@@ -1,0 +1,75 @@
+# LiteLLM gateway config. Logical model names map to US Bedrock inference
+# profiles (Claude primary, Nova fallback), resolved under mpse-legacy.
+
+model_list:
+  - model_name: planning-model
+    litellm_params:
+      model: bedrock/us.anthropic.claude-opus-4-5-20251101-v1:0
+      aws_region_name: us-east-1
+  - model_name: planning-model
+    litellm_params:
+      model: bedrock/us.amazon.nova-premier-v1:0
+      aws_region_name: us-east-1
+
+  - model_name: coding-model
+    litellm_params:
+      model: bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0
+      aws_region_name: us-east-1
+  - model_name: coding-model
+    litellm_params:
+      model: bedrock/us.amazon.nova-pro-v1:0
+      aws_region_name: us-east-1
+
+  - model_name: review-model
+    litellm_params:
+      model: bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0
+      aws_region_name: us-east-1
+  - model_name: review-model
+    litellm_params:
+      model: bedrock/us.amazon.nova-pro-v1:0
+      aws_region_name: us-east-1
+
+  - model_name: security-review-model
+    litellm_params:
+      model: bedrock/us.anthropic.claude-opus-4-5-20251101-v1:0
+      aws_region_name: us-east-1
+  - model_name: security-review-model
+    litellm_params:
+      model: bedrock/us.amazon.nova-pro-v1:0
+      aws_region_name: us-east-1
+
+  - model_name: evaluation-model
+    litellm_params:
+      model: bedrock/us.anthropic.claude-opus-4-5-20251101-v1:0
+      aws_region_name: us-east-1
+  - model_name: evaluation-model
+    litellm_params:
+      model: bedrock/us.amazon.nova-premier-v1:0
+      aws_region_name: us-east-1
+
+  - model_name: classification-summary
+    litellm_params:
+      model: bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0
+      aws_region_name: us-east-1
+  - model_name: classification-summary
+    litellm_params:
+      model: bedrock/us.amazon.nova-lite-v1:0
+      aws_region_name: us-east-1
+
+litellm_settings:
+  drop_params: true
+  num_retries: 2
+  request_timeout: 600
+
+router_settings:
+  routing_strategy: simple-shuffle
+  fallbacks:
+    - planning-model: [planning-model]
+    - coding-model: [coding-model]
+    - review-model: [review-model]
+    - security-review-model: [security-review-model]
+    - evaluation-model: [evaluation-model]
+    - classification-summary: [classification-summary]
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY

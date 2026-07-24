@@ -1,0 +1,127 @@
+name: agentic-dev-platform
+
+x-python-service: &python-service
+  build:
+    context: .
+    dockerfile: docker/Dockerfile
+  env_file: [.env]
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-platform}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-locally}
+      POSTGRES_DB: ${POSTGRES_DB:-agent_platform}
+      POSTGRES_MULTIPLE_DATABASES: agent_platform,temporal,temporal_visibility,langfuse
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./database/init/00-create-multiple-databases.sh:/docker-entrypoint-initdb.d/00-create-multiple-databases.sh:ro
+    ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-platform} -d agent_platform"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  temporal:
+    image: temporalio/auto-setup:1.24.2
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB: postgres12
+      DB_PORT: 5432
+      POSTGRES_SEEDS: postgres
+      POSTGRES_USER: ${POSTGRES_USER:-platform}
+      POSTGRES_PWD: ${POSTGRES_PASSWORD:-change-me-locally}
+      DBNAME: temporal
+      VISIBILITY_DBNAME: temporal_visibility
+    ports: ["7233:7233"]
+    healthcheck:
+      test: ["CMD", "tctl", "--address", "temporal:7233", "cluster", "health"]
+      interval: 15s
+      timeout: 10s
+      retries: 15
+
+  temporal-ui:
+    image: temporalio/ui:2.31.2
+    depends_on: [temporal]
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: http://localhost:3001
+    ports: ["3001:8080"]
+    restart: unless-stopped
+
+  workflow-worker:
+    <<: *python-service
+    command: ["python", "-m", "services.orchestration.worker"]
+    depends_on:
+      temporal:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      litellm:
+        condition: service_started
+
+  langgraph-service:
+    <<: *python-service
+    command: ["python", "-m", "services.orchestration.langgraph.service"]
+    depends_on:
+      litellm:
+        condition: service_started
+    ports: ["8100:8100"]
+
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    command: ["--config", "/app/config/litellm-config.yaml", "--port", "4000"]
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
+      AWS_PROFILE: ${AWS_PROFILE}
+      AWS_REGION: ${AWS_REGION}
+    volumes:
+      - ./config/local/litellm-config.yaml:/app/config/litellm-config.yaml:ro
+      - ${HOME}/.aws:/root/.aws:ro
+    ports: ["4000:4000"]
+    restart: unless-stopped
+
+  opa:
+    image: openpolicyagent/opa:0.66.0
+    command:
+      - "run"
+      - "--server"
+      - "--addr=0.0.0.0:8181"
+      - "--log-level=info"
+      - "/policies"
+    volumes:
+      - ./config/policies:/policies:ro
+    ports: ["8181:8181"]
+    restart: unless-stopped
+
+  langfuse:
+    image: langfuse/langfuse:2
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-platform}:${POSTGRES_PASSWORD:-change-me-locally}@postgres:5432/langfuse
+      NEXTAUTH_URL: http://localhost:3000
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-change-me-locally}
+      SALT: ${LANGFUSE_SALT:-change-me-locally}
+      TELEMETRY_ENABLED: "false"
+    ports: ["3000:3000"]
+    restart: unless-stopped
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.104.0
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes:
+      - ./observability/otel/otel-collector-config.yaml:/etc/otel/config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+    restart: unless-stopped
+
+volumes:
+  postgres-data:

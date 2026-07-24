@@ -1,0 +1,33 @@
+# Local developer overrides applied automatically by Compose on top of compose.yaml.
+services:
+  bedrock-tunnel:
+    image: alpine/socat:1.8.0.0
+    command: TCP-LISTEN:443,fork,reuseaddr TCP:host.docker.internal:8443
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      default:
+        aliases:
+          - bedrock-runtime.us-east-1.amazonaws.com
+    restart: unless-stopped
+
+  litellm:
+    depends_on:
+      - bedrock-tunnel
+
+  workflow-worker:
+    volumes:
+      - ./services:/app/services
+      - ./adapters:/app/adapters
+      - ./schemas:/app/schemas
+      - ./database:/app/database
+    environment:
+      LOG_LEVEL: DEBUG
+
+  langgraph-service:
+    volumes:
+      - ./services:/app/services
+      - ./adapters:/app/adapters
+      - ./schemas:/app/schemas
+    environment:
+      LOG_LEVEL: DEBUG
