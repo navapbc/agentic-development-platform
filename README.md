@@ -6,7 +6,7 @@ A local, Docker-based agentic SDLC platform (POC). Given a Jira ticket it plans,
 
 ## Non-negotiable constraints
 
-- FedRAMP Medium, `us-east-1`. Amazon Bedrock is the only inference path, reached through the approved jump-host (`components/osre-opis-jumphost/terraform` in the sibling `infrastructure` repo). US-only models: Claude primary, Nova fallback.
+- FedRAMP Medium, `us-east-1`. Amazon Bedrock is the only inference path. Reachability is a contract, not a fixed route: platform code depends only on a network path to `bedrock-runtime`, an IAM principal with `bedrock:InvokeModel`, and an injected endpoint URL plus region and credential chain. A pluggable connectivity provider satisfies it (default `jumphost` for current OSRE testing via `components/osre-opis-jumphost/terraform` in the sibling `infrastructure` repo). US-only models: Claude primary, Nova fallback.
 - AWS profile `mpse-legacy`; secrets naming `mpsm/<environment>/opis/<secret>`.
 - VPC endpoints exist for S3 and Secrets Manager, not Bedrock.
 - Jira is canonical (no git-copied tickets); a custom Jira adapter serves both Cloud and Data Center. rebar's ticket store and reconciler are not adopted.
@@ -32,6 +32,19 @@ inv smoke-test                # DB reachable, services healthy, Bedrock path
 ```
 
 Common tasks (`inv --list`): `tunnel-start`, `connectivity-check`, `local-up`, `local-down`, `db-migrate`, `db-reset`, `seed`, `smoke-test`, `test`, `logs`, `workflow-status`.
+
+## Bedrock connectivity providers
+
+`inv tunnel-start` and `inv connectivity-check` dispatch to the provider named by `BEDROCK_CONNECTIVITY_PROVIDER`. Each satisfies the same reachability contract, so the same platform code runs unchanged per project by swapping the provider and its config.
+
+| Provider | Path | Required config |
+| --- | --- | --- |
+| `jumphost` (default) | SSM port-forward through an on-demand jump-host | `JUMPHOST_NAME`, `JUMPHOST_ENV`, `JUMPHOST_CONNECT_SCRIPT` |
+| `ssh-bastion` | SSH local forward through a bastion | `SSH_BASTION_TARGET` |
+| `direct` | No tunnel; the caller resolves and originates inside the VPC | `BEDROCK_ENDPOINT_URL` (optional) |
+| `public` | Public Bedrock endpoint, synthetic-data dev only | `ALLOW_PUBLIC_BEDROCK_ENDPOINT=true` |
+
+`BEDROCK_ENDPOINT_URL` is the injected endpoint surfaced by `Settings.bedrock_client_kwargs()` for boto3 and `BedrockConverseModel`; empty uses the default regional resolver. The public provider is refused unless `ALLOW_PUBLIC_BEDROCK_ENDPOINT` is set, keeping inference inside the ATO boundary by default. Projects with no existing interface endpoint can apply the optional `infra/terraform/bedrock-vpce` module to provision their own.
 
 ## Phase-1 services
 
@@ -61,7 +74,8 @@ Migrations are scoped to the platform's own `agent_platform` schema only; Tempor
 ## Open research (see `.agent-context/research-backlog.md`)
 
 - R1: route rebar to Bedrock via LiteLLM (P1)
-- R2: CBM vs custom repo-intel (P1)
+- R2: CBM vs custom repo-intel (P1, done: hybrid query-type routed)
 - R4: rebar maintainer session
 - R5: connectivity and sandbox
 - R6: language coverage
+- R7: project-agnostic Bedrock reachability (P2)

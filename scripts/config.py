@@ -12,7 +12,9 @@ class Settings(BaseSettings):
     environment: str = "local"
     log_level: str = "INFO"
 
-    database_url: str = "postgresql+asyncpg://platform:change-me-locally@localhost:5432/agent_platform"
+    database_url: str = (
+        "postgresql+asyncpg://platform:change-me-locally@localhost:5432/agent_platform"
+    )
 
     temporal_host: str = "localhost:7233"
     temporal_namespace: str = "default"
@@ -26,10 +28,14 @@ class Settings(BaseSettings):
     bedrock_runtime_endpoint: str = "com.amazonaws.us-east-1.bedrock-runtime"
     bedrock_proxy_url: str = ""
     bedrock_runtime_host: str = "bedrock-runtime.us-east-1.amazonaws.com"
+    bedrock_endpoint_url: str = ""
+    bedrock_connectivity_provider: str = "jumphost"
+    allow_public_bedrock_endpoint: bool = False
 
-    jumphost_name: str = "osre-opis-jumphost"
-    jumphost_env: str = "util"
+    jumphost_name: str = ""
+    jumphost_env: str = ""
     jumphost_connect_script: str = ""
+    ssh_bastion_target: str = ""
     bedrock_tunnel_local_port: int = 8443
 
     opa_url: str = "http://localhost:8181"
@@ -44,6 +50,13 @@ class Settings(BaseSettings):
 
     def allowed_repos(self) -> set[str]:
         return {r.strip() for r in self.allowlist_repos.split(",") if r.strip()}
+
+    def bedrock_client_kwargs(self) -> dict[str, str]:
+        """Boto3/BedrockConverseModel kwargs: region, plus endpoint_url when configured."""
+        kwargs = {"region_name": self.aws_region}
+        if self.bedrock_endpoint_url:
+            kwargs["endpoint_url"] = self.bedrock_endpoint_url
+        return kwargs
 
 
 @lru_cache

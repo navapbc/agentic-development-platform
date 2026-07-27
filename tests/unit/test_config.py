@@ -28,3 +28,28 @@ def test_region_and_profile_defaults_are_fedramp_aligned():
 
 def test_bedrock_endpoint_is_standard_regional_host():
     assert Settings().bedrock_runtime_endpoint == "com.amazonaws.us-east-1.bedrock-runtime"
+
+
+def test_default_connectivity_provider_is_jumphost():
+    assert Settings().bedrock_connectivity_provider == "jumphost"
+
+
+def test_public_bedrock_endpoint_is_disabled_by_default():
+    assert Settings().allow_public_bedrock_endpoint is False
+
+
+def test_code_defaults_carry_no_project_specific_jumphost():
+    s = Settings(_env_file=None)
+    assert s.jumphost_name == ""
+    assert s.jumphost_env == ""
+
+
+def test_bedrock_client_kwargs_omits_endpoint_when_unset():
+    kwargs = Settings(bedrock_endpoint_url="").bedrock_client_kwargs()
+    assert kwargs == {"region_name": "us-east-1"}
+
+
+def test_bedrock_client_kwargs_injects_endpoint_when_set():
+    url = "https://bedrock-runtime.us-east-1.amazonaws.com"
+    kwargs = Settings(bedrock_endpoint_url=url).bedrock_client_kwargs()
+    assert kwargs == {"region_name": "us-east-1", "endpoint_url": url}

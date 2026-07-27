@@ -28,6 +28,12 @@ repository_indexes/**/index/
 *.sqlite
 *.db
 
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl
+
 # Editor / OS
 .DS_Store
 .idea/

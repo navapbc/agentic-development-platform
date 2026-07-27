@@ -1,47 +1,27 @@
-"""Jump-host tunnel to the Bedrock runtime VPC endpoint via SSM port forwarding."""
+"""Establish the configured Bedrock connectivity path (R7 pluggable providers)."""
 
 from __future__ import annotations
 
-import os
 import sys
-from pathlib import Path
 
 from scripts.config import get_settings
-
-
-def _resolve_connect_script(configured: str) -> Path | None:
-    candidate = configured or os.environ.get("JUMPHOST_CONNECT_SCRIPT", "")
-    if not candidate:
-        return None
-    path = Path(candidate).expanduser()
-    return path if path.is_file() else None
+from scripts.connectivity_providers import get_provider
 
 
 def start(detach: bool = False) -> int:
     settings = get_settings()
-    script = _resolve_connect_script(settings.jumphost_connect_script)
-
-    print("[tunnel] Bedrock jump-host path")
-    print(f"[tunnel]   profile     : {settings.aws_profile}")
-    print(f"[tunnel]   region      : {settings.aws_region}")
-    print(f"[tunnel]   jumphost    : {settings.jumphost_name} (env {settings.jumphost_env})")
-    print(f"[tunnel]   remote host : {settings.bedrock_runtime_host}:443")
-    print(f"[tunnel]   local port  : {settings.bedrock_tunnel_local_port}")
-
-    if script is None:
-        print("[tunnel] FAIL: connect_to_jumphost.sh not found.", file=sys.stderr)
-        print(
-            "[tunnel] Set JUMPHOST_CONNECT_SCRIPT to the path of connect_to_jumphost.sh.",
-            file=sys.stderr,
-        )
+    try:
+        provider = get_provider(settings)
+    except ValueError as exc:
+        print(f"[tunnel] FAIL: {exc}", file=sys.stderr)
         return 2
 
-    forwarding = f"{settings.bedrock_tunnel_local_port}:{settings.bedrock_runtime_host}:443"
-    cmd = [str(script), "-n", settings.jumphost_name, "-e", settings.jumphost_env, "-p", forwarding]
-    env = {**os.environ, "AWS_PROFILE": settings.aws_profile, "AWS_REGION": settings.aws_region}
-
-    print(f"[tunnel] exec: {' '.join(cmd)}")
-    os.execvpe(cmd[0], cmd, env)
+    print("[tunnel] Bedrock connectivity path")
+    print(f"[tunnel]   provider    : {provider.key}")
+    print(f"[tunnel]   profile     : {settings.aws_profile}")
+    print(f"[tunnel]   region      : {settings.aws_region}")
+    print(f"[tunnel]   path        : {provider.summary(settings)}")
+    return provider.start(settings)
 
 
 if __name__ == "__main__":
