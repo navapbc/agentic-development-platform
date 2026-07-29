@@ -15,8 +15,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import TypeVar
 
-from services.repository_intelligence.indexing.scip_builder import build_scip_index
-from services.repository_intelligence.indexing.zoekt_builder import build_zoekt_index
+from services.repository_intelligence.indexing.reindex import reindex_repo
 from services.repository_intelligence.normalization.models import (
     ContextPackage,
     RecentChange,
@@ -67,7 +66,7 @@ class RepositoryIntelligenceService:
         ast_grep: AstGrepProvider | None = None,
         cbm: CBMProvider | None = None,
         build_metadata: BuildMetadataProvider | None = None,
-        reindex: Callable[[RepoRef], None] | None = None,
+        reindex: Callable[[RepoRef, str | None], None] | None = None,
     ) -> None:
         self._router = router
         self._root = Path(repo_root)
@@ -113,9 +112,8 @@ class RepositoryIntelligenceService:
             cbm=cbm,
         )
 
-        def reindex(repo: RepoRef) -> None:
-            build_scip_index(root, commit=repo.commit_sha, index_root=index_root, refresh=True)
-            build_zoekt_index(root, commit=repo.commit_sha, index_root=index_root, refresh=True)
+        def reindex(repo: RepoRef, prior_commit: str | None) -> None:
+            reindex_repo(root, repo, prior_commit=prior_commit, index_root=index_root)
 
         return cls(
             router,
@@ -145,8 +143,9 @@ class RepositoryIntelligenceService:
         if status is not None and status.is_fresh and status.indexed_commit == repo.commit_sha:
             self._indexed_commit = status.indexed_commit
             return True
+        prior = self._indexed_commit or (status.indexed_commit if status is not None else None)
         if self._reindex is not None:
-            self._reindex(repo)
+            self._reindex(repo, prior)
         self._indexed_commit = repo.commit_sha
         return False
 

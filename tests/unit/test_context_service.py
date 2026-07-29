@@ -117,11 +117,11 @@ def _base_package(focus: str = "health") -> ContextPackage:
 
 def test_ensure_fresh_skips_reindex_when_fresh_and_commit_matches(tmp_path):
     status = IndexStatus(_REPO, "0744a6e", True, ("python",))
-    reindexed: list[RepoRef] = []
+    reindexed: list[tuple[RepoRef, str | None]] = []
     service = RepositoryIntelligenceService(
         FakeRouter(status=status),
         repo_root=tmp_path,
-        reindex=reindexed.append,
+        reindex=lambda repo, prior: reindexed.append((repo, prior)),
     )
 
     assert service.ensure_fresh(_REPO) is True
@@ -130,28 +130,28 @@ def test_ensure_fresh_skips_reindex_when_fresh_and_commit_matches(tmp_path):
 
 def test_ensure_fresh_reindexes_on_commit_change(tmp_path):
     status = IndexStatus(_REPO, "oldsha", True, ("python",))
-    reindexed: list[RepoRef] = []
+    reindexed: list[tuple[RepoRef, str | None]] = []
     service = RepositoryIntelligenceService(
         FakeRouter(status=status),
         repo_root=tmp_path,
-        reindex=reindexed.append,
+        reindex=lambda repo, prior: reindexed.append((repo, prior)),
     )
 
     assert service.ensure_fresh(_REPO) is False
-    assert reindexed == [_REPO]
+    assert reindexed == [(_REPO, "oldsha")]
 
 
 def test_ensure_fresh_reindexes_when_index_stale(tmp_path):
     status = IndexStatus(_REPO, "0744a6e", False, ("python",))
-    reindexed: list[RepoRef] = []
+    reindexed: list[tuple[RepoRef, str | None]] = []
     service = RepositoryIntelligenceService(
         FakeRouter(status=status),
         repo_root=tmp_path,
-        reindex=reindexed.append,
+        reindex=lambda repo, prior: reindexed.append((repo, prior)),
     )
 
     assert service.ensure_fresh(_REPO) is False
-    assert reindexed == [_REPO]
+    assert reindexed == [(_REPO, "0744a6e")]
 
 
 def test_context_package_composes_all_enrichments(tmp_path):
