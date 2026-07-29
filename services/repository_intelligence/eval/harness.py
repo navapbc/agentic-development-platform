@@ -21,6 +21,7 @@ from services.repository_intelligence.eval.gold_schema import (
 from services.repository_intelligence.normalization.models import RepoRef
 from services.repository_intelligence.providers.cbm.cbm_provider import CBMProvider
 from services.repository_intelligence.providers.custom.python_provider import CustomPythonProvider
+from services.repository_intelligence.providers.router import RouterProvider
 from services.repository_intelligence.providers.scip.scip_provider import ScipProvider
 
 HARNESS_VERSION = "harness/1"
@@ -405,6 +406,26 @@ def run(
     corpus_name = corpus.name
     repo = RepoRef(repo=meta.repo, commit_sha=meta.commit)
 
+    router = RouterProvider.from_repo(
+        corpus,
+        commit=meta.commit,
+        cbm_binary=cbm_binary if cbm_binary.exists() else None,
+        cbm_allowed_root=corpus,
+        cbm_cache_dir=cache_dir,
+    )
+    router_result = _score_provider(
+        "router",
+        router,
+        repo,
+        records,
+        corpus_name,
+        runs,
+        module_prefix=f"{corpus_name}.",
+        detects_staleness=True,
+        ops_score=ops_scores["router"],
+        resource_score=resource_scores["router"],
+    )
+
     scip = ScipProvider(corpus)
     scip_result = _score_provider(
         "scip-python",
@@ -433,7 +454,11 @@ def run(
         resource_score=resource_scores["custom-python"],
     )
 
-    reports = [_provider_report(scip_result), _provider_report(custom_result)]
+    reports = [
+        _provider_report(router_result),
+        _provider_report(scip_result),
+        _provider_report(custom_result),
+    ]
     if not cbm_binary.exists():
         if cbm_required:
             raise FileNotFoundError(f"CBM binary not found at {cbm_binary}")
@@ -459,7 +484,7 @@ def run(
         reports.append(_provider_report(cbm_result))
 
     return {
-        "record_type": "r2_scorecard",
+        "record_type": "acceptance_scorecard",
         "harness_version": HARNESS_VERSION,
         "generated_at": datetime.now(UTC).isoformat(),
         "repo": meta.repo,
@@ -497,9 +522,11 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--ops-score-scip", type=float, default=9.0)
     parser.add_argument("--ops-score-custom", type=float, default=8.0)
     parser.add_argument("--ops-score-cbm", type=float, default=12.0)
+    parser.add_argument("--ops-score-router", type=float, default=9.0)
     parser.add_argument("--resource-score-scip", type=float, default=8.0)
     parser.add_argument("--resource-score-custom", type=float, default=7.0)
     parser.add_argument("--resource-score-cbm", type=float, default=6.0)
+    parser.add_argument("--resource-score-router", type=float, default=7.0)
     return parser.parse_args(argv)
 
 
@@ -525,11 +552,13 @@ def main(argv: list[str] | None = None) -> int:
             "scip-python": args.ops_score_scip,
             "custom-python": args.ops_score_custom,
             "cbm": args.ops_score_cbm,
+            "router": args.ops_score_router,
         },
         {
             "scip-python": args.resource_score_scip,
             "custom-python": args.resource_score_custom,
             "cbm": args.resource_score_cbm,
+            "router": args.resource_score_router,
         },
         cbm_required=cbm_required,
     )
