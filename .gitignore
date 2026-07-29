@@ -28,6 +28,10 @@ repository_indexes/**/index/
 *.sqlite
 *.db
 
+# Vendored prebuilt binaries (kept locally, copied into containers, never committed)
+vendor/bin/*
+!vendor/bin/.gitkeep
+
 # Terraform
 .terraform/
 *.tfstate

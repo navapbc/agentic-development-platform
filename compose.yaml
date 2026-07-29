@@ -123,5 +123,23 @@ services:
       - "4318:4318"
     restart: unless-stopped
 
+  repo-intelligence:
+    build:
+      context: .
+      dockerfile: docker/repo-intelligence.Dockerfile
+    env_file: [.env]
+    profiles: ["repo-intelligence"]
+    volumes:
+      - repo-index-data:/app/repository_indexes
+    restart: unless-stopped
+
+  codebase-memory-mcp:
+    build:
+      context: .
+      dockerfile: docker/cbm.Dockerfile
+    profiles: ["cbm"]
+    restart: unless-stopped
+
 volumes:
   postgres-data:
+  repo-index-data:
