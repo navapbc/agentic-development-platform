@@ -1,0 +1,350 @@
+{
+  "assessed_subscores_note": "operational_complexity and resource_efficiency are assessed inputs (production stack shape), overridable via CLI; all other dimensions are measured",
+  "commit": "0744a6e16964f33827d00bef41a1e8071a70449b",
+  "generated_at": "2026-07-29T16:27:31.982209+00:00",
+  "gold": {
+    "generated_at": "2026-07-27T16:28:39.435966+00:00",
+    "oracles": {
+      "related_tests": "coverage.py@7.15.2",
+      "scip_reader": "scip version v0.9.0-dev",
+      "structure": "scip-python@0.6.6"
+    },
+    "path": "/Users/joerobinson/Documents/Projects/Nava/agentic-dev-platform/services/repository_intelligence/eval/gold/agentic-demo-service@0744a6e.jsonl",
+    "records": 80
+  },
+  "harness_version": "r2-harness/1",
+  "llm_context": "none (repository-intelligence path invokes no model)",
+  "policy_bundle_version": "n/a",
+  "prompt_versions": "n/a",
+  "providers": [
+    {
+      "context_p95_ms": 0.01,
+      "detects_staleness": true,
+      "errors": [],
+      "hard_gates": {
+        "callers_precision>=0.90": true,
+        "no_nonallowlisted_egress": true,
+        "no_plaintext_secret_persistence": true,
+        "references_precision>=0.90": true,
+        "reindex_without_repair": true,
+        "related_tests_precision>=0.80": true,
+        "search_top10_overlap>=0.80": true,
+        "symbol_definition_precision>=0.95": true
+      },
+      "hard_gates_pass": true,
+      "indexed_commit": "0744a6e16964f33827d00bef41a1e8071a70449b",
+      "macro_f1": 0.8333,
+      "provider": "scip-python",
+      "reindex_ok": true,
+      "search_top10_overlap": 1.0,
+      "symbol_ref_p95_ms": 0.01,
+      "type_scores": [
+        {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "path_precision": 1.0,
+          "path_recall": 1.0,
+          "precision": 1.0,
+          "query_type": "symbol_definition",
+          "recall": 1.0,
+          "records": 24,
+          "tp": 24
+        },
+        {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "path_precision": 1.0,
+          "path_recall": 1.0,
+          "precision": 1.0,
+          "query_type": "references",
+          "recall": 1.0,
+          "records": 24,
+          "tp": 38
+        },
+        {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "path_precision": 1.0,
+          "path_recall": 1.0,
+          "precision": 1.0,
+          "query_type": "callers",
+          "recall": 1.0,
+          "records": 17,
+          "tp": 3
+        },
+        {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "path_precision": 1.0,
+          "path_recall": 1.0,
+          "precision": 1.0,
+          "query_type": "implementations",
+          "recall": 1.0,
+          "records": 3,
+          "tp": 4
+        },
+        {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "path_precision": 1.0,
+          "path_recall": 1.0,
+          "precision": 1.0,
+          "query_type": "module_dependencies",
+          "recall": 1.0,
+          "records": 4,
+          "tp": 10
+        },
+        {
+          "f1": 0.0,
+          "fn": 8,
+          "fp": 0,
+          "path_precision": 1.0,
+          "path_recall": 0.0,
+          "precision": 1.0,
+          "query_type": "related_tests",
+          "recall": 0.0,
+          "records": 8,
+          "tp": 0
+        }
+      ],
+      "verdict": "Primary",
+      "weighted_score": {
+        "accuracy_completeness": 33.33,
+        "incremental_freshness": 15.0,
+        "latency": 20.0,
+        "operational_complexity": 9.0,
+        "resource_efficiency": 8.0,
+        "total": 85.33
+      }
+    },
+    {
+      "context_p95_ms": 0.02,
+      "detects_staleness": false,
+      "errors": [],
+      "hard_gates": {
+        "callers_precision>=0.90": false,
+        "no_nonallowlisted_egress": true,
+        "no_plaintext_secret_persistence": true,
+        "references_precision>=0.90": false,
+        "reindex_without_repair": true,
+        "related_tests_precision>=0.80": true,
+        "search_top10_overlap>=0.80": true,
+        "symbol_definition_precision>=0.95": true
+      },
+      "hard_gates_pass": false,
+      "indexed_commit": "0744a6e16964f33827d00bef41a1e8071a70449b",
+      "macro_f1": 0.6985,
+      "provider": "custom-python",
+      "reindex_ok": true,
+      "search_top10_overlap": 1.0,
+      "symbol_ref_p95_ms": 0.01,
+      "type_scores": [
+        {
+          "f1": 0.9565,
+          "fn": 2,
+          "fp": 0,
+          "path_precision": 1.0,
+          "path_recall": 0.9167,
+          "precision": 1.0,
+          "query_type": "symbol_definition",
+          "recall": 0.9167,
+          "records": 24,
+          "tp": 22
+        },
+        {
+          "f1": 0.6596,
+          "fn": 7,
+          "fp": 25,
+          "path_precision": 0.6667,
+          "path_recall": 1.0,
+          "precision": 0.5536,
+          "query_type": "references",
+          "recall": 0.8158,
+          "records": 24,
+          "tp": 31
+        },
+        {
+          "f1": 0.3529,
+          "fn": 0,
+          "fp": 11,
+          "path_precision": 0.375,
+          "path_recall": 1.0,
+          "precision": 0.2143,
+          "query_type": "callers",
+          "recall": 1.0,
+          "records": 17,
+          "tp": 3
+        },
+        {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "path_precision": 1.0,
+          "path_recall": 1.0,
+          "precision": 1.0,
+          "query_type": "implementations",
+          "recall": 1.0,
+          "records": 3,
+          "tp": 4
+        },
+        {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "path_precision": 1.0,
+          "path_recall": 1.0,
+          "precision": 1.0,
+          "query_type": "module_dependencies",
+          "recall": 1.0,
+          "records": 4,
+          "tp": 10
+        },
+        {
+          "f1": 0.2222,
+          "fn": 7,
+          "fp": 0,
+          "path_precision": 1.0,
+          "path_recall": 0.125,
+          "precision": 1.0,
+          "query_type": "related_tests",
+          "recall": 0.125,
+          "records": 8,
+          "tp": 1
+        }
+      ],
+      "verdict": "Reject",
+      "weighted_score": {
+        "accuracy_completeness": 27.94,
+        "incremental_freshness": 8.0,
+        "latency": 20.0,
+        "operational_complexity": 8.0,
+        "resource_efficiency": 7.0,
+        "total": 70.94
+      }
+    },
+    {
+      "context_p95_ms": 3540.22,
+      "detects_staleness": true,
+      "errors": [],
+      "hard_gates": {
+        "callers_precision>=0.90": false,
+        "no_nonallowlisted_egress": true,
+        "no_plaintext_secret_persistence": true,
+        "references_precision>=0.90": false,
+        "reindex_without_repair": true,
+        "related_tests_precision>=0.80": true,
+        "search_top10_overlap>=0.80": true,
+        "symbol_definition_precision>=0.95": true
+      },
+      "hard_gates_pass": false,
+      "indexed_commit": "0744a6e16964f33827d00bef41a1e8071a70449b",
+      "macro_f1": 0.5926,
+      "provider": "cbm",
+      "reindex_ok": true,
+      "search_top10_overlap": 1.0,
+      "symbol_ref_p95_ms": 3502.02,
+      "type_scores": [
+        {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "path_precision": 1.0,
+          "path_recall": 1.0,
+          "precision": 1.0,
+          "query_type": "symbol_definition",
+          "recall": 1.0,
+          "records": 24,
+          "tp": 24
+        },
+        {
+          "f1": 0.2051,
+          "fn": 30,
+          "fp": 32,
+          "path_precision": 0.7368,
+          "path_recall": 1.0,
+          "precision": 0.2,
+          "query_type": "references",
+          "recall": 0.2105,
+          "records": 24,
+          "tp": 8
+        },
+        {
+          "f1": 0.4615,
+          "fn": 0,
+          "fp": 7,
+          "path_precision": 0.6,
+          "path_recall": 1.0,
+          "precision": 0.3,
+          "query_type": "callers",
+          "recall": 1.0,
+          "records": 17,
+          "tp": 3
+        },
+        {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "path_precision": 1.0,
+          "path_recall": 1.0,
+          "precision": 1.0,
+          "query_type": "implementations",
+          "recall": 1.0,
+          "records": 3,
+          "tp": 4
+        },
+        {
+          "f1": 0.6667,
+          "fn": 5,
+          "fp": 0,
+          "path_precision": 1.0,
+          "path_recall": 1.0,
+          "precision": 1.0,
+          "query_type": "module_dependencies",
+          "recall": 0.5,
+          "records": 4,
+          "tp": 5
+        },
+        {
+          "f1": 0.2222,
+          "fn": 7,
+          "fp": 0,
+          "path_precision": 1.0,
+          "path_recall": 0.125,
+          "precision": 1.0,
+          "query_type": "related_tests",
+          "recall": 0.125,
+          "records": 8,
+          "tp": 1
+        }
+      ],
+      "verdict": "Reject",
+      "weighted_score": {
+        "accuracy_completeness": 23.7,
+        "incremental_freshness": 15.0,
+        "latency": 4.98,
+        "operational_complexity": 12.0,
+        "resource_efficiency": 6.0,
+        "total": 61.68
+      }
+    }
+  ],
+  "recommendation": {
+    "leader": "scip-python",
+    "leader_verdict": "Primary",
+    "rationale": "scip-python leads at 85.33 (verdict Primary); scip-python=85.33/Primary; custom-python=70.94/Reject; cbm=61.68/Reject"
+  },
+  "record_type": "r2_scorecard",
+  "repo": "agentic-demo-service",
+  "runs_per_provider": 3,
+  "toolchain": {
+    "cbm_binary": "/Users/joerobinson/Documents/Projects/Nava/codebase-memory-mcp/build/c/codebase-memory-mcp",
+    "cbm_binary_bytes": 296169792,
+    "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+    "python": "3.14.6"
+  }
+}

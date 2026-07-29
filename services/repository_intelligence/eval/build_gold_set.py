@@ -22,7 +22,7 @@ from services.repository_intelligence.eval.gold_schema import (
     QueryType,
     write_gold_set,
 )
-from services.repository_intelligence.eval.scip_oracle import (
+from services.repository_intelligence.indexing.scip_index import (
     ScipIndex,
     SymbolInfo,
     parse_symbol,

@@ -21,6 +21,7 @@ from services.repository_intelligence.eval.gold_schema import (
 from services.repository_intelligence.normalization.models import RepoRef
 from services.repository_intelligence.providers.cbm.cbm_provider import CBMProvider
 from services.repository_intelligence.providers.custom.python_provider import CustomPythonProvider
+from services.repository_intelligence.providers.scip.scip_provider import ScipProvider
 
 HARNESS_VERSION = "r2-harness/1"
 
@@ -396,12 +397,27 @@ def run(
     runs: int,
     ops_scores: dict[str, float],
     resource_scores: dict[str, float],
+    cbm_required: bool = False,
 ) -> dict[str, Any]:
     meta, records = read_gold_set(gold_path)
     if meta is None:
         raise ValueError(f"gold set {gold_path} has no meta record")
     corpus_name = corpus.name
     repo = RepoRef(repo=meta.repo, commit_sha=meta.commit)
+
+    scip = ScipProvider(corpus)
+    scip_result = _score_provider(
+        "scip-python",
+        scip,
+        repo,
+        records,
+        corpus_name,
+        runs,
+        module_prefix=f"{corpus_name}.",
+        detects_staleness=True,
+        ops_score=ops_scores["scip-python"],
+        resource_score=resource_scores["scip-python"],
+    )
 
     custom = CustomPythonProvider(corpus)
     custom_result = _score_provider(
@@ -417,22 +433,31 @@ def run(
         resource_score=resource_scores["custom-python"],
     )
 
-    cbm = CBMProvider(corpus, cbm_binary, allowed_root=corpus, cache_dir=cache_dir)
-    cbm.index()
-    cbm_result = _score_provider(
-        "cbm",
-        cbm,
-        repo,
-        records,
-        corpus_name,
-        runs,
-        module_prefix="",
-        detects_staleness=True,
-        ops_score=ops_scores["cbm"],
-        resource_score=resource_scores["cbm"],
-    )
+    reports = [_provider_report(scip_result), _provider_report(custom_result)]
+    if not cbm_binary.exists():
+        if cbm_required:
+            raise FileNotFoundError(f"CBM binary not found at {cbm_binary}")
+        print(
+            f"[harness] CBM binary not found at {cbm_binary}; skipping CBM provider",
+            file=sys.stderr,
+        )
+    else:
+        cbm = CBMProvider(corpus, cbm_binary, allowed_root=corpus, cache_dir=cache_dir)
+        cbm.index()
+        cbm_result = _score_provider(
+            "cbm",
+            cbm,
+            repo,
+            records,
+            corpus_name,
+            runs,
+            module_prefix="",
+            detects_staleness=True,
+            ops_score=ops_scores["cbm"],
+            resource_score=resource_scores["cbm"],
+        )
+        reports.append(_provider_report(cbm_result))
 
-    reports = [_provider_report(custom_result), _provider_report(cbm_result)]
     return {
         "record_type": "r2_scorecard",
         "harness_version": HARNESS_VERSION,
@@ -463,12 +488,14 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="R2 provider comparison harness")
     parser.add_argument("--corpus", default=_DEFAULT_CORPUS)
     parser.add_argument("--gold", default=None)
-    parser.add_argument("--cbm-binary", default=_DEFAULT_CBM)
+    parser.add_argument("--cbm-binary", default=None)
     parser.add_argument("--cache-dir", default=_DEFAULT_CACHE)
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--out", default=None)
+    parser.add_argument("--ops-score-scip", type=float, default=9.0)
     parser.add_argument("--ops-score-custom", type=float, default=8.0)
     parser.add_argument("--ops-score-cbm", type=float, default=12.0)
+    parser.add_argument("--resource-score-scip", type=float, default=8.0)
     parser.add_argument("--resource-score-custom", type=float, default=7.0)
     parser.add_argument("--resource-score-cbm", type=float, default=6.0)
     return parser.parse_args(argv)
@@ -483,7 +510,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.gold
         else here / "gold" / "agentic-demo-service@0744a6e.jsonl"
     )
-    cbm_binary = Path(args.cbm_binary).expanduser().resolve()
+    cbm_required = args.cbm_binary is not None
+    cbm_binary = Path(args.cbm_binary or _DEFAULT_CBM).expanduser().resolve()
     cache_dir = Path(args.cache_dir).expanduser()
     scorecard = run(
         corpus,
@@ -491,8 +519,17 @@ def main(argv: list[str] | None = None) -> int:
         cbm_binary,
         cache_dir,
         args.runs,
-        {"custom-python": args.ops_score_custom, "cbm": args.ops_score_cbm},
-        {"custom-python": args.resource_score_custom, "cbm": args.resource_score_cbm},
+        {
+            "scip-python": args.ops_score_scip,
+            "custom-python": args.ops_score_custom,
+            "cbm": args.ops_score_cbm,
+        },
+        {
+            "scip-python": args.resource_score_scip,
+            "custom-python": args.resource_score_custom,
+            "cbm": args.resource_score_cbm,
+        },
+        cbm_required=cbm_required,
     )
     text = json.dumps(scorecard, indent=2, sort_keys=True)
     if args.out:

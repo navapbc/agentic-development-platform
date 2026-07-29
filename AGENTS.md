@@ -14,7 +14,7 @@ Generic, tool-agnostic working rules. These are personal preferences for how any
   - Remove OSRE jump-host constants from Python defaults
   ```
 
-- Ticket numbers are sequential per repository: increment from the last committed ticket. They are never derived from research item, phase, or task numbers (research item R7 does not imply `ADEVX-7`).
+- A ticket number identifies a unit of grouped work, like a Jira ticket, not a single commit. One ticket can span multiple commits, so reuse the same number for every commit that belongs to that unit of work. Increment to the next number only when starting a new unit of work. Numbers are sequential per repository and are never derived from research item, phase, or task numbers (research item R7 does not imply `ADEVX-7`).
 - Ticket number prefixes by repository: `agentic-dev-platform` uses `ADEVX-<number>`, `agentic-demo-service` uses `ADSERX-<number>`, `agentic-demo-greenfield` uses `ADGRX-<number>`.
 
 ## Prose and punctuation
