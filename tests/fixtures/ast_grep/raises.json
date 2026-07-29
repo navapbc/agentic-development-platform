@@ -1,0 +1,85 @@
+[
+{
+  "text": "raise HTTPException(status_code=404, detail=\"Task not found\")",
+  "range": {
+    "byteOffset": {
+      "start": 1013,
+      "end": 1074
+    },
+    "start": {
+      "line": 39,
+      "column": 8
+    },
+    "end": {
+      "line": 39,
+      "column": 69
+    }
+  },
+  "file": "app/main.py",
+  "lines": "        raise HTTPException(status_code=404, detail=\"Task not found\")",
+  "charCount": {
+    "leading": 8,
+    "trailing": 0
+  },
+  "language": "Python",
+  "metaVariables": {
+    "single": {},
+    "multi": {
+      "ARGS": [
+        {
+          "text": "status_code=404",
+          "range": {
+            "byteOffset": {
+              "start": 1033,
+              "end": 1048
+            },
+            "start": {
+              "line": 39,
+              "column": 28
+            },
+            "end": {
+              "line": 39,
+              "column": 43
+            }
+          }
+        },
+        {
+          "text": ",",
+          "range": {
+            "byteOffset": {
+              "start": 1048,
+              "end": 1049
+            },
+            "start": {
+              "line": 39,
+              "column": 43
+            },
+            "end": {
+              "line": 39,
+              "column": 44
+            }
+          }
+        },
+        {
+          "text": "detail=\"Task not found\"",
+          "range": {
+            "byteOffset": {
+              "start": 1050,
+              "end": 1073
+            },
+            "start": {
+              "line": 39,
+              "column": 45
+            },
+            "end": {
+              "line": 39,
+              "column": 68
+            }
+          }
+        }
+      ]
+    },
+    "transformed": {}
+  }
+}
+]

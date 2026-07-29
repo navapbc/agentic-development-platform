@@ -1,0 +1,406 @@
+[
+{
+  "text": "@app.get(\"/health\")",
+  "range": {
+    "byteOffset": {
+      "start": 435,
+      "end": 454
+    },
+    "start": {
+      "line": 16,
+      "column": 0
+    },
+    "end": {
+      "line": 16,
+      "column": 19
+    }
+  },
+  "file": "app/main.py",
+  "lines": "@app.get(\"/health\")",
+  "charCount": {
+    "leading": 0,
+    "trailing": 0
+  },
+  "language": "Python",
+  "metaVariables": {
+    "single": {
+      "METHOD": {
+        "text": "get",
+        "range": {
+          "byteOffset": {
+            "start": 440,
+            "end": 443
+          },
+          "start": {
+            "line": 16,
+            "column": 5
+          },
+          "end": {
+            "line": 16,
+            "column": 8
+          }
+        }
+      }
+    },
+    "multi": {
+      "ARGS": [
+        {
+          "text": "\"/health\"",
+          "range": {
+            "byteOffset": {
+              "start": 444,
+              "end": 453
+            },
+            "start": {
+              "line": 16,
+              "column": 9
+            },
+            "end": {
+              "line": 16,
+              "column": 18
+            }
+          }
+        }
+      ]
+    },
+    "transformed": {}
+  }
+},
+{
+  "text": "@app.get(\"/tasks\", response_model=list[Task])",
+  "range": {
+    "byteOffset": {
+      "start": 543,
+      "end": 588
+    },
+    "start": {
+      "line": 22,
+      "column": 0
+    },
+    "end": {
+      "line": 22,
+      "column": 45
+    }
+  },
+  "file": "app/main.py",
+  "lines": "@app.get(\"/tasks\", response_model=list[Task])",
+  "charCount": {
+    "leading": 0,
+    "trailing": 0
+  },
+  "language": "Python",
+  "metaVariables": {
+    "single": {
+      "METHOD": {
+        "text": "get",
+        "range": {
+          "byteOffset": {
+            "start": 548,
+            "end": 551
+          },
+          "start": {
+            "line": 22,
+            "column": 5
+          },
+          "end": {
+            "line": 22,
+            "column": 8
+          }
+        }
+      }
+    },
+    "multi": {
+      "ARGS": [
+        {
+          "text": "\"/tasks\"",
+          "range": {
+            "byteOffset": {
+              "start": 552,
+              "end": 560
+            },
+            "start": {
+              "line": 22,
+              "column": 9
+            },
+            "end": {
+              "line": 22,
+              "column": 17
+            }
+          }
+        },
+        {
+          "text": ",",
+          "range": {
+            "byteOffset": {
+              "start": 560,
+              "end": 561
+            },
+            "start": {
+              "line": 22,
+              "column": 17
+            },
+            "end": {
+              "line": 22,
+              "column": 18
+            }
+          }
+        },
+        {
+          "text": "response_model=list[Task]",
+          "range": {
+            "byteOffset": {
+              "start": 562,
+              "end": 587
+            },
+            "start": {
+              "line": 22,
+              "column": 19
+            },
+            "end": {
+              "line": 22,
+              "column": 44
+            }
+          }
+        }
+      ]
+    },
+    "transformed": {}
+  }
+},
+{
+  "text": "@app.post(\"/tasks\", response_model=Task, status_code=201)",
+  "range": {
+    "byteOffset": {
+      "start": 675,
+      "end": 732
+    },
+    "start": {
+      "line": 28,
+      "column": 0
+    },
+    "end": {
+      "line": 28,
+      "column": 57
+    }
+  },
+  "file": "app/main.py",
+  "lines": "@app.post(\"/tasks\", response_model=Task, status_code=201)",
+  "charCount": {
+    "leading": 0,
+    "trailing": 0
+  },
+  "language": "Python",
+  "metaVariables": {
+    "single": {
+      "METHOD": {
+        "text": "post",
+        "range": {
+          "byteOffset": {
+            "start": 680,
+            "end": 684
+          },
+          "start": {
+            "line": 28,
+            "column": 5
+          },
+          "end": {
+            "line": 28,
+            "column": 9
+          }
+        }
+      }
+    },
+    "multi": {
+      "ARGS": [
+        {
+          "text": "\"/tasks\"",
+          "range": {
+            "byteOffset": {
+              "start": 685,
+              "end": 693
+            },
+            "start": {
+              "line": 28,
+              "column": 10
+            },
+            "end": {
+              "line": 28,
+              "column": 18
+            }
+          }
+        },
+        {
+          "text": ",",
+          "range": {
+            "byteOffset": {
+              "start": 693,
+              "end": 694
+            },
+            "start": {
+              "line": 28,
+              "column": 18
+            },
+            "end": {
+              "line": 28,
+              "column": 19
+            }
+          }
+        },
+        {
+          "text": "response_model=Task",
+          "range": {
+            "byteOffset": {
+              "start": 695,
+              "end": 714
+            },
+            "start": {
+              "line": 28,
+              "column": 20
+            },
+            "end": {
+              "line": 28,
+              "column": 39
+            }
+          }
+        },
+        {
+          "text": ",",
+          "range": {
+            "byteOffset": {
+              "start": 714,
+              "end": 715
+            },
+            "start": {
+              "line": 28,
+              "column": 39
+            },
+            "end": {
+              "line": 28,
+              "column": 40
+            }
+          }
+        },
+        {
+          "text": "status_code=201",
+          "range": {
+            "byteOffset": {
+              "start": 716,
+              "end": 731
+            },
+            "start": {
+              "line": 28,
+              "column": 41
+            },
+            "end": {
+              "line": 28,
+              "column": 56
+            }
+          }
+        }
+      ]
+    },
+    "transformed": {}
+  }
+},
+{
+  "text": "@app.get(\"/tasks/{task_id}\", response_model=Task)",
+  "range": {
+    "byteOffset": {
+      "start": 830,
+      "end": 879
+    },
+    "start": {
+      "line": 34,
+      "column": 0
+    },
+    "end": {
+      "line": 34,
+      "column": 49
+    }
+  },
+  "file": "app/main.py",
+  "lines": "@app.get(\"/tasks/{task_id}\", response_model=Task)",
+  "charCount": {
+    "leading": 0,
+    "trailing": 0
+  },
+  "language": "Python",
+  "metaVariables": {
+    "single": {
+      "METHOD": {
+        "text": "get",
+        "range": {
+          "byteOffset": {
+            "start": 835,
+            "end": 838
+          },
+          "start": {
+            "line": 34,
+            "column": 5
+          },
+          "end": {
+            "line": 34,
+            "column": 8
+          }
+        }
+      }
+    },
+    "multi": {
+      "ARGS": [
+        {
+          "text": "\"/tasks/{task_id}\"",
+          "range": {
+            "byteOffset": {
+              "start": 839,
+              "end": 857
+            },
+            "start": {
+              "line": 34,
+              "column": 9
+            },
+            "end": {
+              "line": 34,
+              "column": 27
+            }
+          }
+        },
+        {
+          "text": ",",
+          "range": {
+            "byteOffset": {
+              "start": 857,
+              "end": 858
+            },
+            "start": {
+              "line": 34,
+              "column": 27
+            },
+            "end": {
+              "line": 34,
+              "column": 28
+            }
+          }
+        },
+        {
+          "text": "response_model=Task",
+          "range": {
+            "byteOffset": {
+              "start": 859,
+              "end": 878
+            },
+            "start": {
+              "line": 34,
+              "column": 29
+            },
+            "end": {
+              "line": 34,
+              "column": 48
+            }
+          }
+        }
+      ]
+    },
+    "transformed": {}
+  }
+}
+]

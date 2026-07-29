@@ -1,0 +1,136 @@
+[
+{
+  "text": "class TaskCreate(BaseModel):\n    \"\"\"Payload accepted when creating a task.\"\"\"\n\n    id: int\n    title: str\n    status: Status = Status.todo",
+  "range": {
+    "byteOffset": {
+      "start": 238,
+      "end": 376
+    },
+    "start": {
+      "line": 15,
+      "column": 0
+    },
+    "end": {
+      "line": 20,
+      "column": 32
+    }
+  },
+  "file": "app/models.py",
+  "lines": "class TaskCreate(BaseModel):\n    \"\"\"Payload accepted when creating a task.\"\"\"\n\n    id: int\n    title: str\n    status: Status = Status.todo",
+  "charCount": {
+    "leading": 0,
+    "trailing": 0
+  },
+  "language": "Python",
+  "metaVariables": {
+    "single": {
+      "NAME": {
+        "text": "TaskCreate",
+        "range": {
+          "byteOffset": {
+            "start": 244,
+            "end": 254
+          },
+          "start": {
+            "line": 15,
+            "column": 6
+          },
+          "end": {
+            "line": 15,
+            "column": 16
+          }
+        }
+      }
+    },
+    "multi": {
+      "BODY": [
+        {
+          "text": "\"\"\"Payload accepted when creating a task.\"\"\"\n\n    id: int\n    title: str\n    status: Status = Status.todo",
+          "range": {
+            "byteOffset": {
+              "start": 271,
+              "end": 376
+            },
+            "start": {
+              "line": 16,
+              "column": 4
+            },
+            "end": {
+              "line": 20,
+              "column": 32
+            }
+          }
+        }
+      ]
+    },
+    "transformed": {}
+  }
+},
+{
+  "text": "class Task(BaseModel):\n    \"\"\"A task stored by the service.\"\"\"\n\n    id: int\n    title: str\n    status: Status",
+  "range": {
+    "byteOffset": {
+      "start": 379,
+      "end": 488
+    },
+    "start": {
+      "line": 23,
+      "column": 0
+    },
+    "end": {
+      "line": 28,
+      "column": 18
+    }
+  },
+  "file": "app/models.py",
+  "lines": "class Task(BaseModel):\n    \"\"\"A task stored by the service.\"\"\"\n\n    id: int\n    title: str\n    status: Status",
+  "charCount": {
+    "leading": 0,
+    "trailing": 0
+  },
+  "language": "Python",
+  "metaVariables": {
+    "single": {
+      "NAME": {
+        "text": "Task",
+        "range": {
+          "byteOffset": {
+            "start": 385,
+            "end": 389
+          },
+          "start": {
+            "line": 23,
+            "column": 6
+          },
+          "end": {
+            "line": 23,
+            "column": 10
+          }
+        }
+      }
+    },
+    "multi": {
+      "BODY": [
+        {
+          "text": "\"\"\"A task stored by the service.\"\"\"\n\n    id: int\n    title: str\n    status: Status",
+          "range": {
+            "byteOffset": {
+              "start": 406,
+              "end": 488
+            },
+            "start": {
+              "line": 24,
+              "column": 4
+            },
+            "end": {
+              "line": 28,
+              "column": 18
+            }
+          }
+        }
+      ]
+    },
+    "transformed": {}
+  }
+}
+]
