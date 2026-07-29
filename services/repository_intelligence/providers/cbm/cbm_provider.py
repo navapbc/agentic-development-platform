@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -54,6 +55,8 @@ _SYMBOL_LABELS = (
     "Variable",
 )
 
+_CANDIDATE_CONFIDENCE = 0.5
+
 
 class CBMError(RuntimeError):
     pass
@@ -81,6 +84,22 @@ class CBMProvider:
             raise CBMError(
                 f"repo_root {self._root} is outside CBM_ALLOWED_ROOT {self._allowed_root}"
             )
+
+    def is_available(self) -> bool:
+        if not Path(self._binary).exists() and shutil.which(self._binary) is None:
+            return False
+        try:
+            completed = subprocess.run(
+                [self._binary, "--version"],
+                env=self._env(),
+                capture_output=True,
+                text=True,
+                timeout=self._timeout,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return completed.returncode == 0
 
     def index(self) -> str:
         envelope = self._invoke("index_repository", repo_path=str(self._root))
@@ -118,13 +137,17 @@ class CBMProvider:
                 continue
             cmd.append("--" + key.replace("_", "-"))
             cmd.append(str(value))
-        completed = subprocess.run(
-            cmd,
-            env=self._env(),
-            capture_output=True,
-            text=True,
-            timeout=self._timeout,
-        )
+        try:
+            completed = subprocess.run(
+                cmd,
+                env=self._env(),
+                capture_output=True,
+                text=True,
+                timeout=self._timeout,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as error:
+            raise CBMError(f"{tool} timed out after {self._timeout}s") from error
         if completed.returncode != 0:
             raise CBMError(
                 f"{tool} exited {completed.returncode}: {completed.stderr.strip()[-500:]}"
@@ -487,4 +510,44 @@ class CBMProvider:
             is_fresh=is_fresh,
             languages=("python",),
             detail=detail,
+        )
+
+    def candidate_references(self, repo: RepoRef, symbol: str) -> list[Reference]:
+        refs = self.repo_find_references(repo, symbol, include_definition=False)
+        best: dict[str, Reference] = {}
+        for ref in refs:
+            path = ref.location.path
+            if not path:
+                continue
+            existing = best.get(path)
+            if existing is None or ref.location.start_line < existing.location.start_line:
+                best[path] = Reference(
+                    symbol=ref.symbol,
+                    location=Location(path=path, start_line=ref.location.start_line),
+                    is_definition=False,
+                    provenance=Provenance(source=Source.CBM, confidence=_CANDIDATE_CONFIDENCE),
+                )
+        return sorted(best.values(), key=lambda r: (r.location.path, r.location.start_line))
+
+    def candidate_callers(self, repo: RepoRef, symbol: str) -> list[CallEdge]:
+        edges = self.repo_get_callers(repo, symbol)
+        best: dict[str, CallEdge] = {}
+        for edge in edges:
+            path = edge.caller.location.path
+            if not path:
+                continue
+            existing = best.get(path)
+            if (
+                existing is None
+                or edge.caller.location.start_line < existing.caller.location.start_line
+            ):
+                best[path] = CallEdge(
+                    caller=edge.caller,
+                    callee=edge.callee,
+                    provenance=Provenance(source=Source.CBM, confidence=_CANDIDATE_CONFIDENCE),
+                    call_site=Location(path=path, start_line=edge.caller.location.start_line),
+                )
+        return sorted(
+            best.values(),
+            key=lambda e: (e.caller.location.path, e.caller.location.start_line),
         )
