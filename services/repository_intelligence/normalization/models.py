@@ -127,6 +127,14 @@ class ChangeImpact:
 
 
 @dataclass(frozen=True)
+class RecentChange:
+    commit_sha: str
+    summary: str
+    path: str
+    authored_at: str | None = None
+
+
+@dataclass(frozen=True)
 class ContextPackage:
     focus: str
     symbols: tuple[Symbol, ...]
@@ -134,6 +142,16 @@ class ContextPackage:
     related_tests: tuple[RelatedTest, ...]
     dependencies: tuple[DependencyEdge, ...]
     summary: str | None = None
+    callers: tuple[CallEdge, ...] = ()
+    callees: tuple[CallEdge, ...] = ()
+    implementations: tuple[Symbol, ...] = ()
+    structural: tuple[SearchHit, ...] = ()
+    candidate_files: tuple[str, ...] = ()
+    build_targets: tuple[str, ...] = ()
+    config_files: tuple[str, ...] = ()
+    repository: str = ""
+    indexed_commit: str | None = None
+    recent_changes: tuple[RecentChange, ...] = ()
 
 
 @dataclass(frozen=True)

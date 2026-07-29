@@ -10,6 +10,7 @@ from temporalio.client import Client
 from temporalio.worker import Worker
 
 from services.orchestration.temporal_activities import (
+    gather_repo_context,
     invoke_model,
     persist_execution_state,
     record_audit_event,
@@ -33,7 +34,12 @@ async def main() -> None:
         client,
         task_queue=settings.temporal_task_queue,
         workflows=[FoundationWorkflow],
-        activities=[invoke_model, persist_execution_state, record_audit_event],
+        activities=[
+            invoke_model,
+            persist_execution_state,
+            record_audit_event,
+            gather_repo_context,
+        ],
     )
     log.info("worker started on task queue '%s'", settings.temporal_task_queue)
     await worker.run()

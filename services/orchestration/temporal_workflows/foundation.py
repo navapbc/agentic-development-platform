@@ -20,6 +20,11 @@ with workflow.unsafe.imports_passed_through():
         persist_execution_state,
         record_audit_event,
     )
+    from services.orchestration.temporal_activities.planning import (
+        ContextRequest,
+        ContextResult,
+        gather_repo_context,
+    )
 
 
 @dataclass
@@ -28,6 +33,9 @@ class FoundationInput:
     execution_id: str
     prompt: str = "Reply with the single word: ready"
     pause_seconds: int = 0
+    repo: str = ""
+    commit: str = ""
+    focus: str = ""
 
 
 @workflow.defn
@@ -65,9 +73,20 @@ class FoundationWorkflow:
         if params.pause_seconds > 0:
             await workflow.sleep(timedelta(seconds=params.pause_seconds))
 
+        prompt = params.prompt
+        if params.repo:
+            context: ContextResult = await workflow.execute_activity(
+                gather_repo_context,
+                ContextRequest(repo=params.repo, commit=params.commit, focus=params.focus),
+                start_to_close_timeout=model_timeout,
+                retry_policy=retry,
+            )
+            if context.summary:
+                prompt = f"{context.summary}\n\n{params.prompt}"
+
         response: ModelResponse = await workflow.execute_activity(
             invoke_model,
-            ModelRequest(logical_model="classification-summary", prompt=params.prompt),
+            ModelRequest(logical_model="classification-summary", prompt=prompt),
             start_to_close_timeout=model_timeout,
             retry_policy=retry,
         )

@@ -57,6 +57,8 @@ services:
   workflow-worker:
     <<: *python-service
     command: ["python", "-m", "services.orchestration.worker"]
+    environment:
+      REPO_INTELLIGENCE_URL: http://repo-intelligence:8120
     depends_on:
       temporal:
         condition: service_healthy
@@ -129,6 +131,7 @@ services:
       dockerfile: docker/repo-intelligence.Dockerfile
     env_file: [.env]
     profiles: ["repo-intelligence"]
+    ports: ["8120:8120"]
     volumes:
       - repo-index-data:/app/repository_indexes
     restart: unless-stopped

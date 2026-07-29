@@ -42,6 +42,11 @@ class Settings(BaseSettings):
     langfuse_host: str = "http://localhost:3000"
     otel_exporter_otlp_endpoint: str = "http://localhost:4317"
 
+    repo_intelligence_url: str = "http://localhost:8120"
+    repo_intelligence_repo_root: str = ""
+    repo_intelligence_commit: str = ""
+    repo_intelligence_cbm_binary: str = ""
+
     allowlist_jira_projects: str = "AGENTDEV"
     allowlist_repos: str = "agentic-demo-service,agentic-demo-greenfield"
 
