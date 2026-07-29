@@ -1,4 +1,4 @@
-"""Pluggable Bedrock connectivity providers (R7).
+"""Pluggable Bedrock connectivity providers.
 
 Platform code depends only on a reachability contract: a network path to the
 bedrock-runtime endpoint, an IAM principal with ``bedrock:InvokeModel``, and an

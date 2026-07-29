@@ -1,4 +1,4 @@
-"""Establish the configured Bedrock connectivity path (R7 pluggable providers)."""
+"""Establish the configured Bedrock connectivity path."""
 
 from __future__ import annotations
 

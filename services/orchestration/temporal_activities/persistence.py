@@ -74,17 +74,21 @@ class AuditEvent:
 
 @activity.defn
 async def record_audit_event(event: AuditEvent) -> str:
-    stmt = insert(audit_events).values(
-        event_id=event.event_id,
-        task_id=event.task_id,
-        execution_id=event.execution_id,
-        event_type=event.event_type,
-        stage=event.stage,
-        prev_state=event.prev_state,
-        new_state=event.new_state,
-        model_id=event.model_id,
-        reason=event.reason,
-    ).on_conflict_do_nothing(index_elements=[audit_events.c.event_id])
+    stmt = (
+        insert(audit_events)
+        .values(
+            event_id=event.event_id,
+            task_id=event.task_id,
+            execution_id=event.execution_id,
+            event_type=event.event_type,
+            stage=event.stage,
+            prev_state=event.prev_state,
+            new_state=event.new_state,
+            model_id=event.model_id,
+            reason=event.reason,
+        )
+        .on_conflict_do_nothing(index_elements=[audit_events.c.event_id])
+    )
     engine = _get_engine()
     async with engine.begin() as conn:
         await conn.execute(stmt)

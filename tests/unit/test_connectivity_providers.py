@@ -1,4 +1,4 @@
-"""Unit tests for the pluggable Bedrock connectivity providers (R7)."""
+"""Unit tests for the pluggable Bedrock connectivity providers."""
 
 from __future__ import annotations
 

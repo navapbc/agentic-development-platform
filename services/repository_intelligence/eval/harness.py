@@ -1,4 +1,4 @@
-"""Comparative scoring harness for repository-intelligence providers (R2)."""
+"""Comparative scoring harness for repository-intelligence providers."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from services.repository_intelligence.providers.cbm.cbm_provider import CBMProvi
 from services.repository_intelligence.providers.custom.python_provider import CustomPythonProvider
 from services.repository_intelligence.providers.scip.scip_provider import ScipProvider
 
-HARNESS_VERSION = "r2-harness/1"
+HARNESS_VERSION = "harness/1"
 
 _PRECISION_GATES = {
     QueryType.SYMBOL_DEFINITION: 0.95,
@@ -485,7 +485,9 @@ def run(
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="R2 provider comparison harness")
+    parser = argparse.ArgumentParser(
+        description="Repository-intelligence provider comparison harness"
+    )
     parser.add_argument("--corpus", default=_DEFAULT_CORPUS)
     parser.add_argument("--gold", default=None)
     parser.add_argument("--cbm-binary", default=None)

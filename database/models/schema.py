@@ -70,8 +70,6 @@ executions = Table(
         nullable=False,
         server_default="TASK_RECEIVED",
     ),
-    # Pinned-at-start determinism inputs: snapshot version, repo SHA, prompt
-    # versions, policy bundle version, resolved logical-to-concrete model ids.
     Column("repository", String(255), nullable=True),
     Column("repository_sha", String(64), nullable=True),
     Column("policy_bundle_version", String(64), nullable=True),

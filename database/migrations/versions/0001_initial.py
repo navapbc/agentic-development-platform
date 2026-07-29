@@ -63,7 +63,9 @@ def upgrade() -> None:
         sa.Column("policy_bundle_version", sa.String(64), nullable=True),
         sa.Column("resolved_models", sa.JSON(), nullable=True),
         sa.Column("prompt_versions", sa.JSON(), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
         schema=SCHEMA,
     )
@@ -79,7 +81,9 @@ def upgrade() -> None:
         sa.Column("version", sa.Integer(), nullable=False, server_default="1"),
         sa.Column("content_hash", sa.String(128), nullable=False),
         sa.Column("payload", sa.JSON(), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
         sa.ForeignKeyConstraint(
             ["execution_id"],
             [f"{SCHEMA}.executions.execution_id"],
@@ -109,7 +113,9 @@ def upgrade() -> None:
         sa.Column("policy_version", sa.String(64), nullable=True),
         sa.Column("correlation_ids", sa.JSON(), nullable=True),
         sa.Column("artifact_hashes", sa.JSON(), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
         schema=SCHEMA,
     )
     op.create_index("ix_audit_events_task_id", "audit_events", ["task_id"], schema=SCHEMA)
@@ -125,11 +131,15 @@ def upgrade() -> None:
         sa.Column("retention", sa.String(32), nullable=True),
         sa.Column("location", sa.Text(), nullable=True),
         sa.Column("metadata", sa.JSON(), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
         sa.UniqueConstraint("content_hash", name="uq_evidence_artifacts_content_hash"),
         schema=SCHEMA,
     )
-    op.create_index("ix_evidence_artifacts_execution_id", "evidence_artifacts", ["execution_id"], schema=SCHEMA)
+    op.create_index(
+        "ix_evidence_artifacts_execution_id", "evidence_artifacts", ["execution_id"], schema=SCHEMA
+    )
 
     op.create_table(
         "work_claims",
@@ -141,7 +151,9 @@ def upgrade() -> None:
         sa.Column("file_impact", sa.JSON(), nullable=True),
         sa.Column("state", sa.String(32), nullable=False, server_default="claimed"),
         sa.Column("claim_version", sa.Integer(), nullable=False, server_default="1"),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
         sa.Column("released_at", sa.DateTime(timezone=True), nullable=True),
         sa.UniqueConstraint("task_id", "work_unit", name="uq_work_claims_task_work_unit"),
         schema=SCHEMA,
@@ -165,7 +177,9 @@ def upgrade() -> None:
         sa.Column("state", sa.String(32), nullable=False, server_default="active"),
         sa.Column("ttl_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("platform_tagged", sa.Boolean(), nullable=False, server_default="true"),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
         schema=SCHEMA,
     )
 

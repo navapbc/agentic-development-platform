@@ -1,4 +1,4 @@
-"""Unit tests for the SCIP-backed repository-intelligence provider (P2.1)."""
+"""Unit tests for the SCIP-backed repository-intelligence provider."""
 
 from __future__ import annotations
 
@@ -104,7 +104,7 @@ def test_callers_carry_scip_provenance(provider: ScipProvider, repo: RepoRef):
         assert edge.call_site is not None
 
 
-def test_related_tests_defers_to_coverage(provider: ScipProvider, repo: RepoRef):
+def test_related_tests_returns_empty(provider: ScipProvider, repo: RepoRef):
     assert provider.repo_get_related_tests(repo, "app.main.create_task") == []
 
 
