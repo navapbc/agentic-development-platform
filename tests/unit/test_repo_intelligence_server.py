@@ -68,7 +68,7 @@ def test_handler_reports_health():
 
 class _FakeSettings:
     def allowed_repos(self):
-        return {"agentic-demo-service"}
+        return {"agentic-demo-service", "agentic-demo-greenfield"}
 
 
 class _FakeService:
@@ -84,9 +84,19 @@ class _FakeService:
         )
 
 
+class _FakeRegistry:
+    def __init__(self, services):
+        self._services = services
+
+    def service(self, repo):
+        return self._services.get(repo)
+
+
 def test_context_package_endpoint_returns_serialized_package(monkeypatch):
     monkeypatch.setattr(server, "get_settings", lambda: _FakeSettings())
-    monkeypatch.setattr(server, "build_service", lambda: _FakeService())
+    monkeypatch.setattr(
+        server, "build_registry", lambda: _FakeRegistry({"agentic-demo-service": _FakeService()})
+    )
     body = json.dumps(
         {"repo": "agentic-demo-service", "commit": "0744a6e", "focus": "health"}
     ).encode()
@@ -100,9 +110,29 @@ def test_context_package_endpoint_returns_serialized_package(monkeypatch):
     assert payload["focus"] == "health"
 
 
+def test_context_package_endpoint_routes_by_repo(monkeypatch):
+    monkeypatch.setattr(server, "get_settings", lambda: _FakeSettings())
+    monkeypatch.setattr(
+        server,
+        "build_registry",
+        lambda: _FakeRegistry(
+            {"agentic-demo-service": _FakeService(), "agentic-demo-greenfield": _FakeService()}
+        ),
+    )
+    body = json.dumps({"repo": "agentic-demo-greenfield", "focus": "health"}).encode()
+
+    recorder = _Recorder("/context_package", body)
+    recorder.do_POST()
+
+    assert recorder._status == 200
+    assert json.loads(recorder._body)["repository"] == "agentic-demo-greenfield"
+
+
 def test_context_package_endpoint_rejects_unlisted_repo(monkeypatch):
     monkeypatch.setattr(server, "get_settings", lambda: _FakeSettings())
-    monkeypatch.setattr(server, "build_service", lambda: _FakeService())
+    monkeypatch.setattr(
+        server, "build_registry", lambda: _FakeRegistry({"agentic-demo-service": _FakeService()})
+    )
     body = json.dumps({"repo": "other-repo", "focus": "health"}).encode()
 
     recorder = _Recorder("/context_package", body)
@@ -113,8 +143,19 @@ def test_context_package_endpoint_rejects_unlisted_repo(monkeypatch):
 
 def test_context_package_endpoint_unconfigured_returns_503(monkeypatch):
     monkeypatch.setattr(server, "get_settings", lambda: _FakeSettings())
-    monkeypatch.setattr(server, "build_service", lambda: None)
+    monkeypatch.setattr(server, "build_registry", lambda: None)
     body = json.dumps({"repo": "agentic-demo-service", "focus": "health"}).encode()
+
+    recorder = _Recorder("/context_package", body)
+    recorder.do_POST()
+
+    assert recorder._status == 503
+
+
+def test_context_package_endpoint_unregistered_repo_returns_503(monkeypatch):
+    monkeypatch.setattr(server, "get_settings", lambda: _FakeSettings())
+    monkeypatch.setattr(server, "build_registry", lambda: _FakeRegistry({}))
+    body = json.dumps({"repo": "agentic-demo-greenfield", "focus": "health"}).encode()
 
     recorder = _Recorder("/context_package", body)
     recorder.do_POST()

@@ -5,12 +5,14 @@ from __future__ import annotations
 import json
 import logging
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 
 from scripts.config import get_settings
 
-from services.repository_intelligence.context_builder.context_service import (
-    RepositoryIntelligenceService,
+from services.repository_intelligence.context_builder.registry import (
+    RepositoryIntelligenceRegistry,
+    RepoSpec,
 )
 from services.repository_intelligence.normalization.models import RepoRef
 from services.repository_intelligence.normalization.serialization import context_package_to_dict
@@ -21,24 +23,25 @@ log = logging.getLogger("repository-intelligence")
 HOST = "0.0.0.0"  # noqa: S104
 PORT = 8120
 
-_service: RepositoryIntelligenceService | None = None
+_registry: RepositoryIntelligenceRegistry | None = None
 
 
-def build_service() -> RepositoryIntelligenceService | None:
-    """Return the warm RIS singleton, building it from settings on first use."""
-    global _service
-    if _service is not None:
-        return _service
+def build_registry() -> RepositoryIntelligenceRegistry | None:
+    """Return the warm registry singleton, building it from settings on first use."""
+    global _registry
+    if _registry is not None:
+        return _registry
     settings = get_settings()
-    root = settings.repo_intelligence_repo_root
-    if not root:
+    configured = settings.repo_intelligence_registry()
+    if not configured:
         return None
-    _service = RepositoryIntelligenceService.from_repo(
-        root,
-        commit=settings.repo_intelligence_commit or None,
-        cbm_binary=settings.repo_intelligence_cbm_binary or None,
-    )
-    return _service
+    cbm_binary = settings.repo_intelligence_cbm_binary or None
+    specs = [
+        RepoSpec(name=name, root=Path(path), commit=commit, cbm_binary=cbm_binary)
+        for name, (path, commit) in configured.items()
+    ]
+    _registry = RepositoryIntelligenceRegistry(specs)
+    return _registry
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -65,7 +68,8 @@ class Handler(BaseHTTPRequestHandler):
         if repo not in get_settings().allowed_repos():
             self._respond(403, {"error": "repo not allowlisted"})
             return
-        service = build_service()
+        registry = build_registry()
+        service = registry.service(repo) if registry is not None else None
         if service is None:
             self._respond(503, {"error": "repository intelligence not configured"})
             return

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -46,6 +47,7 @@ class Settings(BaseSettings):
     repo_intelligence_repo_root: str = ""
     repo_intelligence_commit: str = ""
     repo_intelligence_cbm_binary: str = ""
+    repo_intelligence_repos: str = ""
 
     allowlist_jira_projects: str = "AGENTDEV"
     allowlist_repos: str = "agentic-demo-service,agentic-demo-greenfield"
@@ -55,6 +57,24 @@ class Settings(BaseSettings):
 
     def allowed_repos(self) -> set[str]:
         return {r.strip() for r in self.allowlist_repos.split(",") if r.strip()}
+
+    def repo_intelligence_registry(self) -> dict[str, tuple[str, str | None]]:
+        """Parse configured repositories into a name to (root, commit) mapping."""
+        registry: dict[str, tuple[str, str | None]] = {}
+        raw = self.repo_intelligence_repos.replace("\n", ",").replace(";", ",")
+        for item in raw.split(","):
+            entry = item.strip()
+            if not entry or "=" not in entry:
+                continue
+            name, _, location = entry.partition("=")
+            path, _, commit = location.strip().partition("@")
+            name, path = name.strip(), path.strip()
+            if name and path:
+                registry[name] = (path, commit.strip() or None)
+        if not registry and self.repo_intelligence_repo_root:
+            root = self.repo_intelligence_repo_root
+            registry[Path(root).name] = (root, self.repo_intelligence_commit or None)
+        return registry
 
     def bedrock_client_kwargs(self) -> dict[str, str]:
         """Boto3/BedrockConverseModel kwargs: region, plus endpoint_url when configured."""

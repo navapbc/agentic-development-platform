@@ -20,6 +20,24 @@ def test_allowlist_parsing_trims_whitespace_and_drops_blanks():
     assert s.allowed_repos() == {"repo-a", "repo-b"}
 
 
+def test_repo_intelligence_registry_parses_entries():
+    s = Settings(repo_intelligence_repos="svc=/repos/svc@abc123, green=/repos/green")
+    assert s.repo_intelligence_registry() == {
+        "svc": ("/repos/svc", "abc123"),
+        "green": ("/repos/green", None),
+    }
+
+
+def test_repo_intelligence_registry_falls_back_to_single_root():
+    s = Settings(
+        repo_intelligence_repo_root="/repos/agentic-demo-service",
+        repo_intelligence_commit="0744a6e",
+    )
+    assert s.repo_intelligence_registry() == {
+        "agentic-demo-service": ("/repos/agentic-demo-service", "0744a6e")
+    }
+
+
 def test_region_and_profile_defaults_are_fedramp_aligned():
     s = Settings()
     assert s.aws_region == "us-east-1"
