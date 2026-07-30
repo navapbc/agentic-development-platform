@@ -136,6 +136,17 @@ services:
       - repo-index-data:/app/repository_indexes
     restart: unless-stopped
 
+  repo-index-worker:
+    build:
+      context: .
+      dockerfile: docker/repo-intelligence.Dockerfile
+    command: ["python", "-m", "services.repository_intelligence.indexing.worker"]
+    env_file: [.env]
+    profiles: ["repo-intelligence"]
+    volumes:
+      - repo-index-data:/app/repository_indexes
+    restart: unless-stopped
+
   codebase-memory-mcp:
     build:
       context: .

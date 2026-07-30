@@ -48,6 +48,8 @@ class Settings(BaseSettings):
     repo_intelligence_commit: str = ""
     repo_intelligence_cbm_binary: str = ""
     repo_intelligence_repos: str = ""
+    repo_index_poll_interval_seconds: float = 30.0
+    repo_index_worker_concurrency: int = 2
 
     allowlist_jira_projects: str = "AGENTDEV"
     allowlist_repos: str = "agentic-demo-service,agentic-demo-greenfield"
