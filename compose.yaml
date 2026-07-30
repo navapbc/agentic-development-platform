@@ -4,6 +4,8 @@ x-python-service: &python-service
   build:
     context: .
     dockerfile: docker/Dockerfile
+    additional_contexts:
+      rebar: ../rebar
   env_file: [.env]
   restart: unless-stopped
 
