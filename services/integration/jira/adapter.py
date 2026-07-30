@@ -8,6 +8,7 @@ from typing import Any, Protocol
 from scripts.config import Settings, get_settings
 
 from services.integration.jira._engine import ensure_engine_on_path
+from services.integration.jira.markdown_adf import markdown_to_adf_json
 from services.integration.jira.normalize import _name_of, _normalize_rich_text
 
 CLOUD = "cloud"
@@ -21,6 +22,8 @@ class _VendorJiraClient(Protocol):
 
     def transition_issue_by_name(self, remote_id: str, target_status: str) -> None: ...
 
+    def create_issue(self, ticket_data: dict[str, Any]) -> dict[str, Any]: ...
+
 
 @dataclass(frozen=True)
 class JiraAdapter:
@@ -30,6 +33,14 @@ class JiraAdapter:
 
     def get_issue(self, issue_key: str) -> dict[str, Any]:
         return self.client.get_issue(issue_key)
+
+    def create_issue(self, ticket_data: dict[str, Any]) -> dict[str, Any]:
+        if self.source == CLOUD and ticket_data.get("description"):
+            ticket_data = {
+                **ticket_data,
+                "description": markdown_to_adf_json(str(ticket_data["description"])),
+            }
+        return self.client.create_issue(ticket_data)
 
     def get_status(self, issue_key: str) -> str:
         fields = self.get_issue(issue_key).get("fields") or {}
@@ -50,16 +61,12 @@ class JiraAdapter:
         return tuple(_normalize_rich_text(item.get("body")) for item in raw)
 
 
-def _site_url(settings: Settings) -> str:
-    return settings.jira_base_url or settings.jira_url
-
-
 def _build_datacenter_client(settings: Settings) -> _VendorJiraClient:
     ensure_engine_on_path()
     from rebar_reconciler.adapters.jira_datacenter.rest_client import JiraDataCenterClient
 
     return JiraDataCenterClient(
-        base_url=_site_url(settings),
+        base_url=settings.jira_url,
         pat=settings.jira_pat,
         project=settings.jira_project,
     )
@@ -71,7 +78,7 @@ def _build_cloud_client(settings: Settings) -> _VendorJiraClient:
 
     acli_cmd = [settings.jira_acli_path] if settings.jira_acli_path else None
     return AcliClient(
-        _site_url(settings),
+        settings.jira_url,
         settings.jira_email,
         settings.jira_api_token,
         jira_project=settings.jira_project,

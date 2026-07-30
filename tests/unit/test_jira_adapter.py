@@ -15,7 +15,7 @@ _GIT_MARKERS = ("apply_outbound", "git_adapter", "_ref_lock", "_advisory_lock")
 def _settings(mode: str) -> Settings:
     return Settings(
         jira_auth_mode=mode,
-        jira_base_url="https://jira.example",
+        jira_url="https://jira.example",
         jira_project="AGENTDEV",
         jira_email="agent@example",
         jira_api_token="",

@@ -60,7 +60,6 @@ class Settings(BaseSettings):
     repo_index_worker_concurrency: int = 2
 
     jira_url: str = ""
-    jira_base_url: str = ""
     jira_auth_mode: str = "cloud"
     jira_project: str = ""
     jira_email: str = ""

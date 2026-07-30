@@ -1,5 +1,9 @@
 """Platform Jira adapter over rebar's vendor Cloud and Data Center clients."""
 
+from services.integration.jira.acli_auth import (
+    acli_is_authenticated,
+    ensure_acli_authenticated,
+)
 from services.integration.jira.adapter import (
     CLOUD,
     DATACENTER,
@@ -93,6 +97,7 @@ __all__ = [
     "TaskSnapshotStore",
     "Text",
     "WriteResult",
+    "acli_is_authenticated",
     "build_jira_adapter",
     "bullet_list",
     "capture_task_snapshot",
@@ -100,6 +105,7 @@ __all__ = [
     "code",
     "comment_marker",
     "content_hash",
+    "ensure_acli_authenticated",
     "evaluate_task_edit",
     "heading",
     "link",
