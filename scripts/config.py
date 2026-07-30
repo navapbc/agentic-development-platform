@@ -24,6 +24,11 @@ class Settings(BaseSettings):
     litellm_base_url: str = "http://localhost:4000"
     litellm_master_key: str = "change-me-locally"
 
+    rebar_llm_base_url: str = "http://localhost:4000"
+    rebar_llm_api_key: str = "change-me-locally"
+    rebar_llm_model_provider: str = "openai"
+    rebar_llm_max_tokens: int = 8192
+
     aws_profile: str = "mpse-legacy"
     aws_region: str = "us-east-1"
     bedrock_runtime_endpoint: str = "com.amazonaws.us-east-1.bedrock-runtime"
