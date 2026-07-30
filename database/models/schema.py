@@ -176,6 +176,21 @@ orphan_artifacts = Table(
 )
 
 
+side_effects = Table(
+    "side_effects",
+    metadata,
+    Column("side_effect_key", String(64), primary_key=True),
+    Column("task_id", String(64), nullable=False, index=True),
+    Column("execution_id", String(64), nullable=False, index=True),
+    Column("operation", String(64), nullable=False),
+    Column("target", String(512), nullable=False),
+    Column("status", String(16), nullable=False, server_default="pending"),  # pending | completed
+    Column("result", JSON, nullable=True),
+    _created_at(),
+    Column("updated_at", DateTime(timezone=True), server_default=func.now(), onupdate=func.now()),
+)
+
+
 __all__ = [
     "SCHEMA",
     "metadata",
@@ -186,4 +201,5 @@ __all__ = [
     "work_claims",
     "sequence_gate",
     "orphan_artifacts",
+    "side_effects",
 ]

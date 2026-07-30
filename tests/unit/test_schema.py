@@ -12,6 +12,7 @@ EXPECTED_TABLES = {
     "work_claims",
     "sequence_gate",
     "orphan_artifacts",
+    "side_effects",
 }
 
 

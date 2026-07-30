@@ -61,6 +61,7 @@ services:
     command: ["python", "-m", "services.orchestration.worker"]
     environment:
       REPO_INTELLIGENCE_URL: http://repo-intelligence:8120
+      COORDINATION_URL: http://coordination-service:8130
     depends_on:
       temporal:
         condition: service_healthy
@@ -68,6 +69,14 @@ services:
         condition: service_healthy
       litellm:
         condition: service_started
+
+  coordination-service:
+    <<: *python-service
+    command: ["python", "-m", "services.coordination.service"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports: ["8130:8130"]
 
   langgraph-service:
     <<: *python-service
