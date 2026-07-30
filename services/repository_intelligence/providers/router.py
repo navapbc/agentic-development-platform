@@ -14,6 +14,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TypeVar
 
+from services.repository_intelligence.indexing.scip_builder import scip_indexer_for
 from services.repository_intelligence.languages import Language, primary_language
 from services.repository_intelligence.normalization.models import (
     CallEdge,
@@ -101,6 +102,7 @@ class RouterProvider:
         root = Path(repo_root)
         language = primary_language(root)
         python = language is Language.PYTHON
+        indexer = scip_indexer_for(language)
         lsp_spec = server_spec_for(language)
         cbm = (
             CBMProvider(
@@ -113,7 +115,9 @@ class RouterProvider:
             else None
         )
         return cls(
-            scip=ScipProvider(root, commit=commit, index_root=index_root) if python else None,
+            scip=ScipProvider(root, commit=commit, index_root=index_root, indexer=indexer)
+            if indexer is not None
+            else None,
             zoekt=ZoektProvider(root, commit=commit, index_root=index_root),
             coverage=CoverageProvider(root, venv_python=venv_python) if python else None,
             build_metadata=BuildMetadataProvider(root),

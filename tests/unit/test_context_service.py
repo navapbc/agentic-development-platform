@@ -271,6 +271,19 @@ def test_from_repo_wires_python_backends_for_a_python_repo(tmp_path):
     assert service._reindex is not None
 
 
+def test_from_repo_wires_scip_typescript_for_a_typescript_repo(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.ts").write_text("export const health = () => ({});\n")
+
+    service = RepositoryIntelligenceService.from_repo(tmp_path)
+
+    assert service._router._scip is not None
+    assert service._router._scip._indexer.language_id == "typescript"
+    assert service._router._coverage is None
+    assert service._router._custom is None
+    assert service._reindex is not None
+
+
 def test_from_repo_degrades_for_a_non_python_repo(tmp_path):
     (tmp_path / "main.tf").write_text('resource "null_resource" "x" {}\n')
 

@@ -10,9 +10,8 @@ from collections.abc import Callable
 from pathlib import Path
 
 from services.repository_intelligence.indexing import scip_builder, zoekt_builder
+from services.repository_intelligence.indexing.scip_builder import ScipIndexer
 from services.repository_intelligence.normalization.models import RepoRef
-
-_PYTHON_SUFFIXES = (".py", ".pyi")
 
 
 def changed_paths(
@@ -46,19 +45,21 @@ def reindex_repo(
     *,
     prior_commit: str | None = None,
     index_root: Path | None = None,
-    source_suffixes: tuple[str, ...] = _PYTHON_SUFFIXES,
+    indexer: ScipIndexer = scip_builder.SCIP_PYTHON_INDEXER,
+    source_suffixes: tuple[str, ...] | None = None,
 ) -> None:
     """Reindex repo at its target commit, reusing SCIP when no source file changed."""
     root = Path(repo_root).resolve()
     project = root.name
     target_sha = repo.commit_sha
     changed = changed_paths(root, prior_commit, target_sha)
+    suffixes = source_suffixes if source_suffixes is not None else indexer.source_suffixes
 
     scip_root = index_root or scip_builder.default_index_root()
     reuse_scip = (
         changed is not None
         and prior_commit is not None
-        and not _touches(changed, source_suffixes)
+        and not _touches(changed, suffixes)
         and _seed(
             scip_builder.index_dir(project, prior_commit, scip_root),
             scip_builder.index_dir(project, target_sha, scip_root),
@@ -67,7 +68,7 @@ def reindex_repo(
     if not reuse_scip:
         _atomic_build(
             lambda staging: scip_builder.build_scip_index(
-                root, commit=target_sha, index_root=staging, refresh=True
+                root, commit=target_sha, index_root=staging, indexer=indexer, refresh=True
             ),
             index_dir=scip_builder.index_dir(project, target_sha, scip_root),
             real_root=scip_root,

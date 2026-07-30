@@ -6,11 +6,14 @@ import json
 import os
 import shlex
 import subprocess
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from services.repository_intelligence.indexing.scip_index import ScipIndex
+from services.repository_intelligence.languages import Language
 
 DEFAULT_SCIP_PYTHON_CMD = "npx --yes @sourcegraph/scip-python@0.6.6"
+DEFAULT_SCIP_TYPESCRIPT_CMD = "npx --yes @sourcegraph/scip-typescript@0.3.14"
 DEFAULT_SCIP_CLI = "scip"
 
 _PLATFORM_ROOT = Path(__file__).resolve().parents[3]
@@ -18,6 +21,61 @@ _PLATFORM_ROOT = Path(__file__).resolve().parents[3]
 
 class ScipBuildError(RuntimeError):
     """Raised when SCIP index generation fails."""
+
+
+@dataclass(frozen=True)
+class ScipIndexer:
+    """A per-language SCIP indexer: its command, source files, and invocation shape."""
+
+    command: str
+    language_id: str
+    source_suffixes: tuple[str, ...]
+    uses_project_flags: bool = False
+    extra_args: tuple[str, ...] = field(default_factory=tuple)
+    inject_python_venv: bool = False
+
+    def index_argv(self, project: str, version: str, output: Path) -> list[str]:
+        argv = [*shlex.split(self.command), "index"]
+        if self.uses_project_flags:
+            argv += ["--project-name", project, "--project-version", version]
+        argv += ["--output", str(output), *self.extra_args]
+        return argv
+
+    def index_env(self, repo_root: Path) -> dict[str, str]:
+        env = dict(os.environ)
+        if self.inject_python_venv:
+            venv_bin = repo_root / ".venv" / "bin"
+            if venv_bin.is_dir():
+                env["VIRTUAL_ENV"] = str(repo_root / ".venv")
+                env["PATH"] = os.pathsep.join([str(venv_bin), env.get("PATH", "")])
+        return env
+
+
+SCIP_PYTHON_INDEXER = ScipIndexer(
+    command=DEFAULT_SCIP_PYTHON_CMD,
+    language_id="python",
+    source_suffixes=(".py", ".pyi"),
+    uses_project_flags=True,
+    extra_args=("--quiet",),
+    inject_python_venv=True,
+)
+
+SCIP_TYPESCRIPT_INDEXER = ScipIndexer(
+    command=DEFAULT_SCIP_TYPESCRIPT_CMD,
+    language_id="typescript",
+    source_suffixes=(".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"),
+)
+
+_SCIP_INDEXERS: dict[Language, ScipIndexer] = {
+    Language.PYTHON: SCIP_PYTHON_INDEXER,
+    Language.TYPESCRIPT: SCIP_TYPESCRIPT_INDEXER,
+    Language.JAVASCRIPT: SCIP_TYPESCRIPT_INDEXER,
+}
+
+
+def scip_indexer_for(language: Language) -> ScipIndexer | None:
+    """Return the SCIP indexer for a language, or None when no indexer is wired."""
+    return _SCIP_INDEXERS.get(language)
 
 
 def default_index_root() -> Path:
@@ -49,7 +107,7 @@ def build_scip_index(
     project: str | None = None,
     commit: str | None = None,
     index_root: Path | None = None,
-    scip_python_cmd: str = DEFAULT_SCIP_PYTHON_CMD,
+    indexer: ScipIndexer = SCIP_PYTHON_INDEXER,
     scip_cli: str = DEFAULT_SCIP_CLI,
     refresh: bool = False,
 ) -> tuple[ScipIndex, str]:
@@ -63,7 +121,7 @@ def build_scip_index(
     if refresh or not json_path.exists():
         target.mkdir(parents=True, exist_ok=True)
         scip_path = target / "index.scip"
-        _generate_scip(root, project_name, commit_sha[:7], scip_python_cmd, scip_path)
+        _generate_scip(root, project_name, commit_sha[:7], indexer, scip_path)
         _print_scip_json(scip_cli, scip_path, json_path)
 
     data = json.loads(json_path.read_text(encoding="utf-8"))
@@ -71,38 +129,19 @@ def build_scip_index(
 
 
 def _generate_scip(
-    repo_root: Path, project: str, version: str, scip_python_cmd: str, output: Path
+    repo_root: Path, project: str, version: str, indexer: ScipIndexer, output: Path
 ) -> None:
     try:
         subprocess.run(
-            [
-                *shlex.split(scip_python_cmd),
-                "index",
-                "--project-name",
-                project,
-                "--project-version",
-                version,
-                "--output",
-                str(output),
-                "--quiet",
-            ],
+            indexer.index_argv(project, version, output),
             cwd=repo_root,
             check=True,
             capture_output=True,
             text=True,
-            env=_index_env(repo_root),
+            env=indexer.index_env(repo_root),
         )
     except subprocess.CalledProcessError as error:
-        raise ScipBuildError(f"scip-python index failed: {error.stderr.strip()}") from error
-
-
-def _index_env(repo_root: Path) -> dict[str, str]:
-    env = dict(os.environ)
-    venv_bin = repo_root / ".venv" / "bin"
-    if venv_bin.is_dir():
-        env["VIRTUAL_ENV"] = str(repo_root / ".venv")
-        env["PATH"] = os.pathsep.join([str(venv_bin), env.get("PATH", "")])
-    return env
+        raise ScipBuildError(f"scip index failed: {error.stderr.strip()}") from error
 
 
 def _print_scip_json(scip_cli: str, scip_path: Path, json_path: Path) -> None:

@@ -106,3 +106,40 @@ def test_shared_index_root_backends_coexist(tmp_path, monkeypatch):
     target = shared / "agentic-demo-service@targets"
     assert (target / "scip.idx").read_text(encoding="utf-8") == "scip"
     assert (target / "zoekt.idx").read_text(encoding="utf-8") == "zoekt"
+
+
+def test_reuses_scip_for_ts_repo_when_only_python_file_changed(tmp_path, monkeypatch):
+    recorder: list[str] = []
+    repo, scip_root, _zoekt_root = _install(tmp_path, monkeypatch, recorder)
+    monkeypatch.setattr(reindex, "changed_paths", lambda *_a: ("app/main.py",))
+
+    prior_dir = scip_builder.index_dir("agentic-demo-service", "priorsha", scip_root)
+    prior_dir.mkdir(parents=True, exist_ok=True)
+    (prior_dir / "index.scip.json").write_text("{}", encoding="utf-8")
+
+    reindex.reindex_repo(
+        repo, _REPO, prior_commit="priorsha", indexer=scip_builder.SCIP_TYPESCRIPT_INDEXER
+    )
+
+    assert recorder == ["zoekt"]
+
+
+def test_rebuilds_scip_for_ts_repo_forwarding_the_typescript_indexer(tmp_path, monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_build(repo_root, *, commit, index_root, indexer, **_kwargs):
+        captured["indexer"] = indexer
+        target = index_root / f"{Path(repo_root).name}@{commit[:7]}"
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "scip.idx").write_text("scip", encoding="utf-8")
+        return (None, commit)
+
+    repo, _scip_root, _zoekt_root = _install(tmp_path, monkeypatch, [])
+    monkeypatch.setattr(scip_builder, "build_scip_index", fake_build)
+    monkeypatch.setattr(reindex, "changed_paths", lambda *_a: ("src/app.ts",))
+
+    reindex.reindex_repo(
+        repo, _REPO, prior_commit="priorsha", indexer=scip_builder.SCIP_TYPESCRIPT_INDEXER
+    )
+
+    assert captured["indexer"] is scip_builder.SCIP_TYPESCRIPT_INDEXER

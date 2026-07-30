@@ -1,4 +1,4 @@
-"""Repository-intelligence provider backed by a SCIP index (scip-python)."""
+"""Repository-intelligence provider backed by a SCIP index (scip-python or scip-typescript)."""
 
 from __future__ import annotations
 
@@ -8,7 +8,8 @@ from pathlib import Path
 
 from services.repository_intelligence.indexing.scip_builder import (
     DEFAULT_SCIP_CLI,
-    DEFAULT_SCIP_PYTHON_CMD,
+    SCIP_PYTHON_INDEXER,
+    ScipIndexer,
     build_scip_index,
     resolve_commit,
 )
@@ -80,12 +81,12 @@ class ScipProvider:
         index: ScipIndex | None = None,
         commit: str | None = None,
         index_root: Path | None = None,
-        scip_python_cmd: str = DEFAULT_SCIP_PYTHON_CMD,
+        indexer: ScipIndexer = SCIP_PYTHON_INDEXER,
         scip_cli: str = DEFAULT_SCIP_CLI,
     ) -> None:
         self._root = Path(repo_root).resolve()
         self._index_root = index_root
-        self._scip_python_cmd = scip_python_cmd
+        self._indexer = indexer
         self._scip_cli = scip_cli
         self._index = index
         self._commit = commit
@@ -99,7 +100,7 @@ class ScipProvider:
             self._index, self._commit = build_scip_index(
                 self._root,
                 index_root=self._index_root,
-                scip_python_cmd=self._scip_python_cmd,
+                indexer=self._indexer,
                 scip_cli=self._scip_cli,
             )
             self._build_lookups(self._index)
