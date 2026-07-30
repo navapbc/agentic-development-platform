@@ -31,7 +31,7 @@ RUN apt-get update \
  && python3 -m venv /opt/venv \
  && /opt/venv/bin/pip install --upgrade pip
 
-RUN npm install -g @ast-grep/cli@0.45.0 @sourcegraph/scip-python@0.6.6
+RUN npm install -g @ast-grep/cli@0.45.0 @sourcegraph/scip-python@0.6.6 @sourcegraph/scip-typescript@0.3.14
 
 COPY --from=go-tools /out/zoekt /out/zoekt-index /usr/local/bin/
 COPY --from=scip-cli /usr/local/bin/scip /usr/local/bin/scip

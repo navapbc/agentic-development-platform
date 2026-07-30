@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -12,7 +11,9 @@ ROLE_WRITE = 0x4
 ROLE_READ = 0x8
 
 _MODULE_SUFFIX = "/__init__:"
-_ATOM = re.compile(r"([^#./()`:\[\] ]+)(\(\))?([#.:])|(\([^)]*\))|(\[[^\]]*\])")
+_SUFFIX_KIND = {"/": "namespace", "#": "type", ".": "term", ":": "meta"}
+_NAME_STOP = "#/.:()[]`"
+_PATH_KINDS = ("type", "term", "meta", "method")
 
 
 @dataclass(frozen=True)
@@ -51,6 +52,64 @@ def _to_range(raw: list[int]) -> tuple[int, int, int, int]:
     return (start_line + 1, start_col, end_line + 1, end_col)
 
 
+def _read_name(descriptor: str, start: int) -> tuple[str, int]:
+    if descriptor[start] == "`":
+        chars: list[str] = []
+        i = start + 1
+        while i < len(descriptor):
+            if descriptor[i] == "`":
+                if i + 1 < len(descriptor) and descriptor[i + 1] == "`":
+                    chars.append("`")
+                    i += 2
+                    continue
+                return "".join(chars), i + 1
+            chars.append(descriptor[i])
+            i += 1
+        return "".join(chars), i
+    i = start
+    while i < len(descriptor) and descriptor[i] not in _NAME_STOP:
+        i += 1
+    return descriptor[start:i], i
+
+
+def _parse_descriptors(descriptor: str) -> list[tuple[str, str]]:
+    parts: list[tuple[str, str]] = []
+    i = 0
+    length = len(descriptor)
+    while i < length:
+        char = descriptor[i]
+        if char == "(":
+            close = descriptor.find(")", i + 1)
+            if close == -1:
+                break
+            parts.append((descriptor[i + 1 : close], "parameter"))
+            i = close + 1
+            continue
+        if char == "[":
+            close = descriptor.find("]", i + 1)
+            if close == -1:
+                break
+            parts.append((descriptor[i + 1 : close], "type_parameter"))
+            i = close + 1
+            continue
+        name, i = _read_name(descriptor, i)
+        if i < length and descriptor[i] == "(":
+            close = descriptor.find(")", i + 1)
+            if close == -1:
+                break
+            parts.append((name, "method"))
+            i = close + 1
+            if i < length and descriptor[i] == ".":
+                i += 1
+            continue
+        if i < length and descriptor[i] in _SUFFIX_KIND:
+            parts.append((name, _SUFFIX_KIND[descriptor[i]]))
+            i += 1
+            continue
+        break
+    return parts
+
+
 def parse_symbol(symbol: str, project: str) -> SymbolInfo:
     if symbol.startswith("local "):
         return SymbolInfo(symbol=symbol, is_project=False, kind="local")
@@ -60,46 +119,30 @@ def parse_symbol(symbol: str, project: str) -> SymbolInfo:
     _scheme, _manager, package, _version, descriptor = parts
     is_project = package == project
 
-    module: str | None = None
-    rest = descriptor
-    if descriptor.startswith("`"):
-        close = descriptor.find("`", 1)
-        if close != -1:
-            module = descriptor[1:close]
-            rest = descriptor[close + 1 :]
-
-    if descriptor.endswith(_MODULE_SUFFIX):
-        module_name = module if module is not None else descriptor[: -len(_MODULE_SUFFIX)]
+    descriptors = _parse_descriptors(descriptor)
+    namespaces = [name for name, kind in descriptors if kind == "namespace"]
+    module = "/".join(namespaces) if namespaces else None
+    path = [(name, kind) for name, kind in descriptors if kind in _PATH_KINDS]
+    if module is not None and (descriptor.endswith("/") or path == [("__init__", "meta")]):
         return SymbolInfo(
             symbol=symbol,
             is_project=is_project,
             kind="module",
-            module=module_name,
-            qualified=module_name,
-            name=module_name.rsplit(".", 1)[-1] if module_name else None,
+            module=module,
+            qualified=module,
+            name=module.rsplit(".", 1)[-1] if module else None,
         )
 
-    names: list[str] = []
-    last_kind = "unknown"
-    for match in _ATOM.finditer(rest):
-        name, method_marker, suffix, param, type_param = match.groups()
-        if param is not None:
-            last_kind = "parameter"
-            continue
-        if type_param is not None:
-            last_kind = "type_parameter"
-            continue
-        names.append(name)
-        if method_marker:
-            last_kind = "method"
-        elif suffix == "#":
-            last_kind = "type"
-        elif suffix == ":":
-            last_kind = "meta"
-        else:
-            last_kind = "term"
+    if not path:
+        return SymbolInfo(symbol=symbol, is_project=is_project, kind="unknown", module=module)
 
-    if last_kind == "type":
+    names = [name for name, _ in path]
+    last_kind = descriptors[-1][1]
+    if last_kind == "parameter":
+        kind = "parameter"
+    elif last_kind == "type_parameter":
+        kind = "type_parameter"
+    elif last_kind == "type":
         kind = "class"
     elif last_kind == "method":
         kind = "function" if len(names) <= 1 else "method"
@@ -108,18 +151,14 @@ def parse_symbol(symbol: str, project: str) -> SymbolInfo:
     else:
         kind = last_kind
 
-    qualified = None
-    short = None
-    if names:
-        short = names[-1]
-        qualified = f"{module}.{'.'.join(names)}" if module else ".".join(names)
+    qualified = f"{module}.{'.'.join(names)}" if module else ".".join(names)
     return SymbolInfo(
         symbol=symbol,
         is_project=is_project,
         kind=kind,
         module=module,
         qualified=qualified,
-        name=short,
+        name=names[-1],
     )
 
 

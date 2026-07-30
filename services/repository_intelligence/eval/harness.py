@@ -18,6 +18,8 @@ from services.repository_intelligence.eval.gold_schema import (
     QueryType,
     read_gold_set,
 )
+from services.repository_intelligence.indexing.scip_builder import scip_indexer_for
+from services.repository_intelligence.languages import Language, primary_language
 from services.repository_intelligence.normalization.models import RepoRef
 from services.repository_intelligence.providers.cbm.cbm_provider import CBMProvider
 from services.repository_intelligence.providers.custom.python_provider import CustomPythonProvider
@@ -298,9 +300,11 @@ def _reindex_check(provider: Any, repo: RepoRef, errors: list[str]) -> tuple[boo
     return status.indexed_commit is not None, status.indexed_commit
 
 
-def _hard_gates(result: ProviderResult) -> dict[str, bool]:
+def _hard_gates(result: ProviderResult, present_types: set[QueryType]) -> dict[str, bool]:
     gates: dict[str, bool] = {}
     for query_type, threshold in _PRECISION_GATES.items():
+        if query_type not in present_types:
+            continue
         score = result.type_scores.get(query_type)
         key = f"{query_type}_precision>={threshold:.2f}"
         gates[key] = score is not None and score.precision >= threshold
@@ -341,8 +345,8 @@ def _verdict(total: float, gates_pass: bool) -> str:
     return "Reject"
 
 
-def _provider_report(result: ProviderResult) -> dict[str, Any]:
-    gates = _hard_gates(result)
+def _provider_report(result: ProviderResult, present_types: set[QueryType]) -> dict[str, Any]:
+    gates = _hard_gates(result, present_types)
     gates_pass = all(gates.values())
     weighted = _weighted_score(result)
     return {
@@ -405,6 +409,10 @@ def run(
         raise ValueError(f"gold set {gold_path} has no meta record")
     corpus_name = corpus.name
     repo = RepoRef(repo=meta.repo, commit_sha=meta.commit)
+    present_types = {record.query_type for record in records}
+    language = primary_language(corpus)
+    indexer = scip_indexer_for(language)
+    scip_label = f"scip-{indexer.language_id}" if indexer is not None else "scip"
 
     router = RouterProvider.from_repo(
         corpus,
@@ -426,39 +434,40 @@ def run(
         resource_score=resource_scores["router"],
     )
 
-    scip = ScipProvider(corpus)
-    scip_result = _score_provider(
-        "scip-python",
-        scip,
-        repo,
-        records,
-        corpus_name,
-        runs,
-        module_prefix=f"{corpus_name}.",
-        detects_staleness=True,
-        ops_score=ops_scores["scip-python"],
-        resource_score=resource_scores["scip-python"],
-    )
+    reports = [_provider_report(router_result, present_types)]
 
-    custom = CustomPythonProvider(corpus)
-    custom_result = _score_provider(
-        "custom-python",
-        custom,
-        repo,
-        records,
-        corpus_name,
-        runs,
-        module_prefix=f"{corpus_name}.",
-        detects_staleness=False,
-        ops_score=ops_scores["custom-python"],
-        resource_score=resource_scores["custom-python"],
-    )
+    if indexer is not None:
+        scip = ScipProvider(corpus, indexer=indexer)
+        scip_result = _score_provider(
+            scip_label,
+            scip,
+            repo,
+            records,
+            corpus_name,
+            runs,
+            module_prefix=f"{corpus_name}.",
+            detects_staleness=True,
+            ops_score=ops_scores["scip-python"],
+            resource_score=resource_scores["scip-python"],
+        )
+        reports.append(_provider_report(scip_result, present_types))
 
-    reports = [
-        _provider_report(router_result),
-        _provider_report(scip_result),
-        _provider_report(custom_result),
-    ]
+    if language is Language.PYTHON:
+        custom = CustomPythonProvider(corpus)
+        custom_result = _score_provider(
+            "custom-python",
+            custom,
+            repo,
+            records,
+            corpus_name,
+            runs,
+            module_prefix=f"{corpus_name}.",
+            detects_staleness=False,
+            ops_score=ops_scores["custom-python"],
+            resource_score=resource_scores["custom-python"],
+        )
+        reports.append(_provider_report(custom_result, present_types))
+
     if not cbm_binary.exists():
         if cbm_required:
             raise FileNotFoundError(f"CBM binary not found at {cbm_binary}")
@@ -481,7 +490,7 @@ def run(
             ops_score=ops_scores["cbm"],
             resource_score=resource_scores["cbm"],
         )
-        reports.append(_provider_report(cbm_result))
+        reports.append(_provider_report(cbm_result, present_types))
 
     return {
         "record_type": "acceptance_scorecard",

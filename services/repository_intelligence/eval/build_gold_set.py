@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import platform
-import shlex
 import subprocess
 import sys
 from datetime import UTC, datetime
@@ -22,11 +21,17 @@ from services.repository_intelligence.eval.gold_schema import (
     QueryType,
     write_gold_set,
 )
+from services.repository_intelligence.indexing.scip_builder import (
+    ScipIndexer,
+    build_scip_index,
+    scip_indexer_for,
+)
 from services.repository_intelligence.indexing.scip_index import (
     ScipIndex,
     SymbolInfo,
     parse_symbol,
 )
+from services.repository_intelligence.languages import Language, primary_language
 
 _DEFINITION_KINDS = {"class", "function", "method", "variable"}
 _CALLABLE_KINDS = {"class", "function", "method"}
@@ -44,29 +49,6 @@ def _resolve_commit(repo_root: Path) -> str:
     return completed.stdout.strip()
 
 
-def _generate_scip_index(
-    repo_root: Path, project: str, version: str, scip_python_cmd: str, output: Path
-) -> Path:
-    subprocess.run(
-        [
-            *shlex.split(scip_python_cmd),
-            "index",
-            "--project-name",
-            project,
-            "--project-version",
-            version,
-            "--output",
-            str(output),
-            "--quiet",
-        ],
-        cwd=repo_root,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return output
-
-
 def _read_scip_json(scip_cli: str, index_path: Path) -> dict:
     completed = subprocess.run(
         [scip_cli, "print", "--json", str(index_path)],
@@ -75,6 +57,11 @@ def _read_scip_json(scip_cli: str, index_path: Path) -> dict:
         text=True,
     )
     return json.loads(completed.stdout)
+
+
+def _indexer_version(indexer: ScipIndexer) -> str:
+    _, _, tail = indexer.command.rpartition("@")
+    return tail or "unknown"
 
 
 def _def_item(index: ScipIndex, info: SymbolInfo) -> ExpectedItem | None:
@@ -95,7 +82,9 @@ def _qualified_locations(index: ScipIndex) -> dict[str, tuple[str, int]]:
     return locations
 
 
-def _symbol_definition_records(index: ScipIndex, repo: str, commit: str) -> list[GoldRecord]:
+def _symbol_definition_records(
+    index: ScipIndex, repo: str, commit: str, oracle: str
+) -> list[GoldRecord]:
     by_name: dict[str, list[SymbolInfo]] = {}
     for info in index.project_symbols(_DEFINITION_KINDS):
         if info.name:
@@ -110,13 +99,13 @@ def _symbol_definition_records(index: ScipIndex, repo: str, commit: str) -> list
                 query_type=QueryType.SYMBOL_DEFINITION,
                 input={"name": name},
                 expected=expected,
-                oracle="scip-python",
+                oracle=oracle,
             )
         )
     return records
 
 
-def _references_records(index: ScipIndex, repo: str, commit: str) -> list[GoldRecord]:
+def _references_records(index: ScipIndex, repo: str, commit: str, oracle: str) -> list[GoldRecord]:
     records: list[GoldRecord] = []
     for info in index.project_symbols(_DEFINITION_KINDS):
         expected = tuple(
@@ -135,13 +124,13 @@ def _references_records(index: ScipIndex, repo: str, commit: str) -> list[GoldRe
                 query_type=QueryType.REFERENCES,
                 input={"symbol": info.qualified, "name": info.name},
                 expected=expected,
-                oracle="scip-python",
+                oracle=oracle,
             )
         )
     return records
 
 
-def _callers_records(index: ScipIndex, repo: str, commit: str) -> list[GoldRecord]:
+def _callers_records(index: ScipIndex, repo: str, commit: str, oracle: str) -> list[GoldRecord]:
     records: list[GoldRecord] = []
     for info in index.project_symbols(_CALLER_TARGET_KINDS):
         seen: set[tuple] = set()
@@ -177,13 +166,15 @@ def _callers_records(index: ScipIndex, repo: str, commit: str) -> list[GoldRecor
                 query_type=QueryType.CALLERS,
                 input={"symbol": info.qualified, "name": info.name},
                 expected=tuple(items),
-                oracle="scip-python",
+                oracle=oracle,
             )
         )
     return records
 
 
-def _implementations_records(index: ScipIndex, repo: str, commit: str) -> list[GoldRecord]:
+def _implementations_records(
+    index: ScipIndex, repo: str, commit: str, oracle: str
+) -> list[GoldRecord]:
     records: list[GoldRecord] = []
     for base_symbol, impls in sorted(index.base_symbols().items()):
         base_info = index.symbols.get(base_symbol) or parse_symbol(base_symbol, index.project)
@@ -195,13 +186,15 @@ def _implementations_records(index: ScipIndex, repo: str, commit: str) -> list[G
                 query_type=QueryType.IMPLEMENTATIONS,
                 input={"name": base_info.name, "base": base_info.qualified},
                 expected=expected,
-                oracle="scip-python",
+                oracle=oracle,
             )
         )
     return records
 
 
-def _module_dependencies_records(index: ScipIndex, repo: str, commit: str) -> list[GoldRecord]:
+def _module_dependencies_records(
+    index: ScipIndex, repo: str, commit: str, oracle: str
+) -> list[GoldRecord]:
     records: list[GoldRecord] = []
     for module, edges in sorted(index.module_dependencies().items()):
         expected = tuple(
@@ -214,7 +207,7 @@ def _module_dependencies_records(index: ScipIndex, repo: str, commit: str) -> li
                 query_type=QueryType.MODULE_DEPENDENCIES,
                 input={"module": module},
                 expected=expected,
-                oracle="scip-python",
+                oracle=oracle,
             )
         )
     return records
@@ -293,8 +286,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out")
     parser.add_argument("--scip-json")
     parser.add_argument("--scip-index")
-    parser.add_argument("--scip-python-cmd", default="npx --yes @sourcegraph/scip-python@0.6.6")
-    parser.add_argument("--scip-python-version", default="0.6.6")
+    parser.add_argument("--language", choices=[lang.value for lang in Language])
     parser.add_argument("--scip-cli", default="scip")
     parser.add_argument("--venv-python")
     parser.add_argument("--no-coverage", action="store_true")
@@ -304,55 +296,70 @@ def main(argv: list[str] | None = None) -> int:
     project = repo_root.name
     commit = _resolve_commit(repo_root)
 
+    language = Language(args.language) if args.language else primary_language(repo_root)
+    indexer = scip_indexer_for(language)
+    if indexer is None:
+        parser.error(f"no SCIP indexer for language {language.value}")
+    oracle = f"scip-{indexer.language_id}"
+    is_python = language is Language.PYTHON
+
     if args.scip_json:
         data = json.loads(Path(args.scip_json).read_text(encoding="utf-8"))
+        index = ScipIndex.from_scip_json(data, project)
+    elif args.scip_index:
+        data = _read_scip_json(args.scip_cli, Path(args.scip_index))
+        index = ScipIndex.from_scip_json(data, project)
     else:
-        index_path = (
-            Path(args.scip_index)
-            if args.scip_index
-            else _generate_scip_index(
-                repo_root,
-                project,
-                commit[:7],
-                args.scip_python_cmd,
-                repo_root / "index.scip",
-            )
+        index, _ = build_scip_index(
+            repo_root,
+            project=project,
+            commit=commit,
+            indexer=indexer,
+            scip_cli=args.scip_cli,
+            refresh=True,
         )
-        data = _read_scip_json(args.scip_cli, index_path)
-
-    index = ScipIndex.from_scip_json(data, project)
-    locations = _qualified_locations(index)
 
     coverage_map: dict[str, dict[int, set[str]]] = {}
     coverage_note = None
     venv_python = args.venv_python or (repo_root / ".venv" / "bin" / "python")
-    if not args.no_coverage and Path(venv_python).exists():
+    if is_python and not args.no_coverage and Path(venv_python).exists():
         try:
             coverage_map = run_coverage(repo_root, venv_python)
         except subprocess.CalledProcessError as error:
             coverage_note = f"coverage failed: {error.stderr.strip().splitlines()[-1:]}"
-    elif not args.no_coverage:
+    elif is_python and not args.no_coverage:
         coverage_note = "coverage skipped: no venv python found"
 
     records: list[GoldRecord] = []
-    records += _symbol_definition_records(index, project, commit)
-    records += _references_records(index, project, commit)
-    records += _callers_records(index, project, commit)
-    records += _implementations_records(index, project, commit)
-    records += _module_dependencies_records(index, project, commit)
-    records += _related_tests_records(index, project, commit, coverage_map, locations)
+    records += _symbol_definition_records(index, project, commit, oracle)
+    records += _references_records(index, project, commit, oracle)
+    records += _callers_records(index, project, commit, oracle)
+    records += _implementations_records(index, project, commit, oracle)
+    if is_python:
+        records += _module_dependencies_records(index, project, commit, oracle)
+        locations = _qualified_locations(index)
+        records += _related_tests_records(index, project, commit, coverage_map, locations)
 
     oracles = {
-        "structure": f"scip-python@{args.scip_python_version}",
+        "structure": f"{oracle}@{_indexer_version(indexer)}",
         "scip_reader": _tool_version([args.scip_cli, "--version"]),
     }
     if coverage_map:
         oracles["related_tests"] = f"coverage.py@{coverage_version(venv_python)}"
 
-    notes = [
-        "callers gold covers function and method targets only; class instantiation is not modeled",
-        "callers recall is bounded by scip-python; builtin-shadowing method calls may be missed",
-    ]
+    if is_python:
+        notes = [
+            "callers gold covers function and method targets only; "
+            "class instantiation is not modeled",
+            "callers recall is bounded by scip-python; "
+            "builtin-shadowing method calls may be missed",
+        ]
+    else:
+        notes = [
+            f"structural oracle only ({oracle}); "
+            f"module_dependencies and related_tests are not modeled for {language.value}",
+            "symbols are qualified by their source-file path rather than a package module name",
+        ]
     if coverage_note:
         notes.append(coverage_note)
 
