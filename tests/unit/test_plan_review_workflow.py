@@ -6,7 +6,7 @@ import uuid
 
 from services.orchestration.temporal_activities.bedrock import ModelRequest, ModelResponse
 from services.orchestration.temporal_activities.persistence import AuditEvent, ExecutionState
-from services.orchestration.temporal_activities.review import PlanReviewOutcome, PlanReviewRequest
+from services.orchestration.temporal_activities.review import ReviewOutcome, ReviewRequest
 from services.orchestration.temporal_workflows.review import PlanReviewInput, PlanReviewWorkflow
 from temporalio import activity
 from temporalio.testing import WorkflowEnvironment
@@ -37,10 +37,10 @@ async def _run_workflow(verdicts: list[str]):
         )
 
     @activity.defn(name="review_plan")
-    async def fake_review(req: PlanReviewRequest) -> PlanReviewOutcome:
+    async def fake_review(req: ReviewRequest) -> ReviewOutcome:
         verdict = next(verdict_iter)
         findings = [] if verdict == "pass" else ["blocking finding"]
-        return PlanReviewOutcome(
+        return ReviewOutcome(
             verdict=verdict,
             attestation_hash="deadbeef",
             prompt_version="plan-review/v1",

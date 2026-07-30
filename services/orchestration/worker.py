@@ -14,9 +14,15 @@ from services.orchestration.temporal_activities import (
     invoke_model,
     persist_execution_state,
     record_audit_event,
+    review_code,
     review_plan,
+    review_security,
 )
-from services.orchestration.temporal_workflows import FoundationWorkflow, PlanReviewWorkflow
+from services.orchestration.temporal_workflows import (
+    CodeReviewWorkflow,
+    FoundationWorkflow,
+    PlanReviewWorkflow,
+)
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("workflow-worker")
@@ -34,13 +40,15 @@ async def main() -> None:
     worker = Worker(
         client,
         task_queue=settings.temporal_task_queue,
-        workflows=[FoundationWorkflow, PlanReviewWorkflow],
+        workflows=[FoundationWorkflow, PlanReviewWorkflow, CodeReviewWorkflow],
         activities=[
             invoke_model,
             persist_execution_state,
             record_audit_event,
             gather_repo_context,
             review_plan,
+            review_code,
+            review_security,
         ],
     )
     log.info("worker started on task queue '%s'", settings.temporal_task_queue)
