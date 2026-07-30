@@ -1,0 +1,182 @@
+{
+  "consolidation_version": "acceptance_consolidation/1",
+  "generated_at": "2026-07-30T05:46:09.926063+00:00",
+  "hard_gates": {
+    "callers_precision>=0.90": true,
+    "no_nonallowlisted_egress": true,
+    "no_plaintext_secret_persistence": true,
+    "references_precision>=0.90": true,
+    "reindex_without_repair": true,
+    "related_tests_precision>=0.80": true,
+    "search_top10_overlap>=0.80": true,
+    "symbol_definition_precision>=0.95": true
+  },
+  "language_tiers": {
+    "lsp": [
+      "php",
+      "terraform"
+    ],
+    "scip": [
+      "java",
+      "python",
+      "ruby",
+      "typescript"
+    ]
+  },
+  "phase_2_definition_of_done": true,
+  "record_type": "acceptance_consolidation",
+  "repos": [
+    {
+      "authoritative": {
+        "gates_pass": true,
+        "macro_f1": 1.0,
+        "provider": "lsp-php",
+        "total": 92.0,
+        "verdict": "Primary"
+      },
+      "commit": "c9b670769e69b29808e2c1428f27a412e090dd01",
+      "language": "php",
+      "passes": true,
+      "repo": "agentic-demo-php",
+      "router": {
+        "gates_pass": true,
+        "macro_f1": 1.0,
+        "provider": "router",
+        "total": 91.0,
+        "verdict": "Primary"
+      },
+      "runs": 3,
+      "source_scorecard": "agentic-demo-php@c9b6707.2026-07-29.json",
+      "structure_oracle": "phpactor@2026.07.22.0",
+      "tier": "lsp"
+    },
+    {
+      "authoritative": {
+        "gates_pass": true,
+        "macro_f1": 1.0,
+        "provider": "lsp-terraform",
+        "total": 92.0,
+        "verdict": "Primary"
+      },
+      "commit": "c7a8621da1db3723bc052f0b833a792e130a5435",
+      "language": "terraform",
+      "passes": true,
+      "repo": "agentic-demo-tf",
+      "router": {
+        "gates_pass": true,
+        "macro_f1": 1.0,
+        "provider": "router",
+        "total": 91.0,
+        "verdict": "Primary"
+      },
+      "runs": 3,
+      "source_scorecard": "agentic-demo-tf@c7a8621.2026-07-29.json",
+      "structure_oracle": "terraform-ls@0.39.0",
+      "tier": "lsp"
+    },
+    {
+      "authoritative": {
+        "gates_pass": true,
+        "macro_f1": 1.0,
+        "provider": "scip-java",
+        "total": 92.0,
+        "verdict": "Primary"
+      },
+      "commit": "0b1f3b2968f6e1657e5c3ce046a21d16ea82015e",
+      "language": "java",
+      "passes": true,
+      "repo": "agentic-demo-java",
+      "router": {
+        "gates_pass": true,
+        "macro_f1": 1.0,
+        "provider": "router",
+        "total": 91.0,
+        "verdict": "Primary"
+      },
+      "runs": 3,
+      "source_scorecard": "agentic-demo-java@0b1f3b2.2026-07-29.json",
+      "structure_oracle": "scip-java@0.13.1",
+      "tier": "scip"
+    },
+    {
+      "authoritative": {
+        "gates_pass": true,
+        "macro_f1": 0.8333,
+        "provider": "scip-python",
+        "total": 85.33,
+        "verdict": "Primary"
+      },
+      "commit": "0744a6e16964f33827d00bef41a1e8071a70449b",
+      "language": "python",
+      "passes": true,
+      "repo": "agentic-demo-service",
+      "router": {
+        "gates_pass": true,
+        "macro_f1": 0.9127,
+        "provider": "router",
+        "total": 87.51,
+        "verdict": "Primary"
+      },
+      "runs": 3,
+      "source_scorecard": "agentic-demo-service@0744a6e.2026-07-29.json",
+      "structure_oracle": "scip-python@0.6.6",
+      "tier": "scip"
+    },
+    {
+      "authoritative": {
+        "gates_pass": true,
+        "macro_f1": 1.0,
+        "provider": "scip-ruby",
+        "total": 92.0,
+        "verdict": "Primary"
+      },
+      "commit": "dc6e9def5488ee6fa66c5a62a9a32bf06d230d01",
+      "language": "ruby",
+      "passes": true,
+      "repo": "agentic-demo-ruby",
+      "router": {
+        "gates_pass": true,
+        "macro_f1": 1.0,
+        "provider": "router",
+        "total": 91.0,
+        "verdict": "Primary"
+      },
+      "runs": 3,
+      "source_scorecard": "agentic-demo-ruby@dc6e9de.2026-07-30.json",
+      "structure_oracle": "scip-ruby@0.4.7",
+      "tier": "scip"
+    },
+    {
+      "authoritative": {
+        "gates_pass": true,
+        "macro_f1": 1.0,
+        "provider": "scip-typescript",
+        "total": 92.0,
+        "verdict": "Primary"
+      },
+      "commit": "b9fdaeca8bd3516e60c7f199cd33eab72cd48ad3",
+      "language": "typescript",
+      "passes": true,
+      "repo": "agentic-demo-ts",
+      "router": {
+        "gates_pass": true,
+        "macro_f1": 1.0,
+        "provider": "router",
+        "total": 91.0,
+        "verdict": "Primary"
+      },
+      "runs": 3,
+      "source_scorecard": "agentic-demo-ts@b9fdaec.2026-07-29.json",
+      "structure_oracle": "scip-typescript@0.3.14",
+      "tier": "scip"
+    }
+  ],
+  "summary": {
+    "all_authoritative_primary": true,
+    "all_router_primary": true,
+    "languages": 6,
+    "lsp_tier": 2,
+    "repos": 6,
+    "scip_tier": 4
+  }
+}
