@@ -2,22 +2,15 @@
 
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 from scripts.config import Settings, get_settings
 
+from services.integration.jira._engine import ensure_engine_on_path
+
 CLOUD = "cloud"
 DATACENTER = "datacenter"
-
-
-def _ensure_engine_on_path() -> None:
-    from rebar._engine import engine_dir
-
-    path = str(engine_dir())
-    if path not in sys.path:
-        sys.path.insert(0, path)
 
 
 class _VendorJiraClient(Protocol):
@@ -43,7 +36,7 @@ def _site_url(settings: Settings) -> str:
 
 
 def _build_datacenter_client(settings: Settings) -> _VendorJiraClient:
-    _ensure_engine_on_path()
+    ensure_engine_on_path()
     from rebar_reconciler.adapters.jira_datacenter.rest_client import JiraDataCenterClient
 
     return JiraDataCenterClient(
@@ -54,7 +47,7 @@ def _build_datacenter_client(settings: Settings) -> _VendorJiraClient:
 
 
 def _build_cloud_client(settings: Settings) -> _VendorJiraClient:
-    _ensure_engine_on_path()
+    ensure_engine_on_path()
     from rebar_reconciler.adapters.jira.acli import AcliClient
 
     acli_cmd = [settings.jira_acli_path] if settings.jira_acli_path else None

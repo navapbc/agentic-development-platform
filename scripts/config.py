@@ -65,6 +65,7 @@ class Settings(BaseSettings):
     jira_api_token: str = ""
     jira_pat: str = ""
     jira_acli_path: str = ""
+    jira_acceptance_field: str = ""
 
     allowlist_jira_projects: str = "AGENTDEV"
     allowlist_repos: str = (
