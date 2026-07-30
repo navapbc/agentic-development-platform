@@ -44,6 +44,20 @@ def test_typescript_indexer_argv_omits_project_flags():
     assert "scip-typescript@0.3.14" in argv[2]
 
 
+def test_typescript_indexer_infers_tsconfig_when_missing(tmp_path):
+    argv = SCIP_TYPESCRIPT_INDEXER.index_argv("proj", "abc1234", Path("/out/index.scip"), tmp_path)
+
+    assert "--infer-tsconfig" in argv
+
+
+def test_typescript_indexer_keeps_existing_tsconfig(tmp_path):
+    (tmp_path / "tsconfig.json").write_text("{}", encoding="utf-8")
+
+    argv = SCIP_TYPESCRIPT_INDEXER.index_argv("proj", "abc1234", Path("/out/index.scip"), tmp_path)
+
+    assert "--infer-tsconfig" not in argv
+
+
 def test_python_indexer_env_injects_venv_when_present(tmp_path):
     (tmp_path / ".venv" / "bin").mkdir(parents=True)
 

@@ -52,7 +52,7 @@ class Settings(BaseSettings):
     repo_index_worker_concurrency: int = 2
 
     allowlist_jira_projects: str = "AGENTDEV"
-    allowlist_repos: str = "agentic-demo-service,agentic-demo-greenfield"
+    allowlist_repos: str = "agentic-demo-service,agentic-demo-greenfield,agentic-demo-ts"
 
     def allowed_projects(self) -> set[str]:
         return {p.strip() for p in self.allowlist_jira_projects.split(",") if p.strip()}

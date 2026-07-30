@@ -33,12 +33,21 @@ class ScipIndexer:
     uses_project_flags: bool = False
     extra_args: tuple[str, ...] = field(default_factory=tuple)
     inject_python_venv: bool = False
+    infer_tsconfig_when_missing: bool = False
 
-    def index_argv(self, project: str, version: str, output: Path) -> list[str]:
+    def index_argv(
+        self, project: str, version: str, output: Path, repo_root: Path | None = None
+    ) -> list[str]:
         argv = [*shlex.split(self.command), "index"]
         if self.uses_project_flags:
             argv += ["--project-name", project, "--project-version", version]
         argv += ["--output", str(output), *self.extra_args]
+        if (
+            self.infer_tsconfig_when_missing
+            and repo_root is not None
+            and not (repo_root / "tsconfig.json").exists()
+        ):
+            argv.append("--infer-tsconfig")
         return argv
 
     def index_env(self, repo_root: Path) -> dict[str, str]:
@@ -64,6 +73,7 @@ SCIP_TYPESCRIPT_INDEXER = ScipIndexer(
     command=DEFAULT_SCIP_TYPESCRIPT_CMD,
     language_id="typescript",
     source_suffixes=(".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"),
+    infer_tsconfig_when_missing=True,
 )
 
 _SCIP_INDEXERS: dict[Language, ScipIndexer] = {
@@ -133,7 +143,7 @@ def _generate_scip(
 ) -> None:
     try:
         subprocess.run(
-            indexer.index_argv(project, version, output),
+            indexer.index_argv(project, version, output, repo_root),
             cwd=repo_root,
             check=True,
             capture_output=True,

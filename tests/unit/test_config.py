@@ -8,7 +8,11 @@ from scripts.config import Settings
 def test_default_allowlists_match_plan():
     s = Settings()
     assert s.allowed_projects() == {"AGENTDEV"}
-    assert s.allowed_repos() == {"agentic-demo-service", "agentic-demo-greenfield"}
+    assert s.allowed_repos() == {
+        "agentic-demo-service",
+        "agentic-demo-greenfield",
+        "agentic-demo-ts",
+    }
 
 
 def test_allowlist_parsing_trims_whitespace_and_drops_blanks():
