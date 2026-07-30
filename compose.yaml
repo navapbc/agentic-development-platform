@@ -62,6 +62,7 @@ services:
     environment:
       REPO_INTELLIGENCE_URL: http://repo-intelligence:8120
       COORDINATION_URL: http://coordination-service:8130
+      JIRA_ACLI_PATH: /app/vendor/bin/acli
     depends_on:
       temporal:
         condition: service_healthy

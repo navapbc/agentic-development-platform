@@ -4,12 +4,14 @@ Cloud: set RUN_LIVE_JIRA_CLOUD=1 with JIRA_URL, JIRA_EMAIL, JIRA_API_TOKEN, and 
 the Cloud smokes authenticate acli non-interactively when it is not already logged in.
 Data Center: set RUN_LIVE_JIRA_DC=1 with JIRA_PAT. The read smokes are non-mutating.
 RUN_LIVE_JIRA_CLOUD_WRITE=1 additionally runs a mutating Cloud smoke that creates an issue; it
-runs before the read smoke, which reads that issue when no JIRA_SMOKE_ISSUE_KEY is set.
+runs before the read smoke, which reads that issue when no JIRA_SMOKE_ISSUE_KEY is set. The read
+retries briefly for a freshly created key to tolerate Jira Cloud JQL index lag.
 """
 
 from __future__ import annotations
 
 import os
+import time
 from uuid import uuid4
 
 import pytest
@@ -33,6 +35,22 @@ requires_live_datacenter = pytest.mark.skipif(
     os.environ.get("RUN_LIVE_JIRA_DC") != "1",
     reason="set RUN_LIVE_JIRA_DC=1 with a Data Center PAT to run the connection smoke",
 )
+
+
+def _read_created_issue(adapter, issue_key, *, attempts=6, delay=2.0):
+    last_exc: RuntimeError | None = None
+    for attempt in range(attempts):
+        try:
+            return adapter.get_issue(issue_key)
+        except RuntimeError as exc:
+            # Jira Cloud JQL index lags after create; a fresh key reads as not-found briefly.
+            if "not found" not in str(exc).lower():
+                raise
+            last_exc = exc
+            if attempt < attempts - 1:
+                time.sleep(delay)
+    assert last_exc is not None
+    raise last_exc
 
 
 @requires_live_cloud_write
@@ -97,7 +115,7 @@ def test_cloud_issue_reads_and_normalizes():
     settings = Settings(jira_auth_mode="cloud")
     ensure_acli_authenticated(settings)
     adapter = build_jira_adapter(settings)
-    raw = adapter.get_issue(issue_key)
+    raw = _read_created_issue(adapter, issue_key) if _created_key else adapter.get_issue(issue_key)
     task = normalize_issue(raw)
     assert task.task_id == issue_key
     assert task.summary

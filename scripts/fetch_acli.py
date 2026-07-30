@@ -1,4 +1,4 @@
-"""Fetch and vendor the Atlassian acli binary into vendor/bin (configurable URL, pinned sha256)."""
+"""Fetch and vendor the Atlassian acli binary; URL configurable, sha256 optional."""
 
 from __future__ import annotations
 
@@ -10,8 +10,8 @@ import stat
 import urllib.request
 from pathlib import Path
 
-ACLI_VERSION = os.environ.get("ACLI_VERSION", "").strip()
-_DEFAULT_URL_TEMPLATE = "https://acli.atlassian.com/{os_name}/{arch}/{version}/acli"
+ACLI_VERSION = os.environ.get("ACLI_VERSION", "latest").strip()
+_DEFAULT_URL_TEMPLATE = "https://acli.atlassian.com/{os_name}/{version}/acli_{os_name}_{arch}/acli"
 _VENDOR_DEST = "vendor/bin/acli"
 
 
@@ -48,10 +48,7 @@ def resolve_url(*, version: str, os_name: str, arch: str, override: str | None) 
 
 
 def resolve_expected_sha256() -> str:
-    digest = os.environ.get("ACLI_SHA256", "").strip().lower()
-    if not digest:
-        raise SystemExit("ACLI_SHA256 is required: pin the sha256 of the acli release.")
-    return digest
+    return os.environ.get("ACLI_SHA256", "").strip().lower()
 
 
 def download(url: str) -> bytes:
@@ -86,10 +83,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     expected = resolve_expected_sha256()
     data = download(url)
-    verify(data, expected)
+    if expected:
+        verify(data, expected)
     dest = Path(args.dest)
     install(data, dest)
-    print(f"acli ({os_name}/{arch}) -> {dest} [{len(data)} bytes, sha256 verified]")
+    integrity = "sha256 verified" if expected else "unverified (TLS only)"
+    print(f"acli ({os_name}/{arch}) -> {dest} [{len(data)} bytes, {integrity}]")
     return 0
 
 

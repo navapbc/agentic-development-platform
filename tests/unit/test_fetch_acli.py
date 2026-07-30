@@ -16,9 +16,7 @@ def test_resolve_url_uses_override_verbatim():
 
 def test_resolve_url_default_composes_atlassian_url():
     url = fetch_acli.resolve_url(version="1.2.3", os_name="linux", arch="amd64", override=None)
-    assert "linux" in url
-    assert "amd64" in url
-    assert "1.2.3" in url
+    assert url == "https://acli.atlassian.com/linux/1.2.3/acli_linux_amd64/acli"
 
 
 def test_resolve_url_default_requires_version():
@@ -39,6 +37,13 @@ def test_verify_accepts_matching_digest():
 def test_verify_rejects_mismatch():
     with pytest.raises(SystemExit):
         fetch_acli.verify(b"binary-bytes", "0" * 64)
+
+
+def test_resolve_sha256_is_optional(monkeypatch):
+    monkeypatch.delenv("ACLI_SHA256", raising=False)
+    assert fetch_acli.resolve_expected_sha256() == ""
+    monkeypatch.setenv("ACLI_SHA256", "ABC123")
+    assert fetch_acli.resolve_expected_sha256() == "abc123"
 
 
 def test_install_writes_executable_binary(tmp_path):

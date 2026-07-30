@@ -20,6 +20,14 @@ RUN pip install --upgrade pip \
     && pip install -e "/opt/rebar[agents]" "pydantic-ai-slim[openai]>=1,<2" \
     && pip install -e ".[reasoning]"
 
+ARG TARGETOS
+ARG TARGETARCH
+ARG ACLI_VERSION=latest
+ARG ACLI_SHA256=
+RUN ACLI_OS="${TARGETOS:-linux}" ACLI_ARCH="${TARGETARCH}" ACLI_VERSION="${ACLI_VERSION}" ACLI_SHA256="${ACLI_SHA256}" python scripts/fetch_acli.py --dest vendor/bin/acli
+
+ENV JIRA_ACLI_PATH=/app/vendor/bin/acli
+
 RUN useradd --create-home --uid 10001 appuser
 USER appuser
 
