@@ -8,6 +8,15 @@ from services.coordination.idempotency import (
     SideEffectRef,
     side_effect_key,
 )
+from services.coordination.manifest import (
+    MANIFEST_EVENT_TYPE,
+    DeterminismManifest,
+    InMemoryManifestStore,
+    ManifestRecord,
+    ManifestStore,
+    PostgresManifestStore,
+    manifest_event_id,
+)
 from services.coordination.sequencing import (
     ADMITTED,
     DISCARDED,
@@ -22,9 +31,15 @@ from services.coordination.sequencing import (
 __all__ = [
     "ADMITTED",
     "DISCARDED",
+    "MANIFEST_EVENT_TYPE",
     "STALE_REVIEW_DISCARDED",
+    "DeterminismManifest",
+    "InMemoryManifestStore",
     "InMemorySequenceGate",
     "InMemorySideEffectLedger",
+    "ManifestRecord",
+    "ManifestStore",
+    "PostgresManifestStore",
     "PostgresSequenceGate",
     "PostgresSideEffectLedger",
     "SequenceDecision",
@@ -33,5 +48,6 @@ __all__ = [
     "SideEffectLedger",
     "SideEffectOutcome",
     "SideEffectRef",
+    "manifest_event_id",
     "side_effect_key",
 ]
