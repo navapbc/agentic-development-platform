@@ -32,3 +32,23 @@ services:
       - ./schemas:/app/schemas
     environment:
       LOG_LEVEL: DEBUG
+
+  repo-intelligence:
+    volumes: &repo-intelligence-mounts
+      - ../agentic-demo-service:/repos/agentic-demo-service:ro
+      - ../agentic-demo-greenfield:/repos/agentic-demo-greenfield:ro
+      - ../agentic-demo-ts:/repos/agentic-demo-ts:ro
+      - ../agentic-demo-tf:/repos/agentic-demo-tf:ro
+      - ../agentic-demo-java:/repos/agentic-demo-java:ro
+      - ../agentic-demo-php:/repos/agentic-demo-php:ro
+      - ../agentic-demo-ruby:/repos/agentic-demo-ruby:ro
+      - ./vendor/bin/codebase-memory-mcp:/usr/local/bin/codebase-memory-mcp:ro
+    environment: &repo-intelligence-env
+      REPO_INTELLIGENCE_REPOS: "agentic-demo-service=/repos/agentic-demo-service,agentic-demo-greenfield=/repos/agentic-demo-greenfield,agentic-demo-ts=/repos/agentic-demo-ts,agentic-demo-tf=/repos/agentic-demo-tf,agentic-demo-java=/repos/agentic-demo-java,agentic-demo-php=/repos/agentic-demo-php,agentic-demo-ruby=/repos/agentic-demo-ruby"
+      REPO_INTELLIGENCE_CBM_BINARY: /usr/local/bin/codebase-memory-mcp
+      CBM_ALLOWED_ROOT: /repos
+
+  repo-index-worker:
+    volumes: *repo-intelligence-mounts
+    environment: *repo-intelligence-env
+

@@ -439,10 +439,24 @@ def main(argv: list[str] | None = None) -> int:
             "builtin-shadowing method calls may be missed",
         ]
     else:
+        if language is Language.JAVA:
+            symbol_note = (
+                "symbols are qualified by their package path "
+                "(for example 'com/example/taskservice.Task')"
+            )
+        elif language is Language.RUBY:
+            symbol_note = (
+                "symbols are qualified by their namespace path (for example 'AgenticDemo.Task')"
+            )
+        else:
+            symbol_note = (
+                "symbols are qualified by their source-file path "
+                "(for example 'src/store.ts.DuplicateTaskError')"
+            )
         notes = [
             f"structural oracle only ({oracle}); "
             f"module_dependencies and related_tests are not modeled for {language.value}",
-            "symbols are qualified by their source-file path rather than a package module name",
+            symbol_note,
         ]
     if coverage_note:
         notes.append(coverage_note)
