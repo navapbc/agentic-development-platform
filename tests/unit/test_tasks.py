@@ -18,6 +18,7 @@ EXPECTED_TASKS = {
     "test",
     "workflow-status",
     "durability-proof",
+    "fetch-acli",
 }
 
 

@@ -57,6 +57,15 @@ class Settings(BaseSettings):
     repo_index_poll_interval_seconds: float = 30.0
     repo_index_worker_concurrency: int = 2
 
+    jira_url: str = ""
+    jira_base_url: str = ""
+    jira_auth_mode: str = "cloud"
+    jira_project: str = ""
+    jira_email: str = ""
+    jira_api_token: str = ""
+    jira_pat: str = ""
+    jira_acli_path: str = ""
+
     allowlist_jira_projects: str = "AGENTDEV"
     allowlist_repos: str = (
         "agentic-demo-service,agentic-demo-greenfield,"

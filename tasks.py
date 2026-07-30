@@ -89,6 +89,12 @@ def durability_proof(c):
     c.run("python -m scripts.durability_proof", pty=True)
 
 
+@task(help={"dest": "Output path for the vendored binary (default vendor/bin/acli)."})
+def fetch_acli(c, dest="vendor/bin/acli"):
+    """Fetch and vendor the Atlassian acli binary (configurable URL, pinned sha256)."""
+    c.run(f"python -m scripts.fetch_acli --dest {dest}", pty=True)
+
+
 ns = Collection()
 for _t in (
     tunnel_start,
@@ -103,5 +109,6 @@ for _t in (
     test,
     workflow_status,
     durability_proof,
+    fetch_acli,
 ):
     ns.add_task(_t)
