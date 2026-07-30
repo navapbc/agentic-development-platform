@@ -125,6 +125,43 @@ def test_search_prefers_zoekt_and_falls_back_to_scip_on_error():
     assert result and result[0].provenance.source is Source.SCIP
 
 
+def test_find_symbol_falls_back_to_lsp_when_scip_yields_nothing():
+    symbols = [_sym("aws_instance", "main.tf", 3, source=Source.LSP)]
+    lsp = Fake(repo_find_symbol=symbols)
+    router = RouterProvider(scip=None, lsp=lsp)
+
+    assert router.repo_find_symbol(_REPO, "aws_instance") == symbols
+    assert lsp.called("repo_find_symbol")
+
+
+def test_find_symbol_prefers_scip_over_lsp():
+    scip_symbols = [_sym("health", "app/main.py", 1)]
+    lsp = Fake(repo_find_symbol=[_sym("health", "main.tf", 9, source=Source.LSP)])
+    router = RouterProvider(scip=Fake(repo_find_symbol=scip_symbols), lsp=lsp)
+
+    assert router.repo_find_symbol(_REPO, "health") == scip_symbols
+    assert not lsp.called("repo_find_symbol")
+
+
+def test_references_fall_back_to_lsp_before_cbm():
+    lsp_refs = [_ref("main.tf", 12, source=Source.LSP)]
+    lsp = Fake(repo_find_references=lsp_refs)
+    cbm = Fake(is_available=True, candidate_references=[_ref("main.tf", 99, source=Source.CBM)])
+    router = RouterProvider(scip=None, lsp=lsp, cbm=cbm)
+
+    assert router.repo_find_references(_REPO, "sym") == lsp_refs
+    assert not cbm.called("candidate_references")
+
+
+def test_index_status_uses_lsp_when_scip_absent():
+    status = IndexStatus(
+        repo=_REPO, indexed_commit="deadbeef", is_fresh=True, languages=("terraform",)
+    )
+    router = RouterProvider(scip=None, lsp=Fake(repo_get_index_status=status))
+
+    assert router.repo_get_index_status(_REPO) == status
+
+
 def test_find_symbol_filters_non_authoritative():
     good = _sym("app.main.health", "app/main.py", 17)
     bad = _sym("guess", "app/main.py", 99, source=Source.EMBEDDING)

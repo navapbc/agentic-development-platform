@@ -36,6 +36,8 @@ from services.repository_intelligence.providers.build_metadata.build_metadata_pr
 from services.repository_intelligence.providers.cbm.cbm_provider import CBMProvider
 from services.repository_intelligence.providers.coverage.coverage_provider import CoverageProvider
 from services.repository_intelligence.providers.custom.python_provider import CustomPythonProvider
+from services.repository_intelligence.providers.lsp.lsp_client import server_spec_for
+from services.repository_intelligence.providers.lsp.lsp_provider import LspProvider
 from services.repository_intelligence.providers.scip.scip_provider import ScipProvider
 from services.repository_intelligence.providers.zoekt.zoekt_provider import ZoektProvider
 
@@ -72,6 +74,7 @@ class RouterProvider:
         custom: CustomPythonProvider | None = None,
         cbm: CBMProvider | None = None,
         ast_grep: AstGrepProvider | None = None,
+        lsp: LspProvider | None = None,
     ) -> None:
         self._scip = scip
         self._zoekt = zoekt
@@ -80,6 +83,7 @@ class RouterProvider:
         self._custom = custom
         self._cbm = cbm
         self._ast_grep = ast_grep
+        self._lsp = lsp
         self._cbm_available: bool | None = None
 
     @classmethod
@@ -95,7 +99,9 @@ class RouterProvider:
         cbm_cache_dir: str | Path | None = None,
     ) -> RouterProvider:
         root = Path(repo_root)
-        python = primary_language(root) is Language.PYTHON
+        language = primary_language(root)
+        python = language is Language.PYTHON
+        lsp_spec = server_spec_for(language)
         cbm = (
             CBMProvider(
                 root,
@@ -114,6 +120,7 @@ class RouterProvider:
             custom=CustomPythonProvider(root) if python else None,
             ast_grep=AstGrepProvider(root),
             cbm=cbm,
+            lsp=LspProvider(root, lsp_spec, commit=commit) if lsp_spec is not None else None,
         )
 
     @staticmethod
@@ -125,6 +132,11 @@ class RouterProvider:
 
     def _scip_call(self, fn: Callable[[], _T], default: _T) -> _T:
         if self._scip is None:
+            return default
+        return self._safe(fn, default)
+
+    def _lsp_call(self, fn: Callable[[], _T], default: _T) -> _T:
+        if self._lsp is None:
             return default
         return self._safe(fn, default)
 
@@ -143,8 +155,13 @@ class RouterProvider:
         return self._scip_call(lambda: self._scip.repo_search_code(repo, query, limit=limit), [])
 
     def repo_find_symbol(self, repo: RepoRef, name: str, *, limit: int = 50) -> list[Symbol]:
-        return _authoritative(
+        primary = _authoritative(
             self._scip_call(lambda: self._scip.repo_find_symbol(repo, name, limit=limit), [])
+        )
+        if primary:
+            return primary
+        return _authoritative(
+            self._lsp_call(lambda: self._lsp.repo_find_symbol(repo, name, limit=limit), [])
         )
 
     def repo_find_references(
@@ -160,6 +177,16 @@ class RouterProvider:
         )
         if primary:
             return _sorted_references(primary)
+        lsp = _authoritative(
+            self._lsp_call(
+                lambda: self._lsp.repo_find_references(
+                    repo, symbol, include_definition=include_definition
+                ),
+                [],
+            )
+        )
+        if lsp:
+            return _sorted_references(lsp)
         if self._cbm_ready():
             candidates = _authoritative(
                 self._safe(lambda: self._cbm.candidate_references(repo, symbol), [])
@@ -259,6 +286,10 @@ class RouterProvider:
         status = self._scip_call(lambda: self._scip.repo_get_index_status(repo), None)
         if status is not None:
             return status
+        if self._lsp is not None:
+            status = self._safe(lambda: self._lsp.repo_get_index_status(repo), None)
+            if status is not None:
+                return status
         if self._zoekt is not None:
             status = self._safe(lambda: self._zoekt.repo_get_index_status(repo), None)
             if status is not None:

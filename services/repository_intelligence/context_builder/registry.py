@@ -9,6 +9,7 @@ from pathlib import Path
 from services.repository_intelligence.context_builder.context_service import (
     RepositoryIntelligenceService,
 )
+from services.repository_intelligence.languages import Language, primary_language
 
 
 @dataclass(frozen=True)
@@ -33,6 +34,7 @@ class RepositoryIntelligenceRegistry:
     ) -> None:
         self._specs = {spec.name: spec for spec in specs}
         self._services: dict[str, RepositoryIntelligenceService] = {}
+        self._languages: dict[str, Language] = {}
         self._builder = builder
 
     def repos(self) -> set[str]:
@@ -42,8 +44,11 @@ class RepositoryIntelligenceRegistry:
         spec = self._specs.get(repo)
         if spec is None:
             return None
-        service = self._services.get(repo)
-        if service is None:
-            service = self._builder(spec.root, commit=spec.commit, cbm_binary=spec.cbm_binary)
-            self._services[repo] = service
+        detected = primary_language(spec.root)
+        cached = self._services.get(repo)
+        if cached is not None and self._languages.get(repo) == detected:
+            return cached
+        service = self._builder(spec.root, commit=spec.commit, cbm_binary=spec.cbm_binary)
+        self._services[repo] = service
+        self._languages[repo] = detected
         return service

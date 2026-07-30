@@ -279,3 +279,21 @@ def test_from_repo_degrades_for_a_non_python_repo(tmp_path):
     assert service._router._scip is None
     assert service._router._zoekt is not None
     assert service._reindex is None
+
+
+def test_from_repo_wires_lsp_backend_for_a_terraform_repo(tmp_path):
+    (tmp_path / "main.tf").write_text('resource "null_resource" "x" {}\n')
+
+    service = RepositoryIntelligenceService.from_repo(tmp_path)
+
+    assert service._router._lsp is not None
+    assert service._router._scip is None
+
+
+def test_from_repo_has_no_lsp_backend_for_a_repo_without_a_language_server(tmp_path):
+    (tmp_path / "app.rb").write_text("def health\n  {}\nend\n")
+
+    service = RepositoryIntelligenceService.from_repo(tmp_path)
+
+    assert service._router._lsp is None
+    assert service._router._scip is None

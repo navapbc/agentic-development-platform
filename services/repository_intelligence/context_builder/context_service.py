@@ -32,6 +32,8 @@ from services.repository_intelligence.providers.build_metadata.build_metadata_pr
 from services.repository_intelligence.providers.cbm.cbm_provider import CBMProvider
 from services.repository_intelligence.providers.coverage.coverage_provider import CoverageProvider
 from services.repository_intelligence.providers.custom.python_provider import CustomPythonProvider
+from services.repository_intelligence.providers.lsp.lsp_client import server_spec_for
+from services.repository_intelligence.providers.lsp.lsp_provider import LspProvider
 from services.repository_intelligence.providers.router import RouterProvider
 from services.repository_intelligence.providers.scip.scip_provider import ScipProvider
 from services.repository_intelligence.providers.zoekt.zoekt_provider import ZoektProvider
@@ -91,7 +93,9 @@ class RepositoryIntelligenceService:
         cbm_cache_dir: str | Path | None = None,
     ) -> RepositoryIntelligenceService:
         root = Path(repo_root)
-        python = primary_language(root) is Language.PYTHON
+        language = primary_language(root)
+        python = language is Language.PYTHON
+        lsp_spec = server_spec_for(language)
         ast_grep = AstGrepProvider(root)
         build_metadata = BuildMetadataProvider(root)
         cbm = (
@@ -112,6 +116,7 @@ class RepositoryIntelligenceService:
             custom=CustomPythonProvider(root) if python else None,
             ast_grep=ast_grep,
             cbm=cbm,
+            lsp=LspProvider(root, lsp_spec, commit=commit) if lsp_spec is not None else None,
         )
 
         def reindex(repo: RepoRef, prior_commit: str | None) -> None:
