@@ -70,6 +70,10 @@ class AuditEvent:
     new_state: str | None = None
     model_id: str | None = None
     reason: str | None = None
+    workflow_id: str | None = None
+    decision: str | None = None
+    prompt_version: str | None = None
+    artifact_hashes: dict[str, Any] = field(default_factory=dict)
 
 
 @activity.defn
@@ -86,6 +90,10 @@ async def record_audit_event(event: AuditEvent) -> str:
             new_state=event.new_state,
             model_id=event.model_id,
             reason=event.reason,
+            workflow_id=event.workflow_id,
+            decision=event.decision,
+            prompt_version=event.prompt_version,
+            artifact_hashes=event.artifact_hashes or None,
         )
         .on_conflict_do_nothing(index_elements=[audit_events.c.event_id])
     )
