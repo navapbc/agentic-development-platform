@@ -7,6 +7,7 @@ from services.orchestration.temporal_activities.review import (
     ReviewRequest,
     review_code,
     review_security,
+    verify_acceptance,
 )
 from services.review.attestation import HmacAttestor
 from services.review.gate import ReviewGate
@@ -108,6 +109,23 @@ async def test_review_security_blocking(monkeypatch):
     outcome, _, sink = await _invoke(
         monkeypatch, review_security, _blocking("security-review-model")
     )
+
+    assert outcome.verdict == "block"
+    assert outcome.findings == ["SQLi"]
+    assert len(sink.records) == 1
+
+
+async def test_verify_acceptance_clean(monkeypatch):
+    outcome, kernel, _ = await _invoke(monkeypatch, verify_acceptance, _clean("evaluation-model"))
+
+    assert outcome.verdict == "pass"
+    assert outcome.prompt_version == "acceptance-verification/v1"
+    assert kernel.seen[0].stage is ReviewStage.ACCEPTANCE_VERIFICATION
+    assert STAGE_TIERS[kernel.seen[0].stage] == "evaluation-model"
+
+
+async def test_verify_acceptance_blocking(monkeypatch):
+    outcome, _, sink = await _invoke(monkeypatch, verify_acceptance, _blocking("evaluation-model"))
 
     assert outcome.verdict == "block"
     assert outcome.findings == ["SQLi"]

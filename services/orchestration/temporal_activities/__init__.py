@@ -8,6 +8,7 @@ from services.orchestration.temporal_activities.review import (
     review_code,
     review_plan,
     review_security,
+    verify_acceptance,
 )
 
 __all__ = [
@@ -18,4 +19,5 @@ __all__ = [
     "review_code",
     "review_plan",
     "review_security",
+    "verify_acceptance",
 ]

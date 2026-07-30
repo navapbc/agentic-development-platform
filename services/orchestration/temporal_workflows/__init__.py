@@ -2,6 +2,12 @@ from services.orchestration.temporal_workflows.foundation import FoundationWorkf
 from services.orchestration.temporal_workflows.review import (
     CodeReviewWorkflow,
     PlanReviewWorkflow,
+    ReviewPipelineWorkflow,
 )
 
-__all__ = ["CodeReviewWorkflow", "FoundationWorkflow", "PlanReviewWorkflow"]
+__all__ = [
+    "CodeReviewWorkflow",
+    "FoundationWorkflow",
+    "PlanReviewWorkflow",
+    "ReviewPipelineWorkflow",
+]

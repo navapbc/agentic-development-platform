@@ -70,6 +70,16 @@ _SECURITY = _PromptSpec(
     ),
     subject_label="Code diff under security review",
 )
+_ACCEPTANCE = _PromptSpec(
+    name="acceptance-verification",
+    version="acceptance-verification/v1",
+    system_prompt=(
+        "You are a rigorous completion verifier. Judge whether the implemented change satisfies "
+        "the task's acceptance criteria and whether the supporting evidence substantiates the "
+        "completion claim. Raise blocking findings only for unmet criteria or unsupported claims."
+    ),
+    subject_label="Completion evidence under acceptance verification",
+)
 
 
 def build_review_gate():
@@ -134,3 +144,8 @@ async def review_code(req: ReviewRequest) -> ReviewOutcome:
 @activity.defn
 async def review_security(req: ReviewRequest) -> ReviewOutcome:
     return await _run_gate(ReviewStage.SECURITY_REVIEW, _SECURITY, req)
+
+
+@activity.defn
+async def verify_acceptance(req: ReviewRequest) -> ReviewOutcome:
+    return await _run_gate(ReviewStage.ACCEPTANCE_VERIFICATION, _ACCEPTANCE, req)

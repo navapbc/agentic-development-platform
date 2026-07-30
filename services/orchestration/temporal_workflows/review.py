@@ -31,6 +31,7 @@ with workflow.unsafe.imports_passed_through():
         review_code,
         review_plan,
         review_security,
+        verify_acceptance,
     )
 
 REPLAN_CAP = 2
@@ -383,4 +384,172 @@ class CodeReviewWorkflow:
             blocking_findings=blocking_findings,
             code_attestation=code.attestation_hash,
             security_attestation=security.attestation_hash,
+        )
+
+
+@dataclass
+class ReviewPipelineInput:
+    task_id: str
+    execution_id: str
+    diff: str
+    repo: str = ""
+    commit: str = ""
+    focus: str = ""
+    acceptance_evidence: str = ""
+
+
+@dataclass
+class ReviewPipelineOutput:
+    execution_id: str
+    plan_verdict: str
+    code_verdict: str
+    security_verdict: str
+    acceptance_verdict: str
+    completed: bool
+    escalated: bool
+    blocked: bool
+    attestations: dict[str, str] = field(default_factory=dict)
+
+
+@workflow.defn
+class ReviewPipelineWorkflow:
+    @workflow.run
+    async def run(self, params: ReviewPipelineInput) -> ReviewPipelineOutput:
+        retry = RetryPolicy(maximum_attempts=3)
+        short = timedelta(seconds=30)
+        model_timeout = timedelta(minutes=5)
+        workflow_id = workflow.info().workflow_id
+        attestations: dict[str, str] = {}
+
+        async def persist(state: str) -> None:
+            await workflow.execute_activity(
+                persist_execution_state,
+                ExecutionState(
+                    execution_id=params.execution_id,
+                    task_id=params.task_id,
+                    state=state,
+                    workflow_id=workflow_id,
+                    repository=params.repo or None,
+                    repository_sha=params.commit or None,
+                ),
+                start_to_close_timeout=short,
+                retry_policy=retry,
+            )
+
+        async def audit(event: AuditEvent) -> None:
+            await workflow.execute_activity(
+                record_audit_event,
+                event,
+                start_to_close_timeout=short,
+                retry_policy=retry,
+            )
+
+        plan: PlanReviewOutput = await workflow.execute_child_workflow(
+            PlanReviewWorkflow.run,
+            PlanReviewInput(
+                task_id=params.task_id,
+                execution_id=params.execution_id,
+                repo=params.repo,
+                commit=params.commit,
+                focus=params.focus,
+            ),
+            id=f"{workflow_id}-plan",
+        )
+        attestations["plan-review"] = plan.attestation_hash
+        if not plan.approved:
+            return ReviewPipelineOutput(
+                execution_id=params.execution_id,
+                plan_verdict=plan.verdict,
+                code_verdict="",
+                security_verdict="",
+                acceptance_verdict="",
+                completed=False,
+                escalated=plan.escalated,
+                blocked=False,
+                attestations=attestations,
+            )
+
+        code: CodeReviewOutput = await workflow.execute_child_workflow(
+            CodeReviewWorkflow.run,
+            CodeReviewInput(
+                task_id=params.task_id,
+                execution_id=params.execution_id,
+                diff=params.diff,
+                repo=params.repo,
+                commit=params.commit,
+                focus=params.focus,
+            ),
+            id=f"{workflow_id}-code",
+        )
+        attestations["code-review"] = code.code_attestation
+        attestations["security-review"] = code.security_attestation
+        if code.blocked:
+            return ReviewPipelineOutput(
+                execution_id=params.execution_id,
+                plan_verdict=plan.verdict,
+                code_verdict=code.code_verdict,
+                security_verdict=code.security_verdict,
+                acceptance_verdict="",
+                completed=False,
+                escalated=False,
+                blocked=True,
+                attestations=attestations,
+            )
+
+        await persist("ACCEPTANCE_VERIFICATION")
+        acceptance: ReviewOutcome = await workflow.execute_activity(
+            verify_acceptance,
+            ReviewRequest(
+                task_id=params.task_id,
+                execution_id=params.execution_id,
+                subject=params.acceptance_evidence or params.diff,
+                context_ref=params.commit,
+            ),
+            start_to_close_timeout=model_timeout,
+            retry_policy=retry,
+        )
+        attestations["acceptance-verification"] = acceptance.attestation_hash
+        await audit(
+            AuditEvent(
+                event_id=f"{params.execution_id}:REVIEW_COMPLETED:ACCEPTANCE_VERIFICATION",
+                task_id=params.task_id,
+                execution_id=params.execution_id,
+                event_type="REVIEW_COMPLETED",
+                stage="ACCEPTANCE_VERIFICATION",
+                prev_state="ACCEPTANCE_VERIFICATION",
+                new_state="ACCEPTANCE_VERIFICATION",
+                model_id=acceptance.model_id,
+                decision=acceptance.verdict,
+                prompt_version=acceptance.prompt_version,
+                artifact_hashes={"attestation": acceptance.attestation_hash},
+                workflow_id=workflow_id,
+            )
+        )
+
+        accepted = acceptance.verdict == "pass"
+        await persist("COMPLETED" if accepted else "FAILED")
+        if accepted:
+            await audit(
+                AuditEvent(
+                    event_id=f"{params.execution_id}:EXECUTION_COMPLETED",
+                    task_id=params.task_id,
+                    execution_id=params.execution_id,
+                    event_type="EXECUTION_COMPLETED",
+                    stage="ACCEPTANCE_VERIFICATION",
+                    prev_state="ACCEPTANCE_VERIFICATION",
+                    new_state="COMPLETED",
+                    workflow_id=workflow_id,
+                )
+            )
+
+        return ReviewPipelineOutput(
+            execution_id=params.execution_id,
+            plan_verdict=plan.verdict,
+            code_verdict=code.code_verdict,
+            security_verdict=code.security_verdict,
+            acceptance_verdict=acceptance.verdict,
+            completed=accepted,
+            escalated=False,
+            blocked=not accepted,
+            attestations=attestations,
         )
