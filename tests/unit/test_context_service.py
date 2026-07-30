@@ -284,6 +284,19 @@ def test_from_repo_wires_scip_typescript_for_a_typescript_repo(tmp_path):
     assert service._reindex is not None
 
 
+def test_from_repo_wires_scip_ruby_for_a_ruby_repo(tmp_path):
+    (tmp_path / "lib").mkdir()
+    (tmp_path / "lib" / "app.rb").write_text("class App\n  def health\n    {}\n  end\nend\n")
+
+    service = RepositoryIntelligenceService.from_repo(tmp_path)
+
+    assert service._router._scip is not None
+    assert service._router._scip._indexer.language_id == "ruby"
+    assert service._router._lsp is None
+    assert service._router._coverage is None
+    assert service._router._custom is None
+
+
 def test_from_repo_degrades_for_a_non_python_repo(tmp_path):
     (tmp_path / "main.tf").write_text('resource "null_resource" "x" {}\n')
 
@@ -304,7 +317,7 @@ def test_from_repo_wires_lsp_backend_for_a_terraform_repo(tmp_path):
 
 
 def test_from_repo_has_no_lsp_backend_for_a_repo_without_a_language_server(tmp_path):
-    (tmp_path / "app.rb").write_text("def health\n  {}\nend\n")
+    (tmp_path / "notes.txt").write_text("no supported language here\n")
 
     service = RepositoryIntelligenceService.from_repo(tmp_path)
 

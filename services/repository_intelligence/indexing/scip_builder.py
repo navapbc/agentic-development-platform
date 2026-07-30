@@ -15,6 +15,7 @@ from services.repository_intelligence.languages import Language
 DEFAULT_SCIP_PYTHON_CMD = "npx --yes @sourcegraph/scip-python@0.6.6"
 DEFAULT_SCIP_TYPESCRIPT_CMD = "npx --yes @sourcegraph/scip-typescript@0.3.14"
 DEFAULT_SCIP_JAVA_CMD = "scip-java"
+DEFAULT_SCIP_RUBY_CMD = "scip-ruby"
 DEFAULT_SCIP_CLI = "scip"
 
 _PLATFORM_ROOT = Path(__file__).resolve().parents[3]
@@ -35,11 +36,22 @@ class ScipIndexer:
     extra_args: tuple[str, ...] = field(default_factory=tuple)
     inject_python_venv: bool = False
     infer_tsconfig_when_missing: bool = False
+    sorbet_style: bool = False
     version: str | None = None
 
     def index_argv(
         self, project: str, version: str, output: Path, repo_root: Path | None = None
     ) -> list[str]:
+        if self.sorbet_style:
+            return [
+                *shlex.split(self.command),
+                "--index-file",
+                str(output),
+                "--gem-metadata",
+                f"{project}@{version}",
+                *self.extra_args,
+                ".",
+            ]
         argv = [*shlex.split(self.command), "index"]
         if self.uses_project_flags:
             argv += ["--project-name", project, "--project-version", version]
@@ -85,11 +97,20 @@ SCIP_JAVA_INDEXER = ScipIndexer(
     version="0.13.1",
 )
 
+SCIP_RUBY_INDEXER = ScipIndexer(
+    command=DEFAULT_SCIP_RUBY_CMD,
+    language_id="ruby",
+    source_suffixes=(".rb",),
+    sorbet_style=True,
+    version="0.4.7",
+)
+
 _SCIP_INDEXERS: dict[Language, ScipIndexer] = {
     Language.PYTHON: SCIP_PYTHON_INDEXER,
     Language.TYPESCRIPT: SCIP_TYPESCRIPT_INDEXER,
     Language.JAVASCRIPT: SCIP_TYPESCRIPT_INDEXER,
     Language.JAVA: SCIP_JAVA_INDEXER,
+    Language.RUBY: SCIP_RUBY_INDEXER,
 }
 
 

@@ -15,6 +15,7 @@ def test_default_allowlists_match_plan():
         "agentic-demo-tf",
         "agentic-demo-java",
         "agentic-demo-php",
+        "agentic-demo-ruby",
     }
 
 

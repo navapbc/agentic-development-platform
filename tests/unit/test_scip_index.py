@@ -10,6 +10,7 @@ from services.repository_intelligence.indexing.scip_index import (
 _PY = "scip-python python agentic-demo-service 0.1 "
 _TS = "scip-typescript npm agentic-demo-ts 0.1 "
 _JAVA = "scip-java maven maven/com.example/task-service 0.1.0 "
+_RUBY = "scip-ruby gem agentic-demo-ruby 0.4.7 "
 
 
 def _py(descriptor: str):
@@ -18,6 +19,10 @@ def _py(descriptor: str):
 
 def _ts(descriptor: str):
     return parse_symbol(_TS + descriptor, "agentic-demo-ts")
+
+
+def _ruby(descriptor: str):
+    return parse_symbol(_RUBY + descriptor, "agentic-demo-ruby")
 
 
 def test_python_package_descriptor_is_a_module():
@@ -133,6 +138,31 @@ def test_symbol_package_extraction():
     task = _JAVA + "com/example/taskservice/Task#"
     assert _symbol_package(task) == "maven/com.example/task-service"
     assert _symbol_package("local 0") is None
+
+
+def test_ruby_nested_module_and_class_are_types():
+    info = _ruby("AgenticDemo#Task#")
+    assert info.kind == "class"
+    assert info.qualified == "AgenticDemo.Task"
+    assert info.name == "Task"
+
+
+def test_ruby_method_uses_hash_nested_owner():
+    info = _ruby("AgenticDemo#Task#with_status().")
+    assert info.kind == "method"
+    assert info.qualified == "AgenticDemo.Task.with_status"
+    assert info.name == "with_status"
+
+
+def test_ruby_instance_variable_is_a_field():
+    info = _ruby("AgenticDemo#Task#`@id`.")
+    assert info.kind == "field"
+    assert info.name == "@id"
+
+
+def test_ruby_gem_package_is_project_when_package_matches():
+    info = _ruby("AgenticDemo#TaskStore#add().")
+    assert info.is_project is True
     assert _symbol_package("scip-java maven") is None
 
 

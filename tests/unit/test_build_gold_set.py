@@ -104,7 +104,7 @@ def test_main_errors_for_a_language_without_an_indexer(tmp_path, monkeypatch):
                 "--repo-root",
                 str(repo_root),
                 "--language",
-                "ruby",
+                "unknown",
                 "--scip-json",
                 str(scip_json),
                 "--out",

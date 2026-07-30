@@ -8,6 +8,7 @@ from pathlib import Path
 from services.repository_intelligence.indexing.scip_builder import (
     SCIP_JAVA_INDEXER,
     SCIP_PYTHON_INDEXER,
+    SCIP_RUBY_INDEXER,
     SCIP_TYPESCRIPT_INDEXER,
     scip_indexer_for,
 )
@@ -19,10 +20,10 @@ def test_scip_indexer_for_maps_supported_languages():
     assert scip_indexer_for(Language.TYPESCRIPT) is SCIP_TYPESCRIPT_INDEXER
     assert scip_indexer_for(Language.JAVASCRIPT) is SCIP_TYPESCRIPT_INDEXER
     assert scip_indexer_for(Language.JAVA) is SCIP_JAVA_INDEXER
+    assert scip_indexer_for(Language.RUBY) is SCIP_RUBY_INDEXER
 
 
 def test_scip_indexer_for_returns_none_without_an_indexer():
-    assert scip_indexer_for(Language.RUBY) is None
     assert scip_indexer_for(Language.TERRAFORM) is None
     assert scip_indexer_for(Language.UNKNOWN) is None
 
@@ -69,6 +70,20 @@ def test_java_indexer_argv_omits_project_flags_and_venv(tmp_path):
     assert argv[-2:] == ["--output", "/out/index.scip"]
     assert SCIP_JAVA_INDEXER.source_suffixes == (".java",)
     assert SCIP_JAVA_INDEXER.index_env(tmp_path).get("VIRTUAL_ENV") is None
+
+
+def test_ruby_indexer_argv_uses_sorbet_index_file_and_gem_metadata(tmp_path):
+    argv = SCIP_RUBY_INDEXER.index_argv("proj", "abc1234", Path("/out/index.scip"))
+
+    assert argv[0] == "scip-ruby"
+    assert "index" not in argv
+    assert "--output" not in argv
+    assert argv[argv.index("--index-file") + 1] == "/out/index.scip"
+    assert argv[argv.index("--gem-metadata") + 1] == "proj@abc1234"
+    assert argv[-1] == "."
+    assert SCIP_RUBY_INDEXER.source_suffixes == (".rb",)
+    assert SCIP_RUBY_INDEXER.version == "0.4.7"
+    assert SCIP_RUBY_INDEXER.index_env(tmp_path).get("VIRTUAL_ENV") is None
 
 
 def test_python_indexer_env_injects_venv_when_present(tmp_path):

@@ -54,7 +54,7 @@ class Settings(BaseSettings):
     allowlist_jira_projects: str = "AGENTDEV"
     allowlist_repos: str = (
         "agentic-demo-service,agentic-demo-greenfield,"
-        "agentic-demo-ts,agentic-demo-tf,agentic-demo-java,agentic-demo-php"
+        "agentic-demo-ts,agentic-demo-tf,agentic-demo-java,agentic-demo-php,agentic-demo-ruby"
     )
 
     def allowed_projects(self) -> set[str]:

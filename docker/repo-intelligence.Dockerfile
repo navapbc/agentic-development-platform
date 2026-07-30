@@ -53,6 +53,17 @@ RUN apt-get update \
  && echo "${sha}  phpactor.phar" | sha256sum -c - \
  && install -m 0755 /tmp/phpactor.phar /usr/local/bin/phpactor
 
+FROM debian:bookworm-slim AS scip-ruby
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl ca-certificates \
+ && rm -rf /var/lib/apt/lists/* \
+ && cd /tmp \
+ && ver=scip-ruby-v0.4.7 \
+ && sha=a068c7c3b2042b9eac563ce77ce35dcaca666b418530b1db9f932a3dbc7175dd \
+ && curl -fsSLo scip-ruby "https://github.com/sourcegraph/scip-ruby/releases/download/${ver}/scip-ruby-x86_64-linux" \
+ && echo "${sha}  scip-ruby" | sha256sum -c - \
+ && install -m 0755 /tmp/scip-ruby /usr/local/bin/scip-ruby
+
 FROM maven:3.9.9-eclipse-temurin-21 AS java-tools
 
 FROM node:24-bookworm-slim AS runtime
@@ -79,6 +90,7 @@ COPY --from=java-tools /opt/java/openjdk /opt/java/openjdk
 COPY --from=java-tools /usr/share/maven /opt/maven
 COPY --from=scip-java /usr/local/bin/scip-java /usr/local/bin/scip-java
 COPY --from=phpactor-cli /usr/local/bin/phpactor /usr/local/bin/phpactor
+COPY --from=scip-ruby /usr/local/bin/scip-ruby /usr/local/bin/scip-ruby
 
 WORKDIR /app
 COPY pyproject.toml README.md ./
