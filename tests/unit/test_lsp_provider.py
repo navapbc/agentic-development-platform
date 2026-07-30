@@ -23,11 +23,32 @@ class _FakeClient:
         return self._responses.get(method)
 
 
-def _factory(client: _FakeClient):
+def _factory(client):
     def build(spec: LspServerSpec):
         return object(), client
 
     return build
+
+
+class _RecordingClient:
+    def __init__(self, symbols: list[dict]) -> None:
+        self._symbols = symbols
+        self.opened: list[str] = []
+
+    def initialize(self, root) -> dict:
+        return {}
+
+    def notify(self, method: str, params: dict) -> None:
+        if method == "textDocument/didOpen":
+            self.opened.append(params["textDocument"]["uri"])
+
+    def request(self, method: str, params: dict):
+        if method == "workspace/symbol":
+            query = params["query"]
+            if not query:
+                return self._symbols
+            return [item for item in self._symbols if item["name"] == query]
+        return None
 
 
 def _location(root, line: int, end_line: int) -> dict:
@@ -127,3 +148,33 @@ def test_index_status_reports_language_and_commit(tmp_path):
     assert status.is_fresh is True
     assert status.indexed_commit == "deadbeef"
     assert status.languages == ("terraform",)
+
+
+def test_open_documents_sends_didopen_for_configured_suffixes(tmp_path):
+    (tmp_path / "main.tf").write_text('resource "random_pet" "x" {}\n', encoding="utf-8")
+    (tmp_path / "notes.md").write_text("ignore\n", encoding="utf-8")
+    spec = LspServerSpec(("terraform-ls", "serve"), "terraform", (".tf",))
+    location = _location(tmp_path, 0, 0)
+    symbols = [{"name": 'resource "random_pet" "x"', "kind": 5, "location": location}]
+    client = _RecordingClient(symbols)
+    provider = LspProvider(tmp_path, spec, client_factory=_factory(client))
+
+    result = provider.repo_find_symbol(_REPO, 'resource "random_pet" "x"')
+
+    assert (tmp_path / "main.tf").resolve().as_uri() in client.opened
+    assert all(not uri.endswith("notes.md") for uri in client.opened)
+    assert len(result) == 1
+
+
+def test_open_documents_skips_pruned_directories(tmp_path):
+    (tmp_path / "main.tf").write_text("locals {}\n", encoding="utf-8")
+    vendored = tmp_path / ".terraform" / "modules"
+    vendored.mkdir(parents=True)
+    (vendored / "dep.tf").write_text("locals {}\n", encoding="utf-8")
+    spec = LspServerSpec(("terraform-ls", "serve"), "terraform", (".tf",))
+    client = _RecordingClient([])
+    provider = LspProvider(tmp_path, spec, client_factory=_factory(client))
+
+    provider.repo_find_symbol(_REPO, "anything")
+
+    assert client.opened == [(tmp_path / "main.tf").resolve().as_uri()]

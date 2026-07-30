@@ -1,0 +1,159 @@
+{
+  "assessed_subscores_note": "operational_complexity and resource_efficiency are assessed inputs (production stack shape), overridable via CLI; all other dimensions are measured",
+  "commit": "c7a8621da1db3723bc052f0b833a792e130a5435",
+  "generated_at": "2026-07-30T03:23:14.404395+00:00",
+  "gold": {
+    "generated_at": "2026-07-30T03:22:51.975759+00:00",
+    "oracles": {
+      "structure": "terraform-ls@0.39.0"
+    },
+    "path": "/work/services/repository_intelligence/eval/gold/agentic-demo-tf@c7a8621.jsonl",
+    "records": 22
+  },
+  "harness_version": "harness/1",
+  "llm_context": "none (repository-intelligence path invokes no model)",
+  "policy_bundle_version": "n/a",
+  "prompt_versions": "n/a",
+  "providers": [
+    {
+      "context_p95_ms": 5.87,
+      "detects_staleness": true,
+      "errors": [],
+      "hard_gates": {
+        "no_nonallowlisted_egress": true,
+        "no_plaintext_secret_persistence": true,
+        "references_precision>=0.90": true,
+        "reindex_without_repair": true,
+        "search_top10_overlap>=0.80": true,
+        "symbol_definition_precision>=0.95": true
+      },
+      "hard_gates_pass": true,
+      "indexed_commit": "c7a8621da1db3723bc052f0b833a792e130a5435",
+      "macro_f1": 1.0,
+      "provider": "router",
+      "reindex_ok": true,
+      "search_top10_overlap": 1.0,
+      "symbol_ref_p95_ms": 5.87,
+      "type_scores": [
+        {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "path_precision": 1.0,
+          "path_recall": 1.0,
+          "precision": 1.0,
+          "query_type": "symbol_definition",
+          "recall": 1.0,
+          "records": 14,
+          "tp": 15
+        },
+        {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "path_precision": 1.0,
+          "path_recall": 1.0,
+          "precision": 1.0,
+          "query_type": "references",
+          "recall": 1.0,
+          "records": 8,
+          "tp": 18
+        }
+      ],
+      "verdict": "Primary",
+      "weighted_score": {
+        "accuracy_completeness": 40.0,
+        "incremental_freshness": 15.0,
+        "latency": 20.0,
+        "operational_complexity": 9.0,
+        "resource_efficiency": 7.0,
+        "total": 91.0
+      }
+    },
+    {
+      "context_p95_ms": 5.18,
+      "detects_staleness": true,
+      "errors": [
+        "search:task: 'LspProvider' object has no attribute 'repo_search_code'",
+        "search:task: 'LspProvider' object has no attribute 'repo_search_code'",
+        "search:task: 'LspProvider' object has no attribute 'repo_search_code'",
+        "search:store: 'LspProvider' object has no attribute 'repo_search_code'",
+        "search:store: 'LspProvider' object has no attribute 'repo_search_code'",
+        "search:store: 'LspProvider' object has no attribute 'repo_search_code'",
+        "search:status: 'LspProvider' object has no attribute 'repo_search_code'",
+        "search:status: 'LspProvider' object has no attribute 'repo_search_code'",
+        "search:status: 'LspProvider' object has no attribute 'repo_search_code'",
+        "search:create: 'LspProvider' object has no attribute 'repo_search_code'",
+        "search:create: 'LspProvider' object has no attribute 'repo_search_code'",
+        "search:create: 'LspProvider' object has no attribute 'repo_search_code'",
+        "search:Task: 'LspProvider' object has no attribute 'repo_search_code'",
+        "search:Task: 'LspProvider' object has no attribute 'repo_search_code'",
+        "search:Task: 'LspProvider' object has no attribute 'repo_search_code'"
+      ],
+      "hard_gates": {
+        "no_nonallowlisted_egress": true,
+        "no_plaintext_secret_persistence": true,
+        "references_precision>=0.90": true,
+        "reindex_without_repair": true,
+        "search_top10_overlap>=0.80": true,
+        "symbol_definition_precision>=0.95": true
+      },
+      "hard_gates_pass": true,
+      "indexed_commit": "c7a8621da1db3723bc052f0b833a792e130a5435",
+      "macro_f1": 1.0,
+      "provider": "lsp-terraform",
+      "reindex_ok": true,
+      "search_top10_overlap": 1.0,
+      "symbol_ref_p95_ms": 5.18,
+      "type_scores": [
+        {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "path_precision": 1.0,
+          "path_recall": 1.0,
+          "precision": 1.0,
+          "query_type": "symbol_definition",
+          "recall": 1.0,
+          "records": 14,
+          "tp": 15
+        },
+        {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "path_precision": 1.0,
+          "path_recall": 1.0,
+          "precision": 1.0,
+          "query_type": "references",
+          "recall": 1.0,
+          "records": 8,
+          "tp": 18
+        }
+      ],
+      "verdict": "Primary",
+      "weighted_score": {
+        "accuracy_completeness": 40.0,
+        "incremental_freshness": 15.0,
+        "latency": 20.0,
+        "operational_complexity": 9.0,
+        "resource_efficiency": 8.0,
+        "total": 92.0
+      }
+    }
+  ],
+  "recommendation": {
+    "leader": "lsp-terraform",
+    "leader_verdict": "Primary",
+    "rationale": "lsp-terraform leads at 92.0 (verdict Primary); lsp-terraform=92.0/Primary; router=91.0/Primary"
+  },
+  "record_type": "acceptance_scorecard",
+  "repo": "agentic-demo-tf",
+  "runs_per_provider": 3,
+  "toolchain": {
+    "cbm_binary": "/home/appuser/Documents/Projects/Nava/codebase-memory-mcp/build/c/codebase-memory-mcp",
+    "cbm_binary_bytes": null,
+    "platform": "Linux-6.12.54-linuxkit-aarch64-with-glibc2.36",
+    "python": "3.11.2"
+  }
+}

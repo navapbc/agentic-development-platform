@@ -23,6 +23,8 @@ from services.repository_intelligence.languages import Language, primary_languag
 from services.repository_intelligence.normalization.models import RepoRef
 from services.repository_intelligence.providers.cbm.cbm_provider import CBMProvider
 from services.repository_intelligence.providers.custom.python_provider import CustomPythonProvider
+from services.repository_intelligence.providers.lsp.lsp_client import server_spec_for
+from services.repository_intelligence.providers.lsp.lsp_provider import LspProvider
 from services.repository_intelligence.providers.router import RouterProvider
 from services.repository_intelligence.providers.scip.scip_provider import ScipProvider
 
@@ -452,6 +454,23 @@ def run(
         )
         reports.append(_provider_report(scip_result, present_types))
 
+    lsp_spec = server_spec_for(language) if indexer is None else None
+    if lsp_spec is not None:
+        lsp = LspProvider(corpus, lsp_spec, commit=meta.commit)
+        lsp_result = _score_provider(
+            f"lsp-{lsp_spec.language_id}",
+            lsp,
+            repo,
+            records,
+            corpus_name,
+            runs,
+            module_prefix=f"{corpus_name}.",
+            detects_staleness=True,
+            ops_score=ops_scores["lsp"],
+            resource_score=resource_scores["lsp"],
+        )
+        reports.append(_provider_report(lsp_result, present_types))
+
     if language is Language.PYTHON:
         custom = CustomPythonProvider(corpus)
         custom_result = _score_provider(
@@ -532,10 +551,12 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--ops-score-custom", type=float, default=8.0)
     parser.add_argument("--ops-score-cbm", type=float, default=12.0)
     parser.add_argument("--ops-score-router", type=float, default=9.0)
+    parser.add_argument("--ops-score-lsp", type=float, default=9.0)
     parser.add_argument("--resource-score-scip", type=float, default=8.0)
     parser.add_argument("--resource-score-custom", type=float, default=7.0)
     parser.add_argument("--resource-score-cbm", type=float, default=6.0)
     parser.add_argument("--resource-score-router", type=float, default=7.0)
+    parser.add_argument("--resource-score-lsp", type=float, default=8.0)
     return parser.parse_args(argv)
 
 
@@ -562,12 +583,14 @@ def main(argv: list[str] | None = None) -> int:
             "custom-python": args.ops_score_custom,
             "cbm": args.ops_score_cbm,
             "router": args.ops_score_router,
+            "lsp": args.ops_score_lsp,
         },
         {
             "scip-python": args.resource_score_scip,
             "custom-python": args.resource_score_custom,
             "cbm": args.resource_score_cbm,
             "router": args.resource_score_router,
+            "lsp": args.resource_score_lsp,
         },
         cbm_required=cbm_required,
     )

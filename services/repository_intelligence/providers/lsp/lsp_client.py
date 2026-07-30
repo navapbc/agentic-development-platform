@@ -21,11 +21,12 @@ class LspError(RuntimeError):
 class LspServerSpec:
     command: tuple[str, ...]
     language_id: str
+    source_suffixes: tuple[str, ...] = ()
 
 
 _SERVER_SPECS: dict[Language, LspServerSpec] = {
-    Language.TERRAFORM: LspServerSpec(("terraform-ls", "serve"), "terraform"),
-    Language.PHP: LspServerSpec(("phpactor", "language-server"), "php"),
+    Language.TERRAFORM: LspServerSpec(("terraform-ls", "serve"), "terraform", (".tf",)),
+    Language.PHP: LspServerSpec(("phpactor", "language-server"), "php", (".php",)),
 }
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -185,6 +186,46 @@ class LspProvider:
         try:
             self._process, self._client = self._client_factory(self._spec)
             self._client.initialize(self._root)
+            self._open_documents(self._client)
         except (OSError, LspError):
             self._client = None
         return self._client
+
+    def _open_documents(self, client: LspClient) -> None:
+        pruned = {".git", ".terraform", "node_modules", "vendor"}
+        opened = 0
+        for suffix in self._spec.source_suffixes:
+            for path in sorted(self._root.rglob(f"*{suffix}")):
+                if pruned.intersection(path.parts) or not path.is_file():
+                    continue
+                try:
+                    text = path.read_text(encoding="utf-8")
+                except OSError:
+                    continue
+                client.notify(
+                    "textDocument/didOpen",
+                    {
+                        "textDocument": {
+                            "uri": path.resolve().as_uri(),
+                            "languageId": self._spec.language_id,
+                            "version": 1,
+                            "text": text,
+                        }
+                    },
+                )
+                opened += 1
+        if opened:
+            self._await_symbols(client)
+
+    def _await_symbols(self, client: LspClient) -> None:
+        previous = -1
+        for _ in range(40):
+            try:
+                raw = client.request("workspace/symbol", {"query": ""})
+            except LspError:
+                return
+            count = len(raw) if isinstance(raw, list) else 0
+            if count and count == previous:
+                return
+            previous = count
+            time.sleep(0.05)

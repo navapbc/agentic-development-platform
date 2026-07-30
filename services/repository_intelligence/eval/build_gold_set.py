@@ -21,6 +21,7 @@ from services.repository_intelligence.eval.gold_schema import (
     QueryType,
     write_gold_set,
 )
+from services.repository_intelligence.eval.lsp_oracle import collect_lsp_records
 from services.repository_intelligence.indexing.scip_builder import (
     ScipIndexer,
     build_scip_index,
@@ -32,6 +33,10 @@ from services.repository_intelligence.indexing.scip_index import (
     parse_symbol,
 )
 from services.repository_intelligence.languages import Language, primary_language
+from services.repository_intelligence.providers.lsp.lsp_client import (
+    LspServerSpec,
+    server_spec_for,
+)
 
 _DEFINITION_KINDS = {"class", "function", "method", "variable"}
 _CALLABLE_KINDS = {"class", "function", "method"}
@@ -280,6 +285,65 @@ def _tool_version(command: list[str]) -> str:
     return (completed.stdout or completed.stderr).strip().splitlines()[0]
 
 
+def _finalize(
+    project: str,
+    commit: str,
+    oracles: dict[str, str],
+    toolchain: dict[str, str],
+    notes: list[str],
+    records: list[GoldRecord],
+    out_arg: str | None,
+) -> int:
+    meta = GoldMeta(
+        repo=project,
+        commit=commit,
+        generated_at=datetime.now(UTC).isoformat(),
+        oracles=oracles,
+        toolchain=toolchain,
+        notes="; ".join(notes),
+    )
+    out_path = (
+        Path(out_arg)
+        if out_arg
+        else Path(__file__).parent / "gold" / f"{project}@{commit[:7]}.jsonl"
+    )
+    write_gold_set(out_path, meta, records)
+
+    by_type: dict[str, int] = {}
+    for record in records:
+        by_type[str(record.query_type)] = by_type.get(str(record.query_type), 0) + 1
+    print(f"wrote {len(records)} records to {out_path}")
+    for query_type, count in sorted(by_type.items()):
+        print(f"  {query_type}: {count}")
+    return 0
+
+
+def _build_lsp_gold(
+    repo_root: Path,
+    project: str,
+    commit: str,
+    language: Language,
+    spec: LspServerSpec,
+    out_arg: str | None,
+) -> int:
+    oracle = f"{spec.language_id}-ls"
+    records = collect_lsp_records(
+        repo_root, project=project, commit=commit, spec=spec, oracle=oracle
+    )
+    oracles = {"structure": f"{spec.command[0]}@{_tool_version([spec.command[0], '--version'])}"}
+    notes = [
+        f"structural oracle only ({spec.command[0]}); callers, implementations, "
+        f"module_dependencies, and related_tests are not modeled for {language.value}",
+        "symbols are identified by their full block header "
+        '(for example \'resource "random_pet" "task_id"\')',
+    ]
+    toolchain = {
+        "python": platform.python_version(),
+        "node": _tool_version(["node", "--version"]),
+    }
+    return _finalize(project, commit, oracles, toolchain, notes, records, out_arg)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", required=True)
@@ -299,7 +363,10 @@ def main(argv: list[str] | None = None) -> int:
     language = Language(args.language) if args.language else primary_language(repo_root)
     indexer = scip_indexer_for(language)
     if indexer is None:
-        parser.error(f"no SCIP indexer for language {language.value}")
+        spec = server_spec_for(language)
+        if spec is None:
+            parser.error(f"no SCIP indexer or language server for language {language.value}")
+        return _build_lsp_gold(repo_root, project, commit, language, spec, args.out)
     oracle = f"scip-{indexer.language_id}"
     is_python = language is Language.PYTHON
 
@@ -363,32 +430,11 @@ def main(argv: list[str] | None = None) -> int:
     if coverage_note:
         notes.append(coverage_note)
 
-    meta = GoldMeta(
-        repo=project,
-        commit=commit,
-        generated_at=datetime.now(UTC).isoformat(),
-        oracles=oracles,
-        toolchain={
-            "python": platform.python_version(),
-            "node": _tool_version(["node", "--version"]),
-        },
-        notes="; ".join(notes),
-    )
-
-    out_path = (
-        Path(args.out)
-        if args.out
-        else Path(__file__).parent / "gold" / f"{project}@{commit[:7]}.jsonl"
-    )
-    write_gold_set(out_path, meta, records)
-
-    by_type: dict[str, int] = {}
-    for record in records:
-        by_type[str(record.query_type)] = by_type.get(str(record.query_type), 0) + 1
-    print(f"wrote {len(records)} records to {out_path}")
-    for query_type, count in sorted(by_type.items()):
-        print(f"  {query_type}: {count}")
-    return 0
+    toolchain = {
+        "python": platform.python_version(),
+        "node": _tool_version(["node", "--version"]),
+    }
+    return _finalize(project, commit, oracles, toolchain, notes, records, args.out)
 
 
 if __name__ == "__main__":

@@ -1,10 +1,11 @@
 """Build-metadata repository-intelligence provider.
 
-Parses Python build files (`pyproject.toml`, `requirements*.txt`) into external
-dependency edges and build/test targets. Backs `repo_get_module_dependencies` with
-authoritative Source.BUILD_METADATA edges for declared third-party packages, which
-the AST import graph does not capture, and exposes build/test targets that feed
-change-impact and context-package assembly.
+Parses Python build files (`pyproject.toml`, `requirements*.txt`) and Terraform
+configuration (`*.tf` `required_providers` and `module` blocks) into dependency
+edges and build/test targets. Backs `repo_get_module_dependencies` with
+authoritative Source.BUILD_METADATA edges for declared third-party packages and
+Terraform providers and modules, which the symbol graph does not capture, and
+exposes build/test targets that feed change-impact and context-package assembly.
 """
 
 from __future__ import annotations
@@ -26,6 +27,11 @@ _BUILD_METADATA_CONFIDENCE = 1.0
 _REQUIREMENT_NAME = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)")
 _DEV_STEM = re.compile(r".*[-_](dev|test|tests|lint|typing)$")
 _NORMALIZE = re.compile(r"[-_.]+")
+
+_TF_SOURCE = re.compile(r'^\s*source\s*=\s*"([^"]+)"')
+_TF_STRING = re.compile(r'"(?:[^"\\]|\\.)*"')
+_TF_LEAD = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_-]*)")
+_TF_LOCAL_PREFIXES = ("./", "../")
 
 _KIND_RANK = {
     "runtime_dependency": 0,
@@ -101,6 +107,45 @@ class BuildMetadataProvider:
         for path in sorted(self._root.glob("requirements*.txt")):
             kind = "dev_dependency" if _DEV_STEM.match(path.stem) else "runtime_dependency"
             deps.extend((name, kind) for name in self._parse_requirements(path, set()))
+        deps.extend(self._terraform_dependencies())
+        return deps
+
+    def _terraform_dependencies(self) -> list[tuple[str, str]]:
+        deps: list[tuple[str, str]] = []
+        for path in sorted(self._root.rglob("*.tf")):
+            if ".terraform" in path.parts:
+                continue
+            deps.extend(self._parse_terraform(path))
+        return deps
+
+    @staticmethod
+    def _parse_terraform(path: Path) -> list[tuple[str, str]]:
+        deps: list[tuple[str, str]] = []
+        stack: list[str] = []
+        for raw in path.read_text(encoding="utf-8").splitlines():
+            source = _TF_SOURCE.match(raw)
+            if source is not None:
+                value = source.group(1)
+                if "required_providers" in stack:
+                    deps.append((value, "provider_dependency"))
+                elif "module" in stack:
+                    kind = (
+                        "local_module_dependency"
+                        if value.startswith(_TF_LOCAL_PREFIXES)
+                        else "module_dependency"
+                    )
+                    deps.append((value, kind))
+            stripped = _TF_STRING.sub('""', raw).split("#", 1)[0].split("//", 1)[0]
+            opens = stripped.count("{")
+            closes = stripped.count("}")
+            if opens > closes:
+                lead = _TF_LEAD.match(raw)
+                tag = lead.group(1) if lead else "block"
+                stack.extend([tag] * (opens - closes))
+            elif closes > opens:
+                for _ in range(closes - opens):
+                    if stack:
+                        stack.pop()
         return deps
 
     def _pyproject_dependencies(self) -> list[tuple[str, str]]:

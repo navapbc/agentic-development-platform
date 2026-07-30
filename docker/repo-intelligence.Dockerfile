@@ -18,6 +18,19 @@ RUN apt-get update \
  && tar -xzf scip.tar.gz -C /tmp \
  && install -m 0755 /tmp/scip /usr/local/bin/scip
 
+FROM debian:bookworm-slim AS terraform-ls
+ARG TARGETARCH
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl ca-certificates unzip \
+ && rm -rf /var/lib/apt/lists/* \
+ && cd /tmp \
+ && fname="terraform-ls_0.39.0_linux_${TARGETARCH}.zip" \
+ && curl -fsSLo "$fname" "https://releases.hashicorp.com/terraform-ls/0.39.0/$fname" \
+ && curl -fsSLo SHA256SUMS "https://releases.hashicorp.com/terraform-ls/0.39.0/terraform-ls_0.39.0_SHA256SUMS" \
+ && grep " $fname$" SHA256SUMS | sha256sum -c - \
+ && unzip -q "$fname" -d /tmp \
+ && install -m 0755 /tmp/terraform-ls /usr/local/bin/terraform-ls
+
 FROM node:24-bookworm-slim AS runtime
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -35,6 +48,7 @@ RUN npm install -g @ast-grep/cli@0.45.0 @sourcegraph/scip-python@0.6.6 @sourcegr
 
 COPY --from=go-tools /out/zoekt /out/zoekt-index /usr/local/bin/
 COPY --from=scip-cli /usr/local/bin/scip /usr/local/bin/scip
+COPY --from=terraform-ls /usr/local/bin/terraform-ls /usr/local/bin/terraform-ls
 
 WORKDIR /app
 COPY pyproject.toml README.md ./

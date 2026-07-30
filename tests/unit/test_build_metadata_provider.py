@@ -122,3 +122,67 @@ def test_missing_build_files_yield_no_dependencies(tmp_path: Path):
 
     assert provider.repo_get_module_dependencies(repo) == []
     assert provider.build_targets() == []
+
+
+_TF_PROJECT = "agentic-demo-tf"
+
+
+def test_terraform_providers_and_modules_become_dependency_edges(tmp_path: Path):
+    _write(
+        tmp_path / "versions.tf",
+        "terraform {\n"
+        "  required_providers {\n"
+        "    random = {\n"
+        '      source  = "hashicorp/random"\n'
+        '      version = "~> 3.6"\n'
+        "    }\n"
+        "    local = {\n"
+        '      source  = "hashicorp/local"\n'
+        "    }\n"
+        "  }\n"
+        "}\n",
+    )
+    _write(
+        tmp_path / "main.tf",
+        'module "task_queue" {\n'
+        '  source = "./modules/task_queue"\n'
+        "}\n\n"
+        'module "vpc" {\n'
+        '  source  = "terraform-aws-modules/vpc/aws"\n'
+        '  version = "5.0.0"\n'
+        "}\n\n"
+        'resource "local_file" "manifest" {\n'
+        '  filename = "${path.module}/out.json"\n'
+        "  content  = jsonencode({\n"
+        '    name = "demo"\n'
+        "  })\n"
+        "}\n",
+    )
+    provider = BuildMetadataProvider(tmp_path, project=_TF_PROJECT)
+    repo = RepoRef(repo=_TF_PROJECT, commit_sha="head")
+
+    edges = provider.repo_get_module_dependencies(repo)
+
+    assert [(e.to_module, e.kind) for e in edges] == [
+        ("./modules/task_queue", "local_module_dependency"),
+        ("hashicorp/local", "provider_dependency"),
+        ("hashicorp/random", "provider_dependency"),
+        ("terraform-aws-modules/vpc/aws", "module_dependency"),
+    ]
+    assert all(e.from_module == _TF_PROJECT for e in edges)
+    assert all(e.provenance.source is Source.BUILD_METADATA for e in edges)
+
+
+def test_terraform_resource_source_attribute_is_not_a_dependency(tmp_path: Path):
+    _write(
+        tmp_path / "main.tf",
+        'data "archive_file" "bundle" {\n'
+        '  type        = "zip"\n'
+        '  source_dir  = "./src"\n'
+        '  source      = "not-a-module"\n'
+        "}\n",
+    )
+    provider = BuildMetadataProvider(tmp_path, project=_TF_PROJECT)
+    repo = RepoRef(repo=_TF_PROJECT, commit_sha="head")
+
+    assert provider.repo_get_module_dependencies(repo) == []
