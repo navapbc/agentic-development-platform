@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     rebar_llm_api_key: str = "change-me-locally"
     rebar_llm_model_provider: str = "openai"
     rebar_llm_max_tokens: int = 8192
+    review_attestation_secret: str = "change-me-locally"
 
     aws_profile: str = "mpse-legacy"
     aws_region: str = "us-east-1"
