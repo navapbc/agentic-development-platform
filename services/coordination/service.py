@@ -1,15 +1,34 @@
-"""Coordination-service entrypoint: health endpoint backed by an agent_platform ping."""
+"""Coordination-service entrypoint: health plus idempotency, sequencing, and claim RPC."""
 
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
+from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Any
 
 from scripts.config import get_settings
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
+
+from services.coordination.claims import (
+    PostgresWorkClaimStore,
+    WorkClaimStore,
+    WorkUnit,
+    partition_by_file_impact,
+)
+from services.coordination.idempotency import (
+    PostgresSideEffectLedger,
+    SideEffectLedger,
+    SideEffectRef,
+)
+from services.coordination.sequencing import (
+    PostgresSequenceGate,
+    SequencedAction,
+    SequenceGate,
+)
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("coordination-service")
@@ -36,29 +55,99 @@ def _agent_platform_healthy() -> bool:
         return False
 
 
-class Handler(BaseHTTPRequestHandler):
-    def do_GET(self) -> None:
-        if self.path in ("/health", "/healthz", "/"):
-            healthy = _agent_platform_healthy()
-            body = json.dumps(
-                {"status": "ok" if healthy else "degraded", "service": "coordination"}
-            ).encode()
-            self.send_response(200 if healthy else 503)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-        else:
-            self.send_response(404)
-            self.end_headers()
+def build_handler(
+    ledger: SideEffectLedger,
+    gate: SequenceGate,
+    claim_store: WorkClaimStore,
+) -> type[BaseHTTPRequestHandler]:
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            if self.path in ("/health", "/healthz", "/"):
+                healthy = _agent_platform_healthy()
+                self._respond(
+                    200 if healthy else 503,
+                    {"status": "ok" if healthy else "degraded", "service": "coordination"},
+                )
+            else:
+                self.send_response(404)
+                self.end_headers()
 
-    def log_message(self, *args) -> None:
-        return
+        def do_POST(self) -> None:
+            try:
+                payload = self._read_json()
+            except ValueError:
+                self._respond(400, {"error": "invalid json body"})
+                return
+            try:
+                result = self._dispatch(self.path, payload)
+            except KeyError:
+                self.send_response(404)
+                self.end_headers()
+                return
+            except (TypeError, ValueError) as exc:
+                self._respond(400, {"error": str(exc)})
+                return
+            self._respond(200, result)
+
+        def _dispatch(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+            if path == "/idempotency/reserve":
+                ref = SideEffectRef(**payload)
+                return asdict(asyncio.run(ledger.reserve(ref)))
+            if path == "/idempotency/record":
+                result = payload.pop("result")
+                ref = SideEffectRef(**payload)
+                return asdict(asyncio.run(ledger.record(ref, result)))
+            if path == "/sequence/admit":
+                action = SequencedAction(**payload)
+                return asdict(asyncio.run(gate.admit(action)))
+            if path == "/claims/try":
+                unit = _work_unit(payload)
+                return asdict(asyncio.run(claim_store.try_claim(unit)))
+            if path == "/claims/next_batch":
+                units = [_work_unit(u) for u in payload["units"]]
+                schedule = partition_by_file_impact(units)
+                return {
+                    "admitted": [asdict(u) for u in schedule.admitted],
+                    "deferred": [asdict(u) for u in schedule.deferred],
+                }
+            raise KeyError(path)
+
+        def _read_json(self) -> dict[str, Any]:
+            length = int(self.headers.get("Content-Length", 0))
+            raw = self.rfile.read(length) if length else b""
+            try:
+                return json.loads(raw or b"{}")
+            except json.JSONDecodeError as exc:
+                raise ValueError(str(exc)) from exc
+
+        def _respond(self, code: int, body: dict[str, Any]) -> None:
+            encoded = json.dumps(body).encode()
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+        def log_message(self, *args) -> None:
+            return
+
+    return Handler
+
+
+def _work_unit(payload: dict[str, Any]) -> WorkUnit:
+    data = dict(payload)
+    data["file_impact"] = tuple(data.get("file_impact") or ())
+    return WorkUnit(**data)
 
 
 def main() -> None:
+    handler = build_handler(
+        PostgresSideEffectLedger(),
+        PostgresSequenceGate(),
+        PostgresWorkClaimStore(),
+    )
     log.info("coordination-service listening on %s:%d", HOST, PORT)
-    ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
+    ThreadingHTTPServer((HOST, PORT), handler).serve_forever()
 
 
 if __name__ == "__main__":

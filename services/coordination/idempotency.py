@@ -49,6 +49,10 @@ async def _resolve(effect: Effect) -> Any:
 
 
 class SideEffectLedger(Protocol):
+    async def reserve(self, ref: SideEffectRef) -> SideEffectOutcome: ...
+
+    async def record(self, ref: SideEffectRef, result: Any) -> SideEffectOutcome: ...
+
     async def run_once(self, ref: SideEffectRef, effect: Effect) -> SideEffectOutcome: ...
 
 
@@ -63,7 +67,7 @@ class PostgresSideEffectLedger:
             )
         return self._engine
 
-    async def run_once(self, ref: SideEffectRef, effect: Effect) -> SideEffectOutcome:
+    async def reserve(self, ref: SideEffectRef) -> SideEffectOutcome:
         key = side_effect_key(ref)
         engine = self._get_engine()
         async with engine.begin() as conn:
@@ -88,7 +92,11 @@ class PostgresSideEffectLedger:
                 )
                 .on_conflict_do_nothing(index_elements=[side_effects.c.side_effect_key])
             )
-        result = await _resolve(effect)
+        return SideEffectOutcome(key, replayed=False, result=None)
+
+    async def record(self, ref: SideEffectRef, result: Any) -> SideEffectOutcome:
+        key = side_effect_key(ref)
+        engine = self._get_engine()
         async with engine.begin() as conn:
             await conn.execute(
                 update(side_effects)
@@ -97,15 +105,32 @@ class PostgresSideEffectLedger:
             )
         return SideEffectOutcome(key, replayed=False, result=result)
 
+    async def run_once(self, ref: SideEffectRef, effect: Effect) -> SideEffectOutcome:
+        reserved = await self.reserve(ref)
+        if reserved.replayed:
+            return reserved
+        result = await _resolve(effect)
+        return await self.record(ref, result)
+
 
 class InMemorySideEffectLedger:
     def __init__(self) -> None:
         self._records: dict[str, Any] = {}
 
-    async def run_once(self, ref: SideEffectRef, effect: Effect) -> SideEffectOutcome:
+    async def reserve(self, ref: SideEffectRef) -> SideEffectOutcome:
         key = side_effect_key(ref)
         if key in self._records:
             return SideEffectOutcome(key, replayed=True, result=self._records[key])
-        result = await _resolve(effect)
+        return SideEffectOutcome(key, replayed=False, result=None)
+
+    async def record(self, ref: SideEffectRef, result: Any) -> SideEffectOutcome:
+        key = side_effect_key(ref)
         self._records[key] = result
         return SideEffectOutcome(key, replayed=False, result=result)
+
+    async def run_once(self, ref: SideEffectRef, effect: Effect) -> SideEffectOutcome:
+        reserved = await self.reserve(ref)
+        if reserved.replayed:
+            return reserved
+        result = await _resolve(effect)
+        return await self.record(ref, result)
