@@ -1,0 +1,67 @@
+{
+  "generated_at": "2026-07-30T17:04:26.138399+00:00",
+  "gold": {
+    "cases": 12,
+    "generated_at": "2026-07-30",
+    "path": "services/review/eval/gold/review-gates.jsonl"
+  },
+  "harness_version": "review-harness/1",
+  "overall": {
+    "macro_f1": 0.6667,
+    "verdict_accuracy": 0.6667
+  },
+  "prompt_versions": {
+    "acceptance-verification": "acceptance-verification/v1",
+    "code-review": "code-review/v1",
+    "plan-review": "plan-review/v1",
+    "security-review": "security-review/v1"
+  },
+  "record_type": "review_scorecard",
+  "reviewer": "keyword-baseline",
+  "stages": [
+    {
+      "cases": 3,
+      "f1": 0.6667,
+      "fn": 1,
+      "fp": 0,
+      "precision": 1.0,
+      "recall": 0.5,
+      "stage": "plan-review",
+      "tp": 1,
+      "verdict_accuracy": 0.6667
+    },
+    {
+      "cases": 3,
+      "f1": 0.6667,
+      "fn": 0,
+      "fp": 1,
+      "precision": 0.5,
+      "recall": 1.0,
+      "stage": "code-review",
+      "tp": 1,
+      "verdict_accuracy": 0.6667
+    },
+    {
+      "cases": 3,
+      "f1": 0.6667,
+      "fn": 1,
+      "fp": 0,
+      "precision": 1.0,
+      "recall": 0.5,
+      "stage": "security-review",
+      "tp": 1,
+      "verdict_accuracy": 0.6667
+    },
+    {
+      "cases": 3,
+      "f1": 0.6667,
+      "fn": 1,
+      "fp": 0,
+      "precision": 1.0,
+      "recall": 0.5,
+      "stage": "acceptance-verification",
+      "tp": 1,
+      "verdict_accuracy": 0.6667
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{"baseline": "keyword-baseline", "generated_at": "2026-07-30", "notes": "Hand-labeled review-gate cases spanning pass and block verdicts across the four gates.", "record_type": "meta"}
+{"case_id": "plan-clean", "expected_findings": [], "expected_verdict": "pass", "record_type": "case", "stage": "plan-review", "subject": "Add a health endpoint that returns 200 and a unit test."}
+{"case_id": "plan-hardcoded-secret", "expected_findings": ["hardcoded-secret"], "expected_verdict": "block", "record_type": "case", "stage": "plan-review", "subject": "Store the service password = 'p@ss' inline in the config module."}
+{"case_id": "plan-skips-tests", "expected_findings": ["no-test-coverage"], "expected_verdict": "block", "record_type": "case", "stage": "plan-review", "subject": "Refactor the auth module and skip tests to save time."}
+{"case_id": "code-clean", "expected_findings": [], "expected_verdict": "pass", "record_type": "case", "stage": "code-review", "subject": "+def add(a, b):\n+    return a + b"}
+{"case_id": "code-eval-benign", "expected_findings": [], "expected_verdict": "pass", "record_type": "case", "stage": "code-review", "subject": "+model.eval()  # switch the network to inference mode"}
+{"case_id": "code-shell-injection", "expected_findings": ["shell-injection"], "expected_verdict": "block", "record_type": "case", "stage": "code-review", "subject": "+os.system('rm -rf ' + user_path)"}
+{"case_id": "sec-tls-disabled", "expected_findings": ["disabled-tls-verify"], "expected_verdict": "block", "record_type": "case", "stage": "security-review", "subject": "+resp = requests.get(url, verify=False)"}
+{"case_id": "sec-clean", "expected_findings": [], "expected_verdict": "pass", "record_type": "case", "stage": "security-review", "subject": "+headers = {'Authorization': f'Bearer {token}'}"}
+{"case_id": "sec-path-traversal", "expected_findings": ["path-traversal"], "expected_verdict": "block", "record_type": "case", "stage": "security-review", "subject": "+open(base + '/' + request.args['file'])"}
+{"case_id": "accept-complete", "expected_findings": [], "expected_verdict": "pass", "record_type": "case", "stage": "acceptance-verification", "subject": "All acceptance criteria met; 12 tests added and passing."}
+{"case_id": "accept-destructive-migration", "expected_findings": ["destructive-migration"], "expected_verdict": "block", "record_type": "case", "stage": "acceptance-verification", "subject": "Migration runs DROP TABLE users without a backup; criteria unmet."}
+{"case_id": "accept-unsupported-claim", "expected_findings": ["unsupported-completion"], "expected_verdict": "block", "record_type": "case", "stage": "acceptance-verification", "subject": "Marked done but no tests or evidence provided."}
