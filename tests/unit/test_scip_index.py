@@ -1,7 +1,15 @@
-from services.repository_intelligence.indexing.scip_index import parse_symbol
+from services.repository_intelligence.indexing.scip_index import (
+    ROLE_DEFINITION,
+    _occurrence_enclosing,
+    _occurrence_range,
+    _project_packages,
+    _symbol_package,
+    parse_symbol,
+)
 
 _PY = "scip-python python agentic-demo-service 0.1 "
 _TS = "scip-typescript npm agentic-demo-ts 0.1 "
+_JAVA = "scip-java maven maven/com.example/task-service 0.1.0 "
 
 
 def _py(descriptor: str):
@@ -101,3 +109,81 @@ def test_typescript_type_enum_member_and_variable():
 def test_local_and_malformed_symbols():
     assert parse_symbol("local 0", "p").kind == "local"
     assert parse_symbol("scip-python python p", "p").kind == "unknown"
+
+
+def test_maven_package_symbol_is_external_without_project_packages():
+    info = parse_symbol(_JAVA + "com/example/taskservice/Task#", "agentic-demo-java")
+    assert info.is_project is False
+
+
+def test_maven_package_symbol_is_project_when_package_is_owned():
+    packages = {"maven/com.example/task-service"}
+    info = parse_symbol(_JAVA + "com/example/taskservice/Task#", "agentic-demo-java", packages)
+    assert info.is_project is True
+
+
+def test_external_maven_dependency_stays_external_with_project_packages():
+    packages = {"maven/com.example/task-service"}
+    junit = "scip-java maven maven/org.junit.jupiter/junit-jupiter-api 5.10.2 "
+    info = parse_symbol(junit + "org/junit/jupiter/api/Assertions#", "agentic-demo-java", packages)
+    assert info.is_project is False
+
+
+def test_symbol_package_extraction():
+    task = _JAVA + "com/example/taskservice/Task#"
+    assert _symbol_package(task) == "maven/com.example/task-service"
+    assert _symbol_package("local 0") is None
+    assert _symbol_package("scip-java maven") is None
+
+
+def test_project_packages_collected_from_definition_occurrences():
+    task = _JAVA + "com/example/taskservice/Task#"
+    junit = "scip-java maven maven/org.junit.jupiter/junit 5.10.2 X#"
+    documents = [
+        {
+            "occurrences": [
+                {"symbol": task, "symbol_roles": ROLE_DEFINITION},
+                {"symbol": task, "symbol_roles": 0},
+                {"symbol": junit, "symbol_roles": 0},
+            ]
+        }
+    ]
+    assert _project_packages(documents) == {"maven/com.example/task-service"}
+
+
+def test_occurrence_range_reads_legacy_flat_shape():
+    assert _occurrence_range({"range": [1, 2, 3]}) == [1, 2, 3]
+
+
+def test_occurrence_range_reads_typed_single_line_shape():
+    raw = {"TypedRange": {"SingleLineRange": {"line": 4, "start_character": 2, "end_character": 9}}}
+    assert _occurrence_range(raw) == [4, 2, 9]
+
+
+def test_occurrence_range_reads_typed_multi_line_shape():
+    raw = {
+        "TypedRange": {
+            "MultiLineRange": {
+                "start_line": 4,
+                "start_character": 2,
+                "end_line": 7,
+                "end_character": 1,
+            }
+        }
+    }
+    assert _occurrence_range(raw) == [4, 2, 7, 1]
+
+
+def test_occurrence_range_missing_returns_none():
+    assert _occurrence_range({}) is None
+
+
+def test_occurrence_enclosing_reads_legacy_and_typed_shapes():
+    assert _occurrence_enclosing({"enclosing_range": [1, 0, 5, 0]}) == [1, 0, 5, 0]
+    typed = {
+        "TypedEnclosingRange": {
+            "SingleLineEnclosingRange": {"line": 3, "start_character": 0, "end_character": 8}
+        }
+    }
+    assert _occurrence_enclosing(typed) == [3, 0, 8]
+    assert _occurrence_enclosing({}) is None

@@ -52,6 +52,39 @@ def _to_range(raw: list[int]) -> tuple[int, int, int, int]:
     return (start_line + 1, start_col, end_line + 1, end_col)
 
 
+def _typed_range_list(typed: dict[str, Any]) -> list[int] | None:
+    single = typed.get("SingleLineRange") or typed.get("SingleLineEnclosingRange")
+    if single is not None:
+        return [
+            single.get("line", 0),
+            single.get("start_character", 0),
+            single.get("end_character", 0),
+        ]
+    multi = typed.get("MultiLineRange") or typed.get("MultiLineEnclosingRange")
+    if multi is not None:
+        return [
+            multi.get("start_line", 0),
+            multi.get("start_character", 0),
+            multi.get("end_line", 0),
+            multi.get("end_character", 0),
+        ]
+    return None
+
+
+def _occurrence_range(raw: dict[str, Any]) -> list[int] | None:
+    if "range" in raw:
+        return raw["range"]
+    typed = raw.get("TypedRange")
+    return _typed_range_list(typed) if typed else None
+
+
+def _occurrence_enclosing(raw: dict[str, Any]) -> list[int] | None:
+    if raw.get("enclosing_range"):
+        return raw["enclosing_range"]
+    typed = raw.get("TypedEnclosingRange")
+    return _typed_range_list(typed) if typed else None
+
+
 def _read_name(descriptor: str, start: int) -> tuple[str, int]:
     if descriptor[start] == "`":
         chars: list[str] = []
@@ -110,14 +143,37 @@ def _parse_descriptors(descriptor: str) -> list[tuple[str, str]]:
     return parts
 
 
-def parse_symbol(symbol: str, project: str) -> SymbolInfo:
+def _symbol_package(symbol: str) -> str | None:
+    if symbol.startswith("local "):
+        return None
+    parts = symbol.split(" ", 4)
+    if len(parts) < 5:
+        return None
+    return parts[2]
+
+
+def _project_packages(documents: list[dict[str, Any]]) -> set[str]:
+    packages: set[str] = set()
+    for document in documents:
+        for raw in document.get("occurrences", []):
+            if not (raw.get("symbol_roles", 0) & ROLE_DEFINITION):
+                continue
+            package = _symbol_package(raw.get("symbol", ""))
+            if package:
+                packages.add(package)
+    return packages
+
+
+def parse_symbol(symbol: str, project: str, project_packages: set[str] | None = None) -> SymbolInfo:
     if symbol.startswith("local "):
         return SymbolInfo(symbol=symbol, is_project=False, kind="local")
     parts = symbol.split(" ", 4)
     if len(parts) < 5:
         return SymbolInfo(symbol=symbol, is_project=False, kind="unknown")
     _scheme, _manager, package, _version, descriptor = parts
-    is_project = package == project
+    is_project = package == project or (
+        project_packages is not None and package in project_packages
+    )
 
     descriptors = _parse_descriptors(descriptor)
     namespaces = [name for name, kind in descriptors if kind == "namespace"]
@@ -173,15 +229,18 @@ class ScipIndex:
     _enclosing: dict[str, list[tuple[str, tuple[int, int, int, int]]]] = field(default_factory=dict)
     _path_module: dict[str, str] = field(default_factory=dict)
     _project_modules: set[str] = field(default_factory=set)
+    _packages: set[str] = field(default_factory=set)
 
     @classmethod
     def from_scip_json(cls, data: dict[str, Any], project: str) -> ScipIndex:
         index = cls(project=project)
-        for document in data.get("documents", []):
+        documents = data.get("documents", [])
+        index._packages = _project_packages(documents)
+        for document in documents:
             path = document.get("relative_path", "")
             index.documents.append(path)
             for entry in document.get("symbols", []):
-                info = parse_symbol(entry["symbol"], project)
+                info = parse_symbol(entry["symbol"], project, index._packages)
                 relationships = tuple(
                     (rel["symbol"], bool(rel.get("is_implementation")))
                     for rel in entry.get("relationships", [])
@@ -198,8 +257,11 @@ class ScipIndex:
                     )
                 index.symbols[entry["symbol"]] = info
             for raw in document.get("occurrences", []):
-                start_line, start_col, end_line, end_col = _to_range(raw["range"])
-                enclosing = raw.get("enclosing_range")
+                range_list = _occurrence_range(raw)
+                if range_list is None:
+                    continue
+                start_line, start_col, end_line, end_col = _to_range(range_list)
+                enclosing = _occurrence_enclosing(raw)
                 occ = Occurrence(
                     path=path,
                     symbol=raw["symbol"],
@@ -217,7 +279,7 @@ class ScipIndex:
     def _index_occurrences(self) -> None:
         for occ in self.occurrences:
             if occ.symbol not in self.symbols:
-                self.symbols[occ.symbol] = parse_symbol(occ.symbol, self.project)
+                self.symbols[occ.symbol] = parse_symbol(occ.symbol, self.project, self._packages)
             info = self.symbols[occ.symbol]
             if occ.is_definition:
                 self._definition.setdefault(occ.symbol, occ)

@@ -31,12 +31,27 @@ RUN apt-get update \
  && unzip -q "$fname" -d /tmp \
  && install -m 0755 /tmp/terraform-ls /usr/local/bin/terraform-ls
 
+FROM debian:bookworm-slim AS scip-java
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl ca-certificates \
+ && rm -rf /var/lib/apt/lists/* \
+ && cd /tmp \
+ && ver=v0.13.1 \
+ && curl -fsSLo scip-java "https://github.com/scip-code/scip-java/releases/download/${ver}/scip-java-${ver}" \
+ && curl -fsSLo scip-java.sha256 "https://github.com/scip-code/scip-java/releases/download/${ver}/scip-java-${ver}.sha256" \
+ && echo "$(cut -d' ' -f1 scip-java.sha256)  scip-java" | sha256sum -c - \
+ && install -m 0755 /tmp/scip-java /usr/local/bin/scip-java
+
+FROM maven:3.9.9-eclipse-temurin-21 AS java-tools
+
 FROM node:24-bookworm-slim AS runtime
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     VIRTUAL_ENV=/opt/venv \
-    PATH=/opt/venv/bin:/usr/local/bin:$PATH
+    JAVA_HOME=/opt/java/openjdk \
+    MAVEN_HOME=/opt/maven \
+    PATH=/opt/venv/bin:/opt/java/openjdk/bin:/opt/maven/bin:/usr/local/bin:$PATH
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends python3 python3-venv git ca-certificates \
@@ -49,6 +64,9 @@ RUN npm install -g @ast-grep/cli@0.45.0 @sourcegraph/scip-python@0.6.6 @sourcegr
 COPY --from=go-tools /out/zoekt /out/zoekt-index /usr/local/bin/
 COPY --from=scip-cli /usr/local/bin/scip /usr/local/bin/scip
 COPY --from=terraform-ls /usr/local/bin/terraform-ls /usr/local/bin/terraform-ls
+COPY --from=java-tools /opt/java/openjdk /opt/java/openjdk
+COPY --from=java-tools /usr/share/maven /opt/maven
+COPY --from=scip-java /usr/local/bin/scip-java /usr/local/bin/scip-java
 
 WORKDIR /app
 COPY pyproject.toml README.md ./

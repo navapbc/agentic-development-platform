@@ -1,0 +1,194 @@
+{
+  "assessed_subscores_note": "operational_complexity and resource_efficiency are assessed inputs (production stack shape), overridable via CLI; all other dimensions are measured",
+  "commit": "0b1f3b2968f6e1657e5c3ce046a21d16ea82015e",
+  "generated_at": "2026-07-30T04:04:16.215561+00:00",
+  "gold": {
+    "generated_at": "2026-07-30T04:03:37.795649+00:00",
+    "oracles": {
+      "scip_reader": "scip version v0.9.0",
+      "structure": "scip-java@0.13.1"
+    },
+    "path": "/work/services/repository_intelligence/eval/gold/agentic-demo-java@0b1f3b2.jsonl",
+    "records": 62
+  },
+  "harness_version": "harness/1",
+  "llm_context": "none (repository-intelligence path invokes no model)",
+  "policy_bundle_version": "n/a",
+  "prompt_versions": "n/a",
+  "providers": [
+    {
+      "context_p95_ms": 0.02,
+      "detects_staleness": true,
+      "errors": [],
+      "hard_gates": {
+        "callers_precision>=0.90": true,
+        "no_nonallowlisted_egress": true,
+        "no_plaintext_secret_persistence": true,
+        "references_precision>=0.90": true,
+        "reindex_without_repair": true,
+        "search_top10_overlap>=0.80": true,
+        "symbol_definition_precision>=0.95": true
+      },
+      "hard_gates_pass": true,
+      "indexed_commit": "0b1f3b2968f6e1657e5c3ce046a21d16ea82015e",
+      "macro_f1": 1.0,
+      "provider": "router",
+      "reindex_ok": true,
+      "search_top10_overlap": 1.0,
+      "symbol_ref_p95_ms": 0.01,
+      "type_scores": [
+        {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "path_precision": 1.0,
+          "path_recall": 1.0,
+          "precision": 1.0,
+          "query_type": "symbol_definition",
+          "recall": 1.0,
+          "records": 18,
+          "tp": 22
+        },
+        {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "path_precision": 1.0,
+          "path_recall": 1.0,
+          "precision": 1.0,
+          "query_type": "references",
+          "recall": 1.0,
+          "records": 22,
+          "tp": 39
+        },
+        {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "path_precision": 1.0,
+          "path_recall": 1.0,
+          "precision": 1.0,
+          "query_type": "callers",
+          "recall": 1.0,
+          "records": 17,
+          "tp": 16
+        },
+        {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "path_precision": 1.0,
+          "path_recall": 1.0,
+          "precision": 1.0,
+          "query_type": "implementations",
+          "recall": 1.0,
+          "records": 5,
+          "tp": 5
+        }
+      ],
+      "verdict": "Primary",
+      "weighted_score": {
+        "accuracy_completeness": 40.0,
+        "incremental_freshness": 15.0,
+        "latency": 20.0,
+        "operational_complexity": 9.0,
+        "resource_efficiency": 7.0,
+        "total": 91.0
+      }
+    },
+    {
+      "context_p95_ms": 0.01,
+      "detects_staleness": true,
+      "errors": [],
+      "hard_gates": {
+        "callers_precision>=0.90": true,
+        "no_nonallowlisted_egress": true,
+        "no_plaintext_secret_persistence": true,
+        "references_precision>=0.90": true,
+        "reindex_without_repair": true,
+        "search_top10_overlap>=0.80": true,
+        "symbol_definition_precision>=0.95": true
+      },
+      "hard_gates_pass": true,
+      "indexed_commit": "0b1f3b2968f6e1657e5c3ce046a21d16ea82015e",
+      "macro_f1": 1.0,
+      "provider": "scip-java",
+      "reindex_ok": true,
+      "search_top10_overlap": 1.0,
+      "symbol_ref_p95_ms": 0.01,
+      "type_scores": [
+        {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "path_precision": 1.0,
+          "path_recall": 1.0,
+          "precision": 1.0,
+          "query_type": "symbol_definition",
+          "recall": 1.0,
+          "records": 18,
+          "tp": 22
+        },
+        {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "path_precision": 1.0,
+          "path_recall": 1.0,
+          "precision": 1.0,
+          "query_type": "references",
+          "recall": 1.0,
+          "records": 22,
+          "tp": 39
+        },
+        {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "path_precision": 1.0,
+          "path_recall": 1.0,
+          "precision": 1.0,
+          "query_type": "callers",
+          "recall": 1.0,
+          "records": 17,
+          "tp": 16
+        },
+        {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "path_precision": 1.0,
+          "path_recall": 1.0,
+          "precision": 1.0,
+          "query_type": "implementations",
+          "recall": 1.0,
+          "records": 5,
+          "tp": 5
+        }
+      ],
+      "verdict": "Primary",
+      "weighted_score": {
+        "accuracy_completeness": 40.0,
+        "incremental_freshness": 15.0,
+        "latency": 20.0,
+        "operational_complexity": 9.0,
+        "resource_efficiency": 8.0,
+        "total": 92.0
+      }
+    }
+  ],
+  "recommendation": {
+    "leader": "scip-java",
+    "leader_verdict": "Primary",
+    "rationale": "scip-java leads at 92.0 (verdict Primary); scip-java=92.0/Primary; router=91.0/Primary"
+  },
+  "record_type": "acceptance_scorecard",
+  "repo": "agentic-demo-java",
+  "runs_per_provider": 3,
+  "toolchain": {
+    "cbm_binary": "/home/appuser/Documents/Projects/Nava/codebase-memory-mcp/build/c/codebase-memory-mcp",
+    "cbm_binary_bytes": null,
+    "platform": "Linux-6.12.54-linuxkit-aarch64-with-glibc2.36",
+    "python": "3.11.2"
+  }
+}

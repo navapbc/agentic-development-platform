@@ -13,6 +13,7 @@ def test_default_allowlists_match_plan():
         "agentic-demo-greenfield",
         "agentic-demo-ts",
         "agentic-demo-tf",
+        "agentic-demo-java",
     }
 
 

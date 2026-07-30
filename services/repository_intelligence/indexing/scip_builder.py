@@ -14,6 +14,7 @@ from services.repository_intelligence.languages import Language
 
 DEFAULT_SCIP_PYTHON_CMD = "npx --yes @sourcegraph/scip-python@0.6.6"
 DEFAULT_SCIP_TYPESCRIPT_CMD = "npx --yes @sourcegraph/scip-typescript@0.3.14"
+DEFAULT_SCIP_JAVA_CMD = "scip-java"
 DEFAULT_SCIP_CLI = "scip"
 
 _PLATFORM_ROOT = Path(__file__).resolve().parents[3]
@@ -34,6 +35,7 @@ class ScipIndexer:
     extra_args: tuple[str, ...] = field(default_factory=tuple)
     inject_python_venv: bool = False
     infer_tsconfig_when_missing: bool = False
+    version: str | None = None
 
     def index_argv(
         self, project: str, version: str, output: Path, repo_root: Path | None = None
@@ -76,10 +78,18 @@ SCIP_TYPESCRIPT_INDEXER = ScipIndexer(
     infer_tsconfig_when_missing=True,
 )
 
+SCIP_JAVA_INDEXER = ScipIndexer(
+    command=DEFAULT_SCIP_JAVA_CMD,
+    language_id="java",
+    source_suffixes=(".java",),
+    version="0.13.1",
+)
+
 _SCIP_INDEXERS: dict[Language, ScipIndexer] = {
     Language.PYTHON: SCIP_PYTHON_INDEXER,
     Language.TYPESCRIPT: SCIP_TYPESCRIPT_INDEXER,
     Language.JAVASCRIPT: SCIP_TYPESCRIPT_INDEXER,
+    Language.JAVA: SCIP_JAVA_INDEXER,
 }
 
 
