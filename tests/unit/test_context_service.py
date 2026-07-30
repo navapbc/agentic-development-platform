@@ -259,3 +259,23 @@ def test_recent_changes_empty_without_git(tmp_path):
     package = service.context_package(_REPO, "health")
 
     assert package.recent_changes == ()
+
+
+def test_from_repo_wires_python_backends_for_a_python_repo(tmp_path):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "main.py").write_text("def health():\n    return {}\n")
+
+    service = RepositoryIntelligenceService.from_repo(tmp_path)
+
+    assert service._router._scip is not None
+    assert service._reindex is not None
+
+
+def test_from_repo_degrades_for_a_non_python_repo(tmp_path):
+    (tmp_path / "main.tf").write_text('resource "null_resource" "x" {}\n')
+
+    service = RepositoryIntelligenceService.from_repo(tmp_path)
+
+    assert service._router._scip is None
+    assert service._router._zoekt is not None
+    assert service._reindex is None

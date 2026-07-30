@@ -77,6 +77,38 @@ def test_router_conforms_to_provider_protocol():
     assert isinstance(router, RepositoryIntelligenceProvider)
 
 
+def test_search_uses_zoekt_when_scip_absent():
+    hit = SearchHit(Location("app/main.py", 1), "x", 1.0, _prov(Source.ZOEKT, 1.0))
+    router = RouterProvider(scip=None, zoekt=Fake(repo_search_code=[hit]))
+
+    assert router.repo_search_code(_REPO, "q") == [hit]
+
+
+def test_structural_queries_are_empty_when_scip_absent():
+    router = RouterProvider(scip=None)
+
+    assert router.repo_find_symbol(_REPO, "health") == []
+    assert router.repo_find_implementations(_REPO, "sym") == []
+    assert router.repo_get_callees(_REPO, "sym") == []
+
+
+def test_references_fall_back_to_cbm_when_scip_absent():
+    candidates = [_ref("app/store.py", 5, source=Source.CBM)]
+    cbm = Fake(is_available=True, candidate_references=candidates)
+    router = RouterProvider(scip=None, cbm=cbm)
+
+    assert router.repo_find_references(_REPO, "sym") == candidates
+    assert cbm.called("candidate_references")
+
+
+def test_callers_fall_back_to_cbm_when_scip_absent():
+    candidates = [_call("app.main.create_task", "app/main.py", 30)]
+    cbm = Fake(is_available=True, candidate_callers=candidates)
+    router = RouterProvider(scip=None, cbm=cbm)
+
+    assert router.repo_get_callers(_REPO, "add") == candidates
+
+
 def test_search_prefers_zoekt_and_falls_back_to_scip_on_error():
     hit = SearchHit(Location("app/main.py", 1), "x", 1.0, _prov(Source.ZOEKT, 1.0))
     zoekt = Fake(repo_search_code=[hit])

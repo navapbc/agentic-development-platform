@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import TypeVar
 
 from services.repository_intelligence.indexing.reindex import reindex_repo
+from services.repository_intelligence.languages import Language, primary_language
 from services.repository_intelligence.normalization.models import (
     ContextPackage,
     RecentChange,
@@ -90,6 +91,7 @@ class RepositoryIntelligenceService:
         cbm_cache_dir: str | Path | None = None,
     ) -> RepositoryIntelligenceService:
         root = Path(repo_root)
+        python = primary_language(root) is Language.PYTHON
         ast_grep = AstGrepProvider(root)
         build_metadata = BuildMetadataProvider(root)
         cbm = (
@@ -103,11 +105,11 @@ class RepositoryIntelligenceService:
             else None
         )
         router = RouterProvider(
-            scip=ScipProvider(root, commit=commit, index_root=index_root),
+            scip=ScipProvider(root, commit=commit, index_root=index_root) if python else None,
             zoekt=ZoektProvider(root, commit=commit, index_root=index_root),
-            coverage=CoverageProvider(root, venv_python=venv_python),
+            coverage=CoverageProvider(root, venv_python=venv_python) if python else None,
             build_metadata=build_metadata,
-            custom=CustomPythonProvider(root),
+            custom=CustomPythonProvider(root) if python else None,
             ast_grep=ast_grep,
             cbm=cbm,
         )
@@ -121,7 +123,7 @@ class RepositoryIntelligenceService:
             ast_grep=ast_grep,
             cbm=cbm,
             build_metadata=build_metadata,
-            reindex=reindex,
+            reindex=reindex if python else None,
         )
 
     @staticmethod

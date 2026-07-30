@@ -14,6 +14,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TypeVar
 
+from services.repository_intelligence.languages import Language, primary_language
 from services.repository_intelligence.normalization.models import (
     CallEdge,
     ChangeImpact,
@@ -64,7 +65,7 @@ class RouterProvider:
     def __init__(
         self,
         *,
-        scip: ScipProvider,
+        scip: ScipProvider | None = None,
         zoekt: ZoektProvider | None = None,
         coverage: CoverageProvider | None = None,
         build_metadata: BuildMetadataProvider | None = None,
@@ -94,6 +95,7 @@ class RouterProvider:
         cbm_cache_dir: str | Path | None = None,
     ) -> RouterProvider:
         root = Path(repo_root)
+        python = primary_language(root) is Language.PYTHON
         cbm = (
             CBMProvider(
                 root,
@@ -105,11 +107,11 @@ class RouterProvider:
             else None
         )
         return cls(
-            scip=ScipProvider(root, commit=commit, index_root=index_root),
+            scip=ScipProvider(root, commit=commit, index_root=index_root) if python else None,
             zoekt=ZoektProvider(root, commit=commit, index_root=index_root),
-            coverage=CoverageProvider(root, venv_python=venv_python),
+            coverage=CoverageProvider(root, venv_python=venv_python) if python else None,
             build_metadata=BuildMetadataProvider(root),
-            custom=CustomPythonProvider(root),
+            custom=CustomPythonProvider(root) if python else None,
             ast_grep=AstGrepProvider(root),
             cbm=cbm,
         )
@@ -120,6 +122,11 @@ class RouterProvider:
             return fn()
         except Exception:  # noqa: BLE001
             return default
+
+    def _scip_call(self, fn: Callable[[], _T], default: _T) -> _T:
+        if self._scip is None:
+            return default
+        return self._safe(fn, default)
 
     def _cbm_ready(self) -> bool:
         if self._cbm is None:
@@ -133,18 +140,18 @@ class RouterProvider:
             hits = self._safe(lambda: self._zoekt.repo_search_code(repo, query, limit=limit), None)
             if hits is not None:
                 return hits
-        return self._safe(lambda: self._scip.repo_search_code(repo, query, limit=limit), [])
+        return self._scip_call(lambda: self._scip.repo_search_code(repo, query, limit=limit), [])
 
     def repo_find_symbol(self, repo: RepoRef, name: str, *, limit: int = 50) -> list[Symbol]:
         return _authoritative(
-            self._safe(lambda: self._scip.repo_find_symbol(repo, name, limit=limit), [])
+            self._scip_call(lambda: self._scip.repo_find_symbol(repo, name, limit=limit), [])
         )
 
     def repo_find_references(
         self, repo: RepoRef, symbol: str, *, include_definition: bool = True
     ) -> list[Reference]:
         primary = _authoritative(
-            self._safe(
+            self._scip_call(
                 lambda: self._scip.repo_find_references(
                     repo, symbol, include_definition=include_definition
                 ),
@@ -162,11 +169,13 @@ class RouterProvider:
 
     def repo_find_implementations(self, repo: RepoRef, symbol: str) -> list[Symbol]:
         return _authoritative(
-            self._safe(lambda: self._scip.repo_find_implementations(repo, symbol), [])
+            self._scip_call(lambda: self._scip.repo_find_implementations(repo, symbol), [])
         )
 
     def repo_get_callers(self, repo: RepoRef, symbol: str) -> list[CallEdge]:
-        primary = _authoritative(self._safe(lambda: self._scip.repo_get_callers(repo, symbol), []))
+        primary = _authoritative(
+            self._scip_call(lambda: self._scip.repo_get_callers(repo, symbol), [])
+        )
         if primary:
             return _sorted_callers(primary)
         if self._cbm_ready():
@@ -177,7 +186,9 @@ class RouterProvider:
         return []
 
     def repo_get_callees(self, repo: RepoRef, symbol: str) -> list[CallEdge]:
-        return _authoritative(self._safe(lambda: self._scip.repo_get_callees(repo, symbol), []))
+        return _authoritative(
+            self._scip_call(lambda: self._scip.repo_get_callees(repo, symbol), [])
+        )
 
     def repo_get_related_tests(self, repo: RepoRef, target: str) -> list[RelatedTest]:
         if self._coverage is not None:
@@ -206,7 +217,7 @@ class RouterProvider:
         )
 
     def repo_get_change_impact(self, repo: RepoRef, changed: list[str]) -> ChangeImpact:
-        base = self._safe(lambda: self._scip.repo_get_change_impact(repo, changed), None)
+        base = self._scip_call(lambda: self._scip.repo_get_change_impact(repo, changed), None)
         if base is None:
             base = ChangeImpact(
                 changed=tuple(changed),
@@ -245,7 +256,7 @@ class RouterProvider:
             status = self._safe(lambda: self._cbm.repo_get_index_status(repo), None)
             if status is not None and status.indexed_commit is not None:
                 return status
-        status = self._safe(lambda: self._scip.repo_get_index_status(repo), None)
+        status = self._scip_call(lambda: self._scip.repo_get_index_status(repo), None)
         if status is not None:
             return status
         if self._zoekt is not None:
