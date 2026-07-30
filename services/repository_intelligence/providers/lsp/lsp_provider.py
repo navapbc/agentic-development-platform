@@ -27,6 +27,11 @@ from services.repository_intelligence.providers.lsp.lsp_client import (
 
 _LSP_CONFIDENCE = 0.9
 
+
+def _short_name(name: str) -> str:
+    return name.rsplit(".", 1)[-1].rsplit("\\", 1)[-1]
+
+
 _LSP_SYMBOL_KIND: dict[int, SymbolKind] = {
     2: SymbolKind.MODULE,
     3: SymbolKind.NAMESPACE,
@@ -94,7 +99,7 @@ class LspProvider:
             )
         except LspError:
             return []
-        short = symbol.rsplit(".", 1)[-1]
+        short = _short_name(symbol)
         references: list[Reference] = []
         for item in raw if isinstance(raw, list) else []:
             parsed = self._location_from_lsp(item)
@@ -125,17 +130,25 @@ class LspProvider:
         if client is None:
             return []
         try:
-            raw = client.request("workspace/symbol", {"query": name.rsplit(".", 1)[-1]})
+            raw = client.request("workspace/symbol", {"query": _short_name(name)})
         except LspError:
             return []
         return [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
 
     def _definition_location(self, symbol: str) -> dict[str, Any] | None:
+        fallback: dict[str, Any] | None = None
         for item in self._symbol_query(symbol):
             location = item.get("location")
-            if isinstance(location, dict) and "uri" in location and "range" in location:
+            if not (isinstance(location, dict) and "uri" in location and "range" in location):
+                continue
+            uri = location.get("uri")
+            if isinstance(uri, str) and urlparse(uri).scheme not in ("", "file"):
+                continue
+            if item.get("name") == symbol:
                 return location
-        return None
+            if fallback is None:
+                fallback = location
+        return fallback
 
     def _symbol_from_information(self, item: dict[str, Any]) -> Symbol | None:
         location = self._location_from_lsp(item.get("location"))

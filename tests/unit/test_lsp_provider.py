@@ -178,3 +178,86 @@ def test_open_documents_skips_pruned_directories(tmp_path):
     provider.repo_find_symbol(_REPO, "anything")
 
     assert client.opened == [(tmp_path / "main.tf").resolve().as_uri()]
+
+
+_PHP_SPEC = LspServerSpec(("phpactor", "language-server"), "php", (".php",))
+
+
+class _PhpClient:
+    """Fake phpactor: substring-matches the short class name and keys references by uri."""
+
+    def __init__(self, symbols: list[dict], refs_by_uri: dict[str, list[dict]]) -> None:
+        self._symbols = symbols
+        self._refs_by_uri = refs_by_uri
+        self.symbol_queries: list[str] = []
+
+    def initialize(self, root) -> dict:
+        return {}
+
+    def notify(self, method: str, params: dict) -> None:
+        return None
+
+    def request(self, method: str, params: dict):
+        if method == "workspace/symbol":
+            query = params["query"]
+            self.symbol_queries.append(query)
+            if not query:
+                return self._symbols
+            return [s for s in self._symbols if query in s["name"].rsplit("\\", 1)[-1]]
+        if method == "textDocument/references":
+            return self._refs_by_uri.get(params["textDocument"]["uri"], [])
+        return None
+
+
+def _php_location(tmp_path, filename: str, line: int) -> dict:
+    return {
+        "uri": (tmp_path / "src" / filename).resolve().as_uri(),
+        "range": {
+            "start": {"line": line, "character": 6},
+            "end": {"line": line, "character": 20},
+        },
+    }
+
+
+def test_find_symbol_strips_php_namespace_separator(tmp_path):
+    (tmp_path / "src").mkdir()
+    symbols = [
+        {"name": "App\\Task", "kind": 5, "location": _php_location(tmp_path, "Task.php", 5)},
+        {
+            "name": "App\\TaskStore",
+            "kind": 5,
+            "location": _php_location(tmp_path, "TaskStore.php", 5),
+        },
+    ]
+    client = _PhpClient(symbols, {})
+    provider = LspProvider(tmp_path, _PHP_SPEC, client_factory=_factory(client))
+
+    result = provider.repo_find_symbol(_REPO, "App\\Task")
+
+    assert client.symbol_queries[-1] == "Task"
+    assert "App\\Task" in {symbol.name for symbol in result}
+
+
+def test_find_references_resolves_namespaced_definition_by_name(tmp_path):
+    (tmp_path / "src").mkdir()
+    task_uri = _php_location(tmp_path, "Task.php", 5)["uri"]
+    store_uri = _php_location(tmp_path, "TaskStore.php", 5)["uri"]
+    symbols = [
+        {
+            "name": "App\\TaskStore",
+            "kind": 5,
+            "location": _php_location(tmp_path, "TaskStore.php", 5),
+        },
+        {"name": "App\\Task", "kind": 5, "location": _php_location(tmp_path, "Task.php", 5)},
+    ]
+    refs_by_uri = {
+        task_uri: [_php_location(tmp_path, "TaskService.php", 11)],
+        store_uri: [_php_location(tmp_path, "TaskService.php", 7)],
+    }
+    client = _PhpClient(symbols, refs_by_uri)
+    provider = LspProvider(tmp_path, _PHP_SPEC, client_factory=_factory(client))
+
+    references = provider.repo_find_references(_REPO, "App\\Task", include_definition=False)
+
+    assert [ref.location.start_line for ref in references] == [12]
+    assert all(ref.symbol == "Task" for ref in references)

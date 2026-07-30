@@ -42,6 +42,17 @@ RUN apt-get update \
  && echo "$(cut -d' ' -f1 scip-java.sha256)  scip-java" | sha256sum -c - \
  && install -m 0755 /tmp/scip-java /usr/local/bin/scip-java
 
+FROM debian:bookworm-slim AS phpactor-cli
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl ca-certificates \
+ && rm -rf /var/lib/apt/lists/* \
+ && cd /tmp \
+ && ver=2026.07.22.0 \
+ && sha=8c0155380b9d7559a12f35ddf8d09c1dc23e72f1797498038251fc35ad15574d \
+ && curl -fsSLo phpactor.phar "https://github.com/phpactor/phpactor/releases/download/${ver}/phpactor.phar" \
+ && echo "${sha}  phpactor.phar" | sha256sum -c - \
+ && install -m 0755 /tmp/phpactor.phar /usr/local/bin/phpactor
+
 FROM maven:3.9.9-eclipse-temurin-21 AS java-tools
 
 FROM node:24-bookworm-slim AS runtime
@@ -54,7 +65,7 @@ ENV PYTHONUNBUFFERED=1 \
     PATH=/opt/venv/bin:/opt/java/openjdk/bin:/opt/maven/bin:/usr/local/bin:$PATH
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends python3 python3-venv git ca-certificates \
+ && apt-get install -y --no-install-recommends python3 python3-venv git ca-certificates php-cli php-mbstring php-xml \
  && rm -rf /var/lib/apt/lists/* \
  && python3 -m venv /opt/venv \
  && /opt/venv/bin/pip install --upgrade pip
@@ -67,6 +78,7 @@ COPY --from=terraform-ls /usr/local/bin/terraform-ls /usr/local/bin/terraform-ls
 COPY --from=java-tools /opt/java/openjdk /opt/java/openjdk
 COPY --from=java-tools /usr/share/maven /opt/maven
 COPY --from=scip-java /usr/local/bin/scip-java /usr/local/bin/scip-java
+COPY --from=phpactor-cli /usr/local/bin/phpactor /usr/local/bin/phpactor
 
 WORKDIR /app
 COPY pyproject.toml README.md ./

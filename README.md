@@ -11,7 +11,7 @@ A local, Docker-based agentic SDLC platform (POC). Given a Jira ticket it plans,
 - VPC endpoints exist for S3 and Secrets Manager, not Bedrock.
 - Jira is canonical (no git-copied tickets); a custom Jira adapter serves both Cloud and Data Center. rebar's ticket store and reconciler are not adopted.
 - Python-native: `invoke` task runner, Python under `scripts/` (no `make` or `.sh` as the primary surface), Alembic and SQLAlchemy Core for migrations.
-- Allowlists only: Jira `AGENTDEV`; repos `agentic-demo-service`, `agentic-demo-greenfield`, `agentic-demo-ts`, `agentic-demo-tf`, `agentic-demo-java`. The `infrastructure` repo is dev-time read-only reference, never a runtime target.
+- Allowlists only: Jira `AGENTDEV`; repos `agentic-demo-service`, `agentic-demo-greenfield`, `agentic-demo-ts`, `agentic-demo-tf`, `agentic-demo-java`, `agentic-demo-php`. The `infrastructure` repo is dev-time read-only reference, never a runtime target.
 
 ## Locked stack
 

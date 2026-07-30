@@ -54,7 +54,9 @@ def _open_documents(client: LspClient, root: Path, spec: LspServerSpec) -> None:
     opened = 0
     for suffix in spec.source_suffixes:
         for path in sorted(root.rglob(f"*{suffix}")):
-            if not path.is_file() or {".git", ".terraform"}.intersection(path.parts):
+            if not path.is_file() or {".git", ".terraform", "vendor", "node_modules"}.intersection(
+                path.parts
+            ):
                 continue
             client.notify(
                 "textDocument/didOpen",
@@ -91,27 +93,42 @@ def _all_symbols(client: LspClient) -> list[dict]:
     return [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
 
 
-def _definition_location(client: LspClient, name: str) -> dict | None:
-    raw = client.request("workspace/symbol", {"query": name})
-    if not isinstance(raw, list):
-        return None
-    for item in raw:
-        if isinstance(item, dict) and item.get("name") == name:
-            location = item.get("location")
-            if isinstance(location, dict) and "uri" in location and "range" in location:
-                return location
-    return None
+def _within_root(uri: object, root: Path) -> bool:
+    if not isinstance(uri, str) or not uri:
+        return False
+    parsed = urlparse(uri)
+    if parsed.scheme and parsed.scheme != "file":
+        return False
+    try:
+        Path(unquote(parsed.path)).resolve().relative_to(root.resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def _project_symbols(symbols: list[dict], root: Path) -> list[tuple[str, dict, _Location]]:
+    project: list[tuple[str, dict, _Location]] = []
+    for item in symbols:
+        name = item.get("name")
+        location = item.get("location")
+        if not (isinstance(name, str) and name and isinstance(location, dict)):
+            continue
+        if "uri" not in location or "range" not in location:
+            continue
+        if not _within_root(location.get("uri"), root):
+            continue
+        parsed = _location(location, root)
+        if parsed is not None:
+            project.append((name, location, parsed))
+    return project
 
 
 def _symbol_definition_records(
-    symbols: list[dict], root: Path, project: str, commit: str, oracle: str
+    project_symbols: list[tuple[str, dict, _Location]], project: str, commit: str, oracle: str
 ) -> list[GoldRecord]:
     by_name: dict[str, list[_Location]] = {}
-    for item in symbols:
-        name = item.get("name")
-        location = _location(item.get("location"), root)
-        if isinstance(name, str) and name and location is not None:
-            by_name.setdefault(name, []).append(location)
+    for name, _location_raw, parsed in project_symbols:
+        by_name.setdefault(name, []).append(parsed)
     records: list[GoldRecord] = []
     for name, locations in sorted(by_name.items()):
         expected = tuple(
@@ -132,21 +149,30 @@ def _symbol_definition_records(
 
 
 def _references_records(
-    client: LspClient, symbols: list[dict], root: Path, project: str, commit: str, oracle: str
+    client: LspClient,
+    project_symbols: list[tuple[str, dict, _Location]],
+    root: Path,
+    project: str,
+    commit: str,
+    oracle: str,
 ) -> list[GoldRecord]:
     records: list[GoldRecord] = []
-    for name in sorted({item.get("name") for item in symbols if isinstance(item.get("name"), str)}):
-        location = _definition_location(client, name)
-        if location is None:
+    seen: set[str] = set()
+    for name, location, _parsed in project_symbols:
+        if name in seen:
             continue
-        raw = client.request(
-            "textDocument/references",
-            {
-                "textDocument": {"uri": location["uri"]},
-                "position": location["range"]["start"],
-                "context": {"includeDeclaration": False},
-            },
-        )
+        seen.add(name)
+        try:
+            raw = client.request(
+                "textDocument/references",
+                {
+                    "textDocument": {"uri": location["uri"]},
+                    "position": location["range"]["start"],
+                    "context": {"includeDeclaration": False},
+                },
+            )
+        except LspError:
+            continue
         items = raw if isinstance(raw, list) else []
         parsed = sorted({loc for item in items if (loc := _location(item, root)) is not None})
         if not parsed:
@@ -174,9 +200,9 @@ def collect_lsp_records(
     try:
         client.initialize(root)
         _open_documents(client, root, spec)
-        symbols = _all_symbols(client)
-        records = _symbol_definition_records(symbols, root, project, commit, oracle)
-        records += _references_records(client, symbols, root, project, commit, oracle)
+        project_symbols = _project_symbols(_all_symbols(client), root)
+        records = _symbol_definition_records(project_symbols, project, commit, oracle)
+        records += _references_records(client, project_symbols, root, project, commit, oracle)
         return records
     finally:
         client.shutdown()

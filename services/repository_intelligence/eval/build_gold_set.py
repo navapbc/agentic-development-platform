@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import platform
+import re
 import subprocess
 import sys
 from datetime import UTC, datetime
@@ -287,6 +288,11 @@ def _tool_version(command: list[str]) -> str:
     return (completed.stdout or completed.stderr).strip().splitlines()[0]
 
 
+def _version_token(version: str) -> str:
+    match = re.search(r"\d[\w.+-]*", version)
+    return match.group(0) if match else version
+
+
 def _finalize(
     project: str,
     commit: str,
@@ -332,12 +338,21 @@ def _build_lsp_gold(
     records = collect_lsp_records(
         repo_root, project=project, commit=commit, spec=spec, oracle=oracle
     )
-    oracles = {"structure": f"{spec.command[0]}@{_tool_version([spec.command[0], '--version'])}"}
+    version = _version_token(_tool_version([spec.command[0], "--version"]))
+    oracles = {"structure": f"{spec.command[0]}@{version}"}
+    if language is Language.TERRAFORM:
+        symbol_note = (
+            "symbols are identified by their full block header "
+            '(for example \'resource "random_pet" "task_id"\')'
+        )
+    else:
+        symbol_note = (
+            "symbols are identified by their fully qualified name (for example 'App\\Task')"
+        )
     notes = [
         f"structural oracle only ({spec.command[0]}); callers, implementations, "
         f"module_dependencies, and related_tests are not modeled for {language.value}",
-        "symbols are identified by their full block header "
-        '(for example \'resource "random_pet" "task_id"\')',
+        symbol_note,
     ]
     toolchain = {
         "python": platform.python_version(),

@@ -1,0 +1,159 @@
+{
+  "assessed_subscores_note": "operational_complexity and resource_efficiency are assessed inputs (production stack shape), overridable via CLI; all other dimensions are measured",
+  "commit": "c9b670769e69b29808e2c1428f27a412e090dd01",
+  "generated_at": "2026-07-30T05:03:30.714465+00:00",
+  "gold": {
+    "generated_at": "2026-07-30T04:56:18.429452+00:00",
+    "oracles": {
+      "structure": "phpactor@2026.07.22.0"
+    },
+    "path": "/work/services/repository_intelligence/eval/gold/agentic-demo-php@c9b6707.jsonl",
+    "records": 7
+  },
+  "harness_version": "harness/1",
+  "llm_context": "none (repository-intelligence path invokes no model)",
+  "policy_bundle_version": "n/a",
+  "prompt_versions": "n/a",
+  "providers": [
+    {
+      "context_p95_ms": 309.65,
+      "detects_staleness": true,
+      "errors": [],
+      "hard_gates": {
+        "no_nonallowlisted_egress": true,
+        "no_plaintext_secret_persistence": true,
+        "references_precision>=0.90": true,
+        "reindex_without_repair": true,
+        "search_top10_overlap>=0.80": true,
+        "symbol_definition_precision>=0.95": true
+      },
+      "hard_gates_pass": true,
+      "indexed_commit": "c9b670769e69b29808e2c1428f27a412e090dd01",
+      "macro_f1": 1.0,
+      "provider": "router",
+      "reindex_ok": true,
+      "search_top10_overlap": 1.0,
+      "symbol_ref_p95_ms": 309.65,
+      "type_scores": [
+        {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "path_precision": 1.0,
+          "path_recall": 1.0,
+          "precision": 1.0,
+          "query_type": "symbol_definition",
+          "recall": 1.0,
+          "records": 4,
+          "tp": 4
+        },
+        {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "path_precision": 1.0,
+          "path_recall": 1.0,
+          "precision": 1.0,
+          "query_type": "references",
+          "recall": 1.0,
+          "records": 3,
+          "tp": 9
+        }
+      ],
+      "verdict": "Primary",
+      "weighted_score": {
+        "accuracy_completeness": 40.0,
+        "incremental_freshness": 15.0,
+        "latency": 20.0,
+        "operational_complexity": 9.0,
+        "resource_efficiency": 7.0,
+        "total": 91.0
+      }
+    },
+    {
+      "context_p95_ms": 69.56,
+      "detects_staleness": true,
+      "errors": [
+        "search:task: 'LspProvider' object has no attribute 'repo_search_code'",
+        "search:task: 'LspProvider' object has no attribute 'repo_search_code'",
+        "search:task: 'LspProvider' object has no attribute 'repo_search_code'",
+        "search:store: 'LspProvider' object has no attribute 'repo_search_code'",
+        "search:store: 'LspProvider' object has no attribute 'repo_search_code'",
+        "search:store: 'LspProvider' object has no attribute 'repo_search_code'",
+        "search:status: 'LspProvider' object has no attribute 'repo_search_code'",
+        "search:status: 'LspProvider' object has no attribute 'repo_search_code'",
+        "search:status: 'LspProvider' object has no attribute 'repo_search_code'",
+        "search:create: 'LspProvider' object has no attribute 'repo_search_code'",
+        "search:create: 'LspProvider' object has no attribute 'repo_search_code'",
+        "search:create: 'LspProvider' object has no attribute 'repo_search_code'",
+        "search:Task: 'LspProvider' object has no attribute 'repo_search_code'",
+        "search:Task: 'LspProvider' object has no attribute 'repo_search_code'",
+        "search:Task: 'LspProvider' object has no attribute 'repo_search_code'"
+      ],
+      "hard_gates": {
+        "no_nonallowlisted_egress": true,
+        "no_plaintext_secret_persistence": true,
+        "references_precision>=0.90": true,
+        "reindex_without_repair": true,
+        "search_top10_overlap>=0.80": true,
+        "symbol_definition_precision>=0.95": true
+      },
+      "hard_gates_pass": true,
+      "indexed_commit": "c9b670769e69b29808e2c1428f27a412e090dd01",
+      "macro_f1": 1.0,
+      "provider": "lsp-php",
+      "reindex_ok": true,
+      "search_top10_overlap": 1.0,
+      "symbol_ref_p95_ms": 69.56,
+      "type_scores": [
+        {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "path_precision": 1.0,
+          "path_recall": 1.0,
+          "precision": 1.0,
+          "query_type": "symbol_definition",
+          "recall": 1.0,
+          "records": 4,
+          "tp": 4
+        },
+        {
+          "f1": 1.0,
+          "fn": 0,
+          "fp": 0,
+          "path_precision": 1.0,
+          "path_recall": 1.0,
+          "precision": 1.0,
+          "query_type": "references",
+          "recall": 1.0,
+          "records": 3,
+          "tp": 9
+        }
+      ],
+      "verdict": "Primary",
+      "weighted_score": {
+        "accuracy_completeness": 40.0,
+        "incremental_freshness": 15.0,
+        "latency": 20.0,
+        "operational_complexity": 9.0,
+        "resource_efficiency": 8.0,
+        "total": 92.0
+      }
+    }
+  ],
+  "recommendation": {
+    "leader": "lsp-php",
+    "leader_verdict": "Primary",
+    "rationale": "lsp-php leads at 92.0 (verdict Primary); lsp-php=92.0/Primary; router=91.0/Primary"
+  },
+  "record_type": "acceptance_scorecard",
+  "repo": "agentic-demo-php",
+  "runs_per_provider": 3,
+  "toolchain": {
+    "cbm_binary": "/home/appuser/Documents/Projects/Nava/codebase-memory-mcp/build/c/codebase-memory-mcp",
+    "cbm_binary_bytes": null,
+    "platform": "Linux-6.12.54-linuxkit-aarch64-with-glibc2.36",
+    "python": "3.11.2"
+  }
+}
