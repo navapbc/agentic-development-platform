@@ -68,6 +68,12 @@ class Settings(BaseSettings):
     jira_acli_path: str = ""
     jira_acceptance_field: str = ""
 
+    github_api_url: str = ""
+    github_git_base_url: str = ""
+    github_owner: str = ""
+    github_token: str = ""
+    github_default_base_branch: str = "main"
+
     allowlist_jira_projects: str = "AGENTDEV"
     allowlist_repos: str = (
         "agentic-demo-service,agentic-demo-greenfield,"
