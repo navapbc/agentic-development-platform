@@ -83,6 +83,13 @@ class Settings(BaseSettings):
     coding_model: str = "coding-model"
 
     execution_workspace_root: str = ".agent-workspaces"
+    implementation_max_cost_usd: float = 5.0
+    implementation_max_llm_calls: int = 200
+    implementation_max_tokens: int = 2_000_000
+    implementation_activity_timeout_seconds: float = 2400.0
+    sandbox_workspace_claim: str = ""
+    sandbox_workspace_host_path: str = ""
+    sandbox_workspace_mount_path: str = "/workspace"
 
     allowlist_jira_projects: str = "AGENTDEV"
     allowlist_repos: str = (

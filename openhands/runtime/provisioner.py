@@ -12,6 +12,14 @@ _NAME_SANITISE = re.compile(r"[^a-z0-9-]+")
 
 
 @dataclass(frozen=True)
+class WorkspaceBinding:
+    sub_path: str
+    mount_path: str = "/workspace"
+    claim_name: str = ""
+    host_path: str = ""
+
+
+@dataclass(frozen=True)
 class SandboxSpec:
     execution_id: str
     image: str
@@ -21,6 +29,7 @@ class SandboxSpec:
     litellm_base_url: str = ""
     labels: Mapping[str, str] = field(default_factory=dict)
     env: Mapping[str, str] = field(default_factory=dict)
+    workspace: WorkspaceBinding | None = None
 
 
 @dataclass(frozen=True)
@@ -33,6 +42,27 @@ class SandboxHandle:
 def pod_name_for(execution_id: str) -> str:
     slug = _NAME_SANITISE.sub("-", execution_id.lower()).strip("-")
     return f"agent-sandbox-{slug or 'exec'}"[:63].rstrip("-")
+
+
+def _workspace_volume(binding: WorkspaceBinding) -> tuple[dict, dict]:
+    mount = {
+        "name": "agent-workspace",
+        "mountPath": binding.mount_path,
+        "subPath": binding.sub_path,
+    }
+    if binding.claim_name:
+        volume = {
+            "name": "agent-workspace",
+            "persistentVolumeClaim": {"claimName": binding.claim_name},
+        }
+    elif binding.host_path:
+        volume = {
+            "name": "agent-workspace",
+            "hostPath": {"path": binding.host_path, "type": "Directory"},
+        }
+    else:
+        raise ValueError("workspace binding requires a claim_name or host_path source")
+    return volume, mount
 
 
 def build_pod_manifest(spec: SandboxSpec) -> dict:
@@ -67,6 +97,12 @@ def build_pod_manifest(spec: SandboxSpec) -> dict:
     }
     if spec.runtime_class:
         spec_body["runtimeClassName"] = spec.runtime_class
+    if spec.workspace is not None:
+        volume, mount = _workspace_volume(spec.workspace)
+        container["workingDir"] = spec.workspace.mount_path
+        container["volumeMounts"] = [mount]
+        env.append({"name": "WORKSPACE_BASE", "value": spec.workspace.mount_path})
+        spec_body["volumes"] = [volume]
     return {
         "apiVersion": "v1",
         "kind": "Pod",
@@ -153,6 +189,7 @@ class FakeSandboxProvisioner:
         self._base_url = base_url
         self.provisioned: list[SandboxHandle] = []
         self.torn_down: list[SandboxHandle] = []
+        self.specs: list[SandboxSpec] = []
 
     async def provision(self, spec: SandboxSpec) -> SandboxHandle:
         handle = SandboxHandle(
@@ -160,6 +197,7 @@ class FakeSandboxProvisioner:
             namespace=spec.namespace,
             base_url=self._base_url,
         )
+        self.specs.append(spec)
         self.provisioned.append(handle)
         return handle
 

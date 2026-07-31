@@ -10,6 +10,7 @@ from temporalio.client import Client
 from temporalio.worker import Worker
 
 from services.orchestration.temporal_activities import (
+    claim_work_unit,
     gather_repo_context,
     invoke_model,
     persist_execution_state,
@@ -17,11 +18,13 @@ from services.orchestration.temporal_activities import (
     review_code,
     review_plan,
     review_security,
+    run_implementation_stage,
     verify_acceptance,
 )
 from services.orchestration.temporal_workflows import (
     CodeReviewWorkflow,
     FoundationWorkflow,
+    ImplementationWorkflow,
     PlanReviewWorkflow,
     ReviewPipelineWorkflow,
 )
@@ -47,6 +50,7 @@ async def main() -> None:
             PlanReviewWorkflow,
             CodeReviewWorkflow,
             ReviewPipelineWorkflow,
+            ImplementationWorkflow,
         ],
         activities=[
             invoke_model,
@@ -57,6 +61,8 @@ async def main() -> None:
             review_code,
             review_security,
             verify_acceptance,
+            claim_work_unit,
+            run_implementation_stage,
         ],
     )
     log.info("worker started on task queue '%s'", settings.temporal_task_queue)

@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import yaml
-from openhands.runtime.provisioner import SandboxSpec, build_pod_manifest
+from openhands.runtime.provisioner import SandboxSpec, WorkspaceBinding, build_pod_manifest
 
 MANIFESTS = Path(__file__).resolve().parents[2] / "openhands"
 POD = MANIFESTS / "images" / "agent-server-pod.yaml"
@@ -50,6 +51,66 @@ def test_builder_swaps_runtime_class_without_touching_the_pod_shape() -> None:
         SandboxSpec(execution_id="exec-1", image="img", runtime_class="gvisor")
     )
     assert hardened["spec"]["runtimeClassName"] == "gvisor"
+
+
+def test_pod_without_workspace_binding_declares_no_volumes() -> None:
+    built = build_pod_manifest(SandboxSpec(execution_id="exec-1", image="img"))
+    container = built["spec"]["containers"][0]
+    assert "volumes" not in built["spec"]
+    assert "volumeMounts" not in container
+    assert "workingDir" not in container
+
+
+def test_pod_binds_the_materialized_workspace_from_a_claim() -> None:
+    built = build_pod_manifest(
+        SandboxSpec(
+            execution_id="exec-1",
+            image="img",
+            workspace=WorkspaceBinding(
+                sub_path="agentic-demo-service/T-1/exec-1",
+                claim_name="agent-workspaces",
+            ),
+        )
+    )
+    container = built["spec"]["containers"][0]
+    volume = built["spec"]["volumes"][0]
+    mount = container["volumeMounts"][0]
+    assert volume["persistentVolumeClaim"]["claimName"] == "agent-workspaces"
+    assert volume["name"] == mount["name"] == "agent-workspace"
+    assert mount["subPath"] == "agentic-demo-service/T-1/exec-1"
+    assert mount["mountPath"] == "/workspace"
+    assert container["workingDir"] == "/workspace"
+    assert {"name": "WORKSPACE_BASE", "value": "/workspace"} in container["env"]
+
+
+def test_pod_binds_the_materialized_workspace_from_a_host_path() -> None:
+    built = build_pod_manifest(
+        SandboxSpec(
+            execution_id="exec-1",
+            image="img",
+            workspace=WorkspaceBinding(
+                sub_path="agentic-demo-service/T-1/exec-1",
+                mount_path="/repo",
+                host_path="/data/agent-workspaces",
+            ),
+        )
+    )
+    container = built["spec"]["containers"][0]
+    volume = built["spec"]["volumes"][0]
+    assert volume["hostPath"] == {"path": "/data/agent-workspaces", "type": "Directory"}
+    assert container["volumeMounts"][0]["mountPath"] == "/repo"
+    assert container["workingDir"] == "/repo"
+
+
+def test_workspace_binding_requires_a_source() -> None:
+    with pytest.raises(ValueError):
+        build_pod_manifest(
+            SandboxSpec(
+                execution_id="exec-1",
+                image="img",
+                workspace=WorkspaceBinding(sub_path="agentic-demo-service/T-1/exec-1"),
+            )
+        )
 
 
 def test_default_deny_policy_blocks_all_egress() -> None:

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from openhands.runtime.caps import RuntimeCaps
 from openhands.runtime.conversation import ConversationDriver, ImplementationOutcome
-from openhands.runtime.provisioner import SandboxProvisioner, SandboxSpec
+from openhands.runtime.provisioner import SandboxProvisioner, SandboxSpec, WorkspaceBinding
 from scripts.config import Settings, get_settings
 
 
@@ -20,6 +20,9 @@ class SandboxRuntime:
     namespace: str
     server_port: int
     litellm_base_url: str
+    workspace_claim: str = ""
+    workspace_host_path: str = ""
+    workspace_mount_path: str = "/workspace"
 
     @classmethod
     def from_settings(
@@ -42,6 +45,19 @@ class SandboxRuntime:
             namespace=resolved.openhands_sandbox_namespace,
             server_port=resolved.openhands_server_port,
             litellm_base_url=resolved.litellm_base_url,
+            workspace_claim=resolved.sandbox_workspace_claim,
+            workspace_host_path=resolved.sandbox_workspace_host_path,
+            workspace_mount_path=resolved.sandbox_workspace_mount_path,
+        )
+
+    def _workspace_binding(self, sub_path: str) -> WorkspaceBinding | None:
+        if not sub_path or not (self.workspace_claim or self.workspace_host_path):
+            return None
+        return WorkspaceBinding(
+            sub_path=sub_path,
+            mount_path=self.workspace_mount_path,
+            claim_name=self.workspace_claim,
+            host_path=self.workspace_host_path,
         )
 
     async def run_implementation(
@@ -50,6 +66,7 @@ class SandboxRuntime:
         execution_id: str,
         task: str,
         context: str = "",
+        workspace_sub_path: str = "",
     ) -> ImplementationOutcome:
         spec = SandboxSpec(
             execution_id=execution_id,
@@ -58,6 +75,7 @@ class SandboxRuntime:
             namespace=self.namespace,
             server_port=self.server_port,
             litellm_base_url=self.litellm_base_url,
+            workspace=self._workspace_binding(workspace_sub_path),
         )
         handle = await self.provisioner.provision(spec)
         try:

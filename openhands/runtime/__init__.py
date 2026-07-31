@@ -24,6 +24,7 @@ from openhands.runtime.provisioner import (
     SandboxHandle,
     SandboxProvisioner,
     SandboxSpec,
+    WorkspaceBinding,
     build_pod_manifest,
     pod_name_for,
 )
@@ -50,6 +51,7 @@ __all__ = [
     "SandboxProvisioner",
     "SandboxRuntime",
     "SandboxSpec",
+    "WorkspaceBinding",
     "build_pod_manifest",
     "pod_name_for",
 ]

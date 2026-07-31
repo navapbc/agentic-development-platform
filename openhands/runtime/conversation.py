@@ -28,6 +28,8 @@ class ImplementationOutcome:
     tool_calls: int
     elapsed_seconds: float
     cost: float = 0.0
+    tokens: int = 0
+    llm_calls: int = 0
     summary: str = ""
 
 
@@ -106,13 +108,17 @@ class RemoteConversationDriver:
             conversation.run()
             reason = breach.get("reason", COMPLETED)
             status = ABORTED if reason != COMPLETED else FINISHED
-            cost = conversation.conversation_stats.get_combined_metrics().accumulated_cost
+            metrics = conversation.conversation_stats.get_combined_metrics()
+            usage = metrics.accumulated_token_usage
+            tokens = int(usage.prompt_tokens + usage.completion_tokens) if usage else 0
             return ImplementationOutcome(
                 status=status,
                 terminal_reason=reason,
                 tool_calls=tracker.tool_calls,
                 elapsed_seconds=tracker.elapsed,
-                cost=float(cost),
+                cost=float(metrics.accumulated_cost),
+                tokens=tokens,
+                llm_calls=len(metrics.costs),
             )
         except Exception as exc:
             return ImplementationOutcome(
@@ -145,11 +151,15 @@ class FakeConversationDriver:
         *,
         tool_calls: int = 1,
         cost: float = 0.0,
+        tokens: int = 0,
+        llm_calls: int = 0,
         summary: str = "",
         fail: bool = False,
     ) -> None:
         self._tool_calls = tool_calls
         self._cost = cost
+        self._tokens = tokens
+        self._llm_calls = llm_calls
         self._summary = summary
         self._fail = fail
         self.calls: list[str] = []
@@ -188,5 +198,7 @@ class FakeConversationDriver:
             tool_calls=tracker.tool_calls,
             elapsed_seconds=tracker.elapsed,
             cost=self._cost,
+            tokens=self._tokens,
+            llm_calls=self._llm_calls,
             summary=self._summary,
         )
