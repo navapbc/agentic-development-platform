@@ -13,6 +13,10 @@ from services.orchestration.temporal_activities.persistence import (
     record_audit_event,
 )
 from services.orchestration.temporal_activities.planning import gather_repo_context
+from services.orchestration.temporal_activities.pull_request import (
+    create_draft_pr,
+    link_pr_to_issue,
+)
 from services.orchestration.temporal_activities.review import (
     review_code,
     review_plan,
@@ -22,8 +26,10 @@ from services.orchestration.temporal_activities.review import (
 
 __all__ = [
     "claim_work_unit",
+    "create_draft_pr",
     "gather_repo_context",
     "invoke_model",
+    "link_pr_to_issue",
     "persist_execution_state",
     "recheck_issue",
     "record_audit_event",

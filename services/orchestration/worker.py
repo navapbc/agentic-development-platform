@@ -11,8 +11,10 @@ from temporalio.worker import Worker
 
 from services.orchestration.temporal_activities import (
     claim_work_unit,
+    create_draft_pr,
     gather_repo_context,
     invoke_model,
+    link_pr_to_issue,
     persist_execution_state,
     recheck_issue,
     record_audit_event,
@@ -30,6 +32,7 @@ from services.orchestration.temporal_workflows import (
     FoundationWorkflow,
     ImplementationWorkflow,
     PlanReviewWorkflow,
+    PullRequestWorkflow,
     ReviewPipelineWorkflow,
 )
 
@@ -56,6 +59,7 @@ async def main() -> None:
             ReviewPipelineWorkflow,
             ImplementationWorkflow,
             BranchSyncWorkflow,
+            PullRequestWorkflow,
         ],
         activities=[
             invoke_model,
@@ -71,6 +75,8 @@ async def main() -> None:
             synchronize_branch,
             resolve_conflicts,
             recheck_issue,
+            create_draft_pr,
+            link_pr_to_issue,
         ],
     )
     log.info("worker started on task queue '%s'", settings.temporal_task_queue)
