@@ -14,14 +14,18 @@ from services.orchestration.temporal_activities import (
     gather_repo_context,
     invoke_model,
     persist_execution_state,
+    recheck_issue,
     record_audit_event,
+    resolve_conflicts,
     review_code,
     review_plan,
     review_security,
     run_implementation_stage,
+    synchronize_branch,
     verify_acceptance,
 )
 from services.orchestration.temporal_workflows import (
+    BranchSyncWorkflow,
     CodeReviewWorkflow,
     FoundationWorkflow,
     ImplementationWorkflow,
@@ -51,6 +55,7 @@ async def main() -> None:
             CodeReviewWorkflow,
             ReviewPipelineWorkflow,
             ImplementationWorkflow,
+            BranchSyncWorkflow,
         ],
         activities=[
             invoke_model,
@@ -63,6 +68,9 @@ async def main() -> None:
             verify_acceptance,
             claim_work_unit,
             run_implementation_stage,
+            synchronize_branch,
+            resolve_conflicts,
+            recheck_issue,
         ],
     )
     log.info("worker started on task queue '%s'", settings.temporal_task_queue)
