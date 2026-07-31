@@ -1,0 +1,12 @@
+apiVersion: vpcresources.k8s.aws/v1beta1
+kind: SecurityGroupPolicy
+metadata:
+  name: openhands-sandbox-egress
+  namespace: agent-sandbox
+spec:
+  podSelector:
+    matchLabels:
+      app: openhands-sandbox
+  securityGroups:
+    groupIds:
+      - ${SANDBOX_EGRESS_SECURITY_GROUP_ID}

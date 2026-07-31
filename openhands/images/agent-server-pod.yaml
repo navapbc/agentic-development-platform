@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: agent-sandbox
+  namespace: agent-sandbox
+  labels:
+    app: openhands-sandbox
+    app.kubernetes.io/part-of: agentic-dev-platform
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  securityContext:
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: agent-server
+      image: ghcr.io/openhands/agent-server:latest-python
+      ports:
+        - containerPort: 8000
+      env:
+        - name: LLM_BASE_URL
+          value: http://litellm:4000
+      resources:
+        requests:
+          cpu: 500m
+          memory: 1Gi
+        limits:
+          cpu: "2"
+          memory: 4Gi
+      securityContext:
+        allowPrivilegeEscalation: false
+        runAsNonRoot: true
+        capabilities:
+          drop:
+            - ALL
