@@ -91,6 +91,10 @@ class Settings(BaseSettings):
     sandbox_workspace_host_path: str = ""
     sandbox_workspace_mount_path: str = "/workspace"
 
+    reap_schedule_id: str = "orphan-reaper"
+    reap_schedule_interval_minutes: int = 60
+    reap_schedule_dry_run: bool = False
+
     allowlist_jira_projects: str = "AGENTDEV"
     allowlist_repos: str = (
         "agentic-demo-service,agentic-demo-greenfield,"

@@ -16,6 +16,7 @@ from services.orchestration.temporal_activities import (
     invoke_model,
     link_pr_to_issue,
     persist_execution_state,
+    reap_orphans,
     recheck_issue,
     record_audit_event,
     resolve_conflicts,
@@ -33,6 +34,7 @@ from services.orchestration.temporal_workflows import (
     ImplementationWorkflow,
     PlanReviewWorkflow,
     PullRequestWorkflow,
+    ReapWorkflow,
     ReviewPipelineWorkflow,
 )
 
@@ -60,6 +62,7 @@ async def main() -> None:
             ImplementationWorkflow,
             BranchSyncWorkflow,
             PullRequestWorkflow,
+            ReapWorkflow,
         ],
         activities=[
             invoke_model,
@@ -77,6 +80,7 @@ async def main() -> None:
             recheck_issue,
             create_draft_pr,
             link_pr_to_issue,
+            reap_orphans,
         ],
     )
     log.info("worker started on task queue '%s'", settings.temporal_task_queue)

@@ -95,6 +95,12 @@ def fetch_acli(c, dest="vendor/bin/acli"):
     c.run(f"python -m scripts.fetch_acli --dest {dest}", pty=True)
 
 
+@task(help={"apply": "Perform real deletions instead of a dry-run."})
+def reap(c, apply=False):
+    """Reap expired platform orphan artifacts (dry-run by default)."""
+    c.run(f"python -m scripts.reap {'--apply' if apply else ''}".strip(), pty=True)
+
+
 ns = Collection()
 for _t in (
     tunnel_start,
@@ -110,5 +116,6 @@ for _t in (
     workflow_status,
     durability_proof,
     fetch_acli,
+    reap,
 ):
     ns.add_task(_t)

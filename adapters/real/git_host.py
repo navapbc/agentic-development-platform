@@ -208,6 +208,19 @@ class RealGitHost:
         comments = tuple(PRComment(author=c["user"]["login"], body=c["body"]) for c in raw)
         return PRFeedback(repo=repo, number=number, state=pull["state"], comments=comments)
 
+    async def delete_branch(self, repo: str, name: str) -> bool:
+        remote = self._remote_url(repo)
+        if not await self._ls_remote(remote, name):
+            return False
+        await self._git("push", remote, "--delete", f"refs/heads/{name}")
+        return True
+
+    async def close_pr(self, repo: str, number: int) -> PullRequest:
+        updated = await self._patch(
+            f"/repos/{self._owner}/{repo}/pulls/{number}", {"state": "closed"}
+        )
+        return _pull_request(repo, updated, created=False)
+
 
 def _pull_request(repo: str, data: dict[str, Any], *, created: bool) -> PullRequest:
     head = data.get("head", {})

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from adapters.interfaces.git_host import (
     BranchRef,
@@ -154,6 +154,23 @@ class MockGitHost:
             raise KeyError(f"pull request missing: {repo}#{number}")
         comments = tuple(record.comments.get(number, ()))
         return PRFeedback(repo=repo, number=number, state=pull.state, comments=comments)
+
+    async def delete_branch(self, repo: str, name: str) -> bool:
+        record = self._repo(repo)
+        if name not in record.heads:
+            return False
+        record.heads.pop(name, None)
+        record.trees.pop(name, None)
+        return True
+
+    async def close_pr(self, repo: str, number: int) -> PullRequest:
+        record = self._repo(repo)
+        for index, existing in enumerate(record.prs):
+            if existing.number == number:
+                closed = replace(existing, state="closed")
+                record.prs[index] = closed
+                return closed
+        raise KeyError(f"pull request missing: {repo}#{number}")
 
     def add_pr_comment(self, repo: str, number: int, author: str, body: str) -> None:
         self._repo(repo).comments.setdefault(number, []).append(PRComment(author, body))

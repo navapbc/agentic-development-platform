@@ -17,6 +17,7 @@ from services.orchestration.temporal_activities.pull_request import (
     create_draft_pr,
     link_pr_to_issue,
 )
+from services.orchestration.temporal_activities.reap import reap_orphans
 from services.orchestration.temporal_activities.review import (
     review_code,
     review_plan,
@@ -32,6 +33,7 @@ __all__ = [
     "link_pr_to_issue",
     "persist_execution_state",
     "recheck_issue",
+    "reap_orphans",
     "record_audit_event",
     "resolve_conflicts",
     "review_code",
