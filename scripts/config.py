@@ -82,6 +82,8 @@ class Settings(BaseSettings):
     openhands_max_wall_clock_seconds: float = 1800.0
     coding_model: str = "coding-model"
 
+    execution_workspace_root: str = ".agent-workspaces"
+
     allowlist_jira_projects: str = "AGENTDEV"
     allowlist_repos: str = (
         "agentic-demo-service,agentic-demo-greenfield,"
