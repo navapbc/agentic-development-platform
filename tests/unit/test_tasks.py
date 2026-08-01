@@ -7,6 +7,8 @@ from invoke import Collection
 
 EXPECTED_TASKS = {
     "tunnel-start",
+    "tunnel-stop",
+    "tunnel-status",
     "connectivity-check",
     "local-up",
     "local-down",
@@ -20,6 +22,10 @@ EXPECTED_TASKS = {
     "durability-proof",
     "fetch-acli",
     "reap",
+    "demo-durable-task",
+    "demo-coordination",
+    "demo-repo-intelligence",
+    "demo-draft-pr",
 }
 
 

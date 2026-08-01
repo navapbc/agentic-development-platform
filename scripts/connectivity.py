@@ -16,6 +16,25 @@ def _check_litellm(base_url: str) -> tuple[bool, str]:
         return False, str(exc)
 
 
+def preflight(settings) -> tuple[bool, str]:
+    """Fast fail-closed reachability probe for the Bedrock inference path.
+
+    Returns (ok, detail). Unlike ``main``, a down tunnel is fatal here so callers
+    can abort before doing expensive work.
+    """
+    litellm_ok, litellm_detail = _check_litellm(settings.litellm_base_url)
+    if not litellm_ok:
+        return False, f"LiteLLM unreachable at {settings.litellm_base_url} ({litellm_detail})"
+    try:
+        provider = get_provider(settings)
+    except ValueError as exc:
+        return False, f"bedrock provider misconfigured: {exc}"
+    tunnel_ok, tunnel_detail = provider.verify(settings)
+    if not tunnel_ok:
+        return False, f"bedrock path down ({provider.key}): {tunnel_detail}"
+    return True, f"LiteLLM ok; bedrock path ok ({provider.key})"
+
+
 def main() -> int:
     settings = get_settings()
     print("== Bedrock connectivity check ==")

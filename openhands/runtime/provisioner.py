@@ -4,11 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import re
+import socket
+import subprocess
+import urllib.error
+import urllib.request
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
 _NAME_SANITISE = re.compile(r"[^a-z0-9-]+")
+_SANDBOX_UID = 10001
 
 
 @dataclass(frozen=True)
@@ -42,6 +47,14 @@ class SandboxHandle:
 def pod_name_for(execution_id: str) -> str:
     slug = _NAME_SANITISE.sub("-", execution_id.lower()).strip("-")
     return f"agent-sandbox-{slug or 'exec'}"[:63].rstrip("-")
+
+
+def _pod_ready(pod: object) -> bool:
+    conditions = getattr(getattr(pod, "status", None), "conditions", None) or []
+    return any(
+        getattr(c, "type", None) == "Ready" and getattr(c, "status", None) == "True"
+        for c in conditions
+    )
 
 
 def _workspace_volume(binding: WorkspaceBinding) -> tuple[dict, dict]:
@@ -86,7 +99,24 @@ def build_pod_manifest(spec: SandboxSpec) -> dict:
         "securityContext": {
             "allowPrivilegeEscalation": False,
             "runAsNonRoot": True,
+            "runAsUser": _SANDBOX_UID,
+            "runAsGroup": _SANDBOX_UID,
             "capabilities": {"drop": ["ALL"]},
+        },
+        "readinessProbe": {
+            "exec": {
+                "command": [
+                    "curl",
+                    "-fsS",
+                    "-o",
+                    "/dev/null",
+                    f"http://127.0.0.1:{spec.server_port}/health",
+                ]
+            },
+            "initialDelaySeconds": 2,
+            "periodSeconds": 2,
+            "timeoutSeconds": 3,
+            "failureThreshold": 60,
         },
     }
     spec_body: dict = {
@@ -161,10 +191,10 @@ class KubernetesSandboxProvisioner:
             pod = await asyncio.to_thread(core.read_namespaced_pod, name, namespace)
             phase = getattr(pod.status, "phase", None)
             pod_ip = getattr(pod.status, "pod_ip", None)
-            if phase == "Running" and pod_ip:
-                return pod_ip
             if phase in {"Failed", "Succeeded"}:
                 raise RuntimeError(f"sandbox pod {name} entered terminal phase {phase}")
+            if pod_ip and _pod_ready(pod):
+                return pod_ip
             if asyncio.get_running_loop().time() >= deadline:
                 raise TimeoutError(f"sandbox pod {name} not ready within {self._ready_timeout}s")
             await asyncio.sleep(self._poll_interval)
@@ -203,3 +233,86 @@ class FakeSandboxProvisioner:
 
     async def teardown(self, handle: SandboxHandle) -> None:
         self.torn_down.append(handle)
+
+
+def _free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def _http_ready(port: int, path: str = "/health") -> bool:
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=1):
+            return True
+    except urllib.error.HTTPError:
+        return True
+    except (urllib.error.URLError, OSError):
+        return False
+
+
+class PortForwardSandboxProvisioner:
+    """Expose an inner provisioner's sandbox over a local kubectl port-forward.
+
+    The Kubernetes provisioner returns a pod-IP base URL that is only routable
+    inside the cluster. A host-run driver (a laptop against Docker Desktop
+    Kubernetes) reaches the pod through a `kubectl port-forward` and a
+    `127.0.0.1` base URL instead.
+    """
+
+    def __init__(
+        self,
+        inner: SandboxProvisioner | None = None,
+        *,
+        kubectl: str = "kubectl",
+        ready_timeout_seconds: float = 120.0,
+    ) -> None:
+        self._inner = inner or KubernetesSandboxProvisioner(in_cluster=False)
+        self._kubectl = kubectl
+        self._ready_timeout = ready_timeout_seconds
+        self._forwards: dict[str, subprocess.Popen] = {}
+
+    async def provision(self, spec: SandboxSpec) -> SandboxHandle:
+        handle = await self._inner.provision(spec)
+        local_port = _free_port()
+        proc = await asyncio.to_thread(
+            subprocess.Popen,
+            [
+                self._kubectl,
+                "port-forward",
+                "-n",
+                handle.namespace,
+                f"pod/{handle.name}",
+                f"{local_port}:{spec.server_port}",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        self._forwards[handle.name] = proc
+        await self._wait_forward(local_port, proc)
+        return SandboxHandle(
+            name=handle.name,
+            namespace=handle.namespace,
+            base_url=f"http://127.0.0.1:{local_port}",
+        )
+
+    async def _wait_forward(self, port: int, proc: subprocess.Popen) -> None:
+        deadline = asyncio.get_running_loop().time() + self._ready_timeout
+        while True:
+            if proc.poll() is not None:
+                raise RuntimeError("kubectl port-forward exited before becoming ready")
+            if await asyncio.to_thread(_http_ready, port):
+                return
+            if asyncio.get_running_loop().time() >= deadline:
+                raise TimeoutError(f"port-forward to 127.0.0.1:{port} not ready in time")
+            await asyncio.sleep(0.25)
+
+    async def teardown(self, handle: SandboxHandle) -> None:
+        proc = self._forwards.pop(handle.name, None)
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            try:
+                await asyncio.to_thread(proc.wait, 5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        await self._inner.teardown(handle)

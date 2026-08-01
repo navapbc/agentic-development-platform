@@ -46,6 +46,40 @@ class LinkbackResult:
     detail: str
 
 
+@dataclass
+class FindOpenPrRequest:
+    repo: str
+    task_id: str
+
+
+@dataclass
+class FindOpenPrResult:
+    found: bool
+    number: int = 0
+    url: str = ""
+    title: str = ""
+    head: str = ""
+
+
+@dataclass
+class CommitPushRequest:
+    repo: str
+    task_id: str
+    execution_id: str
+    base: str
+    commit: str
+    message: str
+    sequence: int = 2
+
+
+@dataclass
+class CommitPushResult:
+    branch: str
+    commit_sha: str
+    pushed: bool
+    replayed: bool
+
+
 def _build_mediator():
     from adapters.real.git_host import RealGitHost
 
@@ -103,6 +137,45 @@ async def create_draft_pr(req: OpenPrRequest) -> OpenPrResult:
         draft=pr.draft,
         state=pr.state,
         orphan_id=orphan_id,
+    )
+
+
+@activity.defn
+async def find_open_pr(req: FindOpenPrRequest) -> FindOpenPrResult:
+    mediator = _build_mediator()
+    pr = await mediator.find_open_pr(req.repo, req.task_id)
+    if pr is None:
+        return FindOpenPrResult(found=False)
+    return FindOpenPrResult(
+        found=True,
+        number=pr.number,
+        url=pr.url,
+        title=pr.title,
+        head=pr.head,
+    )
+
+
+@activity.defn
+async def commit_and_push(req: CommitPushRequest) -> CommitPushResult:
+    from services.coordination.orphans import PostgresOrphanRegistry
+    from services.orchestration.materialization import WorkspaceMaterializer
+
+    materializer = WorkspaceMaterializer.from_settings(PostgresOrphanRegistry())
+    workspace = await materializer.materialize(
+        repo=req.repo,
+        task_id=req.task_id,
+        execution_id=req.execution_id,
+        base=req.base,
+        commit_sha=req.commit,
+    )
+    commit_request = await materializer.build_commit_request(workspace, message=req.message)
+    mediator = _build_mediator()
+    result = await mediator.commit_and_push(commit_request, sequence=req.sequence)
+    return CommitPushResult(
+        branch=result.branch,
+        commit_sha=result.commit_sha,
+        pushed=result.pushed,
+        replayed=result.replayed,
     )
 
 

@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import TypeVar
 
 from services.repository_intelligence.indexing.reindex import reindex_repo
-from services.repository_intelligence.indexing.scip_builder import scip_indexer_for
+from services.repository_intelligence.indexing.scip_builder import resolve_commit, scip_indexer_for
 from services.repository_intelligence.languages import Language, primary_language
 from services.repository_intelligence.normalization.models import (
     ContextPackage,
@@ -151,6 +151,12 @@ class RepositoryIntelligenceService:
             self._cbm_available = self._safe(self._cbm.is_available, False)
         return self._cbm_available
 
+    def _resolve_commit(self, repo: RepoRef) -> RepoRef:
+        if repo.commit_sha:
+            return repo
+        head = self._safe(lambda: resolve_commit(self._root), "")
+        return replace(repo, commit_sha=head) if head else repo
+
     def ensure_fresh(self, repo: RepoRef) -> bool:
         status = self._safe(lambda: self._router.repo_get_index_status(repo), None)
         if status is not None and status.is_fresh and status.indexed_commit == repo.commit_sha:
@@ -163,6 +169,7 @@ class RepositoryIntelligenceService:
         return False
 
     def context_package(self, repo: RepoRef, focus: str) -> ContextPackage:
+        repo = self._resolve_commit(repo)
         self.ensure_fresh(repo)
         base = self._router.repo_get_context_package(repo, focus)
         candidate_files = self._candidate_files(repo, focus)

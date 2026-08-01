@@ -26,6 +26,7 @@ from services.review.types import ModelProvenance, RawReview, Verdict
 from temporalio import activity
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
+from temporalio.worker.workflow_sandbox import SandboxedWorkflowRunner, SandboxRestrictions
 
 
 class _InMemorySink:
@@ -72,6 +73,9 @@ async def test_pipeline_persists_verified_attestations(monkeypatch):
             env.client,
             task_queue=task_queue,
             workflows=[ReviewPipelineWorkflow, PlanReviewWorkflow, CodeReviewWorkflow],
+            workflow_runner=SandboxedWorkflowRunner(
+                restrictions=SandboxRestrictions.default.with_passthrough_modules("beartype")
+            ),
             activities=[
                 fake_persist,
                 fake_audit,

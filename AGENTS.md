@@ -19,7 +19,8 @@ Generic, tool-agnostic working rules. These are personal preferences for how any
 
 ## Prose and punctuation
 
-- Never use em-dashes, en-dashes, or space-hyphen-space as sentence connectors or parenthetical separators anywhere (prose, documentation, chat). Rewrite the sentence instead. Do not substitute a plain hyphen for a dash.
+- A prose connector is any punctuation that splices, appends, or interrupts a clause in place of ending the sentence or restructuring it. The banned connectors are the em-dash, the en-dash, space-hyphen-space, the semicolon, and the colon when it joins or introduces a clause mid-sentence. Never use any of them in prose, documentation, chat, on-screen demo output, or help strings. Rewrite with a period, a comma where it is grammatical, or two sentences. Do not substitute a plain hyphen for a dash.
+- A colon is allowed only to introduce a list of items or as a structural label such as a heading or a field name (for example a `Command:` line), never to connect two clauses inside a sentence. When text is quoted as spoken narration, keep it free of colons entirely and reword instead.
 - Acceptable hyphen uses: compound words, technical names and identifiers, markdown list bullets, table separators, horizontal rules, and code or SQL operators.
 - Do not hard-wrap paragraphs in markdown. Write each paragraph as a single logical line and let editors and viewers handle soft-wrapping. Keep line breaks only where markdown semantics require them.
 
@@ -48,7 +49,7 @@ Generic, tool-agnostic working rules. These are personal preferences for how any
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **agentic-dev-platform** (6036 symbols, 11492 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **agentic-dev-platform** (6216 symbols, 11786 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 

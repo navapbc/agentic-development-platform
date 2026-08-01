@@ -64,7 +64,7 @@ async def test_materializes_repo_at_manifest_sha_on_deterministic_branch(remote,
         commit_sha=manifest_sha,
     )
 
-    assert workspace.branch == agent_branch_name(TASK_ID, EXECUTION_ID)
+    assert workspace.branch == agent_branch_name(TASK_ID)
     assert workspace.commit_sha == manifest_sha
     assert _git(["rev-parse", "HEAD"], workspace.path) == manifest_sha
     assert _git(["rev-parse", "--abbrev-ref", "HEAD"], workspace.path) == workspace.branch

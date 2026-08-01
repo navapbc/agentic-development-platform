@@ -152,8 +152,14 @@ def to_host_url(url: str) -> str:
     """
     parsed = urlparse(url)
     if parsed.hostname in _COMPOSE_SERVICE_HOSTS:
+        userinfo = ""
+        if parsed.username:
+            userinfo = parsed.username
+            if parsed.password:
+                userinfo += f":{parsed.password}"
+            userinfo += "@"
         port = f":{parsed.port}" if parsed.port else ""
-        return urlunparse(parsed._replace(netloc=f"localhost{port}"))
+        return urlunparse(parsed._replace(netloc=f"{userinfo}localhost{port}"))
     return url
 
 

@@ -46,7 +46,7 @@ async def test_ensure_agent_branch_is_deterministic_and_create_if_not_exists(
     mediator: GitHubMediator,
 ) -> None:
     branch = await mediator.ensure_agent_branch(REPO, TASK_ID, EXECUTION_ID, "main", sequence=1)
-    assert branch.name == agent_branch_name(TASK_ID, EXECUTION_ID)
+    assert branch.name == agent_branch_name(TASK_ID)
     assert branch.created is True
 
     replay = await mediator.ensure_agent_branch(REPO, TASK_ID, EXECUTION_ID, "main", sequence=1)
@@ -55,7 +55,7 @@ async def test_ensure_agent_branch_is_deterministic_and_create_if_not_exists(
 
 
 async def test_commit_is_idempotent_under_a_forced_retry(mediator: GitHubMediator) -> None:
-    branch = agent_branch_name(TASK_ID, EXECUTION_ID)
+    branch = agent_branch_name(TASK_ID)
     await mediator.ensure_agent_branch(REPO, TASK_ID, EXECUTION_ID, "main", sequence=1)
     request = CommitRequest(
         repo=REPO,
@@ -78,7 +78,7 @@ async def test_commit_is_idempotent_under_a_forced_retry(mediator: GitHubMediato
 async def test_open_draft_pr_updates_an_existing_open_pr_instead_of_duplicating(
     mediator: GitHubMediator,
 ) -> None:
-    branch = agent_branch_name(TASK_ID, EXECUTION_ID)
+    branch = agent_branch_name(TASK_ID)
     await mediator.ensure_agent_branch(REPO, TASK_ID, EXECUTION_ID, "main", sequence=1)
 
     created = await mediator.open_draft_pr(
@@ -101,3 +101,25 @@ async def test_a_stale_execution_write_is_discarded_by_the_sequence_gate(
     await mediator.ensure_agent_branch(REPO, TASK_ID, "exec-new", "main", sequence=5)
     with pytest.raises(StaleActionError):
         await mediator.ensure_agent_branch(REPO, TASK_ID, "exec-old", "main", sequence=3)
+
+
+async def test_find_open_pr_returns_none_when_no_pr_exists(mediator: GitHubMediator) -> None:
+    assert await mediator.find_open_pr(REPO, TASK_ID) is None
+
+
+async def test_find_open_pr_locates_the_task_branch_pr(mediator: GitHubMediator) -> None:
+    branch = agent_branch_name(TASK_ID)
+    await mediator.ensure_agent_branch(REPO, TASK_ID, EXECUTION_ID, "main", sequence=1)
+    created = await mediator.open_draft_pr(
+        REPO, TASK_ID, EXECUTION_ID, branch, "main", "Draft", "body", sequence=2
+    )
+
+    found = await mediator.find_open_pr(REPO, TASK_ID)
+    assert found is not None
+    assert found.number == created.number
+    assert found.head == branch
+
+
+async def test_find_open_pr_guards_non_allowlisted_repos(mediator: GitHubMediator) -> None:
+    with pytest.raises(RepoNotAllowedError):
+        await mediator.find_open_pr("secret-internal", TASK_ID)

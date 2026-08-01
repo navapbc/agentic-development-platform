@@ -19,6 +19,7 @@ from openhands.runtime.caps import (
 FINISHED = "finished"
 ABORTED = "aborted"
 FAILED = "failed"
+_MAX_OUTPUT_TOKENS = 8192
 
 
 @dataclass(frozen=True)
@@ -42,12 +43,13 @@ class ConversationDriver(Protocol):
         task: str,
         context: str,
         caps: RuntimeCaps,
+        working_dir: str = "",
     ) -> ImplementationOutcome: ...
 
 
 class RemoteConversationDriver:
     def __init__(self, *, model: str, litellm_base_url: str, api_key: str = "") -> None:
-        self._model = model
+        self._model = model if "/" in model else f"litellm_proxy/{model}"
         self._litellm_base_url = litellm_base_url
         self._api_key = api_key
 
@@ -58,8 +60,9 @@ class RemoteConversationDriver:
         task: str,
         context: str,
         caps: RuntimeCaps,
+        working_dir: str = "",
     ) -> ImplementationOutcome:
-        return await asyncio.to_thread(self._run_sync, base_url, task, context, caps)
+        return await asyncio.to_thread(self._run_sync, base_url, task, context, caps, working_dir)
 
     def _run_sync(
         self,
@@ -67,6 +70,7 @@ class RemoteConversationDriver:
         task: str,
         context: str,
         caps: RuntimeCaps,
+        working_dir: str = "",
     ) -> ImplementationOutcome:
         from openhands.sdk import LLM, Conversation, Workspace
         from openhands.sdk.event import ActionEvent
@@ -81,9 +85,12 @@ class RemoteConversationDriver:
             model=self._model,
             base_url=self._litellm_base_url,
             api_key=SecretStr(self._api_key or "unused"),
+            max_output_tokens=_MAX_OUTPUT_TOKENS,
+            caching_prompt=False,
+            reasoning_effort="none",
         )
         agent = get_default_agent(llm=llm, cli_mode=True)
-        workspace = Workspace(host=base_url)
+        workspace = Workspace(host=base_url, working_dir=working_dir or "workspace/project")
 
         def on_event(event: object) -> None:
             if isinstance(event, ActionEvent):
@@ -171,6 +178,7 @@ class FakeConversationDriver:
         task: str,
         context: str,
         caps: RuntimeCaps,
+        working_dir: str = "",
     ) -> ImplementationOutcome:
         self.calls.append(base_url)
         tracker = CapTracker(caps)

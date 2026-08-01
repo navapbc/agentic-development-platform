@@ -97,7 +97,7 @@ class WorkspaceMaterializer:
         commit_sha: str,
     ) -> MaterializedWorkspace:
         self._guard(repo)
-        branch = agent_branch_name(task_id, execution_id)
+        branch = agent_branch_name(task_id)
         path = self._path_for(repo, task_id, execution_id)
         await self._ensure_checkout(repo, path, branch, commit_sha)
         head = await _git("rev-parse", "HEAD", cwd=str(path))
@@ -106,7 +106,7 @@ class WorkspaceMaterializer:
                 BRANCH,
                 f"{repo}:{branch}",
                 repository=repo,
-                owning_workflow=execution_id,
+                owning_workflow=task_id,
             )
         )
         workspace_orphan_id = await self.registry.register(

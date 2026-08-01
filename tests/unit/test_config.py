@@ -6,7 +6,7 @@ from scripts.config import Settings
 
 
 def test_default_allowlists_match_plan():
-    s = Settings()
+    s = Settings(_env_file=None)
     assert s.allowed_projects() == {"AGENTDEV"}
     assert s.allowed_repos() == {
         "agentic-demo-service",

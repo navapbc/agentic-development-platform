@@ -82,6 +82,10 @@ class GitHubMediator:
         self._guard(repo)
         return await self.backend.read_pr_feedback(repo, number)
 
+    async def find_open_pr(self, repo: str, task_id: str) -> PullRequest | None:
+        self._guard(repo)
+        return await self.backend.find_open_pr(repo, agent_branch_name(task_id))
+
     async def ensure_agent_branch(
         self,
         repo: str,
@@ -92,7 +96,7 @@ class GitHubMediator:
         sequence: int,
     ) -> BranchRef:
         self._guard(repo)
-        name = agent_branch_name(task_id, execution_id)
+        name = agent_branch_name(task_id)
         action = SequencedAction(task_id, execution_id, sequence, operation="github.ensure_branch")
         ref = SideEffectRef(task_id, execution_id, "github.ensure_branch", f"{repo}:{name}")
 

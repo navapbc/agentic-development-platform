@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import pytest
 import yaml
-from openhands.runtime.provisioner import SandboxSpec, WorkspaceBinding, build_pod_manifest
+from openhands.runtime.provisioner import (
+    SandboxSpec,
+    WorkspaceBinding,
+    _free_port,
+    _http_ready,
+    build_pod_manifest,
+)
 
 MANIFESTS = Path(__file__).resolve().parents[2] / "openhands"
 POD = MANIFESTS / "images" / "agent-server-pod.yaml"
@@ -15,6 +23,31 @@ POLICIES = MANIFESTS / "policies"
 
 def _load(path: Path) -> dict:
     return yaml.safe_load(path.read_text())
+
+
+def test_http_ready_detects_a_serving_endpoint() -> None:
+    class _Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'{"status":"ok"}')
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), _Handler)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        assert _http_ready(port) is True
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
+def test_http_ready_false_when_nothing_listens() -> None:
+    assert _http_ready(_free_port()) is False
 
 
 def test_pod_pins_agent_server_image_and_hardens_the_container() -> None:
@@ -26,6 +59,8 @@ def test_pod_pins_agent_server_image_and_hardens_the_container() -> None:
     assert pod["metadata"]["labels"]["app"] == "openhands-sandbox"
     assert container["securityContext"]["runAsNonRoot"] is True
     assert container["securityContext"]["allowPrivilegeEscalation"] is False
+    assert container["securityContext"]["runAsUser"] == 10001
+    assert container["readinessProbe"]["exec"]["command"][-1].endswith(":8000/health")
 
 
 def test_pod_builder_matches_the_declarative_manifest() -> None:
@@ -38,6 +73,7 @@ def test_pod_builder_matches_the_declarative_manifest() -> None:
         )
     )
     assert built["spec"]["containers"][0]["image"] == pod["spec"]["containers"][0]["image"]
+    assert built["spec"]["containers"][0]["securityContext"]["runAsUser"] == 10001
     assert built["metadata"]["labels"]["app"] == pod["metadata"]["labels"]["app"]
     assert (
         built["spec"]["containers"][0]["ports"][0]["containerPort"]

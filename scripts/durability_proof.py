@@ -15,7 +15,7 @@ from scripts.config import get_settings, to_host_hostport
 from scripts.db_reset import _sync_url
 
 WORKER_SERVICE = "workflow-worker"
-PAUSE_SECONDS = 25
+WORK_SECONDS = 25
 
 
 def _compose_cmd() -> list[str]:
@@ -56,9 +56,9 @@ def _audit_trail(engine: Engine, execution_id: str) -> list[tuple[str, str | Non
 
 
 async def main() -> int:
-    from services.orchestration.temporal_workflows.foundation import (
-        FoundationInput,
-        FoundationWorkflow,
+    from services.orchestration.temporal_workflows.durable_task_workflow import (
+        DurableTaskInput,
+        DurableTaskWorkflow,
     )
     from temporalio.client import Client
 
@@ -67,20 +67,20 @@ async def main() -> int:
 
     execution_id = f"exec-{uuid.uuid4().hex[:8]}"
     task_id = f"proof-{uuid.uuid4().hex[:8]}"
-    workflow_id = f"foundation-{execution_id}"
+    workflow_id = f"durable-task-{execution_id}"
 
     address = to_host_hostport(settings.temporal_host)
     print(f"[proof] connecting to Temporal at {address}")
     client = await Client.connect(address, namespace=settings.temporal_namespace)
 
-    print(f"[proof] starting {workflow_id} with a {PAUSE_SECONDS}s durable pause")
+    print(f"[proof] starting {workflow_id} with a {WORK_SECONDS}s long-running task")
     handle = await client.start_workflow(
-        FoundationWorkflow.run,
-        FoundationInput(
+        DurableTaskWorkflow.run,
+        DurableTaskInput(
             task_id=task_id,
             execution_id=execution_id,
             prompt="Reply with the single word: ok",
-            pause_seconds=PAUSE_SECONDS,
+            work_seconds=WORK_SECONDS,
         ),
         id=workflow_id,
         task_queue=settings.temporal_task_queue,
@@ -90,7 +90,7 @@ async def main() -> int:
     if not _wait_for_state(engine, execution_id, "TASK_RECEIVED", timeout=30):
         print("[proof] FAIL: workflow did not persist TASK_RECEIVED in time")
         return 1
-    print("[proof] TASK_RECEIVED persisted; workflow is parked in a durable timer")
+    print("[proof] TASK_RECEIVED persisted; workflow is running its long task")
 
     print(f"[proof] restarting '{WORKER_SERVICE}' to simulate a worker crash...")
     subprocess.run([*_compose_cmd(), "restart", WORKER_SERVICE], check=True)

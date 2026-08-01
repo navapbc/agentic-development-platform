@@ -36,11 +36,17 @@ with workflow.unsafe.imports_passed_through():
         ContextResult,
         gather_repo_context,
     )
+    from services.orchestration.temporal_activities.pull_request import (
+        FindOpenPrRequest,
+        FindOpenPrResult,
+        find_open_pr,
+    )
 
 _CAP_BREACH_REASONS = frozenset({TOOL_CALLS_EXCEEDED, WALL_CLOCK_EXCEEDED})
 COST_BUDGET_EXCEEDED = "cost_budget_exceeded"
 LLM_CALLS_EXCEEDED = "llm_calls_exceeded"
 TOKEN_BUDGET_EXCEEDED = "token_budget_exceeded"
+EXISTING_PR_REUSED = "existing_pr_reused"
 
 
 @dataclass
@@ -71,6 +77,9 @@ class ImplementationOutput:
     branch: str = ""
     commit_sha: str = ""
     diff_hash: str = ""
+    workspace_path: str = ""
+    pr_number: int = 0
+    pr_url: str = ""
     escalated: bool = False
     changed_files: list[str] = field(default_factory=list)
     tokens: int = 0
@@ -146,6 +155,39 @@ class ImplementationWorkflow:
                     status="claim_denied",
                     terminal_reason="work_unit_claimed",
                     claimed=False,
+                )
+
+        if params.repo:
+            existing: FindOpenPrResult = await workflow.execute_activity(
+                find_open_pr,
+                FindOpenPrRequest(repo=params.repo, task_id=params.task_id),
+                start_to_close_timeout=short,
+                retry_policy=retry,
+            )
+            if existing.found:
+                await audit(
+                    AuditEvent(
+                        event_id=f"{params.execution_id}:EXISTING_PR_REUSED",
+                        task_id=params.task_id,
+                        execution_id=params.execution_id,
+                        event_type="EXISTING_PR_REUSED",
+                        stage="IMPLEMENTING",
+                        prev_state="IMPLEMENTING",
+                        new_state="IMPLEMENTING",
+                        decision="reuse",
+                        reason=f"existing draft PR #{existing.number} at {existing.url}",
+                        workflow_id=workflow_id,
+                        artifact_hashes={"pr_url": existing.url},
+                    )
+                )
+                return ImplementationOutput(
+                    execution_id=params.execution_id,
+                    status=EXISTING_PR_REUSED,
+                    terminal_reason=EXISTING_PR_REUSED,
+                    claimed=bool(params.work_unit),
+                    branch=existing.head,
+                    pr_number=existing.number,
+                    pr_url=existing.url,
                 )
 
         context = ""
@@ -229,6 +271,7 @@ class ImplementationWorkflow:
                 branch=result.branch,
                 commit_sha=result.commit_sha,
                 diff_hash=result.diff_hash,
+                workspace_path=result.workspace_path,
                 escalated=True,
                 changed_files=result.changed_files,
                 tokens=result.tokens,
@@ -260,6 +303,7 @@ class ImplementationWorkflow:
             branch=result.branch,
             commit_sha=result.commit_sha,
             diff_hash=result.diff_hash,
+            workspace_path=result.workspace_path,
             escalated=False,
             changed_files=result.changed_files,
             tokens=result.tokens,

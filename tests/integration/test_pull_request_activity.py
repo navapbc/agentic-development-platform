@@ -37,7 +37,7 @@ def _request(execution_id: str, sequence: int) -> OpenPrRequest:
         repo=REPO,
         task_id=TASK_ID,
         execution_id=execution_id,
-        head=agent_branch_name(TASK_ID, "exec-1"),
+        head=agent_branch_name(TASK_ID),
         base="main",
         title="Draft change",
         body="body",

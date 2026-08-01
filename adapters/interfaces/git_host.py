@@ -79,8 +79,8 @@ class PRFeedback:
     comments: tuple[PRComment, ...] = ()
 
 
-def agent_branch_name(task_id: str, execution_id: str) -> str:
-    return f"agent/{task_id}/{execution_id}"
+def agent_branch_name(task_id: str) -> str:
+    return f"agent/{task_id}"
 
 
 class GitHost(Protocol):
@@ -95,6 +95,8 @@ class GitHost(Protocol):
     async def open_draft_pr(
         self, repo: str, head: str, base: str, title: str, body: str
     ) -> PullRequest: ...
+
+    async def find_open_pr(self, repo: str, head: str) -> PullRequest | None: ...
 
     async def read_pr_feedback(self, repo: str, number: int) -> PRFeedback: ...
 

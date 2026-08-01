@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 
 from invoke import Collection, task
 
@@ -19,7 +20,19 @@ def _compose_files() -> str:
 @task(help={"detach": "Run the tunnel in the background."})
 def tunnel_start(c, detach=False):
     """Start the jump-host tunnel to Bedrock."""
-    c.run(f"python -m scripts.tunnel start {'--detach' if detach else ''}", pty=True)
+    c.run(f"python -m scripts.tunnel start {'--detach' if detach else ''}".strip(), pty=True)
+
+
+@task
+def tunnel_stop(c):
+    """Stop the backgrounded Bedrock connectivity tunnel."""
+    c.run("python -m scripts.tunnel stop", pty=True)
+
+
+@task
+def tunnel_status(c):
+    """Report whether the backgrounded Bedrock connectivity tunnel is running."""
+    c.run("python -m scripts.tunnel status", pty=True)
 
 
 @task
@@ -31,7 +44,7 @@ def connectivity_check(c):
 @task
 def local_up(c):
     """Bring up the Phase-1 Compose stack."""
-    c.run(f"{COMPOSE} {_compose_files()} up -d --build")
+    c.run(f"{COMPOSE} {_compose_files()} --profile repo-intelligence up -d --build")
 
 
 @task
@@ -101,9 +114,106 @@ def reap(c, apply=False):
     c.run(f"python -m scripts.reap {'--apply' if apply else ''}".strip(), pty=True)
 
 
+@task(
+    help={
+        "repo": "Demo repo to ground the run with a briefing pack of its code.",
+        "focus": "Center the briefing pack on a function or file (default TaskStore).",
+        "work_seconds": "Length of the long-running task you interrupt with the restart.",
+        "auto_restart": "Restart the worker automatically mid-task instead of by hand.",
+        "show_context": "Print the full briefing pack. Act 2 shows this, leave off for Act 1.",
+    }
+)
+def demo_durable_task(
+    c, repo="", focus="TaskStore", work_seconds=15, auto_restart=False, show_context=False
+):
+    """Demo: a durable, briefing-pack-grounded workflow survives a worker restart (Acts 1 and 2)."""
+    cmd = [sys.executable, "-m", "scripts.demo_durable_task"]
+    if repo:
+        cmd += ["--repo", repo]
+    if focus:
+        cmd += ["--focus", focus]
+    cmd += ["--work-seconds", str(work_seconds)]
+    if auto_restart:
+        cmd.append("--auto-restart")
+    if show_context:
+        cmd.append("--show-context")
+    os.execv(sys.executable, cmd)
+
+
+@task(help={"target": "How high to count before finishing (default 50)."})
+def demo_durable_counter(c, target=50):
+    """Demo: a durable workflow counts through a hand-run worker restart."""
+    os.execv(
+        sys.executable,
+        [sys.executable, "-m", "scripts.demo_durable_counter", "--target", str(target)],
+    )
+
+
+@task(
+    help={
+        "task": "Real Jira ticket to snapshot for the run (defaults to ADSER-13).",
+        "repo": "Repo whose head commit pins the run (defaults to agentic-demo-service).",
+    }
+)
+def demo_coordination(c, task="ADSER-13", repo="agentic-demo-service"):
+    """Demo: the coordination stack blocks double-work and duplicate side effects (Act 3)."""
+    c.run(f"python -m scripts.demo_coordination --task {task} --repo {repo}", pty=True)
+
+
+@task(
+    help={
+        "repo": "Repo to query (defaults to agentic-demo-service).",
+        "commit": "Commit to pin (empty uses the indexed head).",
+        "focus": "Center the briefing pack on a function or file (default TaskStore).",
+    }
+)
+def demo_repo_intelligence(c, repo="agentic-demo-service", commit="", focus="TaskStore"):
+    """Demo: build a briefing pack of a repo's most relevant code (Act 2)."""
+    flags = f"--repo {repo}"
+    flags += f" --commit {commit}" if commit else ""
+    flags += f' --focus "{focus}"' if focus else ""
+    c.run(f"python -m scripts.demo_repo_intelligence {flags}".strip(), pty=True)
+
+
+@task(
+    help={
+        "repo": "Allowlisted repo to open the draft PR against.",
+        "base": "Base branch (empty uses the configured default).",
+        "task": "Jira-style task id used in the PR title and linkback.",
+        "start_status": "Optional Jira status to transition to before work starts.",
+        "review_status": "Optional Jira status to transition to after the PR opens.",
+        "live_agent": "Author the change with the OpenHands sandbox agent instead of the stand-in.",
+        "litellm_url": "LiteLLM base URL reachable from the sandbox pod (empty uses the default).",
+        "via_temporal": "Drive the DraftPullRequestWorkflow on Temporal instead of in-process.",
+    }
+)
+def demo_draft_pr(
+    c,
+    repo="agentic-demo-service",
+    base="",
+    task="AGENTDEV-1",
+    start_status="",
+    review_status="",
+    live_agent=False,
+    litellm_url="",
+    via_temporal=False,
+):
+    """Demo: open a real draft PR on GitHub through the full coordination stack (Act 4)."""
+    flags = f"--repo {repo} --task {task}"
+    flags += f" --base {base}" if base else ""
+    flags += f' --start-status "{start_status}"' if start_status else ""
+    flags += f' --review-status "{review_status}"' if review_status else ""
+    flags += " --live-agent" if live_agent else ""
+    flags += f" --litellm-url {litellm_url}" if litellm_url else ""
+    flags += " --via-temporal" if via_temporal else ""
+    c.run(f"python -m scripts.demo_draft_pr {flags}".strip(), pty=True)
+
+
 ns = Collection()
 for _t in (
     tunnel_start,
+    tunnel_stop,
+    tunnel_status,
     connectivity_check,
     local_up,
     local_down,
@@ -117,5 +227,10 @@ for _t in (
     durability_proof,
     fetch_acli,
     reap,
+    demo_durable_task,
+    demo_durable_counter,
+    demo_coordination,
+    demo_repo_intelligence,
+    demo_draft_pr,
 ):
     ns.add_task(_t)

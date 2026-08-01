@@ -60,7 +60,7 @@ async def _remote_heads(backend: RealGitHost, branch: str) -> str:
 
 async def test_dry_run_leaves_branch_present(bare_remote: str) -> None:
     backend = _backend(bare_remote)
-    branch = agent_branch_name("AGENTDEV-1", "exec-1")
+    branch = agent_branch_name("AGENTDEV-1")
     await backend.ensure_branch(REPO, branch, "main")
     registry = InMemoryOrphanRegistry()
     await registry.register(
@@ -78,7 +78,7 @@ async def test_dry_run_leaves_branch_present(bare_remote: str) -> None:
 
 async def test_apply_deletes_branch_on_remote(bare_remote: str) -> None:
     backend = _backend(bare_remote)
-    branch = agent_branch_name("AGENTDEV-1", "exec-1")
+    branch = agent_branch_name("AGENTDEV-1")
     await backend.ensure_branch(REPO, branch, "main")
     registry = InMemoryOrphanRegistry()
     orphan_id = await registry.register(

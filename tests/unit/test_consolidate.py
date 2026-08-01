@@ -87,7 +87,7 @@ def test_consolidate_fails_done_when_authoritative_is_not_primary(tmp_path: Path
 
 def test_load_scorecards_skips_prior_consolidation(tmp_path: Path) -> None:
     _write(tmp_path, "ruby.json", _scorecard("r", "scip-ruby@0.4.7", "scip-ruby", generated_at="1"))
-    (tmp_path / "phase-2-consolidated.json").write_text(
+    (tmp_path / "acceptance-consolidated.json").write_text(
         json.dumps({"record_type": "acceptance_consolidation"}), encoding="utf-8"
     )
     cards = consolidate.load_scorecards(tmp_path)

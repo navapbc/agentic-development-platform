@@ -147,6 +147,13 @@ class MockGitHost:
         record.prs.append(pull)
         return pull
 
+    async def find_open_pr(self, repo: str, head: str) -> PullRequest | None:
+        record = self._repo(repo)
+        for existing in record.prs:
+            if existing.head == head and existing.state == "open":
+                return existing
+        return None
+
     async def read_pr_feedback(self, repo: str, number: int) -> PRFeedback:
         record = self._repo(repo)
         pull = next((p for p in record.prs if p.number == number), None)

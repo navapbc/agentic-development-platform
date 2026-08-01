@@ -68,6 +68,7 @@ class SandboxRuntime:
         context: str = "",
         workspace_sub_path: str = "",
     ) -> ImplementationOutcome:
+        binding = self._workspace_binding(workspace_sub_path)
         spec = SandboxSpec(
             execution_id=execution_id,
             image=self.image,
@@ -75,7 +76,7 @@ class SandboxRuntime:
             namespace=self.namespace,
             server_port=self.server_port,
             litellm_base_url=self.litellm_base_url,
-            workspace=self._workspace_binding(workspace_sub_path),
+            workspace=binding,
         )
         handle = await self.provisioner.provision(spec)
         try:
@@ -84,6 +85,7 @@ class SandboxRuntime:
                 task=task,
                 context=context,
                 caps=self.caps,
+                working_dir=self.workspace_mount_path if binding else "",
             )
         finally:
             await self.provisioner.teardown(handle)

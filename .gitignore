@@ -46,3 +46,4 @@ vendor/bin/*
 
 # Agent working context
 .agent-context/
+.agent-workspaces/

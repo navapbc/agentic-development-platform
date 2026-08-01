@@ -30,6 +30,20 @@ spec:
       securityContext:
         allowPrivilegeEscalation: false
         runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
         capabilities:
           drop:
             - ALL
+      readinessProbe:
+        exec:
+          command:
+            - curl
+            - -fsS
+            - -o
+            - /dev/null
+            - http://127.0.0.1:8000/health
+        initialDelaySeconds: 2
+        periodSeconds: 2
+        timeoutSeconds: 3
+        failureThreshold: 60

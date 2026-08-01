@@ -60,6 +60,23 @@ services:
     <<: *python-service
     command: ["python", "-m", "services.orchestration.worker"]
     environment:
+      WORKER_ROLE: workflow
+      REPO_INTELLIGENCE_URL: http://repo-intelligence:8120
+      COORDINATION_URL: http://coordination-service:8130
+      JIRA_ACLI_PATH: /app/vendor/bin/acli
+    depends_on:
+      temporal:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      litellm:
+        condition: service_started
+
+  activity-worker:
+    <<: *python-service
+    command: ["python", "-m", "services.orchestration.worker"]
+    environment:
+      WORKER_ROLE: activity
       REPO_INTELLIGENCE_URL: http://repo-intelligence:8120
       COORDINATION_URL: http://coordination-service:8130
       JIRA_ACLI_PATH: /app/vendor/bin/acli

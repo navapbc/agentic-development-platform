@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 from temporalio import activity
 
@@ -47,7 +48,7 @@ class RecheckRequest:
     issue_key: str
     execution_id: str
     task_id: str
-    stored_payload: dict[str, str] = field(default_factory=dict)
+    stored_payload: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

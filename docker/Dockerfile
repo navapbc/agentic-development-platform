@@ -15,6 +15,7 @@ COPY adapters ./adapters
 COPY schemas ./schemas
 COPY database ./database
 COPY scripts ./scripts
+COPY openhands ./openhands
 
 RUN pip install --upgrade pip \
     && pip install -e "/opt/rebar[agents]" "pydantic-ai-slim[openai]>=1,<2" \

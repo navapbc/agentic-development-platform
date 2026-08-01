@@ -90,7 +90,7 @@ def _host(bare_remote: str) -> RealGitHost:
 
 async def test_ensure_branch_creates_then_is_a_noop(bare_remote: str) -> None:
     host = _host(bare_remote)
-    name = agent_branch_name(TASK_ID, EXECUTION_ID)
+    name = agent_branch_name(TASK_ID)
 
     created = await host.ensure_branch(REPO, name, "main")
     assert created.created is True
@@ -104,7 +104,7 @@ async def test_commit_and_push_is_idempotent_via_the_execution_trailer(bare_remo
     host = _host(bare_remote)
     request = CommitRequest(
         repo=REPO,
-        branch=agent_branch_name(TASK_ID, EXECUTION_ID),
+        branch=agent_branch_name(TASK_ID),
         base="main",
         message="apply change",
         files={"src/app.py": "print('hi')\n"},
@@ -124,7 +124,7 @@ async def test_commit_and_push_is_idempotent_via_the_execution_trailer(bare_remo
 
 async def test_open_draft_pr_creates_then_updates_the_same_pr(bare_remote: str) -> None:
     host = _host(bare_remote)
-    branch = agent_branch_name(TASK_ID, EXECUTION_ID)
+    branch = agent_branch_name(TASK_ID)
 
     created = await host.open_draft_pr(REPO, branch, "main", "Draft", "body")
     assert created.created is True
@@ -142,7 +142,7 @@ async def test_open_draft_pr_creates_then_updates_the_same_pr(bare_remote: str) 
 )
 async def test_live_smoke_against_an_allowlisted_demo_repo() -> None:
     host = RealGitHost.from_settings()
-    name = agent_branch_name(TASK_ID, EXECUTION_ID)
+    name = agent_branch_name(TASK_ID)
     branch = await host.ensure_branch(REPO, name, "main")
     assert branch.name == name
     request = CommitRequest(

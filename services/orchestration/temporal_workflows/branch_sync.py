@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import timedelta
+from typing import Any
 
 from temporalio import workflow
 from temporalio.common import RetryPolicy
@@ -47,7 +48,7 @@ class BranchSyncInput:
     branch: str
     workspace_path: str
     issue_key: str = ""
-    stored_issue: dict[str, str] = field(default_factory=dict)
+    stored_issue: dict[str, Any] = field(default_factory=dict)
     rebase_cap: int = REBASE_CAP
     resolution_cap: int = RESOLUTION_CAP
 

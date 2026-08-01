@@ -1,4 +1,4 @@
-"""Phase 5 exit proof: a bounded allowlisted task reaches a draft PR through every guard.
+"""Exit proof: a bounded allowlisted task reaches a draft PR through every guard.
 
 Hermetic. Composes Jira-canonical intake, an atomic work claim, deterministic workspace
 materialization, a bounded code step under the caps, base-branch synchronization, the
@@ -34,15 +34,17 @@ from services.integration.jira import (
 )
 from services.integration.jira.linkback import post_pr_linkback
 from services.integration.jira.snapshot import snapshot_id_for
-from services.orchestration.branch_sync import GitBranchSynchronizer
-from services.orchestration.materialization import MaterializedWorkspace, WorkspaceMaterializer
-from services.orchestration.phase5_pipeline import (
+from services.orchestration.bounded_task_pipeline import (
     DRAFT_PR_OPEN,
+    EXISTING_PR_REUSED,
+    NO_CHANGES,
     CodeResult,
     PipelineDeps,
     PipelineRequest,
     run_bounded_task,
 )
+from services.orchestration.branch_sync import GitBranchSynchronizer
+from services.orchestration.materialization import MaterializedWorkspace, WorkspaceMaterializer
 
 REPO = "agentic-demo-service"
 OWNER = "acme"
@@ -252,7 +254,7 @@ async def test_bounded_task_reaches_draft_pr_hermetically(tmp_path, bare_remote)
 
     result = await run_bounded_task(deps, request)
 
-    branch = agent_branch_name(TASK_ID, EXECUTION_ID)
+    branch = agent_branch_name(TASK_ID)
     assert result.status == DRAFT_PR_OPEN
     assert result.snapshot_id
     assert result.branch == branch
@@ -288,19 +290,111 @@ async def test_bounded_task_reaches_draft_pr_hermetically(tmp_path, bare_remote)
     assert again.action == SKIPPED
     assert len(linkback_client.comments) == 1
 
+    second_code_step = _FakeCodeStep({"README.md": "should not run\n"})
+    second_deps = PipelineDeps(
+        snapshot_store=_InMemorySnapshotStore(),
+        claim_store=InMemoryWorkClaimStore(),
+        materializer=materializer,
+        code_step=second_code_step,
+        synchronizer=synchronizer,
+        mediator=mediator,
+        jira_reader=reader,
+        linkback_client=linkback_client,
+        settings=settings,
+    )
+    second_request = PipelineRequest(
+        task_id=TASK_ID,
+        execution_id="exec-2",
+        repo=REPO,
+        base="main",
+        base_sha=base_sha,
+        task="Add retry to the client",
+        issue_key=TASK_ID,
+        raw_issue=_dc_issue(),
+        jira_source=DATACENTER,
+    )
+
+    reused = await run_bounded_task(second_deps, second_request)
+
+    assert reused.status == EXISTING_PR_REUSED
+    assert reused.pr_number == result.pr_number
+    assert reused.pr_url == result.pr_url
+    assert reused.branch == branch
+    assert reused.linkback == SKIPPED
+    assert second_code_step.tasks == []
+    assert len(ghes_state["pulls"]) == 1
+    assert len(linkback_client.comments) == 1
+
+
+async def test_bounded_task_no_changes_terminates_cleanly(tmp_path, bare_remote) -> None:
+    settings = _settings()
+    base_sha = _remote_head(bare_remote)
+    transport, ghes_state = _fake_ghes()
+    host = _host(bare_remote, transport)
+    ledger = InMemorySideEffectLedger()
+    gate = InMemorySequenceGate()
+    mediator = GitHubMediator(
+        backend=host, ledger=ledger, gate=gate, allowed_repos=frozenset({REPO})
+    )
+    materializer = WorkspaceMaterializer(
+        registry=InMemoryOrphanRegistry(),
+        allowed_repos=frozenset({REPO}),
+        workspace_root=tmp_path / "ws",
+        remote_url_for=lambda repo: bare_remote,
+    )
+    synchronizer = GitBranchSynchronizer(
+        allowed_repos=frozenset({REPO}),
+        remote_url_for=lambda repo: bare_remote,
+    )
+    reader = _FakeReader(_dc_issue())
+    linkback_client = _FakeLinkbackClient(DATACENTER)
+    code_step = _FakeCodeStep({})
+
+    deps = PipelineDeps(
+        snapshot_store=_InMemorySnapshotStore(),
+        claim_store=InMemoryWorkClaimStore(),
+        materializer=materializer,
+        code_step=code_step,
+        synchronizer=synchronizer,
+        mediator=mediator,
+        jira_reader=reader,
+        linkback_client=linkback_client,
+        settings=settings,
+    )
+    request = PipelineRequest(
+        task_id=TASK_ID,
+        execution_id=EXECUTION_ID,
+        repo=REPO,
+        base="main",
+        base_sha=base_sha,
+        task="Add retry to the client",
+        issue_key=TASK_ID,
+        raw_issue=_dc_issue(),
+        jira_source=DATACENTER,
+    )
+
+    result = await run_bounded_task(deps, request)
+
+    assert result.status == NO_CHANGES
+    assert result.terminal_reason == "agent produced no file changes"
+    assert result.branch == agent_branch_name(TASK_ID)
+    assert result.pr_number == 0
+    assert ghes_state["pulls"] == []
+    assert linkback_client.comments == []
+
 
 @pytest.mark.skipif(
-    not os.getenv("PHASE5_LIVE_SMOKE"),
-    reason="live phase-5 smoke requires VPN, JIRA_EMAIL, JIRA_API_TOKEN, acli, and a GHES token",
+    not os.getenv("BOUNDED_TASK_LIVE_SMOKE"),
+    reason="live bounded-task smoke needs VPN, JIRA_EMAIL, JIRA_API_TOKEN, acli, and a GHES token",
 )
 async def test_bounded_task_live_smoke() -> None:
     from services.integration.jira.adapter import build_jira_adapter
     from services.integration.jira.snapshot import PostgresTaskSnapshotStore
 
-    repo = os.environ["PHASE5_LIVE_REPO"]
-    issue_key = os.environ["PHASE5_LIVE_ISSUE"]
-    execution_id = os.environ.get("PHASE5_LIVE_EXECUTION", f"live-{issue_key}")
-    base = os.environ.get("PHASE5_LIVE_BASE", "main")
+    repo = os.environ["BOUNDED_TASK_LIVE_REPO"]
+    issue_key = os.environ["BOUNDED_TASK_LIVE_ISSUE"]
+    execution_id = os.environ.get("BOUNDED_TASK_LIVE_EXECUTION", f"live-{issue_key}")
+    base = os.environ.get("BOUNDED_TASK_LIVE_BASE", "main")
 
     adapter = build_jira_adapter()
     raw_issue = adapter.get_issue(issue_key)

@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 
 from scripts.config import get_settings
-from scripts.connectivity_providers import get_provider
+from scripts.connectivity_providers import get_provider, status_tunnel, stop_tunnel
 
 
 def start(detach: bool = False) -> int:
@@ -21,12 +21,17 @@ def start(detach: bool = False) -> int:
     print(f"[tunnel]   profile     : {settings.aws_profile}")
     print(f"[tunnel]   region      : {settings.aws_region}")
     print(f"[tunnel]   path        : {provider.summary(settings)}")
-    return provider.start(settings)
+    return provider.start(settings, detach=detach)
 
 
 if __name__ == "__main__":
     args = sys.argv[1:]
-    if not args or args[0] == "start":
+    command = args[0] if args else "start"
+    if command == "start":
         raise SystemExit(start(detach="--detach" in args))
-    print(f"unknown command: {args[0]}", file=sys.stderr)
+    if command == "stop":
+        raise SystemExit(stop_tunnel())
+    if command == "status":
+        raise SystemExit(status_tunnel())
+    print(f"unknown command: {command}", file=sys.stderr)
     raise SystemExit(2)

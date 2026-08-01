@@ -52,6 +52,7 @@ class ImplementationResult:
     diff_hash: str
     model_id: str
     prompt_version: str
+    workspace_path: str = ""
     changed_files: list[str] = field(default_factory=list)
     summary: str = ""
 
@@ -146,6 +147,7 @@ async def run_implementation_stage(req: ImplementationRequest) -> Implementation
         diff_hash=_hash_changes(changes),
         model_id=get_settings().coding_model,
         prompt_version=IMPLEMENTATION_PROMPT_VERSION,
+        workspace_path=workspace.path,
         changed_files=sorted(changes),
         summary=outcome.summary,
     )

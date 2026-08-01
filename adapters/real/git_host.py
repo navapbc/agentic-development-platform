@@ -75,12 +75,18 @@ class RealGitHost:
             return subprocess.run(
                 ["git", *args],
                 cwd=cwd,
-                check=True,
                 capture_output=True,
                 text=True,
             )
 
         proc = await asyncio.to_thread(run)
+        if proc.returncode != 0:
+            shown = " ".join(args)
+            detail = (proc.stderr or proc.stdout).strip()
+            if self._token:
+                shown = shown.replace(self._token, "***")
+                detail = detail.replace(self._token, "***")
+            raise RuntimeError(f"git {shown} failed (rc {proc.returncode}): {detail}")
         return proc.stdout.strip()
 
     async def _ls_remote(self, remote: str, ref: str) -> str:
@@ -201,6 +207,15 @@ class RealGitHost:
             {"title": title, "head": head, "base": base, "body": body, "draft": True},
         )
         return _pull_request(repo, created, created=True)
+
+    async def find_open_pr(self, repo: str, head: str) -> PullRequest | None:
+        found = await self._get(
+            f"/repos/{self._owner}/{repo}/pulls",
+            params={"head": f"{self._owner}:{head}", "state": "open"},
+        )
+        if not found:
+            return None
+        return _pull_request(repo, found[0], created=False)
 
     async def read_pr_feedback(self, repo: str, number: int) -> PRFeedback:
         pull = await self._get(f"/repos/{self._owner}/{repo}/pulls/{number}")

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -21,7 +21,9 @@ CLAIM_DENIED = "claim_denied"
 IMPL_CAP_BREACH = "impl_cap_breach"
 SYNC_PAUSED = "sync_paused"
 RECHECK_PAUSED = "recheck_paused"
+NO_CHANGES = "no_changes"
 DRAFT_PR_OPEN = "draft_pr_open"
+EXISTING_PR_REUSED = "existing_pr_reused"
 
 _ENSURE_BRANCH_SEQUENCE = 1
 _COMMIT_SEQUENCE = 2
@@ -96,8 +98,18 @@ def _breached(result: CodeResult, request: PipelineRequest) -> bool:
     return over_budget or result.terminal_reason != COMPLETED
 
 
-async def run_bounded_task(deps: PipelineDeps, request: PipelineRequest) -> PipelineResult:
+async def run_bounded_task(
+    deps: PipelineDeps,
+    request: PipelineRequest,
+    *,
+    on_progress: Callable[[str], None] | None = None,
+) -> PipelineResult:
+    def _progress(stage: str) -> None:
+        if on_progress is not None:
+            on_progress(stage)
+
     settings = deps.settings or get_settings()
+    _progress("intake: capturing task snapshot")
     snapshot = await capture_task_snapshot(
         dict(request.raw_issue),
         execution_id=request.execution_id,
@@ -113,10 +125,35 @@ async def run_bounded_task(deps: PipelineDeps, request: PipelineRequest) -> Pipe
         request.agent_id,
         request.file_impact,
     )
+    _progress("claim: acquiring work claim")
     claim = await deps.claim_store.try_claim(unit)
     if not claim.won:
         return PipelineResult(request.execution_id, CLAIM_DENIED, snapshot_id=snapshot.snapshot_id)
 
+    _progress("pickup: checking for existing draft PR")
+    existing_pr = await deps.mediator.find_open_pr(request.repo, request.task_id)
+    if existing_pr is not None:
+        _progress("pickup: reusing existing draft PR")
+        reuse_linkback = post_pr_linkback(
+            deps.linkback_client,
+            request.issue_key,
+            execution_id=request.execution_id,
+            pr_url=existing_pr.url,
+            pr_title=existing_pr.title,
+            repo=request.repo,
+            branch=existing_pr.head,
+        )
+        return PipelineResult(
+            request.execution_id,
+            EXISTING_PR_REUSED,
+            snapshot_id=snapshot.snapshot_id,
+            branch=existing_pr.head,
+            pr_number=existing_pr.number,
+            pr_url=existing_pr.url,
+            linkback=reuse_linkback.action,
+        )
+
+    _progress("branch: ensuring agent branch")
     branch_ref = await deps.mediator.ensure_agent_branch(
         request.repo,
         request.task_id,
@@ -125,6 +162,7 @@ async def run_bounded_task(deps: PipelineDeps, request: PipelineRequest) -> Pipe
         sequence=_ENSURE_BRANCH_SEQUENCE,
     )
 
+    _progress("materialize: preparing workspace")
     workspace = await deps.materializer.materialize(
         repo=request.repo,
         task_id=request.task_id,
@@ -133,6 +171,7 @@ async def run_bounded_task(deps: PipelineDeps, request: PipelineRequest) -> Pipe
         commit_sha=request.base_sha,
     )
 
+    _progress("code: agent authoring change")
     code = await deps.code_step.run(workspace=workspace, task=request.task)
     if _breached(code, request):
         return PipelineResult(
@@ -143,6 +182,7 @@ async def run_bounded_task(deps: PipelineDeps, request: PipelineRequest) -> Pipe
             terminal_reason=code.terminal_reason,
         )
 
+    _progress("sync: rebasing branch onto base")
     sync = await deps.synchronizer.synchronize(
         repo=request.repo,
         base=request.base,
@@ -161,6 +201,7 @@ async def run_bounded_task(deps: PipelineDeps, request: PipelineRequest) -> Pipe
         )
 
     try:
+        _progress("recheck: verifying issue is still actionable")
         await recheck_issue_before_pr(
             deps.jira_reader,
             request.issue_key,
@@ -181,10 +222,20 @@ async def run_bounded_task(deps: PipelineDeps, request: PipelineRequest) -> Pipe
     commit_request = await deps.materializer.build_commit_request(
         workspace, message=request.commit_message
     )
+    if not commit_request.files:
+        return PipelineResult(
+            request.execution_id,
+            NO_CHANGES,
+            snapshot_id=snapshot.snapshot_id,
+            branch=workspace.branch,
+            terminal_reason="agent produced no file changes",
+        )
+    _progress("commit: pushing branch")
     await deps.mediator.commit_and_push(commit_request, sequence=_COMMIT_SEQUENCE)
 
     title = f"[{request.task_id}] {snapshot.payload.get('summary') or request.task}"
     body = f"Automated draft for {request.issue_key} (execution {request.execution_id})."
+    _progress("pr: opening draft pull request")
     pull_request = await deps.mediator.open_draft_pr(
         request.repo,
         request.task_id,
@@ -196,6 +247,7 @@ async def run_bounded_task(deps: PipelineDeps, request: PipelineRequest) -> Pipe
         sequence=_OPEN_PR_SEQUENCE,
     )
 
+    _progress("linkback: posting PR link to jira")
     linkback = post_pr_linkback(
         deps.linkback_client,
         request.issue_key,

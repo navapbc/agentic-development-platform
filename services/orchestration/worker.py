@@ -4,14 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 
 from scripts.config import get_settings
 from temporalio.client import Client
 from temporalio.worker import Worker
+from temporalio.worker.workflow_sandbox import SandboxedWorkflowRunner, SandboxRestrictions
 
 from services.orchestration.temporal_activities import (
     claim_work_unit,
+    commit_and_push,
+    count_tick,
     create_draft_pr,
+    find_open_pr,
     gather_repo_context,
     invoke_model,
     link_pr_to_issue,
@@ -30,7 +35,9 @@ from services.orchestration.temporal_activities import (
 from services.orchestration.temporal_workflows import (
     BranchSyncWorkflow,
     CodeReviewWorkflow,
-    FoundationWorkflow,
+    CountingWorkflow,
+    DraftPullRequestWorkflow,
+    DurableTaskWorkflow,
     ImplementationWorkflow,
     PlanReviewWorkflow,
     PullRequestWorkflow,
@@ -41,9 +48,74 @@ from services.orchestration.temporal_workflows import (
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("workflow-worker")
 
+WORKER_ROLE_ALL = "all"
+WORKER_ROLE_WORKFLOW = "workflow"
+WORKER_ROLE_ACTIVITY = "activity"
+_WORKER_ROLES = frozenset({WORKER_ROLE_ALL, WORKER_ROLE_WORKFLOW, WORKER_ROLE_ACTIVITY})
+
+_WORKFLOWS = [
+    DurableTaskWorkflow,
+    CountingWorkflow,
+    PlanReviewWorkflow,
+    CodeReviewWorkflow,
+    ReviewPipelineWorkflow,
+    ImplementationWorkflow,
+    BranchSyncWorkflow,
+    PullRequestWorkflow,
+    DraftPullRequestWorkflow,
+    ReapWorkflow,
+]
+
+_ACTIVITIES = [
+    invoke_model,
+    persist_execution_state,
+    record_audit_event,
+    gather_repo_context,
+    count_tick,
+    review_plan,
+    review_code,
+    review_security,
+    verify_acceptance,
+    claim_work_unit,
+    run_implementation_stage,
+    synchronize_branch,
+    resolve_conflicts,
+    recheck_issue,
+    find_open_pr,
+    commit_and_push,
+    create_draft_pr,
+    link_pr_to_issue,
+    reap_orphans,
+]
+
+
+def _resolve_role() -> str:
+    role = os.environ.get("WORKER_ROLE", WORKER_ROLE_ALL).strip().lower()
+    if role not in _WORKER_ROLES:
+        raise SystemExit(f"invalid WORKER_ROLE {role!r}; expected one of {sorted(_WORKER_ROLES)}")
+    return role
+
+
+def build_worker(client: Client, task_queue: str, role: str) -> Worker:
+    runner = SandboxedWorkflowRunner(
+        restrictions=SandboxRestrictions.default.with_passthrough_modules("beartype")
+    )
+    if role == WORKER_ROLE_WORKFLOW:
+        return Worker(client, task_queue=task_queue, workflows=_WORKFLOWS, workflow_runner=runner)
+    if role == WORKER_ROLE_ACTIVITY:
+        return Worker(client, task_queue=task_queue, activities=_ACTIVITIES)
+    return Worker(
+        client,
+        task_queue=task_queue,
+        workflows=_WORKFLOWS,
+        activities=_ACTIVITIES,
+        workflow_runner=runner,
+    )
+
 
 async def main() -> None:
     settings = get_settings()
+    role = _resolve_role()
     log.info(
         "connecting to Temporal at %s (ns=%s)",
         settings.temporal_host,
@@ -51,39 +123,8 @@ async def main() -> None:
     )
     client = await Client.connect(settings.temporal_host, namespace=settings.temporal_namespace)
 
-    worker = Worker(
-        client,
-        task_queue=settings.temporal_task_queue,
-        workflows=[
-            FoundationWorkflow,
-            PlanReviewWorkflow,
-            CodeReviewWorkflow,
-            ReviewPipelineWorkflow,
-            ImplementationWorkflow,
-            BranchSyncWorkflow,
-            PullRequestWorkflow,
-            ReapWorkflow,
-        ],
-        activities=[
-            invoke_model,
-            persist_execution_state,
-            record_audit_event,
-            gather_repo_context,
-            review_plan,
-            review_code,
-            review_security,
-            verify_acceptance,
-            claim_work_unit,
-            run_implementation_stage,
-            synchronize_branch,
-            resolve_conflicts,
-            recheck_issue,
-            create_draft_pr,
-            link_pr_to_issue,
-            reap_orphans,
-        ],
-    )
-    log.info("worker started on task queue '%s'", settings.temporal_task_queue)
+    worker = build_worker(client, settings.temporal_task_queue, role)
+    log.info("worker started on task queue '%s' (role=%s)", settings.temporal_task_queue, role)
     await worker.run()
 
 

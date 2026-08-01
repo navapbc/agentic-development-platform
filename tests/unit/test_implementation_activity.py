@@ -43,7 +43,7 @@ class _FakeMaterializer:
             repo=repo,
             task_id=task_id,
             execution_id=execution_id,
-            branch=f"agent/{task_id}/{execution_id}",
+            branch=f"agent/{task_id}",
             base=base,
             commit_sha=commit_sha,
             path=str(path),

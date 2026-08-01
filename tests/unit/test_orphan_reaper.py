@@ -34,7 +34,7 @@ FUTURE = NOW + timedelta(hours=1)
 
 
 def _branch() -> str:
-    return agent_branch_name("AGENTDEV-1", "exec-1")
+    return agent_branch_name("AGENTDEV-1")
 
 
 async def _seed_branch(backend: MockGitHost) -> str:
