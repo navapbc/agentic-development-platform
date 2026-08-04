@@ -24,6 +24,15 @@ Generic, tool-agnostic working rules. These are personal preferences for how any
 - Acceptable hyphen uses: compound words, technical names and identifiers, markdown list bullets, table separators, horizontal rules, and code or SQL operators.
 - Do not hard-wrap paragraphs in markdown. Write each paragraph as a single logical line and let editors and viewers handle soft-wrapping. Keep line breaks only where markdown semantics require them.
 
+## Diction
+
+These rules apply to every piece of writing, prose, documentation, chat, on-screen demo output, help strings, spoken narration, commit messages, and comments where comments are allowed. They are not limited to any one format.
+
+- Do not use empty intensifiers or authenticity padding. A word is filler when deleting it does not change the meaning, and filler must be deleted. Banned by default: real, actual, genuine, live used as a value adjective, simply, just, quietly, seamlessly, robust, powerful, leverage, truly, in real time, concretely, and today used for emphasis rather than to state a date.
+- Do not add authenticity padding phrases such as `not a placeholder`, `live for this run`, `the thing that matters`, or `this is not a mock`. Never assert that something is authentic when no fake alternative exists. State the mechanism or the source instead.
+- Prefer the noun on its own over the noun plus an adjective, unless the adjective changes which thing you mean. `the database` not `the real database`, `the ticket` not `the real ticket`. Keep an adjective only when it selects one option from several, for example `the locked snapshot` where an unlocked one also exists.
+- When tempted to claim something is real, live, or genuine, describe what makes it so instead. Say that a value is read from the database and changes on every run, rather than calling it real.
+
 ## Code
 
 - Default to writing zero comments. Only add a comment when removing it would actively mislead a reader: a non-obvious constraint, a workaround for a specific bug (with a reference), or an invariant callers depend on that is not enforced in code.
@@ -49,7 +58,7 @@ Generic, tool-agnostic working rules. These are personal preferences for how any
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **agentic-dev-platform** (6216 symbols, 11786 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **agentic-dev-platform** (6725 symbols, 12696 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 

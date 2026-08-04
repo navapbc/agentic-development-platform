@@ -1,10 +1,18 @@
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1
 
 WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN ARCH="$(dpkg --print-architecture)" \
+    && curl -fsSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/v1.34.1/bin/linux/${ARCH}/kubectl" \
+    && chmod +x /usr/local/bin/kubectl
 
 COPY --from=rebar pyproject.toml hatch_build.py README.md LICENSE /opt/rebar/
 COPY --from=rebar src /opt/rebar/src
@@ -19,7 +27,7 @@ COPY openhands ./openhands
 
 RUN pip install --upgrade pip \
     && pip install -e "/opt/rebar[agents]" "pydantic-ai-slim[openai]>=1,<2" \
-    && pip install -e ".[reasoning]"
+    && pip install -e ".[reasoning,sandbox]"
 
 ARG TARGETOS
 ARG TARGETARCH

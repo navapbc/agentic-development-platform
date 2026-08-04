@@ -13,6 +13,7 @@ from temporalio.worker.workflow_sandbox import SandboxedWorkflowRunner, SandboxR
 
 from services.orchestration.temporal_activities import (
     claim_work_unit,
+    clear_suspension,
     commit_and_push,
     count_tick,
     create_draft_pr,
@@ -20,16 +21,19 @@ from services.orchestration.temporal_activities import (
     gather_repo_context,
     invoke_model,
     link_pr_to_issue,
+    mark_task_parked,
     persist_execution_state,
     reap_orphans,
     recheck_issue,
     record_audit_event,
+    record_suspension,
     resolve_conflicts,
     review_code,
     review_plan,
     review_security,
     run_implementation_stage,
     synchronize_branch,
+    unmark_task_parked,
     verify_acceptance,
 )
 from services.orchestration.temporal_workflows import (
@@ -85,7 +89,11 @@ _ACTIVITIES = [
     commit_and_push,
     create_draft_pr,
     link_pr_to_issue,
+    mark_task_parked,
+    unmark_task_parked,
     reap_orphans,
+    record_suspension,
+    clear_suspension,
 ]
 
 
@@ -100,16 +108,30 @@ def build_worker(client: Client, task_queue: str, role: str) -> Worker:
     runner = SandboxedWorkflowRunner(
         restrictions=SandboxRestrictions.default.with_passthrough_modules("beartype")
     )
+    settings = get_settings()
+    versioning: dict[str, object] = {}
+    if settings.worker_versioning_enabled:
+        versioning = {
+            "build_id": settings.agent_build_id,
+            "use_worker_versioning": True,
+        }
     if role == WORKER_ROLE_WORKFLOW:
-        return Worker(client, task_queue=task_queue, workflows=_WORKFLOWS, workflow_runner=runner)
+        return Worker(
+            client,
+            task_queue=task_queue,
+            workflows=_WORKFLOWS,
+            workflow_runner=runner,
+            **versioning,
+        )
     if role == WORKER_ROLE_ACTIVITY:
-        return Worker(client, task_queue=task_queue, activities=_ACTIVITIES)
+        return Worker(client, task_queue=task_queue, activities=_ACTIVITIES, **versioning)
     return Worker(
         client,
         task_queue=task_queue,
         workflows=_WORKFLOWS,
         activities=_ACTIVITIES,
         workflow_runner=runner,
+        **versioning,
     )
 
 
@@ -124,7 +146,12 @@ async def main() -> None:
     client = await Client.connect(settings.temporal_host, namespace=settings.temporal_namespace)
 
     worker = build_worker(client, settings.temporal_task_queue, role)
-    log.info("worker started on task queue '%s' (role=%s)", settings.temporal_task_queue, role)
+    log.info(
+        "worker started on task queue '%s' (role=%s, build=%s)",
+        settings.temporal_task_queue,
+        role,
+        settings.agent_build_id,
+    )
     await worker.run()
 
 

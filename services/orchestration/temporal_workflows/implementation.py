@@ -84,6 +84,7 @@ class ImplementationOutput:
     changed_files: list[str] = field(default_factory=list)
     tokens: int = 0
     llm_calls: int = 0
+    claim_version: int = 0
 
 
 @workflow.defn
@@ -122,6 +123,7 @@ class ImplementationWorkflow:
 
         await persist("IMPLEMENTING")
 
+        claim_version = 0
         if params.work_unit:
             claim: ClaimResult = await workflow.execute_activity(
                 claim_work_unit,
@@ -156,6 +158,7 @@ class ImplementationWorkflow:
                     terminal_reason="work_unit_claimed",
                     claimed=False,
                 )
+            claim_version = claim.claim_version
 
         if params.repo:
             existing: FindOpenPrResult = await workflow.execute_activity(
@@ -308,4 +311,5 @@ class ImplementationWorkflow:
             changed_files=result.changed_files,
             tokens=result.tokens,
             llm_calls=result.llm_calls,
+            claim_version=claim_version,
         )

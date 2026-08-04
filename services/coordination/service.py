@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -140,11 +141,32 @@ def _work_unit(payload: dict[str, Any]) -> WorkUnit:
     return WorkUnit(**data)
 
 
+def _temporal_owner_active() -> Callable[[str], Awaitable[bool]]:
+    settings = get_settings()
+
+    async def _active(workflow_id: str) -> bool:
+        from temporalio.client import Client, WorkflowExecutionStatus
+        from temporalio.service import RPCError, RPCStatusCode
+
+        try:
+            client = await Client.connect(
+                settings.temporal_host, namespace=settings.temporal_namespace
+            )
+            description = await client.get_workflow_handle(workflow_id).describe()
+        except RPCError as exc:
+            return exc.status != RPCStatusCode.NOT_FOUND
+        except Exception:  # noqa: BLE001
+            return True
+        return description.status == WorkflowExecutionStatus.RUNNING
+
+    return _active
+
+
 def main() -> None:
     handler = build_handler(
         PostgresSideEffectLedger(),
         PostgresSequenceGate(),
-        PostgresWorkClaimStore(),
+        PostgresWorkClaimStore(owner_active=_temporal_owner_active()),
     )
     log.info("coordination-service listening on %s:%d", HOST, PORT)
     ThreadingHTTPServer((HOST, PORT), handler).serve_forever()

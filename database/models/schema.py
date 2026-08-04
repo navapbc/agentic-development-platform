@@ -144,6 +144,7 @@ work_claims = Table(
     Column("execution_id", String(64), nullable=False),
     Column("agent_id", String(128), nullable=False),
     Column("file_impact", JSON, nullable=True),
+    Column("owner_workflow_id", String(255), nullable=True),
     Column("state", String(32), nullable=False, server_default="claimed"),
     Column("claim_version", Integer, nullable=False, server_default="1"),
     _created_at(),
@@ -191,6 +192,19 @@ side_effects = Table(
 )
 
 
+suspended_flows = Table(
+    "suspended_flows",
+    metadata,
+    Column("workflow_id", String(255), primary_key=True),
+    Column("reason", String(32), nullable=False),
+    Column("resume_on", String(32), nullable=False),
+    Column("parked_build_id", String(128), nullable=False, server_default=""),
+    Column("stage", String(64), nullable=False, server_default=""),
+    Column("detail", Text, nullable=True),
+    Column("suspended_at", DateTime(timezone=True), server_default=func.now(), nullable=False),
+)
+
+
 __all__ = [
     "SCHEMA",
     "metadata",
@@ -202,4 +216,5 @@ __all__ = [
     "sequence_gate",
     "orphan_artifacts",
     "side_effects",
+    "suspended_flows",
 ]

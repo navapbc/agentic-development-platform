@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     temporal_host: str = "localhost:7233"
     temporal_namespace: str = "default"
     temporal_task_queue: str = "agent-platform"
+    agent_build_id: str = "dev"
+    worker_versioning_enabled: bool = False
 
     litellm_base_url: str = "http://localhost:4000"
     litellm_master_key: str = "change-me-locally"
@@ -67,6 +69,7 @@ class Settings(BaseSettings):
     jira_pat: str = ""
     jira_acli_path: str = ""
     jira_acceptance_field: str = ""
+    jira_parked_status: str = ""
 
     github_api_url: str = ""
     github_git_base_url: str = ""
@@ -80,6 +83,7 @@ class Settings(BaseSettings):
     openhands_server_port: int = 8000
     openhands_max_tool_calls: int = 60
     openhands_max_wall_clock_seconds: float = 1800.0
+    openhands_in_cluster: bool = False
     coding_model: str = "coding-model"
 
     execution_workspace_root: str = ".agent-workspaces"
@@ -90,6 +94,7 @@ class Settings(BaseSettings):
     sandbox_workspace_claim: str = ""
     sandbox_workspace_host_path: str = ""
     sandbox_workspace_mount_path: str = "/workspace"
+    sandbox_litellm_base_url: str = "http://host.docker.internal:4000"
 
     reap_schedule_id: str = "orphan-reaper"
     reap_schedule_interval_minutes: int = 60

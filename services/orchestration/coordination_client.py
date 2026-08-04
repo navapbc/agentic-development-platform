@@ -101,6 +101,7 @@ def _work_unit_body(unit: WorkUnit) -> dict[str, Any]:
         "execution_id": unit.execution_id,
         "agent_id": unit.agent_id,
         "file_impact": list(unit.file_impact),
+        "workflow_id": unit.workflow_id,
     }
 
 

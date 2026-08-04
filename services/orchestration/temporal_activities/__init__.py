@@ -19,6 +19,8 @@ from services.orchestration.temporal_activities.pull_request import (
     create_draft_pr,
     find_open_pr,
     link_pr_to_issue,
+    mark_task_parked,
+    unmark_task_parked,
 )
 from services.orchestration.temporal_activities.reap import reap_orphans
 from services.orchestration.temporal_activities.review import (
@@ -27,9 +29,14 @@ from services.orchestration.temporal_activities.review import (
     review_security,
     verify_acceptance,
 )
+from services.orchestration.temporal_activities.suspension import (
+    clear_suspension,
+    record_suspension,
+)
 
 __all__ = [
     "claim_work_unit",
+    "clear_suspension",
     "commit_and_push",
     "count_tick",
     "create_draft_pr",
@@ -37,15 +44,18 @@ __all__ = [
     "gather_repo_context",
     "invoke_model",
     "link_pr_to_issue",
+    "mark_task_parked",
     "persist_execution_state",
     "recheck_issue",
     "reap_orphans",
     "record_audit_event",
+    "record_suspension",
     "resolve_conflicts",
     "review_code",
     "review_plan",
     "review_security",
     "run_implementation_stage",
     "synchronize_branch",
+    "unmark_task_parked",
     "verify_acceptance",
 ]

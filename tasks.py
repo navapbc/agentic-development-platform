@@ -97,6 +97,12 @@ def workflow_status(c):
 
 
 @task
+def resume_parked(c):
+    """Resume parked workflows a newer agent build can retry."""
+    c.run("python -m scripts.resume_parked", pty=True)
+
+
+@task
 def durability_proof(c):
     """Prove a workflow survives a worker restart (Phase-1 exit criterion)."""
     c.run("python -m scripts.durability_proof", pty=True)

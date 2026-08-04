@@ -47,6 +47,24 @@ class LinkbackResult:
 
 
 @dataclass
+class ParkTaskRequest:
+    issue_key: str
+    parked_status: str
+
+
+@dataclass
+class ParkTaskResult:
+    previous_status: str
+    transitioned: bool
+
+
+@dataclass
+class UnparkTaskRequest:
+    issue_key: str
+    target_status: str
+
+
+@dataclass
 class FindOpenPrRequest:
     repo: str
     task_id: str
@@ -194,3 +212,21 @@ async def link_pr_to_issue(req: LinkbackRequest) -> LinkbackResult:
         branch=req.branch,
     )
     return LinkbackResult(action=result.action, detail=result.detail)
+
+
+@activity.defn
+async def mark_task_parked(req: ParkTaskRequest) -> ParkTaskResult:
+    adapter = _build_jira_adapter()
+    current = adapter.get_status(req.issue_key)
+    if current.strip().lower() == req.parked_status.strip().lower():
+        return ParkTaskResult(previous_status=current, transitioned=False)
+    adapter.transition(req.issue_key, req.parked_status)
+    return ParkTaskResult(previous_status=current, transitioned=True)
+
+
+@activity.defn
+async def unmark_task_parked(req: UnparkTaskRequest) -> str:
+    if req.target_status:
+        adapter = _build_jira_adapter()
+        adapter.transition(req.issue_key, req.target_status)
+    return req.issue_key

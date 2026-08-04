@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import os
 import subprocess
 import uuid
+from typing import Any
 
 from adapters.interfaces.git_host import agent_branch_name
 from adapters.real.git_host import RealGitHost
@@ -158,7 +160,7 @@ _DONE_STATUSES = frozenset(
 )
 
 
-def _jira_task_actionable(adapter, task_id: str) -> tuple[bool, str]:
+def _jira_task_actionable(adapter, task_id: str, parked_status: str = "") -> tuple[bool, str]:
     try:
         raw = adapter.get_issue(task_id)
     except Exception as exc:
@@ -166,7 +168,60 @@ def _jira_task_actionable(adapter, task_id: str) -> tuple[bool, str]:
     status = ((raw.get("fields") or {}).get("status") or {}).get("name") or ""
     if status.strip().lower() in _DONE_STATUSES:
         return False, f"{task_id} is '{status}'; choose an actionable (not done) ticket"
+    if parked_status and status.strip().lower() == parked_status.strip().lower():
+        return False, f"{task_id} is parked ('{status}'); a newer build resumes it automatically"
     return True, status or "unknown status"
+
+
+_PHASE_STEPS: tuple[tuple[str, str], ...] = (
+    ("impl", "claims the work and writes the change"),
+    ("sync", "syncs the branch onto the base"),
+    ("commit", "commits and pushes the change"),
+    ("pr", "opens the draft pull request"),
+    ("linkback", "links the pull request back to Jira"),
+)
+
+
+async def _track_phases(handle: Any) -> None:
+    from temporalio.api.enums.v1 import EventType
+
+    labels = dict(_PHASE_STEPS)
+    total = len(_PHASE_STEPS)
+    order = {key: index + 1 for index, (key, _) in enumerate(_PHASE_STEPS)}
+    announced: set[str] = set()
+
+    def announce(key: str) -> None:
+        if key in announced:
+            return
+        announced.add(key)
+        print(f"[demo]   step {order[key]}/{total}: {labels[key]}")
+
+    try:
+        async for event in handle.fetch_history_events(wait_new_event=True):
+            if event.event_type == EventType.EVENT_TYPE_CHILD_WORKFLOW_EXECUTION_STARTED:
+                child_id = (
+                    event.child_workflow_execution_started_event_attributes.workflow_execution.workflow_id
+                )
+                if child_id.endswith("-impl"):
+                    announce("impl")
+                elif child_id.endswith("-sync"):
+                    announce("sync")
+                elif child_id.endswith("-pr"):
+                    announce("pr")
+            elif event.event_type == EventType.EVENT_TYPE_CHILD_WORKFLOW_EXECUTION_COMPLETED:
+                child_id = (
+                    event.child_workflow_execution_completed_event_attributes.workflow_execution.workflow_id
+                )
+                if child_id.endswith("-pr"):
+                    announce("linkback")
+            elif event.event_type == EventType.EVENT_TYPE_ACTIVITY_TASK_SCHEDULED:
+                name = event.activity_task_scheduled_event_attributes.activity_type.name
+                if name == "commit_and_push":
+                    announce("commit")
+                elif name == "link_pr_to_issue":
+                    announce("linkback")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[demo]   (phase tracking stopped: {exc})")
 
 
 async def _run_via_temporal(
@@ -210,13 +265,22 @@ async def _run_via_temporal(
             base_sha=base_sha,
             task=summary,
             issue_key=task_id,
+            focus=summary,
             commit_message="Add automated draft demo marker",
             stored_issue=stored_issue,
+            build_id=settings.agent_build_id,
+            parked_status=settings.jira_parked_status,
         ),
         id=workflow_id,
         task_queue=settings.temporal_task_queue,
     )
-    result = await handle.result()
+    tracker = asyncio.create_task(_track_phases(handle))
+    try:
+        result = await handle.result()
+    finally:
+        tracker.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await tracker
 
     print(f"\n[demo] workflow status: {result.status}")
     if result.status not in (DRAFT_PR_OPEN, EXISTING_PR_REUSED):
@@ -307,17 +371,24 @@ async def main() -> int:
     synchronizer = GitBranchSynchronizer.from_settings(
         remote_url_for=remote_url_for, settings=settings
     )
+    existing_pr = await mediator.find_open_pr(repo, task_id)
     if _jira_configured(settings):
         ensure_acli_authenticated(settings)
         adapter = build_jira_adapter(settings)
-        ok, detail = _jira_task_actionable(adapter, task_id)
+        ok, detail = _jira_task_actionable(adapter, task_id, settings.jira_parked_status)
         print(f"[demo] jira preflight {task_id}: [{'ok' if ok else 'FAIL'}] {detail}")
         if not ok:
             print("[demo] pick a real, not-done ticket with --task, then retry.")
             return 2
-        if args.start_status:
+        if existing_pr is not None:
+            print(
+                f"[demo] {task_id} already has an open pull request, leaving Jira status as is"
+            )
+        elif args.start_status and detail.strip().lower() != args.start_status.strip().lower():
             adapter.transition(task_id, args.start_status)
             print(f"[demo] jira transition to {args.start_status}")
+        elif args.start_status:
+            print(f"[demo] {task_id} already in {args.start_status}, no transition needed")
         raw_issue = adapter.get_issue(task_id)
         summary = (raw_issue.get("fields") or {}).get("summary") or "Bounded agent change"
         description = normalize_issue(raw_issue).description or ""
@@ -344,7 +415,7 @@ async def main() -> int:
             summary=summary,
             raw_issue=dict(raw_issue),
         )
-        if rc == 0 and _jira_configured(settings) and args.review_status:
+        if rc == 0 and _jira_configured(settings) and args.review_status and existing_pr is None:
             reader.transition(task_id, args.review_status)
             print(f"  jira transition       {args.review_status}")
         return rc
@@ -406,7 +477,7 @@ async def main() -> int:
     print(f"  jira linkback         {result.linkback}")
     print(f"  gated sequence        {result.sequence_used}")
 
-    if _jira_configured(settings) and args.review_status:
+    if _jira_configured(settings) and args.review_status and existing_pr is None:
         reader.transition(task_id, args.review_status)
         print(f"  jira transition       {args.review_status}")
 

@@ -1,21 +1,37 @@
 # Executive Demo Narration
 
-A spoken script for a recorded walkthrough of an in-progress build. Each act lists the command to run, what the audience sees, and the words to say. The narration is grounded in what actually runs today. Where a step is a stand-in for a component still in progress, the script says so plainly, and the closing section lists what is planned.
+A spoken script for a recorded walkthrough of an in-progress build. Each act lists the command to run, what the audience sees, and the words to say. The narration reflects what the platform runs today. Where a step is a stand-in for a component still in progress, the script says so plainly, and the closing section lists what is planned.
 
-## High-level overview (say this first)
+## Opening (cover slide)
 
-> This is an agentic software delivery platform, and this is an in-progress build. It is designed to take a tracked work item from Jira, understand the target repository, plan and write a bounded code change with an AI coding agent, run it through review and policy gates, and open a pull request for a human to approve. Every step is durable, auditable, and safe to run with multiple agents at once against many repositories.
+Show the cover slide with the title, subtitle, and your name.
 
-> This demo runs the platform end to end. It uses durable orchestration that survives crashes, repository intelligence that grounds the work, an AI coding agent that writes the small, well-defined change in a sandboxed pod, a coordination safety layer that prevents double-work and duplicate side effects, and draft pull request creation on GitHub through those safeguards.
+> Thank you all for joining. My name is Joe Robinson, and this is a state of development update on the Agentic Development Platform. In the next few minutes I will introduce what the platform is, show the guarantees it already provides, and walk through it carrying a tracked ticket all the way to a pull request.
+
+## Agenda
+
+Advance to the agenda slide.
+
+> Here is how the session is laid out. First a short platform overview, how it picks up a task from Jira, makes changes in an isolated sandbox development environment, validates them through policy and compliance checks, and opens a draft pull request for review. Next, the guarantees the platform already provides, durability, grounded context, safe concurrency, and auditable end to end delivery. Then the demo itself, where I run the platform end to end and we watch it work.
+
+## High-level overview
+
+Advance to the Platform Overview slide.
+
+> The platform goes through five steps from a tracked Jira ticket to a pull request a person approves. Every step along the way is durable, auditable, and safe to run with many agents at once across many repositories.
+
+> It uses durable orchestration that survives crashes, repository intelligence that grounds the work, an AI coding agent that writes the small, well-defined change in a sandboxed pod, a coordination safety layer that prevents double-work and duplicate side effects, and draft pull request creation on GitHub through those safeguards.
 
 > The design goal is that a team points the platform at their repositories and Jira board. It then behaves like a careful junior engineer who never loses work, never double-commits, and always leaves an evidence trail.
 
-> This demo proves four properties concretely, today.
+Advance to the What the Platform Already Guarantees slide.
+
+> This demo proves four properties.
 >
 > 1. Durability means work survives process crashes and resumes exactly where it left off.
-> 2. Grounded context means the work is planned against real repository intelligence, not a blind text search.
+> 2. Grounded context means the work is planned against the repository intelligence service.
 > 3. Safe concurrency means multiple agents cannot collide, double-claim work, or post duplicate side effects.
-> 4. Auditable delivery means a real pull request is produced through exactly-once, correctly-ordered steps, with a full history you can audit.
+> 4. Auditable delivery means a single pull request is produced through correctly-ordered steps, with a full history you can trace.
 
 > The platform is not tied to a single repository. It operates on every repository in its allowlist, so the same deployment serves many teams.
 
@@ -38,7 +54,7 @@ Walk the audience through this table on screen, one row at a time. The status co
 
 ## Act 1: durable execution that survives a crash
 
-What happens: the platform starts a durable workflow, saves its state in Postgres, quietly gathers a briefing pack of the most relevant code from the repository (we look at that pack in Act 2), then runs a long task that saves its progress every step. That long task is a stand-in for real work: it counts from 0 to 15, one step per second, and each step is saved as a durable checkpoint before the next one starts. A real change would be many small steps like this. The counter just makes the progress visible on screen. While that task is running you restart the worker on camera twice, to show the recovery is repeatable and not a fluke. Each time, the task freezes at the step it had reached, and when the worker comes back the same workflow instance resumes from that exact step. It finishes the task and answers with the AI model using the briefing pack it gathered before the crash. Nothing restarts from the beginning and nothing is lost.
+What happens: the platform starts a durable workflow, saves its state in Postgres, gathers a briefing pack of the most relevant code from the repository (we look at that pack in Act 2), then runs a long task that saves its progress every step. That long task is a stand-in for real work: it counts from 0 to 15, one step per second, and each step is saved as a durable checkpoint before the next one starts. A real change would be many small steps like this. The counter makes the progress visible on screen. While that task is running you restart the worker on camera twice, to show the recovery is repeatable and not a fluke. Each time, the task freezes at the step it had reached, and when the worker comes back the same workflow instance resumes from that exact step. It finishes the task and answers with the AI model using the briefing pack it gathered before the crash. Nothing restarts from the beginning and nothing is lost.
 
 Prerequisite: the stack is up (`inv local-up`), the Bedrock path is up (`inv connectivity-check`), and the repo is indexed by the intelligence service. The crash-and-resume part is pure durability and needs only Temporal and Postgres, but the workflow always ends with the AI model's reply, so the run only completes when the Bedrock path is up. Bring the tunnel up before recording this act.
 
@@ -54,11 +70,11 @@ inv demo-durable-task --repo agentic-demo-service
 
 Say while it starts up and reads the repository:
 
-> The first thing it does is record its state in Postgres, and behind the scenes it reads the repository to gather a briefing pack it will use for its final answer. We will look at that pack closely in the next act. For now, the thing that matters is whether it can survive a crash.
+> The first thing it does is record its state in Postgres, and behind the scenes it reads the repository to gather a briefing pack it will use for its final answer. We will look at that pack closely in the next act. For now, what matters is whether it can survive a crash.
 
 Say as the count begins to climb:
 
-> Now it is running a long task. To make it easy to see, that task simply counts from 0 to 15, one step per second, saving each step before it moves on. Think of each number as one small unit of work that the platform records as done. In a moment, while the count is climbing, I will stop the worker to simulate a crash.
+> Now it is running a long task. To make it easy to see, the task counts from 0 to 15, one step per second, saving each step before it moves on. Think of each number as one small unit of work that the platform records as done. While the count is climbing, I will stop the worker to simulate a crash.
 
 Run the printed restart command in another terminal while the steps are advancing:
 
@@ -68,7 +84,7 @@ docker compose -f compose.yaml -f compose.override.yaml restart workflow-worker
 
 Say as the worker restarts and the count resumes:
 
-> I just restarted the worker process. In a fragile system, the job would be lost and it would start over from the beginning. Here, the count simply freezes, because for a moment there is no worker. When the worker comes back, Temporal hands it the same run at the exact step it had reached, and it carries on counting from there.
+> I just restarted the worker process. In a fragile system, the job would be lost and it would start over from the beginning. Here, the count freezes, because for a moment there is no worker. When the worker comes back, Temporal hands it the same run at the exact step it had reached, and it carries on counting from there.
 
 Run the same restart command a second time, once the count has climbed a little further:
 
@@ -82,17 +98,17 @@ Say as it resumes the second time:
 
 Say once the count reaches 15 and the saved history and the model's reply have printed:
 
-> Here is the saved history that survived both restarts, and here is the model's reply, grounded in the briefing pack we gathered before it.
+> Here is the saved history that survived both restarts, and here is the model's reply, grounded in the briefing pack we gathered at the start of the process.
 
 ## Act 2: repository intelligence, the briefing pack up close
 
 What happens: this is the same briefing pack the durable workflow just used in Act 1, now on its own so we can slow down and read it. It calls the repository intelligence service directly and prints the pack, most relevant items first, with each item labeled by where it came from, plus a count of how many items of each kind it found. Unlike Act 1, there is no workflow and no AI model here, so this act runs even when Bedrock is down.
 
-Prerequisite: the intelligence service is up and the target repo is indexed. If it is not indexed yet, index it before recording. An unindexed repo returns an empty package.
+Prerequisite: the repository intelligence service is up and the target repo is indexed. If it is not indexed yet, index it before recording. An unindexed repo returns an empty package.
 
 Say before running the command:
 
-> The answer from that last command was grounded in the repository. Let me run the same briefing pack on its own, so we can slow down and read what the workflow was working from.
+> The answer from that last command was grounded in the repository. The repository intelligence service maintains a structural map of the codebase and answers the platform's queries against it. Without it, an agent would have to search the code and map it out from scratch every session to work out where a change belongs and what impacts the change would have. Let me run the same briefing pack on its own, so we can slow down and read what the workflow was working from.
 
 Command:
 
@@ -104,17 +120,17 @@ Say over the output:
 
 > To build this, it does three things at once. It runs a fast text and symbol search across the whole repository, it reads precomputed code maps that already know where every function and type is defined and everywhere it is used, and a router merges those results, ranks them by relevance, and labels each item with the source it came from. That combination is why it finds the code that matters instead of the code that merely mentions a keyword.
 
-> For a target repository and the part of it we point at, it returns the functions that matter, the files most likely to change, what calls what around them, the related tests, the libraries involved, and recent related changes. Every item is labeled with where it came from, so we can trust it. This is what the coding agent plans against, and it is why it stays on target instead of guessing.
+> For this repository and the task we just asked about, the pack lists the functions that matter, the files most likely to change, what calls what around them, the related tests, the libraries involved, and recent related changes. Every item is labeled with where it came from, so we can trust it. This is what the coding agent plans against, and it is why it stays on target instead of guessing.
 
 ## Act 3: safe concurrency and no double-work
 
-What happens: this act runs the coordination safety layer against the real stack. It captures a locked snapshot of a real Jira ticket, pins the run to the current commit of the target repository, then exercises the safety primitives directly against Postgres. The strongest moment is a live race, where several agents try to claim the same piece of work at once and the database itself lets exactly one win. Every result on screen is a real row written to the coordination tables, with content hashes, claim ids, and timestamps that change on every run, so it cannot be a scripted echo. The run takes a few seconds because each step is a real database round trip.
+What happens: this act runs the coordination safety layer against the real stack. It captures a locked snapshot of a real Jira ticket, pins the run to the current commit of the target repository, then exercises the safety primitives directly against Postgres. The key moment is a live race, where several agents try to claim the same piece of work at once and the database itself lets exactly one win. Every result on screen is a real row written to the coordination tables, with content hashes, claim ids, and timestamps that change on every run, so it cannot be a scripted echo. The run takes a few seconds because each step is a real database round trip.
 
 Prerequisite: the stack is up (`inv local-up`) and Jira Cloud credentials are set so it can read the real ticket. No Bedrock is needed for this act.
 
 Say before running the command:
 
-> So far we have run one thing at a time. In production, many agents run at once, and this is the safety layer that keeps them from colliding. Everything you are about to see is written to and read back from the real database, so the ids, hashes, and timestamps are live for this run.
+> So far we have run one thing at a time. In production, many agents run at once, and the coordination safety layer is what keeps them from colliding.
 
 Command:
 
@@ -124,15 +140,15 @@ inv demo-coordination --task ADSER-13 --repo agentic-demo-service
 
 Say over the snapshot and the pinned inputs:
 
-> First it takes a locked snapshot of a real Jira ticket and pins the run to the exact commit of the repository, then records those inputs so the run can be reproduced. The content hash on screen is computed from the real ticket, and the code version is the real commit, not a placeholder.
+> First it takes a locked snapshot of the Jira ticket and pins the run to the exact commit of the repository, then records those inputs so the run can be reproduced. The content hash on screen is computed from the ticket, and the code version is the commit.
 
 Say over the claim race:
 
-> Now the real test. Several agents try to claim the same unit of work at the same moment, and the database itself lets exactly one of them win, with the rest turned away. The screen shows that one winning claim with its real id and the version and time it was granted. Two units that touch different files are both claimed at once because they cannot collide, while a third that overlaps a file already being changed is held back.
+> Now the claim race. Several agents try to claim the same unit of work at the same moment, and the database lets only one of them win and turns the rest away. The screen shows the winning claim with its id and the version and time it was granted. Two units that touch different files are claimed at once because they cannot collide, and a third that overlaps a file already being changed is held back.
 
 Say over the ordering gate and the exactly-once ledger:
 
-> The ordering gate applies steps in order, then throws out a retried step that arrives after later ones were applied, writing a real discard receipt rather than acting on it. The ledger records outside actions, so something like a Jira comment happens only once even if the step is retried. The closing summary counts the live rows this run wrote to the coordination tables, keyed to this run's id, so you can go and read them in Postgres afterward.
+> The ordering gate applies steps in order, then discards a manually triggered step that arrives after later ones were applied, writing a discard receipt rather than acting on it. The ledger records outside actions, so a Jira comment happens only once even if the step is retried. The closing summary counts the rows this run wrote to the coordination tables, keyed to this run's id, so you can read them in Postgres afterward.
 
 ## Act 4: a real, auditable pull request
 
@@ -140,14 +156,20 @@ What happens: the platform starts a durable Temporal workflow that runs the smal
 
 Prerequisite: the stack is up (`inv local-up` runs Temporal, Postgres, and the workflow and activity workers), the Bedrock path is up (`inv connectivity-check`), Jira Cloud credentials are set, and `--task` names a real, not-done Jira ticket whose work is not already implemented. Before any GitHub or Jira write, the command runs two quick health checks, one for the AI model path and one for the Jira ticket, and stops cleanly if either fails.
 
+Show the starting state before running the command. Open the Jira ticket ADSER-13 in the browser and point out its status and that no pull request is linked to it. Then open the repository's pull request list on GitHub and show there is no open pull request for this ticket's branch.
+
+Say while showing the starting state:
+
+> Before I run anything, let me show where we are starting from. This is the ticket the platform will pick up, and it is sitting in To Do with nothing linked to it yet. Over on GitHub, the pull request list has nothing open for this ticket's branch.
+
 Say before running the command:
 
-> Now we bring those three properties together and add the fourth, auditable delivery. This single command starts a durable workflow that carries a real Jira ticket all the way to a pull request, on the platform's own workers. Before it changes anything outside the platform, it runs two quick health checks, the model path and the Jira ticket, and stops cleanly if either one is unhealthy. Let me run it.
+> Now we bring those three properties together and add the fourth, auditable delivery. This single command starts a durable workflow on the platform's Temporal workers that carries a Jira ticket all the way to a pull request. As the platform picks up the ticket it moves it from To Do to In Progress, and once the draft pull request is open it moves it to the review stage. That move happens too fast to catch on screen, so afterward I will open the ticket history to show both transitions. Which statuses the platform moves the ticket through is configurable, set on this command by the start-status and review-status options. Before it changes anything outside the platform, it runs two quick health checks, the model path and the Jira ticket, and stops cleanly if either one is unhealthy.
 
 Command:
 
 ```
-inv demo-draft-pr --repo agentic-demo-service --task ADSER-13 --start-status "In Progress" --review-status "In Review" --via-temporal
+inv demo-draft-pr --repo agentic-demo-service --task ADSER-15 --start-status "In Progress" --review-status "In Review" --via-temporal
 ```
 
 Say as the steps complete:
@@ -158,29 +180,29 @@ Say while showing the pull request in GitHub:
 
 > Here is the draft pull request the platform opened on GitHub.
 
-Say while showing the Jira ticket:
+Say while showing the Jira ticket and its history:
 
-> Back on the Jira ticket, the platform has posted a link to that same pull request, so the trail connects the ticket to the work.
+> Back on the Jira ticket, it is now at the review stage, and the platform has posted a link to that same pull request, so the trail connects the ticket to the work. Opening the history, you can see the two moves it made, from To Do to In Progress when it picked up the work, and on to the review stage when the draft pull request was open.
 
 Say before running the exact same command a second time:
 
-> In a real system the same ticket can get started more than once, by a retry after a timeout, by two operators, or later by an automated trigger firing twice. Without a guard, that would open a second pull request and post a second link on the ticket. Let me run the exact same command again and show what the platform does instead.
+> In production the same ticket can get started more than once, by a retry after a timeout, by two operators, or later by an automated trigger firing twice. Without a guard, that would open a second pull request and post a second link on the ticket. Let me run the exact same command again and show what the platform does instead.
 
 Command:
 
 ```
-inv demo-draft-pr --repo agentic-demo-service --task ADSER-13 --start-status "In Progress" --review-status "In Review" --via-temporal
+inv demo-draft-pr --repo agentic-demo-service --task ADSER-15 --start-status "In Progress" --review-status "In Review" --via-temporal
 ```
 
 Say over the second run:
 
-> This time, before doing any work, the platform finds the open pull request already tied to this ticket's branch and stops. It does not run the coding agent again, open a second pull request, or post a second link. This guard only prevents duplicate delivery. Whether the change actually satisfies the ticket is the review and policy gate we are still wiring in.
+> This time, before doing any work, the platform finds the open pull request already tied to this ticket's branch and stops. The guard only prevents duplicate delivery. Whether the change satisfies the ticket is the review and policy gate we are still wiring in.
 
 ## Closing (say this last)
 
 Say after the last act, to wrap up the demo:
 
-> That is the whole loop. We took a real ticket and turned it into a reviewable pull request without losing work to a crash, without guessing at the code, without two agents stepping on each other, and with a full trail you could audit afterward. Those are the four properties we set out to prove, durability, grounded context, safe concurrency, and auditable delivery, and everything you saw runs today on the platform's own workers. The next milestone is wiring the review and policy gates into this same flow, so a change has to pass policy before the pull request ever opens.
+> That is the complete loop. A ticket became a reviewable pull request without losing work to a crash, without guessing at the code, without two agents colliding, and with a full trail you can audit. Those are the four properties we set out to prove, durability, grounded context, safe concurrency, and auditable delivery, and everything shown runs on the platform. The next milestone is wiring the review and policy gates into this same flow, so a change must pass policy before the pull request opens.
 
 ## What runs today versus what is a stand-in
 

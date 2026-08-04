@@ -15,8 +15,19 @@ with workflow.unsafe.imports_passed_through():
         CommitPushResult,
         LinkbackRequest,
         LinkbackResult,
+        ParkTaskRequest,
+        ParkTaskResult,
+        UnparkTaskRequest,
         commit_and_push,
         link_pr_to_issue,
+        mark_task_parked,
+        unmark_task_parked,
+    )
+    from services.orchestration.temporal_activities.suspension import (
+        ClearSuspensionRequest,
+        RecordSuspensionRequest,
+        clear_suspension,
+        record_suspension,
     )
     from services.orchestration.temporal_workflows.branch_sync import (
         BranchSyncInput,
@@ -35,13 +46,20 @@ with workflow.unsafe.imports_passed_through():
         PullRequestWorkflow,
     )
 
+from services.orchestration.suspension import ResumeOn, SuspendReason, Suspension
+from services.orchestration.temporal_workflows.suspendable import (
+    SuspendableWorkflow,
+    is_code_defect,
+)
+
 CLAIM_DENIED = "claim_denied"
 IMPL_FAILED = "impl_failed"
 SYNC_PAUSED = "sync_paused"
 DRAFT_PR_OPEN = "draft_pr_open"
 
-_COMMIT_SEQUENCE = 2
-_OPEN_PR_SEQUENCE = 3
+_SEQUENCE_STRIDE = 10
+_COMMIT_OFFSET = 2
+_OPEN_PR_OFFSET = 3
 
 
 @dataclass
@@ -65,6 +83,8 @@ class DraftPullRequestInput:
     max_llm_calls: int = 200
     max_tokens: int = 2_000_000
     activity_timeout_seconds: float = 2400.0
+    build_id: str = ""
+    parked_status: str = ""
 
 
 @dataclass
@@ -80,12 +100,17 @@ class DraftPullRequestOutput:
 
 
 @workflow.defn
-class DraftPullRequestWorkflow:
+class DraftPullRequestWorkflow(SuspendableWorkflow):
+    def __init__(self) -> None:
+        super().__init__()
+        self._sync: BranchSyncOutput | None = None
+        self._commit: CommitPushResult | None = None
+        self._pr: PullRequestOutput | None = None
+
     @workflow.run
     async def run(self, params: DraftPullRequestInput) -> DraftPullRequestOutput:
         retry = RetryPolicy(maximum_attempts=3)
         short = timedelta(seconds=30)
-        commit_timeout = timedelta(minutes=5)
         workflow_id = workflow.info().workflow_id
 
         title = params.title or f"[{params.task_id}] {params.task}"
@@ -157,21 +182,90 @@ class DraftPullRequestWorkflow:
                 branch=impl.branch,
             )
 
-        sync: BranchSyncOutput = await workflow.execute_child_workflow(
-            BranchSyncWorkflow.run,
-            BranchSyncInput(
-                task_id=params.task_id,
-                execution_id=params.execution_id,
-                repo=params.repo,
-                base=params.base,
-                base_sha=params.base_sha,
-                branch=impl.branch,
-                workspace_path=impl.workspace_path,
-                issue_key=params.issue_key,
-                stored_issue=dict(params.stored_issue),
-            ),
-            id=f"{workflow_id}-sync",
-        )
+        while True:
+            try:
+                return await self._finalize(params, impl, workflow_id, title)
+            except Exception as exc:  # noqa: BLE001
+                if not is_code_defect(exc):
+                    raise
+                suspension = Suspension(
+                    reason=SuspendReason.AWAITING_FIX,
+                    resume_on=ResumeOn.NEWER_BUILD,
+                    stage="finalize",
+                    parked_build_id=params.build_id,
+                    detail=str(exc),
+                )
+                await workflow.execute_activity(
+                    record_suspension,
+                    RecordSuspensionRequest(
+                        workflow_id=workflow_id,
+                        reason=suspension.reason.value,
+                        resume_on=suspension.resume_on.value,
+                        parked_build_id=suspension.parked_build_id,
+                        stage=suspension.stage,
+                        detail=suspension.detail,
+                    ),
+                    start_to_close_timeout=short,
+                    retry_policy=retry,
+                )
+                parked_from = ""
+                if params.issue_key and params.parked_status:
+                    park: ParkTaskResult = await workflow.execute_activity(
+                        mark_task_parked,
+                        ParkTaskRequest(
+                            issue_key=params.issue_key,
+                            parked_status=params.parked_status,
+                        ),
+                        start_to_close_timeout=short,
+                        retry_policy=retry,
+                    )
+                    parked_from = park.previous_status
+                await self.await_resume(suspension)
+                if params.issue_key and parked_from:
+                    await workflow.execute_activity(
+                        unmark_task_parked,
+                        UnparkTaskRequest(
+                            issue_key=params.issue_key,
+                            target_status=parked_from,
+                        ),
+                        start_to_close_timeout=short,
+                        retry_policy=retry,
+                    )
+                await workflow.execute_activity(
+                    clear_suspension,
+                    ClearSuspensionRequest(workflow_id=workflow_id),
+                    start_to_close_timeout=short,
+                    retry_policy=retry,
+                )
+
+    async def _finalize(
+        self,
+        params: DraftPullRequestInput,
+        impl: ImplementationOutput,
+        workflow_id: str,
+        title: str,
+    ) -> DraftPullRequestOutput:
+        retry = RetryPolicy(maximum_attempts=3)
+        commit_timeout = timedelta(minutes=5)
+        sequence_base = impl.claim_version * _SEQUENCE_STRIDE
+
+        if self._sync is None:
+            self._sync = await workflow.execute_child_workflow(
+                BranchSyncWorkflow.run,
+                BranchSyncInput(
+                    task_id=params.task_id,
+                    execution_id=params.execution_id,
+                    repo=params.repo,
+                    base=params.base,
+                    base_sha=params.base_sha,
+                    branch=impl.branch,
+                    workspace_path=impl.workspace_path,
+                    issue_key=params.issue_key,
+                    stored_issue=dict(params.stored_issue),
+                ),
+                id=f"{workflow_id}-sync",
+            )
+        sync = self._sync
         if sync.status != "synced":
             return DraftPullRequestOutput(
                 execution_id=params.execution_id,
@@ -180,40 +274,44 @@ class DraftPullRequestWorkflow:
                 branch=impl.branch,
             )
 
-        commit: CommitPushResult = await workflow.execute_activity(
-            commit_and_push,
-            CommitPushRequest(
-                repo=params.repo,
-                task_id=params.task_id,
-                execution_id=params.execution_id,
-                base=params.base,
-                commit=params.base_sha,
-                message=params.commit_message,
-                sequence=_COMMIT_SEQUENCE,
-            ),
-            start_to_close_timeout=commit_timeout,
-            retry_policy=retry,
-        )
+        if self._commit is None:
+            self._commit = await workflow.execute_activity(
+                commit_and_push,
+                CommitPushRequest(
+                    repo=params.repo,
+                    task_id=params.task_id,
+                    execution_id=params.execution_id,
+                    base=params.base,
+                    commit=params.base_sha,
+                    message=params.commit_message,
+                    sequence=sequence_base + _COMMIT_OFFSET,
+                ),
+                start_to_close_timeout=commit_timeout,
+                retry_policy=retry,
+            )
+        commit = self._commit
 
         body = params.body or (
             f"Automated draft for {params.issue_key} (execution {params.execution_id})."
         )
-        pr: PullRequestOutput = await workflow.execute_child_workflow(
-            PullRequestWorkflow.run,
-            PullRequestInput(
-                task_id=params.task_id,
-                execution_id=params.execution_id,
-                repo=params.repo,
-                base=params.base,
-                branch=commit.branch,
-                title=title,
-                body=body,
-                issue_key=params.issue_key,
-                base_sha=params.base_sha,
-                sequence=_OPEN_PR_SEQUENCE,
-            ),
-            id=f"{workflow_id}-pr",
-        )
+        if self._pr is None:
+            self._pr = await workflow.execute_child_workflow(
+                PullRequestWorkflow.run,
+                PullRequestInput(
+                    task_id=params.task_id,
+                    execution_id=params.execution_id,
+                    repo=params.repo,
+                    base=params.base,
+                    branch=commit.branch,
+                    title=title,
+                    body=body,
+                    issue_key=params.issue_key,
+                    base_sha=params.base_sha,
+                    sequence=sequence_base + _OPEN_PR_OFFSET,
+                ),
+                id=f"{workflow_id}-pr",
+            )
+        pr = self._pr
 
         return DraftPullRequestOutput(
             execution_id=params.execution_id,
@@ -224,3 +322,4 @@ class DraftPullRequestWorkflow:
             pr_url=pr.url,
             linkback=pr.linkback,
         )
+

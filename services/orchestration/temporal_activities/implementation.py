@@ -80,17 +80,28 @@ def _build_materializer():
 
 def _build_runtime():
     from openhands.runtime.conversation import RemoteConversationDriver
-    from openhands.runtime.provisioner import KubernetesSandboxProvisioner
+    from openhands.runtime.provisioner import (
+        KubernetesSandboxProvisioner,
+        PortForwardSandboxProvisioner,
+    )
     from openhands.runtime.runtime import SandboxRuntime
     from scripts.config import get_settings
 
     settings = get_settings()
+    litellm_base_url = settings.sandbox_litellm_base_url
     driver = RemoteConversationDriver(
         model=settings.coding_model,
-        litellm_base_url=settings.litellm_base_url,
+        litellm_base_url=litellm_base_url,
         api_key=settings.litellm_master_key,
     )
-    return SandboxRuntime.from_settings(KubernetesSandboxProvisioner(), driver)
+    inner = KubernetesSandboxProvisioner(
+        in_cluster=settings.openhands_in_cluster,
+        ready_timeout_seconds=600.0,
+    )
+    provisioner = inner if settings.openhands_in_cluster else PortForwardSandboxProvisioner(inner)
+    runtime = SandboxRuntime.from_settings(provisioner, driver, settings)
+    runtime.litellm_base_url = litellm_base_url
+    return runtime
 
 
 @activity.defn
@@ -105,6 +116,7 @@ async def claim_work_unit(req: ClaimRequest) -> ClaimResult:
             execution_id=req.execution_id,
             agent_id=req.agent_id,
             file_impact=tuple(req.file_impact),
+            workflow_id=activity.info().workflow_id,
         )
     )
     return ClaimResult(

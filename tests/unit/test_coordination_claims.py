@@ -74,6 +74,70 @@ def test_scheduler_defers_units_that_share_files():
     assert deferred == {"u2"}
 
 
+def _owned(work_unit: str, workflow_id: str, *, agent: str = "agent-a") -> WorkUnit:
+    return WorkUnit(
+        task_id="AGENTDEV-1",
+        work_unit=work_unit,
+        execution_id=f"exec-{agent}",
+        agent_id=agent,
+        workflow_id=workflow_id,
+    )
+
+
+async def test_active_owner_blocks_reclaim():
+    async def owner_active(_workflow_id: str) -> bool:
+        return True
+
+    store = InMemoryWorkClaimStore(owner_active=owner_active)
+    first = await store.try_claim(_owned("u1", "wf-live", agent="agent-a"))
+    second = await store.try_claim(_owned("u1", "wf-new", agent="agent-b"))
+    assert first.won is True
+    assert second.won is False
+    assert second.claim_version == 1
+
+
+async def test_dead_owner_is_reclaimed():
+    async def owner_active(_workflow_id: str) -> bool:
+        return False
+
+    store = InMemoryWorkClaimStore(owner_active=owner_active)
+    first = await store.try_claim(_owned("u1", "wf-crashed", agent="agent-a"))
+    second = await store.try_claim(_owned("u1", "wf-new", agent="agent-b"))
+    assert first.won is True
+    assert second.won is True
+    assert second.claim_version == 2
+
+
+async def test_empty_owner_preserves_single_winner():
+    async def owner_active(_workflow_id: str) -> bool:
+        return False
+
+    store = InMemoryWorkClaimStore(owner_active=owner_active)
+    first = await store.try_claim(_unit("u1"))
+    second = await store.try_claim(_unit("u1"))
+    assert first.won is True
+    assert second.won is False
+
+
+async def test_released_claim_is_reclaimable():
+    store = InMemoryWorkClaimStore()
+    first = await store.try_claim(_owned("u1", "wf-a", agent="agent-a"))
+    await store.transition(first.claim_id, expected_version=1, new_state="released")
+    second = await store.try_claim(_owned("u1", "wf-b", agent="agent-b"))
+    assert second.won is True
+
+
+async def test_completed_claim_is_not_reclaimable():
+    async def owner_active(_workflow_id: str) -> bool:
+        return False
+
+    store = InMemoryWorkClaimStore(owner_active=owner_active)
+    first = await store.try_claim(_owned("u1", "wf-a", agent="agent-a"))
+    await store.transition(first.claim_id, expected_version=1, new_state=COMPLETED)
+    second = await store.try_claim(_owned("u1", "wf-b", agent="agent-b"))
+    assert second.won is False
+
+
 def test_scheduler_admits_all_disjoint_units():
     schedule = partition_by_file_impact(
         [_unit("u1", "a.py"), _unit("u2", "b.py"), _unit("u3", "c.py")]

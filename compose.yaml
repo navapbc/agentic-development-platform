@@ -61,9 +61,11 @@ services:
     command: ["python", "-m", "services.orchestration.worker"]
     environment:
       WORKER_ROLE: workflow
+      AGENT_BUILD_ID: ${AGENT_BUILD_ID:-dev}
       REPO_INTELLIGENCE_URL: http://repo-intelligence:8120
       COORDINATION_URL: http://coordination-service:8130
       JIRA_ACLI_PATH: /app/vendor/bin/acli
+      EXECUTION_WORKSPACE_ROOT: /home/appuser/agent-workspaces
     depends_on:
       temporal:
         condition: service_healthy
@@ -77,9 +79,11 @@ services:
     command: ["python", "-m", "services.orchestration.worker"]
     environment:
       WORKER_ROLE: activity
+      AGENT_BUILD_ID: ${AGENT_BUILD_ID:-dev}
       REPO_INTELLIGENCE_URL: http://repo-intelligence:8120
       COORDINATION_URL: http://coordination-service:8130
       JIRA_ACLI_PATH: /app/vendor/bin/acli
+      EXECUTION_WORKSPACE_ROOT: /home/appuser/agent-workspaces
     depends_on:
       temporal:
         condition: service_healthy
