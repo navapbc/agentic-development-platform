@@ -26,7 +26,11 @@ from services.orchestration.temporal_activities.implementation import (
     ImplementationRequest,
     ImplementationResult,
 )
-from services.orchestration.temporal_activities.persistence import AuditEvent, ExecutionState
+from services.orchestration.temporal_activities.persistence import (
+    AuditEvent,
+    ExecutionState,
+    UsageMetrics,
+)
 from services.orchestration.temporal_activities.planning import ContextRequest, ContextResult
 from services.orchestration.temporal_activities.pull_request import (
     CommitPushRequest,
@@ -77,6 +81,10 @@ def _make_activities(
     @activity.defn(name="record_audit_event")
     async def fake_audit(event: AuditEvent) -> str:
         return event.event_id
+
+    @activity.defn(name="record_usage_metrics")
+    async def fake_usage(payload: UsageMetrics) -> str:
+        return payload.execution_id
 
     @activity.defn(name="gather_repo_context")
     async def fake_context(req: ContextRequest) -> ContextResult:
@@ -169,6 +177,7 @@ def _make_activities(
     return [
         fake_persist,
         fake_audit,
+        fake_usage,
         fake_context,
         fake_claim,
         fake_find_open_pr,

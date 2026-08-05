@@ -23,6 +23,7 @@ EXPECTED_TASKS = {
     "fetch-acli",
     "reap",
     "demo-durable-task",
+    "demo-durable-counter",
     "demo-coordination",
     "demo-repo-intelligence",
     "demo-draft-pr",

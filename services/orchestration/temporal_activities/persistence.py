@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from database.models.schema import audit_events, executions
+from database.models.schema import audit_events, executions, usage_metrics
 from scripts.config import get_settings
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
@@ -101,3 +101,62 @@ async def record_audit_event(event: AuditEvent) -> str:
     async with engine.begin() as conn:
         await conn.execute(stmt)
     return event.event_id
+
+
+@dataclass
+class UsageMetrics:
+    execution_id: str
+    task_id: str
+    stage: str
+    workflow_id: str | None = None
+    model_id: str | None = None
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    total_tokens: int = 0
+    llm_calls: int = 0
+    tool_calls: int = 0
+    cost_usd: float = 0.0
+    elapsed_seconds: float = 0.0
+
+
+@activity.defn
+async def record_usage_metrics(payload: UsageMetrics) -> str:
+    stmt = insert(usage_metrics).values(
+        execution_id=payload.execution_id,
+        stage=payload.stage,
+        task_id=payload.task_id,
+        workflow_id=payload.workflow_id,
+        model_id=payload.model_id,
+        prompt_tokens=payload.prompt_tokens,
+        completion_tokens=payload.completion_tokens,
+        cache_read_tokens=payload.cache_read_tokens,
+        cache_write_tokens=payload.cache_write_tokens,
+        total_tokens=payload.total_tokens,
+        llm_calls=payload.llm_calls,
+        tool_calls=payload.tool_calls,
+        cost_usd=payload.cost_usd,
+        elapsed_seconds=payload.elapsed_seconds,
+    )
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[usage_metrics.c.execution_id, usage_metrics.c.stage],
+        set_={
+            "task_id": payload.task_id,
+            "workflow_id": payload.workflow_id,
+            "model_id": payload.model_id,
+            "prompt_tokens": payload.prompt_tokens,
+            "completion_tokens": payload.completion_tokens,
+            "cache_read_tokens": payload.cache_read_tokens,
+            "cache_write_tokens": payload.cache_write_tokens,
+            "total_tokens": payload.total_tokens,
+            "llm_calls": payload.llm_calls,
+            "tool_calls": payload.tool_calls,
+            "cost_usd": payload.cost_usd,
+            "elapsed_seconds": payload.elapsed_seconds,
+        },
+    )
+    engine = _get_engine()
+    async with engine.begin() as conn:
+        await conn.execute(stmt)
+    return payload.execution_id

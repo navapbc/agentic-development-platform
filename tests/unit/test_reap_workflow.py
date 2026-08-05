@@ -13,6 +13,7 @@ from services.orchestration.temporal_workflows.reap import ReapInput, ReapWorkfl
 from temporalio import activity
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
+from temporalio.worker.workflow_sandbox import SandboxedWorkflowRunner, SandboxRestrictions
 
 
 async def _run_workflow(*, dry_run: bool):
@@ -44,6 +45,9 @@ async def _run_workflow(*, dry_run: bool):
             env.client,
             task_queue=task_queue,
             workflows=[ReapWorkflow],
+            workflow_runner=SandboxedWorkflowRunner(
+                restrictions=SandboxRestrictions.default.with_passthrough_modules("beartype")
+            ),
             activities=[fake_reap],
         ):
             result = await env.client.execute_workflow(

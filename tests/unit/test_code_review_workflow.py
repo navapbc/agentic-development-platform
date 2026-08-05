@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import uuid
 
-from services.orchestration.temporal_activities.persistence import AuditEvent, ExecutionState
+from services.orchestration.temporal_activities.persistence import (
+    AuditEvent,
+    ExecutionState,
+    UsageMetrics,
+)
 from services.orchestration.temporal_activities.review import ReviewOutcome, ReviewRequest
 from services.orchestration.temporal_workflows.review import CodeReviewInput, CodeReviewWorkflow
 from temporalio import activity
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
+from temporalio.worker.workflow_sandbox import SandboxedWorkflowRunner, SandboxRestrictions
 
 
 def _outcome(verdict: str, gate: str, attestation: str) -> ReviewOutcome:
@@ -28,6 +33,7 @@ def _outcome(verdict: str, gate: str, attestation: str) -> ReviewOutcome:
 async def _run_workflow(code_verdict: str, security_verdict: str):
     states: list[str] = []
     audits: list[AuditEvent] = []
+    usages: list[UsageMetrics] = []
 
     @activity.defn(name="persist_execution_state")
     async def fake_persist(payload: ExecutionState) -> str:
@@ -38,6 +44,11 @@ async def _run_workflow(code_verdict: str, security_verdict: str):
     async def fake_audit(event: AuditEvent) -> str:
         audits.append(event)
         return event.event_id
+
+    @activity.defn(name="record_usage_metrics")
+    async def fake_usage(payload: UsageMetrics) -> str:
+        usages.append(payload)
+        return payload.execution_id
 
     @activity.defn(name="review_code")
     async def fake_code(req: ReviewRequest) -> ReviewOutcome:
@@ -53,7 +64,10 @@ async def _run_workflow(code_verdict: str, security_verdict: str):
             env.client,
             task_queue=task_queue,
             workflows=[CodeReviewWorkflow],
-            activities=[fake_persist, fake_audit, fake_code, fake_security],
+            workflow_runner=SandboxedWorkflowRunner(
+                restrictions=SandboxRestrictions.default.with_passthrough_modules("beartype")
+            ),
+            activities=[fake_persist, fake_audit, fake_usage, fake_code, fake_security],
         ):
             result = await env.client.execute_workflow(
                 CodeReviewWorkflow.run,

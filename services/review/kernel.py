@@ -10,6 +10,7 @@ from services.review.types import (
     ModelProvenance,
     RawReview,
     ReviewInput,
+    TokenUsage,
     Verdict,
 )
 
@@ -49,6 +50,18 @@ def _raw_from_runner_result(result: dict[str, Any], tier: str) -> RawReview:
         coaching=list(result.get("coaching") or []),
         provenance=provenance,
         summary=str(result.get("summary") or ""),
+        usage=_usage_from_runner_result(result),
+    )
+
+
+def _usage_from_runner_result(result: dict[str, Any]) -> TokenUsage:
+    usage = result.get("_usage") or {}
+    return TokenUsage(
+        prompt_tokens=int(usage.get("input_tokens", 0)),
+        completion_tokens=int(usage.get("output_tokens", 0)),
+        cache_read_tokens=int(usage.get("cache_read_tokens", 0)),
+        cache_write_tokens=int(usage.get("cache_write_tokens", 0)),
+        llm_calls=int(usage.get("requests", 0)),
     )
 
 

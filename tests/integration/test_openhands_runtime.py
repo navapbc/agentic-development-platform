@@ -42,6 +42,19 @@ async def test_provisions_and_tears_down_one_pod_per_execution() -> None:
     assert driver.calls == [provisioner.provisioned[0].base_url]
 
 
+async def test_threads_ticket_and_execution_into_request_metadata() -> None:
+    driver = FakeConversationDriver(tool_calls=1, summary="done")
+    runtime = _runtime(driver, RuntimeCaps())
+
+    await runtime.run_implementation(execution_id=EXECUTION_ID, task=TASK, task_id="ADSER-19")
+
+    assert driver.metadata == {
+        "execution_id": EXECUTION_ID,
+        "stage": "implementing",
+        "ticket": "ADSER-19",
+    }
+
+
 async def test_tool_call_cap_aborts_the_stage() -> None:
     driver = FakeConversationDriver(tool_calls=61)
     runtime = _runtime(driver, RuntimeCaps(max_tool_calls=60))

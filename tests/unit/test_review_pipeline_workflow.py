@@ -6,7 +6,11 @@ import uuid
 
 from services.orchestration.temporal_activities import review
 from services.orchestration.temporal_activities.bedrock import ModelRequest, ModelResponse
-from services.orchestration.temporal_activities.persistence import AuditEvent, ExecutionState
+from services.orchestration.temporal_activities.persistence import (
+    AuditEvent,
+    ExecutionState,
+    UsageMetrics,
+)
 from services.orchestration.temporal_activities.review import (
     review_code,
     review_plan,
@@ -50,6 +54,7 @@ async def test_pipeline_persists_verified_attestations(monkeypatch):
 
     states: list[str] = []
     audits: list[AuditEvent] = []
+    usages: list[UsageMetrics] = []
 
     @activity.defn(name="persist_execution_state")
     async def fake_persist(payload: ExecutionState) -> str:
@@ -60,6 +65,11 @@ async def test_pipeline_persists_verified_attestations(monkeypatch):
     async def fake_audit(event: AuditEvent) -> str:
         audits.append(event)
         return event.event_id
+
+    @activity.defn(name="record_usage_metrics")
+    async def fake_usage(payload: UsageMetrics) -> str:
+        usages.append(payload)
+        return payload.execution_id
 
     @activity.defn(name="invoke_model")
     async def fake_invoke(req: ModelRequest) -> ModelResponse:
@@ -79,6 +89,7 @@ async def test_pipeline_persists_verified_attestations(monkeypatch):
             activities=[
                 fake_persist,
                 fake_audit,
+                fake_usage,
                 fake_invoke,
                 review_plan,
                 review_code,

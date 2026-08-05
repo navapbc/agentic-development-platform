@@ -52,6 +52,10 @@ class ImplementationResult:
     diff_hash: str
     model_id: str
     prompt_version: str
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
     workspace_path: str = ""
     changed_files: list[str] = field(default_factory=list)
     summary: str = ""
@@ -144,6 +148,7 @@ async def run_implementation_stage(req: ImplementationRequest) -> Implementation
         task=req.task,
         context=req.context,
         workspace_sub_path=str(Path(workspace.path).relative_to(materializer.workspace_root)),
+        task_id=req.task_id,
     )
     changes = await materializer.collect_changes(workspace)
     return ImplementationResult(
@@ -154,6 +159,10 @@ async def run_implementation_stage(req: ImplementationRequest) -> Implementation
         cost=outcome.cost,
         tokens=outcome.tokens,
         llm_calls=outcome.llm_calls,
+        prompt_tokens=outcome.prompt_tokens,
+        completion_tokens=outcome.completion_tokens,
+        cache_read_tokens=outcome.cache_read_tokens,
+        cache_write_tokens=outcome.cache_write_tokens,
         branch=workspace.branch,
         commit_sha=workspace.commit_sha,
         diff_hash=_hash_changes(changes),

@@ -28,8 +28,10 @@ with workflow.unsafe.imports_passed_through():
     from services.orchestration.temporal_activities.persistence import (
         AuditEvent,
         ExecutionState,
+        UsageMetrics,
         persist_execution_state,
         record_audit_event,
+        record_usage_metrics,
     )
     from services.orchestration.temporal_activities.planning import (
         ContextRequest,
@@ -230,6 +232,28 @@ class ImplementationWorkflow:
             ),
             start_to_close_timeout=stage_timeout,
             retry_policy=once,
+        )
+
+        await workflow.execute_activity(
+            record_usage_metrics,
+            UsageMetrics(
+                execution_id=params.execution_id,
+                task_id=params.task_id,
+                stage="IMPLEMENTING",
+                workflow_id=workflow_id,
+                model_id=result.model_id,
+                prompt_tokens=result.prompt_tokens,
+                completion_tokens=result.completion_tokens,
+                cache_read_tokens=result.cache_read_tokens,
+                cache_write_tokens=result.cache_write_tokens,
+                total_tokens=result.tokens,
+                llm_calls=result.llm_calls,
+                tool_calls=result.tool_calls,
+                cost_usd=result.cost,
+                elapsed_seconds=result.elapsed_seconds,
+            ),
+            start_to_close_timeout=short,
+            retry_policy=retry,
         )
 
         llm_calls_exceeded = result.llm_calls > params.max_llm_calls

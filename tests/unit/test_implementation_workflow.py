@@ -11,7 +11,11 @@ from services.orchestration.temporal_activities.implementation import (
     ImplementationRequest,
     ImplementationResult,
 )
-from services.orchestration.temporal_activities.persistence import AuditEvent, ExecutionState
+from services.orchestration.temporal_activities.persistence import (
+    AuditEvent,
+    ExecutionState,
+    UsageMetrics,
+)
 from services.orchestration.temporal_activities.planning import ContextRequest, ContextResult
 from services.orchestration.temporal_activities.pull_request import (
     FindOpenPrRequest,
@@ -25,6 +29,7 @@ from services.orchestration.temporal_workflows.implementation import (
 from temporalio import activity
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
+from temporalio.worker.workflow_sandbox import SandboxedWorkflowRunner, SandboxRestrictions
 
 
 async def _run_workflow(
@@ -46,6 +51,7 @@ async def _run_workflow(
     stages: list[ImplementationRequest] = []
     contexts: list[ContextRequest] = []
     lookups: list[FindOpenPrRequest] = []
+    usages: list[UsageMetrics] = []
 
     @activity.defn(name="persist_execution_state")
     async def fake_persist(payload: ExecutionState) -> str:
@@ -56,6 +62,11 @@ async def _run_workflow(
     async def fake_audit(event: AuditEvent) -> str:
         audits.append(event)
         return event.event_id
+
+    @activity.defn(name="record_usage_metrics")
+    async def fake_usage(payload: UsageMetrics) -> str:
+        usages.append(payload)
+        return payload.execution_id
 
     @activity.defn(name="gather_repo_context")
     async def fake_context(req: ContextRequest) -> ContextResult:
@@ -99,6 +110,9 @@ async def _run_workflow(
             env.client,
             task_queue=task_queue,
             workflows=[ImplementationWorkflow],
+            workflow_runner=SandboxedWorkflowRunner(
+                restrictions=SandboxRestrictions.default.with_passthrough_modules("beartype")
+            ),
             activities=[
                 fake_persist,
                 fake_audit,
@@ -106,6 +120,7 @@ async def _run_workflow(
                 fake_claim,
                 fake_stage,
                 fake_find_open_pr,
+                fake_usage,
             ],
         ):
             result = await env.client.execute_workflow(

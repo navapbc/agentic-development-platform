@@ -59,10 +59,13 @@ class _FakeRuntime:
     def __init__(self) -> None:
         self.received: dict[str, str] = {}
 
-    async def run_implementation(self, *, execution_id, task, context="", workspace_sub_path=""):
+    async def run_implementation(
+        self, *, execution_id, task, context="", workspace_sub_path="", task_id=""
+    ):
         self.received = {
             "execution_id": execution_id,
             "workspace_sub_path": workspace_sub_path,
+            "task_id": task_id,
         }
         return ImplementationOutcome(
             status=FINISHED,

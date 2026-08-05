@@ -99,4 +99,5 @@ class ReviewGate:
             provenance=raw.provenance,
             summary=raw.summary,
             attestation=attestation,
+            usage=raw.usage,
         )

@@ -71,6 +71,8 @@ class ScipIndexer:
             if venv_bin.is_dir():
                 env["VIRTUAL_ENV"] = str(repo_root / ".venv")
                 env["PATH"] = os.pathsep.join([str(venv_bin), env.get("PATH", "")])
+        else:
+            env.pop("VIRTUAL_ENV", None)
         return env
 
 

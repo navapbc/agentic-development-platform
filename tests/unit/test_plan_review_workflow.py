@@ -5,17 +5,23 @@ from __future__ import annotations
 import uuid
 
 from services.orchestration.temporal_activities.bedrock import ModelRequest, ModelResponse
-from services.orchestration.temporal_activities.persistence import AuditEvent, ExecutionState
+from services.orchestration.temporal_activities.persistence import (
+    AuditEvent,
+    ExecutionState,
+    UsageMetrics,
+)
 from services.orchestration.temporal_activities.review import ReviewOutcome, ReviewRequest
 from services.orchestration.temporal_workflows.review import PlanReviewInput, PlanReviewWorkflow
 from temporalio import activity
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
+from temporalio.worker.workflow_sandbox import SandboxedWorkflowRunner, SandboxRestrictions
 
 
 async def _run_workflow(verdicts: list[str]):
     states: list[str] = []
     audits: list[AuditEvent] = []
+    usages: list[UsageMetrics] = []
     verdict_iter = iter(verdicts)
 
     @activity.defn(name="persist_execution_state")
@@ -27,6 +33,11 @@ async def _run_workflow(verdicts: list[str]):
     async def fake_audit(event: AuditEvent) -> str:
         audits.append(event)
         return event.event_id
+
+    @activity.defn(name="record_usage_metrics")
+    async def fake_usage(payload: UsageMetrics) -> str:
+        usages.append(payload)
+        return payload.execution_id
 
     @activity.defn(name="invoke_model")
     async def fake_invoke(req: ModelRequest) -> ModelResponse:
@@ -56,7 +67,10 @@ async def _run_workflow(verdicts: list[str]):
             env.client,
             task_queue=task_queue,
             workflows=[PlanReviewWorkflow],
-            activities=[fake_persist, fake_audit, fake_invoke, fake_review],
+            workflow_runner=SandboxedWorkflowRunner(
+                restrictions=SandboxRestrictions.default.with_passthrough_modules("beartype")
+            ),
+            activities=[fake_persist, fake_audit, fake_usage, fake_invoke, fake_review],
         ):
             result = await env.client.execute_workflow(
                 PlanReviewWorkflow.run,

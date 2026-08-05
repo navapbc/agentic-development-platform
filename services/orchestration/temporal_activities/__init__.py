@@ -12,6 +12,7 @@ from services.orchestration.temporal_activities.implementation import (
 from services.orchestration.temporal_activities.persistence import (
     persist_execution_state,
     record_audit_event,
+    record_usage_metrics,
 )
 from services.orchestration.temporal_activities.planning import gather_repo_context
 from services.orchestration.temporal_activities.pull_request import (
@@ -50,6 +51,7 @@ __all__ = [
     "reap_orphans",
     "record_audit_event",
     "record_suspension",
+    "record_usage_metrics",
     "resolve_conflicts",
     "review_code",
     "review_plan",

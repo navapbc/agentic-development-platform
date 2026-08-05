@@ -13,6 +13,8 @@ EXPECTED_TABLES = {
     "sequence_gate",
     "orphan_artifacts",
     "side_effects",
+    "suspended_flows",
+    "usage_metrics",
 }
 
 

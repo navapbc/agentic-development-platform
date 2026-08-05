@@ -5,7 +5,9 @@ from __future__ import annotations
 from scripts.config import Settings
 
 
-def test_default_allowlists_match_plan():
+def test_default_allowlists_match_plan(monkeypatch):
+    monkeypatch.delenv("ALLOWLIST_JIRA_PROJECTS", raising=False)
+    monkeypatch.delenv("ALLOWLIST_REPOS", raising=False)
     s = Settings(_env_file=None)
     assert s.allowed_projects() == {"AGENTDEV"}
     assert s.allowed_repos() == {
@@ -64,7 +66,9 @@ def test_public_bedrock_endpoint_is_disabled_by_default():
     assert Settings().allow_public_bedrock_endpoint is False
 
 
-def test_code_defaults_carry_no_project_specific_jumphost():
+def test_code_defaults_carry_no_project_specific_jumphost(monkeypatch):
+    monkeypatch.delenv("JUMPHOST_NAME", raising=False)
+    monkeypatch.delenv("JUMPHOST_ENV", raising=False)
     s = Settings(_env_file=None)
     assert s.jumphost_name == ""
     assert s.jumphost_env == ""

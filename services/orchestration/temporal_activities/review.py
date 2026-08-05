@@ -30,6 +30,12 @@ class ReviewOutcome:
     summary: str = ""
     blocking_findings: int = 0
     findings: list[str] = field(default_factory=list)
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    total_tokens: int = 0
+    llm_calls: int = 0
 
 
 @dataclass(frozen=True)
@@ -120,6 +126,7 @@ async def _run_gate(stage: ReviewStage, spec: _PromptSpec, req: ReviewRequest) -
     )
     result = await gate.review(review_input, execution_id=req.execution_id)
     model_id = result.provenance[0].model_id if result.provenance else None
+    usage = result.usage
     return ReviewOutcome(
         verdict=result.verdict.value,
         attestation_hash=result.attestation.content_hash,
@@ -128,6 +135,12 @@ async def _run_gate(stage: ReviewStage, spec: _PromptSpec, req: ReviewRequest) -
         summary=result.summary,
         blocking_findings=sum(1 for f in result.findings if f.blocking),
         findings=[f.title for f in result.findings if f.blocking],
+        prompt_tokens=usage.prompt_tokens,
+        completion_tokens=usage.completion_tokens,
+        cache_read_tokens=usage.cache_read_tokens,
+        cache_write_tokens=usage.cache_write_tokens,
+        total_tokens=usage.prompt_tokens + usage.completion_tokens,
+        llm_calls=usage.llm_calls,
     )
 
 

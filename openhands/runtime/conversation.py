@@ -30,6 +30,10 @@ class ImplementationOutcome:
     elapsed_seconds: float
     cost: float = 0.0
     tokens: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
     llm_calls: int = 0
     summary: str = ""
 
@@ -44,6 +48,7 @@ class ConversationDriver(Protocol):
         context: str,
         caps: RuntimeCaps,
         working_dir: str = "",
+        metadata: dict[str, str] | None = None,
     ) -> ImplementationOutcome: ...
 
 
@@ -61,8 +66,11 @@ class RemoteConversationDriver:
         context: str,
         caps: RuntimeCaps,
         working_dir: str = "",
+        metadata: dict[str, str] | None = None,
     ) -> ImplementationOutcome:
-        return await asyncio.to_thread(self._run_sync, base_url, task, context, caps, working_dir)
+        return await asyncio.to_thread(
+            self._run_sync, base_url, task, context, caps, working_dir, metadata
+        )
 
     def _run_sync(
         self,
@@ -71,6 +79,7 @@ class RemoteConversationDriver:
         context: str,
         caps: RuntimeCaps,
         working_dir: str = "",
+        metadata: dict[str, str] | None = None,
     ) -> ImplementationOutcome:
         from openhands.sdk import LLM, Conversation, Workspace
         from openhands.sdk.event import ActionEvent
@@ -79,6 +88,7 @@ class RemoteConversationDriver:
 
         tracker = CapTracker(caps)
         breach: dict[str, str] = {}
+        extra_body = {"requestMetadata": dict(metadata)} if metadata else {}
 
         llm = LLM(
             usage_id="coding",
@@ -88,6 +98,7 @@ class RemoteConversationDriver:
             max_output_tokens=_MAX_OUTPUT_TOKENS,
             caching_prompt=False,
             reasoning_effort="none",
+            litellm_extra_body=extra_body,
         )
         agent = get_default_agent(llm=llm, cli_mode=True)
         workspace = Workspace(host=base_url, working_dir=working_dir or "workspace/project")
@@ -117,14 +128,21 @@ class RemoteConversationDriver:
             status = ABORTED if reason != COMPLETED else FINISHED
             metrics = conversation.conversation_stats.get_combined_metrics()
             usage = metrics.accumulated_token_usage
-            tokens = int(usage.prompt_tokens + usage.completion_tokens) if usage else 0
+            prompt_tokens = int(usage.prompt_tokens) if usage else 0
+            completion_tokens = int(usage.completion_tokens) if usage else 0
+            cache_read_tokens = int(usage.cache_read_tokens) if usage else 0
+            cache_write_tokens = int(usage.cache_write_tokens) if usage else 0
             return ImplementationOutcome(
                 status=status,
                 terminal_reason=reason,
                 tool_calls=tracker.tool_calls,
                 elapsed_seconds=tracker.elapsed,
                 cost=float(metrics.accumulated_cost),
-                tokens=tokens,
+                tokens=prompt_tokens + completion_tokens,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                cache_read_tokens=cache_read_tokens,
+                cache_write_tokens=cache_write_tokens,
                 llm_calls=len(metrics.costs),
             )
         except Exception as exc:
@@ -170,6 +188,7 @@ class FakeConversationDriver:
         self._summary = summary
         self._fail = fail
         self.calls: list[str] = []
+        self.metadata: dict[str, str] | None = None
 
     async def run_task(
         self,
@@ -179,8 +198,10 @@ class FakeConversationDriver:
         context: str,
         caps: RuntimeCaps,
         working_dir: str = "",
+        metadata: dict[str, str] | None = None,
     ) -> ImplementationOutcome:
         self.calls.append(base_url)
+        self.metadata = metadata
         tracker = CapTracker(caps)
         if self._fail:
             return ImplementationOutcome(

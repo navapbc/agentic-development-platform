@@ -67,6 +67,7 @@ class SandboxRuntime:
         task: str,
         context: str = "",
         workspace_sub_path: str = "",
+        task_id: str = "",
     ) -> ImplementationOutcome:
         binding = self._workspace_binding(workspace_sub_path)
         spec = SandboxSpec(
@@ -78,6 +79,9 @@ class SandboxRuntime:
             litellm_base_url=self.litellm_base_url,
             workspace=binding,
         )
+        metadata = {"execution_id": execution_id, "stage": "implementing"}
+        if task_id:
+            metadata["ticket"] = task_id
         handle = await self.provisioner.provision(spec)
         try:
             return await self.driver.run_task(
@@ -86,6 +90,7 @@ class SandboxRuntime:
                 context=context,
                 caps=self.caps,
                 working_dir=self.workspace_mount_path if binding else "",
+                metadata=metadata,
             )
         finally:
             await self.provisioner.teardown(handle)

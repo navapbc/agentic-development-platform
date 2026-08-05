@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import timedelta
 
 from temporalio import workflow
@@ -17,8 +17,10 @@ with workflow.unsafe.imports_passed_through():
     from services.orchestration.temporal_activities.persistence import (
         AuditEvent,
         ExecutionState,
+        UsageMetrics,
         persist_execution_state,
         record_audit_event,
+        record_usage_metrics,
     )
     from services.orchestration.temporal_activities.planning import (
         ContextRequest,
@@ -100,6 +102,26 @@ class PlanReviewWorkflow:
                 retry_policy=retry,
             )
 
+        async def usage(stage: str, outcome: ReviewOutcome) -> None:
+            await workflow.execute_activity(
+                record_usage_metrics,
+                UsageMetrics(
+                    execution_id=params.execution_id,
+                    task_id=params.task_id,
+                    stage=stage,
+                    workflow_id=workflow_id,
+                    model_id=outcome.model_id,
+                    prompt_tokens=outcome.prompt_tokens,
+                    completion_tokens=outcome.completion_tokens,
+                    cache_read_tokens=outcome.cache_read_tokens,
+                    cache_write_tokens=outcome.cache_write_tokens,
+                    total_tokens=outcome.total_tokens,
+                    llm_calls=outcome.llm_calls,
+                ),
+                start_to_close_timeout=short,
+                retry_policy=retry,
+            )
+
         await persist("PLANNING")
 
         context_summary = ""
@@ -138,6 +160,12 @@ class PlanReviewWorkflow:
 
         replans = 0
         attempt = 0
+        plan_prompt = 0
+        plan_completion = 0
+        plan_cache_read = 0
+        plan_cache_write = 0
+        plan_total = 0
+        plan_calls = 0
         while True:
             await persist("PLAN_REVIEW")
             outcome: ReviewOutcome = await workflow.execute_activity(
@@ -151,6 +179,24 @@ class PlanReviewWorkflow:
                 ),
                 start_to_close_timeout=model_timeout,
                 retry_policy=retry,
+            )
+            plan_prompt += outcome.prompt_tokens
+            plan_completion += outcome.completion_tokens
+            plan_cache_read += outcome.cache_read_tokens
+            plan_cache_write += outcome.cache_write_tokens
+            plan_total += outcome.total_tokens
+            plan_calls += outcome.llm_calls
+            await usage(
+                "PLAN_REVIEW",
+                replace(
+                    outcome,
+                    prompt_tokens=plan_prompt,
+                    completion_tokens=plan_completion,
+                    cache_read_tokens=plan_cache_read,
+                    cache_write_tokens=plan_cache_write,
+                    total_tokens=plan_total,
+                    llm_calls=plan_calls,
+                ),
             )
             await audit(
                 AuditEvent(
@@ -304,6 +350,26 @@ class CodeReviewWorkflow:
                 retry_policy=retry,
             )
 
+        async def usage(stage: str, outcome: ReviewOutcome) -> None:
+            await workflow.execute_activity(
+                record_usage_metrics,
+                UsageMetrics(
+                    execution_id=params.execution_id,
+                    task_id=params.task_id,
+                    stage=stage,
+                    workflow_id=workflow_id,
+                    model_id=outcome.model_id,
+                    prompt_tokens=outcome.prompt_tokens,
+                    completion_tokens=outcome.completion_tokens,
+                    cache_read_tokens=outcome.cache_read_tokens,
+                    cache_write_tokens=outcome.cache_write_tokens,
+                    total_tokens=outcome.total_tokens,
+                    llm_calls=outcome.llm_calls,
+                ),
+                start_to_close_timeout=short,
+                retry_policy=retry,
+            )
+
         context_summary = ""
         if params.repo:
             context: ContextResult = await workflow.execute_activity(
@@ -329,6 +395,7 @@ class CodeReviewWorkflow:
             start_to_close_timeout=model_timeout,
             retry_policy=retry,
         )
+        await usage("CODE_REVIEW", code)
         await audit(
             AuditEvent(
                 event_id=f"{params.execution_id}:REVIEW_COMPLETED:CODE_REVIEW",
@@ -353,6 +420,7 @@ class CodeReviewWorkflow:
             start_to_close_timeout=model_timeout,
             retry_policy=retry,
         )
+        await usage("SECURITY_REVIEW", security)
         await audit(
             AuditEvent(
                 event_id=f"{params.execution_id}:REVIEW_COMPLETED:SECURITY_REVIEW",
@@ -444,6 +512,26 @@ class ReviewPipelineWorkflow:
                 retry_policy=retry,
             )
 
+        async def usage(stage: str, outcome: ReviewOutcome) -> None:
+            await workflow.execute_activity(
+                record_usage_metrics,
+                UsageMetrics(
+                    execution_id=params.execution_id,
+                    task_id=params.task_id,
+                    stage=stage,
+                    workflow_id=workflow_id,
+                    model_id=outcome.model_id,
+                    prompt_tokens=outcome.prompt_tokens,
+                    completion_tokens=outcome.completion_tokens,
+                    cache_read_tokens=outcome.cache_read_tokens,
+                    cache_write_tokens=outcome.cache_write_tokens,
+                    total_tokens=outcome.total_tokens,
+                    llm_calls=outcome.llm_calls,
+                ),
+                start_to_close_timeout=short,
+                retry_policy=retry,
+            )
+
         plan: PlanReviewOutput = await workflow.execute_child_workflow(
             PlanReviewWorkflow.run,
             PlanReviewInput(
@@ -509,6 +597,7 @@ class ReviewPipelineWorkflow:
             retry_policy=retry,
         )
         attestations["acceptance-verification"] = acceptance.attestation_hash
+        await usage("ACCEPTANCE_VERIFICATION", acceptance)
         await audit(
             AuditEvent(
                 event_id=f"{params.execution_id}:REVIEW_COMPLETED:ACCEPTANCE_VERIFICATION",

@@ -60,6 +60,15 @@ class ModelProvenance:
 
 
 @dataclass(frozen=True)
+class TokenUsage:
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    llm_calls: int = 0
+
+
+@dataclass(frozen=True)
 class Attestation:
     algorithm: str
     payload_version: int
@@ -76,6 +85,7 @@ class RawReview:
     coaching: list[str] = field(default_factory=list)
     provenance: list[ModelProvenance] = field(default_factory=list)
     summary: str = ""
+    usage: TokenUsage = field(default_factory=TokenUsage)
 
 
 @dataclass
@@ -90,3 +100,4 @@ class ReviewResult:
     provenance: list[ModelProvenance]
     summary: str
     attestation: Attestation
+    usage: TokenUsage = field(default_factory=TokenUsage)

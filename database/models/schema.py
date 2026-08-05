@@ -12,6 +12,7 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     MetaData,
+    Numeric,
     String,
     Table,
     Text,
@@ -205,6 +206,28 @@ suspended_flows = Table(
 )
 
 
+usage_metrics = Table(
+    "usage_metrics",
+    metadata,
+    Column("execution_id", String(64), primary_key=True),
+    Column("stage", String(64), primary_key=True),
+    Column("task_id", String(64), nullable=False, index=True),
+    Column("workflow_id", String(255), nullable=True),
+    Column("model_id", String(128), nullable=True),
+    Column("prompt_tokens", BigInteger, nullable=False, server_default="0"),
+    Column("completion_tokens", BigInteger, nullable=False, server_default="0"),
+    Column("cache_read_tokens", BigInteger, nullable=False, server_default="0"),
+    Column("cache_write_tokens", BigInteger, nullable=False, server_default="0"),
+    Column("total_tokens", BigInteger, nullable=False, server_default="0"),
+    Column("llm_calls", Integer, nullable=False, server_default="0"),
+    Column("tool_calls", Integer, nullable=False, server_default="0"),
+    Column("cost_usd", Numeric(12, 6), nullable=False, server_default="0"),
+    Column("elapsed_seconds", Numeric(12, 3), nullable=False, server_default="0"),
+    _created_at(),
+    Column("updated_at", DateTime(timezone=True), server_default=func.now(), onupdate=func.now()),
+)
+
+
 __all__ = [
     "SCHEMA",
     "metadata",
@@ -217,4 +240,5 @@ __all__ = [
     "orphan_artifacts",
     "side_effects",
     "suspended_flows",
+    "usage_metrics",
 ]
