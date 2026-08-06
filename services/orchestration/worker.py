@@ -12,6 +12,8 @@ from temporalio.worker import Worker
 from temporalio.worker.workflow_sandbox import SandboxedWorkflowRunner, SandboxRestrictions
 
 from services.orchestration.temporal_activities import (
+    analyze_ci_failure,
+    apply_ci_repair,
     claim_work_unit,
     clear_suspension,
     commit_and_push,
@@ -24,6 +26,7 @@ from services.orchestration.temporal_activities import (
     mark_task_parked,
     persist_execution_state,
     poll_ci,
+    read_ci_log,
     reap_orphans,
     recheck_issue,
     record_audit_event,
@@ -100,6 +103,9 @@ _ACTIVITIES = [
     clear_suspension,
     trigger_ci,
     poll_ci,
+    read_ci_log,
+    analyze_ci_failure,
+    apply_ci_repair,
 ]
 
 

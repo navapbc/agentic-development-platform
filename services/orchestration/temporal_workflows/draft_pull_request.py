@@ -13,9 +13,12 @@ with workflow.unsafe.imports_passed_through():
     from services.orchestration.temporal_activities.ci import (
         PollCIRequest,
         PollCIResult,
+        ReadCILogRequest,
+        ReadCILogResult,
         TriggerCIRequest,
         TriggerCIResult,
         poll_ci,
+        read_ci_log,
         trigger_ci,
     )
     from services.orchestration.temporal_activities.persistence import (
@@ -36,6 +39,14 @@ with workflow.unsafe.imports_passed_through():
         link_pr_to_issue,
         mark_task_parked,
         unmark_task_parked,
+    )
+    from services.orchestration.temporal_activities.repair import (
+        AnalyzeCIFailureRequest,
+        AnalyzeCIFailureResult,
+        ApplyCIRepairRequest,
+        ApplyCIRepairResult,
+        analyze_ci_failure,
+        apply_ci_repair,
     )
     from services.orchestration.temporal_activities.suspension import (
         ClearSuspensionRequest,
@@ -75,11 +86,13 @@ DRAFT_PR_OPEN = "draft_pr_open"
 CI_PASSED = "ci_passed"
 CI_FAILED = "ci_failed"
 CI_RUNNING = "CI_RUNNING"
+REPAIRING = "REPAIRING"
 
 _SEQUENCE_STRIDE = 10
 _COMMIT_OFFSET = 2
 _OPEN_PR_OFFSET = 3
 _CI_TRIGGER_OFFSET = 4
+_REPAIR_STRIDE = 2
 
 
 @dataclass
@@ -108,6 +121,7 @@ class DraftPullRequestInput:
     ci_job: str = ""
     ci_poll_interval_seconds: float = 60.0
     ci_poll_max_attempts: int = 20
+    max_repair_attempts: int = 2
 
 
 @dataclass
@@ -123,6 +137,7 @@ class DraftPullRequestOutput:
     ci_status: str = ""
     ci_build_id: str = ""
     ci_build_number: int = 0
+    repair_attempts: int = 0
 
 
 @workflow.defn
@@ -266,7 +281,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 )
 
         if params.ci_job and outcome.status == DRAFT_PR_OPEN:
-            return await self._run_ci(params, impl, outcome, workflow_id)
+            return await self._ci_and_repair(params, impl, outcome, workflow_id)
         return outcome
 
     async def _finalize(
@@ -354,16 +369,159 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             linkback=pr.linkback,
         )
 
-    async def _run_ci(
+    async def _ci_and_repair(
         self,
         params: DraftPullRequestInput,
         impl: ImplementationOutput,
         outcome: DraftPullRequestOutput,
         workflow_id: str,
     ) -> DraftPullRequestOutput:
+        result = await self._run_ci(params, impl, outcome, workflow_id, attempt=0)
+        repairs = 0
+        while result.status == CI_FAILED and repairs < params.max_repair_attempts:
+            attempt = repairs + 1
+            applied = await self._repair(params, impl, result, workflow_id, attempt)
+            if not applied:
+                break
+            repairs = attempt
+            result = await self._run_ci(params, impl, result, workflow_id, attempt=repairs)
+
+        if result.status == CI_FAILED:
+            await self._audit(
+                AuditEvent(
+                    event_id=f"{params.execution_id}:REPAIR_EXHAUSTED",
+                    task_id=params.task_id,
+                    execution_id=params.execution_id,
+                    event_type="REPAIR_EXHAUSTED",
+                    stage="repair",
+                    new_state=REPAIRING,
+                    workflow_id=workflow_id,
+                    reason=str(repairs),
+                )
+            )
+        return replace(result, repair_attempts=repairs)
+
+    async def _repair(
+        self,
+        params: DraftPullRequestInput,
+        impl: ImplementationOutput,
+        outcome: DraftPullRequestOutput,
+        workflow_id: str,
+        attempt: int,
+    ) -> bool:
         retry = RetryPolicy(maximum_attempts=3)
         short = timedelta(seconds=30)
-        sequence = impl.claim_version * _SEQUENCE_STRIDE + _CI_TRIGGER_OFFSET
+        commit_timeout = timedelta(minutes=5)
+        commit_sha = self._commit.commit_sha if self._commit else params.base_sha
+
+        await workflow.execute_activity(
+            persist_execution_state,
+            ExecutionState(
+                execution_id=params.execution_id,
+                task_id=params.task_id,
+                state=REPAIRING,
+                workflow_id=workflow_id,
+                repository=params.repo or None,
+                repository_sha=commit_sha or None,
+            ),
+            start_to_close_timeout=short,
+            retry_policy=retry,
+        )
+        await self._audit(
+            AuditEvent(
+                event_id=f"{params.execution_id}:REPAIR_STARTED:{attempt}",
+                task_id=params.task_id,
+                execution_id=params.execution_id,
+                event_type="REPAIR_STARTED",
+                stage="repair",
+                new_state=REPAIRING,
+                workflow_id=workflow_id,
+                reason=str(attempt),
+                decision=outcome.ci_build_id,
+            )
+        )
+
+        log: ReadCILogResult = await workflow.execute_activity(
+            read_ci_log,
+            ReadCILogRequest(
+                repo=params.repo,
+                job=params.ci_job,
+                build_number=outcome.ci_build_number,
+            ),
+            start_to_close_timeout=short,
+            retry_policy=retry,
+        )
+        plan: AnalyzeCIFailureResult = await workflow.execute_activity(
+            analyze_ci_failure,
+            AnalyzeCIFailureRequest(failure_summary=log.failure_summary),
+            start_to_close_timeout=short,
+            retry_policy=retry,
+        )
+        if not plan.actionable:
+            return False
+
+        repair: ApplyCIRepairResult = await workflow.execute_activity(
+            apply_ci_repair,
+            ApplyCIRepairRequest(
+                task_id=params.task_id,
+                execution_id=params.execution_id,
+                repo=params.repo,
+                base=params.base,
+                commit=commit_sha,
+                instruction=plan.instruction,
+                failure_summary=log.failure_summary,
+            ),
+            start_to_close_timeout=timedelta(seconds=params.activity_timeout_seconds),
+            retry_policy=RetryPolicy(maximum_attempts=1),
+        )
+        if not repair.applied:
+            return False
+
+        sequence = (
+            impl.claim_version * _SEQUENCE_STRIDE + _OPEN_PR_OFFSET + _REPAIR_STRIDE * attempt
+        )
+        self._commit = await workflow.execute_activity(
+            commit_and_push,
+            CommitPushRequest(
+                repo=params.repo,
+                task_id=params.task_id,
+                execution_id=params.execution_id,
+                base=params.base,
+                commit=params.base_sha,
+                message=params.commit_message,
+                sequence=sequence,
+            ),
+            start_to_close_timeout=commit_timeout,
+            retry_policy=retry,
+        )
+        await self._audit(
+            AuditEvent(
+                event_id=f"{params.execution_id}:REPAIR_APPLIED:{attempt}",
+                task_id=params.task_id,
+                execution_id=params.execution_id,
+                event_type="REPAIR_APPLIED",
+                stage="repair",
+                new_state=REPAIRING,
+                workflow_id=workflow_id,
+                reason=str(attempt),
+                artifact_hashes={"files": ",".join(repair.changed_files)},
+            )
+        )
+        return True
+
+    async def _run_ci(
+        self,
+        params: DraftPullRequestInput,
+        impl: ImplementationOutput,
+        outcome: DraftPullRequestOutput,
+        workflow_id: str,
+        attempt: int = 0,
+    ) -> DraftPullRequestOutput:
+        retry = RetryPolicy(maximum_attempts=3)
+        short = timedelta(seconds=30)
+        sequence = (
+            impl.claim_version * _SEQUENCE_STRIDE + _CI_TRIGGER_OFFSET + _REPAIR_STRIDE * attempt
+        )
         commit_sha = self._commit.commit_sha if self._commit else params.base_sha
 
         await workflow.execute_activity(
@@ -398,7 +556,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
 
         await self._audit(
             AuditEvent(
-                event_id=f"{params.execution_id}:CI_TRIGGERED",
+                event_id=f"{params.execution_id}:CI_TRIGGERED:{build_id}",
                 task_id=params.task_id,
                 execution_id=params.execution_id,
                 event_type="CI_TRIGGERED",
@@ -416,7 +574,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
 
         await self._audit(
             AuditEvent(
-                event_id=f"{params.execution_id}:{event_type}",
+                event_id=f"{params.execution_id}:{event_type}:{build_id}",
                 task_id=params.task_id,
                 execution_id=params.execution_id,
                 event_type=event_type,

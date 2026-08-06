@@ -1,0 +1,119 @@
+"""Bounded LangGraph stage that classifies a CI failure and plans a single repair instruction."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import TypedDict
+
+from langgraph.graph import END, START, StateGraph
+
+ACTIONABLE = "actionable"
+UNREPAIRABLE = "unrepairable"
+
+TEST_FAILURE = "test_failure"
+LINT = "lint"
+BUILD = "build"
+UNKNOWN = "unknown"
+
+_TEST_MARKERS = ("AssertionError", "FAILED", "assert ", "pytest", "test failed")
+_LINT_MARKERS = ("ruff", "flake8", "lint", "E501", "would reformat", "format")
+_BUILD_MARKERS = (
+    "SyntaxError",
+    "ImportError",
+    "ModuleNotFoundError",
+    "NameError",
+    "BUILD FAILURE",
+    "compilation",
+)
+
+_INSTRUCTIONS = {
+    TEST_FAILURE: (
+        "The CI build failed on a test. Read the failing test output below, make the smallest "
+        "change that makes the test pass without weakening the assertion, and do not edit the "
+        "test to hide the failure.\n\n{summary}"
+    ),
+    LINT: (
+        "The CI build failed on a lint or format check. Apply the formatter and fix the lint "
+        "violations reported below without changing behaviour.\n\n{summary}"
+    ),
+    BUILD: (
+        "The CI build failed to build or import. Fix the syntax, import, or name error reported "
+        "below.\n\n{summary}"
+    ),
+}
+
+
+@dataclass(frozen=True)
+class RepairPlan:
+    status: str
+    category: str
+    instruction: str
+
+
+def classify_failure(failure_summary: str) -> str:
+    text = failure_summary.lower()
+    if any(marker.lower() in text for marker in _BUILD_MARKERS):
+        return BUILD
+    if any(marker.lower() in text for marker in _TEST_MARKERS):
+        return TEST_FAILURE
+    if any(marker.lower() in text for marker in _LINT_MARKERS):
+        return LINT
+    return UNKNOWN
+
+
+class _RepairState(TypedDict):
+    summary: str
+    category: str
+    status: str
+    instruction: str
+
+
+def _classify(state: _RepairState) -> _RepairState:
+    if not state["summary"].strip():
+        return {**state, "category": UNKNOWN}
+    return {**state, "category": classify_failure(state["summary"])}
+
+
+def _route(state: _RepairState) -> str:
+    if not state["summary"].strip() or state["category"] == UNKNOWN:
+        return "abort"
+    return "plan"
+
+
+def _plan(state: _RepairState) -> _RepairState:
+    template = _INSTRUCTIONS[state["category"]]
+    return {
+        **state,
+        "status": ACTIONABLE,
+        "instruction": template.format(summary=state["summary"].strip()),
+    }
+
+
+def _abort(state: _RepairState) -> _RepairState:
+    return {**state, "status": UNREPAIRABLE, "instruction": ""}
+
+
+def build_repair_graph():
+    graph = StateGraph(_RepairState)
+    graph.add_node("classify", _classify)
+    graph.add_node("plan", _plan)
+    graph.add_node("abort", _abort)
+    graph.add_edge(START, "classify")
+    graph.add_conditional_edges("classify", _route, {"plan": "plan", "abort": "abort"})
+    graph.add_edge("plan", END)
+    graph.add_edge("abort", END)
+    return graph.compile()
+
+
+_GRAPH = build_repair_graph()
+
+
+def plan_repair(failure_summary: str) -> RepairPlan:
+    final = _GRAPH.invoke(
+        {"summary": failure_summary, "category": "", "status": "", "instruction": ""}
+    )
+    return RepairPlan(
+        status=final["status"],
+        category=final["category"],
+        instruction=final["instruction"],
+    )

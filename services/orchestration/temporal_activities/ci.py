@@ -41,6 +41,19 @@ class PollCIResult:
     completed: bool
 
 
+@dataclass
+class ReadCILogRequest:
+    repo: str
+    job: str
+    build_number: int
+
+
+@dataclass
+class ReadCILogResult:
+    failure_summary: str
+    text: str
+
+
 def _build_jenkins_mediator():
     from adapters.real.ci_host import RealJenkins
 
@@ -85,3 +98,10 @@ async def poll_ci(req: PollCIRequest) -> PollCIResult:
         url=build.url,
         completed=build.completed,
     )
+
+
+@activity.defn
+async def read_ci_log(req: ReadCILogRequest) -> ReadCILogResult:
+    mediator = _build_jenkins_mediator()
+    log = await mediator.get_build_log(req.repo, req.job, req.build_number)
+    return ReadCILogResult(failure_summary=log.failure_summary, text=log.text)

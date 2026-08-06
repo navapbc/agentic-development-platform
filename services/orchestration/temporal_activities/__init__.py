@@ -4,7 +4,7 @@ from services.orchestration.temporal_activities.branch_sync import (
     resolve_conflicts,
     synchronize_branch,
 )
-from services.orchestration.temporal_activities.ci import poll_ci, trigger_ci
+from services.orchestration.temporal_activities.ci import poll_ci, read_ci_log, trigger_ci
 from services.orchestration.temporal_activities.counter import count_tick
 from services.orchestration.temporal_activities.implementation import (
     claim_work_unit,
@@ -25,6 +25,10 @@ from services.orchestration.temporal_activities.pull_request import (
     unmark_task_parked,
 )
 from services.orchestration.temporal_activities.reap import reap_orphans
+from services.orchestration.temporal_activities.repair import (
+    analyze_ci_failure,
+    apply_ci_repair,
+)
 from services.orchestration.temporal_activities.review import (
     review_code,
     review_plan,
@@ -37,6 +41,8 @@ from services.orchestration.temporal_activities.suspension import (
 )
 
 __all__ = [
+    "analyze_ci_failure",
+    "apply_ci_repair",
     "claim_work_unit",
     "clear_suspension",
     "commit_and_push",
@@ -49,6 +55,7 @@ __all__ = [
     "mark_task_parked",
     "persist_execution_state",
     "poll_ci",
+    "read_ci_log",
     "recheck_issue",
     "reap_orphans",
     "record_audit_event",

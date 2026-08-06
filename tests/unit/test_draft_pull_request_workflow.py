@@ -25,6 +25,8 @@ from services.orchestration.temporal_activities.branch_sync import (
 from services.orchestration.temporal_activities.ci import (
     PollCIRequest,
     PollCIResult,
+    ReadCILogRequest,
+    ReadCILogResult,
     TriggerCIRequest,
     TriggerCIResult,
 )
@@ -52,6 +54,12 @@ from services.orchestration.temporal_activities.pull_request import (
     ParkTaskRequest,
     ParkTaskResult,
     UnparkTaskRequest,
+)
+from services.orchestration.temporal_activities.repair import (
+    AnalyzeCIFailureRequest,
+    AnalyzeCIFailureResult,
+    ApplyCIRepairRequest,
+    ApplyCIRepairResult,
 )
 from services.orchestration.temporal_activities.suspension import (
     ClearSuspensionRequest,
@@ -86,7 +94,10 @@ def _make_activities(
     *,
     ci_triggers: list[TriggerCIRequest] | None = None,
     ci_result: str = SUCCESS,
+    ci_results: list[str] | None = None,
     ci_running_polls: int = 0,
+    repairs: list[ApplyCIRepairRequest] | None = None,
+    repair_actionable: bool = True,
 ):
     @activity.defn(name="persist_execution_state")
     async def fake_persist(payload: ExecutionState) -> str:
@@ -188,28 +199,66 @@ def _make_activities(
             unparks.append(req)
         return req.issue_key
 
-    poll_count = {"n": 0}
+    trigger_count = {"n": 0}
+    build_result: dict[int, str] = {}
 
     @activity.defn(name="trigger_ci")
     async def fake_trigger_ci(req: TriggerCIRequest) -> TriggerCIResult:
+        idx = trigger_count["n"]
+        trigger_count["n"] += 1
+        build_number = 7 + idx
+        if ci_results is not None:
+            build_result[build_number] = ci_results[min(idx, len(ci_results) - 1)]
+        else:
+            build_result[build_number] = ci_result
         if ci_triggers is not None:
             ci_triggers.append(req)
         return TriggerCIResult(
-            build_number=7, queue_id=42, url="https://ci.example/7", triggered=True
+            build_number=build_number,
+            queue_id=42,
+            url=f"https://ci.example/{build_number}",
+            triggered=True,
         )
+
+    poll_counts: dict[int, int] = {}
 
     @activity.defn(name="poll_ci")
     async def fake_poll_ci(req: PollCIRequest) -> PollCIResult:
-        poll_count["n"] += 1
-        if poll_count["n"] <= ci_running_polls:
-            return PollCIResult(
-                status=RUNNING, result="", url="https://ci.example/7", completed=False
-            )
+        n = poll_counts.get(req.build_number, 0) + 1
+        poll_counts[req.build_number] = n
+        url = f"https://ci.example/{req.build_number}"
+        if n <= ci_running_polls:
+            return PollCIResult(status=RUNNING, result="", url=url, completed=False)
         return PollCIResult(
             status=CI_COMPLETED,
-            result=ci_result,
-            url="https://ci.example/7",
+            result=build_result.get(req.build_number, ci_result),
+            url=url,
             completed=True,
+        )
+
+    @activity.defn(name="read_ci_log")
+    async def fake_read_ci_log(req: ReadCILogRequest) -> ReadCILogResult:
+        return ReadCILogResult(
+            failure_summary="AssertionError: expected 1 got 2",
+            text="FAILED tests/test_x.py::test_x - AssertionError",
+        )
+
+    @activity.defn(name="analyze_ci_failure")
+    async def fake_analyze(req: AnalyzeCIFailureRequest) -> AnalyzeCIFailureResult:
+        if not repair_actionable:
+            return AnalyzeCIFailureResult(actionable=False, category="unknown", instruction="")
+        return AnalyzeCIFailureResult(
+            actionable=True,
+            category="test_failure",
+            instruction="Fix the failing assertion",
+        )
+
+    @activity.defn(name="apply_ci_repair")
+    async def fake_apply_repair(req: ApplyCIRepairRequest) -> ApplyCIRepairResult:
+        if repairs is not None:
+            repairs.append(req)
+        return ApplyCIRepairResult(
+            applied=True, changed_files=["feature.py"], cost=0.1, tokens=5, llm_calls=1
         )
 
     return [
@@ -232,6 +281,9 @@ def _make_activities(
         fake_unmark_parked,
         fake_trigger_ci,
         fake_poll_ci,
+        fake_read_ci_log,
+        fake_analyze,
+        fake_apply_repair,
     ]
 
 
@@ -512,11 +564,96 @@ async def test_open_draft_pr_triggers_ci_and_advances_on_pass():
     assert ci_triggers[0].sequence == 14
 
 
-async def test_open_draft_pr_ci_failure_routes_to_repair():
+async def test_ci_failure_repairs_and_passes():
     commits: list[CommitPushRequest] = []
     pr_opens: list[OpenPrRequest] = []
     linkbacks: list[LinkbackRequest] = []
-    activities = _make_activities(None, 1, commits, pr_opens, linkbacks, ci_result=FAILURE)
+    ci_triggers: list[TriggerCIRequest] = []
+    repairs: list[ApplyCIRepairRequest] = []
+    activities = _make_activities(
+        None,
+        1,
+        commits,
+        pr_opens,
+        linkbacks,
+        ci_triggers=ci_triggers,
+        ci_results=[FAILURE, SUCCESS],
+        repairs=repairs,
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            result = await env.client.execute_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+
+    assert result.status == CI_PASSED
+    assert result.ci_status == "passed"
+    assert result.repair_attempts == 1
+    assert result.ci_build_number == 8
+    assert len(repairs) == 1
+    assert repairs[0].instruction == "Fix the failing assertion"
+    assert len(ci_triggers) == 2
+    assert ci_triggers[1].sequence == 16
+    assert len(commits) == 2
+    assert commits[1].sequence == 15
+
+
+async def test_ci_repair_exhausted_after_cap():
+    commits: list[CommitPushRequest] = []
+    pr_opens: list[OpenPrRequest] = []
+    linkbacks: list[LinkbackRequest] = []
+    ci_triggers: list[TriggerCIRequest] = []
+    repairs: list[ApplyCIRepairRequest] = []
+    activities = _make_activities(
+        None,
+        1,
+        commits,
+        pr_opens,
+        linkbacks,
+        ci_triggers=ci_triggers,
+        ci_result=FAILURE,
+        repairs=repairs,
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            result = await env.client.execute_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+
+    assert result.status == CI_FAILED
+    assert result.repair_attempts == 2
+    assert len(repairs) == 2
+    assert len(ci_triggers) == 3
+    assert ci_triggers[2].sequence == 18
+
+
+async def test_ci_failure_unactionable_stops_without_repair():
+    commits: list[CommitPushRequest] = []
+    pr_opens: list[OpenPrRequest] = []
+    linkbacks: list[LinkbackRequest] = []
+    ci_triggers: list[TriggerCIRequest] = []
+    repairs: list[ApplyCIRepairRequest] = []
+    activities = _make_activities(
+        None,
+        1,
+        commits,
+        pr_opens,
+        linkbacks,
+        ci_triggers=ci_triggers,
+        ci_result=FAILURE,
+        repairs=repairs,
+        repair_actionable=False,
+    )
 
     async with await WorkflowEnvironment.start_time_skipping() as env:
         task_queue = f"draft-{uuid.uuid4().hex[:8]}"
@@ -530,7 +667,10 @@ async def test_open_draft_pr_ci_failure_routes_to_repair():
 
     assert result.status == CI_FAILED
     assert result.ci_status == "failed"
+    assert result.repair_attempts == 0
     assert result.ci_build_number == 7
+    assert len(repairs) == 0
+    assert len(ci_triggers) == 1
 
 
 async def test_ci_parks_on_awaiting_ci_and_resumes_on_build_result():
