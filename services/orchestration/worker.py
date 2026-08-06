@@ -23,6 +23,7 @@ from services.orchestration.temporal_activities import (
     link_pr_to_issue,
     mark_task_parked,
     persist_execution_state,
+    poll_ci,
     reap_orphans,
     recheck_issue,
     record_audit_event,
@@ -34,6 +35,7 @@ from services.orchestration.temporal_activities import (
     review_security,
     run_implementation_stage,
     synchronize_branch,
+    trigger_ci,
     unmark_task_parked,
     verify_acceptance,
 )
@@ -96,6 +98,8 @@ _ACTIVITIES = [
     reap_orphans,
     record_suspension,
     clear_suspension,
+    trigger_ci,
+    poll_ci,
 ]
 
 

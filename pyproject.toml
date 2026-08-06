@@ -3,7 +3,7 @@ name = "agentic-dev-platform"
 version = "0.1.0"
 description = "Local agentic SDLC platform POC (Jira -> plan -> code -> test -> scan -> PR) with HITL, audit, and observability."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 license = { text = "Apache-2.0" }
 
 dependencies = [
@@ -38,7 +38,7 @@ dev = [
     "pytest>=8.2,<9",
     "pytest-asyncio>=0.23,<0.25",
     "coverage>=7.5,<8",
-    "mypy>=1.10,<2",
+    "basedpyright>=1.13,<2",
 ]
 
 [build-system]
@@ -49,7 +49,7 @@ build-backend = "hatchling.build"
 packages = ["services", "adapters", "schemas", "database", "scripts"]
 
 [tool.ruff]
-target-version = "py311"
+target-version = "py312"
 line-length = 100
 src = ["services", "adapters", "schemas", "database", "scripts", "openhands", "tests"]
 
@@ -64,7 +64,9 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "-ra"
 
-[tool.mypy]
-python_version = "3.11"
-warn_unused_ignores = true
-warn_redundant_casts = true
+[tool.basedpyright]
+pythonVersion = "3.12"
+typeCheckingMode = "standard"
+venvPath = "."
+venv = ".venv"
+include = ["services", "adapters", "schemas", "database", "scripts", "openhands", "tests"]

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import timedelta
 from typing import Any
 
@@ -10,6 +10,20 @@ from temporalio import workflow
 from temporalio.common import RetryPolicy
 
 with workflow.unsafe.imports_passed_through():
+    from services.orchestration.temporal_activities.ci import (
+        PollCIRequest,
+        PollCIResult,
+        TriggerCIRequest,
+        TriggerCIResult,
+        poll_ci,
+        trigger_ci,
+    )
+    from services.orchestration.temporal_activities.persistence import (
+        AuditEvent,
+        ExecutionState,
+        persist_execution_state,
+        record_audit_event,
+    )
     from services.orchestration.temporal_activities.pull_request import (
         CommitPushRequest,
         CommitPushResult,
@@ -46,6 +60,8 @@ with workflow.unsafe.imports_passed_through():
         PullRequestWorkflow,
     )
 
+from adapters.interfaces.ci_host import SUCCESS
+
 from services.orchestration.suspension import ResumeOn, SuspendReason, Suspension
 from services.orchestration.temporal_workflows.suspendable import (
     SuspendableWorkflow,
@@ -56,10 +72,14 @@ CLAIM_DENIED = "claim_denied"
 IMPL_FAILED = "impl_failed"
 SYNC_PAUSED = "sync_paused"
 DRAFT_PR_OPEN = "draft_pr_open"
+CI_PASSED = "ci_passed"
+CI_FAILED = "ci_failed"
+CI_RUNNING = "CI_RUNNING"
 
 _SEQUENCE_STRIDE = 10
 _COMMIT_OFFSET = 2
 _OPEN_PR_OFFSET = 3
+_CI_TRIGGER_OFFSET = 4
 
 
 @dataclass
@@ -85,6 +105,9 @@ class DraftPullRequestInput:
     activity_timeout_seconds: float = 2400.0
     build_id: str = ""
     parked_status: str = ""
+    ci_job: str = ""
+    ci_poll_interval_seconds: float = 60.0
+    ci_poll_max_attempts: int = 20
 
 
 @dataclass
@@ -97,6 +120,9 @@ class DraftPullRequestOutput:
     pr_url: str = ""
     linkback: str = "none"
     reused: bool = False
+    ci_status: str = ""
+    ci_build_id: str = ""
+    ci_build_number: int = 0
 
 
 @workflow.defn
@@ -184,7 +210,8 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
 
         while True:
             try:
-                return await self._finalize(params, impl, workflow_id, title)
+                outcome = await self._finalize(params, impl, workflow_id, title)
+                break
             except Exception as exc:  # noqa: BLE001
                 if not is_code_defect(exc):
                     raise
@@ -237,6 +264,10 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                     start_to_close_timeout=short,
                     retry_policy=retry,
                 )
+
+        if params.ci_job and outcome.status == DRAFT_PR_OPEN:
+            return await self._run_ci(params, impl, outcome, workflow_id)
+        return outcome
 
     async def _finalize(
         self,
@@ -323,3 +354,142 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             linkback=pr.linkback,
         )
 
+    async def _run_ci(
+        self,
+        params: DraftPullRequestInput,
+        impl: ImplementationOutput,
+        outcome: DraftPullRequestOutput,
+        workflow_id: str,
+    ) -> DraftPullRequestOutput:
+        retry = RetryPolicy(maximum_attempts=3)
+        short = timedelta(seconds=30)
+        sequence = impl.claim_version * _SEQUENCE_STRIDE + _CI_TRIGGER_OFFSET
+        commit_sha = self._commit.commit_sha if self._commit else params.base_sha
+
+        await workflow.execute_activity(
+            persist_execution_state,
+            ExecutionState(
+                execution_id=params.execution_id,
+                task_id=params.task_id,
+                state=CI_RUNNING,
+                workflow_id=workflow_id,
+                repository=params.repo or None,
+                repository_sha=commit_sha or None,
+            ),
+            start_to_close_timeout=short,
+            retry_policy=retry,
+        )
+
+        trigger: TriggerCIResult = await workflow.execute_activity(
+            trigger_ci,
+            TriggerCIRequest(
+                repo=params.repo,
+                task_id=params.task_id,
+                execution_id=params.execution_id,
+                job=params.ci_job,
+                branch=outcome.branch,
+                commit_sha=commit_sha,
+                sequence=sequence,
+            ),
+            start_to_close_timeout=short,
+            retry_policy=retry,
+        )
+        build_id = str(trigger.build_number)
+
+        await self._audit(
+            AuditEvent(
+                event_id=f"{params.execution_id}:CI_TRIGGERED",
+                task_id=params.task_id,
+                execution_id=params.execution_id,
+                event_type="CI_TRIGGERED",
+                stage="ci",
+                new_state=CI_RUNNING,
+                workflow_id=workflow_id,
+                reason=build_id,
+                artifact_hashes={"build_url": trigger.url},
+            )
+        )
+
+        result = await self._await_ci_result(params, trigger, build_id)
+        passed = result.result == SUCCESS
+        event_type = "CI_PASSED" if passed else "CI_FAILED"
+
+        await self._audit(
+            AuditEvent(
+                event_id=f"{params.execution_id}:{event_type}",
+                task_id=params.task_id,
+                execution_id=params.execution_id,
+                event_type=event_type,
+                stage="ci",
+                new_state=CI_RUNNING,
+                workflow_id=workflow_id,
+                reason=build_id,
+                decision=result.result,
+                artifact_hashes={"build_url": result.url},
+            )
+        )
+
+        return replace(
+            outcome,
+            status=CI_PASSED if passed else CI_FAILED,
+            ci_status="passed" if passed else "failed",
+            ci_build_id=build_id,
+            ci_build_number=trigger.build_number,
+        )
+
+    async def _await_ci_result(
+        self,
+        params: DraftPullRequestInput,
+        trigger: TriggerCIResult,
+        build_id: str,
+    ) -> PollCIResult:
+        retry = RetryPolicy(maximum_attempts=3)
+        short = timedelta(seconds=30)
+        request = PollCIRequest(
+            repo=params.repo,
+            job=params.ci_job,
+            build_number=trigger.build_number,
+        )
+        suspension = Suspension(
+            reason=SuspendReason.AWAITING_CI,
+            resume_on=ResumeOn.CI_RESULT,
+            stage="ci",
+            parked_build_id=build_id,
+        )
+        self._suspension = suspension
+        poll_interval = (
+            timedelta(seconds=params.ci_poll_interval_seconds)
+            if params.ci_poll_interval_seconds > 0
+            else None
+        )
+
+        result: PollCIResult | None = None
+        for _ in range(max(1, params.ci_poll_max_attempts)):
+            poll: PollCIResult = await workflow.execute_activity(
+                poll_ci,
+                request,
+                start_to_close_timeout=short,
+                retry_policy=retry,
+            )
+            if poll.completed:
+                result = poll
+                break
+            await self.wait_resume_or_timeout(suspension, timeout=poll_interval)
+
+        self._suspension = None
+        if result is None:
+            result = await workflow.execute_activity(
+                poll_ci,
+                request,
+                start_to_close_timeout=short,
+                retry_policy=retry,
+            )
+        return result
+
+    async def _audit(self, event: AuditEvent) -> None:
+        await workflow.execute_activity(
+            record_audit_event,
+            event,
+            start_to_close_timeout=timedelta(seconds=30),
+            retry_policy=RetryPolicy(maximum_attempts=3),
+        )

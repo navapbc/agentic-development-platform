@@ -29,7 +29,7 @@ ADEVX-2
 ## Coding standards
 
 - Format and lint with ruff. The line length is 100. Run `ruff check .` and `ruff format .` before you push.
-- Type-check with `mypy` on the packages you touch.
+- Type-check with `basedpyright` on the packages you touch.
 - Default to writing no comments. Add a comment only when removing it would mislead a reader, for example a non-obvious constraint or an invariant callers depend on that the code does not enforce.
 - Keep your change focused. Do not refactor, rename, or add abstractions beyond the scope of your ticket, and keep out-of-scope files out of the diff.
 
@@ -48,7 +48,7 @@ ADEVX-2
 ## Before you open a pull request
 
 1. `ruff check .` and `ruff format --check .` are clean.
-2. `mypy` passes on the packages you changed.
+2. `basedpyright` passes on the packages you changed.
 3. `inv test` passes.
 4. `inv smoke-test` passes against a running stack.
 5. The diff contains only in-scope files, and `.env` and other secrets are not staged.

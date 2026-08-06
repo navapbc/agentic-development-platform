@@ -4,6 +4,7 @@ from services.orchestration.temporal_activities.branch_sync import (
     resolve_conflicts,
     synchronize_branch,
 )
+from services.orchestration.temporal_activities.ci import poll_ci, trigger_ci
 from services.orchestration.temporal_activities.counter import count_tick
 from services.orchestration.temporal_activities.implementation import (
     claim_work_unit,
@@ -47,6 +48,7 @@ __all__ = [
     "link_pr_to_issue",
     "mark_task_parked",
     "persist_execution_state",
+    "poll_ci",
     "recheck_issue",
     "reap_orphans",
     "record_audit_event",
@@ -58,6 +60,7 @@ __all__ = [
     "review_security",
     "run_implementation_stage",
     "synchronize_branch",
+    "trigger_ci",
     "unmark_task_parked",
     "verify_acceptance",
 ]

@@ -45,7 +45,7 @@ from services.repository_intelligence.providers.zoekt.zoekt_provider import Zoek
 _T = TypeVar("_T")
 
 
-def _authoritative(items: list[_T]) -> list[_T]:
+def _authoritative[T](items: list[T]) -> list[T]:
     return [item for item in items if item.provenance.authoritative]  # type: ignore[attr-defined]
 
 

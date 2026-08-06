@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import uuid
 
+from adapters.interfaces.ci_host import COMPLETED as CI_COMPLETED
+from adapters.interfaces.ci_host import FAILURE, RUNNING, SUCCESS
 from openhands.runtime.caps import COMPLETED
 from services.orchestration.branch_sync import FAST_FORWARD
 from services.orchestration.suspension import (
@@ -19,6 +21,12 @@ from services.orchestration.temporal_activities.branch_sync import (
     ResolveResult,
     SyncRequest,
     SyncResult,
+)
+from services.orchestration.temporal_activities.ci import (
+    PollCIRequest,
+    PollCIResult,
+    TriggerCIRequest,
+    TriggerCIResult,
 )
 from services.orchestration.temporal_activities.implementation import (
     ClaimRequest,
@@ -51,6 +59,8 @@ from services.orchestration.temporal_activities.suspension import (
 )
 from services.orchestration.temporal_workflows.branch_sync import BranchSyncWorkflow
 from services.orchestration.temporal_workflows.draft_pull_request import (
+    CI_FAILED,
+    CI_PASSED,
     DRAFT_PR_OPEN,
     EXISTING_PR_REUSED,
     DraftPullRequestInput,
@@ -73,6 +83,10 @@ def _make_activities(
     linkbacks: list[LinkbackRequest],
     parks: list[ParkTaskRequest] | None = None,
     unparks: list[UnparkTaskRequest] | None = None,
+    *,
+    ci_triggers: list[TriggerCIRequest] | None = None,
+    ci_result: str = SUCCESS,
+    ci_running_polls: int = 0,
 ):
     @activity.defn(name="persist_execution_state")
     async def fake_persist(payload: ExecutionState) -> str:
@@ -174,6 +188,30 @@ def _make_activities(
             unparks.append(req)
         return req.issue_key
 
+    poll_count = {"n": 0}
+
+    @activity.defn(name="trigger_ci")
+    async def fake_trigger_ci(req: TriggerCIRequest) -> TriggerCIResult:
+        if ci_triggers is not None:
+            ci_triggers.append(req)
+        return TriggerCIResult(
+            build_number=7, queue_id=42, url="https://ci.example/7", triggered=True
+        )
+
+    @activity.defn(name="poll_ci")
+    async def fake_poll_ci(req: PollCIRequest) -> PollCIResult:
+        poll_count["n"] += 1
+        if poll_count["n"] <= ci_running_polls:
+            return PollCIResult(
+                status=RUNNING, result="", url="https://ci.example/7", completed=False
+            )
+        return PollCIResult(
+            status=CI_COMPLETED,
+            result=ci_result,
+            url="https://ci.example/7",
+            completed=True,
+        )
+
     return [
         fake_persist,
         fake_audit,
@@ -192,6 +230,8 @@ def _make_activities(
         fake_clear_suspension,
         fake_mark_parked,
         fake_unmark_parked,
+        fake_trigger_ci,
+        fake_poll_ci,
     ]
 
 
@@ -407,3 +447,148 @@ async def test_park_mirrors_jira_status_and_restores_on_resume():
     assert unparks[0].issue_key == "T-1"
     assert unparks[0].target_status == "In Progress"
 
+
+def _ci_input(poll_interval: float = 1.0) -> DraftPullRequestInput:
+    return DraftPullRequestInput(
+        task_id="T-1",
+        execution_id="exec-1",
+        repo="agentic-demo-service",
+        base="main",
+        base_sha="a" * 40,
+        task="Implement the change",
+        issue_key="T-1",
+        file_impact=["feature.py"],
+        stored_issue={"summary": "Implement the change"},
+        ci_job="agentic-demo-service-ci",
+        ci_poll_interval_seconds=poll_interval,
+        ci_poll_max_attempts=5,
+    )
+
+
+async def _start_ci_worker(env, task_queue: str, activities):
+    return Worker(
+        env.client,
+        task_queue=task_queue,
+        workflows=[
+            DraftPullRequestWorkflow,
+            ImplementationWorkflow,
+            BranchSyncWorkflow,
+            PullRequestWorkflow,
+        ],
+        workflow_runner=SandboxedWorkflowRunner(
+            restrictions=SandboxRestrictions.default.with_passthrough_modules("beartype")
+        ),
+        activities=activities,
+    )
+
+
+async def test_open_draft_pr_triggers_ci_and_advances_on_pass():
+    commits: list[CommitPushRequest] = []
+    pr_opens: list[OpenPrRequest] = []
+    linkbacks: list[LinkbackRequest] = []
+    ci_triggers: list[TriggerCIRequest] = []
+    activities = _make_activities(
+        None, 1, commits, pr_opens, linkbacks, ci_triggers=ci_triggers, ci_result=SUCCESS
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            result = await env.client.execute_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+
+    assert result.status == CI_PASSED
+    assert result.ci_status == "passed"
+    assert result.ci_build_number == 7
+    assert result.ci_build_id == "7"
+    assert len(ci_triggers) == 1
+    assert ci_triggers[0].job == "agentic-demo-service-ci"
+    assert ci_triggers[0].branch == "agent/T-1"
+    assert ci_triggers[0].commit_sha == "c" * 40
+    assert ci_triggers[0].sequence == 14
+
+
+async def test_open_draft_pr_ci_failure_routes_to_repair():
+    commits: list[CommitPushRequest] = []
+    pr_opens: list[OpenPrRequest] = []
+    linkbacks: list[LinkbackRequest] = []
+    activities = _make_activities(None, 1, commits, pr_opens, linkbacks, ci_result=FAILURE)
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            result = await env.client.execute_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+
+    assert result.status == CI_FAILED
+    assert result.ci_status == "failed"
+    assert result.ci_build_number == 7
+
+
+async def test_ci_parks_on_awaiting_ci_and_resumes_on_build_result():
+    commits: list[CommitPushRequest] = []
+    pr_opens: list[OpenPrRequest] = []
+    linkbacks: list[LinkbackRequest] = []
+    activities = _make_activities(
+        None, 1, commits, pr_opens, linkbacks, ci_result=SUCCESS, ci_running_polls=1
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(poll_interval=0.0),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+
+            state: dict[str, str] = {}
+            for _ in range(50):
+                state = await handle.query(DraftPullRequestWorkflow.suspension_state)
+                if state.get("reason") == SuspendReason.AWAITING_CI.value:
+                    break
+                await asyncio.sleep(0.05)
+
+            assert state["reason"] == SuspendReason.AWAITING_CI.value
+            assert state["resume_on"] == ResumeOn.CI_RESULT.value
+            assert state["parked_build_id"] == "7"
+            assert state["stage"] == "ci"
+
+            await handle.signal(RESUME_SIGNAL, ResumeOn.CI_RESULT.value)
+            result = await handle.result()
+
+    assert result.status == CI_PASSED
+    assert result.ci_status == "passed"
+    assert result.ci_build_number == 7
+
+
+async def test_ci_bounded_poll_resumes_without_a_signal():
+    commits: list[CommitPushRequest] = []
+    pr_opens: list[OpenPrRequest] = []
+    linkbacks: list[LinkbackRequest] = []
+    activities = _make_activities(
+        None, 1, commits, pr_opens, linkbacks, ci_result=SUCCESS, ci_running_polls=1
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            result = await env.client.execute_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(poll_interval=30.0),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+
+    assert result.status == CI_PASSED
+    assert result.ci_status == "passed"
+    assert result.ci_build_number == 7
