@@ -1,81 +1,170 @@
 # agentic-dev-platform
 
-A local, Docker-based agentic SDLC platform (POC). Given a Jira ticket it plans, codes, tests, security-scans, then opens a PR against an allowlisted repository, with human-in-the-loop (HITL) approvals, full audit, and observability. Parallel multi-agent execution is an explicit goal.
+A Docker-based agentic software delivery platform. Given a Jira ticket it plans, writes code, runs tests, scans for security issues, and opens a pull request against an allowlisted repository, with human approvals, a full audit trail, and observability. Parallel multi-agent execution is a design goal.
 
-> The canonical design is `.agent-context/agentic_plan_v2.md` (v2). Where v1 (`agentic_plan.md`) and v2 conflict, v2 wins.
+The end goal is a hosted deployment on AWS. The Docker Compose stack in this repository is the development environment that stands the platform up on a workstation. Components are built to move to AWS without changing platform code. Inference targets Amazon Bedrock through a swappable connectivity provider, so the same code path runs in development and in the hosted environment.
 
-## Non-negotiable constraints
+This README gets a new developer from a fresh clone to a running stack. Contribution rules are in [CONTRIBUTING.md](CONTRIBUTING.md).
 
-- FedRAMP Medium, `us-east-1`. Amazon Bedrock is the only inference path. Reachability is a contract, not a fixed route: platform code depends only on a network path to `bedrock-runtime`, an IAM principal with `bedrock:InvokeModel`, and an injected endpoint URL plus region and credential chain. A pluggable connectivity provider satisfies it (default `jumphost` for current OSRE testing via `components/osre-opis-jumphost/terraform` in the sibling `infrastructure` repo). US-only models: Claude primary, Nova fallback.
-- AWS profile `mpse-legacy`; secrets naming `mpsm/<environment>/opis/<secret>`.
-- VPC endpoints exist for S3 and Secrets Manager, not Bedrock.
-- Jira is canonical (no git-copied tickets); a custom Jira adapter serves both Cloud and Data Center. rebar's ticket store and reconciler are not adopted.
-- Python-native: `invoke` task runner, Python under `scripts/` (no `make` or `.sh` as the primary surface), Alembic and SQLAlchemy Core for migrations.
-- Allowlists only: Jira `AGENTDEV`; repos `agentic-demo-service`, `agentic-demo-greenfield`, `agentic-demo-ts`, `agentic-demo-tf`, `agentic-demo-java`, `agentic-demo-php`, `agentic-demo-ruby`. The `infrastructure` repo is dev-time read-only reference, never a runtime target.
+## What you will be running
 
-## Locked stack
+The stack runs under Docker Compose and talks to Amazon Bedrock over a connectivity provider you choose. The pieces are described in [System components](#system-components) below. Inference always passes through the LiteLLM container, which is the single path to Bedrock.
 
-Docker Compose, Python 3.11+, invoke, PostgreSQL, Alembic and SQLAlchemy Core, Temporal, LangGraph, OpenHands, LiteLLM fronting Bedrock (single choke point), OPA, rebar (library: review kernel, attestation, and prompt/eval only), Zoekt plus a custom Repository Intelligence Service (codebase-memory-mcp under evaluation), Langfuse, and OTel.
+## Prerequisites
 
-## Quick start (Phase 1)
+Install these on the host before you start.
 
-```bash
-cp .env.example .env          # fill in placeholders locally (never commit .env)
-python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev,reasoning]"
+| Requirement | Why | Notes |
+| --- | --- | --- |
+| Docker Desktop with Compose v2 | Runs the whole stack | The `docker compose` command must work |
+| Python 3.12 or newer | Task runner, migrations, local scripts | The container images use 3.12 |
+| git | Clone this repo and its siblings | |
+| An AWS profile with Bedrock access | Inference | An IAM principal with `bedrock:InvokeModel` and credentials under `~/.aws`. Set the profile and region in `.env` |
 
-inv tunnel-start              # open the jump-host path to Bedrock
-inv connectivity-check        # validate the Bedrock path end-to-end
-inv local-up                  # start the Phase-1 Compose stack
-inv db-migrate                # alembic upgrade head (agent_platform only)
-inv smoke-test                # DB reachable, services healthy, Bedrock path
-```
+Check out the `rebar` repository next to this one, under the same parent directory. The container build and the review path both install it from `../rebar`.
 
-Common tasks (`inv --list`): `tunnel-start`, `connectivity-check`, `local-up`, `local-down`, `db-migrate`, `db-reset`, `seed`, `smoke-test`, `test`, `logs`, `workflow-status`.
+The Repository Intelligence profile and the demo tasks mount a set of test repositories read-only from the same parent directory. Check out the ones you plan to exercise, or remove the mounts you do not need from `compose.override.yaml`.
 
-## Bedrock connectivity providers
+| Test repository | Used by |
+| --- | --- |
+| `agentic-demo-service` | Repository Intelligence and the demo tasks |
+| `agentic-demo-greenfield`, `agentic-demo-ts`, `agentic-demo-tf`, `agentic-demo-java`, `agentic-demo-php`, `agentic-demo-ruby` | The Repository Intelligence profile, mounted read-only |
 
-`inv tunnel-start` and `inv connectivity-check` dispatch to the provider named by `BEDROCK_CONNECTIVITY_PROVIDER`. Each satisfies the same reachability contract, so the same platform code runs unchanged per project by swapping the provider and its config.
+Two host tools are optional and only needed for specific paths.
+
+| Optional tool | Needed for |
+| --- | --- |
+| kubeconfig under `~/.kube/config` | The OpenHands sandbox agent, used by live-agent demo runs |
+| Vendored `acli` binary | Jira Cloud writes. The worker image build provisions it. See [Vendored binaries](#vendored-binaries) |
+
+## First-time setup
+
+Run these once from the repository root.
+
+1. Copy the environment file with `cp .env.example .env`, then fill in the placeholders. See [Configuration](#configuration). Never commit `.env`.
+2. Create and activate a virtual environment with `python -m venv .venv && source .venv/bin/activate`.
+3. Install the package with its development extras using `pip install -e ".[dev,reasoning]"`. Add `sandbox` for the OpenHands agent, and see [CONTRIBUTING.md](CONTRIBUTING.md) for the editable `rebar` install needed on the review path.
+4. Choose a Bedrock connectivity provider in `.env` and open the path with `inv tunnel-start`. See [Bedrock connectivity](#bedrock-connectivity).
+5. Validate the Bedrock path and local reachability with `inv connectivity-check`.
+6. Start the stack with `inv local-up`.
+7. Apply database migrations with `inv db-migrate`.
+8. Confirm everything is healthy with `inv smoke-test`.
+9. Load allowlisted seed data with `inv seed` when you need demo fixtures.
+
+## Vendored binaries
+
+Two binaries live under `vendor/bin` and are provisioned outside the Python install.
+
+`acli` is the Atlassian CLI used for Jira Cloud writes. The worker image build runs `scripts/fetch_acli.py` during `inv local-up`, which downloads and checksum-verifies the binary into the image at `/app/vendor/bin/acli`. The download is driven by `ACLI_VERSION`, `ACLI_DOWNLOAD_URL`, and `ACLI_SHA256` in `.env`, where `ACLI_SHA256` is required and verifies the artifact whatever its source. To place the same binary on the host for host-side runs, use `inv fetch-acli`, which writes `vendor/bin/acli`.
+
+`codebase-memory-mcp` is the optional CBM provider for Repository Intelligence, still under evaluation. It is not downloaded. Build it from a separate CBM source checkout with `docker build -f docker/cbm-build.Dockerfile --target export --output type=local,dest=vendor/bin <path-to-cbm-source>`, which writes `vendor/bin/codebase-memory-mcp`. The Repository Intelligence containers mount that path read-only, and the stack runs without it when the CBM provider is not in use.
+
+## Configuration
+
+`.env` is grouped by concern. The defaults in `.env.example` work for a local run except where a value is specific to your account or environment.
+
+| Group | Keys | What to set |
+| --- | --- | --- |
+| Postgres | `POSTGRES_*`, `DATABASE_URL`, `ALEMBIC_DATABASE_URL` | Defaults work locally. The Alembic URL targets `localhost`, the app URL targets the `postgres` service |
+| Temporal | `TEMPORAL_HOST`, `TEMPORAL_NAMESPACE`, `TEMPORAL_TASK_QUEUE` | Defaults work locally |
+| Bedrock | `AWS_PROFILE`, `AWS_REGION`, `BEDROCK_CONNECTIVITY_PROVIDER`, `BEDROCK_ENDPOINT_URL`, provider keys | Set your profile and provider. See [Bedrock connectivity](#bedrock-connectivity) |
+| LiteLLM | `LITELLM_BASE_URL`, `LITELLM_MASTER_KEY` | Set a local master key |
+| Review (rebar) | `REBAR_LLM_*`, `REVIEW_ATTESTATION_SECRET` | Point at LiteLLM, set an attestation secret |
+| Jira | `JIRA_URL`, `JIRA_AUTH_MODE`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_PAT`, `JIRA_ACLI_PATH` | Needed for ticket intake and linkback |
+| GitHub | `GITHUB_API_URL`, `GITHUB_GIT_BASE_URL`, `GITHUB_OWNER`, `GITHUB_TOKEN` | Needed to open pull requests |
+| Policy and observability | `OPA_URL`, `LANGFUSE_*`, `OTEL_EXPORTER_OTLP_ENDPOINT` | Defaults work locally |
+| Allowlists | `ALLOWLIST_JIRA_PROJECTS`, `ALLOWLIST_REPOS` | Leave at the defaults unless you are adding a target |
+
+## Bedrock connectivity
+
+`inv tunnel-start` and `inv connectivity-check` dispatch to the provider named by `BEDROCK_CONNECTIVITY_PROVIDER`. Every provider satisfies the same reachability contract, so the platform code runs unchanged when you swap providers. Inference stays inside the compliance boundary by default, and the public provider is refused unless you set `ALLOW_PUBLIC_BEDROCK_ENDPOINT=true`.
 
 | Provider | Path | Required config |
 | --- | --- | --- |
 | `jumphost` (default) | SSM port-forward through an on-demand jump-host | `JUMPHOST_NAME`, `JUMPHOST_ENV`, `JUMPHOST_CONNECT_SCRIPT` |
 | `ssh-bastion` | SSH local forward through a bastion | `SSH_BASTION_TARGET` |
-| `direct` | No tunnel; the caller resolves and originates inside the VPC | `BEDROCK_ENDPOINT_URL` (optional) |
+| `direct` | No tunnel. The caller originates inside the VPC | `BEDROCK_ENDPOINT_URL` optional |
 | `public` | Public Bedrock endpoint, synthetic-data dev only | `ALLOW_PUBLIC_BEDROCK_ENDPOINT=true` |
 
-`BEDROCK_ENDPOINT_URL` is the injected endpoint surfaced by `Settings.bedrock_client_kwargs()` for boto3 and `BedrockConverseModel`; empty uses the default regional resolver. The public provider is refused unless `ALLOW_PUBLIC_BEDROCK_ENDPOINT` is set, keeping inference inside the ATO boundary by default. Projects with no existing interface endpoint can apply the optional `infra/terraform/bedrock-vpce` module to provision their own.
+`BEDROCK_ENDPOINT_URL` is the injected endpoint used by boto3 and the Bedrock model client. An empty value uses the default regional resolver. A project with no interface endpoint can apply the optional `infra/terraform/bedrock-vpce` module to provision one.
 
-## Phase-1 services
+## Services and ports
 
-`postgres`, `temporal` (plus UI), `workflow-worker`, `langgraph-service`, `litellm`, `opa`, `langfuse`, `otel-collector`. Databases: `agent_platform`, `temporal`, `temporal_visibility`, `langfuse`. Phase-1 exit: a workflow invokes Bedrock and persists state; Temporal resumes after a worker restart.
+`inv local-up` starts the services below with the `repo-intelligence` profile. The four backing databases `agent_platform`, `temporal`, `temporal_visibility`, and `langfuse` are created in the one Postgres container.
+
+| Service | Host port | Role |
+| --- | --- | --- |
+| `postgres` | 5432 | Platform, Temporal, and Langfuse databases |
+| `temporal` | 7233 | Durable workflow engine |
+| `temporal-ui` | 3001 | Workflow inspection UI |
+| `workflow-worker`, `activity-worker` | none | Temporal workers for workflows and activities |
+| `coordination-service` | 8130 | Claims, ordering, exactly-once, orphan reaping |
+| `repo-intelligence` | 8120 | Context packages built from indexed repos |
+| `repo-index-worker` | none | Reindexes each repo when its commit moves |
+| `langgraph-service` | 8100 | Bounded reasoning stages |
+| `litellm` | 4000 | Single gateway to Bedrock |
+| `opa` | 8181 | Policy decisions |
+| `langfuse` | 3000 | LLM tracing UI |
+| `otel-collector` | 4317, 4318 | Telemetry pipeline |
+
+Migrations only touch the platform's own `agent_platform` schema. Temporal and Langfuse manage their own schemas.
+
+## Verifying the stack
+
+`inv smoke-test` checks the database and the `agent_platform` schema, the LiteLLM, OPA, and Langfuse health endpoints, and a Bedrock inference round trip through LiteLLM. `inv durability-proof` shows a workflow surviving a worker restart. `inv workflow-status` lists recent Temporal executions.
+
+## Everyday commands
+
+Run `inv --list` for the full set. The common tasks are below.
+
+| Task | Purpose |
+| --- | --- |
+| `inv local-up`, `inv local-down` | Start or stop the stack, volumes preserved |
+| `inv logs [--service NAME]` | Follow logs for the stack or one service |
+| `inv db-migrate`, `inv db-reset` | Apply migrations, or rebuild the schema then migrate |
+| `inv seed` | Load allowlisted seed data |
+| `inv smoke-test`, `inv connectivity-check` | Health and Bedrock path checks |
+| `inv test` | Run the pytest suite |
+| `inv tunnel-start`, `inv tunnel-stop`, `inv tunnel-status` | Manage the Bedrock connectivity tunnel |
+| `inv fetch-acli` | Vendor the Atlassian `acli` binary |
+| `inv reap [--apply]` | Reap expired orphan artifacts, dry-run by default |
+
+## Demos
+
+The demo tasks walk the platform in four acts. Each is an `inv` task with its own flags, listed under `inv --list`.
+
+| Task | Act |
+| --- | --- |
+| `inv demo-durable-task`, `inv demo-durable-counter` | Durability through a worker restart |
+| `inv demo-repo-intelligence` | A briefing pack of a repo's most relevant code |
+| `inv demo-coordination` | Blocking double-work and duplicate side effects |
+| `inv demo-draft-pr` | Opening a draft PR through the full stack |
+
+## System components
+
+| Component | Backed by | Built here |
+| --- | --- | --- |
+| Repository Intelligence | SCIP, Zoekt, LSP, ast-grep, coverage and build-metadata readers | The router, index worker, per-repo registry, and context package |
+| Orchestration | Temporal, LangGraph | The workflows, budget caps, suspend and resume, and the write pipeline |
+| Coordination | PostgreSQL | The whole component, claims, exactly-once effects, ordering, and reaping |
+| Integration | Jira, GitHub, Jenkins, OPA | The adapters, snapshot, recheck, and linkback |
+| Review | rebar as a library | The kernel wrapper, verdict and attestation logic, and the gate |
+| Agent runtime | OpenHands, LiteLLM to Bedrock | The spend and time caps, request tagging, and connectivity options |
 
 ## Repository layout
 
 ```text
 config/            services/          repository_indexes/  adapters/
 schemas/           database/          observability/       openhands/
-fixtures/          scripts/           tests/
+fixtures/          scripts/           tests/               docker/
 ```
 
-Migrations are scoped to the platform's own `agent_platform` schema only; Temporal and Langfuse manage their own schemas.
+## Troubleshooting
 
-## Delivery phases
-
-1. Platform foundation
-2. Repository intelligence
-3. rebar review integration
-4. Ticket and coordination
-5. Enterprise adapters and coding
-6. CI, review, approval
-7. Observability and evaluation
-8. AWS transition planning
-
-## Open research (see `.agent-context/research-backlog.md`)
-
-- R1: route rebar to Bedrock via LiteLLM (P1)
-- R2: CBM vs custom repo-intel (P1, done: hybrid query-type routed)
-- R4: rebar maintainer session
-- R5: connectivity and sandbox
-- R6: language coverage
-- R7: project-agnostic Bedrock reachability (P2)
+| Symptom | Cause and fix |
+| --- | --- |
+| `inv local-up` fails on a missing mount | A sibling demo repo is not checked out next to this one. Clone it, or remove its mount from `compose.override.yaml` |
+| `inv connectivity-check` fails | The Bedrock path is not open. Confirm `BEDROCK_CONNECTIVITY_PROVIDER` and its keys, then rerun `inv tunnel-start` |
+| Smoke test reports a database failure | Migrations have not run. Apply them with `inv db-migrate` |
+| Container build fails resolving `rebar` | The `../rebar` sibling is missing. Clone it next to this repo |
+| Live-agent demos cannot reach the cluster | No kubeconfig at `~/.kube/config`. Provide one or skip the live-agent flag |
