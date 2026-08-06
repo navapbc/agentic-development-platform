@@ -48,6 +48,13 @@ with workflow.unsafe.imports_passed_through():
         analyze_ci_failure,
         apply_ci_repair,
     )
+    from services.orchestration.temporal_activities.review import (
+        ReviewOutcome,
+        ReviewRequest,
+        review_code,
+        review_security,
+        verify_acceptance,
+    )
     from services.orchestration.temporal_activities.suspension import (
         ClearSuspensionRequest,
         RecordSuspensionRequest,
@@ -87,12 +94,18 @@ CI_PASSED = "ci_passed"
 CI_FAILED = "ci_failed"
 CI_RUNNING = "CI_RUNNING"
 REPAIRING = "REPAIRING"
+REVIEW_PASSED = "review_passed"
+REVIEW_BLOCKED = "review_blocked"
 
 _SEQUENCE_STRIDE = 10
 _COMMIT_OFFSET = 2
 _OPEN_PR_OFFSET = 3
 _CI_TRIGGER_OFFSET = 4
 _REPAIR_STRIDE = 2
+
+_CODE_REVIEW = "CODE_REVIEW"
+_SECURITY_REVIEW = "SECURITY_REVIEW"
+_ACCEPTANCE_VERIFICATION = "ACCEPTANCE_VERIFICATION"
 
 
 @dataclass
@@ -122,6 +135,7 @@ class DraftPullRequestInput:
     ci_poll_interval_seconds: float = 60.0
     ci_poll_max_attempts: int = 20
     max_repair_attempts: int = 2
+    run_reviews: bool = False
 
 
 @dataclass
@@ -138,6 +152,16 @@ class DraftPullRequestOutput:
     ci_build_id: str = ""
     ci_build_number: int = 0
     repair_attempts: int = 0
+    review_status: str = ""
+    code_verdict: str = ""
+    security_verdict: str = ""
+    acceptance_verdict: str = ""
+    review_attestations: dict[str, str] = field(default_factory=dict)
+
+
+def _change_subject(impl: ImplementationOutput, commit_sha: str) -> str:
+    files = "\n".join(impl.changed_files) if impl.changed_files else "(no file list)"
+    return f"Change on branch {impl.branch} at {commit_sha}.\nChanged files:\n{files}"
 
 
 @workflow.defn
@@ -281,7 +305,9 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 )
 
         if params.ci_job and outcome.status == DRAFT_PR_OPEN:
-            return await self._ci_and_repair(params, impl, outcome, workflow_id)
+            outcome = await self._ci_and_repair(params, impl, outcome, workflow_id)
+            if params.run_reviews and outcome.status == CI_PASSED:
+                return await self._review(params, impl, outcome, workflow_id)
         return outcome
 
     async def _finalize(
@@ -643,6 +669,116 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 retry_policy=retry,
             )
         return result
+
+    async def _review(
+        self,
+        params: DraftPullRequestInput,
+        impl: ImplementationOutput,
+        outcome: DraftPullRequestOutput,
+        workflow_id: str,
+    ) -> DraftPullRequestOutput:
+        commit_sha = self._commit.commit_sha if self._commit else params.base_sha
+        subject = _change_subject(impl, commit_sha)
+        attestations: dict[str, str] = {}
+
+        code = await self._review_gate(
+            params, review_code, _CODE_REVIEW, subject, commit_sha, impl, workflow_id
+        )
+        attestations["code-review"] = code.attestation_hash
+        security = await self._review_gate(
+            params, review_security, _SECURITY_REVIEW, subject, commit_sha, impl, workflow_id
+        )
+        attestations["security-review"] = security.attestation_hash
+
+        if code.verdict == "block" or security.verdict == "block":
+            return replace(
+                outcome,
+                status=REVIEW_BLOCKED,
+                review_status="blocked",
+                code_verdict=code.verdict,
+                security_verdict=security.verdict,
+                review_attestations=attestations,
+            )
+
+        acceptance = await self._review_gate(
+            params,
+            verify_acceptance,
+            _ACCEPTANCE_VERIFICATION,
+            subject,
+            commit_sha,
+            impl,
+            workflow_id,
+        )
+        attestations["acceptance-verification"] = acceptance.attestation_hash
+        blocked = acceptance.verdict == "block"
+
+        return replace(
+            outcome,
+            status=REVIEW_BLOCKED if blocked else REVIEW_PASSED,
+            review_status="blocked" if blocked else "passed",
+            code_verdict=code.verdict,
+            security_verdict=security.verdict,
+            acceptance_verdict=acceptance.verdict,
+            review_attestations=attestations,
+        )
+
+    async def _review_gate(
+        self,
+        params: DraftPullRequestInput,
+        gate: Any,
+        state: str,
+        subject: str,
+        commit_sha: str,
+        impl: ImplementationOutput,
+        workflow_id: str,
+    ) -> ReviewOutcome:
+        retry = RetryPolicy(maximum_attempts=3)
+        short = timedelta(seconds=30)
+        model_timeout = timedelta(minutes=5)
+
+        await workflow.execute_activity(
+            persist_execution_state,
+            ExecutionState(
+                execution_id=params.execution_id,
+                task_id=params.task_id,
+                state=state,
+                workflow_id=workflow_id,
+                repository=params.repo or None,
+                repository_sha=commit_sha or None,
+            ),
+            start_to_close_timeout=short,
+            retry_policy=retry,
+        )
+        outcome: ReviewOutcome = await workflow.execute_activity(
+            gate,
+            ReviewRequest(
+                task_id=params.task_id,
+                execution_id=params.execution_id,
+                subject=subject,
+                context_ref=commit_sha,
+                repo_root=impl.workspace_path or None,
+                ref=commit_sha or None,
+            ),
+            start_to_close_timeout=model_timeout,
+            retry_policy=retry,
+        )
+        await self._audit(
+            AuditEvent(
+                event_id=f"{params.execution_id}:REVIEW_COMPLETED:{state}",
+                task_id=params.task_id,
+                execution_id=params.execution_id,
+                event_type="REVIEW_COMPLETED",
+                stage=state,
+                prev_state=state,
+                new_state=state,
+                model_id=outcome.model_id,
+                decision=outcome.verdict,
+                prompt_version=outcome.prompt_version,
+                artifact_hashes={"attestation": outcome.attestation_hash},
+                workflow_id=workflow_id,
+            )
+        )
+        return outcome
 
     async def _audit(self, event: AuditEvent) -> None:
         await workflow.execute_activity(

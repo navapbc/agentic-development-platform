@@ -61,6 +61,10 @@ from services.orchestration.temporal_activities.repair import (
     ApplyCIRepairRequest,
     ApplyCIRepairResult,
 )
+from services.orchestration.temporal_activities.review import (
+    ReviewOutcome,
+    ReviewRequest,
+)
 from services.orchestration.temporal_activities.suspension import (
     ClearSuspensionRequest,
     RecordSuspensionRequest,
@@ -71,6 +75,8 @@ from services.orchestration.temporal_workflows.draft_pull_request import (
     CI_PASSED,
     DRAFT_PR_OPEN,
     EXISTING_PR_REUSED,
+    REVIEW_BLOCKED,
+    REVIEW_PASSED,
     DraftPullRequestInput,
     DraftPullRequestWorkflow,
 )
@@ -98,6 +104,10 @@ def _make_activities(
     ci_running_polls: int = 0,
     repairs: list[ApplyCIRepairRequest] | None = None,
     repair_actionable: bool = True,
+    review_requests: list[ReviewRequest] | None = None,
+    code_verdict: str = "pass",
+    security_verdict: str = "pass",
+    acceptance_verdict: str = "pass",
 ):
     @activity.defn(name="persist_execution_state")
     async def fake_persist(payload: ExecutionState) -> str:
@@ -261,6 +271,35 @@ def _make_activities(
             applied=True, changed_files=["feature.py"], cost=0.1, tokens=5, llm_calls=1
         )
 
+    def _review_outcome(stage: str, verdict: str) -> ReviewOutcome:
+        return ReviewOutcome(
+            verdict=verdict,
+            attestation_hash=f"sha256:{stage}",
+            prompt_version=f"{stage}/v1",
+            model_id="review-model",
+            summary="reviewed",
+            blocking_findings=1 if verdict == "block" else 0,
+            findings=[f"{stage} blocking finding"] if verdict == "block" else [],
+        )
+
+    @activity.defn(name="review_code")
+    async def fake_review_code(req: ReviewRequest) -> ReviewOutcome:
+        if review_requests is not None:
+            review_requests.append(req)
+        return _review_outcome("code-review", code_verdict)
+
+    @activity.defn(name="review_security")
+    async def fake_review_security(req: ReviewRequest) -> ReviewOutcome:
+        if review_requests is not None:
+            review_requests.append(req)
+        return _review_outcome("security-review", security_verdict)
+
+    @activity.defn(name="verify_acceptance")
+    async def fake_verify_acceptance(req: ReviewRequest) -> ReviewOutcome:
+        if review_requests is not None:
+            review_requests.append(req)
+        return _review_outcome("acceptance-verification", acceptance_verdict)
+
     return [
         fake_persist,
         fake_audit,
@@ -284,6 +323,9 @@ def _make_activities(
         fake_read_ci_log,
         fake_analyze,
         fake_apply_repair,
+        fake_review_code,
+        fake_review_security,
+        fake_verify_acceptance,
     ]
 
 
@@ -500,7 +542,7 @@ async def test_park_mirrors_jira_status_and_restores_on_resume():
     assert unparks[0].target_status == "In Progress"
 
 
-def _ci_input(poll_interval: float = 1.0) -> DraftPullRequestInput:
+def _ci_input(poll_interval: float = 1.0, *, run_reviews: bool = False) -> DraftPullRequestInput:
     return DraftPullRequestInput(
         task_id="T-1",
         execution_id="exec-1",
@@ -514,6 +556,7 @@ def _ci_input(poll_interval: float = 1.0) -> DraftPullRequestInput:
         ci_job="agentic-demo-service-ci",
         ci_poll_interval_seconds=poll_interval,
         ci_poll_max_attempts=5,
+        run_reviews=run_reviews,
     )
 
 
@@ -732,3 +775,81 @@ async def test_ci_bounded_poll_resumes_without_a_signal():
     assert result.status == CI_PASSED
     assert result.ci_status == "passed"
     assert result.ci_build_number == 7
+
+
+async def test_ci_pass_flows_through_review_gates_with_attestations():
+    commits: list[CommitPushRequest] = []
+    pr_opens: list[OpenPrRequest] = []
+    linkbacks: list[LinkbackRequest] = []
+    review_requests: list[ReviewRequest] = []
+    activities = _make_activities(
+        None,
+        1,
+        commits,
+        pr_opens,
+        linkbacks,
+        ci_result=SUCCESS,
+        review_requests=review_requests,
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            result = await env.client.execute_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(run_reviews=True),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+
+    assert result.status == REVIEW_PASSED
+    assert result.review_status == "passed"
+    assert result.code_verdict == "pass"
+    assert result.security_verdict == "pass"
+    assert result.acceptance_verdict == "pass"
+    assert result.review_attestations == {
+        "code-review": "sha256:code-review",
+        "security-review": "sha256:security-review",
+        "acceptance-verification": "sha256:acceptance-verification",
+    }
+    assert len(review_requests) == 3
+    assert review_requests[0].ref == "c" * 40
+    assert review_requests[0].repo_root == "/tmp/ws/agent-T-1"
+
+
+async def test_review_blocking_finding_stops_before_policy_gate():
+    commits: list[CommitPushRequest] = []
+    pr_opens: list[OpenPrRequest] = []
+    linkbacks: list[LinkbackRequest] = []
+    review_requests: list[ReviewRequest] = []
+    activities = _make_activities(
+        None,
+        1,
+        commits,
+        pr_opens,
+        linkbacks,
+        ci_result=SUCCESS,
+        review_requests=review_requests,
+        security_verdict="block",
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            result = await env.client.execute_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(run_reviews=True),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+
+    assert result.status == REVIEW_BLOCKED
+    assert result.review_status == "blocked"
+    assert result.code_verdict == "pass"
+    assert result.security_verdict == "block"
+    assert result.acceptance_verdict == ""
+    assert result.review_attestations == {
+        "code-review": "sha256:code-review",
+        "security-review": "sha256:security-review",
+    }
+    assert len(review_requests) == 2
