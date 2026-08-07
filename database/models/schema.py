@@ -62,6 +62,7 @@ executions = Table(
             "AWAITING_PR_APPROVAL",
             "PR_CREATING",
             "PR_CREATED",
+            "AWAITING_PR_CLOSE",
             "COMPLETED",
             "FAILED",
             "CANCELLED",

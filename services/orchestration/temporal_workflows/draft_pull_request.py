@@ -123,7 +123,11 @@ PR_PROMOTED = "pr_promoted"
 PROMOTION_CANCELLED = "promotion_cancelled"
 AWAITING_PR_APPROVAL = "AWAITING_PR_APPROVAL"
 PR_CREATED = "PR_CREATED"
+AWAITING_PR_CLOSE = "AWAITING_PR_CLOSE"
 CANCELLED = "CANCELLED"
+COMPLETED = "COMPLETED"
+PR_MERGED = "pr_merged"
+PR_CLOSED_UNMERGED = "pr_closed_unmerged"
 
 _SEQUENCE_STRIDE = 10
 _COMMIT_OFFSET = 2
@@ -168,6 +172,7 @@ class DraftPullRequestInput:
     run_reviews: bool = False
     run_policy: bool = False
     run_approval: bool = False
+    await_pr_close: bool = False
     jira_project: str = ""
     plan_approved: bool = False
     jira_snapshot_current: bool = True
@@ -200,12 +205,19 @@ class DraftPullRequestOutput:
     approval_status: str = ""
     approver: str = ""
     promoted: bool = False
+    pr_merged: bool = False
+    pr_close_status: str = ""
 
 
 @dataclass(frozen=True)
 class _PrApproval:
     approved: bool
     approver: str = ""
+
+
+@dataclass(frozen=True)
+class _PrClosed:
+    merged: bool
 
 
 def _project_from_issue(issue_key: str) -> str:
@@ -225,11 +237,18 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         self._commit: CommitPushResult | None = None
         self._pr: PullRequestOutput | None = None
         self._pr_approval: _PrApproval | None = None
+        self._pr_closed: _PrClosed | None = None
 
     @workflow.signal(name="submit_pr_approval")
     def submit_pr_approval(self, approved: bool, approver: str = "") -> None:
         self._pr_approval = _PrApproval(approved=approved, approver=approver)
         self._resume_trigger = ResumeOn.HUMAN_APPROVAL.value
+        self._resume_requested = True
+
+    @workflow.signal(name="submit_pr_closed")
+    def submit_pr_closed(self, merged: bool) -> None:
+        self._pr_closed = _PrClosed(merged=merged)
+        self._resume_trigger = ResumeOn.PR_CLOSED.value
         self._resume_requested = True
 
     @workflow.run
@@ -1040,7 +1059,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 artifact_hashes={"pr_url": ready.url},
             )
         )
-        return replace(
+        promoted = replace(
             outcome,
             status=PR_PROMOTED,
             terminal_reason="promoted",
@@ -1048,6 +1067,68 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             approver=approver,
             promoted=True,
             pr_url=ready.url or outcome.pr_url,
+        )
+        if not params.await_pr_close:
+            return promoted
+        return await self._await_pr_close(params, promoted, workflow_id)
+
+    async def _await_pr_close(
+        self,
+        params: DraftPullRequestInput,
+        outcome: DraftPullRequestOutput,
+        workflow_id: str,
+    ) -> DraftPullRequestOutput:
+        retry = RetryPolicy(maximum_attempts=3)
+        short = timedelta(seconds=30)
+
+        async def persist(state: str) -> None:
+            await workflow.execute_activity(
+                persist_execution_state,
+                ExecutionState(
+                    execution_id=params.execution_id,
+                    task_id=params.task_id,
+                    state=state,
+                    workflow_id=workflow_id,
+                    repository=params.repo or None,
+                ),
+                start_to_close_timeout=short,
+                retry_policy=retry,
+            )
+
+        await persist(AWAITING_PR_CLOSE)
+        await self.await_resume(
+            Suspension(
+                reason=SuspendReason.AWAITING_PR_CLOSE,
+                resume_on=ResumeOn.PR_CLOSED,
+                stage="pr_close",
+                detail=str(outcome.pr_number),
+            )
+        )
+        closed = self._pr_closed
+        self._pr_closed = None
+        merged = bool(closed and closed.merged)
+        terminal_state = COMPLETED if merged else CANCELLED
+        close_status = PR_MERGED if merged else PR_CLOSED_UNMERGED
+        await persist(terminal_state)
+        await self._audit(
+            AuditEvent(
+                event_id=f"{params.execution_id}:{close_status.upper()}",
+                task_id=params.task_id,
+                execution_id=params.execution_id,
+                event_type=close_status.upper(),
+                stage="pr_close",
+                new_state=terminal_state,
+                workflow_id=workflow_id,
+                decision="merged" if merged else "closed",
+                reason=str(outcome.pr_number),
+            )
+        )
+        return replace(
+            outcome,
+            status=close_status,
+            terminal_reason=close_status,
+            pr_merged=merged,
+            pr_close_status=terminal_state,
         )
 
     async def _review_gate(

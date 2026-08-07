@@ -20,6 +20,7 @@ class SuspendReason(str, Enum):
     AWAITING_FIX = "awaiting_fix"
     AWAITING_BUDGET = "awaiting_budget"
     AWAITING_DEPENDENCY = "awaiting_dependency"
+    AWAITING_PR_CLOSE = "awaiting_pr_close"
 
 
 class ResumeOn(str, Enum):
@@ -28,6 +29,7 @@ class ResumeOn(str, Enum):
     NEWER_BUILD = "newer_build"
     BUDGET_RAISED = "budget_raised"
     DEPENDENCY_READY = "dependency_ready"
+    PR_CLOSED = "pr_closed"
 
 
 _DEFAULT_RESUME_ON = {
@@ -36,6 +38,7 @@ _DEFAULT_RESUME_ON = {
     SuspendReason.AWAITING_FIX: ResumeOn.NEWER_BUILD,
     SuspendReason.AWAITING_BUDGET: ResumeOn.BUDGET_RAISED,
     SuspendReason.AWAITING_DEPENDENCY: ResumeOn.DEPENDENCY_READY,
+    SuspendReason.AWAITING_PR_CLOSE: ResumeOn.PR_CLOSED,
 }
 
 
@@ -73,9 +76,7 @@ def should_resume(
     return trigger == suspension.resume_on
 
 
-def select_resumable(
-    suspensions: list[Suspension], *, current_build_id: str
-) -> list[Suspension]:
+def select_resumable(suspensions: list[Suspension], *, current_build_id: str) -> list[Suspension]:
     return [
         suspension
         for suspension in suspensions
