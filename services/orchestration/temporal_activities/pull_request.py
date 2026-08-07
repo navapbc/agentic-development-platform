@@ -98,6 +98,42 @@ class CommitPushResult:
     replayed: bool
 
 
+@dataclass
+class PromotePrRequest:
+    repo: str
+    task_id: str
+    execution_id: str
+    number: int
+    sequence: int
+
+
+@dataclass
+class PromotePrResult:
+    number: int
+    url: str
+    draft: bool
+    state: str
+    ready: bool
+
+
+@dataclass
+class RecordApprovalRequest:
+    repo: str
+    task_id: str
+    execution_id: str
+    number: int
+    approved: bool
+    approver: str
+    sequence: int
+
+
+@dataclass
+class RecordApprovalResult:
+    recorded: bool
+    approved: bool
+    approver: str
+
+
 def _build_mediator():
     from adapters.real.git_host import RealGitHost
 
@@ -230,3 +266,41 @@ async def unmark_task_parked(req: UnparkTaskRequest) -> str:
         adapter = _build_jira_adapter()
         adapter.transition(req.issue_key, req.target_status)
     return req.issue_key
+
+
+@activity.defn
+async def record_pr_approval(req: RecordApprovalRequest) -> RecordApprovalResult:
+    mediator = _build_mediator()
+    outcome = await mediator.record_promotion_approval(
+        req.repo,
+        req.task_id,
+        req.execution_id,
+        req.number,
+        approved=req.approved,
+        approver=req.approver,
+        sequence=req.sequence,
+    )
+    return RecordApprovalResult(
+        recorded=True,
+        approved=bool(outcome.get("approved", req.approved)),
+        approver=str(outcome.get("approver", req.approver)),
+    )
+
+
+@activity.defn
+async def promote_pr(req: PromotePrRequest) -> PromotePrResult:
+    mediator = _build_mediator()
+    pr = await mediator.mark_pr_ready(
+        req.repo,
+        req.task_id,
+        req.execution_id,
+        req.number,
+        sequence=req.sequence,
+    )
+    return PromotePrResult(
+        number=pr.number,
+        url=pr.url,
+        draft=pr.draft,
+        state=pr.state,
+        ready=not pr.draft,
+    )

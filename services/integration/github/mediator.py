@@ -143,6 +143,40 @@ class GitHubMediator:
 
         return PullRequest(**await self._gated(action, ref, effect))
 
+    async def mark_pr_ready(
+        self, repo: str, task_id: str, execution_id: str, number: int, *, sequence: int
+    ) -> PullRequest:
+        self._guard(repo)
+        action = SequencedAction(task_id, execution_id, sequence, operation="github.mark_ready")
+        ref = SideEffectRef(task_id, execution_id, "github.mark_ready", f"{repo}#{number}")
+
+        async def effect() -> dict[str, Any]:
+            return asdict(await self.backend.mark_pr_ready(repo, number))
+
+        return PullRequest(**await self._gated(action, ref, effect))
+
+    async def record_promotion_approval(
+        self,
+        repo: str,
+        task_id: str,
+        execution_id: str,
+        number: int,
+        *,
+        approved: bool,
+        approver: str,
+        sequence: int,
+    ) -> dict[str, Any]:
+        self._guard(repo)
+        action = SequencedAction(
+            task_id, execution_id, sequence, operation="github.promotion_approval"
+        )
+        ref = SideEffectRef(task_id, execution_id, "github.promotion_approval", f"{repo}#{number}")
+
+        async def effect() -> dict[str, Any]:
+            return {"number": number, "approved": approved, "approver": approver}
+
+        return await self._gated(action, ref, effect)
+
     async def _gated(
         self,
         action: SequencedAction,

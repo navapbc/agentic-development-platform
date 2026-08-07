@@ -179,5 +179,14 @@ class MockGitHost:
                 return closed
         raise KeyError(f"pull request missing: {repo}#{number}")
 
+    async def mark_pr_ready(self, repo: str, number: int) -> PullRequest:
+        record = self._repo(repo)
+        for index, existing in enumerate(record.prs):
+            if existing.number == number:
+                ready = replace(existing, draft=False)
+                record.prs[index] = ready
+                return ready
+        raise KeyError(f"pull request missing: {repo}#{number}")
+
     def add_pr_comment(self, repo: str, number: int, author: str, body: str) -> None:
         self._repo(repo).comments.setdefault(number, []).append(PRComment(author, body))

@@ -10,6 +10,11 @@ from temporalio import workflow
 from temporalio.common import RetryPolicy
 
 with workflow.unsafe.imports_passed_through():
+    from services.orchestration.temporal_activities.branch_sync import (
+        RecheckRequest,
+        RecheckResult,
+        recheck_issue,
+    )
     from services.orchestration.temporal_activities.ci import (
         PollCIRequest,
         PollCIResult,
@@ -39,10 +44,15 @@ with workflow.unsafe.imports_passed_through():
         LinkbackResult,
         ParkTaskRequest,
         ParkTaskResult,
+        PromotePrRequest,
+        PromotePrResult,
+        RecordApprovalRequest,
         UnparkTaskRequest,
         commit_and_push,
         link_pr_to_issue,
         mark_task_parked,
+        promote_pr,
+        record_pr_approval,
         unmark_task_parked,
     )
     from services.orchestration.temporal_activities.repair import (
@@ -109,12 +119,19 @@ REVIEW_BLOCKED = "review_blocked"
 POLICY_ALLOWED = "policy_allowed"
 POLICY_DENIED = "policy_denied"
 POLICY_EVALUATION = "POLICY_EVALUATION"
+PR_PROMOTED = "pr_promoted"
+PROMOTION_CANCELLED = "promotion_cancelled"
+AWAITING_PR_APPROVAL = "AWAITING_PR_APPROVAL"
+PR_CREATED = "PR_CREATED"
+CANCELLED = "CANCELLED"
 
 _SEQUENCE_STRIDE = 10
 _COMMIT_OFFSET = 2
 _OPEN_PR_OFFSET = 3
 _CI_TRIGGER_OFFSET = 4
 _REPAIR_STRIDE = 2
+_APPROVAL_OFFSET = 1
+_PROMOTE_OFFSET = 2
 
 _CODE_REVIEW = "CODE_REVIEW"
 _SECURITY_REVIEW = "SECURITY_REVIEW"
@@ -150,6 +167,7 @@ class DraftPullRequestInput:
     max_repair_attempts: int = 2
     run_reviews: bool = False
     run_policy: bool = False
+    run_approval: bool = False
     jira_project: str = ""
     plan_approved: bool = False
     jira_snapshot_current: bool = True
@@ -179,6 +197,15 @@ class DraftPullRequestOutput:
     policy_next_action: str = ""
     policy_reasons: list[str] = field(default_factory=list)
     scan_blocking_findings: int = 0
+    approval_status: str = ""
+    approver: str = ""
+    promoted: bool = False
+
+
+@dataclass(frozen=True)
+class _PrApproval:
+    approved: bool
+    approver: str = ""
 
 
 def _project_from_issue(issue_key: str) -> str:
@@ -197,6 +224,13 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         self._sync: BranchSyncOutput | None = None
         self._commit: CommitPushResult | None = None
         self._pr: PullRequestOutput | None = None
+        self._pr_approval: _PrApproval | None = None
+
+    @workflow.signal(name="submit_pr_approval")
+    def submit_pr_approval(self, approved: bool, approver: str = "") -> None:
+        self._pr_approval = _PrApproval(approved=approved, approver=approver)
+        self._resume_trigger = ResumeOn.HUMAN_APPROVAL.value
+        self._resume_requested = True
 
     @workflow.run
     async def run(self, params: DraftPullRequestInput) -> DraftPullRequestOutput:
@@ -335,7 +369,9 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             if params.run_reviews and outcome.status == CI_PASSED:
                 outcome = await self._review(params, impl, outcome, workflow_id)
                 if params.run_policy and outcome.status == REVIEW_PASSED:
-                    return await self._policy(params, impl, outcome, workflow_id)
+                    outcome = await self._policy(params, impl, outcome, workflow_id)
+                    if params.run_approval and outcome.status == POLICY_ALLOWED:
+                        return await self._promote(params, impl, outcome, workflow_id)
         return outcome
 
     async def _finalize(
@@ -835,6 +871,183 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             policy_next_action=decision.next_action,
             policy_reasons=list(decision.reasons),
             scan_blocking_findings=scan.blocking_count,
+        )
+
+    async def _promote(
+        self,
+        params: DraftPullRequestInput,
+        impl: ImplementationOutput,
+        outcome: DraftPullRequestOutput,
+        workflow_id: str,
+    ) -> DraftPullRequestOutput:
+        retry = RetryPolicy(maximum_attempts=3)
+        short = timedelta(seconds=30)
+        commit_sha = self._commit.commit_sha if self._commit else params.base_sha
+        sequence_base = impl.claim_version * _SEQUENCE_STRIDE
+        promotion_base = _CI_TRIGGER_OFFSET + _REPAIR_STRIDE * params.max_repair_attempts
+
+        async def persist(state: str) -> None:
+            await workflow.execute_activity(
+                persist_execution_state,
+                ExecutionState(
+                    execution_id=params.execution_id,
+                    task_id=params.task_id,
+                    state=state,
+                    workflow_id=workflow_id,
+                    repository=params.repo or None,
+                    repository_sha=commit_sha or None,
+                ),
+                start_to_close_timeout=short,
+                retry_policy=retry,
+            )
+
+        await persist(AWAITING_PR_APPROVAL)
+        await self._audit(
+            AuditEvent(
+                event_id=f"{params.execution_id}:PR_APPROVAL_REQUESTED",
+                task_id=params.task_id,
+                execution_id=params.execution_id,
+                event_type="PR_APPROVAL_REQUESTED",
+                stage="approval",
+                new_state=AWAITING_PR_APPROVAL,
+                workflow_id=workflow_id,
+                reason=str(outcome.pr_number),
+            )
+        )
+
+        suspension = Suspension(
+            reason=SuspendReason.AWAITING_REVIEW,
+            resume_on=ResumeOn.HUMAN_APPROVAL,
+            stage="approval",
+            parked_build_id=outcome.ci_build_id,
+        )
+        await self.await_resume(suspension)
+        approval = self._pr_approval
+        self._pr_approval = None
+        approver = approval.approver if approval else ""
+        approved = bool(approval and approval.approved)
+
+        await workflow.execute_activity(
+            record_pr_approval,
+            RecordApprovalRequest(
+                repo=params.repo,
+                task_id=params.task_id,
+                execution_id=params.execution_id,
+                number=outcome.pr_number,
+                approved=approved,
+                approver=approver,
+                sequence=sequence_base + promotion_base + _APPROVAL_OFFSET,
+            ),
+            start_to_close_timeout=short,
+            retry_policy=retry,
+        )
+        await self._audit(
+            AuditEvent(
+                event_id=f"{params.execution_id}:PR_APPROVAL_RECORDED",
+                task_id=params.task_id,
+                execution_id=params.execution_id,
+                event_type="PR_APPROVAL_RECORDED",
+                stage="approval",
+                new_state=AWAITING_PR_APPROVAL,
+                workflow_id=workflow_id,
+                decision="approved" if approved else "rejected",
+                reason=approver,
+            )
+        )
+
+        if not approved:
+            await persist(CANCELLED)
+            await self._audit(
+                AuditEvent(
+                    event_id=f"{params.execution_id}:PROMOTION_CANCELLED",
+                    task_id=params.task_id,
+                    execution_id=params.execution_id,
+                    event_type="PROMOTION_CANCELLED",
+                    stage="approval",
+                    new_state=CANCELLED,
+                    workflow_id=workflow_id,
+                    decision="cancel",
+                    reason="approval_rejected",
+                )
+            )
+            return replace(
+                outcome,
+                status=PROMOTION_CANCELLED,
+                terminal_reason="approval_rejected",
+                approval_status="rejected",
+                approver=approver,
+            )
+
+        if params.issue_key:
+            recheck: RecheckResult = await workflow.execute_activity(
+                recheck_issue,
+                RecheckRequest(
+                    issue_key=params.issue_key,
+                    execution_id=params.execution_id,
+                    task_id=params.task_id,
+                    stored_payload=dict(params.stored_issue),
+                ),
+                start_to_close_timeout=short,
+                retry_policy=retry,
+            )
+            if recheck.requires_pause:
+                await persist(CANCELLED)
+                await self._audit(
+                    AuditEvent(
+                        event_id=f"{params.execution_id}:ISSUE_RECHECK_PAUSED",
+                        task_id=params.task_id,
+                        execution_id=params.execution_id,
+                        event_type="ISSUE_RECHECK_PAUSED",
+                        stage="approval",
+                        new_state=CANCELLED,
+                        workflow_id=workflow_id,
+                        decision="pause",
+                        reason=recheck.reason,
+                    )
+                )
+                return replace(
+                    outcome,
+                    status=PROMOTION_CANCELLED,
+                    terminal_reason=recheck.category,
+                    approval_status="approved",
+                    approver=approver,
+                )
+
+        ready: PromotePrResult = await workflow.execute_activity(
+            promote_pr,
+            PromotePrRequest(
+                repo=params.repo,
+                task_id=params.task_id,
+                execution_id=params.execution_id,
+                number=outcome.pr_number,
+                sequence=sequence_base + promotion_base + _PROMOTE_OFFSET,
+            ),
+            start_to_close_timeout=short,
+            retry_policy=retry,
+        )
+        await persist(PR_CREATED)
+        await self._audit(
+            AuditEvent(
+                event_id=f"{params.execution_id}:PR_CREATED",
+                task_id=params.task_id,
+                execution_id=params.execution_id,
+                event_type="PR_CREATED",
+                stage="promotion",
+                new_state=PR_CREATED,
+                workflow_id=workflow_id,
+                decision="promote",
+                reason=str(ready.number),
+                artifact_hashes={"pr_url": ready.url},
+            )
+        )
+        return replace(
+            outcome,
+            status=PR_PROMOTED,
+            terminal_reason="promoted",
+            approval_status="approved",
+            approver=approver,
+            promoted=True,
+            pr_url=ready.url or outcome.pr_url,
         )
 
     async def _review_gate(

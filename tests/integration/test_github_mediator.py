@@ -123,3 +123,42 @@ async def test_find_open_pr_locates_the_task_branch_pr(mediator: GitHubMediator)
 async def test_find_open_pr_guards_non_allowlisted_repos(mediator: GitHubMediator) -> None:
     with pytest.raises(RepoNotAllowedError):
         await mediator.find_open_pr("secret-internal", TASK_ID)
+
+
+async def test_mark_pr_ready_flips_draft_and_is_idempotent(mediator: GitHubMediator) -> None:
+    branch = agent_branch_name(TASK_ID)
+    await mediator.ensure_agent_branch(REPO, TASK_ID, EXECUTION_ID, "main", sequence=1)
+    created = await mediator.open_draft_pr(
+        REPO, TASK_ID, EXECUTION_ID, branch, "main", "Draft", "body", sequence=2
+    )
+    assert created.draft is True
+
+    ready = await mediator.mark_pr_ready(REPO, TASK_ID, EXECUTION_ID, created.number, sequence=3)
+    assert ready.number == created.number
+    assert ready.draft is False
+
+    retry = await mediator.mark_pr_ready(REPO, TASK_ID, EXECUTION_ID, created.number, sequence=3)
+    assert retry == ready
+
+
+async def test_mark_pr_ready_guards_non_allowlisted_repos(mediator: GitHubMediator) -> None:
+    with pytest.raises(RepoNotAllowedError):
+        await mediator.mark_pr_ready("secret-internal", TASK_ID, EXECUTION_ID, 1, sequence=1)
+
+
+async def test_record_promotion_approval_is_idempotent(mediator: GitHubMediator) -> None:
+    branch = agent_branch_name(TASK_ID)
+    await mediator.ensure_agent_branch(REPO, TASK_ID, EXECUTION_ID, "main", sequence=1)
+    created = await mediator.open_draft_pr(
+        REPO, TASK_ID, EXECUTION_ID, branch, "main", "Draft", "body", sequence=2
+    )
+
+    first = await mediator.record_promotion_approval(
+        REPO, TASK_ID, EXECUTION_ID, created.number, approved=True, approver="rm", sequence=3
+    )
+    assert first == {"number": created.number, "approved": True, "approver": "rm"}
+
+    retry = await mediator.record_promotion_approval(
+        REPO, TASK_ID, EXECUTION_ID, created.number, approved=True, approver="rm", sequence=3
+    )
+    assert retry == first

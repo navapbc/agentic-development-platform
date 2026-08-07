@@ -57,6 +57,10 @@ from services.orchestration.temporal_activities.pull_request import (
     OpenPrResult,
     ParkTaskRequest,
     ParkTaskResult,
+    PromotePrRequest,
+    PromotePrResult,
+    RecordApprovalRequest,
+    RecordApprovalResult,
     UnparkTaskRequest,
 )
 from services.orchestration.temporal_activities.repair import (
@@ -85,6 +89,8 @@ from services.orchestration.temporal_workflows.draft_pull_request import (
     EXISTING_PR_REUSED,
     POLICY_ALLOWED,
     POLICY_DENIED,
+    PR_PROMOTED,
+    PROMOTION_CANCELLED,
     REVIEW_BLOCKED,
     REVIEW_PASSED,
     DraftPullRequestInput,
@@ -123,6 +129,10 @@ def _make_activities(
     policy_requests: list[EvaluatePromotionRequest] | None = None,
     policy_allow: bool = True,
     policy_reasons: list[str] | None = None,
+    approvals: list[RecordApprovalRequest] | None = None,
+    promotions: list[PromotePrRequest] | None = None,
+    recheck_requires_pause: bool = False,
+    recheck_category: str = "",
 ):
     @activity.defn(name="persist_execution_state")
     async def fake_persist(payload: ExecutionState) -> str:
@@ -176,8 +186,15 @@ def _make_activities(
     async def fake_resolve(req: ResolveRequest) -> ResolveResult:
         return ResolveResult(status="resolved")
 
+    recheck_calls: list[int] = []
+
     @activity.defn(name="recheck_issue")
     async def fake_recheck(req: RecheckRequest) -> RecheckResult:
+        recheck_calls.append(1)
+        if recheck_requires_pause and len(recheck_calls) >= 2:
+            return RecheckResult(
+                category=recheck_category, requires_pause=True, reason="issue changed"
+            )
         return RecheckResult(category="", requires_pause=False)
 
     @activity.defn(name="commit_and_push")
@@ -340,6 +357,24 @@ def _make_activities(
             reasons=list(policy_reasons or []),
         )
 
+    @activity.defn(name="record_pr_approval")
+    async def fake_record_approval(req: RecordApprovalRequest) -> RecordApprovalResult:
+        if approvals is not None:
+            approvals.append(req)
+        return RecordApprovalResult(recorded=True, approved=req.approved, approver=req.approver)
+
+    @activity.defn(name="promote_pr")
+    async def fake_promote(req: PromotePrRequest) -> PromotePrResult:
+        if promotions is not None:
+            promotions.append(req)
+        return PromotePrResult(
+            number=req.number,
+            url=f"https://github.com/org/agentic-demo-service/pull/{req.number}",
+            draft=False,
+            state="open",
+            ready=True,
+        )
+
     return [
         fake_persist,
         fake_audit,
@@ -368,6 +403,8 @@ def _make_activities(
         fake_verify_acceptance,
         fake_scan_change,
         fake_evaluate_promotion,
+        fake_record_approval,
+        fake_promote,
     ]
 
 
@@ -585,7 +622,11 @@ async def test_park_mirrors_jira_status_and_restores_on_resume():
 
 
 def _ci_input(
-    poll_interval: float = 1.0, *, run_reviews: bool = False, run_policy: bool = False
+    poll_interval: float = 1.0,
+    *,
+    run_reviews: bool = False,
+    run_policy: bool = False,
+    run_approval: bool = False,
 ) -> DraftPullRequestInput:
     return DraftPullRequestInput(
         task_id="T-1",
@@ -602,6 +643,7 @@ def _ci_input(
         ci_poll_max_attempts=5,
         run_reviews=run_reviews,
         run_policy=run_policy,
+        run_approval=run_approval,
         jira_project="AGENTDEV",
         plan_approved=True,
     )
@@ -980,3 +1022,134 @@ async def test_policy_deny_on_blocking_finding_blocks_promotion():
     assert result.policy_reasons == ["blocking_security_findings"]
     assert result.scan_blocking_findings == 1
     assert policy_requests[0].blocking_findings == 1
+
+
+async def _await_approval_park(handle) -> dict[str, str]:
+    state: dict[str, str] = {}
+    for _ in range(50):
+        state = await handle.query(DraftPullRequestWorkflow.suspension_state)
+        if (
+            state.get("reason") == SuspendReason.AWAITING_REVIEW.value
+            and state.get("stage") == "approval"
+        ):
+            return state
+        await asyncio.sleep(0.05)
+    return state
+
+
+async def test_approval_parks_and_promotes_pr_on_approve():
+    approvals: list[RecordApprovalRequest] = []
+    promotions: list[PromotePrRequest] = []
+    activities = _make_activities(
+        None,
+        1,
+        [],
+        [],
+        [],
+        ci_result=SUCCESS,
+        approvals=approvals,
+        promotions=promotions,
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(run_reviews=True, run_policy=True, run_approval=True),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+
+            state = await _await_approval_park(handle)
+            assert state["reason"] == SuspendReason.AWAITING_REVIEW.value
+            assert state["resume_on"] == ResumeOn.HUMAN_APPROVAL.value
+            assert state["stage"] == "approval"
+
+            await handle.signal("submit_pr_approval", args=[True, "release-manager"])
+            result = await handle.result()
+
+    assert result.status == PR_PROMOTED
+    assert result.approval_status == "approved"
+    assert result.approver == "release-manager"
+    assert result.promoted is True
+    assert len(approvals) == 1
+    assert approvals[0].approved is True
+    assert approvals[0].sequence == 19
+    assert len(promotions) == 1
+    assert promotions[0].sequence == 20
+
+
+async def test_approval_rejection_cancels_promotion():
+    approvals: list[RecordApprovalRequest] = []
+    promotions: list[PromotePrRequest] = []
+    activities = _make_activities(
+        None,
+        1,
+        [],
+        [],
+        [],
+        ci_result=SUCCESS,
+        approvals=approvals,
+        promotions=promotions,
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(run_reviews=True, run_policy=True, run_approval=True),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+
+            await _await_approval_park(handle)
+            await handle.signal("submit_pr_approval", args=[False, "release-manager"])
+            result = await handle.result()
+
+    assert result.status == PROMOTION_CANCELLED
+    assert result.approval_status == "rejected"
+    assert result.terminal_reason == "approval_rejected"
+    assert result.promoted is False
+    assert len(approvals) == 1
+    assert approvals[0].approved is False
+    assert len(promotions) == 0
+
+
+async def test_approval_snapshot_drift_cancels_promotion():
+    approvals: list[RecordApprovalRequest] = []
+    promotions: list[PromotePrRequest] = []
+    activities = _make_activities(
+        None,
+        1,
+        [],
+        [],
+        [],
+        ci_result=SUCCESS,
+        approvals=approvals,
+        promotions=promotions,
+        recheck_requires_pause=True,
+        recheck_category="scope_change",
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(run_reviews=True, run_policy=True, run_approval=True),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+
+            await _await_approval_park(handle)
+            await handle.signal("submit_pr_approval", args=[True, "release-manager"])
+            result = await handle.result()
+
+    assert result.status == PROMOTION_CANCELLED
+    assert result.approval_status == "approved"
+    assert result.terminal_reason == "scope_change"
+    assert result.promoted is False
+    assert len(approvals) == 1
+    assert len(promotions) == 0

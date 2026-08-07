@@ -23,6 +23,8 @@ from services.orchestration.temporal_activities.pull_request import (
     find_open_pr,
     link_pr_to_issue,
     mark_task_parked,
+    promote_pr,
+    record_pr_approval,
     unmark_task_parked,
 )
 from services.orchestration.temporal_activities.reap import reap_orphans
@@ -58,10 +60,12 @@ __all__ = [
     "mark_task_parked",
     "persist_execution_state",
     "poll_ci",
+    "promote_pr",
     "read_ci_log",
     "recheck_issue",
     "reap_orphans",
     "record_audit_event",
+    "record_pr_approval",
     "record_suspension",
     "record_usage_metrics",
     "resolve_conflicts",

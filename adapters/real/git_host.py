@@ -43,6 +43,7 @@ class RealGitHost:
         self._remote_url_for = remote_url_for
         self._transport = transport
         self._timeout = timeout
+        self._graphql_url = _graphql_url_from(self._api_url)
 
     @classmethod
     def from_settings(
@@ -179,6 +180,17 @@ class RealGitHost:
             resp.raise_for_status()
             return resp.json()
 
+    async def _graphql(self, query: str, variables: dict[str, Any]) -> Any:
+        async with self._client() as client:
+            resp = await client.post(
+                self._graphql_url, json={"query": query, "variables": variables}
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+            if payload.get("errors"):
+                raise RuntimeError(f"graphql error: {payload['errors']}")
+            return payload.get("data")
+
     async def read_file(self, repo: str, path: str, ref: str) -> FileContent:
         data = await self._get(f"/repos/{self._owner}/{repo}/contents/{path}", params={"ref": ref})
         text = base64.b64decode(data["content"]).decode("utf-8")
@@ -235,6 +247,26 @@ class RealGitHost:
             f"/repos/{self._owner}/{repo}/pulls/{number}", {"state": "closed"}
         )
         return _pull_request(repo, updated, created=False)
+
+    async def mark_pr_ready(self, repo: str, number: int) -> PullRequest:
+        pull = await self._get(f"/repos/{self._owner}/{repo}/pulls/{number}")
+        if not bool(pull.get("draft", False)):
+            return _pull_request(repo, pull, created=False)
+        mutation = (
+            "mutation MarkReady($id: ID!) { "
+            "markPullRequestReadyForReview(input: {pullRequestId: $id}) "
+            "{ pullRequest { number } } }"
+        )
+        await self._graphql(mutation, {"id": pull.get("node_id", "")})
+        refreshed = await self._get(f"/repos/{self._owner}/{repo}/pulls/{number}")
+        return _pull_request(repo, refreshed, created=False)
+
+
+def _graphql_url_from(api_url: str) -> str:
+    suffix = "/api/v3"
+    if api_url.endswith(suffix):
+        return f"{api_url[: -len(suffix)]}/api/graphql"
+    return f"{api_url}/graphql"
 
 
 def _pull_request(repo: str, data: dict[str, Any], *, created: bool) -> PullRequest:

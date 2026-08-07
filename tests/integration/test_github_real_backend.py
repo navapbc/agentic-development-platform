@@ -49,6 +49,7 @@ def _fake_ghes() -> httpx.MockTransport:
             number = len(state["pulls"]) + 1
             pull = {
                 "number": number,
+                "node_id": f"PR_{number}",
                 "html_url": f"https://ghes.invalid/pr/{number}",
                 "head": {"ref": body["head"]},
                 "base": {"ref": body["base"]},
@@ -59,6 +60,19 @@ def _fake_ghes() -> httpx.MockTransport:
             }
             state["pulls"].append(pull)
             return httpx.Response(201, json=pull)
+        if request.method == "POST" and path.endswith("/graphql"):
+            variables = json.loads(request.content)["variables"]
+            node_id = variables["id"]
+            pull = next(p for p in state["pulls"] if p["node_id"] == node_id)
+            pull["draft"] = False
+            return httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "markPullRequestReadyForReview": {"pullRequest": {"number": pull["number"]}}
+                    }
+                },
+            )
         if request.method == "PATCH" and "/pulls/" in path:
             number = int(path.rsplit("/", 1)[-1])
             body = json.loads(request.content)
@@ -73,6 +87,10 @@ def _fake_ghes() -> httpx.MockTransport:
                 if p["state"] == "open" and (head is None or f"{OWNER}:{p['head']['ref']}" == head)
             ]
             return httpx.Response(200, json=matches)
+        if request.method == "GET" and "/pulls/" in path:
+            number = int(path.rsplit("/", 1)[-1])
+            pull = next(p for p in state["pulls"] if p["number"] == number)
+            return httpx.Response(200, json=pull)
         return httpx.Response(404, json={"message": "not found"})
 
     return httpx.MockTransport(handler)
@@ -134,6 +152,22 @@ async def test_open_draft_pr_creates_then_updates_the_same_pr(bare_remote: str) 
     assert updated.number == created.number
     assert updated.created is False
     assert updated.title == "Draft v2"
+
+
+async def test_mark_pr_ready_flips_draft_and_is_idempotent(bare_remote: str) -> None:
+    host = _host(bare_remote)
+    branch = agent_branch_name(TASK_ID)
+
+    created = await host.open_draft_pr(REPO, branch, "main", "Draft", "body")
+    assert created.draft is True
+
+    ready = await host.mark_pr_ready(REPO, created.number)
+    assert ready.number == created.number
+    assert ready.draft is False
+    assert ready.state == "open"
+
+    again = await host.mark_pr_ready(REPO, created.number)
+    assert again.draft is False
 
 
 @pytest.mark.skipif(
