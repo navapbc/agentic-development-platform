@@ -81,6 +81,10 @@ class Settings(BaseSettings):
     jenkins_user: str = ""
     jenkins_api_token: str = ""
 
+    semgrep_binary: str = "semgrep"
+    trivy_binary: str = "trivy"
+    security_blocking_threshold: str = "high"
+
     openhands_agent_server_image: str = "ghcr.io/openhands/agent-server:latest-python"
     openhands_runtime_class: str = ""
     openhands_sandbox_namespace: str = "agent-sandbox"

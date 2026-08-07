@@ -35,6 +35,7 @@ from services.orchestration.temporal_activities.review import (
     review_security,
     verify_acceptance,
 )
+from services.orchestration.temporal_activities.security import scan_change
 from services.orchestration.temporal_activities.suspension import (
     clear_suspension,
     record_suspension,
@@ -66,6 +67,7 @@ __all__ = [
     "review_plan",
     "review_security",
     "run_implementation_stage",
+    "scan_change",
     "synchronize_branch",
     "trigger_ci",
     "unmark_task_parked",

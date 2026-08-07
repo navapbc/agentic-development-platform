@@ -37,6 +37,7 @@ from services.orchestration.temporal_activities import (
     review_plan,
     review_security,
     run_implementation_stage,
+    scan_change,
     synchronize_branch,
     trigger_ci,
     unmark_task_parked,
@@ -106,6 +107,7 @@ _ACTIVITIES = [
     read_ci_log,
     analyze_ci_failure,
     apply_ci_repair,
+    scan_change,
 ]
 
 
