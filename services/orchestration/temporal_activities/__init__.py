@@ -16,6 +16,7 @@ from services.orchestration.temporal_activities.persistence import (
     record_usage_metrics,
 )
 from services.orchestration.temporal_activities.planning import gather_repo_context
+from services.orchestration.temporal_activities.policy import evaluate_promotion
 from services.orchestration.temporal_activities.pull_request import (
     commit_and_push,
     create_draft_pr,
@@ -49,6 +50,7 @@ __all__ = [
     "commit_and_push",
     "count_tick",
     "create_draft_pr",
+    "evaluate_promotion",
     "find_open_pr",
     "gather_repo_context",
     "invoke_model",

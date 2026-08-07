@@ -19,6 +19,7 @@ from services.orchestration.temporal_activities import (
     commit_and_push,
     count_tick,
     create_draft_pr,
+    evaluate_promotion,
     find_open_pr,
     gather_repo_context,
     invoke_model,
@@ -108,6 +109,7 @@ _ACTIVITIES = [
     analyze_ci_failure,
     apply_ci_repair,
     scan_change,
+    evaluate_promotion,
 ]
 
 

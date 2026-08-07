@@ -4,7 +4,7 @@ import rego.v1
 
 default allow := false
 
-bundle_version := "0.1.0"
+bundle_version := "0.2.0"
 
 allowed_projects := {"AGENTDEV"}
 
@@ -22,8 +22,28 @@ reasons contains "ci_not_successful" if {
 	input.ci_status != "success"
 }
 
+reasons contains "scan_incomplete" if {
+	not input.scan_completed
+}
+
 reasons contains "blocking_security_findings" if {
 	input.blocking_findings > 0
+}
+
+reasons contains "repair_attempts_exceeded" if {
+	input.repair_attempts > input.max_repair_attempts
+}
+
+reasons contains "jira_snapshot_stale" if {
+	not input.jira_snapshot_current
+}
+
+reasons contains "acceptance_not_verified" if {
+	not input.acceptance_verified
+}
+
+reasons contains "pr_not_authorized" if {
+	not input.pr_authorized
 }
 
 reasons contains "plan_not_approved" if {

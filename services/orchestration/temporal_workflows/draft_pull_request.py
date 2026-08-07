@@ -27,6 +27,11 @@ with workflow.unsafe.imports_passed_through():
         persist_execution_state,
         record_audit_event,
     )
+    from services.orchestration.temporal_activities.policy import (
+        EvaluatePromotionRequest,
+        EvaluatePromotionResult,
+        evaluate_promotion,
+    )
     from services.orchestration.temporal_activities.pull_request import (
         CommitPushRequest,
         CommitPushResult,
@@ -54,6 +59,11 @@ with workflow.unsafe.imports_passed_through():
         review_code,
         review_security,
         verify_acceptance,
+    )
+    from services.orchestration.temporal_activities.security import (
+        ScanChangeRequest,
+        ScanChangeResult,
+        scan_change,
     )
     from services.orchestration.temporal_activities.suspension import (
         ClearSuspensionRequest,
@@ -96,6 +106,9 @@ CI_RUNNING = "CI_RUNNING"
 REPAIRING = "REPAIRING"
 REVIEW_PASSED = "review_passed"
 REVIEW_BLOCKED = "review_blocked"
+POLICY_ALLOWED = "policy_allowed"
+POLICY_DENIED = "policy_denied"
+POLICY_EVALUATION = "POLICY_EVALUATION"
 
 _SEQUENCE_STRIDE = 10
 _COMMIT_OFFSET = 2
@@ -136,6 +149,10 @@ class DraftPullRequestInput:
     ci_poll_max_attempts: int = 20
     max_repair_attempts: int = 2
     run_reviews: bool = False
+    run_policy: bool = False
+    jira_project: str = ""
+    plan_approved: bool = False
+    jira_snapshot_current: bool = True
 
 
 @dataclass
@@ -157,6 +174,15 @@ class DraftPullRequestOutput:
     security_verdict: str = ""
     acceptance_verdict: str = ""
     review_attestations: dict[str, str] = field(default_factory=dict)
+    policy_status: str = ""
+    policy_bundle_version: str = ""
+    policy_next_action: str = ""
+    policy_reasons: list[str] = field(default_factory=list)
+    scan_blocking_findings: int = 0
+
+
+def _project_from_issue(issue_key: str) -> str:
+    return issue_key.split("-", 1)[0] if "-" in issue_key else ""
 
 
 def _change_subject(impl: ImplementationOutput, commit_sha: str) -> str:
@@ -307,7 +333,9 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         if params.ci_job and outcome.status == DRAFT_PR_OPEN:
             outcome = await self._ci_and_repair(params, impl, outcome, workflow_id)
             if params.run_reviews and outcome.status == CI_PASSED:
-                return await self._review(params, impl, outcome, workflow_id)
+                outcome = await self._review(params, impl, outcome, workflow_id)
+                if params.run_policy and outcome.status == REVIEW_PASSED:
+                    return await self._policy(params, impl, outcome, workflow_id)
         return outcome
 
     async def _finalize(
@@ -720,6 +748,93 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             security_verdict=security.verdict,
             acceptance_verdict=acceptance.verdict,
             review_attestations=attestations,
+        )
+
+    async def _policy(
+        self,
+        params: DraftPullRequestInput,
+        impl: ImplementationOutput,
+        outcome: DraftPullRequestOutput,
+        workflow_id: str,
+    ) -> DraftPullRequestOutput:
+        retry = RetryPolicy(maximum_attempts=3)
+        short = timedelta(seconds=30)
+        scan_timeout = timedelta(minutes=10)
+        commit_sha = self._commit.commit_sha if self._commit else params.base_sha
+
+        await workflow.execute_activity(
+            persist_execution_state,
+            ExecutionState(
+                execution_id=params.execution_id,
+                task_id=params.task_id,
+                state=POLICY_EVALUATION,
+                workflow_id=workflow_id,
+                repository=params.repo or None,
+                repository_sha=commit_sha or None,
+            ),
+            start_to_close_timeout=short,
+            retry_policy=retry,
+        )
+
+        scan: ScanChangeResult = await workflow.execute_activity(
+            scan_change,
+            ScanChangeRequest(
+                task_id=params.task_id,
+                execution_id=params.execution_id,
+                repo=params.repo,
+                ref=commit_sha,
+                repo_root=impl.workspace_path,
+            ),
+            start_to_close_timeout=scan_timeout,
+            retry_policy=retry,
+        )
+
+        ci_status = "success" if outcome.ci_status == "passed" else (outcome.ci_status or "unknown")
+        decision: EvaluatePromotionResult = await workflow.execute_activity(
+            evaluate_promotion,
+            EvaluatePromotionRequest(
+                task_id=params.task_id,
+                execution_id=params.execution_id,
+                jira_project=params.jira_project or _project_from_issue(params.issue_key),
+                repository=params.repo,
+                ci_status=ci_status,
+                blocking_findings=scan.blocking_count,
+                scan_completed=True,
+                plan_approved=params.plan_approved,
+                repair_attempts=outcome.repair_attempts,
+                max_repair_attempts=params.max_repair_attempts,
+                jira_snapshot_current=params.jira_snapshot_current,
+                acceptance_verified=outcome.acceptance_verdict == "pass",
+                pr_authorized=outcome.pr_number > 0,
+            ),
+            start_to_close_timeout=short,
+            retry_policy=retry,
+        )
+
+        event_type = "POLICY_EVALUATED" if decision.allow else "POLICY_DENIED"
+        await self._audit(
+            AuditEvent(
+                event_id=f"{params.execution_id}:{event_type}",
+                task_id=params.task_id,
+                execution_id=params.execution_id,
+                event_type=event_type,
+                stage="policy",
+                new_state=POLICY_EVALUATION,
+                workflow_id=workflow_id,
+                decision=decision.next_action,
+                reason=",".join(decision.reasons),
+                artifact_hashes={"bundle_version": decision.bundle_version},
+            )
+        )
+
+        return replace(
+            outcome,
+            status=POLICY_ALLOWED if decision.allow else POLICY_DENIED,
+            policy_status="allowed" if decision.allow else "denied",
+            policy_bundle_version=decision.bundle_version,
+            policy_next_action=decision.next_action,
+            policy_reasons=list(decision.reasons),
+            scan_blocking_findings=scan.blocking_count,
         )
 
     async def _review_gate(
