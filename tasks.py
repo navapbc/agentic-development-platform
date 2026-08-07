@@ -191,6 +191,9 @@ def demo_repo_intelligence(c, repo="agentic-demo-service", commit="", focus="Tas
         "live_agent": "Author the change with the OpenHands sandbox agent instead of the stand-in.",
         "litellm_url": "LiteLLM base URL reachable from the sandbox pod (empty uses the default).",
         "via_temporal": "Drive the DraftPullRequestWorkflow on Temporal instead of in-process.",
+        "full_pipeline": "Run CI, reviews, scan, policy, and the approval pause (via-temporal).",
+        "ci_job": "CI job for the full pipeline (empty uses <repo>-ci).",
+        "await_pr_close": "After promotion, park for the PR-closed signal and finish on close.",
     }
 )
 def demo_draft_pr(
@@ -203,6 +206,9 @@ def demo_draft_pr(
     live_agent=False,
     litellm_url="",
     via_temporal=False,
+    full_pipeline=False,
+    ci_job="",
+    await_pr_close=False,
 ):
     """Demo: open a real draft PR on GitHub through the full coordination stack (Act 4)."""
     flags = f"--repo {repo} --task {task}"
@@ -212,7 +218,84 @@ def demo_draft_pr(
     flags += " --live-agent" if live_agent else ""
     flags += f" --litellm-url {litellm_url}" if litellm_url else ""
     flags += " --via-temporal" if via_temporal else ""
+    flags += " --full-pipeline" if full_pipeline else ""
+    flags += f" --ci-job {ci_job}" if ci_job else ""
+    flags += " --await-pr-close" if await_pr_close else ""
     c.run(f"python -m scripts.demo_draft_pr {flags}".strip(), pty=True)
+
+
+@task(
+    help={
+        "workflow_id": "Workflow id parked for approval (printed when the pipeline starts).",
+        "approver": "Approval identity recorded in the audit event.",
+        "reject": "Reject the pull request instead of approving it.",
+        "pr_closed": "Send the PR-close signal for the AWAITING_PR_CLOSE stage.",
+        "merged": "With pr_closed, mark the pull request merged rather than closed unmerged.",
+    }
+)
+def approve_pr(
+    c, workflow_id, approver="release-manager", reject=False, pr_closed=False, merged=False
+):
+    """Release the approval pause on a running draft-PR workflow."""
+    flags = f'--workflow-id {workflow_id} --approver "{approver}"'
+    flags += " --reject" if reject else ""
+    flags += " --pr-closed" if pr_closed else ""
+    flags += " --merged" if merged else ""
+    c.run(f"python -m scripts.approve_pr {flags}".strip(), pty=True)
+
+
+_K8S_LOCAL = "deploy/kubernetes/local"
+_K8S_RENDER = f"kubectl kustomize --load-restrictor LoadRestrictionsNone {_K8S_LOCAL}"
+
+
+@task(
+    help={
+        "image": "Local image tag serving both the gateway and the webhook.",
+        "build": "Build and tag the image from docker/Dockerfile before deploying.",
+    }
+)
+def k8s_deploy(c, image="agentic-dev-platform-local:latest", build=False):
+    """Deploy the sandbox namespace, mcp-gateway, and pr-webhook to the local cluster."""
+    if build:
+        c.run(
+            f"docker build --build-context rebar=../rebar -f docker/Dockerfile -t {image} .",
+            pty=True,
+        )
+    c.run(f"kubectl apply -f {_K8S_LOCAL}/namespaces.yaml", pty=True)
+    c.run(f"{_K8S_RENDER} | kubectl apply -f -", pty=True)
+    c.run(
+        "kubectl rollout status deployment/mcp-gateway -n agentic-dev-platform --timeout=120s",
+        pty=True,
+    )
+    c.run(
+        "kubectl rollout status deployment/pr-webhook -n agentic-dev-platform --timeout=120s",
+        pty=True,
+    )
+
+
+@task
+def k8s_delete(c):
+    """Remove the local mcp-gateway and pr-webhook deployment."""
+    c.run(f"{_K8S_RENDER} | kubectl delete --ignore-not-found -f -", pty=True)
+
+
+@task(
+    help={
+        "repo": "Repository name under GITHUB_OWNER to forward events from.",
+        "url": "Local pr-webhook endpoint that receives the deliveries.",
+    }
+)
+def webhook_setup(c, repo="", url="http://localhost:8140/webhook/pr"):
+    """Forward GitHub pull-request events to the local pr-webhook via gh webhook forward."""
+    repo_flag = f"--repo {repo}" if repo else ""
+    c.run(f"python -m scripts.webhook_forward {repo_flag} --url {url}".strip(), pty=True)
+
+
+@task(help={"repo": "Repository name under GITHUB_OWNER to clean dev hooks from."})
+def webhook_teardown(c, repo=""):
+    """Delete the gh webhook forward dev hooks left on the repository."""
+    repo_flag = f"--repo {repo}" if repo else ""
+    c.run(f"python -m scripts.webhook_forward {repo_flag} --remove".strip(), pty=True)
 
 
 ns = Collection()
@@ -238,5 +321,10 @@ for _t in (
     demo_coordination,
     demo_repo_intelligence,
     demo_draft_pr,
+    approve_pr,
+    k8s_deploy,
+    k8s_delete,
+    webhook_setup,
+    webhook_teardown,
 ):
     ns.add_task(_t)

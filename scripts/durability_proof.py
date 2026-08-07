@@ -7,6 +7,7 @@ import os
 import subprocess
 import time
 import uuid
+from datetime import timedelta
 
 from database.models import SCHEMA
 from sqlalchemy import Engine, create_engine, text
@@ -84,6 +85,7 @@ async def main() -> int:
         ),
         id=workflow_id,
         task_queue=settings.temporal_task_queue,
+        execution_timeout=timedelta(seconds=settings.workflow_execution_timeout_seconds),
     )
 
     print("[proof] waiting for TASK_RECEIVED to persist before the restart...")

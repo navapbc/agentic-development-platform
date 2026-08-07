@@ -48,7 +48,7 @@ Walk the audience through this table on screen, one row at a time. The status co
 | Ticket integration | Custom Jira adapter for Cloud and Data Center | Jira is the single source of truth. We capture a locked snapshot of the issue, re-check it before opening a PR, and post follow-up links that never duplicate. | Live (Act 4): snapshot, re-check, follow-up link that never duplicates, and status changes against the real Jira Cloud ticket. |
 | Source control | GitHub adapter over the REST and git HTTPS APIs | Creates branches, commits, and draft pull requests. The target host is set by configuration, so the same code works against github.com or a company GitHub server without any code changes. | Live (Act 4, real PR) |
 | Coordination service | PostgreSQL-backed safety layer: exactly-once ledger, ordering gate, work locks, file-aware scheduler | The safety layer for running many agents at once. It makes sure every outside action, like a comment or a pull request, happens exactly once, throws out stale or out-of-order steps, stops two agents from grabbing the same piece of work, and only runs work in parallel when it touches different files. | Live (Acts 3 and 4), backed by the durable Temporal workflows in Act 4 |
-| Policy and review | OPA, plus the rebar review kernel | Enforces policy decisions and review gates before a change is allowed to proceed. | Built as components, not wired into the Act 4 pipeline yet |
+| Policy and review | OPA, plus the rebar review kernel | Enforces policy decisions and review gates before a change is allowed to proceed. | Live (Act 5): CI, code and security review, Semgrep and Trivy scans, and an OPA promotion decision run inside the workflow before the pull request is promoted. |
 | Persistence and audit | PostgreSQL | Stores execution state and an append-only audit trail of every state transition and decision. | Live (Act 1) |
 | Cleanup | Temporal scheduled reaper | Closes or deletes expired agent branches and draft PRs so the platform does not leave stray branches and pull requests behind. | Built, not shown in these acts |
 
@@ -196,13 +196,60 @@ inv demo-draft-pr --repo agentic-demo-service --task ADSER-15 --start-status "In
 
 Say over the second run:
 
-> This time, before doing any work, the platform finds the open pull request already tied to this ticket's branch and stops. The guard only prevents duplicate delivery. Whether the change satisfies the ticket is the review and policy gate we are still wiring in.
+> This time, before doing any work, the platform finds the open pull request already tied to this ticket's branch and stops. The guard only prevents duplicate delivery. Whether the change satisfies the ticket is enforced by the review and policy gate we run in the next act.
+
+## Act 5: the full pipeline with CI, review, policy, and approval on Kubernetes
+
+What happens: the same durable workflow now runs every Phase 6 gate before the pull request is promoted. It authors the change in the OpenHands sandbox pod on Kubernetes, runs continuous integration, repairs on a failure and reruns until the build is green, runs code and security review through the rebar kernel, runs Semgrep and Trivy scans, asks OPA for a promotion decision, then pauses for a human approval. An operator releases the pause with a second command. On approval the workflow re-checks the Jira ticket, promotes the draft to a ready pull request, and then parks for the pull-request-closed signal so the merge closes the loop. Every gate runs against a backend with no mock in the path.
+
+The pieces that need Kubernetes run on Kubernetes. The coding agent runs in a sandbox pod in the agent-sandbox namespace. The mcp-gateway and the pr-webhook run as deployments in the agentic-dev-platform namespace on the local cluster.
+
+Prerequisite runbook for this act:
+
+1. Bring the stack up with `inv local-up` so Temporal, Postgres, and the workers are running.
+2. Bring the Bedrock path up with `inv tunnel-start --detach` and confirm it with `inv connectivity-check`.
+3. Deploy the Kubernetes pieces with `inv k8s-deploy --build`. This builds the local image, creates the agent-sandbox and agentic-dev-platform namespaces, and rolls out the mcp-gateway and pr-webhook deployments. Confirm both are ready with `kubectl get pods -n agentic-dev-platform`.
+4. Port-forward the two services for the demo with `kubectl port-forward -n agentic-dev-platform svc/mcp-gateway 8150:80` and `kubectl port-forward -n agentic-dev-platform svc/pr-webhook 8140:80` in separate terminals.
+5. Set the backend credentials the gates need. Jenkins or GitHub Actions for CI, Semgrep and Trivy on PATH for scans, OPA reachable for the policy decision, LiteLLM in front of Bedrock for review and authoring, a GitHub token with contents and pull-request write, and Jira Cloud credentials.
+6. Choose a not-done Jira ticket whose work is not already implemented and name it on the command.
+
+Say before running the command:
+
+> We proved the guard, now we prove the gates. This run carries the ticket through continuous integration, code and security review, security scanning, and a policy decision, and then it stops and waits for a person to approve the promotion. The coding agent runs in a sandbox pod on Kubernetes, and the gateway and webhook it depends on run as deployments on the same cluster.
+
+Command:
+
+```
+inv demo-draft-pr --repo agentic-demo-service --task ADSER-16 --start-status "In Progress" --review-status "In Review" --via-temporal --full-pipeline --await-pr-close --live-agent
+```
+
+Say as the gates run:
+
+> The workflow opened the draft, ran the build, and on a red build it repaired and reran until it went green. Then it ran code and security review, ran the Semgrep and Trivy scans, and asked the policy engine whether the change may be promoted. Each gate printed its verdict as it completed. Now it has paused, and it is waiting for an approval before it promotes anything.
+
+Say while pointing at the printed workflow id:
+
+> The pause is durable. The workflow id is on screen, and the run will wait as long as it needs to. A release manager approves it out of band with a single command.
+
+Command:
+
+```
+inv approve-pr --workflow-id <workflow-id> --approver release-manager
+```
+
+Say as the workflow resumes and promotes:
+
+> On approval it re-checked the ticket one more time, then promoted the draft into a ready pull request. It is now parked for the pull-request-closed signal, so when the pull request merges the workflow records the merge and finishes.
+
+Say while closing the loop:
+
+> Merging the pull request drives the pr-webhook running on the cluster, which sends the close signal to the workflow. For the recording the same signal can be sent with `inv approve-pr --workflow-id <workflow-id> --pr-closed --merged`. Either way the workflow reaches its merged terminal state and the trail is complete.
 
 ## Closing (say this last)
 
 Say after the last act, to wrap up the demo:
 
-> That is the complete loop. A ticket became a reviewable pull request without losing work to a crash, without guessing at the code, without two agents colliding, and with a full trail you can audit. Those are the four properties we set out to prove, durability, grounded context, safe concurrency, and auditable delivery, and everything shown runs on the platform. The next milestone is wiring the review and policy gates into this same flow, so a change must pass policy before the pull request opens.
+> That is the complete loop. A ticket became a merged pull request without losing work to a crash, without guessing at the code, without two agents colliding, and with a full trail you can audit. Every gate ran on its backend with no mock in the path, and the pieces that need Kubernetes ran on Kubernetes. Those are the four properties we set out to prove, durability, grounded context, safe concurrency, and auditable delivery, and the review and policy gates now run inside the same delivery flow before a pull request is promoted.
 
 ## What runs today versus what is a stand-in
 
@@ -213,20 +260,21 @@ Real and running in this demo:
 - Repository intelligence briefing packs, each item labeled by where it came from (Act 2, repo indexed).
 - The coordination safety layer against the real Postgres stack, driven by a locked snapshot of a real Jira ticket and the pinned repository commit, with a live claim race the database arbitrates, work locks, file-aware scheduling, an ordering gate, and an exactly-once ledger (Act 3).
 - A durable Temporal workflow that claims, implements, syncs, commits, and opens a real GitHub draft PR with a ticket linkback, all through the exactly-once safety layer (Act 4).
-- The OpenHands coding agent writing the small, well-defined change in a sandboxed pod under hard limits (Act 4).
+- The OpenHands coding agent writing the small, well-defined change in a sandboxed pod on Kubernetes under hard limits (Acts 4 and 5).
 - Live Jira Cloud snapshot, re-check, follow-up link that never duplicates, and status changes (Act 4).
+- Continuous integration on Jenkins or GitHub Actions with automatic repair and rerun, code and security review through the rebar kernel, Semgrep and Trivy scans, an OPA promotion decision, a durable human approval pause, promotion to a ready pull request, and a pull-request-closed handoff, all inside one workflow (Act 5).
+- The mcp-gateway and pr-webhook running as Kubernetes deployments alongside the sandbox namespace (Act 5).
 - Postgres execution state and the append-only audit trail (Act 1).
 
 Stand-ins in this build:
 
-- The review and policy gates are built and tested as standalone components, but they are not yet wired into the Act 4 delivery flow. Composing them into the pipeline with Temporal approval pauses is Phase 6.
+- The pull-request-closed handoff can be sent by the pr-webhook on the cluster when the pull request merges, and the same signal is available as an operator command for the recording.
 
 ## Future features (planned, not in this demo)
 
 Grounded in the delivery plan:
 
-- AI coding agent hardening: the OpenHands agent already writes the small, well-defined change live in Act 4 under hard limits on cost, tokens, tool calls, and wall-clock time. Remaining work is broader task coverage and reliability (Phase 5).
-- Review and policy gates in the main flow: the rebar review kernel and OPA decisions with Temporal approval pauses before a PR opens (Phase 6).
+- AI coding agent hardening: the OpenHands agent already writes the small, well-defined change live in Acts 4 and 5 under hard limits on cost, tokens, tool calls, and wall-clock time. Remaining work is broader task coverage and reliability (Phase 5).
 - Automated ticket intake: a Jira poller and inbound webhook that start executions with no operator command, duplicate-safe (Phase 11).
 - Per-repository credentials: different owners, tokens, or GitHub hosts per repo from one deployment (Phase 12).
 - Observability and evaluation: Langfuse prompt management, OpenTelemetry tracing across stages, and context-accuracy scoring (Phase 7).
@@ -235,6 +283,7 @@ Grounded in the delivery plan:
 ## Setup for the recording
 
 - Durable path for Act 4: bring the stack up with `inv local-up` so Temporal, Postgres, and the workflow and activity workers are running before `inv demo-draft-pr --via-temporal`.
+- Full pipeline for Act 5: deploy the Kubernetes pieces with `inv k8s-deploy --build`, port-forward the mcp-gateway and pr-webhook services, then run `inv demo-draft-pr --via-temporal --full-pipeline --await-pr-close --live-agent` and release the pause with `inv approve-pr --workflow-id <id>`. Remove the deployment afterward with `inv k8s-delete`.
 - GitHub target for Act 4: set `GITHUB_API_URL=https://api.github.com`, `GITHUB_GIT_BASE_URL=https://github.com`, `GITHUB_OWNER`, and a `GITHUB_TOKEN` with contents and pull-request write. The same adapter targets an enterprise GitHub host by changing those values. Draft PRs are always allowed on public repositories.
 - Multi-repository: the platform operates on every repository in `ALLOWLIST_REPOS`. The demo selects one with `--repo`.
 - Trigger: executions are started by an operator command today. Automated Jira intake is planned (Phase 11). Acknowledge this if asked how a ticket auto-starts a run.

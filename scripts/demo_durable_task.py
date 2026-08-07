@@ -159,6 +159,7 @@ async def main() -> int:
         ),
         id=workflow_id,
         task_queue=settings.temporal_task_queue,
+        execution_timeout=timedelta(seconds=settings.workflow_execution_timeout_seconds),
     )
 
     print("[demo] waiting for the task to be received and saved...")

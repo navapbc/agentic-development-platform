@@ -1,0 +1,85 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: agentic-dev-platform
+
+resources:
+  - ../mcp-gateway.yaml
+  - ../pr-webhook.yaml
+
+images:
+  - name: REGISTRY/agentic-dev-platform/mcp-gateway
+    newName: agentic-dev-platform-local
+    newTag: latest
+  - name: REGISTRY/agentic-dev-platform/pr-webhook
+    newName: agentic-dev-platform-local
+    newTag: latest
+
+generatorOptions:
+  disableNameSuffixHash: true
+
+configMapGenerator:
+  - name: agentic-platform
+    literals:
+      - allowed_repos=agentic-demo-service
+      - repo_intelligence_url=http://host.docker.internal:8130
+      - jira_acceptance_field=customfield_10040
+      - temporal_host=host.docker.internal:7233
+      - temporal_namespace=default
+
+secretGenerator:
+  - name: agentic-platform
+    type: Opaque
+    literals:
+      - database_url=postgresql://platform:platform@host.docker.internal:5432/platform
+      - github_webhook_secret=local-demo-secret
+
+patches:
+  - target:
+      kind: Ingress
+      name: mcp-gateway
+    patch: |
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: mcp-gateway
+      $patch: delete
+  - target:
+      kind: Ingress
+      name: pr-webhook
+    patch: |
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: pr-webhook
+      $patch: delete
+  - target:
+      kind: Deployment
+      name: mcp-gateway
+    patch: |
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: mcp-gateway
+      spec:
+        replicas: 1
+        template:
+          spec:
+            containers:
+              - name: mcp-gateway
+                imagePullPolicy: IfNotPresent
+  - target:
+      kind: Deployment
+      name: pr-webhook
+    patch: |
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: pr-webhook
+      spec:
+        replicas: 1
+        template:
+          spec:
+            containers:
+              - name: pr-webhook
+                imagePullPolicy: IfNotPresent

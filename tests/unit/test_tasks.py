@@ -27,6 +27,11 @@ EXPECTED_TASKS = {
     "demo-coordination",
     "demo-repo-intelligence",
     "demo-draft-pr",
+    "approve-pr",
+    "k8s-deploy",
+    "k8s-delete",
+    "webhook-setup",
+    "webhook-teardown",
 }
 
 

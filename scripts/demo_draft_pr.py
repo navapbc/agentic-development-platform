@@ -8,6 +8,7 @@ import contextlib
 import os
 import subprocess
 import uuid
+from datetime import timedelta
 from typing import Any
 
 from adapters.interfaces.git_host import agent_branch_name
@@ -199,9 +200,8 @@ async def _track_phases(handle: Any) -> None:
     try:
         async for event in handle.fetch_history_events(wait_new_event=True):
             if event.event_type == EventType.EVENT_TYPE_CHILD_WORKFLOW_EXECUTION_STARTED:
-                child_id = (
-                    event.child_workflow_execution_started_event_attributes.workflow_execution.workflow_id
-                )
+                started = event.child_workflow_execution_started_event_attributes
+                child_id = started.workflow_execution.workflow_id
                 if child_id.endswith("-impl"):
                     announce("impl")
                 elif child_id.endswith("-sync"):
@@ -209,9 +209,8 @@ async def _track_phases(handle: Any) -> None:
                 elif child_id.endswith("-pr"):
                     announce("pr")
             elif event.event_type == EventType.EVENT_TYPE_CHILD_WORKFLOW_EXECUTION_COMPLETED:
-                child_id = (
-                    event.child_workflow_execution_completed_event_attributes.workflow_execution.workflow_id
-                )
+                completed = event.child_workflow_execution_completed_event_attributes
+                child_id = completed.workflow_execution.workflow_id
                 if child_id.endswith("-pr"):
                     announce("linkback")
             elif event.event_type == EventType.EVENT_TYPE_ACTIVITY_TASK_SCHEDULED:
@@ -233,10 +232,15 @@ async def _run_via_temporal(
     task_id: str,
     summary: str,
     raw_issue: dict,
+    full_pipeline: bool = False,
+    ci_job: str = "",
+    await_pr_close: bool = False,
 ) -> int:
     from services.orchestration.temporal_workflows.draft_pull_request import (
         DRAFT_PR_OPEN,
         EXISTING_PR_REUSED,
+        PR_MERGED,
+        PR_PROMOTED,
         DraftPullRequestInput,
         DraftPullRequestWorkflow,
     )
@@ -251,10 +255,19 @@ async def _run_via_temporal(
     print(f"[demo] connecting to Temporal at {address}")
     client = await Client.connect(address, namespace=settings.temporal_namespace)
     print(f"[demo] starting {workflow_id} on task queue {settings.temporal_task_queue}")
-    print(
-        "[demo] the platform claims the work, writes the change, syncs the branch, commits, "
-        "opens the pull request, and links it back to Jira"
-    )
+    if full_pipeline:
+        print(
+            "[demo] full pipeline: the platform claims the work, writes the change in a "
+            "sandbox pod, syncs, commits, opens the pull request, runs CI with the repair "
+            "loop, runs the review gates, scans and evaluates policy, parks for approval, "
+            "and promotes the pull request"
+        )
+        print(f"[demo] approve the pause with: inv approve-pr --workflow-id {workflow_id}")
+    else:
+        print(
+            "[demo] the platform claims the work, writes the change, syncs the branch, commits, "
+            "opens the pull request, and links it back to Jira"
+        )
     handle = await client.start_workflow(
         DraftPullRequestWorkflow.run,
         DraftPullRequestInput(
@@ -270,9 +283,17 @@ async def _run_via_temporal(
             stored_issue=stored_issue,
             build_id=settings.agent_build_id,
             parked_status=settings.jira_parked_status,
+            ci_job=ci_job,
+            run_reviews=full_pipeline,
+            run_policy=full_pipeline,
+            run_approval=full_pipeline,
+            await_pr_close=await_pr_close,
+            jira_project=settings.jira_project or task_id.split("-")[0],
+            plan_approved=full_pipeline,
         ),
         id=workflow_id,
         task_queue=settings.temporal_task_queue,
+        execution_timeout=timedelta(seconds=settings.draft_pr_execution_timeout_seconds),
     )
     tracker = asyncio.create_task(_track_phases(handle))
     try:
@@ -283,8 +304,9 @@ async def _run_via_temporal(
             await tracker
 
     print(f"\n[demo] workflow status: {result.status}")
-    if result.status not in (DRAFT_PR_OPEN, EXISTING_PR_REUSED):
-        print(f"[demo] stopped before the PR at terminal reason: {result.terminal_reason}")
+    succeeded = {DRAFT_PR_OPEN, EXISTING_PR_REUSED, PR_PROMOTED, PR_MERGED}
+    if result.status not in succeeded:
+        print(f"[demo] stopped at terminal reason: {result.terminal_reason}")
         return 1
     if result.status == EXISTING_PR_REUSED:
         print(
@@ -292,9 +314,15 @@ async def _run_via_temporal(
             "instead of creating a duplicate"
         )
     print(f"  branch                {result.branch}")
-    print(f"  draft pr number       {result.pr_number}")
-    print(f"  draft pr url          {result.pr_url}")
+    print(f"  pr number             {result.pr_number}")
+    print(f"  pr url                {result.pr_url}")
     print(f"  jira linkback         {result.linkback}")
+    if result.status in (PR_PROMOTED, PR_MERGED):
+        print(f"  ci status             {result.ci_status}")
+        print(f"  review status         {result.review_status}")
+        print(f"  policy status         {result.policy_status}")
+        print(f"  approval              {result.approval_status} by {result.approver}")
+        print(f"  promoted              {result.promoted}")
     print("\nDRAFT PR DEMO: PASS")
     return 0
 
@@ -313,6 +341,21 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--live-agent", action="store_true")
     parser.add_argument("--via-temporal", action="store_true")
     parser.add_argument("--litellm-url", default=os.environ.get("DEMO_LITELLM_URL", ""))
+    parser.add_argument(
+        "--full-pipeline",
+        action="store_true",
+        help="Run CI, reviews, scan, policy, and the approval pause on Temporal (via-temporal).",
+    )
+    parser.add_argument(
+        "--ci-job",
+        default=os.environ.get("DEMO_CI_JOB", ""),
+        help="CI job for the full pipeline. Defaults to <repo>-ci.",
+    )
+    parser.add_argument(
+        "--await-pr-close",
+        action="store_true",
+        help="After promotion, park for the PR-closed webhook and finish on close or merge.",
+    )
     return parser.parse_args()
 
 
@@ -381,9 +424,7 @@ async def main() -> int:
             print("[demo] pick a real, not-done ticket with --task, then retry.")
             return 2
         if existing_pr is not None:
-            print(
-                f"[demo] {task_id} already has an open pull request, leaving Jira status as is"
-            )
+            print(f"[demo] {task_id} already has an open pull request, leaving Jira status as is")
         elif args.start_status and detail.strip().lower() != args.start_status.strip().lower():
             adapter.transition(task_id, args.start_status)
             print(f"[demo] jira transition to {args.start_status}")
@@ -414,6 +455,9 @@ async def main() -> int:
             task_id=task_id,
             summary=summary,
             raw_issue=dict(raw_issue),
+            full_pipeline=args.full_pipeline,
+            ci_job=args.ci_job or (f"{repo}-ci" if args.full_pipeline else ""),
+            await_pr_close=args.await_pr_close,
         )
         if rc == 0 and _jira_configured(settings) and args.review_status and existing_pr is None:
             reader.transition(task_id, args.review_status)

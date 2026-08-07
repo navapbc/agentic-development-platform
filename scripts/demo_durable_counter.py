@@ -43,6 +43,7 @@ async def main() -> int:
         CountingInput(target=args.target),
         id=workflow_id,
         task_queue=settings.temporal_task_queue,
+        execution_timeout=timedelta(seconds=settings.workflow_execution_timeout_seconds),
     )
     print(f"[demo] started {workflow_id}; counting to {args.target}, one activity per number")
     print(

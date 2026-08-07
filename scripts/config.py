@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     temporal_task_queue: str = "agent-platform"
     agent_build_id: str = "dev"
     worker_versioning_enabled: bool = False
+    workflow_execution_timeout_seconds: float = 3600.0
+    draft_pr_execution_timeout_seconds: float = 86400.0
 
     litellm_base_url: str = "http://localhost:4000"
     litellm_master_key: str = "change-me-locally"
