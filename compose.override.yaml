@@ -1,6 +1,6 @@
 # Local developer overrides applied automatically by Compose on top of compose.yaml.
 services:
-  # Used only by the jumphost and ssh-bastion providers; direct and public need no sidecar.
+  # Used only by the jumphost and ssh-bastion providers. The direct provider needs no sidecar.
   bedrock-tunnel:
     image: alpine/socat:1.8.0.0
     command: TCP-LISTEN:443,fork,reuseaddr TCP:host.docker.internal:${BEDROCK_TUNNEL_LOCAL_PORT:-8443}

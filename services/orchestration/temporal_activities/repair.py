@@ -42,9 +42,11 @@ class ApplyCIRepairResult:
 
 @activity.defn
 async def analyze_ci_failure(req: AnalyzeCIFailureRequest) -> AnalyzeCIFailureResult:
-    from services.orchestration.langgraph.ci_repair import ACTIONABLE, plan_repair
+    from scripts.config import get_settings
 
-    plan = plan_repair(req.failure_summary)
+    from services.orchestration.langgraph.ci_repair import ACTIONABLE, analyze_failure
+
+    plan = analyze_failure(req.failure_summary, use_model=get_settings().repair_analysis_use_llm)
     return AnalyzeCIFailureResult(
         actionable=plan.status == ACTIONABLE,
         category=plan.category,

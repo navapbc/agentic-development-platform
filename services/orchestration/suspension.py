@@ -21,6 +21,7 @@ class SuspendReason(str, Enum):
     AWAITING_BUDGET = "awaiting_budget"
     AWAITING_DEPENDENCY = "awaiting_dependency"
     AWAITING_PR_CLOSE = "awaiting_pr_close"
+    AWAITING_HUMAN = "awaiting_human"
 
 
 class ResumeOn(str, Enum):
@@ -39,6 +40,7 @@ _DEFAULT_RESUME_ON = {
     SuspendReason.AWAITING_BUDGET: ResumeOn.BUDGET_RAISED,
     SuspendReason.AWAITING_DEPENDENCY: ResumeOn.DEPENDENCY_READY,
     SuspendReason.AWAITING_PR_CLOSE: ResumeOn.PR_CLOSED,
+    SuspendReason.AWAITING_HUMAN: ResumeOn.HUMAN_APPROVAL,
 }
 
 

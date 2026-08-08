@@ -338,8 +338,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--task", default=os.environ.get("DEMO_TASK", "AGENTDEV-1"))
     parser.add_argument("--start-status", default=os.environ.get("DEMO_START_STATUS", ""))
     parser.add_argument("--review-status", default=os.environ.get("DEMO_REVIEW_STATUS", ""))
-    parser.add_argument("--live-agent", action="store_true")
-    parser.add_argument("--via-temporal", action="store_true")
+    parser.add_argument("--live-agent", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--via-temporal", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--litellm-url", default=os.environ.get("DEMO_LITELLM_URL", ""))
     parser.add_argument(
         "--full-pipeline",

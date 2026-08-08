@@ -117,3 +117,65 @@ def plan_repair(failure_summary: str) -> RepairPlan:
         category=final["category"],
         instruction=final["instruction"],
     )
+
+
+_MAX_SUMMARY_CHARS = 8000
+
+_MODEL_SYSTEM_PROMPT = (
+    "You are a CI repair planner. Given a failing CI job log, produce a single concrete "
+    "instruction for a coding agent to fix the failure with the smallest change. Never weaken, "
+    "skip, or delete a test to hide the failure. Respond with the fix instruction only."
+)
+
+
+def _repair_llm_config(settings=None):
+    from rebar.llm.config import LLMConfig
+    from scripts.config import get_settings
+
+    settings = settings or get_settings()
+    return LLMConfig(
+        runner="pydantic_ai",
+        model="repair-model",
+        model_provider=settings.rebar_llm_model_provider,
+        base_url=settings.rebar_llm_base_url,
+        api_key=settings.rebar_llm_api_key,
+        max_tokens=settings.rebar_llm_max_tokens,
+    )
+
+
+def _model_instruction(failure_summary: str, category: str, *, runner=None, settings=None) -> str:
+    from rebar.llm.runner import RunRequest, get_runner
+
+    cfg = _repair_llm_config(settings)
+    run = runner or get_runner(cfg)
+    result = run.run(
+        RunRequest(
+            system_prompt=_MODEL_SYSTEM_PROMPT,
+            instructions=(
+                f"Failure category: {category}.\n"
+                f"Failing job log:\n{failure_summary[:_MAX_SUMMARY_CHARS]}"
+            ),
+            config=cfg,
+            reviewers=[],
+        )
+    )
+    return str(result.get("summary") or "").strip()
+
+
+def analyze_failure(
+    failure_summary: str, *, use_model: bool, runner=None, settings=None
+) -> RepairPlan:
+    base = plan_repair(failure_summary)
+    if base.status != ACTIONABLE or not use_model:
+        return base
+    try:
+        instruction = _model_instruction(
+            failure_summary, base.category, runner=runner, settings=settings
+        )
+    except Exception:  # noqa: BLE001
+        return base
+    return RepairPlan(
+        status=ACTIONABLE,
+        category=base.category,
+        instruction=instruction or base.instruction,
+    )

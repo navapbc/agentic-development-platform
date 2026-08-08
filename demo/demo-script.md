@@ -169,7 +169,7 @@ Say before running the command:
 Command:
 
 ```
-inv demo-draft-pr --repo agentic-demo-service --task ADSER-15 --start-status "In Progress" --review-status "In Review" --via-temporal
+inv demo-draft-pr --repo agentic-demo-service --task ADSER-15 --start-status "In Progress" --review-status "In Review"
 ```
 
 Say as the steps complete:
@@ -191,7 +191,7 @@ Say before running the exact same command a second time:
 Command:
 
 ```
-inv demo-draft-pr --repo agentic-demo-service --task ADSER-15 --start-status "In Progress" --review-status "In Review" --via-temporal
+inv demo-draft-pr --repo agentic-demo-service --task ADSER-15 --start-status "In Progress" --review-status "In Review"
 ```
 
 Say over the second run:
@@ -220,7 +220,7 @@ Say before running the command:
 Command:
 
 ```
-inv demo-draft-pr --repo agentic-demo-service --task ADSER-16 --start-status "In Progress" --review-status "In Review" --via-temporal --full-pipeline --await-pr-close --live-agent
+inv demo-draft-pr --repo agentic-demo-service --task ADSER-16 --start-status "In Progress" --review-status "In Review" --full-pipeline --await-pr-close
 ```
 
 Say as the gates run:
@@ -282,8 +282,8 @@ Grounded in the delivery plan:
 
 ## Setup for the recording
 
-- Durable path for Act 4: bring the stack up with `inv local-up` so Temporal, Postgres, and the workflow and activity workers are running before `inv demo-draft-pr --via-temporal`.
-- Full pipeline for Act 5: deploy the Kubernetes pieces with `inv k8s-deploy --build`, port-forward the mcp-gateway and pr-webhook services, then run `inv demo-draft-pr --via-temporal --full-pipeline --await-pr-close --live-agent` and release the pause with `inv approve-pr --workflow-id <id>`. Remove the deployment afterward with `inv k8s-delete`.
+- Durable path for Act 4: bring the stack up with `inv local-up` so Temporal, Postgres, and the workflow and activity workers are running before `inv demo-draft-pr`. The demo drives Temporal and the OpenHands agent by default. Add `--in-process` and `--stub-agent` only to exercise the local stand-in paths.
+- Full pipeline for Act 5: deploy the Kubernetes pieces with `inv k8s-deploy --build`, port-forward the mcp-gateway and pr-webhook services, then run `inv demo-draft-pr --full-pipeline --await-pr-close` and release the pause with `inv approve-pr --workflow-id <id>`. Remove the deployment afterward with `inv k8s-delete`.
 - GitHub target for Act 4: set `GITHUB_API_URL=https://api.github.com`, `GITHUB_GIT_BASE_URL=https://github.com`, `GITHUB_OWNER`, and a `GITHUB_TOKEN` with contents and pull-request write. The same adapter targets an enterprise GitHub host by changing those values. Draft PRs are always allowed on public repositories.
 - Multi-repository: the platform operates on every repository in `ALLOWLIST_REPOS`. The demo selects one with `--repo`.
 - Trigger: executions are started by an operator command today. Automated Jira intake is planned (Phase 11). Acknowledge this if asked how a ticket auto-starts a run.

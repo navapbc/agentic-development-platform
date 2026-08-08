@@ -3,8 +3,8 @@
 Platform code depends only on a reachability contract: a network path to the
 bedrock-runtime endpoint, an IAM principal with ``bedrock:InvokeModel``, and an
 injected endpoint URL plus region and credential chain. Each provider satisfies that
-contract with a different network path (SSM jump-host, SSH bastion, in-VPC direct, or
-public endpoint). No single provider is baked into the platform code paths.
+contract with a different network path (SSM jump-host, SSH bastion, or in-VPC direct).
+No single provider is baked into the platform code paths.
 """
 
 from __future__ import annotations
@@ -345,30 +345,12 @@ class DirectConnectivity:
         return _tls_check(settings.bedrock_runtime_host, settings.bedrock_runtime_host, 443)
 
 
-class PublicConnectivity:
-    """Public bedrock-runtime endpoint (synthetic-data dev only, off by default)."""
-
-    key = "public"
-
-    def summary(self, settings: Settings) -> str:
-        return f"public endpoint {settings.bedrock_runtime_host}:443"
-
-    def start(self, settings: Settings, *, detach: bool = False) -> int:
-        print("[tunnel] public provider: no tunnel; reaching the public Bedrock endpoint.")
-        print(f"[tunnel]   target: {self.summary(settings)}")
-        return 0
-
-    def verify(self, settings: Settings) -> tuple[bool, str]:
-        return _tls_check(settings.bedrock_runtime_host, settings.bedrock_runtime_host, 443)
-
-
 _PROVIDERS: dict[str, BedrockConnectivity] = {
     p.key: p
     for p in (
         JumphostConnectivity(),
         SshBastionConnectivity(),
         DirectConnectivity(),
-        PublicConnectivity(),
     )
 }
 
@@ -379,9 +361,4 @@ def get_provider(settings: Settings) -> BedrockConnectivity:
     if provider is None:
         known = ", ".join(sorted(_PROVIDERS))
         raise ValueError(f"unknown bedrock_connectivity_provider {key!r}; known: {known}")
-    if key == "public" and not settings.allow_public_bedrock_endpoint:
-        raise ValueError(
-            "public bedrock provider requires allow_public_bedrock_endpoint=true "
-            "(synthetic-data dev only, explicit sign-off)"
-        )
     return provider

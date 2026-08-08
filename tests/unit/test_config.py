@@ -62,10 +62,6 @@ def test_default_connectivity_provider_is_jumphost():
     assert Settings().bedrock_connectivity_provider == "jumphost"
 
 
-def test_public_bedrock_endpoint_is_disabled_by_default():
-    assert Settings().allow_public_bedrock_endpoint is False
-
-
 def test_code_defaults_carry_no_project_specific_jumphost(monkeypatch):
     monkeypatch.delenv("JUMPHOST_NAME", raising=False)
     monkeypatch.delenv("JUMPHOST_ENV", raising=False)

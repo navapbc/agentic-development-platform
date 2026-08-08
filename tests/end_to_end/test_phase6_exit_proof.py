@@ -3,8 +3,8 @@
 This composes every Phase 6 stage into one workflow execution on the Temporal test
 environment, the primary Jenkins route, and adds a provider-parity check that drives
 the same CIHost contract against the fake GitHub Actions fixture. The committed gate is
-hermetic. The live no-mocks path is exercised by `inv demo-draft-pr --full-pipeline
---via-temporal` and the env-gated backend smokes.
+hermetic. The live no-mocks path is exercised by `inv demo-draft-pr --full-pipeline`
+and the env-gated backend smokes.
 """
 
 from __future__ import annotations

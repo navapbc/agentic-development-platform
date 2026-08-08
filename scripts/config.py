@@ -33,6 +33,13 @@ class Settings(BaseSettings):
     rebar_llm_model_provider: str = "openai"
     rebar_llm_max_tokens: int = 8192
     review_attestation_secret: str = "change-me-locally"
+    repair_analysis_use_llm: bool = True
+
+    slack_webhook_url: str = ""
+    alert_email_from: str = ""
+    alert_email_to: str = ""
+    smtp_host: str = ""
+    smtp_port: int = 587
 
     aws_profile: str = "mpse-legacy"
     aws_region: str = "us-east-1"
@@ -41,7 +48,6 @@ class Settings(BaseSettings):
     bedrock_runtime_host: str = "bedrock-runtime.us-east-1.amazonaws.com"
     bedrock_endpoint_url: str = ""
     bedrock_connectivity_provider: str = "jumphost"
-    allow_public_bedrock_endpoint: bool = False
 
     jumphost_name: str = ""
     jumphost_env: str = ""

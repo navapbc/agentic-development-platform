@@ -26,6 +26,10 @@ with workflow.unsafe.imports_passed_through():
         read_ci_log,
         trigger_ci,
     )
+    from services.orchestration.temporal_activities.notify import (
+        AlertHumanInterventionRequest,
+        alert_human_intervention,
+    )
     from services.orchestration.temporal_activities.persistence import (
         AuditEvent,
         ExecutionState,
@@ -124,6 +128,8 @@ PROMOTION_CANCELLED = "promotion_cancelled"
 AWAITING_PR_APPROVAL = "AWAITING_PR_APPROVAL"
 PR_CREATED = "PR_CREATED"
 AWAITING_PR_CLOSE = "AWAITING_PR_CLOSE"
+AWAITING_HUMAN = "AWAITING_HUMAN"
+HUMAN_ABANDONED = "human_abandoned"
 CANCELLED = "CANCELLED"
 COMPLETED = "COMPLETED"
 PR_MERGED = "pr_merged"
@@ -168,7 +174,7 @@ class DraftPullRequestInput:
     ci_job: str = ""
     ci_poll_interval_seconds: float = 60.0
     ci_poll_max_attempts: int = 20
-    max_repair_attempts: int = 2
+    max_repair_attempts: int = 5
     run_reviews: bool = False
     run_policy: bool = False
     run_approval: bool = False
@@ -220,6 +226,12 @@ class _PrClosed:
     merged: bool
 
 
+@dataclass(frozen=True)
+class _RepairDecision:
+    retry: bool
+    actor: str = ""
+
+
 def _project_from_issue(issue_key: str) -> str:
     return issue_key.split("-", 1)[0] if "-" in issue_key else ""
 
@@ -238,6 +250,8 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         self._pr: PullRequestOutput | None = None
         self._pr_approval: _PrApproval | None = None
         self._pr_closed: _PrClosed | None = None
+        self._repair_decision: _RepairDecision | None = None
+        self._max_attempt_used: int = 0
 
     @workflow.signal(name="submit_pr_approval")
     def submit_pr_approval(self, approved: bool, approver: str = "") -> None:
@@ -249,6 +263,12 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
     def submit_pr_closed(self, merged: bool) -> None:
         self._pr_closed = _PrClosed(merged=merged)
         self._resume_trigger = ResumeOn.PR_CLOSED.value
+        self._resume_requested = True
+
+    @workflow.signal(name="submit_repair_decision")
+    def submit_repair_decision(self, retry: bool, actor: str = "") -> None:
+        self._repair_decision = _RepairDecision(retry=retry, actor=actor)
+        self._resume_trigger = ResumeOn.HUMAN_APPROVAL.value
         self._resume_requested = True
 
     @workflow.run
@@ -385,7 +405,16 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
 
         if params.ci_job and outcome.status == DRAFT_PR_OPEN:
             outcome = await self._ci_and_repair(params, impl, outcome, workflow_id)
-            if params.run_reviews and outcome.status == CI_PASSED:
+            while outcome.status == CI_FAILED:
+                await self._alert_human_intervention(params, outcome, workflow_id)
+                decision = await self._await_repair_decision(params, outcome, workflow_id)
+                if not decision.retry:
+                    outcome = replace(outcome, terminal_reason=HUMAN_ABANDONED)
+                    break
+                outcome = await self._ci_and_repair(
+                    params, impl, outcome, workflow_id, base=self._max_attempt_used + 1
+                )
+            if outcome.status == CI_PASSED and params.run_reviews:
                 outcome = await self._review(params, impl, outcome, workflow_id)
                 if params.run_policy and outcome.status == REVIEW_PASSED:
                     outcome = await self._policy(params, impl, outcome, workflow_id)
@@ -484,10 +513,12 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         impl: ImplementationOutput,
         outcome: DraftPullRequestOutput,
         workflow_id: str,
+        base: int = 0,
     ) -> DraftPullRequestOutput:
-        result = await self._run_ci(params, impl, outcome, workflow_id, attempt=0)
-        repairs = 0
-        while result.status == CI_FAILED and repairs < params.max_repair_attempts:
+        result = await self._run_ci(params, impl, outcome, workflow_id, attempt=base)
+        repairs = base
+        limit = base + params.max_repair_attempts
+        while result.status == CI_FAILED and repairs < limit:
             attempt = repairs + 1
             applied = await self._repair(params, impl, result, workflow_id, attempt)
             if not applied:
@@ -495,10 +526,11 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             repairs = attempt
             result = await self._run_ci(params, impl, result, workflow_id, attempt=repairs)
 
+        self._max_attempt_used = max(self._max_attempt_used, repairs)
         if result.status == CI_FAILED:
             await self._audit(
                 AuditEvent(
-                    event_id=f"{params.execution_id}:REPAIR_EXHAUSTED",
+                    event_id=f"{params.execution_id}:REPAIR_EXHAUSTED:{repairs}",
                     task_id=params.task_id,
                     execution_id=params.execution_id,
                     event_type="REPAIR_EXHAUSTED",
@@ -509,6 +541,106 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 )
             )
         return replace(result, repair_attempts=repairs)
+
+    async def _alert_human_intervention(
+        self,
+        params: DraftPullRequestInput,
+        outcome: DraftPullRequestOutput,
+        workflow_id: str,
+    ) -> None:
+        retry = RetryPolicy(maximum_attempts=3)
+        short = timedelta(seconds=30)
+        failure_summary = ""
+        if params.ci_job and outcome.ci_build_number:
+            log: ReadCILogResult = await workflow.execute_activity(
+                read_ci_log,
+                ReadCILogRequest(
+                    repo=params.repo,
+                    job=params.ci_job,
+                    build_number=outcome.ci_build_number,
+                ),
+                start_to_close_timeout=short,
+                retry_policy=retry,
+            )
+            failure_summary = log.failure_summary
+        await workflow.execute_activity(
+            alert_human_intervention,
+            AlertHumanInterventionRequest(
+                task_id=params.task_id,
+                execution_id=params.execution_id,
+                workflow_id=workflow_id,
+                repo=params.repo,
+                issue_key=params.issue_key,
+                attempts=outcome.repair_attempts,
+                ci_build_id=outcome.ci_build_id,
+                failure_summary=failure_summary,
+            ),
+            start_to_close_timeout=short,
+            retry_policy=retry,
+        )
+
+    async def _await_repair_decision(
+        self,
+        params: DraftPullRequestInput,
+        outcome: DraftPullRequestOutput,
+        workflow_id: str,
+    ) -> _RepairDecision:
+        retry = RetryPolicy(maximum_attempts=3)
+        short = timedelta(seconds=30)
+        commit_sha = self._commit.commit_sha if self._commit else params.base_sha
+        attempts = outcome.repair_attempts
+        await workflow.execute_activity(
+            persist_execution_state,
+            ExecutionState(
+                execution_id=params.execution_id,
+                task_id=params.task_id,
+                state=AWAITING_HUMAN,
+                workflow_id=workflow_id,
+                repository=params.repo or None,
+                repository_sha=commit_sha or None,
+            ),
+            start_to_close_timeout=short,
+            retry_policy=retry,
+        )
+        requested_id = f"{params.execution_id}:HUMAN_INTERVENTION_REQUESTED:{attempts}"
+        await self._audit(
+            AuditEvent(
+                event_id=requested_id,
+                task_id=params.task_id,
+                execution_id=params.execution_id,
+                event_type="HUMAN_INTERVENTION_REQUESTED",
+                stage="repair",
+                new_state=AWAITING_HUMAN,
+                workflow_id=workflow_id,
+                reason=str(attempts),
+            )
+        )
+        self._repair_decision = None
+        await self.await_resume(
+            Suspension(
+                reason=SuspendReason.AWAITING_HUMAN,
+                resume_on=ResumeOn.HUMAN_APPROVAL,
+                stage="repair",
+                parked_build_id=outcome.ci_build_id,
+            )
+        )
+        decision = self._repair_decision or _RepairDecision(retry=False)
+        self._repair_decision = None
+        decided_id = f"{params.execution_id}:HUMAN_INTERVENTION_DECISION:{attempts}"
+        await self._audit(
+            AuditEvent(
+                event_id=decided_id,
+                task_id=params.task_id,
+                execution_id=params.execution_id,
+                event_type="HUMAN_INTERVENTION_DECISION",
+                stage="repair",
+                new_state=AWAITING_HUMAN,
+                workflow_id=workflow_id,
+                decision="retry" if decision.retry else "abandon",
+                reason=decision.actor,
+            )
+        )
+        return decision
 
     async def _repair(
         self,
@@ -903,7 +1035,9 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         short = timedelta(seconds=30)
         commit_sha = self._commit.commit_sha if self._commit else params.base_sha
         sequence_base = impl.claim_version * _SEQUENCE_STRIDE
-        promotion_base = _CI_TRIGGER_OFFSET + _REPAIR_STRIDE * params.max_repair_attempts
+        promotion_base = _CI_TRIGGER_OFFSET + _REPAIR_STRIDE * max(
+            params.max_repair_attempts, self._max_attempt_used
+        )
 
         async def persist(state: str) -> None:
             await workflow.execute_activity(

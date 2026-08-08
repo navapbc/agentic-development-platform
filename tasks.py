@@ -188,10 +188,10 @@ def demo_repo_intelligence(c, repo="agentic-demo-service", commit="", focus="Tas
         "task": "Jira-style task id used in the PR title and linkback.",
         "start_status": "Optional Jira status to transition to before work starts.",
         "review_status": "Optional Jira status to transition to after the PR opens.",
-        "live_agent": "Author the change with the OpenHands sandbox agent instead of the stand-in.",
+        "stub_agent": "Author the change with the stand-in step instead of the sandbox agent.",
         "litellm_url": "LiteLLM base URL reachable from the sandbox pod (empty uses the default).",
-        "via_temporal": "Drive the DraftPullRequestWorkflow on Temporal instead of in-process.",
-        "full_pipeline": "Run CI, reviews, scan, policy, and the approval pause (via-temporal).",
+        "in_process": "Drive the demo in-process instead of the workflow on Temporal.",
+        "full_pipeline": "Run CI, reviews, scan, policy, and the approval pause on Temporal.",
         "ci_job": "CI job for the full pipeline (empty uses <repo>-ci).",
         "await_pr_close": "After promotion, park for the PR-closed signal and finish on close.",
     }
@@ -203,9 +203,9 @@ def demo_draft_pr(
     task="AGENTDEV-1",
     start_status="",
     review_status="",
-    live_agent=False,
+    stub_agent=False,
     litellm_url="",
-    via_temporal=False,
+    in_process=False,
     full_pipeline=False,
     ci_job="",
     await_pr_close=False,
@@ -215,9 +215,9 @@ def demo_draft_pr(
     flags += f" --base {base}" if base else ""
     flags += f' --start-status "{start_status}"' if start_status else ""
     flags += f' --review-status "{review_status}"' if review_status else ""
-    flags += " --live-agent" if live_agent else ""
+    flags += " --no-live-agent" if stub_agent else ""
     flags += f" --litellm-url {litellm_url}" if litellm_url else ""
-    flags += " --via-temporal" if via_temporal else ""
+    flags += " --no-via-temporal" if in_process else ""
     flags += " --full-pipeline" if full_pipeline else ""
     flags += f" --ci-job {ci_job}" if ci_job else ""
     flags += " --await-pr-close" if await_pr_close else ""

@@ -77,16 +77,23 @@ Two binaries live under `vendor/bin` and are provisioned outside the Python inst
 
 ## Bedrock connectivity
 
-`inv tunnel-start` and `inv connectivity-check` dispatch to the provider named by `BEDROCK_CONNECTIVITY_PROVIDER`. Every provider satisfies the same reachability contract, so the platform code runs unchanged when you swap providers. Inference stays inside the compliance boundary by default, and the public provider is refused unless you set `ALLOW_PUBLIC_BEDROCK_ENDPOINT=true`.
+`inv tunnel-start` and `inv connectivity-check` dispatch to the provider named by `BEDROCK_CONNECTIVITY_PROVIDER`. Every provider satisfies the same reachability contract, so the platform code runs unchanged when you swap providers. Every path terminates at a private endpoint, so inference stays inside the compliance boundary. There is no public-endpoint provider.
 
 | Provider | Path | Required config |
 | --- | --- | --- |
 | `jumphost` (default) | SSM port-forward through an on-demand jump-host | `JUMPHOST_NAME`, `JUMPHOST_ENV`, `JUMPHOST_CONNECT_SCRIPT` |
 | `ssh-bastion` | SSH local forward through a bastion | `SSH_BASTION_TARGET` |
 | `direct` | No tunnel. The caller originates inside the VPC | `BEDROCK_ENDPOINT_URL` optional |
-| `public` | Public Bedrock endpoint, synthetic-data dev only | `ALLOW_PUBLIC_BEDROCK_ENDPOINT=true` |
 
 `BEDROCK_ENDPOINT_URL` is the injected endpoint used by boto3 and the Bedrock model client. An empty value uses the default regional resolver. A project with no interface endpoint can apply the optional `infra/terraform/bedrock-vpce` module to provision one.
+
+### Reaching the private endpoint
+
+The `bedrock-vpce` module provisions an interface endpoint that admits 443 only from the in-VPC subnet CIDRs you pass, with private DNS on. That means `bedrock-runtime.<region>.amazonaws.com` resolves to the endpoint's private IPs for any caller inside the VPC and is unreachable from outside it.
+
+- From in-VPC compute (an EKS pod or an EC2 host in an allowed subnet): set `BEDROCK_CONNECTIVITY_PROVIDER=direct` and leave `BEDROCK_ENDPOINT_URL` empty. Private DNS routes the call over the endpoint. Attach the module's `bedrock:InvokeModel` policy to the workload role.
+- From a developer laptop: the private endpoint is not reachable directly, so forward through an in-VPC hop. Set `BEDROCK_CONNECTIVITY_PROVIDER=jumphost` for an SSM port-forward through a host in an allowed subnet, or `ssh-bastion` for an SSH local forward through a bastion, then run `inv tunnel-start` followed by `inv connectivity-check`. The hop resolves and originates the request inside the VPC.
+- `inv connectivity-check` runs a TLS handshake to `bedrock-runtime` over the selected provider and reports the result, so use it to confirm any path.
 
 ## Services and ports
 

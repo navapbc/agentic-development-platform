@@ -7,7 +7,6 @@ from scripts.config import Settings
 from scripts.connectivity_providers import (
     DirectConnectivity,
     JumphostConnectivity,
-    PublicConnectivity,
     SshBastionConnectivity,
     get_provider,
 )
@@ -33,15 +32,9 @@ def test_unknown_provider_raises():
         get_provider(Settings(bedrock_connectivity_provider="nope"))
 
 
-def test_public_provider_refused_without_flag():
-    settings = Settings(bedrock_connectivity_provider="public")
-    with pytest.raises(ValueError, match="allow_public_bedrock_endpoint"):
-        get_provider(settings)
-
-
-def test_public_provider_allowed_with_flag():
-    settings = Settings(bedrock_connectivity_provider="public", allow_public_bedrock_endpoint=True)
-    assert isinstance(get_provider(settings), PublicConnectivity)
+def test_public_provider_is_unknown():
+    with pytest.raises(ValueError, match="unknown bedrock_connectivity_provider"):
+        get_provider(Settings(bedrock_connectivity_provider="public"))
 
 
 def test_direct_provider_summary_uses_injected_endpoint():

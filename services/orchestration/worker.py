@@ -12,6 +12,7 @@ from temporalio.worker import Worker
 from temporalio.worker.workflow_sandbox import SandboxedWorkflowRunner, SandboxRestrictions
 
 from services.orchestration.temporal_activities import (
+    alert_human_intervention,
     analyze_ci_failure,
     apply_ci_repair,
     claim_work_unit,
@@ -112,6 +113,7 @@ _ACTIVITIES = [
     read_ci_log,
     analyze_ci_failure,
     apply_ci_repair,
+    alert_human_intervention,
     scan_change,
     evaluate_promotion,
 ]

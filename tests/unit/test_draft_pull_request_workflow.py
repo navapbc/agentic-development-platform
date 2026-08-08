@@ -36,6 +36,10 @@ from services.orchestration.temporal_activities.implementation import (
     ImplementationRequest,
     ImplementationResult,
 )
+from services.orchestration.temporal_activities.notify import (
+    AlertHumanInterventionRequest,
+    AlertHumanInterventionResult,
+)
 from services.orchestration.temporal_activities.persistence import (
     AuditEvent,
     ExecutionState,
@@ -120,6 +124,7 @@ def _make_activities(
     ci_running_polls: int = 0,
     repairs: list[ApplyCIRepairRequest] | None = None,
     repair_actionable: bool = True,
+    alerts: list[AlertHumanInterventionRequest] | None = None,
     review_requests: list[ReviewRequest] | None = None,
     code_verdict: str = "pass",
     security_verdict: str = "pass",
@@ -303,6 +308,12 @@ def _make_activities(
             applied=True, changed_files=["feature.py"], cost=0.1, tokens=5, llm_calls=1
         )
 
+    @activity.defn(name="alert_human_intervention")
+    async def fake_alert(req: AlertHumanInterventionRequest) -> AlertHumanInterventionResult:
+        if alerts is not None:
+            alerts.append(req)
+        return AlertHumanInterventionResult(channels=["jira"])
+
     def _review_outcome(stage: str, verdict: str) -> ReviewOutcome:
         return ReviewOutcome(
             verdict=verdict,
@@ -398,6 +409,7 @@ def _make_activities(
         fake_read_ci_log,
         fake_analyze,
         fake_apply_repair,
+        fake_alert,
         fake_review_code,
         fake_review_security,
         fake_verify_acceptance,
@@ -627,6 +639,7 @@ def _ci_input(
     run_reviews: bool = False,
     run_policy: bool = False,
     run_approval: bool = False,
+    max_repair_attempts: int = 5,
 ) -> DraftPullRequestInput:
     return DraftPullRequestInput(
         task_id="T-1",
@@ -641,6 +654,7 @@ def _ci_input(
         ci_job="agentic-demo-service-ci",
         ci_poll_interval_seconds=poll_interval,
         ci_poll_max_attempts=5,
+        max_repair_attempts=max_repair_attempts,
         run_reviews=run_reviews,
         run_policy=run_policy,
         run_approval=run_approval,
@@ -735,12 +749,26 @@ async def test_ci_failure_repairs_and_passes():
     assert commits[1].sequence == 15
 
 
-async def test_ci_repair_exhausted_after_cap():
+async def _await_human_park(handle) -> dict[str, str]:
+    state: dict[str, str] = {}
+    for _ in range(50):
+        state = await handle.query(DraftPullRequestWorkflow.suspension_state)
+        if (
+            state.get("reason") == SuspendReason.AWAITING_HUMAN.value
+            and state.get("stage") == "repair"
+        ):
+            return state
+        await asyncio.sleep(0.05)
+    return state
+
+
+async def test_ci_repair_exhausted_parks_for_human_and_abandons():
     commits: list[CommitPushRequest] = []
     pr_opens: list[OpenPrRequest] = []
     linkbacks: list[LinkbackRequest] = []
     ci_triggers: list[TriggerCIRequest] = []
     repairs: list[ApplyCIRepairRequest] = []
+    alerts: list[AlertHumanInterventionRequest] = []
     activities = _make_activities(
         None,
         1,
@@ -750,31 +778,81 @@ async def test_ci_repair_exhausted_after_cap():
         ci_triggers=ci_triggers,
         ci_result=FAILURE,
         repairs=repairs,
+        alerts=alerts,
     )
 
     async with await WorkflowEnvironment.start_time_skipping() as env:
         task_queue = f"draft-{uuid.uuid4().hex[:8]}"
         async with await _start_ci_worker(env, task_queue, activities):
-            result = await env.client.execute_workflow(
+            handle = await env.client.start_workflow(
                 DraftPullRequestWorkflow.run,
-                _ci_input(),
+                _ci_input(max_repair_attempts=2),
                 id=f"wf-{uuid.uuid4().hex[:8]}",
                 task_queue=task_queue,
             )
+            state = await _await_human_park(handle)
+            assert state["reason"] == SuspendReason.AWAITING_HUMAN.value
+            assert state["resume_on"] == ResumeOn.HUMAN_APPROVAL.value
+            assert state["stage"] == "repair"
+            await handle.signal("submit_repair_decision", args=[False, "release-manager"])
+            result = await handle.result()
 
     assert result.status == CI_FAILED
+    assert result.terminal_reason == "human_abandoned"
     assert result.repair_attempts == 2
     assert len(repairs) == 2
     assert len(ci_triggers) == 3
     assert ci_triggers[2].sequence == 18
+    assert len(alerts) == 1
+    assert alerts[0].attempts == 2
 
 
-async def test_ci_failure_unactionable_stops_without_repair():
+async def test_ci_repair_retry_decision_reruns_and_passes():
     commits: list[CommitPushRequest] = []
     pr_opens: list[OpenPrRequest] = []
     linkbacks: list[LinkbackRequest] = []
     ci_triggers: list[TriggerCIRequest] = []
     repairs: list[ApplyCIRepairRequest] = []
+    alerts: list[AlertHumanInterventionRequest] = []
+    activities = _make_activities(
+        None,
+        1,
+        commits,
+        pr_opens,
+        linkbacks,
+        ci_triggers=ci_triggers,
+        ci_results=[FAILURE, FAILURE, SUCCESS],
+        repairs=repairs,
+        alerts=alerts,
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(max_repair_attempts=1),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+            await _await_human_park(handle)
+            await handle.signal("submit_repair_decision", args=[True, "release-manager"])
+            result = await handle.result()
+
+    assert result.status == CI_PASSED
+    assert result.repair_attempts == 2
+    assert len(repairs) == 1
+    assert len(ci_triggers) == 3
+    assert len(alerts) == 1
+
+
+async def test_ci_failure_unactionable_parks_for_human():
+    commits: list[CommitPushRequest] = []
+    pr_opens: list[OpenPrRequest] = []
+    linkbacks: list[LinkbackRequest] = []
+    ci_triggers: list[TriggerCIRequest] = []
+    repairs: list[ApplyCIRepairRequest] = []
+    alerts: list[AlertHumanInterventionRequest] = []
     activities = _make_activities(
         None,
         1,
@@ -785,24 +863,30 @@ async def test_ci_failure_unactionable_stops_without_repair():
         ci_result=FAILURE,
         repairs=repairs,
         repair_actionable=False,
+        alerts=alerts,
     )
 
     async with await WorkflowEnvironment.start_time_skipping() as env:
         task_queue = f"draft-{uuid.uuid4().hex[:8]}"
         async with await _start_ci_worker(env, task_queue, activities):
-            result = await env.client.execute_workflow(
+            handle = await env.client.start_workflow(
                 DraftPullRequestWorkflow.run,
                 _ci_input(),
                 id=f"wf-{uuid.uuid4().hex[:8]}",
                 task_queue=task_queue,
             )
+            await _await_human_park(handle)
+            await handle.signal("submit_repair_decision", args=[False, ""])
+            result = await handle.result()
 
     assert result.status == CI_FAILED
+    assert result.terminal_reason == "human_abandoned"
     assert result.ci_status == "failed"
     assert result.repair_attempts == 0
     assert result.ci_build_number == 7
     assert len(repairs) == 0
     assert len(ci_triggers) == 1
+    assert len(alerts) == 1
 
 
 async def test_ci_parks_on_awaiting_ci_and_resumes_on_build_result():
@@ -1075,9 +1159,9 @@ async def test_approval_parks_and_promotes_pr_on_approve():
     assert result.promoted is True
     assert len(approvals) == 1
     assert approvals[0].approved is True
-    assert approvals[0].sequence == 19
+    assert approvals[0].sequence == 25
     assert len(promotions) == 1
-    assert promotions[0].sequence == 20
+    assert promotions[0].sequence == 26
 
 
 async def test_approval_rejection_cancels_promotion():

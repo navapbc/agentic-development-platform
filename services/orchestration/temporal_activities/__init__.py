@@ -10,6 +10,7 @@ from services.orchestration.temporal_activities.implementation import (
     claim_work_unit,
     run_implementation_stage,
 )
+from services.orchestration.temporal_activities.notify import alert_human_intervention
 from services.orchestration.temporal_activities.persistence import (
     persist_execution_state,
     record_audit_event,
@@ -45,6 +46,7 @@ from services.orchestration.temporal_activities.suspension import (
 )
 
 __all__ = [
+    "alert_human_intervention",
     "analyze_ci_failure",
     "apply_ci_repair",
     "claim_work_unit",
