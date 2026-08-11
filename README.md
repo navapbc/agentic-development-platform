@@ -42,14 +42,15 @@ Two host tools are optional and only needed for specific paths.
 Run these once from the repository root.
 
 1. Copy the environment file with `cp .env.example .env`, then fill in the placeholders. See [Configuration](#configuration). Never commit `.env`.
-2. Create and activate a virtual environment with `python -m venv .venv && source .venv/bin/activate`.
-3. Install the package with its development extras using `pip install -e ".[dev,reasoning]"`. Add `sandbox` for the OpenHands agent, and see [CONTRIBUTING.md](CONTRIBUTING.md) for the editable `rebar` install needed on the review path.
-4. Choose a Bedrock connectivity provider in `.env` and open the path with `inv tunnel-start`. See [Bedrock connectivity](#bedrock-connectivity).
-5. Validate the Bedrock path and local reachability with `inv connectivity-check`.
-6. Start the stack with `inv local-up`.
-7. Apply database migrations with `inv db-migrate`.
-8. Confirm everything is healthy with `inv smoke-test`.
-9. Load allowlisted seed data with `inv seed` when you need demo fixtures.
+2. Copy the GitHub source config with `cp config/local/github.yaml.example config/local/github.yaml`, then edit the copy. See [GitHub source configuration](#github-source-configuration). Never commit `config/local/github.yaml`.
+3. Create and activate a virtual environment with `python -m venv .venv && source .venv/bin/activate`.
+4. Install the package with its development extras using `pip install -e ".[dev,reasoning]"`. Add `sandbox` for the OpenHands agent, and see [CONTRIBUTING.md](CONTRIBUTING.md) for the editable `rebar` install needed on the review path.
+5. Choose a Bedrock connectivity provider in `.env` and open the path with `inv tunnel-start`. See [Bedrock connectivity](#bedrock-connectivity).
+6. Validate the Bedrock path and local reachability with `inv connectivity-check`.
+7. Start the stack with `inv local-up`.
+8. Apply database migrations with `inv db-migrate`.
+9. Confirm everything is healthy with `inv smoke-test`.
+10. Load allowlisted seed data with `inv seed` when you need demo fixtures.
 
 ## Vendored binaries
 
@@ -74,6 +75,36 @@ Two binaries live under `vendor/bin` and are provisioned outside the Python inst
 | GitHub | `GITHUB_API_URL`, `GITHUB_GIT_BASE_URL`, `GITHUB_OWNER`, `GITHUB_TOKEN` | Needed to open pull requests |
 | Policy and observability | `OPA_URL`, `LANGFUSE_*`, `OTEL_EXPORTER_OTLP_ENDPOINT` | Defaults work locally |
 | Allowlists | `ALLOWLIST_JIRA_PROJECTS`, `ALLOWLIST_REPOS` | Leave at the defaults unless you are adding a target |
+
+### GitHub source configuration
+
+`config/local/github.yaml` maps each repository to the host, owner, and token used to reach it. Copy the committed template with `cp config/local/github.yaml.example config/local/github.yaml` and edit the copy. The file is git-ignored, so your edits never conflict with a repository update.
+
+`hosts` names a connection once, its REST API base and its git base, and reuses it under a short key. `default` sets the host, owner, and token reference applied to any allowlisted repository you do not list under `repositories`. A `repositories` entry overrides the host, owner, or token for one repository, and anything it leaves unset inherits the default. A github.com repository that uses the default identity needs no entry.
+
+Tokens are named references rather than values. A `token_ref` of `GITHUB_TOKEN` reads `GITHUB_TOKEN` from `.env` locally and from Secrets Manager in AWS. Every token you name in `github.yaml` must exist in `.env`.
+
+```yaml
+hosts:
+  github-com:
+    api_url: https://api.github.com
+    git_base_url: https://github.com
+  enterprise:
+    api_url: https://ghe.example.com/api/v3
+    git_base_url: https://ghe.example.com
+
+default:
+  host: github-com
+  owner: agentic-demo
+  token_ref: GITHUB_TOKEN
+
+repositories:
+  billing-svc:
+    token_ref: BILLING_TOKEN
+  legacy-core:
+    host: enterprise
+    owner: platform
+```
 
 ## Bedrock connectivity
 
