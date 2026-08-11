@@ -53,6 +53,18 @@ def local_down(c):
     c.run(f"{COMPOSE} {_compose_files()} down")
 
 
+@task
+def local_stop(c):
+    """Stop the local stack without removing containers (containers + volumes preserved)."""
+    c.run(f"{COMPOSE} {_compose_files()} stop")
+
+
+@task
+def local_destroy(c):
+    """Bring the local stack down and delete its volumes (destroys Postgres and index data)."""
+    c.run(f"{COMPOSE} {_compose_files()} down --volumes --remove-orphans")
+
+
 @task(help={"service": "Optional single service to tail."})
 def logs(c, service=""):
     """Follow logs for the stack or a single service."""
@@ -306,6 +318,8 @@ for _t in (
     connectivity_check,
     local_up,
     local_down,
+    local_stop,
+    local_destroy,
     logs,
     db_migrate,
     db_reset,
