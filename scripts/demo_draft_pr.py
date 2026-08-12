@@ -19,6 +19,7 @@ from services.coordination import (
     InMemoryWorkClaimStore,
 )
 from services.coordination.orphans import InMemoryOrphanRegistry
+from services.integration.credentials import ConfigError
 from services.integration.github.credentials import build_single_identity_resolver
 from services.integration.github.mediator import GitHubMediator
 from services.integration.jira import (
@@ -28,7 +29,11 @@ from services.integration.jira import (
     ensure_acli_authenticated,
 )
 from services.integration.jira.adapter import build_jira_adapter_for_issue, project_of
-from services.integration.jira.credentials import build_single_project_resolver
+from services.integration.jira.credentials import (
+    StatusFlow,
+    build_jira_credential_resolver,
+    build_single_project_resolver,
+)
 from services.integration.jira.linkback import post_pr_linkback
 from services.integration.jira.normalize import normalize_issue
 from services.integration.jira.snapshot import SnapshotCandidate, snapshot_id_for
@@ -71,6 +76,13 @@ def _demo_jira_adapter(settings: Settings, issue_key: str):
         project=project,
     )
     return build_jira_adapter_for_issue(issue_key, settings, resolver=resolver)
+
+
+def _demo_status_flow(settings: Settings, issue_key: str) -> StatusFlow:
+    try:
+        return build_jira_credential_resolver(settings).status_flow(project_of(issue_key))
+    except ConfigError:
+        return StatusFlow()
 
 
 def _remote_head(remote: str, branch: str) -> str:
@@ -356,8 +368,6 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--base", default=os.environ.get("DEMO_BASE", ""))
     parser.add_argument("--task", default=os.environ.get("DEMO_TASK", "AGENTDEV-1"))
-    parser.add_argument("--start-status", default=os.environ.get("DEMO_START_STATUS", ""))
-    parser.add_argument("--review-status", default=os.environ.get("DEMO_REVIEW_STATUS", ""))
     parser.add_argument("--live-agent", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--via-temporal", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--litellm-url", default=os.environ.get("DEMO_LITELLM_URL", ""))
@@ -454,11 +464,6 @@ async def main() -> int:
             return 2
         if existing_pr is not None:
             print(f"[demo] {task_id} already has an open pull request, leaving Jira status as is")
-        elif args.start_status and detail.strip().lower() != args.start_status.strip().lower():
-            adapter.transition(task_id, args.start_status)
-            print(f"[demo] jira transition to {args.start_status}")
-        elif args.start_status:
-            print(f"[demo] {task_id} already in {args.start_status}, no transition needed")
         raw_issue = adapter.get_issue(task_id)
         summary = (raw_issue.get("fields") or {}).get("summary") or "Bounded agent change"
         description = normalize_issue(raw_issue).description or ""
@@ -488,9 +493,6 @@ async def main() -> int:
             ci_job=args.ci_job or (f"{repo}-ci" if args.full_pipeline else ""),
             await_pr_close=args.await_pr_close,
         )
-        if rc == 0 and _jira_configured(settings) and args.review_status and existing_pr is None:
-            reader.transition(task_id, args.review_status)
-            print(f"  jira transition       {args.review_status}")
         return rc
 
     if args.live_agent:
@@ -504,6 +506,7 @@ async def main() -> int:
     else:
         code_step = _DemoCodeStep(execution_id)
 
+    demo_flow = _demo_status_flow(settings, task_id) if _jira_configured(settings) else StatusFlow()
     deps = PipelineDeps(
         snapshot_store=_SnapshotStore(),
         claim_store=InMemoryWorkClaimStore(),
@@ -514,6 +517,7 @@ async def main() -> int:
         jira_reader=reader,
         linkback_client=linkback_client,
         settings=settings,
+        status_flow=demo_flow,
     )
     request = PipelineRequest(
         task_id=task_id,
@@ -549,10 +553,6 @@ async def main() -> int:
     print(f"  draft pr url          {result.pr_url}")
     print(f"  jira linkback         {result.linkback}")
     print(f"  gated sequence        {result.sequence_used}")
-
-    if _jira_configured(settings) and args.review_status and existing_pr is None:
-        reader.transition(task_id, args.review_status)
-        print(f"  jira transition       {args.review_status}")
 
     print("\n[demo] replaying the PR open to prove idempotency (no duplicate PR)...")
     replay = await mediator.open_draft_pr(

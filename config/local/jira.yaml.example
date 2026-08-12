@@ -11,6 +11,13 @@
 # token_ref for the API token, and a datacenter identity carries a token_ref for
 # the PAT. Tokens are named references resolved from the local .env now and
 # Secrets Manager in AWS.
+#
+# statuses lists the board's available status names, and flow maps the two logical
+# moves the platform drives onto concrete statuses: work_started on the work claim
+# and ready_for_review on the draft pull request. Every flow status must appear in
+# statuses or the config fails closed at load. Leave a flow stage unset to skip it,
+# for a board that has no review status the pull request linkback is the review
+# signal and the ticket stays in its work_started status.
 
 sites:
   cloud:
@@ -25,11 +32,18 @@ default:
   email: agent@example.com
   token_ref: JIRA_API_TOKEN
   board: AGENTDEV
+  statuses: [Backlog, Selected for Development, In Progress, In Review, Done]
+  flow:
+    work_started: In Progress
+    ready_for_review: In Review
 
 projects: {}
   # OPS:                         # its own board, same cloud site and account
   #   board: OPS
-  # PLATFORM:                    # a project on the datacenter site with a PAT
+  # PLATFORM:                    # a datacenter board with no review status
   #   site: datacenter
   #   token_ref: JIRA_PAT
   #   board: PLATFORM
+  #   statuses: [Backlog, Selected for Development, In Progress, Done]
+  #   flow:
+  #     work_started: In Progress

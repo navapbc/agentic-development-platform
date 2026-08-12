@@ -51,6 +51,8 @@ from services.orchestration.temporal_activities.policy import (
     EvaluatePromotionResult,
 )
 from services.orchestration.temporal_activities.pull_request import (
+    ApplyStatusRequest,
+    ApplyStatusResult,
     CommitPushRequest,
     CommitPushResult,
     FindOpenPrRequest,
@@ -118,6 +120,7 @@ def _make_activities(
     parks: list[ParkTaskRequest] | None = None,
     unparks: list[UnparkTaskRequest] | None = None,
     *,
+    status_moves: list[ApplyStatusRequest] | None = None,
     ci_triggers: list[TriggerCIRequest] | None = None,
     ci_result: str = SUCCESS,
     ci_results: list[str] | None = None,
@@ -245,6 +248,12 @@ def _make_activities(
         if unparks is not None:
             unparks.append(req)
         return req.issue_key
+
+    @activity.defn(name="apply_task_status")
+    async def fake_apply_status(req: ApplyStatusRequest) -> ApplyStatusResult:
+        if status_moves is not None:
+            status_moves.append(req)
+        return ApplyStatusResult(status=req.stage, transitioned=bool(req.stage))
 
     trigger_count = {"n": 0}
     build_result: dict[int, str] = {}
@@ -404,6 +413,7 @@ def _make_activities(
         fake_clear_suspension,
         fake_mark_parked,
         fake_unmark_parked,
+        fake_apply_status,
         fake_trigger_ci,
         fake_poll_ci,
         fake_read_ci_log,

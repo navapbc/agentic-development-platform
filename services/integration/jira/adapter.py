@@ -122,6 +122,16 @@ def build_jira_adapter_for_issue(
     return build_jira_adapter(settings, project=project_of(issue_key), resolver=resolver)
 
 
+def apply_status(reader: Any, issue_key: str, target_status: str) -> bool:
+    if not target_status:
+        return False
+    current = reader.get_status(issue_key)
+    if current.strip().lower() == target_status.strip().lower():
+        return False
+    reader.transition(issue_key, target_status)
+    return True
+
+
 class ProjectRoutingJiraReader:
     """Resolves a per-project Jira adapter for each issue key it reads."""
 

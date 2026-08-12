@@ -198,8 +198,6 @@ def demo_repo_intelligence(c, repo="agentic-demo-service", commit="", focus="Tas
         "repo": "Allowlisted repo to open the draft PR against.",
         "base": "Base branch (empty uses the configured default).",
         "task": "Jira-style task id used in the PR title and linkback.",
-        "start_status": "Optional Jira status to transition to before work starts.",
-        "review_status": "Optional Jira status to transition to after the PR opens.",
         "stub_agent": "Author the change with the stand-in step instead of the sandbox agent.",
         "litellm_url": "LiteLLM base URL reachable from the sandbox pod (empty uses the default).",
         "in_process": "Drive the demo in-process instead of the workflow on Temporal.",
@@ -213,8 +211,6 @@ def demo_draft_pr(
     repo="agentic-demo-service",
     base="",
     task="AGENTDEV-1",
-    start_status="",
-    review_status="",
     stub_agent=False,
     litellm_url="",
     in_process=False,
@@ -225,8 +221,6 @@ def demo_draft_pr(
     """Demo: open a real draft PR on GitHub through the full coordination stack (Act 4)."""
     flags = f"--repo {repo} --task {task}"
     flags += f" --base {base}" if base else ""
-    flags += f' --start-status "{start_status}"' if start_status else ""
-    flags += f' --review-status "{review_status}"' if review_status else ""
     flags += " --no-live-agent" if stub_agent else ""
     flags += f" --litellm-url {litellm_url}" if litellm_url else ""
     flags += " --no-via-temporal" if in_process else ""

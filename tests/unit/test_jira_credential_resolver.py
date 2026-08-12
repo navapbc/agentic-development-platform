@@ -14,6 +14,7 @@ from services.integration.credentials import (
 from services.integration.jira.credentials import (
     JiraCredentialResolver,
     JiraProjectCredential,
+    StatusFlow,
     UnconfiguredProjectError,
     parse_jira_config,
 )
@@ -193,3 +194,64 @@ def test_committed_example_template_is_valid_and_resolves():
     assert cred.token == "tok"
     assert cred.board == "AGENTDEV"
     assert resolver.resolve("not-an-allowlisted-project") is None
+
+
+def _flow_config() -> dict:
+    raw = _config()
+    raw["default"]["statuses"] = ["Backlog", "In Progress", "In Review", "Done"]
+    raw["default"]["flow"] = {"work_started": "In Progress", "ready_for_review": "In Review"}
+    return raw
+
+
+def test_full_flow_board_resolves_both_moves():
+    resolver = _resolver(_flow_config(), {"CORE"}, {"TOKEN_CLOUD": "ccc"})
+
+    cred = resolver.resolve("CORE")
+
+    assert cred is not None
+    assert cred.statuses == ("Backlog", "In Progress", "In Review", "Done")
+    assert cred.status_flow == StatusFlow(work_started="In Progress", ready_for_review="In Review")
+    assert resolver.status_flow("CORE") == StatusFlow(
+        work_started="In Progress", ready_for_review="In Review"
+    )
+
+
+def test_no_review_status_board_leaves_ready_for_review_unset():
+    raw = _flow_config()
+    raw["default"]["statuses"] = ["Backlog", "In Progress", "Done"]
+    raw["default"]["flow"] = {"work_started": "In Progress"}
+    resolver = _resolver(raw, {"CORE"}, {"TOKEN_CLOUD": "ccc"})
+
+    flow = resolver.status_flow("CORE")
+
+    assert flow.work_started == "In Progress"
+    assert flow.ready_for_review == ""
+
+
+def test_flow_status_absent_from_declared_statuses_fails_closed():
+    raw = _flow_config()
+    raw["default"]["flow"] = {"work_started": "In Progress", "ready_for_review": "Nonexistent"}
+    resolver = _resolver(raw, {"CORE"}, {"TOKEN_CLOUD": "ccc"})
+
+    with pytest.raises(ConfigError):
+        resolver.status_flow("CORE")
+    with pytest.raises(ConfigError):
+        resolver.resolve("CORE")
+
+
+def test_per_project_flow_override():
+    raw = _flow_config()
+    raw["projects"] = {
+        "OPS": {"statuses": ["To Do", "Doing", "Done"], "flow": {"work_started": "Doing"}}
+    }
+    resolver = _resolver(raw, {"CORE", "OPS"}, {"TOKEN_CLOUD": "ccc"})
+
+    assert resolver.status_flow("CORE").ready_for_review == "In Review"
+    assert resolver.status_flow("OPS") == StatusFlow(work_started="Doing", ready_for_review="")
+
+
+def test_parse_rejects_unknown_flow_stage():
+    raw = _flow_config()
+    raw["default"]["flow"] = {"bogus": "In Progress"}
+    with pytest.raises(ConfigError):
+        parse_jira_config(raw)

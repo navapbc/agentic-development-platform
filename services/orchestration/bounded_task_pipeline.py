@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from openhands.runtime.caps import COMPLETED
@@ -11,6 +11,8 @@ from scripts.config import Settings, get_settings
 
 from services.coordination.claims import WorkClaimStore, WorkUnit
 from services.integration.github.mediator import GitHubMediator
+from services.integration.jira.adapter import apply_status
+from services.integration.jira.credentials import StatusFlow
 from services.integration.jira.edits import PauseSignal, recheck_issue_before_pr
 from services.integration.jira.linkback import LinkbackClient, post_pr_linkback
 from services.integration.jira.snapshot import TaskSnapshotStore, capture_task_snapshot
@@ -54,6 +56,7 @@ class PipelineDeps:
     jira_reader: Any
     linkback_client: LinkbackClient
     settings: Settings | None = None
+    status_flow: StatusFlow = field(default_factory=StatusFlow)
 
 
 @dataclass(frozen=True)
@@ -154,6 +157,7 @@ async def run_bounded_task(
         )
 
     _progress("branch: ensuring agent branch")
+    apply_status(deps.jira_reader, request.issue_key, deps.status_flow.work_started)
     branch_ref = await deps.mediator.ensure_agent_branch(
         request.repo,
         request.task_id,
@@ -257,6 +261,7 @@ async def run_bounded_task(
         repo=request.repo,
         branch=workspace.branch,
     )
+    apply_status(deps.jira_reader, request.issue_key, deps.status_flow.ready_for_review)
 
     return PipelineResult(
         request.execution_id,

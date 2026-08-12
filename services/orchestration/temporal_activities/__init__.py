@@ -19,6 +19,7 @@ from services.orchestration.temporal_activities.persistence import (
 from services.orchestration.temporal_activities.planning import gather_repo_context
 from services.orchestration.temporal_activities.policy import evaluate_promotion
 from services.orchestration.temporal_activities.pull_request import (
+    apply_task_status,
     commit_and_push,
     create_draft_pr,
     find_open_pr,
@@ -49,6 +50,7 @@ __all__ = [
     "alert_human_intervention",
     "analyze_ci_failure",
     "apply_ci_repair",
+    "apply_task_status",
     "claim_work_unit",
     "clear_suspension",
     "commit_and_push",

@@ -42,6 +42,7 @@ with workflow.unsafe.imports_passed_through():
         evaluate_promotion,
     )
     from services.orchestration.temporal_activities.pull_request import (
+        ApplyStatusRequest,
         CommitPushRequest,
         CommitPushResult,
         LinkbackRequest,
@@ -52,6 +53,7 @@ with workflow.unsafe.imports_passed_through():
         PromotePrResult,
         RecordApprovalRequest,
         UnparkTaskRequest,
+        apply_task_status,
         commit_and_push,
         link_pr_to_issue,
         mark_task_parked,
@@ -346,6 +348,14 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 branch=impl.branch,
             )
 
+        if params.issue_key:
+            await workflow.execute_activity(
+                apply_task_status,
+                ApplyStatusRequest(issue_key=params.issue_key, stage="work_started"),
+                start_to_close_timeout=short,
+                retry_policy=retry,
+            )
+
         while True:
             try:
                 outcome = await self._finalize(params, impl, workflow_id, title)
@@ -402,6 +412,14 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                     start_to_close_timeout=short,
                     retry_policy=retry,
                 )
+
+        if params.issue_key and outcome.status == DRAFT_PR_OPEN:
+            await workflow.execute_activity(
+                apply_task_status,
+                ApplyStatusRequest(issue_key=params.issue_key, stage="ready_for_review"),
+                start_to_close_timeout=short,
+                retry_policy=retry,
+            )
 
         if params.ci_job and outcome.status == DRAFT_PR_OPEN:
             outcome = await self._ci_and_repair(params, impl, outcome, workflow_id)

@@ -164,12 +164,12 @@ Say while showing the starting state:
 
 Say before running the command:
 
-> Now we bring those three properties together and add the fourth, auditable delivery. This single command starts a durable workflow on the platform's Temporal workers that carries a Jira ticket all the way to a pull request. As the platform picks up the ticket it moves it from To Do to In Progress, and once the draft pull request is open it moves it to the review stage. That move happens too fast to catch on screen, so afterward I will open the ticket history to show both transitions. Which statuses the platform moves the ticket through is configurable, set on this command by the start-status and review-status options. Before it changes anything outside the platform, it runs two quick health checks, the model path and the Jira ticket, and stops cleanly if either one is unhealthy.
+> Now we bring those three properties together and add the fourth, auditable delivery. This single command starts a durable workflow on the platform's Temporal workers that carries a Jira ticket all the way to a pull request. As the platform picks up the ticket it moves it from To Do to In Progress, and once the draft pull request is open it moves it to the review stage. That move happens too fast to catch on screen, so afterward I will open the ticket history to show both transitions. Which statuses the platform moves the ticket through is configured per board in jira.yaml, so each project maps those two moves onto its own status names. Before it changes anything outside the platform, it runs two quick health checks, the model path and the Jira ticket, and stops cleanly if either one is unhealthy.
 
 Command:
 
 ```
-inv demo-draft-pr --repo agentic-demo-service --task ADSER-15 --start-status "In Progress" --review-status "In Review"
+inv demo-draft-pr --repo agentic-demo-service --task ADSER-15
 ```
 
 Say as the steps complete:
@@ -191,7 +191,7 @@ Say before running the exact same command a second time:
 Command:
 
 ```
-inv demo-draft-pr --repo agentic-demo-service --task ADSER-15 --start-status "In Progress" --review-status "In Review"
+inv demo-draft-pr --repo agentic-demo-service --task ADSER-15
 ```
 
 Say over the second run:
@@ -220,7 +220,7 @@ Say before running the command:
 Command:
 
 ```
-inv demo-draft-pr --repo agentic-demo-service --task ADSER-16 --start-status "In Progress" --review-status "In Review" --full-pipeline --await-pr-close
+inv demo-draft-pr --repo agentic-demo-service --task ADSER-16 --full-pipeline --await-pr-close
 ```
 
 Say as the gates run:

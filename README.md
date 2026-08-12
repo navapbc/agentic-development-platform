@@ -114,6 +114,8 @@ repositories:
 
 Tokens are named references rather than values. A `token_ref` of `JIRA_API_TOKEN` reads `JIRA_API_TOKEN` from `.env` locally and from Secrets Manager in AWS. Every token you name in `jira.yaml` must exist in `.env`.
 
+`statuses` lists the board's available status names, and `flow` maps the two moves the platform drives, `work_started` on the work claim and `ready_for_review` on the draft pull request, onto concrete statuses. Every status in `flow` must appear in `statuses` or the config fails closed at load. Leave a `flow` stage unset to skip it. A board with no review status leaves `ready_for_review` unset, keeps the ticket in its `work_started` status, and relies on the pull request linkback as the review signal. The platform never invents a status and never advances a ticket to a terminal status such as Done.
+
 ```yaml
 sites:
   cloud:
@@ -128,12 +130,19 @@ default:
   email: agent@example.com
   token_ref: JIRA_API_TOKEN
   board: AGENTDEV
+  statuses: [Backlog, Selected for Development, In Progress, In Review, Done]
+  flow:
+    work_started: In Progress
+    ready_for_review: In Review
 
 projects:
   PLATFORM:
     site: datacenter
     token_ref: JIRA_PAT
     board: PLATFORM
+    statuses: [Backlog, Selected for Development, In Progress, Done]
+    flow:
+      work_started: In Progress
 ```
 
 ## Bedrock connectivity

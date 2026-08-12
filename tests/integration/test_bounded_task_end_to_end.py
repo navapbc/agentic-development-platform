@@ -33,6 +33,7 @@ from services.integration.jira import (
     SnapshotCandidate,
     TaskSnapshot,
 )
+from services.integration.jira.credentials import StatusFlow
 from services.integration.jira.linkback import post_pr_linkback
 from services.integration.jira.snapshot import snapshot_id_for
 from services.orchestration.bounded_task_pipeline import (
@@ -161,13 +162,22 @@ class _InMemorySnapshotStore:
 
 
 class _FakeReader:
-    def __init__(self, issue: dict) -> None:
+    def __init__(self, issue: dict, *, status: str = "To Do") -> None:
         self.issue = issue
         self.calls = 0
+        self.status = status
+        self.transitions: list[str] = []
 
     def get_issue(self, issue_key: str) -> dict:
         self.calls += 1
         return dict(self.issue)
+
+    def get_status(self, issue_key: str) -> str:
+        return self.status
+
+    def transition(self, issue_key: str, target_status: str) -> None:
+        self.status = target_status
+        self.transitions.append(target_status)
 
 
 class _FakeLinkbackClient:
@@ -386,6 +396,76 @@ async def test_bounded_task_no_changes_terminates_cleanly(tmp_path, bare_remote)
     assert result.pr_number == 0
     assert ghes_state["pulls"] == []
     assert linkback_client.comments == []
+
+
+async def _run_with_status_flow(tmp_path, bare_remote, flow: StatusFlow) -> tuple:
+    settings = _settings()
+    base_sha = _remote_head(bare_remote)
+    transport, _ = _fake_ghes()
+    host = _host(bare_remote, transport)
+    ledger = InMemorySideEffectLedger()
+    gate = InMemorySequenceGate()
+    mediator = GitHubMediator(
+        backend=host, ledger=ledger, gate=gate, allowed_repos=frozenset({REPO})
+    )
+    materializer = WorkspaceMaterializer(
+        registry=InMemoryOrphanRegistry(),
+        allowed_repos=frozenset({REPO}),
+        workspace_root=tmp_path / "ws",
+        remote_url_for=lambda repo: bare_remote,
+    )
+    synchronizer = GitBranchSynchronizer(
+        allowed_repos=frozenset({REPO}),
+        remote_url_for=lambda repo: bare_remote,
+    )
+    reader = _FakeReader(_dc_issue())
+    deps = PipelineDeps(
+        snapshot_store=_InMemorySnapshotStore(),
+        claim_store=InMemoryWorkClaimStore(),
+        materializer=materializer,
+        code_step=_FakeCodeStep({"README.md": "hello\nflow change\n"}),
+        synchronizer=synchronizer,
+        mediator=mediator,
+        jira_reader=reader,
+        linkback_client=_FakeLinkbackClient(DATACENTER),
+        settings=settings,
+        status_flow=flow,
+    )
+    request = PipelineRequest(
+        task_id=TASK_ID,
+        execution_id=EXECUTION_ID,
+        repo=REPO,
+        base="main",
+        base_sha=base_sha,
+        task="Add retry to the client",
+        issue_key=TASK_ID,
+        raw_issue=_dc_issue(),
+        jira_source=DATACENTER,
+    )
+    result = await run_bounded_task(deps, request)
+    return result, reader
+
+
+async def test_full_flow_board_moves_ticket_on_claim_and_pr_open(tmp_path, bare_remote) -> None:
+    result, reader = await _run_with_status_flow(
+        tmp_path,
+        bare_remote,
+        StatusFlow(work_started="In Progress", ready_for_review="In Review"),
+    )
+
+    assert result.status == DRAFT_PR_OPEN
+    assert reader.transitions == ["In Progress", "In Review"]
+
+
+async def test_no_review_status_board_moves_ticket_on_claim_only(tmp_path, bare_remote) -> None:
+    result, reader = await _run_with_status_flow(
+        tmp_path,
+        bare_remote,
+        StatusFlow(work_started="In Progress"),
+    )
+
+    assert result.status == DRAFT_PR_OPEN
+    assert reader.transitions == ["In Progress"]
 
 
 @pytest.mark.skipif(

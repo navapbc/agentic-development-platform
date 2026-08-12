@@ -65,6 +65,18 @@ class UnparkTaskRequest:
 
 
 @dataclass
+class ApplyStatusRequest:
+    issue_key: str
+    stage: str
+
+
+@dataclass
+class ApplyStatusResult:
+    status: str
+    transitioned: bool
+
+
+@dataclass
 class FindOpenPrRequest:
     repo: str
     task_id: str
@@ -266,6 +278,25 @@ async def unmark_task_parked(req: UnparkTaskRequest) -> str:
         adapter = _build_jira_adapter(req.issue_key)
         adapter.transition(req.issue_key, req.target_status)
     return req.issue_key
+
+
+@activity.defn
+async def apply_task_status(req: ApplyStatusRequest) -> ApplyStatusResult:
+    from services.integration.jira.adapter import (
+        apply_status,
+        build_jira_adapter_for_issue,
+        project_of,
+    )
+    from services.integration.jira.credentials import build_jira_credential_resolver
+
+    resolver = build_jira_credential_resolver()
+    flow = resolver.status_flow(project_of(req.issue_key))
+    target = flow.work_started if req.stage == "work_started" else flow.ready_for_review
+    if not target:
+        return ApplyStatusResult(status="", transitioned=False)
+    adapter = build_jira_adapter_for_issue(req.issue_key, resolver=resolver)
+    transitioned = apply_status(adapter, req.issue_key, target)
+    return ApplyStatusResult(status=target, transitioned=transitioned)
 
 
 @activity.defn

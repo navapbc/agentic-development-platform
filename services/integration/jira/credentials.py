@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 
 from scripts.config import Settings, get_settings
 
@@ -17,6 +17,13 @@ from services.integration.credentials import (
 CLOUD = "cloud"
 DATACENTER = "datacenter"
 _AUTH_MODES = {CLOUD, DATACENTER}
+_FLOW_STAGES = ("work_started", "ready_for_review")
+
+
+@dataclass(frozen=True)
+class StatusFlow:
+    work_started: str = ""
+    ready_for_review: str = ""
 
 
 @dataclass(frozen=True)
@@ -27,6 +34,8 @@ class JiraProjectCredential:
     token: str
     board: str
     project: str
+    statuses: tuple[str, ...] = ()
+    status_flow: StatusFlow = field(default_factory=StatusFlow)
 
 
 @dataclass(frozen=True)
@@ -41,6 +50,8 @@ class _Identity:
     email: str | None
     token_ref: str
     board: str
+    statuses: tuple[str, ...] = ()
+    flow: StatusFlow = field(default_factory=StatusFlow)
 
 
 @dataclass(frozen=True)
@@ -49,6 +60,18 @@ class _ProjectOverride:
     email: str | None
     token_ref: str | None
     board: str | None
+    statuses: tuple[str, ...] | None = None
+    flow: StatusFlow | None = None
+
+
+@dataclass(frozen=True)
+class _Effective:
+    site: _Site
+    email: str | None
+    token_ref: str
+    board: str
+    statuses: tuple[str, ...]
+    flow: StatusFlow
 
 
 @dataclass(frozen=True)
@@ -72,12 +95,48 @@ class UnconfiguredProjectError(RuntimeError):
 def _string_fields(raw: Mapping[str, object], context: str) -> dict[str, str]:
     fields: dict[str, str] = {}
     for key, value in raw.items():
+        if key in ("statuses", "flow"):
+            continue
         if value is None:
             continue
         if not isinstance(value, str | int):
             raise ConfigError(f"jira config {context} field {key} is not a scalar")
         fields[str(key)] = str(value)
     return fields
+
+
+def _parse_statuses(raw: object, context: str) -> tuple[str, ...] | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, Sequence) or isinstance(raw, str):
+        raise ConfigError(f"jira config {context} 'statuses' is not a list")
+    statuses: list[str] = []
+    for value in raw:
+        if not isinstance(value, str | int):
+            raise ConfigError(f"jira config {context} status is not a scalar")
+        statuses.append(str(value))
+    return tuple(statuses)
+
+
+def _parse_flow(raw: object, context: str) -> StatusFlow | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping):
+        raise ConfigError(f"jira config {context} 'flow' is not a mapping")
+    unknown = [str(key) for key in raw if str(key) not in _FLOW_STAGES]
+    if unknown:
+        raise ConfigError(f"jira config {context} flow has unknown stages: {', '.join(unknown)}")
+    values: dict[str, str] = {}
+    for key, value in raw.items():
+        if value is None:
+            continue
+        if not isinstance(value, str | int):
+            raise ConfigError(f"jira config {context} flow stage {key} is not a scalar")
+        values[str(key)] = str(value)
+    return StatusFlow(
+        work_started=values.get("work_started", ""),
+        ready_for_review=values.get("ready_for_review", ""),
+    )
 
 
 def _parse_sites(raw: Mapping[str, object]) -> dict[str, _Site]:
@@ -116,6 +175,8 @@ def _parse_default(raw: Mapping[str, object], sites: dict[str, _Site]) -> _Ident
         email=parsed.get("email"),
         token_ref=parsed["token_ref"],
         board=parsed["board"],
+        statuses=_parse_statuses(default_raw.get("statuses"), "default") or (),
+        flow=_parse_flow(default_raw.get("flow"), "default") or StatusFlow(),
     )
 
 
@@ -138,6 +199,8 @@ def _parse_projects(
             email=parsed.get("email"),
             token_ref=parsed.get("token_ref"),
             board=parsed.get("board"),
+            statuses=_parse_statuses(fields.get("statuses"), f"project {name}"),
+            flow=_parse_flow(fields.get("flow"), f"project {name}"),
         )
     return projects
 
@@ -147,6 +210,17 @@ def parse_jira_config(raw: Mapping[str, object]) -> JiraSourceConfig:
     default = _parse_default(raw, sites)
     projects = _parse_projects(raw, sites)
     return JiraSourceConfig(sites=sites, default=default, projects=projects)
+
+
+def _validate_flow(flow: StatusFlow, statuses: tuple[str, ...]) -> None:
+    if not statuses:
+        return
+    available = {status.strip().lower() for status in statuses}
+    for stage_status in (flow.work_started, flow.ready_for_review):
+        if stage_status and stage_status.strip().lower() not in available:
+            raise ConfigError(
+                f"jira status '{stage_status}' is not in the board's declared statuses"
+            )
 
 
 class JiraCredentialResolver:
@@ -169,18 +243,29 @@ class JiraCredentialResolver:
         effective = self._effective(project)
         if effective is None:
             raise UnconfiguredProjectError(project)
-        site, email, token_ref, board = effective
-        token = self._secrets.resolve(token_ref)
+        _validate_flow(effective.flow, effective.statuses)
+        token = self._secrets.resolve(effective.token_ref)
         return JiraProjectCredential(
-            url=site.url,
-            auth_mode=site.auth_mode,
-            email=email or "",
+            url=effective.site.url,
+            auth_mode=effective.site.auth_mode,
+            email=effective.email or "",
             token=token,
-            board=board,
+            board=effective.board,
             project=project,
+            statuses=effective.statuses,
+            status_flow=effective.flow,
         )
 
-    def _effective(self, project: str) -> tuple[_Site, str | None, str, str] | None:
+    def status_flow(self, project: str) -> StatusFlow:
+        if project not in self._allowlist:
+            return StatusFlow()
+        effective = self._effective(project)
+        if effective is None:
+            return StatusFlow()
+        _validate_flow(effective.flow, effective.statuses)
+        return effective.flow
+
+    def _effective(self, project: str) -> _Effective | None:
         override = self._config.projects.get(project)
         default = self._config.default
         site_name = (override.site if override else None) or (default.site if default else None)
@@ -198,7 +283,19 @@ class JiraCredentialResolver:
             return None
         if site.auth_mode == DATACENTER:
             email = None
-        return site, email, token_ref, board
+        if override is not None and override.statuses is not None:
+            statuses = override.statuses
+        elif default is not None:
+            statuses = default.statuses
+        else:
+            statuses = ()
+        if override is not None and override.flow is not None:
+            flow = override.flow
+        elif default is not None:
+            flow = default.flow
+        else:
+            flow = StatusFlow()
+        return _Effective(site, email, token_ref, board, statuses, flow)
 
 
 def build_jira_credential_resolver(
@@ -212,7 +309,10 @@ def build_jira_credential_resolver(
     raw = load_env_config("jira", environment=env)
     config = parse_jira_config(raw)
     secrets = secret_resolver or EnvSecretResolver()
-    return JiraCredentialResolver(config, resolved.allowed_projects(), secrets)
+    resolver = JiraCredentialResolver(config, resolved.allowed_projects(), secrets)
+    for project in resolver.projects():
+        resolver.status_flow(project)
+    return resolver
 
 
 def build_single_project_resolver(
@@ -223,13 +323,22 @@ def build_single_project_resolver(
     token: str,
     board: str,
     project: str,
+    statuses: tuple[str, ...] = (),
+    flow: StatusFlow | None = None,
 ) -> JiraCredentialResolver:
     mode = auth_mode.strip().lower()
     if mode not in _AUTH_MODES:
         raise ConfigError(f"unsupported jira auth_mode: {auth_mode}")
     config = JiraSourceConfig(
         sites={"default": _Site(url=url, auth_mode=mode)},
-        default=_Identity(site="default", email=email or None, token_ref="__token__", board=board),
+        default=_Identity(
+            site="default",
+            email=email or None,
+            token_ref="__token__",
+            board=board,
+            statuses=tuple(statuses),
+            flow=flow or StatusFlow(),
+        ),
         projects={},
     )
     return JiraCredentialResolver(config, {project}, EnvSecretResolver({"__token__": token}))
