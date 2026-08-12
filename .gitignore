@@ -8,6 +8,8 @@
 # Per-environment config edited by the operator (ship the .example template only)
 config/*/github.yaml
 !config/*/github.yaml.example
+config/*/jira.yaml
+!config/*/jira.yaml.example
 
 # AWS / credentials
 .aws/

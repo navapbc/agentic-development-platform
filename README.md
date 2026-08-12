@@ -106,6 +106,36 @@ repositories:
     owner: platform
 ```
 
+### Jira source configuration
+
+`config/local/jira.yaml` maps each project to the site, account, token, and board used to reach it. Copy the committed template with `cp config/local/jira.yaml.example config/local/jira.yaml` and edit the copy. The file is git-ignored, so your edits never conflict with a repository update.
+
+`sites` names a connection once, its site url and an `auth_mode` of `cloud` or `datacenter`, and reuses it under a short key. `default` sets the site, account fields, token reference, and board applied to any allowlisted project you do not list under `projects`. A `projects` entry overrides the site, account, token, or board for one project, and anything it leaves unset inherits the default. A cloud identity carries an `email` and a `token_ref` for the API token, and a datacenter identity carries a `token_ref` for the PAT.
+
+Tokens are named references rather than values. A `token_ref` of `JIRA_API_TOKEN` reads `JIRA_API_TOKEN` from `.env` locally and from Secrets Manager in AWS. Every token you name in `jira.yaml` must exist in `.env`.
+
+```yaml
+sites:
+  cloud:
+    url: https://your-org.atlassian.net
+    auth_mode: cloud
+  datacenter:
+    url: https://jira.example.com
+    auth_mode: datacenter
+
+default:
+  site: cloud
+  email: agent@example.com
+  token_ref: JIRA_API_TOKEN
+  board: AGENTDEV
+
+projects:
+  PLATFORM:
+    site: datacenter
+    token_ref: JIRA_PAT
+    board: PLATFORM
+```
+
 ## Bedrock connectivity
 
 `inv tunnel-start` and `inv connectivity-check` dispatch to the provider named by `BEDROCK_CONNECTIVITY_PROVIDER`. Every provider satisfies the same reachability contract, so the platform code runs unchanged when you swap providers. Every path terminates at a private endpoint, so inference stays inside the compliance boundary. There is no public-endpoint provider.
