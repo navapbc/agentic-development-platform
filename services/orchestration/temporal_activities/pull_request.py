@@ -154,10 +154,10 @@ def _build_registry():
     return PostgresOrphanRegistry()
 
 
-def _build_jira_adapter():
-    from services.integration.jira.adapter import build_jira_adapter
+def _build_jira_adapter(issue_key: str):
+    from services.integration.jira.adapter import build_jira_adapter_for_issue
 
-    return build_jira_adapter()
+    return build_jira_adapter_for_issue(issue_key)
 
 
 @activity.defn
@@ -237,7 +237,7 @@ async def commit_and_push(req: CommitPushRequest) -> CommitPushResult:
 async def link_pr_to_issue(req: LinkbackRequest) -> LinkbackResult:
     from services.integration.jira.linkback import post_pr_linkback
 
-    adapter = _build_jira_adapter()
+    adapter = _build_jira_adapter(req.issue_key)
     result = post_pr_linkback(
         adapter,
         req.issue_key,
@@ -252,7 +252,7 @@ async def link_pr_to_issue(req: LinkbackRequest) -> LinkbackResult:
 
 @activity.defn
 async def mark_task_parked(req: ParkTaskRequest) -> ParkTaskResult:
-    adapter = _build_jira_adapter()
+    adapter = _build_jira_adapter(req.issue_key)
     current = adapter.get_status(req.issue_key)
     if current.strip().lower() == req.parked_status.strip().lower():
         return ParkTaskResult(previous_status=current, transitioned=False)
@@ -263,7 +263,7 @@ async def mark_task_parked(req: ParkTaskRequest) -> ParkTaskResult:
 @activity.defn
 async def unmark_task_parked(req: UnparkTaskRequest) -> str:
     if req.target_status:
-        adapter = _build_jira_adapter()
+        adapter = _build_jira_adapter(req.issue_key)
         adapter.transition(req.issue_key, req.target_status)
     return req.issue_key
 

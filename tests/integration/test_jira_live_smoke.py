@@ -17,11 +17,31 @@ from uuid import uuid4
 import pytest
 from scripts.config import Settings
 from services.integration.jira import build_jira_adapter, ensure_acli_authenticated
+from services.integration.jira.adapter import project_of
+from services.integration.jira.credentials import build_single_project_resolver
 from services.integration.jira.normalize import normalize_issue
 
 _SMOKE_ISSUE_KEY = os.environ.get("JIRA_SMOKE_ISSUE_KEY", "")
 _created_key = ""
 _created_description = ""
+
+
+def _live_adapter(settings: Settings, project: str):
+    token = (
+        settings.jira_pat
+        if settings.jira_auth_mode.strip().lower() == "datacenter"
+        else settings.jira_api_token
+    )
+    resolver = build_single_project_resolver(
+        url=settings.jira_url,
+        auth_mode=settings.jira_auth_mode,
+        email=settings.jira_email,
+        token=token,
+        board=project,
+        project=project,
+    )
+    return build_jira_adapter(settings, project=project, resolver=resolver)
+
 
 requires_live_cloud = pytest.mark.skipif(
     os.environ.get("RUN_LIVE_JIRA_CLOUD") != "1",
@@ -58,7 +78,7 @@ def test_cloud_creates_and_reads_issue():
     global _created_key, _created_description
     settings = Settings(jira_auth_mode="cloud")
     ensure_acli_authenticated(settings)
-    adapter = build_jira_adapter(settings)
+    adapter = _live_adapter(settings, settings.jira_project)
     marker = uuid4()
     summary = f"agentic-dev-platform cloud smoke {marker}"
     description = "\n".join(
@@ -114,7 +134,7 @@ def test_cloud_issue_reads_and_normalizes():
         pytest.skip("set JIRA_SMOKE_ISSUE_KEY or enable RUN_LIVE_JIRA_CLOUD_WRITE")
     settings = Settings(jira_auth_mode="cloud")
     ensure_acli_authenticated(settings)
-    adapter = build_jira_adapter(settings)
+    adapter = _live_adapter(settings, project_of(issue_key))
     raw = _read_created_issue(adapter, issue_key) if _created_key else adapter.get_issue(issue_key)
     task = normalize_issue(raw)
     assert task.task_id == issue_key
@@ -125,7 +145,7 @@ def test_cloud_issue_reads_and_normalizes():
 
 @requires_live_datacenter
 def test_datacenter_connection_reads_and_normalizes():
-    adapter = build_jira_adapter(Settings(jira_auth_mode="datacenter"))
+    adapter = _live_adapter(Settings(jira_auth_mode="datacenter"), project_of(_SMOKE_ISSUE_KEY))
     raw = adapter.get_issue(_SMOKE_ISSUE_KEY)
     task = normalize_issue(raw)
     assert task.task_id == _SMOKE_ISSUE_KEY

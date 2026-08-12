@@ -1,4 +1,4 @@
-"""Facade over rebar's vendor Jira clients, selecting a backend by auth mode."""
+"""Facade over rebar's vendor Jira clients, selecting a backend by the resolved project site."""
 
 from __future__ import annotations
 
@@ -8,11 +8,16 @@ from typing import Any, Protocol
 from scripts.config import Settings, get_settings
 
 from services.integration.jira._engine import ensure_engine_on_path
+from services.integration.jira.credentials import (
+    CLOUD,
+    DATACENTER,
+    JiraCredentialResolver,
+    JiraProjectCredential,
+    UnconfiguredProjectError,
+    build_jira_credential_resolver,
+)
 from services.integration.jira.markdown_adf import markdown_to_adf_json
 from services.integration.jira.normalize import _name_of, _normalize_rich_text
-
-CLOUD = "cloud"
-DATACENTER = "datacenter"
 
 
 class _VendorJiraClient(Protocol):
@@ -61,44 +66,69 @@ class JiraAdapter:
         return tuple(_normalize_rich_text(item.get("body")) for item in raw)
 
 
-def _build_datacenter_client(settings: Settings) -> _VendorJiraClient:
+def _build_datacenter_client(cred: JiraProjectCredential) -> _VendorJiraClient:
     ensure_engine_on_path()
     from rebar_reconciler.adapters.jira_datacenter.rest_client import JiraDataCenterClient
 
     return JiraDataCenterClient(
-        base_url=settings.jira_url,
-        pat=settings.jira_pat,
-        project=settings.jira_project,
+        base_url=cred.url,
+        pat=cred.token,
+        project=cred.project,
     )
 
 
-def _build_cloud_client(settings: Settings) -> _VendorJiraClient:
+def _build_cloud_client(cred: JiraProjectCredential, *, acli_path: str) -> _VendorJiraClient:
     ensure_engine_on_path()
     from rebar_reconciler.adapters.jira.acli import AcliClient
 
-    acli_cmd = [settings.jira_acli_path] if settings.jira_acli_path else None
+    acli_cmd = [acli_path] if acli_path else None
     return AcliClient(
-        settings.jira_url,
-        settings.jira_email,
-        settings.jira_api_token,
-        jira_project=settings.jira_project,
+        cred.url,
+        cred.email,
+        cred.token,
+        jira_project=cred.project,
         acli_cmd=acli_cmd,
     )
 
 
-def build_jira_adapter(settings: Settings | None = None) -> JiraAdapter:
-    settings = settings or get_settings()
-    mode = settings.jira_auth_mode.strip().lower()
-    if mode == DATACENTER:
-        return JiraAdapter(
-            source=DATACENTER,
-            client=_build_datacenter_client(settings),
-            project=settings.jira_project,
-        )
-    if mode == CLOUD:
-        return JiraAdapter(
-            source=CLOUD,
-            client=_build_cloud_client(settings),
-            project=settings.jira_project,
-        )
-    raise ValueError(f"unsupported jira_auth_mode: {settings.jira_auth_mode!r}")
+def project_of(issue_key: str) -> str:
+    return issue_key.split("-", 1)[0]
+
+
+def build_jira_adapter(
+    settings: Settings | None = None,
+    *,
+    project: str,
+    resolver: JiraCredentialResolver | None = None,
+) -> JiraAdapter:
+    resolved = settings or get_settings()
+    resolver = resolver or build_jira_credential_resolver(resolved)
+    cred = resolver.resolve(project)
+    if cred is None:
+        raise UnconfiguredProjectError(project)
+    if cred.auth_mode == DATACENTER:
+        client = _build_datacenter_client(cred)
+    else:
+        client = _build_cloud_client(cred, acli_path=resolved.jira_acli_path)
+    return JiraAdapter(source=cred.auth_mode, client=client, project=cred.project)
+
+
+def build_jira_adapter_for_issue(
+    issue_key: str,
+    settings: Settings | None = None,
+    *,
+    resolver: JiraCredentialResolver | None = None,
+) -> JiraAdapter:
+    return build_jira_adapter(settings, project=project_of(issue_key), resolver=resolver)
+
+
+class ProjectRoutingJiraReader:
+    """Resolves a per-project Jira adapter for each issue key it reads."""
+
+    def __init__(self, settings: Settings | None = None) -> None:
+        self._settings = settings or get_settings()
+        self._resolver = build_jira_credential_resolver(self._settings)
+
+    def get_issue(self, issue_key: str) -> dict[str, Any]:
+        adapter = build_jira_adapter_for_issue(issue_key, self._settings, resolver=self._resolver)
+        return adapter.get_issue(issue_key)

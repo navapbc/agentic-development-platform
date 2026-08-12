@@ -76,14 +76,14 @@ class ReadOnlyToolset:
         from services.coordination.sequencing import PostgresSequenceGate
         from services.integration.github.mediator import GitHubMediator
         from services.integration.jenkins.mediator import JenkinsMediator
-        from services.integration.jira.adapter import build_jira_adapter
+        from services.integration.jira.adapter import ProjectRoutingJiraReader
         from services.orchestration.repo_intelligence_client import fetch_context_package
 
         resolved = settings or get_settings()
         ledger = PostgresSideEffectLedger()
         gate = PostgresSequenceGate()
         return cls(
-            jira=build_jira_adapter(resolved),
+            jira=ProjectRoutingJiraReader(resolved),
             github=GitHubMediator.from_settings(
                 RealGitHost.from_settings(), ledger, gate, resolved
             ),

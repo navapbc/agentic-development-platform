@@ -213,3 +213,23 @@ def build_jira_credential_resolver(
     config = parse_jira_config(raw)
     secrets = secret_resolver or EnvSecretResolver()
     return JiraCredentialResolver(config, resolved.allowed_projects(), secrets)
+
+
+def build_single_project_resolver(
+    *,
+    url: str,
+    auth_mode: str,
+    email: str,
+    token: str,
+    board: str,
+    project: str,
+) -> JiraCredentialResolver:
+    mode = auth_mode.strip().lower()
+    if mode not in _AUTH_MODES:
+        raise ConfigError(f"unsupported jira auth_mode: {auth_mode}")
+    config = JiraSourceConfig(
+        sites={"default": _Site(url=url, auth_mode=mode)},
+        default=_Identity(site="default", email=email or None, token_ref="__token__", board=board),
+        projects={},
+    )
+    return JiraCredentialResolver(config, {project}, EnvSecretResolver({"__token__": token}))

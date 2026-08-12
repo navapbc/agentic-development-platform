@@ -393,7 +393,7 @@ async def test_bounded_task_no_changes_terminates_cleanly(tmp_path, bare_remote)
     reason="live bounded-task smoke needs VPN, JIRA_EMAIL, JIRA_API_TOKEN, acli, and a GHES token",
 )
 async def test_bounded_task_live_smoke() -> None:
-    from services.integration.jira.adapter import build_jira_adapter
+    from services.integration.jira.adapter import build_jira_adapter_for_issue
     from services.integration.jira.snapshot import PostgresTaskSnapshotStore
 
     repo = os.environ["BOUNDED_TASK_LIVE_REPO"]
@@ -401,7 +401,7 @@ async def test_bounded_task_live_smoke() -> None:
     execution_id = os.environ.get("BOUNDED_TASK_LIVE_EXECUTION", f"live-{issue_key}")
     base = os.environ.get("BOUNDED_TASK_LIVE_BASE", "main")
 
-    adapter = build_jira_adapter()
+    adapter = build_jira_adapter_for_issue(issue_key)
     raw_issue = adapter.get_issue(issue_key)
 
     host = RealGitHost.from_settings()

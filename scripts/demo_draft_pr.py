@@ -27,7 +27,8 @@ from services.integration.jira import (
     TaskSnapshot,
     ensure_acli_authenticated,
 )
-from services.integration.jira.adapter import build_jira_adapter
+from services.integration.jira.adapter import build_jira_adapter_for_issue, project_of
+from services.integration.jira.credentials import build_single_project_resolver
 from services.integration.jira.linkback import post_pr_linkback
 from services.integration.jira.normalize import normalize_issue
 from services.integration.jira.snapshot import SnapshotCandidate, snapshot_id_for
@@ -52,6 +53,24 @@ def _authed_remote(settings: Settings, repo: str) -> str:
     if settings.github_token and base.startswith("https://"):
         base = f"https://x-access-token:{settings.github_token}@{base[len('https://') :]}"
     return f"{base}/{settings.github_owner}/{repo}.git"
+
+
+def _demo_jira_adapter(settings: Settings, issue_key: str):
+    project = project_of(issue_key)
+    token = (
+        settings.jira_pat
+        if settings.jira_auth_mode.strip().lower() == DATACENTER
+        else settings.jira_api_token
+    )
+    resolver = build_single_project_resolver(
+        url=settings.jira_url,
+        auth_mode=settings.jira_auth_mode,
+        email=settings.jira_email,
+        token=token,
+        board=project,
+        project=project,
+    )
+    return build_jira_adapter_for_issue(issue_key, settings, resolver=resolver)
 
 
 def _remote_head(remote: str, branch: str) -> str:
@@ -427,7 +446,7 @@ async def main() -> int:
     existing_pr = await mediator.find_open_pr(repo, task_id)
     if _jira_configured(settings):
         ensure_acli_authenticated(settings)
-        adapter = build_jira_adapter(settings)
+        adapter = _demo_jira_adapter(settings, task_id)
         ok, detail = _jira_task_actionable(adapter, task_id, settings.jira_parked_status)
         print(f"[demo] jira preflight {task_id}: [{'ok' if ok else 'FAIL'}] {detail}")
         if not ok:

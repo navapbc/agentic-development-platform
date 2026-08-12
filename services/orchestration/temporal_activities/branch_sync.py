@@ -106,10 +106,10 @@ async def resolve_conflicts(req: ResolveRequest) -> ResolveResult:
 
 @activity.defn
 async def recheck_issue(req: RecheckRequest) -> RecheckResult:
-    from services.integration.jira.adapter import build_jira_adapter
+    from services.integration.jira.adapter import build_jira_adapter_for_issue
     from services.integration.jira.edits import PauseSignal, recheck_issue_before_pr
 
-    reader = build_jira_adapter()
+    reader = build_jira_adapter_for_issue(req.issue_key)
     try:
         classification = await recheck_issue_before_pr(
             reader,

@@ -28,7 +28,12 @@ from services.coordination import (
     WorkUnit,
     partition_by_file_impact,
 )
-from services.integration.jira.adapter import build_jira_adapter
+from services.integration.jira.adapter import (
+    DATACENTER,
+    build_jira_adapter_for_issue,
+    project_of,
+)
+from services.integration.jira.credentials import build_single_project_resolver
 from services.integration.jira.snapshot import (
     AllowlistError,
     PostgresTaskSnapshotStore,
@@ -68,7 +73,21 @@ def _head_sha(remote: str) -> str:
 
 def _fetch_issue(settings: Settings, task_id: str) -> tuple[dict | None, str, str]:
     try:
-        adapter = build_jira_adapter(settings)
+        project = project_of(task_id)
+        token = (
+            settings.jira_pat
+            if settings.jira_auth_mode.strip().lower() == DATACENTER
+            else settings.jira_api_token
+        )
+        resolver = build_single_project_resolver(
+            url=settings.jira_url,
+            auth_mode=settings.jira_auth_mode,
+            email=settings.jira_email,
+            token=token,
+            board=project,
+            project=project,
+        )
+        adapter = build_jira_adapter_for_issue(task_id, settings, resolver=resolver)
         raw = adapter.get_issue(task_id)
     except Exception as exc:  # noqa: BLE001
         return None, "", f"could not read {task_id} from Jira ({exc})"
