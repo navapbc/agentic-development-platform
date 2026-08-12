@@ -9,6 +9,7 @@ import pytest
 from adapters.interfaces.git_host import agent_branch_name
 from adapters.real.git_host import RealGitHost
 from services.coordination.orphans import BRANCH, STAGING, InMemoryOrphanRegistry
+from services.integration.github.credentials import build_single_identity_resolver
 from services.integration.github.mediator import RepoNotAllowedError
 from services.orchestration.materialization import WorkspaceMaterializer
 
@@ -155,9 +156,13 @@ async def test_built_commit_request_pushes_idempotently_through_the_backend(
     request = await materializer.build_commit_request(workspace, message="Add feature")
 
     backend = RealGitHost(
-        api_url="http://ghes.invalid/api/v3",
-        owner=OWNER,
-        token="test-token",
+        build_single_identity_resolver(
+            api_url="http://ghes.invalid/api/v3",
+            owner=OWNER,
+            git_base_url="",
+            token="test-token",
+            repos={REPO},
+        ),
         remote_url_for=lambda repo: remote_path,
     )
 

@@ -10,6 +10,7 @@ import httpx
 import pytest
 from adapters.interfaces.git_host import CommitRequest, agent_branch_name
 from adapters.real.git_host import RealGitHost
+from services.integration.github.credentials import build_single_identity_resolver
 
 REPO = "agentic-demo-service"
 OWNER = "acme"
@@ -98,9 +99,13 @@ def _fake_ghes() -> httpx.MockTransport:
 
 def _host(bare_remote: str) -> RealGitHost:
     return RealGitHost(
-        api_url="http://ghes.invalid/api/v3",
-        owner=OWNER,
-        token="test-token",
+        build_single_identity_resolver(
+            api_url="http://ghes.invalid/api/v3",
+            owner=OWNER,
+            git_base_url="",
+            token="test-token",
+            repos={REPO},
+        ),
         remote_url_for=lambda repo: bare_remote,
         transport=_fake_ghes(),
     )

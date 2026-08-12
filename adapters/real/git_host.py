@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import re
 import subprocess
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 from adapters.interfaces.git_host import (
@@ -23,27 +24,28 @@ from adapters.interfaces.git_host import (
 )
 from scripts.config import Settings, get_settings
 
+if TYPE_CHECKING:
+    from services.integration.github.credentials import (
+        GitHubCredentialResolver,
+        GitHubRepoCredential,
+    )
+
+_AUTH_URL = re.compile(r"x-access-token:[^@]*@")
+
 
 class RealGitHost:
     def __init__(
         self,
+        resolver: GitHubCredentialResolver,
         *,
-        api_url: str,
-        owner: str,
-        token: str,
-        git_base_url: str = "",
         remote_url_for: Callable[[str], str] | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
         timeout: float = 30.0,
     ) -> None:
-        self._api_url = api_url.rstrip("/")
-        self._owner = owner
-        self._token = token
-        self._git_base_url = git_base_url.rstrip("/")
+        self._resolver = resolver
         self._remote_url_for = remote_url_for
         self._transport = transport
         self._timeout = timeout
-        self._graphql_url = _graphql_url_from(self._api_url)
 
     @classmethod
     def from_settings(
@@ -53,23 +55,25 @@ class RealGitHost:
         remote_url_for: Callable[[str], str] | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> RealGitHost:
+        from services.integration.github.credentials import build_github_credential_resolver
+
         resolved = settings or get_settings()
         return cls(
-            api_url=resolved.github_api_url,
-            owner=resolved.github_owner,
-            token=resolved.github_token,
-            git_base_url=resolved.github_git_base_url,
+            build_github_credential_resolver(resolved),
             remote_url_for=remote_url_for,
             transport=transport,
         )
 
+    def _credential(self, repo: str) -> GitHubRepoCredential:
+        cred = self._resolver.resolve(repo)
+        if cred is None:
+            raise KeyError(f"repository not resolvable: {repo}")
+        return cred
+
     def _remote_url(self, repo: str) -> str:
         if self._remote_url_for is not None:
             return self._remote_url_for(repo)
-        base = self._git_base_url
-        if self._token and base.startswith("https://"):
-            base = f"https://x-access-token:{self._token}@{base[len('https://') :]}"
-        return f"{base}/{self._owner}/{repo}.git"
+        return self._resolver.git_remote_url(repo)
 
     async def _git(self, *args: str, cwd: str | None = None) -> str:
         def run() -> subprocess.CompletedProcess[str]:
@@ -82,11 +86,8 @@ class RealGitHost:
 
         proc = await asyncio.to_thread(run)
         if proc.returncode != 0:
-            shown = " ".join(args)
-            detail = (proc.stderr or proc.stdout).strip()
-            if self._token:
-                shown = shown.replace(self._token, "***")
-                detail = detail.replace(self._token, "***")
+            shown = _AUTH_URL.sub("x-access-token:***@", " ".join(args))
+            detail = _AUTH_URL.sub("x-access-token:***@", (proc.stderr or proc.stdout).strip())
             raise RuntimeError(f"git {shown} failed (rc {proc.returncode}): {detail}")
         return proc.stdout.strip()
 
@@ -150,40 +151,45 @@ class RealGitHost:
             replayed=False,
         )
 
-    def _client(self) -> httpx.AsyncClient:
+    def _client(self, cred: GitHubRepoCredential) -> httpx.AsyncClient:
         headers = {
             "Accept": "application/vnd.github+json",
-            "Authorization": f"Bearer {self._token}",
+            "Authorization": f"Bearer {cred.token}",
         }
         return httpx.AsyncClient(
-            base_url=self._api_url,
+            base_url=cred.api_url.rstrip("/"),
             headers=headers,
             transport=self._transport,
             timeout=self._timeout,
         )
 
-    async def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
-        async with self._client() as client:
+    async def _get(
+        self, cred: GitHubRepoCredential, path: str, params: dict[str, Any] | None = None
+    ) -> Any:
+        async with self._client(cred) as client:
             resp = await client.get(path, params=params)
             resp.raise_for_status()
             return resp.json()
 
-    async def _post(self, path: str, body: dict[str, Any]) -> Any:
-        async with self._client() as client:
+    async def _post(self, cred: GitHubRepoCredential, path: str, body: dict[str, Any]) -> Any:
+        async with self._client(cred) as client:
             resp = await client.post(path, json=body)
             resp.raise_for_status()
             return resp.json()
 
-    async def _patch(self, path: str, body: dict[str, Any]) -> Any:
-        async with self._client() as client:
+    async def _patch(self, cred: GitHubRepoCredential, path: str, body: dict[str, Any]) -> Any:
+        async with self._client(cred) as client:
             resp = await client.patch(path, json=body)
             resp.raise_for_status()
             return resp.json()
 
-    async def _graphql(self, query: str, variables: dict[str, Any]) -> Any:
-        async with self._client() as client:
+    async def _graphql(
+        self, cred: GitHubRepoCredential, query: str, variables: dict[str, Any]
+    ) -> Any:
+        async with self._client(cred) as client:
             resp = await client.post(
-                self._graphql_url, json={"query": query, "variables": variables}
+                _graphql_url_from(cred.api_url.rstrip("/")),
+                json={"query": query, "variables": variables},
             )
             resp.raise_for_status()
             payload = resp.json()
@@ -192,46 +198,59 @@ class RealGitHost:
             return payload.get("data")
 
     async def read_file(self, repo: str, path: str, ref: str) -> FileContent:
-        data = await self._get(f"/repos/{self._owner}/{repo}/contents/{path}", params={"ref": ref})
+        cred = self._credential(repo)
+        data = await self._get(
+            cred, f"/repos/{cred.owner}/{repo}/contents/{path}", params={"ref": ref}
+        )
         text = base64.b64decode(data["content"]).decode("utf-8")
         return FileContent(path=path, text=text, ref=ref)
 
     async def search_code(self, repo: str, query: str, ref: str = "") -> list[CodeHit]:
-        data = await self._get("/search/code", params={"q": f"{query} repo:{self._owner}/{repo}"})
+        cred = self._credential(repo)
+        data = await self._get(
+            cred, "/search/code", params={"q": f"{query} repo:{cred.owner}/{repo}"}
+        )
         return [CodeHit(path=item["path"], line=0, text="") for item in data.get("items", [])]
 
     async def open_draft_pr(
         self, repo: str, head: str, base: str, title: str, body: str
     ) -> PullRequest:
+        cred = self._credential(repo)
         found = await self._get(
-            f"/repos/{self._owner}/{repo}/pulls",
-            params={"head": f"{self._owner}:{head}", "state": "open"},
+            cred,
+            f"/repos/{cred.owner}/{repo}/pulls",
+            params={"head": f"{cred.owner}:{head}", "state": "open"},
         )
         if found:
             existing = found[0]
             updated = await self._patch(
-                f"/repos/{self._owner}/{repo}/pulls/{existing['number']}",
+                cred,
+                f"/repos/{cred.owner}/{repo}/pulls/{existing['number']}",
                 {"title": title, "body": body},
             )
             return _pull_request(repo, updated, created=False)
         created = await self._post(
-            f"/repos/{self._owner}/{repo}/pulls",
+            cred,
+            f"/repos/{cred.owner}/{repo}/pulls",
             {"title": title, "head": head, "base": base, "body": body, "draft": True},
         )
         return _pull_request(repo, created, created=True)
 
     async def find_open_pr(self, repo: str, head: str) -> PullRequest | None:
+        cred = self._credential(repo)
         found = await self._get(
-            f"/repos/{self._owner}/{repo}/pulls",
-            params={"head": f"{self._owner}:{head}", "state": "open"},
+            cred,
+            f"/repos/{cred.owner}/{repo}/pulls",
+            params={"head": f"{cred.owner}:{head}", "state": "open"},
         )
         if not found:
             return None
         return _pull_request(repo, found[0], created=False)
 
     async def read_pr_feedback(self, repo: str, number: int) -> PRFeedback:
-        pull = await self._get(f"/repos/{self._owner}/{repo}/pulls/{number}")
-        raw = await self._get(f"/repos/{self._owner}/{repo}/issues/{number}/comments")
+        cred = self._credential(repo)
+        pull = await self._get(cred, f"/repos/{cred.owner}/{repo}/pulls/{number}")
+        raw = await self._get(cred, f"/repos/{cred.owner}/{repo}/issues/{number}/comments")
         comments = tuple(PRComment(author=c["user"]["login"], body=c["body"]) for c in raw)
         return PRFeedback(repo=repo, number=number, state=pull["state"], comments=comments)
 
@@ -243,13 +262,15 @@ class RealGitHost:
         return True
 
     async def close_pr(self, repo: str, number: int) -> PullRequest:
+        cred = self._credential(repo)
         updated = await self._patch(
-            f"/repos/{self._owner}/{repo}/pulls/{number}", {"state": "closed"}
+            cred, f"/repos/{cred.owner}/{repo}/pulls/{number}", {"state": "closed"}
         )
         return _pull_request(repo, updated, created=False)
 
     async def mark_pr_ready(self, repo: str, number: int) -> PullRequest:
-        pull = await self._get(f"/repos/{self._owner}/{repo}/pulls/{number}")
+        cred = self._credential(repo)
+        pull = await self._get(cred, f"/repos/{cred.owner}/{repo}/pulls/{number}")
         if not bool(pull.get("draft", False)):
             return _pull_request(repo, pull, created=False)
         mutation = (
@@ -257,8 +278,8 @@ class RealGitHost:
             "markPullRequestReadyForReview(input: {pullRequestId: $id}) "
             "{ pullRequest { number } } }"
         )
-        await self._graphql(mutation, {"id": pull.get("node_id", "")})
-        refreshed = await self._get(f"/repos/{self._owner}/{repo}/pulls/{number}")
+        await self._graphql(cred, mutation, {"id": pull.get("node_id", "")})
+        refreshed = await self._get(cred, f"/repos/{cred.owner}/{repo}/pulls/{number}")
         return _pull_request(repo, refreshed, created=False)
 
 

@@ -159,6 +159,15 @@ class GitHubCredentialResolver:
             token=token,
         )
 
+    def git_remote_url(self, repo: str) -> str:
+        cred = self.resolve(repo)
+        if cred is None:
+            raise UnconfiguredRepositoryError(repo)
+        base = cred.git_base_url.rstrip("/")
+        if cred.token and base.startswith("https://"):
+            base = f"https://x-access-token:{cred.token}@{base[len('https://') :]}"
+        return f"{base}/{cred.owner}/{repo}.git"
+
     def _effective(self, repo: str) -> tuple[_Host, str, str] | None:
         override = self._config.repositories.get(repo)
         default = self._config.default
@@ -187,3 +196,19 @@ def build_github_credential_resolver(
     config = parse_github_config(raw)
     secrets = secret_resolver or EnvSecretResolver()
     return GitHubCredentialResolver(config, resolved.allowed_repos(), secrets)
+
+
+def build_single_identity_resolver(
+    *,
+    api_url: str,
+    owner: str,
+    git_base_url: str,
+    token: str,
+    repos: set[str],
+) -> GitHubCredentialResolver:
+    config = GitHubSourceConfig(
+        hosts={"default": _Host(api_url=api_url, git_base_url=git_base_url)},
+        default=_Identity(host="default", owner=owner, token_ref="__token__"),
+        repositories={},
+    )
+    return GitHubCredentialResolver(config, set(repos), EnvSecretResolver({"__token__": token}))

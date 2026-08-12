@@ -12,6 +12,8 @@ EXPECTED_TASKS = {
     "connectivity-check",
     "local-up",
     "local-down",
+    "local-stop",
+    "local-destroy",
     "logs",
     "db-migrate",
     "db-reset",

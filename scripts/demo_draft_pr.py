@@ -19,6 +19,7 @@ from services.coordination import (
     InMemoryWorkClaimStore,
 )
 from services.coordination.orphans import InMemoryOrphanRegistry
+from services.integration.github.credentials import build_single_identity_resolver
 from services.integration.github.mediator import GitHubMediator
 from services.integration.jira import (
     CLOUD,
@@ -402,7 +403,16 @@ async def main() -> int:
         print(f"Could not read {base} on the remote. Confirm the repo exists and the token works.")
         return 2
 
-    host = RealGitHost.from_settings(settings, remote_url_for=remote_url_for)
+    host = RealGitHost(
+        build_single_identity_resolver(
+            api_url=settings.github_api_url,
+            owner=settings.github_owner,
+            git_base_url=settings.github_git_base_url,
+            token=settings.github_token,
+            repos=set(allowlist),
+        ),
+        remote_url_for=remote_url_for,
+    )
     ledger = InMemorySideEffectLedger()
     gate = InMemorySequenceGate()
     mediator = GitHubMediator(

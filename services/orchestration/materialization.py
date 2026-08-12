@@ -35,13 +35,6 @@ def _slug(value: str) -> str:
     return _SLUG.sub("-", value).strip("-") or "x"
 
 
-def _default_remote_url(settings: Settings, repo: str) -> str:
-    base = settings.github_git_base_url.rstrip("/")
-    if settings.github_token and base.startswith("https://"):
-        base = f"https://x-access-token:{settings.github_token}@{base[len('https://') :]}"
-    return f"{base}/{settings.github_owner}/{repo}.git"
-
-
 def _run_git(args: list[str], cwd: str | None) -> str:
     proc = subprocess.run(
         ["git", *args],
@@ -73,11 +66,15 @@ class WorkspaceMaterializer:
         settings: Settings | None = None,
     ) -> WorkspaceMaterializer:
         resolved = settings or get_settings()
+        if remote_url_for is None:
+            from services.integration.github.credentials import build_github_credential_resolver
+
+            remote_url_for = build_github_credential_resolver(resolved).git_remote_url
         return cls(
             registry=registry,
             allowed_repos=frozenset(resolved.allowed_repos()),
             workspace_root=Path(resolved.execution_workspace_root),
-            remote_url_for=remote_url_for or (lambda repo: _default_remote_url(resolved, repo)),
+            remote_url_for=remote_url_for,
         )
 
     def _guard(self, repo: str) -> None:

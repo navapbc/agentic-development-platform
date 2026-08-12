@@ -15,6 +15,7 @@ from services.coordination.orphans import (
     OrphanArtifact,
 )
 from services.coordination.reaper import DELETE_BRANCH, reap
+from services.integration.github.credentials import build_single_identity_resolver
 
 REPO = "agentic-demo-service"
 OWNER = "acme"
@@ -47,9 +48,13 @@ def bare_remote(tmp_path) -> str:
 
 def _backend(bare_remote: str) -> RealGitHost:
     return RealGitHost(
-        api_url="https://ghes.invalid/api/v3",
-        owner=OWNER,
-        token="",
+        build_single_identity_resolver(
+            api_url="https://ghes.invalid/api/v3",
+            owner=OWNER,
+            git_base_url="",
+            token="",
+            repos={REPO},
+        ),
         remote_url_for=lambda repo: bare_remote,
     )
 

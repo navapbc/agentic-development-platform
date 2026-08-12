@@ -24,6 +24,7 @@ from services.coordination import (
     InMemoryWorkClaimStore,
 )
 from services.coordination.orphans import InMemoryOrphanRegistry
+from services.integration.github.credentials import build_single_identity_resolver
 from services.integration.github.mediator import GitHubMediator
 from services.integration.jira import (
     APPLIED,
@@ -197,9 +198,13 @@ class _FakeCodeStep:
 
 def _host(bare_remote: str, transport: httpx.MockTransport) -> RealGitHost:
     return RealGitHost(
-        api_url="http://ghes.invalid/api/v3",
-        owner=OWNER,
-        token="test-token",
+        build_single_identity_resolver(
+            api_url="http://ghes.invalid/api/v3",
+            owner=OWNER,
+            git_base_url="",
+            token="test-token",
+            repos={REPO},
+        ),
         remote_url_for=lambda repo: bare_remote,
         transport=transport,
     )
@@ -400,7 +405,7 @@ async def test_bounded_task_live_smoke() -> None:
     raw_issue = adapter.get_issue(issue_key)
 
     host = RealGitHost.from_settings()
-    base_sha = _remote_head(host._remote_url_for(repo), base)
+    base_sha = _remote_head(host._remote_url(repo), base)
     ledger = InMemorySideEffectLedger()
     gate = InMemorySequenceGate()
     mediator = GitHubMediator.from_settings(host, ledger, gate)
