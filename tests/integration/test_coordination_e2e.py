@@ -1,4 +1,4 @@
-"""Phase 4 exit proof: two agents run non-colliding units with the full coordination stack.
+"""Exit proof: two agents run non-colliding units with the full coordination stack.
 
 Hermetic. Composes Jira-canonical intake, the determinism manifest, atomic claims, the
 file-impact scheduler, the sequence gate, idempotent side effects, and outbound rendering.

@@ -200,7 +200,7 @@ Say over the second run:
 
 ## Act 5: the full pipeline with CI, review, policy, and approval on Kubernetes
 
-What happens: the same durable workflow now runs every Phase 6 gate before the pull request is promoted. It authors the change in the OpenHands sandbox pod on Kubernetes, runs continuous integration, repairs on a failure and reruns until the build is green, runs code and security review through the rebar kernel, runs Semgrep and Trivy scans, asks OPA for a promotion decision, then pauses for a human approval. An operator releases the pause with a second command. On approval the workflow re-checks the Jira ticket, promotes the draft to a ready pull request, and then parks for the pull-request-closed signal so the merge closes the loop. Every gate runs against a backend with no mock in the path.
+What happens: the same durable workflow now runs every gate before the pull request is promoted. It authors the change in the OpenHands sandbox pod on Kubernetes, runs continuous integration, repairs on a failure and reruns until the build is green, runs code and security review through the rebar kernel, runs Semgrep and Trivy scans, asks OPA for a promotion decision, then pauses for a human approval. An operator releases the pause with a second command. On approval the workflow re-checks the Jira ticket, promotes the draft to a ready pull request, and then parks for the pull-request-closed signal so the merge closes the loop. Every gate runs against a backend with no mock in the path.
 
 The pieces that need Kubernetes run on Kubernetes. The coding agent runs in a sandbox pod in the agent-sandbox namespace. The mcp-gateway and the pr-webhook run as deployments in the agentic-dev-platform namespace on the local cluster.
 
@@ -274,11 +274,11 @@ Stand-ins in this build:
 
 Grounded in the delivery plan:
 
-- AI coding agent hardening: the OpenHands agent already writes the small, well-defined change live in Acts 4 and 5 under hard limits on cost, tokens, tool calls, and wall-clock time. Remaining work is broader task coverage and reliability (Phase 5).
-- Automated ticket intake: a Jira poller and inbound webhook that start executions with no operator command, duplicate-safe (Phase 11).
-- Per-repository credentials: different owners, tokens, or GitHub hosts per repo from one deployment (Phase 12).
-- Observability and evaluation: Langfuse prompt management, OpenTelemetry tracing across stages, and context-accuracy scoring (Phase 7).
-- AWS transition: EKS workloads, image-based Lambda handlers, RDS, S3 WORM evidence, Secrets Manager and KMS (Phase 8).
+- AI coding agent hardening: the OpenHands agent already writes the small, well-defined change live in Acts 4 and 5 under hard limits on cost, tokens, tool calls, and wall-clock time. Remaining work is broader task coverage and reliability.
+- Automated ticket intake: a Jira poller and inbound webhook that start executions with no operator command, duplicate-safe.
+- Per-repository credentials: different owners, tokens, or GitHub hosts per repo from one deployment.
+- Observability and evaluation: Langfuse prompt management, OpenTelemetry tracing across stages, and context-accuracy scoring.
+- AWS transition: EKS workloads, image-based Lambda handlers, RDS, S3 WORM evidence, Secrets Manager and KMS.
 
 ## Setup for the recording
 
@@ -286,4 +286,4 @@ Grounded in the delivery plan:
 - Full pipeline for Act 5: deploy the Kubernetes pieces with `inv k8s-deploy --build`, port-forward the mcp-gateway and pr-webhook services, then run `inv demo-draft-pr --full-pipeline --await-pr-close` and release the pause with `inv approve-pr --workflow-id <id>`. Remove the deployment afterward with `inv k8s-delete`.
 - GitHub target for Act 4: set `GITHUB_API_URL=https://api.github.com`, `GITHUB_GIT_BASE_URL=https://github.com`, `GITHUB_OWNER`, and a `GITHUB_TOKEN` with contents and pull-request write. The same adapter targets an enterprise GitHub host by changing those values. Draft PRs are always allowed on public repositories.
 - Multi-repository: the platform operates on every repository in `ALLOWLIST_REPOS`. The demo selects one with `--repo`.
-- Trigger: executions are started by an operator command today. Automated Jira intake is planned (Phase 11). Acknowledge this if asked how a ticket auto-starts a run.
+- Trigger: executions are started by an operator command today. Automated Jira intake is planned. Acknowledge this if asked how a ticket auto-starts a run.

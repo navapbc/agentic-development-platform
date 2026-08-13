@@ -43,7 +43,7 @@ def connectivity_check(c):
 
 @task
 def local_up(c):
-    """Bring up the Phase-1 Compose stack."""
+    """Bring up the local Compose stack."""
     c.run(f"{COMPOSE} {_compose_files()} --profile repo-intelligence up -d --build")
 
 
@@ -92,7 +92,7 @@ def seed(c):
 
 @task
 def smoke_test(c):
-    """Run the Phase-1 smoke test: DB reachable, services healthy, Bedrock path."""
+    """Run the smoke test: DB reachable, services healthy, Bedrock path."""
     c.run("python -m scripts.smoke_test", pty=True)
 
 
@@ -116,7 +116,7 @@ def resume_parked(c):
 
 @task
 def durability_proof(c):
-    """Prove a workflow survives a worker restart (Phase-1 exit criterion)."""
+    """Prove a workflow survives a worker restart."""
     c.run("python -m scripts.durability_proof", pty=True)
 
 

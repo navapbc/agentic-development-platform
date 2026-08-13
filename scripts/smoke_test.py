@@ -1,4 +1,4 @@
-"""Phase-1 smoke test for local service health."""
+"""Smoke test for local service health."""
 
 from __future__ import annotations
 

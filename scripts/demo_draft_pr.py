@@ -206,7 +206,7 @@ def _jira_task_actionable(adapter, task_id: str, parked_status: str = "") -> tup
     return True, status or "unknown status"
 
 
-_PHASE_STEPS: tuple[tuple[str, str], ...] = (
+_STAGE_STEPS: tuple[tuple[str, str], ...] = (
     ("impl", "claims the work and writes the change"),
     ("sync", "syncs the branch onto the base"),
     ("commit", "commits and pushes the change"),
@@ -215,12 +215,12 @@ _PHASE_STEPS: tuple[tuple[str, str], ...] = (
 )
 
 
-async def _track_phases(handle: Any) -> None:
+async def _track_stages(handle: Any) -> None:
     from temporalio.api.enums.v1 import EventType
 
-    labels = dict(_PHASE_STEPS)
-    total = len(_PHASE_STEPS)
-    order = {key: index + 1 for index, (key, _) in enumerate(_PHASE_STEPS)}
+    labels = dict(_STAGE_STEPS)
+    total = len(_STAGE_STEPS)
+    order = {key: index + 1 for index, (key, _) in enumerate(_STAGE_STEPS)}
     announced: set[str] = set()
 
     def announce(key: str) -> None:
@@ -252,7 +252,7 @@ async def _track_phases(handle: Any) -> None:
                 elif name == "link_pr_to_issue":
                     announce("linkback")
     except Exception as exc:  # noqa: BLE001
-        print(f"[demo]   (phase tracking stopped: {exc})")
+        print(f"[demo]   (stage tracking stopped: {exc})")
 
 
 async def _run_via_temporal(
@@ -327,7 +327,7 @@ async def _run_via_temporal(
         task_queue=settings.temporal_task_queue,
         execution_timeout=timedelta(seconds=settings.draft_pr_execution_timeout_seconds),
     )
-    tracker = asyncio.create_task(_track_phases(handle))
+    tracker = asyncio.create_task(_track_stages(handle))
     try:
         result = await handle.result()
     finally:

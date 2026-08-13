@@ -491,7 +491,7 @@ async def test_bounded_task_live_smoke() -> None:
     mediator = GitHubMediator.from_settings(host, ledger, gate)
     materializer = WorkspaceMaterializer.from_settings(InMemoryOrphanRegistry())
     synchronizer = GitBranchSynchronizer.from_settings()
-    code_step = _FakeCodeStep({"docs/phase5-smoke.md": f"smoke {execution_id}\n"})
+    code_step = _FakeCodeStep({"docs/agent-smoke.md": f"smoke {execution_id}\n"})
 
     deps = PipelineDeps(
         snapshot_store=PostgresTaskSnapshotStore(),

@@ -1,9 +1,9 @@
-"""Phase 6 exit proof: the full draft-PR-to-merged scenario in a single hermetic run.
+"""End-to-end proof that a draft pull request reaches merged through every gate in one run.
 
-This composes every Phase 6 stage into one workflow execution on the Temporal test
-environment, the primary Jenkins route, and adds a provider-parity check that drives
-the same CIHost contract against the fake GitHub Actions fixture. The committed gate is
-hermetic. The live no-mocks path is exercised by `inv demo-draft-pr --full-pipeline`
+This composes the full draft-PR-to-merged delivery into one workflow execution on the
+Temporal test environment and the primary Jenkins route, and adds a provider-parity check
+that drives the same CIHost contract against the fake GitHub Actions fixture. The committed
+gate is hermetic. The live no-mocks path is exercised by `inv demo-draft-pr --full-pipeline`
 and the env-gated backend smokes.
 """
 

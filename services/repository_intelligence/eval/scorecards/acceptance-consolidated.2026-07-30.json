@@ -23,7 +23,7 @@
       "typescript"
     ]
   },
-  "phase_2_definition_of_done": true,
+  "definition_of_done": true,
   "record_type": "acceptance_consolidation",
   "repos": [
     {

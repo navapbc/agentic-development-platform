@@ -56,7 +56,7 @@ def test_consolidate_reports_definition_of_done_across_tiers(tmp_path: Path) -> 
     _write(tmp_path, "php.json", _scorecard("p", "phpactor@1", "lsp-php", generated_at="1"))
     record = consolidate.consolidate(consolidate.load_scorecards(tmp_path))
 
-    assert record["phase_2_definition_of_done"] is True
+    assert record["definition_of_done"] is True
     assert record["language_tiers"] == {"scip": ["ruby"], "lsp": ["php"]}
     assert record["summary"]["languages"] == 2
     assert [entry["language"] for entry in record["repos"]] == ["php", "ruby"]
@@ -81,7 +81,7 @@ def test_consolidate_fails_done_when_authoritative_is_not_primary(tmp_path: Path
     _write(tmp_path, "ruby.json", card)
     record = consolidate.consolidate(consolidate.load_scorecards(tmp_path))
 
-    assert record["phase_2_definition_of_done"] is False
+    assert record["definition_of_done"] is False
     assert record["repos"][0]["passes"] is False
 
 

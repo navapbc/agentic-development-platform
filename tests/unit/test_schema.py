@@ -23,7 +23,7 @@ def test_schema_name_is_agent_platform():
     assert metadata.schema == "agent_platform"
 
 
-def test_all_phase1_tables_present():
+def test_all_expected_tables_present():
     assert {t.name for t in metadata.sorted_tables} == EXPECTED_TABLES
 
 

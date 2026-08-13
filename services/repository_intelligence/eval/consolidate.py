@@ -125,7 +125,7 @@ def consolidate(cards: list[_NamedCard]) -> dict[str, Any]:
         "record_type": "acceptance_consolidation",
         "consolidation_version": CONSOLIDATION_VERSION,
         "generated_at": datetime.now(UTC).isoformat(),
-        "phase_2_definition_of_done": definition_of_done,
+        "definition_of_done": definition_of_done,
         "language_tiers": tiers,
         "hard_gates": dict(sorted(gate_results.items())),
         "repos": repos,

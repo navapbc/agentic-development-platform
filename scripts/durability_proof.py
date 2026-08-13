@@ -1,4 +1,4 @@
-"""Phase-1 durability proof: a Temporal workflow survives a worker restart."""
+"""Durability proof: a Temporal workflow survives a worker restart."""
 
 from __future__ import annotations
 
