@@ -1,0 +1,19 @@
+# Integration delivery modes and other non-secret integration settings.
+#
+# Copy this file to integrations.yaml in the same directory and edit it. integrations.yaml is
+# git-ignored so operator edits never conflict with a repository update.
+#
+# Each integration runs in one mode. polling uses the level-triggered poll only, webhook uses
+# inbound deliveries only, and hybrid runs both with the poll as the fallback. The webhook
+# signing secrets stay in the environment, not here.
+#
+# config_version records the schema version of this file. On load the platform compares your
+# integrations.yaml version to the version this release expects and fails closed when yours is
+# older. Run `inv config-check` to see what to add.
+
+config_version: 1
+
+modes:
+  pr_closed: polling
+  jira_intake: polling
+  ci_status: polling

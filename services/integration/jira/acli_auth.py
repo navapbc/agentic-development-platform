@@ -5,38 +5,37 @@ from __future__ import annotations
 import subprocess
 from urllib.parse import urlsplit
 
-from scripts.config import Settings
+from services.integration.jira.credentials import JiraProjectCredential
 
 
-def _acli_command(settings: Settings) -> list[str]:
-    return [settings.jira_acli_path] if settings.jira_acli_path else ["acli"]
+def _acli_command(acli_path: str) -> list[str]:
+    return [acli_path] if acli_path else ["acli"]
 
 
-def _site_host(settings: Settings) -> str:
-    raw = settings.jira_url
-    split = urlsplit(raw if "://" in raw else f"//{raw}")
+def _site_host(url: str) -> str:
+    split = urlsplit(url if "://" in url else f"//{url}")
     return split.netloc or split.path
 
 
-def acli_is_authenticated(settings: Settings) -> bool:
+def acli_is_authenticated(*, acli_path: str = "") -> bool:
     result = subprocess.run(
-        [*_acli_command(settings), "jira", "auth", "status"],
+        [*_acli_command(acli_path), "jira", "auth", "status"],
         capture_output=True,
         text=True,
     )
     return result.returncode == 0
 
 
-def ensure_acli_authenticated(settings: Settings) -> bool:
-    if acli_is_authenticated(settings):
+def ensure_acli_authenticated(cred: JiraProjectCredential, *, acli_path: str = "") -> bool:
+    if acli_is_authenticated(acli_path=acli_path):
         return False
-    site = _site_host(settings)
+    site = _site_host(cred.url)
     missing = [
         name
         for name, value in (
             ("jira_url", site),
-            ("jira_email", settings.jira_email),
-            ("jira_api_token", settings.jira_api_token),
+            ("jira_email", cred.email),
+            ("jira_api_token", cred.token),
         )
         if not value
     ]
@@ -44,17 +43,17 @@ def ensure_acli_authenticated(settings: Settings) -> bool:
         raise ValueError(f"cannot authenticate acli, missing settings: {', '.join(missing)}")
     result = subprocess.run(
         [
-            *_acli_command(settings),
+            *_acli_command(acli_path),
             "jira",
             "auth",
             "login",
             "--site",
             site,
             "--email",
-            settings.jira_email,
+            cred.email,
             "--token",
         ],
-        input=settings.jira_api_token,
+        input=cred.token,
         capture_output=True,
         text=True,
     )

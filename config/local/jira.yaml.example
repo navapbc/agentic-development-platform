@@ -18,7 +18,7 @@
 # statuses or the config fails closed at load. Leave a flow stage unset to skip it,
 # for a board that has no review status the pull request linkback is the review
 # signal and the ticket stays in its work_started status.
-
+config_version: 1
 sites:
   cloud:
     url: https://your-org.atlassian.net

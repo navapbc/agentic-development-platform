@@ -66,7 +66,7 @@ RUN apt-get update \
 
 FROM maven:3.9.9-eclipse-temurin-21 AS java-tools
 
-FROM node:24-bookworm-slim AS runtime
+FROM node:24-trixie-slim AS runtime
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \

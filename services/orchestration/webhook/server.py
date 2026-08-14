@@ -1,62 +1,79 @@
-"""HTTP entrypoint for the PR-closed webhook receiver."""
+"""HTTP entrypoint for the shared inbound webhook service."""
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any
+from typing import Any, cast
 
-from scripts.config import get_settings
+from scripts.config import Settings, get_settings
 
+from services.coordination.idempotency import PostgresSideEffectLedger, SideEffectLedger
+from services.integration.integrations import load_integrations_config
+from services.orchestration.webhook.inbound import IntegrationHandler, handle_inbound
 from services.orchestration.webhook.pr_events import (
     PostgresWorkflowResolver,
+    PrClosedHandler,
     TemporalSignaller,
-    WorkflowResolver,
-    WorkflowSignaller,
-    handle_pr_webhook,
 )
 
 logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("pr-webhook")
+log = logging.getLogger("inbound-webhook")
 
 HOST = "0.0.0.0"  # noqa: S104
 PORT = 8140
-_SIGNATURE_HEADER = "X-Hub-Signature-256"
+_SERVICE = "inbound-webhook"
+
+
+@dataclass(frozen=True)
+class Route:
+    handler: IntegrationHandler
+    allowed: frozenset[str]
+
+
+async def build_routes(settings: Settings) -> dict[str, Route]:
+    resolver = PostgresWorkflowResolver()
+    signaller = await TemporalSignaller.connect(settings)
+    pr_closed = PrClosedHandler(
+        secret=settings.github_webhook_secret, resolver=resolver, signaller=signaller
+    )
+    return {"/webhook/pr": Route(handler=pr_closed, allowed=frozenset(settings.allowed_repos()))}
 
 
 def build_handler(
-    resolver: WorkflowResolver, signaller: WorkflowSignaller
+    routes: dict[str, Route], ledger: SideEffectLedger, settings: Settings
 ) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
             if self.path in ("/health", "/healthz", "/"):
-                self._respond(200, {"status": "ok", "service": "pr-webhook"})
+                self._respond(200, {"status": "ok", "service": _SERVICE})
             else:
                 self._respond(404, {"error": "not found"})
 
         def do_POST(self) -> None:
-            if self.path != "/webhook/pr":
+            route = routes.get(self.path)
+            if route is None:
                 self._respond(404, {"error": "not found"})
                 return
             length = int(self.headers.get("Content-Length") or 0)
             body = self.rfile.read(length) if length else b""
-            settings = get_settings()
+            mode = load_integrations_config(settings).mode(route.handler.name)
             code, payload = asyncio.run(
-                handle_pr_webhook(
+                handle_inbound(
                     body,
-                    self.headers.get(_SIGNATURE_HEADER, ""),
-                    secret=settings.github_webhook_secret,
-                    allowed_repos=frozenset(settings.allowed_repos()),
-                    resolver=resolver,
-                    signaller=signaller,
+                    cast("dict[str, str]", self.headers),
+                    handler=route.handler,
+                    allowed=route.allowed,
+                    ledger=ledger,
+                    mode=mode,
                 )
             )
             self._respond(code, payload)
 
         def _respond(self, code: int, body: dict[str, Any]) -> None:
-            import json
-
             encoded = json.dumps(body).encode()
             self.send_response(code)
             self.send_header("Content-Type", "application/json")
@@ -71,10 +88,11 @@ def build_handler(
 
 
 def main() -> None:
-    resolver = PostgresWorkflowResolver()
-    signaller = asyncio.run(TemporalSignaller.connect())
-    handler = build_handler(resolver, signaller)
-    log.info("pr-webhook listening on %s:%d", HOST, PORT)
+    settings = get_settings()
+    routes = asyncio.run(build_routes(settings))
+    ledger = PostgresSideEffectLedger()
+    handler = build_handler(routes, ledger, settings)
+    log.info("%s listening on %s:%d for %s", _SERVICE, HOST, PORT, ", ".join(sorted(routes)))
     ThreadingHTTPServer((HOST, PORT), handler).serve_forever()
 
 

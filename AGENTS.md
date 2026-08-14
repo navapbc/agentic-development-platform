@@ -58,7 +58,7 @@ These rules apply to every piece of writing, prose, documentation, chat, on-scre
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **agentic-dev-platform** (6725 symbols, 12696 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **agentic-dev-platform** (8991 symbols, 16888 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 

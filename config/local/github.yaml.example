@@ -10,6 +10,8 @@
 # the default. Tokens are named references resolved from the local .env now and
 # Secrets Manager in AWS.
 
+config_version: 1
+
 hosts:
   github-com:
     api_url: https://api.github.com

@@ -1,9 +1,13 @@
 """Optional live Jira smokes, skipped unless explicitly enabled.
 
-Cloud: set RUN_LIVE_JIRA_CLOUD=1 with JIRA_URL, JIRA_EMAIL, JIRA_API_TOKEN, and a vendored acli;
-the Cloud smokes authenticate acli non-interactively when it is not already logged in.
-Data Center: set RUN_LIVE_JIRA_DC=1 with JIRA_PAT. The read smokes are non-mutating.
-RUN_LIVE_JIRA_CLOUD_WRITE=1 additionally runs a mutating Cloud smoke that creates an issue; it
+Configure the Cloud and Data Center sites in config/<env>/jira.yaml and export the tokens the
+config references, for example JIRA_API_TOKEN and JIRA_PAT, in .env.
+
+Cloud smokes run when RUN_LIVE_JIRA_CLOUD=1 and a vendored acli is present. They authenticate
+acli non-interactively when it is not already logged in. Data Center smokes run when
+RUN_LIVE_JIRA_DC=1. The read smokes are non-mutating.
+
+RUN_LIVE_JIRA_CLOUD_WRITE=1 additionally runs a mutating Cloud smoke that creates an issue. It
 runs before the read smoke, which reads that issue when no JIRA_SMOKE_ISSUE_KEY is set. The read
 retries briefly for a freshly created key to tolerate Jira Cloud JQL index lag.
 """
@@ -18,7 +22,7 @@ import pytest
 from scripts.config import Settings
 from services.integration.jira import build_jira_adapter, ensure_acli_authenticated
 from services.integration.jira.adapter import project_of
-from services.integration.jira.credentials import build_single_project_resolver
+from services.integration.jira.credentials import build_jira_credential_resolver
 from services.integration.jira.normalize import normalize_issue
 
 _SMOKE_ISSUE_KEY = os.environ.get("JIRA_SMOKE_ISSUE_KEY", "")
@@ -26,21 +30,19 @@ _created_key = ""
 _created_description = ""
 
 
+def _smoke_project(settings: Settings) -> str:
+    projects = sorted(settings.allowed_projects())
+    return projects[0] if projects else ""
+
+
 def _live_adapter(settings: Settings, project: str):
-    token = (
-        settings.jira_pat
-        if settings.jira_auth_mode.strip().lower() == "datacenter"
-        else settings.jira_api_token
-    )
-    resolver = build_single_project_resolver(
-        url=settings.jira_url,
-        auth_mode=settings.jira_auth_mode,
-        email=settings.jira_email,
-        token=token,
-        board=project,
-        project=project,
-    )
-    return build_jira_adapter(settings, project=project, resolver=resolver)
+    return build_jira_adapter(settings, project=project)
+
+
+def _acli_login(settings: Settings, project: str) -> None:
+    cred = build_jira_credential_resolver(settings).resolve(project)
+    if cred is not None:
+        ensure_acli_authenticated(cred, acli_path=settings.jira_acli_path)
 
 
 requires_live_cloud = pytest.mark.skipif(
@@ -76,9 +78,10 @@ def _read_created_issue(adapter, issue_key, *, attempts=6, delay=2.0):
 @requires_live_cloud_write
 def test_cloud_creates_and_reads_issue():
     global _created_key, _created_description
-    settings = Settings(jira_auth_mode="cloud")
-    ensure_acli_authenticated(settings)
-    adapter = _live_adapter(settings, settings.jira_project)
+    settings = Settings()
+    project = _smoke_project(settings)
+    _acli_login(settings, project)
+    adapter = _live_adapter(settings, project)
     marker = uuid4()
     summary = f"agentic-dev-platform cloud smoke {marker}"
     description = "\n".join(
@@ -132,8 +135,8 @@ def test_cloud_issue_reads_and_normalizes():
     issue_key = _created_key or _SMOKE_ISSUE_KEY
     if not issue_key:
         pytest.skip("set JIRA_SMOKE_ISSUE_KEY or enable RUN_LIVE_JIRA_CLOUD_WRITE")
-    settings = Settings(jira_auth_mode="cloud")
-    ensure_acli_authenticated(settings)
+    settings = Settings()
+    _acli_login(settings, project_of(issue_key))
     adapter = _live_adapter(settings, project_of(issue_key))
     raw = _read_created_issue(adapter, issue_key) if _created_key else adapter.get_issue(issue_key)
     task = normalize_issue(raw)
@@ -145,7 +148,7 @@ def test_cloud_issue_reads_and_normalizes():
 
 @requires_live_datacenter
 def test_datacenter_connection_reads_and_normalizes():
-    adapter = _live_adapter(Settings(jira_auth_mode="datacenter"), project_of(_SMOKE_ISSUE_KEY))
+    adapter = _live_adapter(Settings(), project_of(_SMOKE_ISSUE_KEY))
     raw = adapter.get_issue(_SMOKE_ISSUE_KEY)
     task = normalize_issue(raw)
     assert task.task_id == _SMOKE_ISSUE_KEY

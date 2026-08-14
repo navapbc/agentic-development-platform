@@ -5,13 +5,13 @@ namespace: agentic-dev-platform
 
 resources:
   - ../mcp-gateway.yaml
-  - ../pr-webhook.yaml
+  - ../inbound-webhook.yaml
 
 images:
   - name: REGISTRY/agentic-dev-platform/mcp-gateway
     newName: agentic-dev-platform-local
     newTag: latest
-  - name: REGISTRY/agentic-dev-platform/pr-webhook
+  - name: REGISTRY/agentic-dev-platform/inbound-webhook
     newName: agentic-dev-platform-local
     newTag: latest
 
@@ -26,6 +26,11 @@ configMapGenerator:
       - jira_acceptance_field=customfield_10040
       - temporal_host=host.docker.internal:7233
       - temporal_namespace=default
+  - name: integration-config
+    files:
+      - github.yaml=../../../config/local/github.yaml
+      - jira.yaml=../../../config/local/jira.yaml
+      - integrations.yaml=../../../config/local/integrations.yaml
 
 secretGenerator:
   - name: agentic-platform
@@ -46,12 +51,12 @@ patches:
       $patch: delete
   - target:
       kind: Ingress
-      name: pr-webhook
+      name: inbound-webhook
     patch: |
       apiVersion: networking.k8s.io/v1
       kind: Ingress
       metadata:
-        name: pr-webhook
+        name: inbound-webhook
       $patch: delete
   - target:
       kind: Deployment
@@ -70,16 +75,16 @@ patches:
                 imagePullPolicy: IfNotPresent
   - target:
       kind: Deployment
-      name: pr-webhook
+      name: inbound-webhook
     patch: |
       apiVersion: apps/v1
       kind: Deployment
       metadata:
-        name: pr-webhook
+        name: inbound-webhook
       spec:
         replicas: 1
         template:
           spec:
             containers:
-              - name: pr-webhook
+              - name: inbound-webhook
                 imagePullPolicy: IfNotPresent

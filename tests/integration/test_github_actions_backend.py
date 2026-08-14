@@ -7,6 +7,7 @@ import os
 import httpx
 import pytest
 from adapters.real.github_actions import RealGitHubActions, RepoNotAllowedError
+from services.integration.github.credentials import build_single_identity_resolver
 
 OWNER = "agentic-org"
 REPO = "agentic-demo-service"
@@ -60,10 +61,15 @@ def _fake_actions() -> tuple[httpx.MockTransport, dict]:
 
 
 def _backend(transport: httpx.MockTransport) -> RealGitHubActions:
-    return RealGitHubActions(
+    resolver = build_single_identity_resolver(
         api_url="https://github.invalid",
         owner=OWNER,
+        git_base_url="https://github.invalid",
         token="token",
+        repos={REPO},
+    )
+    return RealGitHubActions(
+        resolver=resolver,
         allowed_repos=frozenset({REPO}),
         transport=transport,
     )

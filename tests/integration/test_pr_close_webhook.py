@@ -1,4 +1,4 @@
-"""PR-closed webhook: authenticated, allowlisted events signal the resolved workflow."""
+"""PR-closed handler through the inbound webhook, signalling the resolved workflow."""
 
 from __future__ import annotations
 
@@ -6,13 +6,18 @@ import hashlib
 import hmac
 import json
 
+from services.coordination.idempotency import InMemorySideEffectLedger
+from services.integration.integrations import POLLING, WEBHOOK
+from services.orchestration.webhook.inbound import handle_inbound
 from services.orchestration.webhook.pr_events import (
     PrClosedEvent,
-    handle_pr_webhook,
+    PrClosedHandler,
     parse_pr_closed_event,
 )
 
 _ALLOWED = frozenset({"agentic-demo-service"})
+_SIGNATURE_HEADER = "X-Hub-Signature-256"
+_DELIVERY_HEADER = "X-GitHub-Delivery"
 
 
 class _FakeResolver:
@@ -55,6 +60,35 @@ def _sign(secret: str, body: bytes) -> str:
     return "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
 
 
+def _handler(
+    *, secret: str = "", workflow_id: str | None = "wf-1"
+) -> tuple[PrClosedHandler, _FakeResolver, _FakeSignaller]:
+    resolver = _FakeResolver(workflow_id)
+    signaller = _FakeSignaller()
+    handler = PrClosedHandler(secret=secret, resolver=resolver, signaller=signaller)
+    return handler, resolver, signaller
+
+
+async def _deliver(
+    handler: PrClosedHandler,
+    body: bytes,
+    *,
+    signature: str = "",
+    delivery: str = "d1",
+    mode: str = WEBHOOK,
+    ledger: InMemorySideEffectLedger | None = None,
+):
+    headers = {_SIGNATURE_HEADER: signature, _DELIVERY_HEADER: delivery}
+    return await handle_inbound(
+        body,
+        headers,
+        handler=handler,
+        allowed=_ALLOWED,
+        ledger=ledger or InMemorySideEffectLedger(),
+        mode=mode,
+    )
+
+
 def test_parse_pr_closed_event_extracts_task_id_from_branch():
     event = parse_pr_closed_event(_payload())
     assert event == PrClosedEvent(
@@ -67,132 +101,78 @@ def test_parse_ignores_non_closed_actions():
 
 
 async def test_merged_event_signals_workflow_with_merged_true():
-    resolver = _FakeResolver("wf-1")
-    signaller = _FakeSignaller()
-    body = _body(_payload(merged=True))
-
-    code, response = await handle_pr_webhook(
-        body,
-        "",
-        secret="",
-        allowed_repos=_ALLOWED,
-        resolver=resolver,
-        signaller=signaller,
-    )
-
+    handler, _resolver, signaller = _handler()
+    code, response = await _deliver(handler, _body(_payload(merged=True)))
     assert code == 200
     assert response == {"status": "signalled", "workflow_id": "wf-1", "merged": True}
     assert signaller.calls == [("wf-1", True)]
 
 
 async def test_closed_unmerged_event_signals_workflow_with_merged_false():
-    resolver = _FakeResolver("wf-1")
-    signaller = _FakeSignaller()
-    body = _body(_payload(merged=False))
-
-    code, _ = await handle_pr_webhook(
-        body,
-        "",
-        secret="",
-        allowed_repos=_ALLOWED,
-        resolver=resolver,
-        signaller=signaller,
-    )
-
+    handler, _resolver, signaller = _handler()
+    code, _ = await _deliver(handler, _body(_payload(merged=False)))
     assert code == 200
     assert signaller.calls == [("wf-1", False)]
 
 
 async def test_valid_signature_is_accepted():
-    resolver = _FakeResolver("wf-1")
-    signaller = _FakeSignaller()
+    handler, _resolver, signaller = _handler(secret="shh")
     body = _body(_payload())
-
-    code, _ = await handle_pr_webhook(
-        body,
-        _sign("shh", body),
-        secret="shh",
-        allowed_repos=_ALLOWED,
-        resolver=resolver,
-        signaller=signaller,
-    )
-
+    code, _ = await _deliver(handler, body, signature=_sign("shh", body))
     assert code == 200
     assert signaller.calls == [("wf-1", True)]
 
 
 async def test_invalid_signature_is_rejected():
-    resolver = _FakeResolver("wf-1")
-    signaller = _FakeSignaller()
+    handler, _resolver, signaller = _handler(secret="shh")
     body = _body(_payload())
-
-    code, response = await handle_pr_webhook(
-        body,
-        "sha256=deadbeef",
-        secret="shh",
-        allowed_repos=_ALLOWED,
-        resolver=resolver,
-        signaller=signaller,
-    )
-
+    code, response = await _deliver(handler, body, signature="sha256=deadbeef")
     assert code == 401
     assert response == {"error": "invalid signature"}
     assert signaller.calls == []
 
 
 async def test_non_allowlisted_repo_is_refused():
-    resolver = _FakeResolver("wf-1")
-    signaller = _FakeSignaller()
-    body = _body(_payload(repo="unlisted-service"))
-
-    code, response = await handle_pr_webhook(
-        body,
-        "",
-        secret="",
-        allowed_repos=_ALLOWED,
-        resolver=resolver,
-        signaller=signaller,
-    )
-
+    handler, resolver, signaller = _handler()
+    code, response = await _deliver(handler, _body(_payload(repo="unlisted-service")))
     assert code == 403
-    assert response == {"error": "repo not allowlisted"}
+    assert response == {"error": "not allowlisted"}
     assert resolver.calls == []
     assert signaller.calls == []
 
 
 async def test_unresolved_workflow_returns_not_found():
-    resolver = _FakeResolver(None)
-    signaller = _FakeSignaller()
-    body = _body(_payload())
-
-    code, response = await handle_pr_webhook(
-        body,
-        "",
-        secret="",
-        allowed_repos=_ALLOWED,
-        resolver=resolver,
-        signaller=signaller,
-    )
-
+    handler, _resolver, signaller = _handler(workflow_id=None)
+    code, response = await _deliver(handler, _body(_payload()))
     assert code == 404
     assert response == {"error": "workflow not found"}
     assert signaller.calls == []
 
 
 async def test_non_closed_action_is_ignored():
-    resolver = _FakeResolver("wf-1")
-    signaller = _FakeSignaller()
-    body = _body(_payload(action="synchronize"))
-
-    code, response = await handle_pr_webhook(
-        body,
-        "",
-        secret="",
-        allowed_repos=_ALLOWED,
-        resolver=resolver,
-        signaller=signaller,
-    )
-
+    handler, _resolver, signaller = _handler()
+    code, response = await _deliver(handler, _body(_payload(action="synchronize")))
     assert code == 202
     assert response == {"status": "ignored"}
     assert signaller.calls == []
+
+
+async def test_polling_mode_disables_the_webhook():
+    handler, resolver, signaller = _handler()
+    code, response = await _deliver(handler, _body(_payload()), mode=POLLING)
+    assert code == 202
+    assert response == {"status": "webhook disabled", "integration": "pr_closed"}
+    assert resolver.calls == []
+    assert signaller.calls == []
+
+
+async def test_redelivered_event_is_a_no_op_that_replays_the_outcome():
+    handler, _resolver, signaller = _handler()
+    ledger = InMemorySideEffectLedger()
+    body = _body(_payload())
+    first = await _deliver(handler, body, delivery="dup", ledger=ledger)
+    second = await _deliver(handler, body, delivery="dup", ledger=ledger)
+    assert first == (200, {"status": "signalled", "workflow_id": "wf-1", "merged": True})
+    assert second[0] == 200
+    assert second[1]["duplicate"] is True
+    assert signaller.calls == [("wf-1", True)]

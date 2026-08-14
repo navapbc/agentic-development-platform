@@ -24,7 +24,6 @@ def _alert() -> HumanInterventionAlert:
 
 def test_no_channels_configured_delivers_nothing():
     settings = Settings(
-        jira_url="",
         slack_webhook_url="",
         smtp_host="",
         alert_email_from="",
@@ -50,7 +49,6 @@ def test_slack_channel_posts_webhook(monkeypatch):
 
     monkeypatch.setattr("services.orchestration.notifications.urllib.request.urlopen", fake_urlopen)
     settings = Settings(
-        jira_url="",
         smtp_host="",
         alert_email_from="",
         alert_email_to="",
@@ -81,7 +79,6 @@ def test_email_backup_sends_via_smtp(monkeypatch):
 
     monkeypatch.setattr("services.orchestration.notifications.smtplib.SMTP", _SMTP)
     settings = Settings(
-        jira_url="",
         slack_webhook_url="",
         smtp_host="mail.local",
         smtp_port=25,
@@ -112,7 +109,6 @@ def test_jira_channel_posts_comment(monkeypatch):
         smtp_host="",
         alert_email_from="",
         alert_email_to="",
-        jira_url="https://jira",
     )
 
     delivered = send_human_intervention_alert(_alert(), settings)
@@ -131,7 +127,6 @@ def test_channel_error_is_swallowed(monkeypatch):
         smtp_host="",
         alert_email_from="",
         alert_email_to="",
-        jira_url="https://jira",
     )
 
     assert send_human_intervention_alert(_alert(), settings) == []

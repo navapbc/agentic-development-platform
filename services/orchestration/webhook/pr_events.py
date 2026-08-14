@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -13,8 +13,12 @@ from scripts.config import Settings, get_settings, to_host_hostport
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
+from services.orchestration.webhook.inbound import DispatchNotReady
+
 PR_CLOSED_SIGNAL = "submit_pr_closed"
 _SIGNATURE_PREFIX = "sha256="
+_SIGNATURE_HEADER = "X-Hub-Signature-256"
+_DELIVERY_HEADER = "X-GitHub-Delivery"
 _BRANCH_PREFIX = "agent/"
 
 
@@ -67,33 +71,34 @@ class WorkflowSignaller(Protocol):
     async def signal_pr_closed(self, workflow_id: str, *, merged: bool) -> None: ...
 
 
-async def handle_pr_webhook(
-    body: bytes,
-    signature_header: str,
-    *,
-    secret: str,
-    allowed_repos: frozenset[str],
-    resolver: WorkflowResolver,
-    signaller: WorkflowSignaller,
-) -> tuple[int, dict[str, Any]]:
-    if not verify_signature(secret, body, signature_header):
-        return 401, {"error": "invalid signature"}
-    try:
-        payload = json.loads(body or b"{}")
-    except json.JSONDecodeError:
-        return 400, {"error": "invalid json"}
-    if not isinstance(payload, dict):
-        return 400, {"error": "invalid payload"}
-    event = parse_pr_closed_event(payload)
-    if event is None:
-        return 202, {"status": "ignored"}
-    if event.repo not in allowed_repos:
-        return 403, {"error": "repo not allowlisted"}
-    workflow_id = await resolver.resolve(event)
-    if not workflow_id:
-        return 404, {"error": "workflow not found"}
-    await signaller.signal_pr_closed(workflow_id, merged=event.merged)
-    return 200, {"status": "signalled", "workflow_id": workflow_id, "merged": event.merged}
+class PrClosedHandler:
+    name = "pr_closed"
+
+    def __init__(
+        self, *, secret: str, resolver: WorkflowResolver, signaller: WorkflowSignaller
+    ) -> None:
+        self._secret = secret
+        self._resolver = resolver
+        self._signaller = signaller
+
+    def verify(self, body: bytes, headers: Mapping[str, str]) -> bool:
+        return verify_signature(self._secret, body, headers.get(_SIGNATURE_HEADER, ""))
+
+    def delivery_id(self, headers: Mapping[str, str]) -> str:
+        return headers.get(_DELIVERY_HEADER, "")
+
+    def parse(self, payload: dict[str, Any]) -> PrClosedEvent | None:
+        return parse_pr_closed_event(payload)
+
+    def allowlisted(self, event: PrClosedEvent, allowed: frozenset[str]) -> bool:
+        return event.repo in allowed
+
+    async def dispatch(self, event: PrClosedEvent) -> dict[str, Any]:
+        workflow_id = await self._resolver.resolve(event)
+        if not workflow_id:
+            raise DispatchNotReady("workflow not found")
+        await self._signaller.signal_pr_closed(workflow_id, merged=event.merged)
+        return {"status": "signalled", "workflow_id": workflow_id, "merged": event.merged}
 
 
 class PostgresWorkflowResolver:

@@ -52,6 +52,10 @@ spec:
                 configMapKeyRef:
                   name: agentic-platform
                   key: jira_acceptance_field
+          volumeMounts:
+            - name: integration-config
+              mountPath: /app/config/local
+              readOnly: true
           resources:
             requests:
               cpu: 100m
@@ -79,6 +83,10 @@ spec:
               port: http
             initialDelaySeconds: 5
             periodSeconds: 10
+      volumes:
+        - name: integration-config
+          configMap:
+            name: integration-config
 ---
 apiVersion: v1
 kind: Service

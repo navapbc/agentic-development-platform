@@ -28,12 +28,8 @@ from services.coordination import (
     WorkUnit,
     partition_by_file_impact,
 )
-from services.integration.jira.adapter import (
-    DATACENTER,
-    build_jira_adapter_for_issue,
-    project_of,
-)
-from services.integration.jira.credentials import build_single_project_resolver
+from services.integration.github.credentials import build_github_credential_resolver
+from services.integration.jira.adapter import build_jira_adapter_for_issue
 from services.integration.jira.snapshot import (
     AllowlistError,
     PostgresTaskSnapshotStore,
@@ -54,13 +50,6 @@ def _clock(value: datetime | None = None) -> str:
     return (value or datetime.now(UTC)).strftime("%H:%M:%S.%f")[:-3]
 
 
-def _authed_remote(settings: Settings, repo: str) -> str:
-    base = settings.github_git_base_url.rstrip("/")
-    if settings.github_token and base.startswith("https://"):
-        base = f"https://x-access-token:{settings.github_token}@{base[len('https://') :]}"
-    return f"{base}/{settings.github_owner}/{repo}.git"
-
-
 def _head_sha(remote: str) -> str:
     proc = subprocess.run(
         ["git", "ls-remote", remote, "HEAD"],
@@ -73,21 +62,7 @@ def _head_sha(remote: str) -> str:
 
 def _fetch_issue(settings: Settings, task_id: str) -> tuple[dict | None, str, str]:
     try:
-        project = project_of(task_id)
-        token = (
-            settings.jira_pat
-            if settings.jira_auth_mode.strip().lower() == DATACENTER
-            else settings.jira_api_token
-        )
-        resolver = build_single_project_resolver(
-            url=settings.jira_url,
-            auth_mode=settings.jira_auth_mode,
-            email=settings.jira_email,
-            token=token,
-            board=project,
-            project=project,
-        )
-        adapter = build_jira_adapter_for_issue(task_id, settings, resolver=resolver)
+        adapter = build_jira_adapter_for_issue(task_id, settings)
         raw = adapter.get_issue(task_id)
     except Exception as exc:  # noqa: BLE001
         return None, "", f"could not read {task_id} from Jira ({exc})"
@@ -161,8 +136,9 @@ async def main() -> int:
         await engine.dispose()
         return 2
 
+    gh_resolver = build_github_credential_resolver(settings)
     try:
-        repository_sha = _head_sha(_authed_remote(settings, args.repo))
+        repository_sha = _head_sha(gh_resolver.git_remote_url(args.repo))
     except Exception as exc:  # noqa: BLE001
         print(f"[demo] could not read the head commit of {args.repo} because {exc}")
         await engine.dispose()

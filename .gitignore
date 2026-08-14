@@ -10,6 +10,8 @@ config/*/github.yaml
 !config/*/github.yaml.example
 config/*/jira.yaml
 !config/*/jira.yaml.example
+config/*/integrations.yaml
+!config/*/integrations.yaml.example
 
 # AWS / credentials
 .aws/

@@ -69,20 +69,10 @@ class Settings(BaseSettings):
     repo_index_poll_interval_seconds: float = 30.0
     repo_index_worker_concurrency: int = 2
 
-    jira_url: str = ""
-    jira_auth_mode: str = "cloud"
-    jira_project: str = ""
-    jira_email: str = ""
-    jira_api_token: str = ""
-    jira_pat: str = ""
     jira_acli_path: str = ""
     jira_acceptance_field: str = ""
     jira_parked_status: str = ""
 
-    github_api_url: str = ""
-    github_git_base_url: str = ""
-    github_owner: str = ""
-    github_token: str = ""
     github_default_base_branch: str = "main"
     github_webhook_secret: str = ""
 

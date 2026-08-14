@@ -20,6 +20,11 @@ from adapters.interfaces.ci_host import (
     failure_summary,
 )
 from scripts.config import Settings, get_settings
+from services.integration.github.credentials import (
+    GitHubCredentialResolver,
+    GitHubRepoCredential,
+    build_github_credential_resolver,
+)
 
 _FAILED_CONCLUSIONS = ("failure", "timed_out", "startup_failure")
 _RESULT_BY_CONCLUSION = {
@@ -45,16 +50,12 @@ class RealGitHubActions:
     def __init__(
         self,
         *,
-        api_url: str,
-        owner: str,
-        token: str,
+        resolver: GitHubCredentialResolver,
         allowed_repos: frozenset[str],
         transport: httpx.AsyncBaseTransport | None = None,
         timeout: float = 30.0,
     ) -> None:
-        self._api_url = api_url.rstrip("/")
-        self._owner = owner
-        self._token = token
+        self._resolver = resolver
         self._allowed_repos = allowed_repos
         self._transport = transport
         self._timeout = timeout
@@ -68,25 +69,27 @@ class RealGitHubActions:
     ) -> RealGitHubActions:
         resolved = settings or get_settings()
         return cls(
-            api_url=resolved.github_api_url,
-            owner=resolved.github_owner,
-            token=resolved.github_token,
+            resolver=build_github_credential_resolver(resolved),
             allowed_repos=frozenset(resolved.allowed_repos()),
             transport=transport,
         )
 
-    def _guard(self, repo: str) -> None:
+    def _cred(self, repo: str) -> GitHubRepoCredential:
         if repo not in self._allowed_repos:
             raise RepoNotAllowedError(repo)
+        cred = self._resolver.resolve(repo)
+        if cred is None:
+            raise RepoNotAllowedError(repo)
+        return cred
 
-    def _client(self) -> httpx.AsyncClient:
+    def _client(self, cred: GitHubRepoCredential) -> httpx.AsyncClient:
         headers = {
             "Accept": "application/vnd.github+json",
-            "Authorization": f"Bearer {self._token}",
+            "Authorization": f"Bearer {cred.token}",
             "X-GitHub-Api-Version": "2022-11-28",
         }
         return httpx.AsyncClient(
-            base_url=self._api_url,
+            base_url=cred.api_url.rstrip("/"),
             headers=headers,
             transport=self._transport,
             timeout=self._timeout,
@@ -102,36 +105,36 @@ class RealGitHubActions:
         execution_id: str,
         parameters: Mapping[str, str] | None = None,
     ) -> BuildRef:
-        self._guard(repo)
-        existing = await self._find_run(repo, job, branch, commit_sha)
+        cred = self._cred(repo)
+        existing = await self._find_run(cred, repo, job, branch, commit_sha)
         if existing is not None:
             return _ref_from_run(repo, job, existing, triggered=False)
         inputs: dict[str, str] = {"execution_id": execution_id, "commit_sha": commit_sha}
         if parameters:
             inputs.update(parameters)
-        async with self._client() as client:
+        async with self._client(cred) as client:
             resp = await client.post(
-                f"/repos/{self._owner}/{repo}/actions/workflows/{job}/dispatches",
+                f"/repos/{cred.owner}/{repo}/actions/workflows/{job}/dispatches",
                 json={"ref": branch, "inputs": inputs},
             )
             resp.raise_for_status()
-        run = await self._find_run(repo, job, branch, commit_sha)
+        run = await self._find_run(cred, repo, job, branch, commit_sha)
         if run is None:
             return BuildRef(repo=repo, job=job, queue_id=0, build_number=0, url="", triggered=True)
         return _ref_from_run(repo, job, run, triggered=True)
 
     async def resolve_queue(self, repo: str, job: str, queue_id: int) -> BuildRef:
-        self._guard(repo)
+        cred = self._cred(repo)
         if queue_id <= 0:
             return BuildRef(
                 repo=repo, job=job, queue_id=queue_id, build_number=0, url="", triggered=True
             )
-        run = await self._get_run(repo, queue_id)
+        run = await self._get_run(cred, repo, queue_id)
         return _ref_from_run(repo, job, run, triggered=True)
 
     async def get_build(self, repo: str, job: str, build_number: int) -> BuildResult:
-        self._guard(repo)
-        run = await self._get_run(repo, build_number)
+        cred = self._cred(repo)
+        run = await self._get_run(cred, repo, build_number)
         status, result, completed = _map_run(run)
         return BuildResult(
             repo=repo,
@@ -144,10 +147,10 @@ class RealGitHubActions:
         )
 
     async def get_build_log(self, repo: str, job: str, build_number: int) -> BuildLog:
-        self._guard(repo)
-        async with self._client() as client:
+        cred = self._cred(repo)
+        async with self._client(cred) as client:
             jobs_resp = await client.get(
-                f"/repos/{self._owner}/{repo}/actions/runs/{build_number}/jobs"
+                f"/repos/{cred.owner}/{repo}/actions/runs/{build_number}/jobs"
             )
             jobs_resp.raise_for_status()
             jobs = jobs_resp.json().get("jobs") or []
@@ -155,7 +158,7 @@ class RealGitHubActions:
             text = ""
             if target is not None:
                 log_resp = await client.get(
-                    f"/repos/{self._owner}/{repo}/actions/jobs/{target}/logs",
+                    f"/repos/{cred.owner}/{repo}/actions/jobs/{target}/logs",
                     follow_redirects=True,
                 )
                 log_resp.raise_for_status()
@@ -168,18 +171,20 @@ class RealGitHubActions:
             failure_summary=failure_summary(text),
         )
 
-    async def _get_run(self, repo: str, run_id: int) -> dict[str, Any]:
-        async with self._client() as client:
-            resp = await client.get(f"/repos/{self._owner}/{repo}/actions/runs/{run_id}")
+    async def _get_run(
+        self, cred: GitHubRepoCredential, repo: str, run_id: int
+    ) -> dict[str, Any]:
+        async with self._client(cred) as client:
+            resp = await client.get(f"/repos/{cred.owner}/{repo}/actions/runs/{run_id}")
             resp.raise_for_status()
             return resp.json()
 
     async def _find_run(
-        self, repo: str, job: str, branch: str, commit_sha: str
+        self, cred: GitHubRepoCredential, repo: str, job: str, branch: str, commit_sha: str
     ) -> dict[str, Any] | None:
-        async with self._client() as client:
+        async with self._client(cred) as client:
             resp = await client.get(
-                f"/repos/{self._owner}/{repo}/actions/workflows/{job}/runs",
+                f"/repos/{cred.owner}/{repo}/actions/workflows/{job}/runs",
                 params={"branch": branch, "per_page": "30"},
             )
             resp.raise_for_status()

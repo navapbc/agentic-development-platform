@@ -1,4 +1,4 @@
-"""Forward GitHub pull-request events to the local pr-webhook through gh webhook forward.
+"""Forward GitHub pull-request events to the local inbound-webhook through gh webhook forward.
 
 gh webhook forward creates a dev webhook named "cli" on the target repository, dials the
 GitHub-hosted relay, and posts each delivery to the local URL. Traffic stays inside GitHub,
@@ -14,6 +14,12 @@ import os
 import shutil
 import subprocess
 import sys
+
+from services.integration.credentials import ConfigError, SecretNotFoundError
+from services.integration.github.credentials import (
+    UnconfiguredRepositoryError,
+    build_github_credential_resolver,
+)
 
 from scripts.config import get_settings
 
@@ -84,10 +90,18 @@ def _parse_args() -> argparse.Namespace:
 def main() -> int:
     args = _parse_args()
     settings = get_settings()
-    if not settings.github_owner:
-        print("[webhook] GITHUB_OWNER is not set in the environment", file=sys.stderr)
+    try:
+        cred = build_github_credential_resolver(settings).resolve(args.repo)
+    except (ConfigError, SecretNotFoundError, UnconfiguredRepositoryError) as exc:
+        print(f"[webhook] {exc}", file=sys.stderr)
         return 1
-    owner_repo = f"{settings.github_owner}/{args.repo}"
+    if cred is None:
+        print(
+            f"[webhook] {args.repo} is not allowlisted or has no configured owner",
+            file=sys.stderr,
+        )
+        return 1
+    owner_repo = f"{cred.owner}/{args.repo}"
 
     gh = _resolve_gh()
     if gh is None:

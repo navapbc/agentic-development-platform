@@ -42,6 +42,12 @@ def connectivity_check(c):
 
 
 @task
+def config_check(c):
+    """Report each per-environment config file version against the version this release expects."""
+    c.run("python -m scripts.config_check", pty=True)
+
+
+@task
 def local_up(c):
     """Bring up the local Compose stack."""
     c.run(f"{COMPOSE} {_compose_files()} --profile repo-intelligence up -d --build")
@@ -256,12 +262,12 @@ _K8S_RENDER = f"kubectl kustomize --load-restrictor LoadRestrictionsNone {_K8S_L
 
 @task(
     help={
-        "image": "Local image tag serving both the gateway and the webhook.",
+        "image": "Local image tag serving the gateway and the inbound webhook.",
         "build": "Build and tag the image from docker/Dockerfile before deploying.",
     }
 )
 def k8s_deploy(c, image="agentic-dev-platform-local:latest", build=False):
-    """Deploy the sandbox namespace, mcp-gateway, and pr-webhook to the local cluster."""
+    """Deploy the sandbox namespace, mcp-gateway, and inbound-webhook to the local cluster."""
     if build:
         c.run(
             f"docker build --build-context rebar=../rebar -f docker/Dockerfile -t {image} .",
@@ -274,25 +280,25 @@ def k8s_deploy(c, image="agentic-dev-platform-local:latest", build=False):
         pty=True,
     )
     c.run(
-        "kubectl rollout status deployment/pr-webhook -n agentic-dev-platform --timeout=120s",
+        "kubectl rollout status deployment/inbound-webhook -n agentic-dev-platform --timeout=120s",
         pty=True,
     )
 
 
 @task
 def k8s_delete(c):
-    """Remove the local mcp-gateway and pr-webhook deployment."""
+    """Remove the local mcp-gateway and inbound-webhook deployment."""
     c.run(f"{_K8S_RENDER} | kubectl delete --ignore-not-found -f -", pty=True)
 
 
 @task(
     help={
         "repo": "Repository name under GITHUB_OWNER to forward events from.",
-        "url": "Local pr-webhook endpoint that receives the deliveries.",
+        "url": "Local inbound-webhook endpoint that receives the deliveries.",
     }
 )
 def webhook_setup(c, repo="", url="http://localhost:8140/webhook/pr"):
-    """Forward GitHub pull-request events to the local pr-webhook via gh webhook forward."""
+    """Forward GitHub pull-request events to the local inbound-webhook via gh webhook forward."""
     repo_flag = f"--repo {repo}" if repo else ""
     c.run(f"python -m scripts.webhook_forward {repo_flag} --url {url}".strip(), pty=True)
 
@@ -310,6 +316,7 @@ for _t in (
     tunnel_stop,
     tunnel_status,
     connectivity_check,
+    config_check,
     local_up,
     local_down,
     local_stop,

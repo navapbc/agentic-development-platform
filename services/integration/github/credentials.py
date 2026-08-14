@@ -12,6 +12,7 @@ from services.integration.credentials import (
     EnvSecretResolver,
     SecretResolver,
     load_env_config,
+    require_current_config,
 )
 
 
@@ -192,6 +193,7 @@ def build_github_credential_resolver(
 ) -> GitHubCredentialResolver:
     resolved = settings or get_settings()
     env = environment or resolved.environment
+    require_current_config("github", environment=env)
     raw = load_env_config("github", environment=env)
     config = parse_github_config(raw)
     secrets = secret_resolver or EnvSecretResolver()

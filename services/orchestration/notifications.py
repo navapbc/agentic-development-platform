@@ -35,7 +35,7 @@ def _alert_body(alert: HumanInterventionAlert) -> str:
 
 
 def _post_jira_comment(settings: Settings, alert: HumanInterventionAlert, body: str) -> bool:
-    if not (settings.jira_url and alert.issue_key):
+    if not alert.issue_key:
         return False
     from services.integration.jira.adapter import build_jira_adapter_for_issue
 

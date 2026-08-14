@@ -202,14 +202,14 @@ Say over the second run:
 
 What happens: the same durable workflow now runs every gate before the pull request is promoted. It authors the change in the OpenHands sandbox pod on Kubernetes, runs continuous integration, repairs on a failure and reruns until the build is green, runs code and security review through the rebar kernel, runs Semgrep and Trivy scans, asks OPA for a promotion decision, then pauses for a human approval. An operator releases the pause with a second command. On approval the workflow re-checks the Jira ticket, promotes the draft to a ready pull request, and then parks for the pull-request-closed signal so the merge closes the loop. Every gate runs against a backend with no mock in the path.
 
-The pieces that need Kubernetes run on Kubernetes. The coding agent runs in a sandbox pod in the agent-sandbox namespace. The mcp-gateway and the pr-webhook run as deployments in the agentic-dev-platform namespace on the local cluster.
+The pieces that need Kubernetes run on Kubernetes. The coding agent runs in a sandbox pod in the agent-sandbox namespace. The mcp-gateway and the inbound-webhook run as deployments in the agentic-dev-platform namespace on the local cluster.
 
 Prerequisite runbook for this act:
 
 1. Bring the stack up with `inv local-up` so Temporal, Postgres, and the workers are running.
 2. Bring the Bedrock path up with `inv tunnel-start --detach` and confirm it with `inv connectivity-check`.
-3. Deploy the Kubernetes pieces with `inv k8s-deploy --build`. This builds the local image, creates the agent-sandbox and agentic-dev-platform namespaces, and rolls out the mcp-gateway and pr-webhook deployments. Confirm both are ready with `kubectl get pods -n agentic-dev-platform`.
-4. Port-forward the two services for the demo with `kubectl port-forward -n agentic-dev-platform svc/mcp-gateway 8150:80` and `kubectl port-forward -n agentic-dev-platform svc/pr-webhook 8140:80` in separate terminals.
+3. Deploy the Kubernetes pieces with `inv k8s-deploy --build`. This builds the local image, creates the agent-sandbox and agentic-dev-platform namespaces, and rolls out the mcp-gateway and inbound-webhook deployments. Confirm both are ready with `kubectl get pods -n agentic-dev-platform`.
+4. Port-forward the two services for the demo with `kubectl port-forward -n agentic-dev-platform svc/mcp-gateway 8150:80` and `kubectl port-forward -n agentic-dev-platform svc/inbound-webhook 8140:80` in separate terminals.
 5. Set the backend credentials the gates need. Jenkins or GitHub Actions for CI, Semgrep and Trivy on PATH for scans, OPA reachable for the policy decision, LiteLLM in front of Bedrock for review and authoring, a GitHub token with contents and pull-request write, and Jira Cloud credentials.
 6. Choose a not-done Jira ticket whose work is not already implemented and name it on the command.
 
@@ -243,7 +243,7 @@ Say as the workflow resumes and promotes:
 
 Say while closing the loop:
 
-> Merging the pull request drives the pr-webhook running on the cluster, which sends the close signal to the workflow. For the recording the same signal can be sent with `inv approve-pr --workflow-id <workflow-id> --pr-closed --merged`. Either way the workflow reaches its merged terminal state and the trail is complete.
+> Merging the pull request drives the inbound-webhook running on the cluster, which sends the close signal to the workflow. For the recording the same signal can be sent with `inv approve-pr --workflow-id <workflow-id> --pr-closed --merged`. Either way the workflow reaches its merged terminal state and the trail is complete.
 
 ## Closing (say this last)
 
@@ -263,12 +263,12 @@ Real and running in this demo:
 - The OpenHands coding agent writing the small, well-defined change in a sandboxed pod on Kubernetes under hard limits (Acts 4 and 5).
 - Live Jira Cloud snapshot, re-check, follow-up link that never duplicates, and status changes (Act 4).
 - Continuous integration on Jenkins or GitHub Actions with automatic repair and rerun, code and security review through the rebar kernel, Semgrep and Trivy scans, an OPA promotion decision, a durable human approval pause, promotion to a ready pull request, and a pull-request-closed handoff, all inside one workflow (Act 5).
-- The mcp-gateway and pr-webhook running as Kubernetes deployments alongside the sandbox namespace (Act 5).
+- The mcp-gateway and inbound-webhook running as Kubernetes deployments alongside the sandbox namespace (Act 5).
 - Postgres execution state and the append-only audit trail (Act 1).
 
 Stand-ins in this build:
 
-- The pull-request-closed handoff can be sent by the pr-webhook on the cluster when the pull request merges, and the same signal is available as an operator command for the recording.
+- The pull-request-closed handoff can be sent by the inbound-webhook on the cluster when the pull request merges, and the same signal is available as an operator command for the recording.
 
 ## Future features (planned, not in this demo)
 
@@ -283,7 +283,7 @@ Grounded in the delivery plan:
 ## Setup for the recording
 
 - Durable path for Act 4: bring the stack up with `inv local-up` so Temporal, Postgres, and the workflow and activity workers are running before `inv demo-draft-pr`. The demo drives Temporal and the OpenHands agent by default. Add `--in-process` and `--stub-agent` only to exercise the local stand-in paths.
-- Full pipeline for Act 5: deploy the Kubernetes pieces with `inv k8s-deploy --build`, port-forward the mcp-gateway and pr-webhook services, then run `inv demo-draft-pr --full-pipeline --await-pr-close` and release the pause with `inv approve-pr --workflow-id <id>`. Remove the deployment afterward with `inv k8s-delete`.
+- Full pipeline for Act 5: deploy the Kubernetes pieces with `inv k8s-deploy --build`, port-forward the mcp-gateway and inbound-webhook services, then run `inv demo-draft-pr --full-pipeline --await-pr-close` and release the pause with `inv approve-pr --workflow-id <id>`. Remove the deployment afterward with `inv k8s-delete`.
 - GitHub target for Act 4: set `GITHUB_API_URL=https://api.github.com`, `GITHUB_GIT_BASE_URL=https://github.com`, `GITHUB_OWNER`, and a `GITHUB_TOKEN` with contents and pull-request write. The same adapter targets an enterprise GitHub host by changing those values. Draft PRs are always allowed on public repositories.
 - Multi-repository: the platform operates on every repository in `ALLOWLIST_REPOS`. The demo selects one with `--repo`.
 - Trigger: executions are started by an operator command today. Automated Jira intake is planned. Acknowledge this if asked how a ticket auto-starts a run.

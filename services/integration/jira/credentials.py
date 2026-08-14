@@ -12,6 +12,7 @@ from services.integration.credentials import (
     EnvSecretResolver,
     SecretResolver,
     load_env_config,
+    require_current_config,
 )
 
 CLOUD = "cloud"
@@ -306,6 +307,7 @@ def build_jira_credential_resolver(
 ) -> JiraCredentialResolver:
     resolved = settings or get_settings()
     env = environment or resolved.environment
+    require_current_config("jira", environment=env)
     raw = load_env_config("jira", environment=env)
     config = parse_jira_config(raw)
     secrets = secret_resolver or EnvSecretResolver()

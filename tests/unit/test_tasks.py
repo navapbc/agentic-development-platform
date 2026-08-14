@@ -10,6 +10,7 @@ EXPECTED_TASKS = {
     "tunnel-stop",
     "tunnel-status",
     "connectivity-check",
+    "config-check",
     "local-up",
     "local-down",
     "local-stop",

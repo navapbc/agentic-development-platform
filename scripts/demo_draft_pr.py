@@ -19,8 +19,11 @@ from services.coordination import (
     InMemoryWorkClaimStore,
 )
 from services.coordination.orphans import InMemoryOrphanRegistry
-from services.integration.credentials import ConfigError
-from services.integration.github.credentials import build_single_identity_resolver
+from services.integration.credentials import ConfigError, SecretNotFoundError
+from services.integration.github.credentials import (
+    UnconfiguredRepositoryError,
+    build_github_credential_resolver,
+)
 from services.integration.github.mediator import GitHubMediator
 from services.integration.jira import (
     CLOUD,
@@ -32,7 +35,6 @@ from services.integration.jira.adapter import build_jira_adapter_for_issue, proj
 from services.integration.jira.credentials import (
     StatusFlow,
     build_jira_credential_resolver,
-    build_single_project_resolver,
 )
 from services.integration.jira.linkback import post_pr_linkback
 from services.integration.jira.normalize import normalize_issue
@@ -51,31 +53,6 @@ from services.orchestration.openhands_code_step import build_openhands_code_step
 
 from scripts.config import Settings, get_settings, to_host_hostport
 from scripts.connectivity import preflight as bedrock_preflight
-
-
-def _authed_remote(settings: Settings, repo: str) -> str:
-    base = settings.github_git_base_url.rstrip("/")
-    if settings.github_token and base.startswith("https://"):
-        base = f"https://x-access-token:{settings.github_token}@{base[len('https://') :]}"
-    return f"{base}/{settings.github_owner}/{repo}.git"
-
-
-def _demo_jira_adapter(settings: Settings, issue_key: str):
-    project = project_of(issue_key)
-    token = (
-        settings.jira_pat
-        if settings.jira_auth_mode.strip().lower() == DATACENTER
-        else settings.jira_api_token
-    )
-    resolver = build_single_project_resolver(
-        url=settings.jira_url,
-        auth_mode=settings.jira_auth_mode,
-        email=settings.jira_email,
-        token=token,
-        board=project,
-        project=project,
-    )
-    return build_jira_adapter_for_issue(issue_key, settings, resolver=resolver)
 
 
 def _demo_status_flow(settings: Settings, issue_key: str) -> StatusFlow:
@@ -170,22 +147,23 @@ class _DemoCodeStep:
 
 
 def _missing(settings: Settings) -> list[str]:
-    required = {
-        "GITHUB_API_URL": settings.github_api_url,
-        "GITHUB_GIT_BASE_URL": settings.github_git_base_url,
-        "GITHUB_OWNER": settings.github_owner,
-        "GITHUB_TOKEN": settings.github_token,
-    }
-    return [name for name, value in required.items() if not value]
+    try:
+        resolver = build_github_credential_resolver(settings)
+        repos = sorted(resolver.repos())
+        if not repos:
+            return ["config/<env>/github.yaml has no allowlisted repository with an identity"]
+        resolver.resolve(repos[0])
+    except (ConfigError, SecretNotFoundError, UnconfiguredRepositoryError) as exc:
+        return [str(exc)]
+    return []
 
 
-def _jira_configured(settings: Settings) -> bool:
-    return (
-        settings.jira_auth_mode.strip().lower() == CLOUD
-        and bool(settings.jira_url)
-        and bool(settings.jira_email)
-        and bool(settings.jira_api_token)
-    )
+def _jira_configured(settings: Settings, issue_key: str) -> bool:
+    try:
+        cred = build_jira_credential_resolver(settings).resolve(project_of(issue_key))
+    except (ConfigError, SecretNotFoundError):
+        return False
+    return cred is not None and cred.auth_mode == CLOUD
 
 
 _DONE_STATUSES = frozenset(
@@ -320,7 +298,7 @@ async def _run_via_temporal(
             run_policy=full_pipeline,
             run_approval=full_pipeline,
             await_pr_close=await_pr_close,
-            jira_project=settings.jira_project or task_id.split("-")[0],
+            jira_project=project_of(task_id),
             plan_approved=full_pipeline,
         ),
         id=workflow_id,
@@ -393,12 +371,10 @@ async def main() -> int:
     settings = get_settings()
     missing = _missing(settings)
     if missing:
-        print("Set these before running the demo (point them at github.com):")
-        print("  GITHUB_API_URL=https://api.github.com")
-        print("  GITHUB_GIT_BASE_URL=https://github.com")
-        print("  GITHUB_OWNER=<your github user or org>")
-        print("  GITHUB_TOKEN=<PAT with contents:write and pull-requests:write>")
-        print(f"Missing: {', '.join(missing)}")
+        print("Configure GitHub before running the demo.")
+        print("Set the host, owner, and token_ref in config/<env>/github.yaml.")
+        print("Export the token named by token_ref, for example GITHUB_TOKEN, in .env.")
+        print(f"Blocked: {', '.join(missing)}")
         return 2
 
     args = _parse_args()
@@ -421,27 +397,21 @@ async def main() -> int:
         print(f"Repo '{repo}' is not allowlisted. Choose one of: {', '.join(allowlist)}")
         return 2
 
+    gh_resolver = build_github_credential_resolver(settings)
+    gh_cred = gh_resolver.resolve(repo)
+    owner = gh_cred.owner if gh_cred is not None else "?"
     print(f"[demo] platform allowlist ({len(allowlist)} repos): {', '.join(allowlist)}")
-    print(f"[demo] repo={settings.github_owner}/{repo} base={base} execution={execution_id}")
+    print(f"[demo] repo={owner}/{repo} base={base} execution={execution_id}")
 
     def remote_url_for(name: str) -> str:
-        return _authed_remote(settings, name)
+        return gh_resolver.git_remote_url(name)
 
     base_sha = _remote_head(remote_url_for(repo), base)
     if not base_sha:
         print(f"Could not read {base} on the remote. Confirm the repo exists and the token works.")
         return 2
 
-    host = RealGitHost(
-        build_single_identity_resolver(
-            api_url=settings.github_api_url,
-            owner=settings.github_owner,
-            git_base_url=settings.github_git_base_url,
-            token=settings.github_token,
-            repos=set(allowlist),
-        ),
-        remote_url_for=remote_url_for,
-    )
+    host = RealGitHost(gh_resolver, remote_url_for=remote_url_for)
     ledger = InMemorySideEffectLedger()
     gate = InMemorySequenceGate()
     mediator = GitHubMediator(
@@ -454,9 +424,12 @@ async def main() -> int:
         remote_url_for=remote_url_for, settings=settings
     )
     existing_pr = await mediator.find_open_pr(repo, task_id)
-    if _jira_configured(settings):
-        ensure_acli_authenticated(settings)
-        adapter = _demo_jira_adapter(settings, task_id)
+    if _jira_configured(settings, task_id):
+        jira_resolver = build_jira_credential_resolver(settings)
+        cloud_cred = jira_resolver.resolve(project_of(task_id))
+        if cloud_cred is not None:
+            ensure_acli_authenticated(cloud_cred, acli_path=settings.jira_acli_path)
+        adapter = build_jira_adapter_for_issue(task_id, settings, resolver=jira_resolver)
         ok, detail = _jira_task_actionable(adapter, task_id, settings.jira_parked_status)
         print(f"[demo] jira preflight {task_id}: [{'ok' if ok else 'FAIL'}] {detail}")
         if not ok:
@@ -506,7 +479,11 @@ async def main() -> int:
     else:
         code_step = _DemoCodeStep(execution_id)
 
-    demo_flow = _demo_status_flow(settings, task_id) if _jira_configured(settings) else StatusFlow()
+    demo_flow = (
+        _demo_status_flow(settings, task_id)
+        if _jira_configured(settings, task_id)
+        else StatusFlow()
+    )
     deps = PipelineDeps(
         snapshot_store=_SnapshotStore(),
         claim_store=InMemoryWorkClaimStore(),
