@@ -2,32 +2,39 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from scripts.config import Settings
+from services.integration.github.credentials import allowed_repos
+from services.integration.jira.credentials import acceptance_field, allowed_projects
 
 
-def test_default_allowlists_match_plan(monkeypatch):
-    monkeypatch.delenv("ALLOWLIST_JIRA_PROJECTS", raising=False)
-    monkeypatch.delenv("ALLOWLIST_REPOS", raising=False)
-    s = Settings(_env_file=None)
-    assert s.allowed_projects() == {"AGENTDEV"}
-    assert s.allowed_repos() == {
-        "agentic-demo-service",
-        "agentic-demo-greenfield",
-        "agentic-demo-ts",
-        "agentic-demo-tf",
-        "agentic-demo-java",
-        "agentic-demo-php",
-        "agentic-demo-ruby",
-    }
+def _write(root: Path, name: str, body: str) -> None:
+    directory = root / "config" / "local"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / f"{name}.yaml").write_text(body, encoding="utf-8")
 
 
-def test_allowlist_parsing_trims_whitespace_and_drops_blanks():
-    s = Settings(
-        allowlist_jira_projects=" AGENTDEV , ",
-        allowlist_repos="repo-a, repo-b ,",
+def test_allowlists_are_read_from_the_config_files(tmp_path: Path) -> None:
+    _write(tmp_path, "github", "config_version: 1\nallowlist:\n  - repo-a\n  - repo-b\n")
+    _write(
+        tmp_path,
+        "jira",
+        "config_version: 1\nallowlist:\n  - AGENTDEV\nacceptance_field: customfield_10\n",
     )
-    assert s.allowed_projects() == {"AGENTDEV"}
-    assert s.allowed_repos() == {"repo-a", "repo-b"}
+    settings = Settings(_env_file=None)
+
+    assert allowed_repos(settings, environment="local", root=tmp_path) == {"repo-a", "repo-b"}
+    assert allowed_projects(settings, environment="local", root=tmp_path) == {"AGENTDEV"}
+    assert acceptance_field(settings, environment="local", root=tmp_path) == "customfield_10"
+
+
+def test_allowlist_parsing_trims_whitespace_and_drops_blanks(tmp_path: Path) -> None:
+    body = "config_version: 1\nallowlist:\n  - ' repo-a '\n  - ''\n  - repo-b\n"
+    _write(tmp_path, "github", body)
+    settings = Settings(_env_file=None)
+
+    assert allowed_repos(settings, environment="local", root=tmp_path) == {"repo-a", "repo-b"}
 
 
 def test_repo_intelligence_registry_parses_entries():

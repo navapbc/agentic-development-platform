@@ -11,6 +11,7 @@ from typing import Protocol
 
 from scripts.config import Settings, get_settings
 
+from services.integration.github.credentials import allowed_repos
 from services.integration.github.mediator import RepoNotAllowedError
 
 FAST_FORWARD = "fast_forward"
@@ -80,7 +81,7 @@ class GitBranchSynchronizer:
     ) -> GitBranchSynchronizer:
         resolved = settings or get_settings()
         return cls(
-            allowed_repos=frozenset(resolved.allowed_repos()),
+            allowed_repos=frozenset(allowed_repos(resolved)),
             remote_url_for=remote_url_for or (lambda repo: repo),
         )
 

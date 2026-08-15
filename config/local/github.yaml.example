@@ -1,16 +1,18 @@
-# GitHub source configuration.
-#
-# Copy this file to github.yaml in the same directory and edit it. github.yaml is
-# git-ignored so operator edits never conflict with repository updates.
-#
-# hosts define a connection (REST API base and git base) once and are reused.
-# default is the identity (host, owner, token) applied to any allowlisted
-# repository not listed under repositories. A repositories entry overrides the
-# host, owner, or token for one repository, and anything it leaves unset inherits
-# the default. Tokens are named references resolved from the local .env now and
-# Secrets Manager in AWS.
+# hosts define a connection (REST API base and git base) once and are reused. default is the
+# identity applied to any allowlisted repository not listed under repositories, and a
+# repositories entry overrides the host, owner, or token for one. allowlist is the set of
+# reachable repositories. token_ref names an environment variable holding the token.
 
 config_version: 1
+
+allowlist:
+  - agentic-demo-service
+  - agentic-demo-greenfield
+  - agentic-demo-ts
+  - agentic-demo-tf
+  - agentic-demo-java
+  - agentic-demo-php
+  - agentic-demo-ruby
 
 hosts:
   github-com:

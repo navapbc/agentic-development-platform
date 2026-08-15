@@ -10,6 +10,7 @@ from typing import Any
 
 from scripts.config import get_settings
 
+from services.integration.github.credentials import allowed_repos
 from services.repository_intelligence.context_builder.registry import (
     RepositoryIntelligenceRegistry,
     RepoSpec,
@@ -65,7 +66,7 @@ class Handler(BaseHTTPRequestHandler):
         if not repo or not focus:
             self._respond(400, {"error": "repo and focus are required"})
             return
-        if repo not in get_settings().allowed_repos():
+        if repo not in allowed_repos(get_settings()):
             self._respond(403, {"error": "repo not allowlisted"})
             return
         registry = build_registry()

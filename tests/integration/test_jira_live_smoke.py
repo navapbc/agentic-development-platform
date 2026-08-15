@@ -22,7 +22,7 @@ import pytest
 from scripts.config import Settings
 from services.integration.jira import build_jira_adapter, ensure_acli_authenticated
 from services.integration.jira.adapter import project_of
-from services.integration.jira.credentials import build_jira_credential_resolver
+from services.integration.jira.credentials import allowed_projects, build_jira_credential_resolver
 from services.integration.jira.normalize import normalize_issue
 
 _SMOKE_ISSUE_KEY = os.environ.get("JIRA_SMOKE_ISSUE_KEY", "")
@@ -31,7 +31,7 @@ _created_description = ""
 
 
 def _smoke_project(settings: Settings) -> str:
-    projects = sorted(settings.allowed_projects())
+    projects = sorted(allowed_projects(settings))
     return projects[0] if projects else ""
 
 

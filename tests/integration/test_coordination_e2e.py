@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
 from scripts.config import Settings
 from services.coordination import (
     ADMITTED,
@@ -58,7 +59,19 @@ def _dc_issue() -> dict:
 
 
 def _settings() -> Settings:
-    return Settings(allowlist_jira_projects="AGENTDEV", jira_acceptance_field="")
+    return Settings(_env_file=None)
+
+
+@pytest.fixture(autouse=True)
+def _allowlist_from_config(monkeypatch):
+    monkeypatch.setattr(
+        "services.integration.jira.snapshot.allowed_projects",
+        lambda settings=None: {"AGENTDEV"},
+    )
+    monkeypatch.setattr(
+        "services.integration.jira.snapshot.acceptance_field",
+        lambda settings=None: "",
+    )
 
 
 class _InMemorySnapshotStore:

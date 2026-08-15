@@ -42,7 +42,7 @@ Two host tools are optional and only needed for specific paths.
 Run these once from the repository root.
 
 1. Copy the environment file with `cp .env.example .env`, then fill in the placeholders. See [Configuration](#configuration). Never commit `.env`.
-2. Copy the GitHub source config with `cp config/local/github.yaml.example config/local/github.yaml`, then edit the copy. See [GitHub source configuration](#github-source-configuration). Never commit `config/local/github.yaml`.
+2. Copy the integration source configs with `cp config/local/github.yaml.example config/local/github.yaml` and `cp config/local/jira.yaml.example config/local/jira.yaml`, then edit the copies. See [Integration credentials](#integration-credentials). Never commit the `config/local/*.yaml` operator files.
 3. Create and activate a virtual environment with `python -m venv .venv && source .venv/bin/activate`.
 4. Install the package with its development extras using `pip install -e ".[dev,reasoning]"`. Add `sandbox` for the OpenHands agent, and see [CONTRIBUTING.md](CONTRIBUTING.md) for the editable `rebar` install needed on the review path.
 5. Choose a Bedrock connectivity provider in `.env` and open the path with `inv tunnel-start`. See [Bedrock connectivity](#bedrock-connectivity).
@@ -71,20 +71,29 @@ Two binaries live under `vendor/bin` and are provisioned outside the Python inst
 | Bedrock | `AWS_PROFILE`, `AWS_REGION`, `BEDROCK_CONNECTIVITY_PROVIDER`, `BEDROCK_ENDPOINT_URL`, provider keys | Set your profile and provider. See [Bedrock connectivity](#bedrock-connectivity) |
 | LiteLLM | `LITELLM_BASE_URL`, `LITELLM_MASTER_KEY` | Set a local master key |
 | Review (rebar) | `REBAR_LLM_*`, `REVIEW_ATTESTATION_SECRET` | Point at LiteLLM, set an attestation secret |
-| Jira | `JIRA_URL`, `JIRA_AUTH_MODE`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_PAT`, `JIRA_ACLI_PATH` | Needed for ticket intake and linkback |
-| GitHub | `GITHUB_API_URL`, `GITHUB_GIT_BASE_URL`, `GITHUB_OWNER`, `GITHUB_TOKEN` | Needed to open pull requests |
+| Integration tokens | `GITHUB_TOKEN`, `JIRA_API_TOKEN`, `JIRA_PAT` | The secrets named by `token_ref` in `github.yaml` and `jira.yaml`. See [Integration credentials](#integration-credentials) |
+| Jira tooling | `JIRA_ACLI_PATH`, `ACLI_VERSION`, `ACLI_DOWNLOAD_URL`, `ACLI_SHA256` | Path and provisioning for the vendored acli binary |
 | Policy and observability | `OPA_URL`, `LANGFUSE_*`, `OTEL_EXPORTER_OTLP_ENDPOINT` | Defaults work locally |
-| Allowlists | `ALLOWLIST_JIRA_PROJECTS`, `ALLOWLIST_REPOS` | Leave at the defaults unless you are adding a target |
+
+The non-secret integration settings, including the repository and project allowlists, live in the `config/local` YAML files rather than `.env`. See [Integration credentials](#integration-credentials).
+
+### Integration credentials
+
+Non-secret integration config lives in the git-ignored YAML files under `config/local`, and the secret tokens live in `.env`. The YAML never holds a secret. It names one with `token_ref`, and the platform reads the value from the environment variable of that name locally and from Secrets Manager in AWS.
+
+For example, `github.yaml` sets `token_ref: GITHUB_TOKEN` and `.env` sets `GITHUB_TOKEN=<your token>`. Do not paste a token into the YAML. Set it in `.env` under the key the config names. Every `token_ref` you use must have a matching key in `.env`. The repository and project allowlists also live in these YAML files under `allowlist`, so `.env` holds only the secrets.
 
 ### GitHub source configuration
 
 `config/local/github.yaml` maps each repository to the host, owner, and token used to reach it. Copy the committed template with `cp config/local/github.yaml.example config/local/github.yaml` and edit the copy. The file is git-ignored, so your edits never conflict with a repository update.
 
-`hosts` names a connection once, its REST API base and its git base, and reuses it under a short key. `default` sets the host, owner, and token reference applied to any allowlisted repository you do not list under `repositories`. A `repositories` entry overrides the host, owner, or token for one repository, and anything it leaves unset inherits the default. A github.com repository that uses the default identity needs no entry.
-
-Tokens are named references rather than values. A `token_ref` of `GITHUB_TOKEN` reads `GITHUB_TOKEN` from `.env` locally and from Secrets Manager in AWS. Every token you name in `github.yaml` must exist in `.env`.
+`allowlist` lists the repositories the platform may reach and is the authorization boundary. `hosts` names a connection once, its REST API base and its git base, and reuses it under a short key. `default` sets the host, owner, and token reference applied to any allowlisted repository you do not list under `repositories`. A `repositories` entry overrides the host, owner, or token for one repository, and anything it leaves unset inherits the default. A github.com repository that uses the default identity needs no entry.
 
 ```yaml
+allowlist:
+  - agentic-demo-service
+  - agentic-demo-greenfield
+
 hosts:
   github-com:
     api_url: https://api.github.com
@@ -110,13 +119,16 @@ repositories:
 
 `config/local/jira.yaml` maps each project to the site, account, token, and board used to reach it. Copy the committed template with `cp config/local/jira.yaml.example config/local/jira.yaml` and edit the copy. The file is git-ignored, so your edits never conflict with a repository update.
 
-`sites` names a connection once, its site url and an `auth_mode` of `cloud` or `datacenter`, and reuses it under a short key. `default` sets the site, account fields, token reference, and board applied to any allowlisted project you do not list under `projects`. A `projects` entry overrides the site, account, token, or board for one project, and anything it leaves unset inherits the default. A cloud identity carries an `email` and a `token_ref` for the API token, and a datacenter identity carries a `token_ref` for the PAT.
-
-Tokens are named references rather than values. A `token_ref` of `JIRA_API_TOKEN` reads `JIRA_API_TOKEN` from `.env` locally and from Secrets Manager in AWS. Every token you name in `jira.yaml` must exist in `.env`.
+`allowlist` lists the projects the platform may reach and is the authorization boundary. `acceptance_field` names the Jira custom field that holds acceptance criteria, and an empty value skips it. `sites` names a connection once, its site url and an `auth_mode` of `cloud` or `datacenter`, and reuses it under a short key. `default` sets the site, account fields, token reference, and board applied to any allowlisted project you do not list under `projects`. A `projects` entry overrides the site, account, token, or board for one project, and anything it leaves unset inherits the default. A cloud identity carries an `email` and a `token_ref` for the API token, and a datacenter identity carries a `token_ref` for the PAT.
 
 `statuses` lists the board's available status names, and `flow` maps the two moves the platform drives, `work_started` on the work claim and `ready_for_review` on the draft pull request, onto concrete statuses. Every status in `flow` must appear in `statuses` or the config fails closed at load. Leave a `flow` stage unset to skip it. A board with no review status leaves `ready_for_review` unset, keeps the ticket in its `work_started` status, and relies on the pull request linkback as the review signal. The platform never invents a status and never advances a ticket to a terminal status such as Done.
 
 ```yaml
+allowlist:
+  - AGENTDEV
+
+acceptance_field: ""
+
 sites:
   cloud:
     url: https://your-org.atlassian.net

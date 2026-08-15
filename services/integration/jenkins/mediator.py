@@ -16,6 +16,7 @@ from services.coordination.sequencing import (
     SequenceDecision,
     SequenceGate,
 )
+from services.integration.github.credentials import allowed_repos
 
 
 class RepoNotAllowedError(Exception):
@@ -53,7 +54,7 @@ class JenkinsMediator:
             backend=backend,
             ledger=ledger,
             gate=gate,
-            allowed_repos=frozenset(resolved.allowed_repos()),
+            allowed_repos=frozenset(allowed_repos(resolved)),
         )
 
     def _guard(self, repo: str) -> None:

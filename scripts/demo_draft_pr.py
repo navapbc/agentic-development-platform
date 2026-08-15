@@ -22,6 +22,7 @@ from services.coordination.orphans import InMemoryOrphanRegistry
 from services.integration.credentials import ConfigError, SecretNotFoundError
 from services.integration.github.credentials import (
     UnconfiguredRepositoryError,
+    allowed_repos,
     build_github_credential_resolver,
 )
 from services.integration.github.mediator import GitHubMediator
@@ -34,6 +35,7 @@ from services.integration.jira import (
 from services.integration.jira.adapter import build_jira_adapter_for_issue, project_of
 from services.integration.jira.credentials import (
     StatusFlow,
+    acceptance_field,
     build_jira_credential_resolver,
 )
 from services.integration.jira.linkback import post_pr_linkback
@@ -257,7 +259,7 @@ async def _run_via_temporal(
     from temporalio.client import Client
 
     stored_issue = normalize_issue(
-        raw_issue, acceptance_field=settings.jira_acceptance_field
+        raw_issue, acceptance_field=acceptance_field(settings)
     ).to_dict()
     execution_id = f"exec-{uuid.uuid4().hex[:8]}"
     workflow_id = f"draft-pr-{task_id}-{execution_id}"
@@ -392,7 +394,7 @@ async def main() -> int:
             print("[demo]   `inv connectivity-check`, then retry.")
             return 2
 
-    allowlist = sorted(settings.allowed_repos())
+    allowlist = sorted(allowed_repos(settings))
     if repo not in allowlist:
         print(f"Repo '{repo}' is not allowlisted. Choose one of: {', '.join(allowlist)}")
         return 2

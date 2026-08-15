@@ -66,13 +66,16 @@ class WorkspaceMaterializer:
         settings: Settings | None = None,
     ) -> WorkspaceMaterializer:
         resolved = settings or get_settings()
-        if remote_url_for is None:
-            from services.integration.github.credentials import build_github_credential_resolver
+        from services.integration.github.credentials import (
+            allowed_repos,
+            build_github_credential_resolver,
+        )
 
+        if remote_url_for is None:
             remote_url_for = build_github_credential_resolver(resolved).git_remote_url
         return cls(
             registry=registry,
-            allowed_repos=frozenset(resolved.allowed_repos()),
+            allowed_repos=frozenset(allowed_repos(resolved)),
             workspace_root=Path(resolved.execution_workspace_root),
             remote_url_for=remote_url_for,
         )

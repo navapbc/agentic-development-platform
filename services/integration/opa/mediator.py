@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from adapters.interfaces.policy_engine import PolicyDecision, PolicyEngine, PolicyInput
 from scripts.config import Settings, get_settings
+from services.integration.github.credentials import allowed_repos
 
 
 class RepoNotAllowedError(Exception):
@@ -24,7 +25,7 @@ class PromotionPolicyMediator:
         cls, engine: PolicyEngine, settings: Settings | None = None
     ) -> PromotionPolicyMediator:
         resolved = settings or get_settings()
-        return cls(engine=engine, allowed_repos=frozenset(resolved.allowed_repos()))
+        return cls(engine=engine, allowed_repos=frozenset(allowed_repos(resolved)))
 
     def _guard(self, repo: str) -> None:
         if repo not in self.allowed_repos:

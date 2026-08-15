@@ -23,6 +23,7 @@ from scripts.config import Settings, get_settings
 from services.integration.github.credentials import (
     GitHubCredentialResolver,
     GitHubRepoCredential,
+    allowed_repos,
     build_github_credential_resolver,
 )
 
@@ -70,7 +71,7 @@ class RealGitHubActions:
         resolved = settings or get_settings()
         return cls(
             resolver=build_github_credential_resolver(resolved),
-            allowed_repos=frozenset(resolved.allowed_repos()),
+            allowed_repos=frozenset(allowed_repos(resolved)),
             transport=transport,
         )
 

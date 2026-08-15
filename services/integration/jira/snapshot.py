@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
+from services.integration.jira.credentials import acceptance_field, allowed_projects
 from services.integration.jira.normalize import normalize_issue
 
 
@@ -132,7 +133,7 @@ def _snapshot_from(candidate: SnapshotCandidate, snapshot_id: str, version: int)
 
 
 def _enforce_allowlist(project: str, settings: Settings) -> None:
-    allowed = settings.allowed_projects()
+    allowed = allowed_projects(settings)
     if project not in allowed:
         raise AllowlistError(
             f"jira project {project!r} is not allowlisted (allowed: {sorted(allowed)})"
@@ -152,7 +153,7 @@ async def capture_task_snapshot(
     normalized = normalize_issue(
         raw_issue,
         raw_comments=raw_comments,
-        acceptance_field=settings.jira_acceptance_field,
+        acceptance_field=acceptance_field(settings),
     )
     _enforce_allowlist(normalized.project, settings)
     payload = normalized.to_dict()

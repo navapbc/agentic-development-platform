@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 
 from scripts.config import Settings, get_settings
 
@@ -12,6 +13,7 @@ from services.integration.credentials import (
     EnvSecretResolver,
     SecretResolver,
     load_env_config,
+    parse_allowlist,
     require_current_config,
 )
 
@@ -49,6 +51,7 @@ class GitHubSourceConfig:
     hosts: dict[str, _Host]
     default: _Identity | None
     repositories: dict[str, _RepoOverride]
+    allowlist: tuple[str, ...] = ()
 
 
 class UnconfiguredRepositoryError(RuntimeError):
@@ -128,7 +131,10 @@ def parse_github_config(raw: Mapping[str, object]) -> GitHubSourceConfig:
     hosts = _parse_hosts(raw)
     default = _parse_default(raw, hosts)
     repositories = _parse_repositories(raw, hosts)
-    return GitHubSourceConfig(hosts=hosts, default=default, repositories=repositories)
+    allowlist = parse_allowlist(raw, "github")
+    return GitHubSourceConfig(
+        hosts=hosts, default=default, repositories=repositories, allowlist=allowlist
+    )
 
 
 class GitHubCredentialResolver:
@@ -197,7 +203,21 @@ def build_github_credential_resolver(
     raw = load_env_config("github", environment=env)
     config = parse_github_config(raw)
     secrets = secret_resolver or EnvSecretResolver()
-    return GitHubCredentialResolver(config, resolved.allowed_repos(), secrets)
+    return GitHubCredentialResolver(config, set(config.allowlist), secrets)
+
+
+def allowed_repos(
+    settings: Settings | None = None,
+    *,
+    environment: str | None = None,
+    root: Path | None = None,
+) -> set[str]:
+    """Return the allowlisted repositories declared in config/<env>/github.yaml."""
+    resolved = settings or get_settings()
+    env = environment or resolved.environment
+    require_current_config("github", environment=env, root=root)
+    raw = load_env_config("github", environment=env, root=root)
+    return set(parse_github_config(raw).allowlist)
 
 
 def build_single_identity_resolver(

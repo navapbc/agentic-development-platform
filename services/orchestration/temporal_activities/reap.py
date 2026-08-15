@@ -49,12 +49,13 @@ async def reap_orphans(request: ReapRequest) -> ReapReport:
     from scripts.config import get_settings
 
     from services.coordination.reaper import reap
+    from services.integration.github.credentials import allowed_repos
 
     settings = get_settings()
     receipt = await reap(
         registry=_build_registry(),
         backend=_build_backend(),
-        allowed_repos=frozenset(settings.allowed_repos()),
+        allowed_repos=frozenset(allowed_repos(settings)),
         now=datetime.now(UTC),
         dry_run=request.dry_run,
     )

@@ -140,6 +140,18 @@ def _issue(key: str, project: str) -> dict:
     }
 
 
+@pytest.fixture(autouse=True)
+def _allowlist_from_config(monkeypatch):
+    monkeypatch.setattr(
+        "services.integration.jira.snapshot.allowed_projects",
+        lambda settings=None: {"CLOUDP", "DCP"},
+    )
+    monkeypatch.setattr(
+        "services.integration.jira.snapshot.acceptance_field",
+        lambda settings=None: "",
+    )
+
+
 async def test_two_tenants_reach_a_draft_pr_with_no_shared_credential(tmp_path) -> None:
     remotes = {
         "repo-a": _bare_remote(tmp_path, "repo-a"),
@@ -166,11 +178,7 @@ async def test_two_tenants_reach_a_draft_pr_with_no_shared_credential(tmp_path) 
         {"CLOUDP", "DCP"},
         EnvSecretResolver({"JTOK_C": "jtok-c", "JTOK_D": "jtok-d"}),
     )
-    settings = Settings(
-        allowlist_jira_projects="CLOUDP,DCP",
-        allowlist_repos="repo-a,repo-b",
-        jira_acceptance_field="",
-    )
+    settings = Settings(_env_file=None)
 
     async def _run(repo: str, issue_key: str, project: str):
         materializer = WorkspaceMaterializer(

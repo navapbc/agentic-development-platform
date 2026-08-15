@@ -35,8 +35,10 @@ These rules apply to every piece of writing, prose, documentation, chat, on-scre
 
 ## Code
 
-- Default to writing zero comments. Only add a comment when removing it would actively mislead a reader: a non-obvious constraint, a workaround for a specific bug (with a reference), or an invariant callers depend on that is not enforced in code.
-- Do not add narrative context, forward-looking notes, references to files that do not exist yet, plain restatements of what the code does, or explanations of why a stub or mock exists. Backstory belongs in the PR description, not the source.
+- Prefer self-documenting code over comments. Choose names, types, and structure so intent is clear from the code itself. Add a comment only when it carries information a competent engineer cannot readily derive from the code.
+- A comment is justified only when removing it would leave a reader misinformed, namely a non-obvious constraint, a workaround for a specific bug with a reference, or an invariant callers depend on that the code does not enforce. When in doubt, delete the comment and improve the code.
+- Do not add comments that restate what a well-named symbol or an obvious expression already says, narrative context, forward-looking notes, references to files that do not exist yet, or explanations of why a stub or mock exists. Backstory belongs in the PR description, not the source.
+- These limits apply to configuration and environment files. Do not add pointer or hand-holding comments that repeat what a key name conveys or that describe where other settings live.
 
 ## Shell commands
 

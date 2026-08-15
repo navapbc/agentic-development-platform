@@ -9,6 +9,7 @@ from adapters.interfaces.ci_host import BuildResult
 from adapters.interfaces.git_host import CodeHit, FileContent, PRFeedback
 from scripts.config import Settings, get_settings
 
+from services.integration.jira.credentials import acceptance_field
 from services.integration.jira.edits import classify_edit
 from services.integration.jira.normalize import normalize_issue
 from services.integration.mcp_gateway.evidence_reader import EvidenceReader, PostgresEvidenceReader
@@ -92,7 +93,7 @@ class ReadOnlyToolset:
             ),
             evidence=PostgresEvidenceReader(),
             context_fetch=fetch_context_package,
-            acceptance_field=resolved.jira_acceptance_field,
+            acceptance_field=acceptance_field(resolved),
         )
 
     async def jira_get_task(self, issue_key: str) -> dict[str, Any]:

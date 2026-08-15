@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
@@ -113,6 +113,21 @@ def config_version(raw: Mapping[str, Any]) -> int:
     if not isinstance(value, int) or isinstance(value, bool):
         raise ConfigError(f"{CONFIG_VERSION_KEY} must be an integer")
     return value
+
+
+def parse_allowlist(raw: Mapping[str, Any], source: str) -> tuple[str, ...]:
+    """Parse a top-level ``allowlist`` list of names from a per-source config mapping."""
+    value = raw.get("allowlist") or []
+    if not isinstance(value, Sequence) or isinstance(value, str | bytes):
+        raise ConfigError(f"{source} config 'allowlist' is not a list")
+    items: list[str] = []
+    for entry in value:
+        if not isinstance(entry, str | int) or isinstance(entry, bool):
+            raise ConfigError(f"{source} config allowlist entry is not a scalar")
+        text = str(entry).strip()
+        if text:
+            items.append(text)
+    return tuple(items)
 
 
 @dataclass(frozen=True)

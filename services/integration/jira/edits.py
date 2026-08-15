@@ -11,6 +11,7 @@ from scripts.config import Settings, get_settings
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
+from services.integration.jira.credentials import acceptance_field
 from services.integration.jira.normalize import normalize_issue
 
 UNCHANGED = "unchanged"
@@ -167,7 +168,7 @@ async def recheck_issue_before_pr(
     fresh = normalize_issue(
         reader.get_issue(issue_key),
         raw_comments=raw_comments,
-        acceptance_field=settings.jira_acceptance_field,
+        acceptance_field=acceptance_field(settings),
     ).to_dict()
     return await evaluate_task_edit(
         stored_payload,

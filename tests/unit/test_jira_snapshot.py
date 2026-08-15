@@ -13,6 +13,18 @@ from services.integration.jira import (
 from services.integration.jira.snapshot import snapshot_id_for
 
 
+@pytest.fixture(autouse=True)
+def _allowlist_from_config(monkeypatch):
+    monkeypatch.setattr(
+        "services.integration.jira.snapshot.allowed_projects",
+        lambda settings=None: {"AGENTDEV"},
+    )
+    monkeypatch.setattr(
+        "services.integration.jira.snapshot.acceptance_field",
+        lambda settings=None: "",
+    )
+
+
 def _dc_issue() -> dict:
     return {
         "key": "AGENTDEV-1",
@@ -78,7 +90,7 @@ class _RecordingStore:
 
 
 def _settings() -> Settings:
-    return Settings(allowlist_jira_projects="AGENTDEV", jira_acceptance_field="")
+    return Settings(_env_file=None)
 
 
 def test_normalize_datacenter_issue():

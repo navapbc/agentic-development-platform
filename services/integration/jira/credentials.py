@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from scripts.config import Settings, get_settings
 
@@ -12,6 +13,7 @@ from services.integration.credentials import (
     EnvSecretResolver,
     SecretResolver,
     load_env_config,
+    parse_allowlist,
     require_current_config,
 )
 
@@ -80,6 +82,8 @@ class JiraSourceConfig:
     sites: dict[str, _Site]
     default: _Identity | None
     projects: dict[str, _ProjectOverride]
+    allowlist: tuple[str, ...] = ()
+    acceptance_field: str = ""
 
 
 class UnconfiguredProjectError(RuntimeError):
@@ -206,11 +210,24 @@ def _parse_projects(
     return projects
 
 
+def _parse_acceptance_field(raw: Mapping[str, object]) -> str:
+    value = raw.get("acceptance_field") or ""
+    if not isinstance(value, str | int) or isinstance(value, bool):
+        raise ConfigError("jira config 'acceptance_field' is not a scalar")
+    return str(value)
+
+
 def parse_jira_config(raw: Mapping[str, object]) -> JiraSourceConfig:
     sites = _parse_sites(raw)
     default = _parse_default(raw, sites)
     projects = _parse_projects(raw, sites)
-    return JiraSourceConfig(sites=sites, default=default, projects=projects)
+    return JiraSourceConfig(
+        sites=sites,
+        default=default,
+        projects=projects,
+        allowlist=parse_allowlist(raw, "jira"),
+        acceptance_field=_parse_acceptance_field(raw),
+    )
 
 
 def _validate_flow(flow: StatusFlow, statuses: tuple[str, ...]) -> None:
@@ -311,10 +328,38 @@ def build_jira_credential_resolver(
     raw = load_env_config("jira", environment=env)
     config = parse_jira_config(raw)
     secrets = secret_resolver or EnvSecretResolver()
-    resolver = JiraCredentialResolver(config, resolved.allowed_projects(), secrets)
+    resolver = JiraCredentialResolver(config, set(config.allowlist), secrets)
     for project in resolver.projects():
         resolver.status_flow(project)
     return resolver
+
+
+def allowed_projects(
+    settings: Settings | None = None,
+    *,
+    environment: str | None = None,
+    root: Path | None = None,
+) -> set[str]:
+    """Return the allowlisted projects declared in config/<env>/jira.yaml."""
+    resolved = settings or get_settings()
+    env = environment or resolved.environment
+    require_current_config("jira", environment=env, root=root)
+    raw = load_env_config("jira", environment=env, root=root)
+    return set(parse_jira_config(raw).allowlist)
+
+
+def acceptance_field(
+    settings: Settings | None = None,
+    *,
+    environment: str | None = None,
+    root: Path | None = None,
+) -> str:
+    """Return the acceptance-criteria field id declared in config/<env>/jira.yaml."""
+    resolved = settings or get_settings()
+    env = environment or resolved.environment
+    require_current_config("jira", environment=env, root=root)
+    raw = load_env_config("jira", environment=env, root=root)
+    return parse_jira_config(raw).acceptance_field
 
 
 def build_single_project_resolver(

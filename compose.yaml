@@ -59,6 +59,8 @@ services:
   workflow-worker:
     <<: *python-service
     command: ["python", "-m", "services.orchestration.worker"]
+    volumes:
+      - ./config/local:/app/config/local:ro
     environment:
       WORKER_ROLE: workflow
       AGENT_BUILD_ID: ${AGENT_BUILD_ID:-dev}
@@ -77,6 +79,8 @@ services:
   activity-worker:
     <<: *python-service
     command: ["python", "-m", "services.orchestration.worker"]
+    volumes:
+      - ./config/local:/app/config/local:ro
     environment:
       WORKER_ROLE: activity
       AGENT_BUILD_ID: ${AGENT_BUILD_ID:-dev}
@@ -103,6 +107,8 @@ services:
   langgraph-service:
     <<: *python-service
     command: ["python", "-m", "services.orchestration.langgraph.service"]
+    volumes:
+      - ./config/local:/app/config/local:ro
     depends_on:
       litellm:
         condition: service_started
@@ -167,6 +173,7 @@ services:
     ports: ["8120:8120"]
     volumes:
       - repo-index-data:/app/repository_indexes
+      - ./config/local:/app/config/local:ro
     restart: unless-stopped
 
   repo-index-worker:

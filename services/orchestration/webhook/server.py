@@ -12,6 +12,7 @@ from typing import Any, cast
 from scripts.config import Settings, get_settings
 
 from services.coordination.idempotency import PostgresSideEffectLedger, SideEffectLedger
+from services.integration.github.credentials import allowed_repos
 from services.integration.integrations import load_integrations_config
 from services.orchestration.webhook.inbound import IntegrationHandler, handle_inbound
 from services.orchestration.webhook.pr_events import (
@@ -40,7 +41,7 @@ async def build_routes(settings: Settings) -> dict[str, Route]:
     pr_closed = PrClosedHandler(
         secret=settings.github_webhook_secret, resolver=resolver, signaller=signaller
     )
-    return {"/webhook/pr": Route(handler=pr_closed, allowed=frozenset(settings.allowed_repos()))}
+    return {"/webhook/pr": Route(handler=pr_closed, allowed=frozenset(allowed_repos(settings)))}
 
 
 def build_handler(

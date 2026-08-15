@@ -13,6 +13,7 @@ from adapters.interfaces.security_scanner import (
     blocking_count,
 )
 from scripts.config import Settings, get_settings
+from services.integration.github.credentials import allowed_repos
 
 
 class RepoNotAllowedError(Exception):
@@ -36,7 +37,7 @@ class SecurityScanMediator:
         resolved = settings or get_settings()
         return cls(
             backends=backends,
-            allowed_repos=frozenset(resolved.allowed_repos()),
+            allowed_repos=frozenset(allowed_repos(resolved)),
             threshold=resolved.security_blocking_threshold,
         )
 

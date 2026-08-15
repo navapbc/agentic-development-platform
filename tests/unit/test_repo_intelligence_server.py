@@ -5,8 +5,18 @@ from __future__ import annotations
 import io
 import json
 
+import pytest
 from services.repository_intelligence import server
 from services.repository_intelligence.normalization.models import ContextPackage
+
+
+@pytest.fixture(autouse=True)
+def _allowlist_from_config(monkeypatch):
+    monkeypatch.setattr(
+        server,
+        "allowed_repos",
+        lambda settings=None: {"agentic-demo-service", "agentic-demo-greenfield"},
+    )
 
 
 class _Recorder(server.Handler):
@@ -67,8 +77,7 @@ def test_handler_reports_health():
 
 
 class _FakeSettings:
-    def allowed_repos(self):
-        return {"agentic-demo-service", "agentic-demo-greenfield"}
+    pass
 
 
 class _FakeService:

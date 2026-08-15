@@ -70,7 +70,6 @@ class Settings(BaseSettings):
     repo_index_worker_concurrency: int = 2
 
     jira_acli_path: str = ""
-    jira_acceptance_field: str = ""
     jira_parked_status: str = ""
 
     github_default_base_branch: str = "main"
@@ -106,18 +105,6 @@ class Settings(BaseSettings):
     reap_schedule_id: str = "orphan-reaper"
     reap_schedule_interval_minutes: int = 60
     reap_schedule_dry_run: bool = False
-
-    allowlist_jira_projects: str = "AGENTDEV"
-    allowlist_repos: str = (
-        "agentic-demo-service,agentic-demo-greenfield,"
-        "agentic-demo-ts,agentic-demo-tf,agentic-demo-java,agentic-demo-php,agentic-demo-ruby"
-    )
-
-    def allowed_projects(self) -> set[str]:
-        return {p.strip() for p in self.allowlist_jira_projects.split(",") if p.strip()}
-
-    def allowed_repos(self) -> set[str]:
-        return {r.strip() for r in self.allowlist_repos.split(",") if r.strip()}
 
     def repo_intelligence_registry(self) -> dict[str, tuple[str, str | None]]:
         """Parse configured repositories into a name to (root, commit) mapping."""

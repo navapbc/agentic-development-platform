@@ -1,24 +1,20 @@
-# Jira source configuration.
-#
-# Copy this file to jira.yaml in the same directory and edit it. jira.yaml is
-# git-ignored so operator edits never conflict with repository updates.
-#
-# sites define a connection (site url and auth_mode of cloud or datacenter) once
-# and are reused. default is the identity (site, account fields, token, board)
-# applied to any allowlisted project not listed under projects. A projects entry
-# overrides the site, account, token, or board for one project, and anything it
-# leaves unset inherits the default. A cloud identity carries an email and a
-# token_ref for the API token, and a datacenter identity carries a token_ref for
-# the PAT. Tokens are named references resolved from the local .env now and
-# Secrets Manager in AWS.
-#
-# statuses lists the board's available status names, and flow maps the two logical
-# moves the platform drives onto concrete statuses: work_started on the work claim
-# and ready_for_review on the draft pull request. Every flow status must appear in
-# statuses or the config fails closed at load. Leave a flow stage unset to skip it,
-# for a board that has no review status the pull request linkback is the review
-# signal and the ticket stays in its work_started status.
+# sites define a connection (site url and cloud or datacenter auth_mode) once and are reused.
+# default is the identity applied to any allowlisted project not listed under projects, and a
+# projects entry overrides the site, account, token, or board for one. allowlist is the set of
+# reachable projects. acceptance_field names the Jira field holding acceptance criteria.
+# token_ref names an environment variable holding the token. statuses lists the board's status
+# names, and flow maps work_started and ready_for_review onto concrete statuses. Every flow
+# status must appear in statuses or the config fails closed at load. Leave a flow stage unset
+# to skip it. A board with no review status keeps the ticket in its work_started status and
+# relies on the pull request linkback as the review signal.
+
 config_version: 1
+
+allowlist:
+  - AGENTDEV
+
+acceptance_field: ""
+
 sites:
   cloud:
     url: https://your-org.atlassian.net
