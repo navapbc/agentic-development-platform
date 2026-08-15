@@ -6,7 +6,8 @@
 # names, and flow maps work_started and ready_for_review onto concrete statuses. Every flow
 # status must appear in statuses or the config fails closed at load. Leave a flow stage unset
 # to skip it. A board with no review status keeps the ticket in its work_started status and
-# relies on the pull request linkback as the review signal.
+# relies on the pull request linkback as the review signal. default_repo is the intake target
+# when a ticket names no repository, and must be in the github allowlist.
 
 config_version: 1
 
@@ -28,6 +29,7 @@ default:
   email: agent@example.com
   token_ref: JIRA_API_TOKEN
   board: AGENTDEV
+  default_repo: agentic-demo-service
   statuses: [Backlog, Selected for Development, In Progress, In Review, Done]
   flow:
     work_started: In Progress

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from rebar.llm.openai_model import build_openai_compatible_model
+from rebar.llm.providers import ProviderSession
 from scripts.config import Settings
 from services.review.llm import REVIEW_TIERS, review_llm_config
 
@@ -32,7 +32,8 @@ def test_review_llm_config_builds_an_openai_compatible_model_per_tier():
 
     for tier in REVIEW_TIERS:
         cfg = review_llm_config(tier, settings)
-        model = build_openai_compatible_model(cfg.model, cfg=cfg)
+        with ProviderSession(cfg) as session:
+            model = session.model_for(f"{cfg.model_provider}:{cfg.model}")
 
-        assert model.model_name == tier
-        assert model.base_url == "http://litellm:4000"
+            assert model.model_name == tier
+            assert str(model.base_url) == "http://litellm:4000"

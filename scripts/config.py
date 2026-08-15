@@ -106,6 +106,9 @@ class Settings(BaseSettings):
     reap_schedule_interval_minutes: int = 60
     reap_schedule_dry_run: bool = False
 
+    intake_schedule_id: str = "jira-intake"
+    intake_schedule_interval_seconds: int = 60
+
     def repo_intelligence_registry(self) -> dict[str, tuple[str, str | None]]:
         """Parse configured repositories into a name to (root, commit) mapping."""
         registry: dict[str, tuple[str, str | None]] = {}

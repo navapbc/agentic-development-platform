@@ -33,6 +33,7 @@ from services.orchestration.temporal_activities import (
     read_ci_log,
     reap_orphans,
     recheck_issue,
+    reconcile_intake_pass,
     record_audit_event,
     record_pr_approval,
     record_suspension,
@@ -55,6 +56,7 @@ from services.orchestration.temporal_workflows import (
     DraftPullRequestWorkflow,
     DurableTaskWorkflow,
     ImplementationWorkflow,
+    IntakeWorkflow,
     PlanReviewWorkflow,
     PullRequestWorkflow,
     ReapWorkflow,
@@ -80,6 +82,7 @@ _WORKFLOWS = [
     PullRequestWorkflow,
     DraftPullRequestWorkflow,
     ReapWorkflow,
+    IntakeWorkflow,
 ]
 
 _ACTIVITIES = [
@@ -118,6 +121,7 @@ _ACTIVITIES = [
     alert_human_intervention,
     scan_change,
     evaluate_promotion,
+    reconcile_intake_pass,
 ]
 
 

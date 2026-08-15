@@ -10,6 +10,11 @@ from services.orchestration.temporal_activities.implementation import (
     claim_work_unit,
     run_implementation_stage,
 )
+from services.orchestration.temporal_activities.intake import (
+    IntakeReconcileReport,
+    IntakeReconcileRequest,
+    reconcile_intake_pass,
+)
 from services.orchestration.temporal_activities.notify import alert_human_intervention
 from services.orchestration.temporal_activities.persistence import (
     persist_execution_state,
@@ -47,6 +52,8 @@ from services.orchestration.temporal_activities.suspension import (
 )
 
 __all__ = [
+    "IntakeReconcileReport",
+    "IntakeReconcileRequest",
     "alert_human_intervention",
     "analyze_ci_failure",
     "apply_ci_repair",
@@ -68,6 +75,7 @@ __all__ = [
     "read_ci_log",
     "recheck_issue",
     "reap_orphans",
+    "reconcile_intake_pass",
     "record_audit_event",
     "record_pr_approval",
     "record_suspension",

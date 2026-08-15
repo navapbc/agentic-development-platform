@@ -29,6 +29,10 @@ class _VendorJiraClient(Protocol):
 
     def create_issue(self, ticket_data: dict[str, Any]) -> dict[str, Any]: ...
 
+    def search_issues(
+        self, jql: str, start_at: int = 0, max_results: int = 50
+    ) -> list[dict[str, Any]]: ...
+
 
 @dataclass(frozen=True)
 class JiraAdapter:
@@ -38,6 +42,17 @@ class JiraAdapter:
 
     def get_issue(self, issue_key: str) -> dict[str, Any]:
         return self.client.get_issue(issue_key)
+
+    def search_issues(self, jql: str, *, page_size: int = 50) -> list[dict[str, Any]]:
+        issues: list[dict[str, Any]] = []
+        start = 0
+        while True:
+            page = self.client.search_issues(jql, start_at=start, max_results=page_size)
+            issues.extend(page)
+            if len(page) < page_size:
+                break
+            start += page_size
+        return issues
 
     def create_issue(self, ticket_data: dict[str, Any]) -> dict[str, Any]:
         if self.source == CLOUD and ticket_data.get("description"):
@@ -68,13 +83,21 @@ class JiraAdapter:
 
 def _build_datacenter_client(cred: JiraProjectCredential) -> _VendorJiraClient:
     ensure_engine_on_path()
-    from rebar_reconciler.adapters.jira_datacenter.rest_client import JiraDataCenterClient
-
-    return JiraDataCenterClient(
-        base_url=cred.url,
-        pat=cred.token,
-        project=cred.project,
+    from rebar_reconciler.adapters.jira_datacenter.settings import JiraDataCenterSettings
+    from rebar_reconciler.adapters.jira_datacenter.transport import (
+        JiraDataCenterTransport,
+        build_client_from_settings,
     )
+
+    settings = JiraDataCenterSettings(
+        url=cred.url,
+        project=cred.project,
+        allow_insecure=False,
+        ca_bundle="",
+        pat=cred.token,
+    )
+    client = build_client_from_settings(settings)
+    return JiraDataCenterTransport(client=client, project=cred.project)
 
 
 def _build_cloud_client(cred: JiraProjectCredential, *, acli_path: str) -> _VendorJiraClient:

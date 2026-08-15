@@ -109,6 +109,6 @@ def test_plain_text_to_adf_reuses_the_rebar_baseline():
     ensure_engine_on_path()
     from rebar_reconciler.adapters.jira.adf import adf_to_text, text_to_adf
 
-    body = "line one\nline two"
+    body = "line one\n\nline two"
     assert plain_text_to_adf(body) == text_to_adf(body)
     assert adf_to_text(plain_text_to_adf(body)) == body

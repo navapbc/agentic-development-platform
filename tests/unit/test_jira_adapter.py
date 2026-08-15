@@ -18,6 +18,21 @@ from services.integration.jira.credentials import (
 _GIT_MARKERS = ("apply_outbound", "git_adapter", "_ref_lock", "_advisory_lock")
 
 
+@pytest.fixture
+def fake_dc_jira(monkeypatch):
+    from services.integration.jira._engine import ensure_engine_on_path
+
+    ensure_engine_on_path()
+    from rebar_reconciler.adapters.jira_datacenter import transport
+
+    class _FakeJira:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    monkeypatch.setattr(transport, "_jira_client_class", lambda: _FakeJira)
+    return _FakeJira
+
+
 def _resolver(mode: str) -> JiraCredentialResolver:
     return build_single_project_resolver(
         url="https://jira.example",
@@ -29,11 +44,11 @@ def _resolver(mode: str) -> JiraCredentialResolver:
     )
 
 
-def test_build_datacenter_adapter():
+def test_build_datacenter_adapter(fake_dc_jira):
     adapter = build_jira_adapter(project="AGENTDEV", resolver=_resolver("datacenter"))
     assert isinstance(adapter, JiraAdapter)
     assert adapter.source == DATACENTER
-    assert type(adapter.client).__name__ == "JiraDataCenterClient"
+    assert type(adapter.client).__name__ == "JiraDataCenterTransport"
 
 
 def test_build_cloud_adapter():
@@ -42,7 +57,7 @@ def test_build_cloud_adapter():
     assert type(adapter.client).__name__ == "AcliClient"
 
 
-def test_auth_mode_is_case_insensitive():
+def test_auth_mode_is_case_insensitive(fake_dc_jira):
     adapter = build_jira_adapter(project="AGENTDEV", resolver=_resolver("DataCenter"))
     assert adapter.source == DATACENTER
 
@@ -52,7 +67,7 @@ def test_unknown_mode_fails_closed():
         _resolver("bogus")
 
 
-def test_build_jira_adapter_for_issue_routes_by_project():
+def test_build_jira_adapter_for_issue_routes_by_project(fake_dc_jira):
     raw = {
         "sites": {
             "cloud": {"url": "https://a.atlassian.net", "auth_mode": "cloud"},
@@ -73,10 +88,10 @@ def test_build_jira_adapter_for_issue_routes_by_project():
     assert type(a.client).__name__ == "AcliClient"
     assert b.source == DATACENTER
     assert b.project == "BBB"
-    assert type(b.client).__name__ == "JiraDataCenterClient"
+    assert type(b.client).__name__ == "JiraDataCenterTransport"
 
 
-def test_construction_stays_git_free():
+def test_construction_stays_git_free(fake_dc_jira):
     build_jira_adapter(project="AGENTDEV", resolver=_resolver("datacenter"))
     build_jira_adapter(project="AGENTDEV", resolver=_resolver("cloud"))
     loaded = sorted(m for m in sys.modules if any(marker in m for marker in _GIT_MARKERS))

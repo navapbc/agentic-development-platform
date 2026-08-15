@@ -39,6 +39,7 @@ class JiraProjectCredential:
     project: str
     statuses: tuple[str, ...] = ()
     status_flow: StatusFlow = field(default_factory=StatusFlow)
+    default_repo: str = ""
 
 
 @dataclass(frozen=True)
@@ -55,6 +56,7 @@ class _Identity:
     board: str
     statuses: tuple[str, ...] = ()
     flow: StatusFlow = field(default_factory=StatusFlow)
+    default_repo: str = ""
 
 
 @dataclass(frozen=True)
@@ -65,6 +67,7 @@ class _ProjectOverride:
     board: str | None
     statuses: tuple[str, ...] | None = None
     flow: StatusFlow | None = None
+    default_repo: str | None = None
 
 
 @dataclass(frozen=True)
@@ -75,6 +78,7 @@ class _Effective:
     board: str
     statuses: tuple[str, ...]
     flow: StatusFlow
+    default_repo: str
 
 
 @dataclass(frozen=True)
@@ -182,6 +186,7 @@ def _parse_default(raw: Mapping[str, object], sites: dict[str, _Site]) -> _Ident
         board=parsed["board"],
         statuses=_parse_statuses(default_raw.get("statuses"), "default") or (),
         flow=_parse_flow(default_raw.get("flow"), "default") or StatusFlow(),
+        default_repo=parsed.get("default_repo", ""),
     )
 
 
@@ -206,6 +211,7 @@ def _parse_projects(
             board=parsed.get("board"),
             statuses=_parse_statuses(fields.get("statuses"), f"project {name}"),
             flow=_parse_flow(fields.get("flow"), f"project {name}"),
+            default_repo=parsed.get("default_repo"),
         )
     return projects
 
@@ -272,6 +278,7 @@ class JiraCredentialResolver:
             project=project,
             statuses=effective.statuses,
             status_flow=effective.flow,
+            default_repo=effective.default_repo,
         )
 
     def status_flow(self, project: str) -> StatusFlow:
@@ -313,7 +320,10 @@ class JiraCredentialResolver:
             flow = default.flow
         else:
             flow = StatusFlow()
-        return _Effective(site, email, token_ref, board, statuses, flow)
+        default_repo = (override.default_repo if override else None) or (
+            default.default_repo if default else ""
+        )
+        return _Effective(site, email, token_ref, board, statuses, flow, default_repo or "")
 
 
 def build_jira_credential_resolver(
@@ -372,6 +382,7 @@ def build_single_project_resolver(
     project: str,
     statuses: tuple[str, ...] = (),
     flow: StatusFlow | None = None,
+    default_repo: str = "",
 ) -> JiraCredentialResolver:
     mode = auth_mode.strip().lower()
     if mode not in _AUTH_MODES:
@@ -385,6 +396,7 @@ def build_single_project_resolver(
             board=board,
             statuses=tuple(statuses),
             flow=flow or StatusFlow(),
+            default_repo=default_repo,
         ),
         projects={},
     )

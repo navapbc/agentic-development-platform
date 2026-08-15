@@ -26,7 +26,7 @@ COPY scripts ./scripts
 COPY openhands ./openhands
 
 RUN pip install --upgrade pip \
-    && pip install -e "/opt/rebar[agents]" "pydantic-ai-slim[openai]>=1,<2" \
+    && pip install -e "/opt/rebar[agents,jira-datacenter]" "pydantic-ai-slim[openai]>=1,<2" \
     && pip install -e ".[reasoning,sandbox]"
 
 ARG TARGETOS
