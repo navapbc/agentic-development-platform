@@ -96,6 +96,20 @@ services:
       litellm:
         condition: service_started
 
+  schedule-bootstrap:
+    <<: *python-service
+    command: ["sh", "-c", "python -m scripts.reap --schedule && python -m scripts.intake --schedule"]
+    restart: "no"
+    environment:
+      REAP_SCHEDULE_DRY_RUN: "true"
+    depends_on:
+      temporal:
+        condition: service_healthy
+      workflow-worker:
+        condition: service_started
+      activity-worker:
+        condition: service_started
+
   coordination-service:
     <<: *python-service
     command: ["python", "-m", "services.coordination.service"]

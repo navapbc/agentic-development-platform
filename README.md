@@ -119,7 +119,7 @@ repositories:
 
 `config/local/jira.yaml` maps each project to the site, account, token, and board used to reach it. Copy the committed template with `cp config/local/jira.yaml.example config/local/jira.yaml` and edit the copy. The file is git-ignored, so your edits never conflict with a repository update.
 
-`allowlist` lists the projects the platform may reach and is the authorization boundary. `acceptance_field` names the Jira custom field that holds acceptance criteria, and an empty value skips it. `sites` names a connection once, its site url and an `auth_mode` of `cloud` or `datacenter`, and reuses it under a short key. `default` sets the site, account fields, token reference, and board applied to any allowlisted project you do not list under `projects`. A `projects` entry overrides the site, account, token, or board for one project, and anything it leaves unset inherits the default. A cloud identity carries an `email` and a `token_ref` for the API token, and a datacenter identity carries a `token_ref` for the PAT.
+`allowlist` lists the projects the platform may reach and is the authorization boundary. `acceptance_field` names the Jira custom field that holds acceptance criteria, and an empty value skips it. `sites` names a connection once, its site url and an `auth_mode` of `cloud` or `datacenter`, and reuses it under a short key. `default` sets the site, account fields, token reference, and board applied to any allowlisted project you do not list under `projects`. A `projects` entry overrides the site, account, token, or board for one project, and anything it leaves unset inherits the default. A cloud identity carries an `email` and a `token_ref` for the API token, and a datacenter identity carries a `token_ref` for the PAT. `default_repo` names the repository the Jira intake reconciler targets when a ticket names none, and it must be in the GitHub allowlist.
 
 `statuses` lists the board's available status names, and `flow` maps the two moves the platform drives, `work_started` on the work claim and `ready_for_review` on the draft pull request, onto concrete statuses. Every status in `flow` must appear in `statuses` or the config fails closed at load. Leave a `flow` stage unset to skip it. A board with no review status leaves `ready_for_review` unset, keeps the ticket in its `work_started` status, and relies on the pull request linkback as the review signal. The platform never invents a status and never advances a ticket to a terminal status such as Done.
 
@@ -142,6 +142,7 @@ default:
   email: agent@example.com
   token_ref: JIRA_API_TOKEN
   board: AGENTDEV
+  default_repo: agentic-demo-service
   statuses: [Backlog, Selected for Development, In Progress, In Review, Done]
   flow:
     work_started: In Progress
@@ -217,6 +218,7 @@ Run `inv --list` for the full set. The common tasks are below.
 | `inv tunnel-start`, `inv tunnel-stop`, `inv tunnel-status` | Manage the Bedrock connectivity tunnel |
 | `inv fetch-acli` | Vendor the Atlassian `acli` binary |
 | `inv reap [--apply]` | Reap expired orphan artifacts, dry-run by default |
+| `inv intake [--schedule]` | Reconcile Jira intake into draft PR executions, single pass by default |
 
 ## Demos
 

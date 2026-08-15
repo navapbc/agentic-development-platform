@@ -54,6 +54,14 @@ class _Alerter:
         self.alerts.append((issue_key, project, reason))
 
 
+class _Seeder:
+    def __init__(self) -> None:
+        self.seeded: list[tuple[str, str, str]] = []
+
+    async def seed(self, *, execution_id: str, task_id: str, repo: str) -> None:
+        self.seeded.append((execution_id, task_id, repo))
+
+
 class _RecordingStore:
     def __init__(self) -> None:
         self.by_execution: dict[str, list[TaskSnapshot]] = {}
@@ -114,12 +122,13 @@ def _hermetic_config(monkeypatch):
     )
 
 
-def _run(read_source, starter, alerter, ledger, store, resolver):
+def _run(read_source, starter, alerter, ledger, store, resolver, seeder=None):
     return reconcile_intake(
         read_source=read_source,
         starter=starter,
         alerter=alerter,
         ledger=ledger,
+        execution_seeder=seeder or _Seeder(),
         settings=Settings(_env_file=None),
         jira_resolver=resolver,
         snapshot_store=store,
@@ -211,3 +220,18 @@ async def test_two_projects_each_start_against_their_own_default():
         ("ADEV-1", "repo-a"),
         ("ADSER-9", "repo-b"),
     }
+
+
+async def test_execution_is_seeded_before_the_workflow_starts():
+    read = _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV", description="repos: repo-a, repo-b")]})
+    starter, alerter, ledger, store, resolver = _defaults()
+    seeder = _Seeder()
+    await _run(read, starter, alerter, ledger, store, resolver, seeder)
+    assert {(task_id, repo) for _, task_id, repo in seeder.seeded} == {
+        ("ADEV-1", "repo-a"),
+        ("ADEV-1", "repo-b"),
+    }
+    seeded_ids = {execution_id for execution_id, _, _ in seeder.seeded}
+    started_ids = {s.execution_id for s in starter.starts}
+    assert started_ids == seeded_ids
+

@@ -82,6 +82,38 @@ class _NotificationsAlerter:
         )
 
 
+class _PostgresExecutionSeeder:
+    def __init__(self) -> None:
+        self._engine: Any = None
+
+    def _get_engine(self) -> Any:
+        if self._engine is None:
+            from scripts.config import get_settings
+            from sqlalchemy.ext.asyncio import create_async_engine
+
+            self._engine = create_async_engine(
+                get_settings().database_url, future=True, pool_pre_ping=True
+            )
+        return self._engine
+
+    async def seed(self, *, execution_id: str, task_id: str, repo: str) -> None:
+        from database.models.schema import executions
+        from sqlalchemy.dialects.postgresql import insert
+
+        stmt = (
+            insert(executions)
+            .values(
+                execution_id=execution_id,
+                task_id=task_id,
+                state="TASK_RECEIVED",
+                repository=repo,
+            )
+            .on_conflict_do_nothing(index_elements=[executions.c.execution_id])
+        )
+        async with self._get_engine().begin() as conn:
+            await conn.execute(stmt)
+
+
 @activity.defn
 async def reconcile_intake_pass(request: IntakeReconcileRequest) -> IntakeReconcileReport:
     from scripts.config import get_settings
@@ -102,6 +134,7 @@ async def reconcile_intake_pass(request: IntakeReconcileRequest) -> IntakeReconc
         starter=_TemporalStarter(client, settings, gh_resolver),
         alerter=_NotificationsAlerter(settings),
         ledger=PostgresSideEffectLedger(),
+        execution_seeder=_PostgresExecutionSeeder(),
         settings=settings,
         jira_resolver=jira_resolver,
     )

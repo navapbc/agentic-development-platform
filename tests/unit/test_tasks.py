@@ -25,6 +25,7 @@ EXPECTED_TASKS = {
     "durability-proof",
     "fetch-acli",
     "reap",
+    "intake",
     "demo-durable-task",
     "demo-durable-counter",
     "demo-coordination",

@@ -45,6 +45,10 @@ class IntakeWorkflowStarter(Protocol):
     async def start(self, start: IntakeStart) -> str: ...
 
 
+class IntakeExecutionSeeder(Protocol):
+    async def seed(self, *, execution_id: str, task_id: str, repo: str) -> None: ...
+
+
 class IntakeAlerter(Protocol):
     async def unroutable(self, *, issue_key: str, project: str, reason: str) -> None: ...
 
@@ -78,6 +82,7 @@ async def reconcile_intake(
     starter: IntakeWorkflowStarter,
     alerter: IntakeAlerter,
     ledger: SideEffectLedger,
+    execution_seeder: IntakeExecutionSeeder,
     settings: Settings | None = None,
     jira_resolver: JiraCredentialResolver | None = None,
     snapshot_store: TaskSnapshotStore | None = None,
@@ -117,6 +122,7 @@ async def reconcile_intake(
                     jira_source=cred.auth_mode,
                     starter=starter,
                     ledger=ledger,
+                    execution_seeder=execution_seeder,
                     snapshot_store=snapshot_store,
                     settings=resolved,
                     report=report,
@@ -167,6 +173,7 @@ async def _start(
     jira_source: str,
     starter: IntakeWorkflowStarter,
     ledger: SideEffectLedger,
+    execution_seeder: IntakeExecutionSeeder,
     snapshot_store: TaskSnapshotStore | None,
     settings: Settings,
     report: IntakeReport,
@@ -180,6 +187,7 @@ async def _start(
 
     async def _launch() -> dict[str, str]:
         execution_id = f"intake-{uuid.uuid4().hex[:8]}"
+        await execution_seeder.seed(execution_id=execution_id, task_id=issue_key, repo=repo)
         await capture_task_snapshot(
             raw,
             execution_id=execution_id,

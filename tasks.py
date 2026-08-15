@@ -138,6 +138,12 @@ def reap(c, apply=False):
     c.run(f"python -m scripts.reap {'--apply' if apply else ''}".strip(), pty=True)
 
 
+@task(help={"schedule": "Install the Temporal intake schedule instead of running a single pass."})
+def intake(c, schedule=False):
+    """Reconcile Jira intake into draft PR executions (single pass by default)."""
+    c.run(f"python -m scripts.intake {'--schedule' if schedule else ''}".strip(), pty=True)
+
+
 @task(
     help={
         "repo": "Demo repo to ground the run with a briefing pack of its code.",
@@ -331,6 +337,7 @@ for _t in (
     durability_proof,
     fetch_acli,
     reap,
+    intake,
     demo_durable_task,
     demo_durable_counter,
     demo_coordination,
