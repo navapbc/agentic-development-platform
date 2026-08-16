@@ -34,7 +34,7 @@ class _FakeHandler:
     def verify(self, body: bytes, headers: Mapping[str, str]) -> bool:
         return self._signature_ok
 
-    def delivery_id(self, headers: Mapping[str, str]) -> str:
+    def delivery_id(self, headers: Mapping[str, str], payload: dict[str, Any]) -> str:
         return headers.get(_DELIVERY, "")
 
     def parse(self, payload: dict[str, Any]) -> _Event | None:

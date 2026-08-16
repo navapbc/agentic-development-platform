@@ -19,7 +19,7 @@ class IntegrationHandler(Protocol):
 
     def verify(self, body: bytes, headers: Mapping[str, str]) -> bool: ...
 
-    def delivery_id(self, headers: Mapping[str, str]) -> str: ...
+    def delivery_id(self, headers: Mapping[str, str], payload: dict[str, Any]) -> str: ...
 
     def parse(self, payload: dict[str, Any]) -> Any | None: ...
 
@@ -52,7 +52,7 @@ async def handle_inbound(
         return 202, {"status": "ignored"}
     if not handler.allowlisted(event, allowed):
         return 403, {"error": "not allowlisted"}
-    delivery_id = handler.delivery_id(headers)
+    delivery_id = handler.delivery_id(headers, payload)
     if not delivery_id:
         return 400, {"error": "missing delivery id"}
     ref = SideEffectRef(

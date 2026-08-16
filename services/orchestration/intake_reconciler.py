@@ -76,6 +76,18 @@ class IntakeReport:
     held: list[IntakeHoldRecord] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class IntakeContext:
+    starter: IntakeWorkflowStarter
+    alerter: IntakeAlerter
+    ledger: SideEffectLedger
+    execution_seeder: IntakeExecutionSeeder
+    snapshot_store: TaskSnapshotStore | None
+    github_allow: frozenset[str]
+    field_id: str
+    settings: Settings
+
+
 async def reconcile_intake(
     *,
     read_source: IntakeReadSource,
@@ -89,8 +101,16 @@ async def reconcile_intake(
 ) -> IntakeReport:
     resolved = settings or get_settings()
     jira_resolver = jira_resolver or build_jira_credential_resolver(resolved)
-    github_allow = frozenset(allowed_repos(resolved))
-    field_id = acceptance_field(resolved)
+    ctx = IntakeContext(
+        starter=starter,
+        alerter=alerter,
+        ledger=ledger,
+        execution_seeder=execution_seeder,
+        snapshot_store=snapshot_store,
+        github_allow=frozenset(allowed_repos(resolved)),
+        field_id=acceptance_field(resolved),
+        settings=resolved,
+    )
     report = IntakeReport()
 
     for project in sorted(jira_allowed_projects(resolved)):
@@ -98,36 +118,47 @@ async def reconcile_intake(
         if cred is None:
             continue
         for raw in await read_source.list_candidate_issues(project):
-            normalized = normalize_issue(raw, acceptance_field=field_id)
-            digest = content_hash(normalized.to_dict())
-            resolution = resolve_targets(
-                normalized.description,
-                default_repo=cred.default_repo,
-                allowlist=github_allow,
-            )
-            if not resolution.routable:
-                await _hold(
-                    normalized.task_id, project, resolution.reason, digest, alerter, ledger, report
-                )
-                continue
-            for repo in resolution.repos:
-                await _start(
-                    raw=raw,
-                    normalized_summary=normalized.summary,
-                    stored_issue=normalized.to_dict(),
-                    issue_key=normalized.task_id,
-                    project=project,
-                    repo=repo,
-                    digest=digest,
-                    jira_source=cred.auth_mode,
-                    starter=starter,
-                    ledger=ledger,
-                    execution_seeder=execution_seeder,
-                    snapshot_store=snapshot_store,
-                    settings=resolved,
-                    report=report,
-                )
+            await process_issue(raw, project=project, cred=cred, ctx=ctx, report=report)
     return report
+
+
+async def process_issue(
+    raw: dict[str, Any],
+    *,
+    project: str,
+    cred: Any,
+    ctx: IntakeContext,
+    report: IntakeReport,
+) -> None:
+    normalized = normalize_issue(raw, acceptance_field=ctx.field_id)
+    digest = content_hash(normalized.to_dict())
+    resolution = resolve_targets(
+        normalized.description,
+        default_repo=cred.default_repo,
+        allowlist=ctx.github_allow,
+    )
+    if not resolution.routable:
+        await _hold(
+            normalized.task_id, project, resolution.reason, digest, ctx.alerter, ctx.ledger, report
+        )
+        return
+    for repo in resolution.repos:
+        await _start(
+            raw=raw,
+            normalized_summary=normalized.summary,
+            stored_issue=normalized.to_dict(),
+            issue_key=normalized.task_id,
+            project=project,
+            repo=repo,
+            digest=digest,
+            jira_source=cred.auth_mode,
+            starter=ctx.starter,
+            ledger=ctx.ledger,
+            execution_seeder=ctx.execution_seeder,
+            snapshot_store=ctx.snapshot_store,
+            settings=ctx.settings,
+            report=report,
+        )
 
 
 async def _hold(

@@ -9,12 +9,21 @@ from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, cast
 
-from scripts.config import Settings, get_settings
+from scripts.config import Settings, get_settings, to_host_hostport
 
 from services.coordination.idempotency import PostgresSideEffectLedger, SideEffectLedger
-from services.integration.github.credentials import allowed_repos
+from services.integration.github.credentials import (
+    allowed_repos,
+    build_github_credential_resolver,
+)
 from services.integration.integrations import load_integrations_config
+from services.integration.jira.credentials import (
+    allowed_projects,
+    build_jira_credential_resolver,
+)
+from services.orchestration.intake_runtime import build_intake_context
 from services.orchestration.webhook.inbound import IntegrationHandler, handle_inbound
+from services.orchestration.webhook.jira_events import JiraIntakeHandler
 from services.orchestration.webhook.pr_events import (
     PostgresWorkflowResolver,
     PrClosedHandler,
@@ -36,12 +45,29 @@ class Route:
 
 
 async def build_routes(settings: Settings) -> dict[str, Route]:
-    resolver = PostgresWorkflowResolver()
-    signaller = await TemporalSignaller.connect(settings)
-    pr_closed = PrClosedHandler(
-        secret=settings.github_webhook_secret, resolver=resolver, signaller=signaller
+    from temporalio.client import Client
+
+    client = await Client.connect(
+        to_host_hostport(settings.temporal_host), namespace=settings.temporal_namespace
     )
-    return {"/webhook/pr": Route(handler=pr_closed, allowed=frozenset(allowed_repos(settings)))}
+    pr_closed = PrClosedHandler(
+        secret=settings.github_webhook_secret,
+        resolver=PostgresWorkflowResolver(),
+        signaller=TemporalSignaller(client),
+    )
+    jira_resolver = build_jira_credential_resolver(settings)
+    gh_resolver = build_github_credential_resolver(settings)
+    jira_intake = JiraIntakeHandler(
+        secret=settings.jira_webhook_secret,
+        jira_resolver=jira_resolver,
+        context=build_intake_context(settings, client=client, gh_resolver=gh_resolver),
+    )
+    return {
+        "/webhook/pr": Route(handler=pr_closed, allowed=frozenset(allowed_repos(settings))),
+        "/webhook/jira": Route(
+            handler=jira_intake, allowed=frozenset(allowed_projects(settings))
+        ),
+    }
 
 
 def build_handler(

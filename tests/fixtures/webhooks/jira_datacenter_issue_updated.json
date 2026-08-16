@@ -1,0 +1,23 @@
+{
+  "timestamp": 1700000009999,
+  "webhookEvent": "jira:issue_updated",
+  "issue": {
+    "id": "10042",
+    "key": "ADSER-42",
+    "fields": {
+      "project": {"key": "ADSER", "name": "Agentic Demo Service"},
+      "summary": "Add a DELETE /tasks/{task_id} endpoint with a 404 on a missing id",
+      "description": "There is no way to delete a task. Add a DELETE /tasks/{task_id} endpoint backed by the store, and return 404 when the id is unknown.",
+      "issuetype": {"name": "Task"},
+      "status": {"name": "In Progress"},
+      "priority": {"name": "Medium"},
+      "labels": []
+    }
+  },
+  "changelog": {
+    "id": "20124",
+    "items": [
+      {"field": "summary", "fromString": "Add a DELETE /tasks/{task_id} endpoint", "toString": "Add a DELETE /tasks/{task_id} endpoint with a 404 on a missing id"}
+    ]
+  }
+}

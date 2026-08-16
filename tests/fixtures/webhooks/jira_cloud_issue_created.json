@@ -1,0 +1,28 @@
+{
+  "timestamp": 1700000000000,
+  "webhookEvent": "jira:issue_created",
+  "issue": {
+    "id": "10050",
+    "key": "ADSER-50",
+    "fields": {
+      "project": {"key": "ADSER", "name": "Agentic Demo Service"},
+      "summary": "Add a GET /health endpoint",
+      "description": {
+        "type": "doc",
+        "version": 1,
+        "content": [
+          {
+            "type": "paragraph",
+            "content": [
+              {"type": "text", "text": "Add a GET /health endpoint that returns 200 with a body of ok."}
+            ]
+          }
+        ]
+      },
+      "issuetype": {"name": "Task"},
+      "status": {"name": "To Do"},
+      "priority": {"name": "Medium"},
+      "labels": []
+    }
+  }
+}

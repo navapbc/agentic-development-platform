@@ -84,7 +84,7 @@ class PrClosedHandler:
     def verify(self, body: bytes, headers: Mapping[str, str]) -> bool:
         return verify_signature(self._secret, body, headers.get(_SIGNATURE_HEADER, ""))
 
-    def delivery_id(self, headers: Mapping[str, str]) -> str:
+    def delivery_id(self, headers: Mapping[str, str], payload: dict[str, Any]) -> str:
         return headers.get(_DELIVERY_HEADER, "")
 
     def parse(self, payload: dict[str, Any]) -> PrClosedEvent | None:

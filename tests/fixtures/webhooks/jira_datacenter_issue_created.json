@@ -1,0 +1,17 @@
+{
+  "timestamp": 1699999999999,
+  "webhookEvent": "jira:issue_created",
+  "issue": {
+    "id": "10042",
+    "key": "ADSER-42",
+    "fields": {
+      "project": {"key": "ADSER", "name": "Agentic Demo Service"},
+      "summary": "Add a DELETE /tasks/{task_id} endpoint",
+      "description": "There is no way to delete a task. Add a DELETE /tasks/{task_id} endpoint backed by the store.",
+      "issuetype": {"name": "Task"},
+      "status": {"name": "To Do"},
+      "priority": {"name": "Medium"},
+      "labels": []
+    }
+  }
+}
