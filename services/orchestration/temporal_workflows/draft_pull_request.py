@@ -273,6 +273,11 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         self._resume_trigger = ResumeOn.HUMAN_APPROVAL.value
         self._resume_requested = True
 
+    @workflow.signal(name="submit_ci_result")
+    def submit_ci_result(self) -> None:
+        self._resume_trigger = ResumeOn.CI_RESULT.value
+        self._resume_requested = True
+
     @workflow.run
     async def run(self, params: DraftPullRequestInput) -> DraftPullRequestOutput:
         retry = RetryPolicy(maximum_attempts=3)

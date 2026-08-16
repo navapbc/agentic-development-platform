@@ -110,6 +110,19 @@ services:
       activity-worker:
         condition: service_started
 
+  jenkins:
+    build:
+      context: .
+      dockerfile: docker/jenkins.Dockerfile
+    ports:
+      - "8080:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - jenkins-home:/var/jenkins_home
+    profiles: ["ci"]
+    restart: unless-stopped
+
   coordination-service:
     <<: *python-service
     command: ["python", "-m", "services.coordination.service"]
@@ -211,3 +224,4 @@ services:
 volumes:
   postgres-data:
   repo-index-data:
+  jenkins-home:

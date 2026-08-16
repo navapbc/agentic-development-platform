@@ -720,6 +720,50 @@ async def test_open_draft_pr_triggers_ci_and_advances_on_pass():
     assert ci_triggers[0].sequence == 14
 
 
+async def test_ci_webhook_signal_resumes_parked_wait_to_pass():
+    activities = _make_activities(
+        None, 1, [], [], [], ci_result=SUCCESS, ci_running_polls=1
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(poll_interval=0.0),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+            state = await _await_ci_park(handle)
+            assert state["reason"] == SuspendReason.AWAITING_CI.value
+            assert state["resume_on"] == ResumeOn.CI_RESULT.value
+            assert state["stage"] == "ci"
+            await handle.signal(DraftPullRequestWorkflow.submit_ci_result)
+            result = await handle.result()
+
+    assert result.status == CI_PASSED
+    assert result.ci_status == "passed"
+
+
+async def test_ci_poll_fallback_resumes_without_a_webhook():
+    activities = _make_activities(
+        None, 1, [], [], [], ci_result=SUCCESS, ci_running_polls=1
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            result = await env.client.execute_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(poll_interval=1.0),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+
+    assert result.status == CI_PASSED
+    assert result.ci_status == "passed"
+
+
 async def test_ci_failure_repairs_and_passes():
     commits: list[CommitPushRequest] = []
     pr_opens: list[OpenPrRequest] = []
@@ -767,6 +811,16 @@ async def _await_human_park(handle) -> dict[str, str]:
             state.get("reason") == SuspendReason.AWAITING_HUMAN.value
             and state.get("stage") == "repair"
         ):
+            return state
+        await asyncio.sleep(0.05)
+    return state
+
+
+async def _await_ci_park(handle) -> dict[str, str]:
+    state: dict[str, str] = {}
+    for _ in range(50):
+        state = await handle.query(DraftPullRequestWorkflow.suspension_state)
+        if state.get("reason") == SuspendReason.AWAITING_CI.value and state.get("stage") == "ci":
             return state
         await asyncio.sleep(0.05)
     return state

@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from services.orchestration.webhook.inbound import DispatchNotReady
 
 PR_CLOSED_SIGNAL = "submit_pr_closed"
+CI_RESULT_SIGNAL = "submit_ci_result"
 _SIGNATURE_PREFIX = "sha256="
 _SIGNATURE_HEADER = "X-Hub-Signature-256"
 _DELIVERY_HEADER = "X-GitHub-Delivery"
@@ -113,11 +114,14 @@ class PostgresWorkflowResolver:
         return self._engine
 
     async def resolve(self, event: PrClosedEvent) -> str | None:
-        if not event.task_id:
+        return await self.resolve_task(event.task_id)
+
+    async def resolve_task(self, task_id: str) -> str | None:
+        if not task_id:
             return None
         stmt = (
             select(executions.c.workflow_id)
-            .where(executions.c.task_id == event.task_id)
+            .where(executions.c.task_id == task_id)
             .where(executions.c.workflow_id.is_not(None))
             .order_by(executions.c.updated_at.desc())
             .limit(1)
@@ -145,3 +149,7 @@ class TemporalSignaller:
     async def signal_pr_closed(self, workflow_id: str, *, merged: bool) -> None:
         handle = self._client.get_workflow_handle(workflow_id)
         await handle.signal(PR_CLOSED_SIGNAL, merged)
+
+    async def signal_ci_result(self, workflow_id: str) -> None:
+        handle = self._client.get_workflow_handle(workflow_id)
+        await handle.signal(CI_RESULT_SIGNAL)

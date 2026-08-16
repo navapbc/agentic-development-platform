@@ -1,0 +1,11 @@
+{
+  "action": "completed",
+  "workflow_run": {
+    "id": 55123,
+    "head_branch": "agent/ADSER-15",
+    "status": "completed",
+    "conclusion": "success",
+    "html_url": "https://github.com/joerobinson-nava/agentic-demo-service/actions/runs/55123"
+  },
+  "repository": {"name": "agentic-demo-service"}
+}

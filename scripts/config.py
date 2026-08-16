@@ -75,6 +75,7 @@ class Settings(BaseSettings):
     github_default_base_branch: str = "main"
     github_webhook_secret: str = ""
     jira_webhook_secret: str = ""
+    jenkins_webhook_secret: str = ""
 
     jenkins_url: str = "http://localhost:8080"
     jenkins_user: str = ""

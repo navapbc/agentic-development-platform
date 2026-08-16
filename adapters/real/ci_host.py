@@ -71,6 +71,7 @@ class RealJenkins:
             "EXECUTION_ID": execution_id,
             "BRANCH": branch,
             "COMMIT_SHA": commit_sha,
+            "REPO": repo,
         }
         if parameters:
             params.update(parameters)
