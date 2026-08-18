@@ -105,3 +105,11 @@ async def test_a_stale_execution_trigger_is_discarded_by_the_sequence_gate(
         await mediator.trigger_build(
             REPO, TASK_ID, "exec-old", JOB, branch=BRANCH, commit_sha=COMMIT_SHA, sequence=3
         )
+
+
+async def test_find_build_resolves_a_build_by_execution_id(mediator: JenkinsMediator) -> None:
+    ref = await mediator.trigger_build(
+        REPO, TASK_ID, EXECUTION_ID, JOB, branch=BRANCH, commit_sha=COMMIT_SHA, sequence=1
+    )
+    assert await mediator.find_build(REPO, JOB, execution_id=EXECUTION_ID) == ref.build_number
+    assert await mediator.find_build(REPO, JOB, execution_id="exec-absent") == 0

@@ -16,12 +16,13 @@ _NAME_SANITISE = re.compile(r"[^a-z0-9-]+")
 _SANDBOX_UID = 10001
 
 
+class SandboxExecError(RuntimeError):
+    """Raised when an exec-based copy-in or patch extraction fails in the sandbox."""
+
+
 @dataclass(frozen=True)
 class WorkspaceBinding:
-    sub_path: str
     mount_path: str = "/workspace"
-    claim_name: str = ""
-    host_path: str = ""
 
 
 @dataclass(frozen=True)
@@ -58,23 +59,8 @@ def _pod_ready(pod: object) -> bool:
 
 
 def _workspace_volume(binding: WorkspaceBinding) -> tuple[dict, dict]:
-    mount = {
-        "name": "agent-workspace",
-        "mountPath": binding.mount_path,
-        "subPath": binding.sub_path,
-    }
-    if binding.claim_name:
-        volume = {
-            "name": "agent-workspace",
-            "persistentVolumeClaim": {"claimName": binding.claim_name},
-        }
-    elif binding.host_path:
-        volume = {
-            "name": "agent-workspace",
-            "hostPath": {"path": binding.host_path, "type": "Directory"},
-        }
-    else:
-        raise ValueError("workspace binding requires a claim_name or host_path source")
+    mount = {"name": "agent-workspace", "mountPath": binding.mount_path}
+    volume = {"name": "agent-workspace", "emptyDir": {}}
     return volume, mount
 
 
@@ -151,6 +137,10 @@ class SandboxProvisioner(Protocol):
 
     async def teardown(self, handle: SandboxHandle) -> None: ...
 
+    async def copy_in(self, handle: SandboxHandle, source_dir: str, dest_dir: str) -> None: ...
+
+    async def extract_patch(self, handle: SandboxHandle, project_dir: str) -> str: ...
+
 
 class KubernetesSandboxProvisioner:
     def __init__(
@@ -159,10 +149,12 @@ class KubernetesSandboxProvisioner:
         in_cluster: bool = True,
         ready_timeout_seconds: float = 120.0,
         poll_interval_seconds: float = 1.0,
+        kubectl: str = "kubectl",
     ) -> None:
         self._in_cluster = in_cluster
         self._ready_timeout = ready_timeout_seconds
         self._poll_interval = poll_interval_seconds
+        self._kubectl = kubectl
         self._core = None
 
     def _client(self):
@@ -213,13 +205,75 @@ class KubernetesSandboxProvisioner:
             if exc.status != 404:
                 raise
 
+    async def copy_in(self, handle: SandboxHandle, source_dir: str, dest_dir: str) -> None:
+        await asyncio.to_thread(self._copy_in_sync, handle, source_dir, dest_dir)
+
+    def _copy_in_sync(self, handle: SandboxHandle, source_dir: str, dest_dir: str) -> None:
+        extract = (
+            f"mkdir -p {dest_dir} && "
+            f"tar xmf - --no-overwrite-dir --no-same-owner -C {dest_dir}"
+        )
+        tar = subprocess.Popen(
+            ["tar", "-C", source_dir, "-cf", "-", "."], stdout=subprocess.PIPE
+        )
+        exec_proc = subprocess.Popen(
+            [
+                self._kubectl,
+                "exec",
+                "-i",
+                "-n",
+                handle.namespace,
+                handle.name,
+                "--",
+                "sh",
+                "-c",
+                extract,
+            ],
+            stdin=tar.stdout,
+            stderr=subprocess.PIPE,
+        )
+        if tar.stdout is not None:
+            tar.stdout.close()
+        _, stderr = exec_proc.communicate()
+        tar.wait()
+        if exec_proc.returncode:
+            raise SandboxExecError((stderr or b"").decode().strip() or "copy_in failed")
+
+    async def extract_patch(self, handle: SandboxHandle, project_dir: str) -> str:
+        return await asyncio.to_thread(self._extract_patch_sync, handle, project_dir)
+
+    def _extract_patch_sync(self, handle: SandboxHandle, project_dir: str) -> str:
+        result = subprocess.run(
+            [
+                self._kubectl,
+                "exec",
+                "-n",
+                handle.namespace,
+                handle.name,
+                "--",
+                "sh",
+                "-c",
+                f"cd {project_dir} && git add -A && git diff --cached",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode:
+            raise SandboxExecError(result.stderr.strip() or "extract_patch failed")
+        return result.stdout
+
 
 class FakeSandboxProvisioner:
-    def __init__(self, *, base_url: str = "http://fake-sandbox:8000") -> None:
+    def __init__(
+        self, *, base_url: str = "http://fake-sandbox:8000", patch: str = ""
+    ) -> None:
         self._base_url = base_url
+        self._patch = patch
         self.provisioned: list[SandboxHandle] = []
         self.torn_down: list[SandboxHandle] = []
         self.specs: list[SandboxSpec] = []
+        self.copied_in: list[tuple[str, str, str]] = []
+        self.patched: list[tuple[str, str]] = []
 
     async def provision(self, spec: SandboxSpec) -> SandboxHandle:
         handle = SandboxHandle(
@@ -233,6 +287,13 @@ class FakeSandboxProvisioner:
 
     async def teardown(self, handle: SandboxHandle) -> None:
         self.torn_down.append(handle)
+
+    async def copy_in(self, handle: SandboxHandle, source_dir: str, dest_dir: str) -> None:
+        self.copied_in.append((handle.name, source_dir, dest_dir))
+
+    async def extract_patch(self, handle: SandboxHandle, project_dir: str) -> str:
+        self.patched.append((handle.name, project_dir))
+        return self._patch
 
 
 def _free_port() -> int:
@@ -316,3 +377,9 @@ class PortForwardSandboxProvisioner:
             except subprocess.TimeoutExpired:
                 proc.kill()
         await self._inner.teardown(handle)
+
+    async def copy_in(self, handle: SandboxHandle, source_dir: str, dest_dir: str) -> None:
+        await self._inner.copy_in(handle, source_dir, dest_dir)
+
+    async def extract_patch(self, handle: SandboxHandle, project_dir: str) -> str:
+        return await self._inner.extract_patch(handle, project_dir)

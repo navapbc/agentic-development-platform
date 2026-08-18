@@ -39,14 +39,16 @@ async def reconcile_intake_pass(request: IntakeReconcileRequest) -> IntakeReconc
     jira_resolver = build_jira_credential_resolver(settings)
     gh_resolver = build_github_credential_resolver(settings)
     client = await Client.connect(settings.temporal_host, namespace=settings.temporal_namespace)
+    execution_store = PostgresExecutionSeeder()
     report = await reconcile_intake(
         read_source=JiraPollReadSource(settings=settings, resolver=jira_resolver),
         starter=TemporalStarter(client, settings, gh_resolver),
         alerter=NotificationsAlerter(settings),
         ledger=PostgresSideEffectLedger(),
-        execution_seeder=PostgresExecutionSeeder(),
+        execution_seeder=execution_store,
         settings=settings,
         jira_resolver=jira_resolver,
+        active_guard=execution_store,
     )
     return IntakeReconcileReport(
         started=sum(1 for record in report.started if not record.duplicate),

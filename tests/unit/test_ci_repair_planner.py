@@ -2,17 +2,53 @@
 
 from __future__ import annotations
 
+from adapters.interfaces.ci_host import failure_summary
 from rebar.llm.runner import FakeRunner
 from services.orchestration.langgraph.ci_repair import (
     ACTIONABLE,
     BUILD,
     LINT,
+    SECURITY,
     TEST_FAILURE,
     UNKNOWN,
     UNREPAIRABLE,
     analyze_failure,
+    classify_failure,
     plan_repair,
 )
+
+_BANDIT_LOG = (
+    "+ bandit -r app\n"
+    "Test results:\n"
+    ">> Issue: [B602:subprocess_popen_with_shell_equals_true] subprocess call with "
+    "shell=True identified, security issue.\n"
+    "   Severity: High   Confidence: High\n"
+    "ERROR: script returned exit code 1\n"
+    "Finished: FAILURE\n"
+)
+
+_RUFF_LOG = (
+    "+ ruff check .\n"
+    "B904 Within an `except` clause, raise exceptions with `raise ... from err`\n"
+    "Found 2 errors.\n"
+    "ERROR: script returned exit code 1\n"
+    "Finished: FAILURE\n"
+)
+
+
+def test_failure_summary_captures_a_bandit_finding_and_classifies_security():
+    summary = failure_summary(_BANDIT_LOG)
+
+    assert "shell=True" in summary
+    assert "Severity: High" in summary
+    assert classify_failure(summary) == SECURITY
+
+
+def test_failure_summary_captures_a_ruff_finding_and_classifies_lint():
+    summary = failure_summary(_RUFF_LOG)
+
+    assert "ruff check" in summary
+    assert classify_failure(summary) == LINT
 
 
 def test_plan_repair_classifies_a_test_failure():
@@ -28,6 +64,18 @@ def test_plan_repair_classifies_a_lint_failure():
 
     assert plan.status == ACTIONABLE
     assert plan.category == LINT
+
+
+def test_plan_repair_classifies_a_security_failure():
+    plan = plan_repair(
+        "+ bandit -r app\n"
+        ">> Issue: [B602] subprocess call with shell=True identified, security issue.\n"
+        "Severity: High Confidence: High"
+    )
+
+    assert plan.status == ACTIONABLE
+    assert plan.category == SECURITY
+    assert "nosec" in plan.instruction
 
 
 def test_plan_repair_classifies_a_build_failure():

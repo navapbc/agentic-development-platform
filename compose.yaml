@@ -56,6 +56,16 @@ services:
     ports: ["3001:8080"]
     restart: unless-stopped
 
+  db-migrate:
+    <<: *python-service
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    environment:
+      ALEMBIC_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-platform}:${POSTGRES_PASSWORD:-change-me-locally}@postgres:5432/agent_platform
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   workflow-worker:
     <<: *python-service
     command: ["python", "-m", "services.orchestration.worker"]
@@ -73,6 +83,8 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
       litellm:
         condition: service_started
 
@@ -88,11 +100,14 @@ services:
       COORDINATION_URL: http://coordination-service:8130
       JIRA_ACLI_PATH: /app/vendor/bin/acli
       EXECUTION_WORKSPACE_ROOT: /home/appuser/agent-workspaces
+      JENKINS_URL: ${JENKINS_URL:-http://jenkins:8080}
     depends_on:
       temporal:
         condition: service_healthy
       postgres:
         condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
       litellm:
         condition: service_started
 
@@ -118,8 +133,11 @@ services:
       - "8080:8080"
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    environment:
+      PLATFORM_WEBHOOK_BASE_URL: ${PLATFORM_WEBHOOK_BASE_URL:-http://host.docker.internal:8140}
     volumes:
       - jenkins-home:/var/jenkins_home
+      - ./docker/jenkins/init.groovy.d:/var/jenkins_home/init.groovy.d:ro
     profiles: ["ci"]
     restart: unless-stopped
 

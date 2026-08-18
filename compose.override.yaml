@@ -39,7 +39,6 @@ services:
     environment:
       LOG_LEVEL: DEBUG
       EXECUTION_WORKSPACE_ROOT: /workspaces
-      SANDBOX_WORKSPACE_HOST_PATH: ${PWD}/.agent-workspaces
       KUBECONFIG: /home/appuser/.kube/config
       OPENHANDS_IN_CLUSTER: "false"
       SANDBOX_LITELLM_BASE_URL: http://host.docker.internal:4000

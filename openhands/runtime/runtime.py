@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from openhands.runtime.caps import RuntimeCaps
 from openhands.runtime.conversation import ConversationDriver, ImplementationOutcome
@@ -20,8 +20,6 @@ class SandboxRuntime:
     namespace: str
     server_port: int
     litellm_base_url: str
-    workspace_claim: str = ""
-    workspace_host_path: str = ""
     workspace_mount_path: str = "/workspace"
 
     @classmethod
@@ -45,19 +43,7 @@ class SandboxRuntime:
             namespace=resolved.openhands_sandbox_namespace,
             server_port=resolved.openhands_server_port,
             litellm_base_url=resolved.litellm_base_url,
-            workspace_claim=resolved.sandbox_workspace_claim,
-            workspace_host_path=resolved.sandbox_workspace_host_path,
             workspace_mount_path=resolved.sandbox_workspace_mount_path,
-        )
-
-    def _workspace_binding(self, sub_path: str) -> WorkspaceBinding | None:
-        if not sub_path or not (self.workspace_claim or self.workspace_host_path):
-            return None
-        return WorkspaceBinding(
-            sub_path=sub_path,
-            mount_path=self.workspace_mount_path,
-            claim_name=self.workspace_claim,
-            host_path=self.workspace_host_path,
         )
 
     async def run_implementation(
@@ -66,10 +52,12 @@ class SandboxRuntime:
         execution_id: str,
         task: str,
         context: str = "",
-        workspace_sub_path: str = "",
+        workspace_source: str = "",
         task_id: str = "",
     ) -> ImplementationOutcome:
-        binding = self._workspace_binding(workspace_sub_path)
+        binding = (
+            WorkspaceBinding(mount_path=self.workspace_mount_path) if workspace_source else None
+        )
         spec = SandboxSpec(
             execution_id=execution_id,
             image=self.image,
@@ -82,15 +70,37 @@ class SandboxRuntime:
         metadata = {"execution_id": execution_id, "stage": "implementing"}
         if task_id:
             metadata["ticket"] = task_id
+        project_dir = f"{self.workspace_mount_path.rstrip('/')}/project" if binding else ""
         handle = await self.provisioner.provision(spec)
         try:
-            return await self.driver.run_task(
+            if binding is not None:
+                await self.provisioner.copy_in(handle, workspace_source, project_dir)
+            outcome = await self.driver.run_task(
                 base_url=handle.base_url,
                 task=task,
                 context=context,
                 caps=self.caps,
-                working_dir=self.workspace_mount_path if binding else "",
+                working_dir=project_dir,
                 metadata=metadata,
             )
+            if binding is not None:
+                patch = await self.provisioner.extract_patch(handle, project_dir)
+                if patch:
+                    _apply_patch(workspace_source, patch)
+                outcome = replace(outcome, patch=patch)
+            return outcome
         finally:
             await self.provisioner.teardown(handle)
+
+
+def _apply_patch(workspace_path: str, patch: str) -> None:
+    import subprocess
+
+    result = subprocess.run(
+        ["git", "apply", "--whitespace=nowarn", "-"],
+        cwd=workspace_path,
+        input=patch.encode(),
+        capture_output=True,
+    )
+    if result.returncode:
+        raise RuntimeError(f"failed to apply agent patch: {result.stderr.decode().strip()}")

@@ -74,7 +74,7 @@ async def apply_ci_repair(req: ApplyCIRepairRequest) -> ApplyCIRepairResult:
         execution_id=req.execution_id,
         task=req.instruction,
         context=req.failure_summary,
-        workspace_sub_path=str(Path(workspace.path).relative_to(materializer.workspace_root)),
+        workspace_source=str(Path(workspace.path).resolve()),
         task_id=req.task_id,
     )
     changes = await materializer.collect_changes(workspace)

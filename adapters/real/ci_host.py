@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 
 import httpx
@@ -9,6 +10,7 @@ from adapters.interfaces.ci_host import (
     COMPLETED,
     QUEUED,
     RUNNING,
+    UNAVAILABLE,
     BuildLog,
     BuildRef,
     BuildResult,
@@ -81,34 +83,94 @@ class RealJenkins:
             location = resp.headers.get("Location", "")
         return await self.resolve_queue(repo, job, _queue_id_from_location(location))
 
-    async def resolve_queue(self, repo: str, job: str, queue_id: int) -> BuildRef:
+    async def resolve_queue(
+        self,
+        repo: str,
+        job: str,
+        queue_id: int,
+        *,
+        attempts: int = 25,
+        delay_seconds: float = 0.4,
+    ) -> BuildRef:
         if queue_id <= 0:
             return BuildRef(
                 repo=repo, job=job, queue_id=queue_id, build_number=0, url="", triggered=True
             )
         async with self._client() as client:
-            resp = await client.get(f"/queue/item/{queue_id}/api/json")
-            if resp.status_code == httpx.codes.NOT_FOUND:
-                return BuildRef(
-                    repo=repo, job=job, queue_id=queue_id, build_number=0, url="", triggered=True
-                )
-            resp.raise_for_status()
-            data = resp.json()
-        executable = data.get("executable") or {}
+            for attempt in range(attempts):
+                resp = await client.get(f"/queue/item/{queue_id}/api/json")
+                if resp.status_code == httpx.codes.NOT_FOUND:
+                    break
+                resp.raise_for_status()
+                data = resp.json()
+                if data.get("cancelled"):
+                    break
+                executable = data.get("executable") or {}
+                build_number = int(executable.get("number") or 0)
+                if build_number > 0:
+                    return BuildRef(
+                        repo=repo,
+                        job=job,
+                        queue_id=queue_id,
+                        build_number=build_number,
+                        url=str(executable.get("url") or ""),
+                        triggered=True,
+                    )
+                if attempt < attempts - 1:
+                    await asyncio.sleep(delay_seconds)
         return BuildRef(
-            repo=repo,
-            job=job,
-            queue_id=queue_id,
-            build_number=int(executable.get("number") or 0),
-            url=str(executable.get("url") or ""),
-            triggered=True,
+            repo=repo, job=job, queue_id=queue_id, build_number=0, url="", triggered=True
         )
 
-    async def get_build(self, repo: str, job: str, build_number: int) -> BuildResult:
+    async def find_build(self, repo: str, job: str, *, execution_id: str) -> int:
+        if not execution_id:
+            return 0
         async with self._client() as client:
-            resp = await client.get(f"/job/{job}/{build_number}/api/json")
-            resp.raise_for_status()
+            resp = await client.get(
+                f"/job/{job}/api/json",
+                params={"tree": "builds[number,actions[parameters[name,value]]]"},
+            )
+            if resp.status_code != httpx.codes.OK:
+                return 0
             data = resp.json()
+        for build in data.get("builds", []):
+            for action in build.get("actions") or []:
+                for param in action.get("parameters") or []:
+                    name = param.get("name")
+                    if name == "EXECUTION_ID" and str(param.get("value")) == execution_id:
+                        return int(build.get("number") or 0)
+        return 0
+
+    async def get_build(self, repo: str, job: str, build_number: int) -> BuildResult:
+        if build_number <= 0:
+            return BuildResult(
+                repo=repo,
+                job=job,
+                build_number=build_number,
+                status=QUEUED,
+                result="",
+                url="",
+                completed=False,
+            )
+        try:
+            async with self._client() as client:
+                resp = await client.get(f"/job/{job}/{build_number}/api/json")
+                if resp.status_code == httpx.codes.NOT_FOUND:
+                    return BuildResult(
+                        repo=repo,
+                        job=job,
+                        build_number=build_number,
+                        status=QUEUED,
+                        result="",
+                        url="",
+                        completed=False,
+                    )
+                if resp.status_code >= httpx.codes.INTERNAL_SERVER_ERROR:
+                    return _unavailable(repo, job, build_number)
+                resp.raise_for_status()
+                data = resp.json()
+        except httpx.TransportError:
+            return _unavailable(repo, job, build_number)
         building = bool(data.get("building", False))
         result = str(data.get("result") or "")
         if building:
@@ -144,3 +206,15 @@ class RealJenkins:
 def _queue_id_from_location(location: str) -> int:
     tail = location.rstrip("/").rsplit("/", 1)[-1]
     return int(tail) if tail.isdigit() else 0
+
+
+def _unavailable(repo: str, job: str, build_number: int) -> BuildResult:
+    return BuildResult(
+        repo=repo,
+        job=job,
+        build_number=build_number,
+        status=UNAVAILABLE,
+        result="",
+        url="",
+        completed=False,
+    )

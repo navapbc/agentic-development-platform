@@ -31,6 +31,7 @@ class PollCIRequest:
     repo: str
     job: str
     build_number: int
+    execution_id: str = ""
 
 
 @dataclass
@@ -39,6 +40,7 @@ class PollCIResult:
     result: str
     url: str
     completed: bool
+    build_number: int = 0
 
 
 @dataclass
@@ -91,12 +93,16 @@ async def trigger_ci(req: TriggerCIRequest) -> TriggerCIResult:
 @activity.defn
 async def poll_ci(req: PollCIRequest) -> PollCIResult:
     mediator = _build_jenkins_mediator()
-    build = await mediator.get_build(req.repo, req.job, req.build_number)
+    build_number = req.build_number
+    if build_number <= 0 and req.execution_id:
+        build_number = await mediator.find_build(req.repo, req.job, execution_id=req.execution_id)
+    build = await mediator.get_build(req.repo, req.job, build_number)
     return PollCIResult(
         status=build.status,
         result=build.result,
         url=build.url,
         completed=build.completed,
+        build_number=build_number,
     )
 
 

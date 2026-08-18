@@ -60,11 +60,11 @@ class _FakeRuntime:
         self.received: dict[str, str] = {}
 
     async def run_implementation(
-        self, *, execution_id, task, context="", workspace_sub_path="", task_id=""
+        self, *, execution_id, task, context="", workspace_source="", task_id=""
     ):
         self.received = {
             "execution_id": execution_id,
-            "workspace_sub_path": workspace_sub_path,
+            "workspace_source": workspace_source,
             "task_id": task_id,
         }
         return ImplementationOutcome(
@@ -96,7 +96,9 @@ async def test_stage_binds_the_materialized_sub_path_into_the_runtime(tmp_path, 
         )
     )
 
-    assert runtime.received["workspace_sub_path"] == "agentic-demo-service/AGENTDEV-1/exec-1"
+    assert runtime.received["workspace_source"] == str(
+        (tmp_path / "agentic-demo-service" / "AGENTDEV-1" / "exec-1").resolve()
+    )
     assert result.terminal_reason == COMPLETED
     assert result.tokens == 100
     assert result.llm_calls == 3

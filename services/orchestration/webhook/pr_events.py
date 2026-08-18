@@ -17,6 +17,8 @@ from services.orchestration.webhook.inbound import DispatchNotReady
 
 PR_CLOSED_SIGNAL = "submit_pr_closed"
 CI_RESULT_SIGNAL = "submit_ci_result"
+_AWAITING_PR_CLOSE = "AWAITING_PR_CLOSE"
+_TERMINAL_STATES = ("COMPLETED", "FAILED", "CANCELLED")
 _SIGNATURE_PREFIX = "sha256="
 _SIGNATURE_HEADER = "X-Hub-Signature-256"
 _DELIVERY_HEADER = "X-GitHub-Delivery"
@@ -114,7 +116,24 @@ class PostgresWorkflowResolver:
         return self._engine
 
     async def resolve(self, event: PrClosedEvent) -> str | None:
-        return await self.resolve_task(event.task_id)
+        task_id = event.task_id
+        if not task_id:
+            return None
+        stmt = (
+            select(executions.c.workflow_id)
+            .where(executions.c.task_id == task_id)
+            .where(executions.c.workflow_id.is_not(None))
+            .where(executions.c.state.not_in(_TERMINAL_STATES))
+            .order_by(
+                (executions.c.state == _AWAITING_PR_CLOSE).desc(),
+                executions.c.updated_at.desc(),
+            )
+            .limit(1)
+        )
+        engine = self._get_engine()
+        async with engine.connect() as conn:
+            row = (await conn.execute(stmt)).first()
+        return row.workflow_id if row is not None else None
 
     async def resolve_task(self, task_id: str) -> str | None:
         if not task_id:
@@ -124,6 +143,20 @@ class PostgresWorkflowResolver:
             .where(executions.c.task_id == task_id)
             .where(executions.c.workflow_id.is_not(None))
             .order_by(executions.c.updated_at.desc())
+            .limit(1)
+        )
+        engine = self._get_engine()
+        async with engine.connect() as conn:
+            row = (await conn.execute(stmt)).first()
+        return row.workflow_id if row is not None else None
+
+    async def resolve_execution(self, execution_id: str) -> str | None:
+        if not execution_id:
+            return None
+        stmt = (
+            select(executions.c.workflow_id)
+            .where(executions.c.execution_id == execution_id)
+            .where(executions.c.workflow_id.is_not(None))
             .limit(1)
         )
         engine = self._get_engine()
@@ -147,9 +180,23 @@ class TemporalSignaller:
         return cls(client)
 
     async def signal_pr_closed(self, workflow_id: str, *, merged: bool) -> None:
+        from temporalio.service import RPCError, RPCStatusCode
+
         handle = self._client.get_workflow_handle(workflow_id)
-        await handle.signal(PR_CLOSED_SIGNAL, merged)
+        try:
+            await handle.signal(PR_CLOSED_SIGNAL, merged)
+        except RPCError as exc:
+            if exc.status == RPCStatusCode.NOT_FOUND:
+                return
+            raise
 
     async def signal_ci_result(self, workflow_id: str) -> None:
+        from temporalio.service import RPCError, RPCStatusCode
+
         handle = self._client.get_workflow_handle(workflow_id)
-        await handle.signal(CI_RESULT_SIGNAL)
+        try:
+            await handle.signal(CI_RESULT_SIGNAL)
+        except RPCError as exc:
+            if exc.status == RPCStatusCode.NOT_FOUND:
+                return
+            raise

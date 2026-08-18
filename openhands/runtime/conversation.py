@@ -36,6 +36,7 @@ class ImplementationOutcome:
     cache_write_tokens: int = 0
     llm_calls: int = 0
     summary: str = ""
+    patch: str = ""
 
 
 @runtime_checkable

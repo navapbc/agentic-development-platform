@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import threading
 from collections.abc import Iterator
 from dataclasses import asdict
@@ -28,10 +29,14 @@ EXECUTION_ID = "exec-1"
 
 @pytest.fixture
 def coordination_url() -> Iterator[str]:
+    loop = asyncio.new_event_loop()
+    loop_thread = threading.Thread(target=loop.run_forever, daemon=True)
+    loop_thread.start()
     handler = build_handler(
         InMemorySideEffectLedger(),
         InMemorySequenceGate(),
         InMemoryWorkClaimStore(),
+        loop,
     )
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -43,6 +48,8 @@ def coordination_url() -> Iterator[str]:
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+        loop.call_soon_threadsafe(loop.stop)
+        loop_thread.join(timeout=5)
 
 
 class _FakeWriteClient:

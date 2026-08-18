@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 
 from adapters.interfaces.ci_host import (
     COMPLETED,
+    QUEUED,
     RUNNING,
     SUCCESS,
     BuildLog,
@@ -114,7 +115,22 @@ class MockCIHost:
             triggered=True,
         )
 
+    async def find_build(self, repo: str, job: str, *, execution_id: str) -> int:
+        record = self._job(repo, job)
+        build = next((b for b in record.builds if b.execution_id == execution_id), None)
+        return build.build_number if build else 0
+
     async def get_build(self, repo: str, job: str, build_number: int) -> BuildResult:
+        if build_number <= 0:
+            return BuildResult(
+                repo=repo,
+                job=job,
+                build_number=build_number,
+                status=QUEUED,
+                result="",
+                url="",
+                completed=False,
+            )
         build = self._find_build(repo, job, build_number)
         return BuildResult(
             repo=repo,

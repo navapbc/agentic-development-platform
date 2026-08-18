@@ -47,6 +47,7 @@ from services.orchestration.bounded_task_pipeline import (
 )
 from services.orchestration.branch_sync import GitBranchSynchronizer
 from services.orchestration.materialization import MaterializedWorkspace, WorkspaceMaterializer
+from tests.support import hermetic_settings
 
 REPO = "agentic-demo-service"
 OWNER = "acme"
@@ -135,7 +136,7 @@ def _dc_issue() -> dict:
 
 
 def _settings() -> Settings:
-    return Settings(_env_file=None)
+    return hermetic_settings()
 
 
 @pytest.fixture(autouse=True)

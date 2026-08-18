@@ -55,6 +55,7 @@ executions = Table(
             "IMPLEMENTING",
             "CI_RUNNING",
             "REPAIRING",
+            "AWAITING_HUMAN",
             "CODE_REVIEW",
             "SECURITY_REVIEW",
             "ACCEPTANCE_VERIFICATION",

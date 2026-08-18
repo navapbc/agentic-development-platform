@@ -99,8 +99,6 @@ class Settings(BaseSettings):
     implementation_max_llm_calls: int = 200
     implementation_max_tokens: int = 2_000_000
     implementation_activity_timeout_seconds: float = 2400.0
-    sandbox_workspace_claim: str = ""
-    sandbox_workspace_host_path: str = ""
     sandbox_workspace_mount_path: str = "/workspace"
     sandbox_litellm_base_url: str = "http://host.docker.internal:4000"
 

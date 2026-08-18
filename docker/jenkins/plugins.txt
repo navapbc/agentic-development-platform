@@ -1,2 +1,6 @@
 notification
-parameterized-trigger
+token-macro
+workflow-aggregator
+git
+timestamper
+junit

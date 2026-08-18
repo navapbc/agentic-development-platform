@@ -110,42 +110,6 @@
                     "endColumn": 47,
                     "lineCount": 1
                 }
-            },
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 9,
-                    "endColumn": 62,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 9,
-                    "endColumn": 44,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./services/integration/jira/normalize.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 9,
-                    "endColumn": 40,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./services/integration/jira/render.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 9,
-                    "endColumn": 43,
-                    "lineCount": 1
-                }
             }
         ],
         "./services/orchestration/branch_sync.py": [
@@ -1418,24 +1382,6 @@
                 }
             }
         ],
-        "./tests/unit/test_config.py": [
-            {
-                "code": "reportCallIssue",
-                "range": {
-                    "startColumn": 17,
-                    "endColumn": 26,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportCallIssue",
-                "range": {
-                    "startColumn": 17,
-                    "endColumn": 26,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./tests/unit/test_context_service.py": [
             {
                 "code": "reportArgumentType",
@@ -1556,50 +1502,6 @@
                 "range": {
                     "startColumn": 24,
                     "endColumn": 30,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./tests/unit/test_jira_markdown_adf.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 9,
-                    "endColumn": 43,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./tests/unit/test_jira_render.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 9,
-                    "endColumn": 43,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 9,
-                    "endColumn": 40,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 9,
-                    "endColumn": 40,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 9,
-                    "endColumn": 43,
                     "lineCount": 1
                 }
             }

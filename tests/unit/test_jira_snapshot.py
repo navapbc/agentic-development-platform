@@ -11,6 +11,7 @@ from services.integration.jira import (
     normalize_issue,
 )
 from services.integration.jira.snapshot import snapshot_id_for
+from tests.support import hermetic_settings
 
 
 @pytest.fixture(autouse=True)
@@ -90,7 +91,7 @@ class _RecordingStore:
 
 
 def _settings() -> Settings:
-    return Settings(_env_file=None)
+    return hermetic_settings()
 
 
 def test_normalize_datacenter_issue():

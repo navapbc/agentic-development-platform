@@ -17,7 +17,7 @@ RUN ARCH="$(dpkg --print-architecture)" \
 COPY --from=rebar pyproject.toml hatch_build.py README.md LICENSE /opt/rebar/
 COPY --from=rebar src /opt/rebar/src
 
-COPY pyproject.toml README.md ./
+COPY pyproject.toml README.md alembic.ini ./
 COPY services ./services
 COPY adapters ./adapters
 COPY schemas ./schemas

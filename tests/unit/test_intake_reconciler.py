@@ -5,11 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import pytest
-from scripts.config import Settings
 from services.coordination.idempotency import InMemorySideEffectLedger
 from services.integration.jira import CLOUD
 from services.integration.jira.snapshot import TaskSnapshot, snapshot_id_for
 from services.orchestration.intake_reconciler import IntakeStart, reconcile_intake
+from tests.support import hermetic_settings
 
 _ALLOW = frozenset({"repo-a", "repo-b", "repo-c"})
 _PROJECTS = {"ADEV", "ADSER"}
@@ -122,16 +122,27 @@ def _hermetic_config(monkeypatch):
     )
 
 
-def _run(read_source, starter, alerter, ledger, store, resolver, seeder=None):
+class _ActiveGuard:
+    def __init__(self, active: dict[tuple[str, str], str] | None = None) -> None:
+        self.active = active or {}
+        self.calls: list[tuple[str, str]] = []
+
+    async def active_workflow(self, *, issue_key: str, repo: str) -> str | None:
+        self.calls.append((issue_key, repo))
+        return self.active.get((issue_key, repo))
+
+
+def _run(read_source, starter, alerter, ledger, store, resolver, seeder=None, active_guard=None):
     return reconcile_intake(
         read_source=read_source,
         starter=starter,
         alerter=alerter,
         ledger=ledger,
         execution_seeder=seeder or _Seeder(),
-        settings=Settings(_env_file=None),
+        settings=hermetic_settings(),
         jira_resolver=resolver,
         snapshot_store=store,
+        active_guard=active_guard,
     )
 
 
@@ -234,4 +245,46 @@ async def test_execution_is_seeded_before_the_workflow_starts():
     seeded_ids = {execution_id for execution_id, _, _ in seeder.seeded}
     started_ids = {s.execution_id for s in starter.starts}
     assert started_ids == seeded_ids
+
+
+async def test_active_execution_suppresses_start_and_records_duplicate():
+    read = _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV")]})
+    starter, alerter, ledger, store, resolver = _defaults()
+    seeder = _Seeder()
+    guard = _ActiveGuard({("ADEV-1", "repo-a"): "wf-ADEV-1-repo-a"})
+    report = await _run(read, starter, alerter, ledger, store, resolver, seeder, active_guard=guard)
+    assert starter.starts == []
+    assert seeder.seeded == []
+    assert len(report.started) == 1
+    assert report.started[0].duplicate
+    assert report.started[0].workflow_id == "wf-ADEV-1-repo-a"
+
+
+async def test_material_change_is_suppressed_while_execution_is_active():
+    starter, alerter, ledger, store, resolver = _defaults()
+    guard = _ActiveGuard()
+    await _run(
+        _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV", summary="v1")]}),
+        starter, alerter, ledger, store, resolver, active_guard=guard,
+    )
+    guard.active[("ADEV-1", "repo-a")] = "wf-ADEV-1-repo-a"
+    await _run(
+        _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV", summary="v2")]}),
+        starter, alerter, ledger, store, resolver, active_guard=guard,
+    )
+    assert len(starter.starts) == 1
+
+
+async def test_material_change_starts_again_after_execution_terminates():
+    starter, alerter, ledger, store, resolver = _defaults()
+    guard = _ActiveGuard()
+    await _run(
+        _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV", summary="v1")]}),
+        starter, alerter, ledger, store, resolver, active_guard=guard,
+    )
+    await _run(
+        _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV", summary="v2")]}),
+        starter, alerter, ledger, store, resolver, active_guard=guard,
+    )
+    assert len(starter.starts) == 2
 

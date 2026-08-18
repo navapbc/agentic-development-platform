@@ -28,6 +28,7 @@ class CIEvent:
     repo: str
     task_id: str
     delivery_id: str
+    execution_id: str = ""
 
 
 def _parse_github(payload: dict[str, Any]) -> CIEvent | None:
@@ -55,7 +56,11 @@ def _parse_jenkins(payload: dict[str, Any]) -> CIEvent | None:
     if not repo or not task_id or not number:
         return None
     return CIEvent(
-        source=SOURCE_JENKINS, repo=repo, task_id=task_id, delivery_id=f"jenkins:{repo}:{number}"
+        source=SOURCE_JENKINS,
+        repo=repo,
+        task_id=task_id,
+        delivery_id=f"jenkins:{repo}:{number}",
+        execution_id=str(params.get("EXECUTION_ID") or ""),
     )
 
 
@@ -69,6 +74,8 @@ def parse_ci_event(payload: dict[str, Any]) -> CIEvent | None:
 
 class CIWorkflowResolver(Protocol):
     async def resolve_task(self, task_id: str) -> str | None: ...
+
+    async def resolve_execution(self, execution_id: str) -> str | None: ...
 
 
 class CISignaller(Protocol):
@@ -109,7 +116,11 @@ class CIWebhookHandler:
         return event.repo in allowed
 
     async def dispatch(self, event: CIEvent) -> dict[str, Any]:
-        workflow_id = await self._resolver.resolve_task(event.task_id)
+        workflow_id = None
+        if event.execution_id:
+            workflow_id = await self._resolver.resolve_execution(event.execution_id)
+        if not workflow_id:
+            workflow_id = await self._resolver.resolve_task(event.task_id)
         if not workflow_id:
             raise DispatchNotReady(f"no parked workflow for {event.task_id}")
         await self._signaller.signal_ci_result(workflow_id)

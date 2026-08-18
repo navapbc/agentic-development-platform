@@ -53,6 +53,32 @@ def test_code_step_maps_outcome_and_binds_workspace(tmp_path: Path) -> None:
 
     spec = provisioner.specs[0]
     assert spec.workspace is not None
-    assert spec.workspace.sub_path == "agentic-demo-service/ADSER-1/exec-1"
-    assert spec.workspace.host_path == str(tmp_path.resolve())
+    assert spec.workspace.mount_path == "/workspace"
+    expected = str((tmp_path / "agentic-demo-service" / "ADSER-1" / "exec-1").resolve())
+    assert provisioner.copied_in[0][1] == expected
+    assert provisioner.copied_in[0][2] == "/workspace/project"
     assert provisioner.torn_down
+
+
+def test_code_step_applies_the_extracted_patch_to_the_workspace(tmp_path: Path) -> None:
+    import subprocess
+
+    patch = (
+        "diff --git a/file.txt b/file.txt\n"
+        "new file mode 100644\n"
+        "index 0000000..3b18e51\n"
+        "--- /dev/null\n"
+        "+++ b/file.txt\n"
+        "@@ -0,0 +1 @@\n"
+        "+hello world\n"
+    )
+    provisioner = FakeSandboxProvisioner(patch=patch)
+    driver = FakeConversationDriver(summary="done")
+    step = OpenHandsCodeStep(runtime=_runtime(provisioner, driver), workspace_root=tmp_path)
+    workspace = _workspace(tmp_path)
+    subprocess.run(["git", "init", "-q"], cwd=workspace.path, check=True)
+
+    asyncio.run(step.run(workspace=workspace, task="Create file.txt"))
+
+    assert (Path(workspace.path) / "file.txt").read_text() == "hello world\n"
+    assert provisioner.patched[0][1] == "/workspace/project"

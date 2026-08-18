@@ -74,3 +74,4 @@ typeCheckingMode = "standard"
 venvPath = "."
 venv = ".venv"
 include = ["services", "adapters", "schemas", "database", "scripts", "openhands", "tests"]
+extraPaths = ["../rebar/src/rebar/_engine"]

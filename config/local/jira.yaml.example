@@ -7,7 +7,10 @@
 # status must appear in statuses or the config fails closed at load. Leave a flow stage unset
 # to skip it. A board with no review status keeps the ticket in its work_started status and
 # relies on the pull request linkback as the review signal. default_repo is the intake target
-# when a ticket names no repository, and must be in the github allowlist.
+# when a ticket names no repository, and must be in the github allowlist. intake_label, when set,
+# gates intake so only issues carrying that Jira label enter the platform, and leaving it unset
+# admits every not-Done issue in the project. It resolves per project with the default as the
+# fallback, the same as board and default_repo.
 
 config_version: 1
 
@@ -30,6 +33,7 @@ default:
   token_ref: JIRA_API_TOKEN
   board: AGENTDEV
   default_repo: agentic-demo-service
+  intake_label: adp
   statuses: [Backlog, Selected for Development, In Progress, In Review, Done]
   flow:
     work_started: In Progress
@@ -38,6 +42,7 @@ default:
 projects: {}
   # OPS:                         # its own board, same cloud site and account
   #   board: OPS
+  #   intake_label: ops-adp      # override the intake label for this project
   # PLATFORM:                    # a datacenter board with no review status
   #   site: datacenter
   #   token_ref: JIRA_PAT

@@ -17,7 +17,6 @@ import httpx
 import pytest
 from adapters.interfaces.git_host import agent_branch_name
 from adapters.real.git_host import RealGitHost
-from scripts.config import Settings
 from services.coordination import (
     InMemorySequenceGate,
     InMemorySideEffectLedger,
@@ -45,6 +44,7 @@ from tests.integration.test_bounded_task_end_to_end import (
     _InMemorySnapshotStore,
     _remote_head,
 )
+from tests.support import hermetic_settings
 
 _GH_RAW = {
     "hosts": {
@@ -178,7 +178,7 @@ async def test_two_tenants_reach_a_draft_pr_with_no_shared_credential(tmp_path) 
         {"CLOUDP", "DCP"},
         EnvSecretResolver({"JTOK_C": "jtok-c", "JTOK_D": "jtok-d"}),
     )
-    settings = Settings(_env_file=None)
+    settings = hermetic_settings()
 
     async def _run(repo: str, issue_key: str, project: str):
         materializer = WorkspaceMaterializer(

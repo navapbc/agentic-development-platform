@@ -39,6 +39,7 @@ from services.integration.jira import (
     render,
 )
 from services.integration.jira.snapshot import snapshot_id_for
+from tests.support import hermetic_settings
 
 TASK_ID = "AGENTDEV-1"
 
@@ -59,7 +60,7 @@ def _dc_issue() -> dict:
 
 
 def _settings() -> Settings:
-    return Settings(_env_file=None)
+    return hermetic_settings()
 
 
 @pytest.fixture(autouse=True)

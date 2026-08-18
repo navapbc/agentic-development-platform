@@ -82,7 +82,7 @@ async def test_pod_is_torn_down_when_the_driver_fails() -> None:
     assert len(provisioner.torn_down) == 1
 
 
-async def test_workspace_sub_path_binds_the_materialized_tree_into_the_pod() -> None:
+async def test_workspace_source_stages_the_materialized_tree_into_the_pod() -> None:
     driver = FakeConversationDriver(tool_calls=1)
     runtime = SandboxRuntime(
         provisioner=FakeSandboxProvisioner(),
@@ -93,35 +93,37 @@ async def test_workspace_sub_path_binds_the_materialized_tree_into_the_pod() -> 
         namespace="agent-sandbox",
         server_port=8000,
         litellm_base_url="http://litellm:4000",
-        workspace_claim="agent-workspaces",
         workspace_mount_path="/workspace",
     )
 
-    await runtime.run_implementation(
+    outcome = await runtime.run_implementation(
         execution_id=EXECUTION_ID,
         task=TASK,
-        workspace_sub_path="agentic-demo-service/AGENTDEV-1/exec-1",
+        workspace_source="/host/agentic-demo-service/AGENTDEV-1/exec-1",
     )
 
     provisioner = runtime.provisioner
     assert isinstance(provisioner, FakeSandboxProvisioner)
     binding = provisioner.specs[0].workspace
     assert binding is not None
-    assert binding.sub_path == "agentic-demo-service/AGENTDEV-1/exec-1"
-    assert binding.claim_name == "agent-workspaces"
     assert binding.mount_path == "/workspace"
+    assert provisioner.copied_in[0] == (
+        provisioner.provisioned[0].name,
+        "/host/agentic-demo-service/AGENTDEV-1/exec-1",
+        "/workspace/project",
+    )
+    assert provisioner.patched[0][1] == "/workspace/project"
+    assert outcome.patch == ""
 
 
-async def test_without_a_configured_source_no_workspace_binding_is_attached() -> None:
+async def test_without_a_workspace_source_no_binding_or_copy_happens() -> None:
     driver = FakeConversationDriver(tool_calls=1)
     runtime = _runtime(driver, RuntimeCaps())
 
-    await runtime.run_implementation(
-        execution_id=EXECUTION_ID,
-        task=TASK,
-        workspace_sub_path="agentic-demo-service/AGENTDEV-1/exec-1",
-    )
+    await runtime.run_implementation(execution_id=EXECUTION_ID, task=TASK)
 
     provisioner = runtime.provisioner
     assert isinstance(provisioner, FakeSandboxProvisioner)
     assert provisioner.specs[0].workspace is None
+    assert provisioner.copied_in == []
+    assert provisioner.patched == []

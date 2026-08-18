@@ -7,6 +7,7 @@ from pathlib import Path
 from scripts.config import Settings
 from services.integration.github.credentials import allowed_repos
 from services.integration.jira.credentials import acceptance_field, allowed_projects
+from tests.support import hermetic_settings
 
 
 def _write(root: Path, name: str, body: str) -> None:
@@ -22,7 +23,7 @@ def test_allowlists_are_read_from_the_config_files(tmp_path: Path) -> None:
         "jira",
         "config_version: 1\nallowlist:\n  - AGENTDEV\nacceptance_field: customfield_10\n",
     )
-    settings = Settings(_env_file=None)
+    settings = hermetic_settings()
 
     assert allowed_repos(settings, environment="local", root=tmp_path) == {"repo-a", "repo-b"}
     assert allowed_projects(settings, environment="local", root=tmp_path) == {"AGENTDEV"}
@@ -32,7 +33,7 @@ def test_allowlists_are_read_from_the_config_files(tmp_path: Path) -> None:
 def test_allowlist_parsing_trims_whitespace_and_drops_blanks(tmp_path: Path) -> None:
     body = "config_version: 1\nallowlist:\n  - ' repo-a '\n  - ''\n  - repo-b\n"
     _write(tmp_path, "github", body)
-    settings = Settings(_env_file=None)
+    settings = hermetic_settings()
 
     assert allowed_repos(settings, environment="local", root=tmp_path) == {"repo-a", "repo-b"}
 
@@ -72,7 +73,7 @@ def test_default_connectivity_provider_is_jumphost():
 def test_code_defaults_carry_no_project_specific_jumphost(monkeypatch):
     monkeypatch.delenv("JUMPHOST_NAME", raising=False)
     monkeypatch.delenv("JUMPHOST_ENV", raising=False)
-    s = Settings(_env_file=None)
+    s = hermetic_settings()
     assert s.jumphost_name == ""
     assert s.jumphost_env == ""
 

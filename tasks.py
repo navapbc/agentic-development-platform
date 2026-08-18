@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import sys
 
-from invoke import Collection, task
+from invoke import Collection, Exit, task
 
 COMPOSE = "docker compose"
 
@@ -138,10 +138,48 @@ def reap(c, apply=False):
     c.run(f"python -m scripts.reap {'--apply' if apply else ''}".strip(), pty=True)
 
 
-@task(help={"schedule": "Install the Temporal intake schedule instead of running a single pass."})
-def intake(c, schedule=False):
+@task(
+    help={
+        "schedule": "Install the Temporal intake schedule instead of running a single pass.",
+        "retry": "Clear the intake dedup for a failed issue so the next poll relaunches it.",
+        "repo": "Scope a --retry to one repository when the issue fanned out to several.",
+    }
+)
+def intake(c, schedule=False, retry="", repo=""):
     """Reconcile Jira intake into draft PR executions (single pass by default)."""
-    c.run(f"python -m scripts.intake {'--schedule' if schedule else ''}".strip(), pty=True)
+    flags = ""
+    if retry:
+        flags = f"--retry {retry}" + (f" --repo {repo}" if repo else "")
+    elif schedule:
+        flags = "--schedule"
+    c.run(f"python -m scripts.intake {flags}".strip(), pty=True)
+
+
+@task(
+    help={
+        "issue": "Jira issue key parked for human repair, for example ADSER-24.",
+        "retry": "Re-run CI and repair on the current branch head.",
+        "abandon": "Abandon the workflow so intake can relaunch a fresh execution.",
+    }
+)
+def repair(c, issue, retry=False, abandon=False):
+    """Release the AWAITING_HUMAN pause on a workflow parked after CI repair exhaustion."""
+    if retry == abandon:
+        raise Exit("pass exactly one of --retry or --abandon")
+    decision = "--retry" if retry else "--abandon"
+    c.run(f"python -m scripts.repair {issue} {decision}", pty=True)
+
+
+@task(
+    help={
+        "issue": "Jira issue key to restart, for example ADSER-24.",
+        "repo": "Scope the intake retry to one repository when the issue fanned out to several.",
+    }
+)
+def restart(c, issue, repo=""):
+    """Abandon a parked workflow and re-trigger intake for a fresh execution."""
+    repo_flag = f" --repo {repo}" if repo else ""
+    c.run(f"python -m scripts.restart {issue}{repo_flag}", pty=True)
 
 
 @task(
@@ -245,17 +283,14 @@ def demo_draft_pr(
 @task(
     help={
         "workflow_id": "Workflow id parked for approval (printed when the pipeline starts).",
-        "approver": "Approval identity recorded in the audit event.",
         "reject": "Reject the pull request instead of approving it.",
         "pr_closed": "Send the PR-close signal for the AWAITING_PR_CLOSE stage.",
         "merged": "With pr_closed, mark the pull request merged rather than closed unmerged.",
     }
 )
-def approve_pr(
-    c, workflow_id, approver="release-manager", reject=False, pr_closed=False, merged=False
-):
+def approve_pr(c, workflow_id, reject=False, pr_closed=False, merged=False):
     """Release the approval pause on a running draft-PR workflow."""
-    flags = f'--workflow-id {workflow_id} --approver "{approver}"'
+    flags = f"--workflow-id {workflow_id}"
     flags += " --reject" if reject else ""
     flags += " --pr-closed" if pr_closed else ""
     flags += " --merged" if merged else ""
@@ -264,23 +299,67 @@ def approve_pr(
 
 _K8S_LOCAL = "deploy/kubernetes/local"
 _K8S_RENDER = f"kubectl kustomize --load-restrictor LoadRestrictionsNone {_K8S_LOCAL}"
+_K8S_IMAGE = "agentic-dev-platform-local"
+_K8S_SECRET_ENV = f"{_K8S_LOCAL}/agentic-platform.secret.env"
 
 
-@task(
-    help={
-        "image": "Local image tag serving the gateway and the inbound webhook.",
-        "build": "Build and tag the image from docker/Dockerfile before deploying.",
-    }
-)
-def k8s_deploy(c, image="agentic-dev-platform-local:latest", build=False):
+def _git_output(*args: str) -> str:
+    import subprocess
+
+    return subprocess.run(
+        ["git", *args], capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+
+def _k8s_image_tag() -> str:
+    import hashlib
+    import re
+
+    branch = _git_output("rev-parse", "--abbrev-ref", "HEAD")
+    sha = _git_output("rev-parse", "--short", "HEAD")
+    base = f"{re.sub(r'[^A-Za-z0-9_.-]', '-', branch)}_{sha}"
+    dirty = _git_output("status", "--porcelain")
+    if not dirty:
+        return base
+    digest = hashlib.sha1((_git_output("diff", "HEAD") + "\n" + dirty).encode()).hexdigest()
+    return f"{base}_{digest[:7]}"
+
+
+def _read_env_file(path: str) -> dict[str, str]:
+    values: dict[str, str] = {}
+    with open(path, encoding="utf-8") as handle:
+        for raw in handle:
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            values[key.strip()] = value.strip()
+    return values
+
+
+def _write_k8s_secret_env() -> None:
+    env = _read_env_file(".env")
+    database_url = env.get("DATABASE_URL", "").replace("@postgres:", "@host.docker.internal:")
+    github_webhook_secret = env.get("GITHUB_WEBHOOK_SECRET", "local-demo-secret")
+    with open(_K8S_SECRET_ENV, "w", encoding="utf-8") as handle:
+        handle.write(f"database_url={database_url}\n")
+        handle.write(f"github_webhook_secret={github_webhook_secret}\n")
+
+
+@task(help={"build": "Build and tag the image from docker/Dockerfile before deploying."})
+def k8s_deploy(c, build=False):
     """Deploy the sandbox namespace, mcp-gateway, and inbound-webhook to the local cluster."""
+    image = f"{_K8S_IMAGE}:{_k8s_image_tag()}"
     if build:
         c.run(
             f"docker build --build-context rebar=../rebar -f docker/Dockerfile -t {image} .",
             pty=True,
         )
+    _write_k8s_secret_env()
     c.run(f"kubectl apply -f {_K8S_LOCAL}/namespaces.yaml", pty=True)
-    c.run(f"{_K8S_RENDER} | kubectl apply -f -", pty=True)
+    c.run(f"{_K8S_RENDER} | sed 's|{_K8S_IMAGE}:local|{image}|g' | kubectl apply -f -", pty=True)
+    c.run("kubectl rollout restart deployment/mcp-gateway -n agentic-dev-platform", pty=True)
+    c.run("kubectl rollout restart deployment/inbound-webhook -n agentic-dev-platform", pty=True)
     c.run(
         "kubectl rollout status deployment/mcp-gateway -n agentic-dev-platform --timeout=120s",
         pty=True,
@@ -338,6 +417,8 @@ for _t in (
     fetch_acli,
     reap,
     intake,
+    repair,
+    restart,
     demo_durable_task,
     demo_durable_counter,
     demo_coordination,

@@ -42,7 +42,7 @@ Two host tools are optional and only needed for specific paths.
 Run these once from the repository root.
 
 1. Copy the environment file with `cp .env.example .env`, then fill in the placeholders. See [Configuration](#configuration). Never commit `.env`.
-2. Copy the integration source configs with `cp config/local/github.yaml.example config/local/github.yaml` and `cp config/local/jira.yaml.example config/local/jira.yaml`, then edit the copies. See [Integration credentials](#integration-credentials). Never commit the `config/local/*.yaml` operator files.
+2. Copy the integration source configs with `cp config/local/github.yaml.example config/local/github.yaml`, `cp config/local/jira.yaml.example config/local/jira.yaml`, and `cp config/local/integrations.yaml.example config/local/integrations.yaml`, then edit the copies. See [Integration credentials](#integration-credentials). Never commit the `config/local/*.yaml` operator files.
 3. Create and activate a virtual environment with `python -m venv .venv && source .venv/bin/activate`.
 4. Install the package with its development extras using `pip install -e ".[dev,reasoning]"`. Add `sandbox` for the OpenHands agent, and see [CONTRIBUTING.md](CONTRIBUTING.md) for the editable `rebar` install needed on the review path.
 5. Choose a Bedrock connectivity provider in `.env` and open the path with `inv tunnel-start`. See [Bedrock connectivity](#bedrock-connectivity).
@@ -119,7 +119,7 @@ repositories:
 
 `config/local/jira.yaml` maps each project to the site, account, token, and board used to reach it. Copy the committed template with `cp config/local/jira.yaml.example config/local/jira.yaml` and edit the copy. The file is git-ignored, so your edits never conflict with a repository update.
 
-`allowlist` lists the projects the platform may reach and is the authorization boundary. `acceptance_field` names the Jira custom field that holds acceptance criteria, and an empty value skips it. `sites` names a connection once, its site url and an `auth_mode` of `cloud` or `datacenter`, and reuses it under a short key. `default` sets the site, account fields, token reference, and board applied to any allowlisted project you do not list under `projects`. A `projects` entry overrides the site, account, token, or board for one project, and anything it leaves unset inherits the default. A cloud identity carries an `email` and a `token_ref` for the API token, and a datacenter identity carries a `token_ref` for the PAT. `default_repo` names the repository the Jira intake reconciler targets when a ticket names none, and it must be in the GitHub allowlist.
+`allowlist` lists the projects the platform may reach and is the authorization boundary. `acceptance_field` names the Jira custom field that holds acceptance criteria, and an empty value skips it. `sites` names a connection once, its site url and an `auth_mode` of `cloud` or `datacenter`, and reuses it under a short key. `default` sets the site, account fields, token reference, and board applied to any allowlisted project you do not list under `projects`. A `projects` entry overrides the site, account, token, or board for one project, and anything it leaves unset inherits the default. A cloud identity carries an `email` and a `token_ref` for the API token, and a datacenter identity carries a `token_ref` for the PAT. `default_repo` names the repository the Jira intake reconciler targets when a ticket names none, and it must be in the GitHub allowlist. `intake_label` gates intake so only issues carrying that Jira label enter the platform, and an empty value admits every not-Done issue in the project. It resolves per project with the default as the fallback, the same as the board and `default_repo`.
 
 `statuses` lists the board's available status names, and `flow` maps the two moves the platform drives, `work_started` on the work claim and `ready_for_review` on the draft pull request, onto concrete statuses. Every status in `flow` must appear in `statuses` or the config fails closed at load. Leave a `flow` stage unset to skip it. A board with no review status leaves `ready_for_review` unset, keeps the ticket in its `work_started` status, and relies on the pull request linkback as the review signal. The platform never invents a status and never advances a ticket to a terminal status such as Done.
 
@@ -157,6 +157,10 @@ projects:
     flow:
       work_started: In Progress
 ```
+
+### Integration delivery modes
+
+`config/local/integrations.yaml` sets how each inbound integration is delivered. Copy the committed template with `cp config/local/integrations.yaml.example config/local/integrations.yaml` and edit the copy. `modes` names the three integrations `pr_closed`, `jira_intake`, and `ci_status`, and gives each a mode of `polling`, `webhook`, or `hybrid`. `polling` reconciles on the level-triggered poll only, `webhook` accepts inbound deliveries only, and `hybrid` runs both with the poll as the fallback. `config_version` records the schema version of the file. Every inbound path is duplicate-safe through the coordination idempotency ledger, so a webhook and a poll for the same event converge on one outcome.
 
 ## Bedrock connectivity
 
@@ -199,6 +203,12 @@ The `bedrock-vpce` module provisions an interface endpoint that admits 443 only 
 
 Migrations only touch the platform's own `agent_platform` schema. Temporal and Langfuse manage their own schemas.
 
+## Inbound webhooks and CI
+
+The inbound front door receives Jira, pull-request, and CI deliveries. It runs on the local Kubernetes cluster alongside the MCP gateway. Deploy both with `inv k8s-deploy`, which builds the image when passed `--build` and rolls out the `inbound-webhook` and `mcp-gateway` deployments. The front door listens on `localhost:8140` and serves `/webhook/jira`, `/webhook/pr`, and `/webhook/ci`. Forward GitHub pull-request events to it during a demo with `inv webhook-setup`, and remove the forwards with `inv webhook-teardown`.
+
+Local CI runs under the Compose `ci` profile, which `inv local-up` does not start. Bring up Jenkins with `docker compose --profile ci up -d jenkins`, reachable at `localhost:8080`. The job checks out the target branch, runs the repository Jenkinsfile, and notifies `/webhook/ci` on completion. A parked CI wait resumes on that notification to the same result the poll would produce, and the poller stays the fallback.
+
 ## Verifying the stack
 
 `inv smoke-test` checks the database and the `agent_platform` schema, the LiteLLM, OPA, and Langfuse health endpoints, and a Bedrock inference round trip through LiteLLM. `inv durability-proof` shows a workflow surviving a worker restart. `inv workflow-status` lists recent Temporal executions.
@@ -219,6 +229,27 @@ Run `inv --list` for the full set. The common tasks are below.
 | `inv fetch-acli` | Vendor the Atlassian `acli` binary |
 | `inv reap [--apply]` | Reap expired orphan artifacts, dry-run by default |
 | `inv intake [--schedule]` | Reconcile Jira intake into draft PR executions, single pass by default |
+| `inv approve-pr --workflow-id ID [--reject] [--pr-closed] [--merged]` | Release an approval or PR-close pause on a running workflow |
+
+See [Recovering a stuck intake](#recovering-a-stuck-intake) for the retry, repair, and restart commands that drive a ticket after a failure.
+
+## Recovering a stuck intake
+
+The Jira intake reconciler turns a labeled ticket into a draft-PR execution on each pass. `inv intake` runs one pass and `inv intake --schedule` installs the recurring Temporal schedule. When an execution fails, or a ticket needs another attempt, the commands below drive it without signalling Temporal by hand.
+
+`inv intake --retry ISSUE [--repo REPO]` clears the intake dedup for a failed issue, marks its stale executions failed, and resets its sequence gate, so the next poll relaunches the ticket from a clean state. Add `--repo` to scope the retry to one repository when the ticket fanned out to several. It refuses while a workflow for the ticket is still running.
+
+When automated CI repair exhausts its attempts, the draft-PR workflow parks at the `AWAITING_HUMAN` state and posts a comment on the ticket. Read the failing Security, Test, or Lint stage in Jenkins to see what to change, then resolve the pause with one of the following.
+
+`inv repair ISSUE --retry` re-runs CI and the automated repair loop on the current branch head. Use it after you push a fix to the branch, or when the failure was transient. It does not re-read the ticket or re-run the coding agent.
+
+`inv repair ISSUE --abandon` ends the parked execution as human-abandoned. It leaves the draft PR open and re-runs nothing.
+
+`inv restart ISSUE [--repo REPO]` abandons the parked execution and re-triggers intake in one step, so a corrected ticket relaunches a fresh execution with a new coding-agent implementation. It waits for the abandoned workflow to finalize before it clears the intake state. This is the usual command after you edit a ticket that failed.
+
+Every decision records the operator identity in the audit trail. The identity is read from the operating system account that runs the command, not a flag, so it cannot be recorded under another name.
+
+When the review and approval gates are enabled, a workflow instead pauses at `AWAITING_PR_APPROVAL` and `AWAITING_PR_CLOSE`. Release those with `inv approve-pr --workflow-id ID`, add `--reject` to reject the pull request, and pass `--pr-closed` with `--merged` to stand in for the GitHub PR-closed webhook. The workflow id prints when the pipeline starts.
 
 ## Demos
 
@@ -259,3 +290,4 @@ fixtures/          scripts/           tests/               docker/
 | Smoke test reports a database failure | Migrations have not run. Apply them with `inv db-migrate` |
 | Container build fails resolving `rebar` | The `../rebar` sibling is missing. Clone it next to this repo |
 | Live-agent demos cannot reach the cluster | No kubeconfig at `~/.kube/config`. Provide one or skip the live-agent flag |
+| A ticket is stuck at `AWAITING_HUMAN` | CI repair exhausted and the workflow parked. Fix the branch and run `inv repair ISSUE --retry`, or edit the ticket and run `inv restart ISSUE` |

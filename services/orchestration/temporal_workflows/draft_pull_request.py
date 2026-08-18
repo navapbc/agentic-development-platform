@@ -104,7 +104,7 @@ with workflow.unsafe.imports_passed_through():
         PullRequestWorkflow,
     )
 
-from adapters.interfaces.ci_host import SUCCESS
+from adapters.interfaces.ci_host import SUCCESS, UNAVAILABLE
 
 from services.orchestration.suspension import ResumeOn, SuspendReason, Suspension
 from services.orchestration.temporal_workflows.suspendable import (
@@ -176,6 +176,7 @@ class DraftPullRequestInput:
     ci_job: str = ""
     ci_poll_interval_seconds: float = 60.0
     ci_poll_max_attempts: int = 20
+    ci_unavailable_alert_threshold: int = 3
     max_repair_attempts: int = 5
     run_reviews: bool = False
     run_policy: bool = False
@@ -432,6 +433,20 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 await self._alert_human_intervention(params, outcome, workflow_id)
                 decision = await self._await_repair_decision(params, outcome, workflow_id)
                 if not decision.retry:
+                    commit_sha = self._commit.commit_sha if self._commit else params.base_sha
+                    await workflow.execute_activity(
+                        persist_execution_state,
+                        ExecutionState(
+                            execution_id=params.execution_id,
+                            task_id=params.task_id,
+                            state=CANCELLED,
+                            workflow_id=workflow_id,
+                            repository=params.repo or None,
+                            repository_sha=commit_sha or None,
+                        ),
+                        start_to_close_timeout=short,
+                        retry_policy=retry,
+                    )
                     outcome = replace(outcome, terminal_reason=HUMAN_ABANDONED)
                     break
                 outcome = await self._ci_and_repair(
@@ -832,20 +847,22 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             )
         )
 
-        result = await self._await_ci_result(params, trigger, build_id)
+        result = await self._await_ci_result(params, trigger, build_id, workflow_id)
+        resolved_number = result.build_number or trigger.build_number
+        resolved_build_id = str(resolved_number)
         passed = result.result == SUCCESS
         event_type = "CI_PASSED" if passed else "CI_FAILED"
 
         await self._audit(
             AuditEvent(
-                event_id=f"{params.execution_id}:{event_type}:{build_id}",
+                event_id=f"{params.execution_id}:{event_type}:{resolved_build_id}",
                 task_id=params.task_id,
                 execution_id=params.execution_id,
                 event_type=event_type,
                 stage="ci",
                 new_state=CI_RUNNING,
                 workflow_id=workflow_id,
-                reason=build_id,
+                reason=resolved_build_id,
                 decision=result.result,
                 artifact_hashes={"build_url": result.url},
             )
@@ -855,8 +872,8 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             outcome,
             status=CI_PASSED if passed else CI_FAILED,
             ci_status="passed" if passed else "failed",
-            ci_build_id=build_id,
-            ci_build_number=trigger.build_number,
+            ci_build_id=resolved_build_id,
+            ci_build_number=resolved_number,
         )
 
     async def _await_ci_result(
@@ -864,6 +881,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         params: DraftPullRequestInput,
         trigger: TriggerCIResult,
         build_id: str,
+        workflow_id: str,
     ) -> PollCIResult:
         retry = RetryPolicy(maximum_attempts=3)
         short = timedelta(seconds=30)
@@ -871,6 +889,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             repo=params.repo,
             job=params.ci_job,
             build_number=trigger.build_number,
+            execution_id=params.execution_id,
         )
         suspension = Suspension(
             reason=SuspendReason.AWAITING_CI,
@@ -886,6 +905,8 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         )
 
         result: PollCIResult | None = None
+        unavailable_polls = 0
+        alerted_unavailable = False
         for _ in range(max(1, params.ci_poll_max_attempts)):
             poll: PollCIResult = await workflow.execute_activity(
                 poll_ci,
@@ -893,9 +914,21 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 start_to_close_timeout=short,
                 retry_policy=retry,
             )
+            if poll.build_number > 0 and request.build_number <= 0:
+                request = replace(request, build_number=poll.build_number)
             if poll.completed:
                 result = poll
                 break
+            if poll.status == UNAVAILABLE:
+                unavailable_polls += 1
+                if (
+                    not alerted_unavailable
+                    and unavailable_polls >= max(1, params.ci_unavailable_alert_threshold)
+                ):
+                    await self._alert_ci_unavailable(params, build_id, workflow_id)
+                    alerted_unavailable = True
+            else:
+                unavailable_polls = 0
             await self.wait_resume_or_timeout(suspension, timeout=poll_interval)
 
         self._suspension = None
@@ -907,6 +940,25 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 retry_policy=retry,
             )
         return result
+
+    async def _alert_ci_unavailable(
+        self, params: DraftPullRequestInput, build_id: str, workflow_id: str
+    ) -> None:
+        await workflow.execute_activity(
+            alert_human_intervention,
+            AlertHumanInterventionRequest(
+                task_id=params.task_id,
+                execution_id=params.execution_id,
+                workflow_id=workflow_id,
+                repo=params.repo,
+                issue_key=params.issue_key,
+                attempts=0,
+                ci_build_id=build_id,
+                failure_summary="CI system unreachable, the execution is parked awaiting CI",
+            ),
+            start_to_close_timeout=timedelta(seconds=30),
+            retry_policy=RetryPolicy(maximum_attempts=3),
+        )
 
     async def _review(
         self,

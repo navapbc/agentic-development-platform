@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Awaitable, Callable
+import threading
+from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -47,9 +48,9 @@ async def _ping(database_url: str) -> None:
         await engine.dispose()
 
 
-def _agent_platform_healthy() -> bool:
+def _agent_platform_healthy(loop: asyncio.AbstractEventLoop) -> bool:
     try:
-        asyncio.run(_ping(get_settings().database_url))
+        asyncio.run_coroutine_threadsafe(_ping(get_settings().database_url), loop).result()
         return True
     except Exception:
         log.exception("agent_platform ping failed")
@@ -60,11 +61,15 @@ def build_handler(
     ledger: SideEffectLedger,
     gate: SequenceGate,
     claim_store: WorkClaimStore,
+    loop: asyncio.AbstractEventLoop,
 ) -> type[BaseHTTPRequestHandler]:
+    def _run(coro: Coroutine[Any, Any, Any]) -> Any:
+        return asyncio.run_coroutine_threadsafe(coro, loop).result()
+
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
             if self.path in ("/health", "/healthz", "/"):
-                healthy = _agent_platform_healthy()
+                healthy = _agent_platform_healthy(loop)
                 self._respond(
                     200 if healthy else 503,
                     {"status": "ok" if healthy else "degraded", "service": "coordination"},
@@ -93,17 +98,17 @@ def build_handler(
         def _dispatch(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
             if path == "/idempotency/reserve":
                 ref = SideEffectRef(**payload)
-                return asdict(asyncio.run(ledger.reserve(ref)))
+                return asdict(_run(ledger.reserve(ref)))
             if path == "/idempotency/record":
                 result = payload.pop("result")
                 ref = SideEffectRef(**payload)
-                return asdict(asyncio.run(ledger.record(ref, result)))
+                return asdict(_run(ledger.record(ref, result)))
             if path == "/sequence/admit":
                 action = SequencedAction(**payload)
-                return asdict(asyncio.run(gate.admit(action)))
+                return asdict(_run(gate.admit(action)))
             if path == "/claims/try":
                 unit = _work_unit(payload)
-                return asdict(asyncio.run(claim_store.try_claim(unit)))
+                return asdict(_run(claim_store.try_claim(unit)))
             if path == "/claims/next_batch":
                 units = [_work_unit(u) for u in payload["units"]]
                 schedule = partition_by_file_impact(units)
@@ -163,10 +168,13 @@ def _temporal_owner_active() -> Callable[[str], Awaitable[bool]]:
 
 
 def main() -> None:
+    loop = asyncio.new_event_loop()
+    threading.Thread(target=loop.run_forever, name="coordination-loop", daemon=True).start()
     handler = build_handler(
         PostgresSideEffectLedger(),
         PostgresSequenceGate(),
         PostgresWorkClaimStore(owner_active=_temporal_owner_active()),
+        loop,
     )
     log.info("coordination-service listening on %s:%d", HOST, PORT)
     ThreadingHTTPServer((HOST, PORT), handler).serve_forever()

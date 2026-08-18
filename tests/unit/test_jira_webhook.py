@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from scripts.config import Settings
 from services.coordination.idempotency import InMemorySideEffectLedger
 from services.integration.integrations import HYBRID, POLLING, WEBHOOK
 from services.integration.jira import DATACENTER
@@ -22,6 +21,7 @@ from services.orchestration.intake_reconciler import (
 )
 from services.orchestration.webhook.inbound import handle_inbound
 from services.orchestration.webhook.jira_events import JiraIntakeHandler
+from tests.support import hermetic_settings
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "webhooks"
 _ALLOWED_PROJECTS = frozenset({"ADSER"})
@@ -122,7 +122,7 @@ def _context(world: _World) -> IntakeContext:
         snapshot_store=world.store,
         github_allow=_ALLOWED_REPOS,
         field_id="",
-        settings=Settings(_env_file=None),
+        settings=hermetic_settings(),
     )
 
 
@@ -154,7 +154,7 @@ async def _poll(world: _World, *, issue: dict):
         alerter=world.alerter,
         ledger=world.ledger,
         execution_seeder=world.seeder,
-        settings=Settings(_env_file=None),
+        settings=hermetic_settings(),
         jira_resolver=world.resolver,
         snapshot_store=world.store,
     )

@@ -10,10 +10,10 @@ resources:
 images:
   - name: REGISTRY/agentic-dev-platform/mcp-gateway
     newName: agentic-dev-platform-local
-    newTag: latest
+    newTag: local
   - name: REGISTRY/agentic-dev-platform/inbound-webhook
     newName: agentic-dev-platform-local
-    newTag: latest
+    newTag: local
 
 generatorOptions:
   disableNameSuffixHash: true
@@ -35,9 +35,8 @@ configMapGenerator:
 secretGenerator:
   - name: agentic-platform
     type: Opaque
-    literals:
-      - database_url=postgresql://platform:platform@host.docker.internal:5432/platform
-      - github_webhook_secret=local-demo-secret
+    envs:
+      - agentic-platform.secret.env
 
 patches:
   - target:
@@ -88,3 +87,13 @@ patches:
             containers:
               - name: inbound-webhook
                 imagePullPolicy: IfNotPresent
+  - target:
+      kind: Service
+      name: inbound-webhook
+    patch: |
+      - op: add
+        path: /spec/type
+        value: LoadBalancer
+      - op: replace
+        path: /spec/ports/0/port
+        value: 8140

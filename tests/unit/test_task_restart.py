@@ -1,0 +1,142 @@
+from __future__ import annotations
+
+import pytest
+from services.orchestration.task_restart import RestartResult, restart_task
+
+
+class _RepairStore:
+    def __init__(self, parked: list[str]) -> None:
+        self._parked = parked
+
+    async def parked_workflow_ids(self, issue_key: str) -> list[str]:
+        return self._parked
+
+
+class _RepairSignaller:
+    def __init__(self) -> None:
+        self.sent: list[tuple[str, bool, str]] = []
+
+    async def signal_repair_decision(self, workflow_id: str, *, retry: bool, actor: str) -> None:
+        self.sent.append((workflow_id, retry, actor))
+
+
+class _IntakeStore:
+    def __init__(self, *, workflow_ids: list[str], dedup: int) -> None:
+        self._workflow_ids = workflow_ids
+        self._dedup = dedup
+        self.cleared_repo: str | None = "unset"
+        self.marked = False
+        self.gate_cleared = False
+
+    async def workflow_ids(self, issue_key: str) -> list[str]:
+        return self._workflow_ids
+
+    async def clear_intake_dedup(self, issue_key: str, repo: str | None) -> int:
+        self.cleared_repo = repo
+        return self._dedup
+
+    async def mark_non_terminal_failed(self, issue_key: str) -> int:
+        self.marked = True
+        return 1
+
+    async def clear_sequence_gate(self, issue_key: str) -> int:
+        self.gate_cleared = True
+        return 1
+
+
+def _active(active: set[str]):
+    async def _check(workflow_id: str) -> bool:
+        return workflow_id in active
+
+    return _check
+
+
+async def _no_sleep(_delay: float) -> None:
+    return None
+
+
+@pytest.mark.asyncio
+async def test_restart_abandons_then_retriggers_intake():
+    wf = "draft-pr-ADSER-24-intake-39d2c862"
+    repair_signaller = _RepairSignaller()
+    intake_store = _IntakeStore(workflow_ids=[wf], dedup=1)
+
+    result = await restart_task(
+        "ADSER-24",
+        repair_store=_RepairStore([wf]),
+        repair_signaller=repair_signaller,
+        intake_store=intake_store,
+        workflow_active=_active(set()),
+        sleep=_no_sleep,
+    )
+
+    assert isinstance(result, RestartResult)
+    assert result.abandoned == (wf,)
+    assert repair_signaller.sent == [(wf, False, "operator")]
+    assert intake_store.marked is True
+    assert intake_store.gate_cleared is True
+    assert result.restarted
+    assert "restarted" in result.message
+
+
+@pytest.mark.asyncio
+async def test_restart_waits_for_the_abandoned_workflow_to_settle():
+    wf = "draft-pr-ADSER-24-intake-39d2c862"
+    settling = {wf}
+    checks = {"n": 0}
+
+    async def _active_then_idle(workflow_id: str) -> bool:
+        checks["n"] += 1
+        if checks["n"] >= 3:
+            settling.discard(workflow_id)
+        return workflow_id in settling
+
+    result = await restart_task(
+        "ADSER-24",
+        repair_store=_RepairStore([wf]),
+        repair_signaller=_RepairSignaller(),
+        intake_store=_IntakeStore(workflow_ids=[wf], dedup=1),
+        workflow_active=_active_then_idle,
+        settle_delay=0.0,
+        sleep=_no_sleep,
+    )
+
+    assert result.restarted
+    assert checks["n"] >= 3
+
+
+@pytest.mark.asyncio
+async def test_restart_with_no_parked_workflow_still_retriggers():
+    intake_store = _IntakeStore(workflow_ids=[], dedup=1)
+    repair_signaller = _RepairSignaller()
+
+    result = await restart_task(
+        "ADSER-24",
+        repair_store=_RepairStore([]),
+        repair_signaller=repair_signaller,
+        intake_store=intake_store,
+        workflow_active=_active(set()),
+        sleep=_no_sleep,
+    )
+
+    assert result.abandoned == ()
+    assert repair_signaller.sent == []
+    assert result.restarted
+    assert "no parked workflow to abandon" in result.message
+
+
+@pytest.mark.asyncio
+async def test_restart_is_blocked_when_a_workflow_is_still_running():
+    wf = "draft-pr-ADSER-24-intake-live"
+    result = await restart_task(
+        "ADSER-24",
+        repair_store=_RepairStore([]),
+        repair_signaller=_RepairSignaller(),
+        intake_store=_IntakeStore(workflow_ids=[wf], dedup=1),
+        workflow_active=_active({wf}),
+        sleep=_no_sleep,
+    )
+
+    assert not result.restarted
+    assert result.retry.blocked_by == (wf,)
+    assert "not restarted" in result.message

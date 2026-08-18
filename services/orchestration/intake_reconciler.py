@@ -49,6 +49,10 @@ class IntakeExecutionSeeder(Protocol):
     async def seed(self, *, execution_id: str, task_id: str, repo: str) -> None: ...
 
 
+class IntakeActiveGuard(Protocol):
+    async def active_workflow(self, *, issue_key: str, repo: str) -> str | None: ...
+
+
 class IntakeAlerter(Protocol):
     async def unroutable(self, *, issue_key: str, project: str, reason: str) -> None: ...
 
@@ -86,6 +90,7 @@ class IntakeContext:
     github_allow: frozenset[str]
     field_id: str
     settings: Settings
+    active_guard: IntakeActiveGuard | None = None
 
 
 async def reconcile_intake(
@@ -98,6 +103,7 @@ async def reconcile_intake(
     settings: Settings | None = None,
     jira_resolver: JiraCredentialResolver | None = None,
     snapshot_store: TaskSnapshotStore | None = None,
+    active_guard: IntakeActiveGuard | None = None,
 ) -> IntakeReport:
     resolved = settings or get_settings()
     jira_resolver = jira_resolver or build_jira_credential_resolver(resolved)
@@ -110,6 +116,7 @@ async def reconcile_intake(
         github_allow=frozenset(allowed_repos(resolved)),
         field_id=acceptance_field(resolved),
         settings=resolved,
+        active_guard=active_guard,
     )
     report = IntakeReport()
 
@@ -157,6 +164,7 @@ async def process_issue(
             execution_seeder=ctx.execution_seeder,
             snapshot_store=ctx.snapshot_store,
             settings=ctx.settings,
+            active_guard=ctx.active_guard,
             report=report,
         )
 
@@ -207,8 +215,22 @@ async def _start(
     execution_seeder: IntakeExecutionSeeder,
     snapshot_store: TaskSnapshotStore | None,
     settings: Settings,
+    active_guard: IntakeActiveGuard | None,
     report: IntakeReport,
 ) -> None:
+    if active_guard is not None:
+        active = await active_guard.active_workflow(issue_key=issue_key, repo=repo)
+        if active is not None:
+            report.started.append(
+                IntakeStartRecord(
+                    issue_key=issue_key,
+                    project=project,
+                    repo=repo,
+                    workflow_id=active,
+                    duplicate=True,
+                )
+            )
+            return
     ref = SideEffectRef(
         task_id=issue_key,
         execution_id="",

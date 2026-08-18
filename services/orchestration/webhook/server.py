@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, cast
@@ -79,7 +80,10 @@ async def build_routes(settings: Settings) -> dict[str, Route]:
 
 
 def build_handler(
-    routes: dict[str, Route], ledger: SideEffectLedger, settings: Settings
+    routes: dict[str, Route],
+    ledger: SideEffectLedger,
+    settings: Settings,
+    loop: asyncio.AbstractEventLoop,
 ) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
@@ -96,7 +100,7 @@ def build_handler(
             length = int(self.headers.get("Content-Length") or 0)
             body = self.rfile.read(length) if length else b""
             mode = load_integrations_config(settings).mode(route.handler.name)
-            code, payload = asyncio.run(
+            code, payload = asyncio.run_coroutine_threadsafe(
                 handle_inbound(
                     body,
                     cast("dict[str, str]", self.headers),
@@ -104,8 +108,9 @@ def build_handler(
                     allowed=route.allowed,
                     ledger=ledger,
                     mode=mode,
-                )
-            )
+                ),
+                loop,
+            ).result()
             self._respond(code, payload)
 
         def _respond(self, code: int, body: dict[str, Any]) -> None:
@@ -124,9 +129,11 @@ def build_handler(
 
 def main() -> None:
     settings = get_settings()
-    routes = asyncio.run(build_routes(settings))
+    loop = asyncio.new_event_loop()
+    threading.Thread(target=loop.run_forever, name="inbound-webhook-loop", daemon=True).start()
+    routes = asyncio.run_coroutine_threadsafe(build_routes(settings), loop).result()
     ledger = PostgresSideEffectLedger()
-    handler = build_handler(routes, ledger, settings)
+    handler = build_handler(routes, ledger, settings, loop)
     log.info("%s listening on %s:%d for %s", _SERVICE, HOST, PORT, ", ".join(sorted(routes)))
     ThreadingHTTPServer((HOST, PORT), handler).serve_forever()
 

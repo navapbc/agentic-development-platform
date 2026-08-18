@@ -14,8 +14,22 @@ ABORTED = "ABORTED"
 QUEUED = "queued"
 RUNNING = "running"
 COMPLETED = "completed"
+UNAVAILABLE = "unavailable"
 
-_FAILURE_MARKERS = ("FAIL", "ERROR", "Traceback", "AssertionError", "BUILD FAILURE")
+_FAILURE_MARKERS = (
+    "fail",
+    "error",
+    "traceback",
+    "assert",
+    "reformat",
+    "severity",
+    "ruff",
+    "bandit",
+    "pytest",
+    "security",
+    "issue",
+    "shell=",
+)
 
 
 @dataclass(frozen=True)
@@ -49,7 +63,9 @@ class BuildLog:
 
 
 def failure_summary(log_text: str, *, max_lines: int = 20) -> str:
-    picked = [line for line in log_text.splitlines() if any(m in line for m in _FAILURE_MARKERS)]
+    picked = [
+        line for line in log_text.splitlines() if any(m in line.lower() for m in _FAILURE_MARKERS)
+    ]
     return "\n".join(picked[-max_lines:])
 
 
@@ -66,6 +82,8 @@ class CIHost(Protocol):
     ) -> BuildRef: ...
 
     async def resolve_queue(self, repo: str, job: str, queue_id: int) -> BuildRef: ...
+
+    async def find_build(self, repo: str, job: str, *, execution_id: str) -> int: ...
 
     async def get_build(self, repo: str, job: str, build_number: int) -> BuildResult: ...
 

@@ -147,7 +147,7 @@ async def run_implementation_stage(req: ImplementationRequest) -> Implementation
         execution_id=req.execution_id,
         task=req.task,
         context=req.context,
-        workspace_sub_path=str(Path(workspace.path).relative_to(materializer.workspace_root)),
+        workspace_source=str(Path(workspace.path).resolve()),
         task_id=req.task_id,
     )
     changes = await materializer.collect_changes(workspace)

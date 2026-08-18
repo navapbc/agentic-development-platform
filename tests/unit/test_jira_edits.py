@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-from scripts.config import Settings
 from services.integration.jira.edits import (
     EXECUTION_INVALIDATING,
     MATERIAL_CHANGE,
@@ -15,6 +14,7 @@ from services.integration.jira.edits import (
     evaluate_task_edit,
     recheck_issue_before_pr,
 )
+from tests.support import hermetic_settings
 
 
 class _RecordingPauseStore:
@@ -131,7 +131,7 @@ def _raw_issue(summary: str = "Add retry to the client") -> dict:
 
 
 async def test_recheck_before_pr_pauses_on_material_edit():
-    settings = Settings(jira_acceptance_field="")
+    settings = hermetic_settings()
     store = _RecordingPauseStore()
     stored = _payload()
     reader = _FakeReader(_raw_issue(summary="Rewrite the whole client"))
@@ -150,7 +150,7 @@ async def test_recheck_before_pr_pauses_on_material_edit():
 
 
 async def test_recheck_before_pr_continues_when_unchanged():
-    settings = Settings(jira_acceptance_field="")
+    settings = hermetic_settings()
     store = _RecordingPauseStore()
     stored = _payload()
     reader = _FakeReader(_raw_issue())

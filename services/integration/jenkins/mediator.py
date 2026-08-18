@@ -95,6 +95,10 @@ class JenkinsMediator:
         self._guard(repo)
         return await self.backend.resolve_queue(repo, job, queue_id)
 
+    async def find_build(self, repo: str, job: str, *, execution_id: str) -> int:
+        self._guard(repo)
+        return await self.backend.find_build(repo, job, execution_id=execution_id)
+
     async def get_build(self, repo: str, job: str, build_number: int) -> BuildResult:
         self._guard(repo)
         return await self.backend.get_build(repo, job, build_number)

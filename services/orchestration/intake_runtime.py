@@ -52,6 +52,7 @@ class TemporalStarter:
                 build_id=self._settings.agent_build_id,
                 parked_status=self._settings.jira_parked_status,
                 jira_project=start.jira_project,
+                ci_job=f"{start.repo}-ci",
             ),
             id=workflow_id,
             task_queue=self._settings.temporal_task_queue,
@@ -102,17 +103,37 @@ class PostgresExecutionSeeder:
         async with self._get_engine().begin() as conn:
             await conn.execute(stmt)
 
+    async def active_workflow(self, *, issue_key: str, repo: str) -> str | None:
+        from database.models.schema import executions
+        from sqlalchemy import select
+
+        stmt = (
+            select(executions.c.workflow_id)
+            .where(executions.c.task_id == issue_key)
+            .where(executions.c.repository == repo)
+            .where(executions.c.state.not_in(("COMPLETED", "FAILED", "CANCELLED")))
+            .order_by(executions.c.updated_at.desc())
+            .limit(1)
+        )
+        async with self._get_engine().connect() as conn:
+            row = (await conn.execute(stmt)).first()
+        if row is None:
+            return None
+        return row.workflow_id or ""
+
 
 def build_intake_context(settings: Settings, *, client: Any, gh_resolver: Any) -> IntakeContext:
     from services.coordination.idempotency import PostgresSideEffectLedger
 
+    execution_store = PostgresExecutionSeeder()
     return IntakeContext(
         starter=TemporalStarter(client, settings, gh_resolver),
         alerter=NotificationsAlerter(settings),
         ledger=PostgresSideEffectLedger(),
-        execution_seeder=PostgresExecutionSeeder(),
+        execution_seeder=execution_store,
         snapshot_store=None,
         github_allow=frozenset(allowed_repos(settings)),
         field_id=acceptance_field(settings),
         settings=settings,
+        active_guard=execution_store,
     )

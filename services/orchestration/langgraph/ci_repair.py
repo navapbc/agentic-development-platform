@@ -12,11 +12,19 @@ UNREPAIRABLE = "unrepairable"
 
 TEST_FAILURE = "test_failure"
 LINT = "lint"
+SECURITY = "security"
 BUILD = "build"
 UNKNOWN = "unknown"
 
 _TEST_MARKERS = ("AssertionError", "FAILED", "assert ", "pytest", "test failed")
 _LINT_MARKERS = ("ruff", "flake8", "lint", "E501", "would reformat", "format")
+_SECURITY_MARKERS = (
+    "bandit",
+    "security issue",
+    "shell=true",
+    "severity: high",
+    "severity: medium",
+)
 _BUILD_MARKERS = (
     "SyntaxError",
     "ImportError",
@@ -36,6 +44,11 @@ _INSTRUCTIONS = {
         "The CI build failed on a lint or format check. Apply the formatter and fix the lint "
         "violations reported below without changing behaviour.\n\n{summary}"
     ),
+    SECURITY: (
+        "The CI build failed a security scan. Fix the security finding reported below by "
+        "removing the unsafe code, not by suppressing it, and do not add nosec, noqa, or ignore "
+        "comments.\n\n{summary}"
+    ),
     BUILD: (
         "The CI build failed to build or import. Fix the syntax, import, or name error reported "
         "below.\n\n{summary}"
@@ -54,6 +67,8 @@ def classify_failure(failure_summary: str) -> str:
     text = failure_summary.lower()
     if any(marker.lower() in text for marker in _BUILD_MARKERS):
         return BUILD
+    if any(marker.lower() in text for marker in _SECURITY_MARKERS):
+        return SECURITY
     if any(marker.lower() in text for marker in _TEST_MARKERS):
         return TEST_FAILURE
     if any(marker.lower() in text for marker in _LINT_MARKERS):

@@ -255,3 +255,31 @@ def test_parse_rejects_unknown_flow_stage():
     raw["default"]["flow"] = {"bogus": "In Progress"}
     with pytest.raises(ConfigError):
         parse_jira_config(raw)
+
+
+def test_intake_label_defaults_empty_and_resolves_from_default():
+    raw = _config()
+    raw["default"]["intake_label"] = "adp"
+    resolver = _resolver(raw, {"CORE"}, {"TOKEN_CLOUD": "ccc"})
+
+    core = resolver.resolve("CORE")
+    assert core is not None and core.intake_label == "adp"
+
+
+def test_intake_label_per_project_override():
+    raw = _config()
+    raw["default"]["intake_label"] = "adp"
+    raw["projects"] = {"OPS": {"board": "OPS", "intake_label": "ops-adp"}}
+    resolver = _resolver(raw, {"CORE", "OPS"}, {"TOKEN_CLOUD": "ccc"})
+
+    core = resolver.resolve("CORE")
+    ops = resolver.resolve("OPS")
+    assert core is not None and core.intake_label == "adp"
+    assert ops is not None and ops.intake_label == "ops-adp"
+
+
+def test_intake_label_absent_resolves_empty():
+    resolver = _resolver(_config(), {"CORE"}, {"TOKEN_CLOUD": "ccc"})
+
+    core = resolver.resolve("CORE")
+    assert core is not None and core.intake_label == ""

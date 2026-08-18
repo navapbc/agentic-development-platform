@@ -7,6 +7,7 @@ import uuid
 
 from adapters.interfaces.ci_host import COMPLETED as CI_COMPLETED
 from adapters.interfaces.ci_host import FAILURE, RUNNING, SUCCESS
+from adapters.interfaces.ci_host import UNAVAILABLE as CI_UNAVAILABLE
 from openhands.runtime.caps import COMPLETED
 from services.orchestration.branch_sync import FAST_FORWARD
 from services.orchestration.suspension import (
@@ -125,6 +126,7 @@ def _make_activities(
     ci_result: str = SUCCESS,
     ci_results: list[str] | None = None,
     ci_running_polls: int = 0,
+    ci_unavailable_polls: int = 0,
     repairs: list[ApplyCIRepairRequest] | None = None,
     repair_actionable: bool = True,
     alerts: list[AlertHumanInterventionRequest] | None = None,
@@ -283,7 +285,9 @@ def _make_activities(
         n = poll_counts.get(req.build_number, 0) + 1
         poll_counts[req.build_number] = n
         url = f"https://ci.example/{req.build_number}"
-        if n <= ci_running_polls:
+        if n <= ci_unavailable_polls:
+            return PollCIResult(status=CI_UNAVAILABLE, result="", url="", completed=False)
+        if n <= ci_unavailable_polls + ci_running_polls:
             return PollCIResult(status=RUNNING, result="", url=url, completed=False)
         return PollCIResult(
             status=CI_COMPLETED,
@@ -650,6 +654,7 @@ def _ci_input(
     run_policy: bool = False,
     run_approval: bool = False,
     max_repair_attempts: int = 5,
+    unavailable_threshold: int = 3,
 ) -> DraftPullRequestInput:
     return DraftPullRequestInput(
         task_id="T-1",
@@ -664,6 +669,7 @@ def _ci_input(
         ci_job="agentic-demo-service-ci",
         ci_poll_interval_seconds=poll_interval,
         ci_poll_max_attempts=5,
+        ci_unavailable_alert_threshold=unavailable_threshold,
         max_repair_attempts=max_repair_attempts,
         run_reviews=run_reviews,
         run_policy=run_policy,
@@ -762,6 +768,35 @@ async def test_ci_poll_fallback_resumes_without_a_webhook():
 
     assert result.status == CI_PASSED
     assert result.ci_status == "passed"
+
+
+async def test_ci_unavailable_parks_alerts_then_resumes_when_ci_returns():
+    alerts: list[AlertHumanInterventionRequest] = []
+    activities = _make_activities(
+        None,
+        1,
+        [],
+        [],
+        [],
+        ci_result=SUCCESS,
+        ci_unavailable_polls=2,
+        alerts=alerts,
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            result = await env.client.execute_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(poll_interval=1.0, unavailable_threshold=2),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+
+    assert result.status == CI_PASSED
+    assert result.ci_status == "passed"
+    assert len(alerts) == 1
+    assert "unreachable" in alerts[0].failure_summary
 
 
 async def test_ci_failure_repairs_and_passes():

@@ -22,6 +22,14 @@ async def _run_once() -> int:
     return 0
 
 
+async def _retry(issue_key: str, repo: str | None) -> int:
+    from services.orchestration.intake_retry import run_intake_retry
+
+    result = await run_intake_retry(issue_key, repo=repo)
+    print(f"[intake] {result.message}")
+    return 0 if not result.blocked_by else 1
+
+
 async def _install_schedule() -> int:
     from services.orchestration.temporal_workflows.intake import IntakeInput, IntakeWorkflow
     from temporalio.client import (
@@ -65,7 +73,19 @@ def main() -> int:
     parser.add_argument(
         "--schedule", action="store_true", help="Install the Temporal intake schedule."
     )
+    parser.add_argument(
+        "--retry",
+        metavar="ISSUE",
+        help="Clear the intake dedup for a failed issue so the next poll relaunches it.",
+    )
+    parser.add_argument(
+        "--repo",
+        default=None,
+        help="Scope a --retry to one repository when the issue fanned out to several.",
+    )
     args = parser.parse_args()
+    if args.retry:
+        return asyncio.run(_retry(args.retry, args.repo))
     if args.schedule:
         return asyncio.run(_install_schedule())
     return asyncio.run(_run_once())

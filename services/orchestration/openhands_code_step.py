@@ -26,14 +26,12 @@ class OpenHandsCodeStep:
     context: str = ""
 
     async def run(self, *, workspace: MaterializedWorkspace, task: str) -> CodeResult:
-        root = self.workspace_root.resolve()
-        self.runtime.workspace_host_path = str(root)
-        sub_path = str(Path(workspace.path).resolve().relative_to(root))
         outcome = await self.runtime.run_implementation(
             execution_id=workspace.execution_id,
             task=task,
             context=self.context,
-            workspace_sub_path=sub_path,
+            workspace_source=str(Path(workspace.path).resolve()),
+            task_id=workspace.task_id,
         )
         return CodeResult(
             cost=outcome.cost,

@@ -12,8 +12,11 @@ from services.integration.jira.adapter import build_jira_adapter
 from services.integration.jira.credentials import CLOUD, JiraCredentialResolver
 
 
-def _candidate_jql(project: str) -> str:
-    return f'project = "{project}" AND statusCategory != Done ORDER BY created ASC'
+def _candidate_jql(project: str, intake_label: str = "") -> str:
+    clauses = [f'project = "{project}"', "statusCategory != Done"]
+    if intake_label:
+        clauses.append(f'labels = "{intake_label}"')
+    return f"{' AND '.join(clauses)} ORDER BY created ASC"
 
 
 @dataclass(frozen=True)
@@ -26,4 +29,5 @@ class JiraPollReadSource:
         if cred is not None and cred.auth_mode == CLOUD:
             ensure_acli_authenticated(cred, acli_path=self.settings.jira_acli_path)
         adapter = build_jira_adapter(self.settings, project=project, resolver=self.resolver)
-        return adapter.search_issues(_candidate_jql(project))
+        label = cred.intake_label if cred is not None else ""
+        return adapter.search_issues(_candidate_jql(project, label))

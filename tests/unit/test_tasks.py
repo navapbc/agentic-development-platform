@@ -26,6 +26,8 @@ EXPECTED_TASKS = {
     "fetch-acli",
     "reap",
     "intake",
+    "repair",
+    "restart",
     "demo-durable-task",
     "demo-durable-counter",
     "demo-coordination",

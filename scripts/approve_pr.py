@@ -25,7 +25,6 @@ _PR_CLOSED_SIGNAL = "submit_pr_closed"
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workflow-id", required=True, help="Workflow id parked for approval.")
-    parser.add_argument("--approver", default="release-manager", help="Approval identity.")
     parser.add_argument(
         "--reject",
         action="store_true",
@@ -45,6 +44,8 @@ def _parse_args() -> argparse.Namespace:
 
 
 async def main() -> int:
+    from scripts.operator import local_operator
+
     args = _parse_args()
     settings = get_settings()
     address = to_host_hostport(settings.temporal_host)
@@ -56,13 +57,14 @@ async def main() -> int:
         log.info("signalled %s pr-closed (merged=%s)", args.workflow_id, args.merged)
         return 0
 
+    approver = local_operator()
     approved = not args.reject
-    await handle.signal(_APPROVAL_SIGNAL, args=[approved, args.approver])
+    await handle.signal(_APPROVAL_SIGNAL, args=[approved, approver])
     log.info(
         "signalled %s approval (approved=%s approver=%s)",
         args.workflow_id,
         approved,
-        args.approver,
+        approver,
     )
     return 0
 
