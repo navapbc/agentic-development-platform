@@ -12,6 +12,7 @@ from services.integration.credentials import (
     SecretNotFoundError,
 )
 from services.integration.jira.credentials import (
+    ComponentRepos,
     JiraCredentialResolver,
     JiraProjectCredential,
     StatusFlow,
@@ -178,6 +179,45 @@ def test_parse_accepts_empty_config():
     assert config.sites == {}
     assert config.default is None
     assert config.projects == {}
+
+
+def test_component_repos_resolve_from_default_and_project_override():
+    raw = _config()
+    raw["default"]["component_repos"] = {"Backend": "repo-a", "Shared": ["repo-a", "repo-c"]}
+    raw["projects"] = {"OPS": {"component_repos": {"Ops": "repo-b"}}}
+    resolver = _resolver(raw, {"CORE", "OPS"}, {"TOKEN_CLOUD": "ccc"})
+
+    core = resolver.resolve("CORE")
+    ops = resolver.resolve("OPS")
+
+    assert core is not None and ops is not None
+    assert core.component_repos.repos_for("Backend") == ("repo-a",)
+    assert core.component_repos.repos_for("shared") == ("repo-a", "repo-c")
+    assert core.component_repos.repos_for("missing") == ()
+    assert ops.component_repos.repos_for("Ops") == ("repo-b",)
+    assert ops.component_repos.repos_for("Backend") == ()
+
+
+def test_component_repos_default_to_empty_when_unset():
+    resolver = _resolver(_config(), {"CORE"}, {"TOKEN_CLOUD": "ccc"})
+    cred = resolver.resolve("CORE")
+
+    assert cred is not None
+    assert cred.component_repos == ComponentRepos()
+
+
+def test_parse_rejects_a_non_mapping_component_repos():
+    raw = _config()
+    raw["default"]["component_repos"] = ["repo-a"]
+    with pytest.raises(ConfigError):
+        parse_jira_config(raw)
+
+
+def test_parse_rejects_a_non_string_or_list_component_value():
+    raw = _config()
+    raw["default"]["component_repos"] = {"Backend": {"nested": "no"}}
+    with pytest.raises(ConfigError):
+        parse_jira_config(raw)
 
 
 def test_committed_example_template_is_valid_and_resolves():

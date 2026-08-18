@@ -28,6 +28,7 @@ class NormalizedTask:
     labels: tuple[str, ...]
     acceptance_criteria: str
     comments: tuple[str, ...]
+    components: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -41,6 +42,7 @@ class NormalizedTask:
             "labels": list(self.labels),
             "acceptance_criteria": self.acceptance_criteria,
             "comments": list(self.comments),
+            "components": list(self.components),
         }
 
 
@@ -66,6 +68,7 @@ def normalize_issue(
     fields = raw.get("fields") or {}
     task_id = str(raw.get("key") or "")
     labels = tuple(str(label) for label in (fields.get("labels") or []))
+    components = tuple(_name_of(component) for component in (fields.get("components") or []))
     acceptance = ""
     if acceptance_field and fields.get(acceptance_field) is not None:
         acceptance = _normalize_rich_text(fields.get(acceptance_field))
@@ -80,4 +83,5 @@ def normalize_issue(
         labels=labels,
         acceptance_criteria=acceptance,
         comments=tuple(_normalize_rich_text(body) for body in raw_comments),
+        components=tuple(name for name in components if name),
     )

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import pytest
 from services.coordination.idempotency import InMemorySideEffectLedger
 from services.integration.jira import CLOUD
+from services.integration.jira.credentials import ComponentRepos
 from services.integration.jira.snapshot import TaskSnapshot, snapshot_id_for
 from services.orchestration.intake_reconciler import IntakeStart, reconcile_intake
 from tests.support import hermetic_settings
@@ -19,6 +20,7 @@ _PROJECTS = {"ADEV", "ADSER"}
 class _Cred:
     default_repo: str
     auth_mode: str = CLOUD
+    component_repos: ComponentRepos = field(default_factory=ComponentRepos)
 
 
 class _Resolver:
@@ -83,7 +85,14 @@ class _RecordingStore:
         return snapshot
 
 
-def _issue(key: str, project: str, *, summary: str = "Add retry", description: str = "") -> dict:
+def _issue(
+    key: str,
+    project: str,
+    *,
+    summary: str = "Add retry",
+    description: str = "",
+    components: tuple[str, ...] = (),
+) -> dict:
     return {
         "key": key,
         "fields": {
@@ -94,6 +103,7 @@ def _issue(key: str, project: str, *, summary: str = "Add retry", description: s
             "status": {"name": "To Do"},
             "priority": {"name": "High"},
             "labels": [],
+            "components": [{"name": name} for name in components],
         },
     }
 
@@ -178,6 +188,33 @@ async def test_scan_match_selects_named_repo():
     starter, alerter, ledger, store, resolver = _defaults()
     await _run(read, starter, alerter, ledger, store, resolver)
     assert [(s.issue_key, s.repo) for s in starter.starts] == [("ADEV-1", "repo-c")]
+
+
+async def test_components_fan_out_to_the_mapped_repositories():
+    read = _ReadSource(
+        {"ADEV": [_issue("ADEV-1", "ADEV", components=("Backend", "Frontend"))]}
+    )
+    components = ComponentRepos((("backend", ("repo-a",)), ("frontend", ("repo-b",))))
+    resolver = _Resolver({"ADEV": _Cred("repo-c", component_repos=components)})
+    starter, alerter = _Starter(), _Alerter()
+    ledger, store = InMemorySideEffectLedger(), _RecordingStore()
+    await _run(read, starter, alerter, ledger, store, resolver)
+    assert {(s.issue_key, s.repo) for s in starter.starts} == {
+        ("ADEV-1", "repo-a"),
+        ("ADEV-1", "repo-b"),
+    }
+
+
+async def test_component_mapping_outside_the_allowlist_holds_and_alerts():
+    read = _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV", components=("Backend",))]})
+    components = ComponentRepos((("backend", ("ghost-repo",)),))
+    resolver = _Resolver({"ADEV": _Cred("repo-a", component_repos=components)})
+    starter, alerter = _Starter(), _Alerter()
+    ledger, store = InMemorySideEffectLedger(), _RecordingStore()
+    report = await _run(read, starter, alerter, ledger, store, resolver)
+    assert starter.starts == []
+    assert len(alerter.alerts) == 1
+    assert report.held[0].issue_key == "ADEV-1"
 
 
 async def test_unchanged_repoll_starts_nothing():

@@ -10,7 +10,10 @@
 # when a ticket names no repository, and must be in the github allowlist. intake_label, when set,
 # gates intake so only issues carrying that Jira label enter the platform, and leaving it unset
 # admits every not-Done issue in the project. It resolves per project with the default as the
-# fallback, the same as board and default_repo.
+# fallback, the same as board and default_repo. component_repos maps a ticket's Jira component
+# names to one repository or a list, and a ticket routes to the union of its components' repos.
+# An explicit repos: marker in the description overrides it, and a component with no mapping is
+# ignored. It resolves per project with the default as the fallback.
 
 config_version: 1
 
@@ -34,6 +37,10 @@ default:
   board: AGENTDEV
   default_repo: agentic-demo-service
   intake_label: adp
+  component_repos:
+    Backend: agentic-demo-service
+    # Frontend: agentic-demo-ts
+    # Shared: [agentic-demo-service, agentic-demo-ts]
   statuses: [Backlog, Selected for Development, In Progress, In Review, Done]
   flow:
     work_started: In Progress

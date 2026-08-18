@@ -143,6 +143,8 @@ async def process_issue(
         normalized.description,
         default_repo=cred.default_repo,
         allowlist=ctx.github_allow,
+        components=normalized.components,
+        component_map=getattr(cred, "component_repos", None),
     )
     if not resolution.routable:
         await _hold(

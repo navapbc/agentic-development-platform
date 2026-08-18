@@ -37,6 +37,7 @@ def _payload(**overrides):
         "labels": ["backend"],
         "acceptance_criteria": "",
         "comments": [],
+        "components": [],
     }
     base.update(overrides)
     return base

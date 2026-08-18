@@ -30,6 +30,18 @@ class StatusFlow:
 
 
 @dataclass(frozen=True)
+class ComponentRepos:
+    entries: tuple[tuple[str, tuple[str, ...]], ...] = ()
+
+    def repos_for(self, component: str) -> tuple[str, ...]:
+        key = component.strip().lower()
+        for name, repos in self.entries:
+            if name == key:
+                return repos
+        return ()
+
+
+@dataclass(frozen=True)
 class JiraProjectCredential:
     url: str
     auth_mode: str
@@ -41,6 +53,7 @@ class JiraProjectCredential:
     status_flow: StatusFlow = field(default_factory=StatusFlow)
     default_repo: str = ""
     intake_label: str = ""
+    component_repos: ComponentRepos = field(default_factory=ComponentRepos)
 
 
 @dataclass(frozen=True)
@@ -59,6 +72,7 @@ class _Identity:
     flow: StatusFlow = field(default_factory=StatusFlow)
     default_repo: str = ""
     intake_label: str = ""
+    component_repos: ComponentRepos = field(default_factory=ComponentRepos)
 
 
 @dataclass(frozen=True)
@@ -71,6 +85,7 @@ class _ProjectOverride:
     flow: StatusFlow | None = None
     default_repo: str | None = None
     intake_label: str | None = None
+    component_repos: ComponentRepos | None = None
 
 
 @dataclass(frozen=True)
@@ -83,6 +98,7 @@ class _Effective:
     flow: StatusFlow
     default_repo: str
     intake_label: str
+    component_repos: ComponentRepos
 
 
 @dataclass(frozen=True)
@@ -108,7 +124,7 @@ class UnconfiguredProjectError(RuntimeError):
 def _string_fields(raw: Mapping[str, object], context: str) -> dict[str, str]:
     fields: dict[str, str] = {}
     for key, value in raw.items():
-        if key in ("statuses", "flow"):
+        if key in ("statuses", "flow", "component_repos"):
             continue
         if value is None:
             continue
@@ -152,6 +168,25 @@ def _parse_flow(raw: object, context: str) -> StatusFlow | None:
     )
 
 
+def _parse_component_repos(raw: object, context: str) -> ComponentRepos | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping):
+        raise ConfigError(f"jira config {context} 'component_repos' is not a mapping")
+    entries: list[tuple[str, tuple[str, ...]]] = []
+    for name, value in raw.items():
+        if isinstance(value, str):
+            repos: tuple[str, ...] = (value,)
+        elif isinstance(value, Sequence) and not isinstance(value, str | bytes):
+            repos = tuple(str(item) for item in value if str(item))
+        else:
+            raise ConfigError(
+                f"jira config {context} component_repos '{name}' is not a string or list"
+            )
+        entries.append((str(name).strip().lower(), repos))
+    return ComponentRepos(tuple(entries))
+
+
 def _parse_sites(raw: Mapping[str, object]) -> dict[str, _Site]:
     sites_raw = raw.get("sites") or {}
     if not isinstance(sites_raw, Mapping):
@@ -192,6 +227,8 @@ def _parse_default(raw: Mapping[str, object], sites: dict[str, _Site]) -> _Ident
         flow=_parse_flow(default_raw.get("flow"), "default") or StatusFlow(),
         default_repo=parsed.get("default_repo", ""),
         intake_label=parsed.get("intake_label", ""),
+        component_repos=_parse_component_repos(default_raw.get("component_repos"), "default")
+        or ComponentRepos(),
     )
 
 
@@ -218,6 +255,9 @@ def _parse_projects(
             flow=_parse_flow(fields.get("flow"), f"project {name}"),
             default_repo=parsed.get("default_repo"),
             intake_label=parsed.get("intake_label"),
+            component_repos=_parse_component_repos(
+                fields.get("component_repos"), f"project {name}"
+            ),
         )
     return projects
 
@@ -286,6 +326,7 @@ class JiraCredentialResolver:
             status_flow=effective.flow,
             default_repo=effective.default_repo,
             intake_label=effective.intake_label,
+            component_repos=effective.component_repos,
         )
 
     def status_flow(self, project: str) -> StatusFlow:
@@ -333,8 +374,22 @@ class JiraCredentialResolver:
         intake_label = (override.intake_label if override else None) or (
             default.intake_label if default else ""
         )
+        if override is not None and override.component_repos is not None:
+            component_repos = override.component_repos
+        elif default is not None:
+            component_repos = default.component_repos
+        else:
+            component_repos = ComponentRepos()
         return _Effective(
-            site, email, token_ref, board, statuses, flow, default_repo or "", intake_label or ""
+            site,
+            email,
+            token_ref,
+            board,
+            statuses,
+            flow,
+            default_repo or "",
+            intake_label or "",
+            component_repos,
         )
 
 
