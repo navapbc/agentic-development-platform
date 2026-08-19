@@ -16,9 +16,9 @@ def _alert() -> HumanInterventionAlert:
         workflow_id="wf-1",
         repo="agentic-demo-service",
         issue_key="T-1",
-        attempts=5,
-        ci_build_id="9",
-        failure_summary="AssertionError: boom",
+        reason="repair_exhausted",
+        stage="repair",
+        detail="AssertionError: boom",
     )
 
 

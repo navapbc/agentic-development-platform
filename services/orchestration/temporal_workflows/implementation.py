@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import timedelta
+from typing import Any
 
 from temporalio import workflow
 from temporalio.common import RetryPolicy
@@ -67,6 +68,8 @@ class ImplementationInput:
     max_llm_calls: int = 200
     max_tokens: int = 2_000_000
     activity_timeout_seconds: float = 2400.0
+    plan: str = ""
+    context_package: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -87,6 +90,7 @@ class ImplementationOutput:
     tokens: int = 0
     llm_calls: int = 0
     claim_version: int = 0
+    summary: str = ""
 
 
 @workflow.defn
@@ -195,15 +199,15 @@ class ImplementationWorkflow:
                     pr_url=existing.url,
                 )
 
-        context = ""
-        if params.repo:
+        context_package = params.context_package
+        if not context_package and params.repo:
             gathered: ContextResult = await workflow.execute_activity(
                 gather_repo_context,
                 ContextRequest(repo=params.repo, commit=params.commit, focus=params.focus),
                 start_to_close_timeout=context_timeout,
                 retry_policy=retry,
             )
-            context = gathered.summary
+            context_package = gathered.package
 
         await audit(
             AuditEvent(
@@ -228,7 +232,8 @@ class ImplementationWorkflow:
                 base=params.base,
                 commit=params.commit,
                 task=params.task,
-                context=context,
+                context_package=context_package,
+                plan=params.plan,
             ),
             start_to_close_timeout=stage_timeout,
             retry_policy=once,
@@ -336,4 +341,5 @@ class ImplementationWorkflow:
             tokens=result.tokens,
             llm_calls=result.llm_calls,
             claim_version=claim_version,
+            summary=result.summary,
         )

@@ -299,6 +299,7 @@ async def _run_via_temporal(
             run_reviews=full_pipeline,
             run_policy=full_pipeline,
             run_approval=full_pipeline,
+            run_planning=full_pipeline,
             await_pr_close=await_pr_close,
             jira_project=project_of(task_id),
             plan_approved=full_pipeline,

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Protocol
 
 PROCEED = "proceed"
@@ -22,6 +22,8 @@ class PolicyInput:
     jira_snapshot_current: bool
     acceptance_verified: bool
     pr_authorized: bool
+    severity_counts: dict[str, int] = field(default_factory=dict)
+    scan_findings: list[dict[str, str]] = field(default_factory=list)
 
     def as_document(self) -> dict[str, object]:
         return asdict(self)

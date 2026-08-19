@@ -15,6 +15,7 @@ from services.orchestration.suspension import (
     ResumeOn,
     SuspendReason,
 )
+from services.orchestration.temporal_activities.bedrock import ModelRequest, ModelResponse
 from services.orchestration.temporal_activities.branch_sync import (
     RecheckRequest,
     RecheckResult,
@@ -83,6 +84,7 @@ from services.orchestration.temporal_activities.review import (
 from services.orchestration.temporal_activities.security import (
     ScanChangeRequest,
     ScanChangeResult,
+    ScanFindingRecord,
 )
 from services.orchestration.temporal_activities.suspension import (
     ClearSuspensionRequest,
@@ -94,6 +96,7 @@ from services.orchestration.temporal_workflows.draft_pull_request import (
     CI_PASSED,
     DRAFT_PR_OPEN,
     EXISTING_PR_REUSED,
+    PLAN_REJECTED,
     POLICY_ALLOWED,
     POLICY_DENIED,
     PR_PROMOTED,
@@ -105,6 +108,7 @@ from services.orchestration.temporal_workflows.draft_pull_request import (
 )
 from services.orchestration.temporal_workflows.implementation import ImplementationWorkflow
 from services.orchestration.temporal_workflows.pull_request import PullRequestWorkflow
+from services.orchestration.temporal_workflows.review import PlanReviewWorkflow
 from temporalio import activity
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
@@ -130,12 +134,18 @@ def _make_activities(
     repairs: list[ApplyCIRepairRequest] | None = None,
     repair_actionable: bool = True,
     alerts: list[AlertHumanInterventionRequest] | None = None,
+    usage: list[UsageMetrics] | None = None,
     review_requests: list[ReviewRequest] | None = None,
     code_verdict: str = "pass",
     security_verdict: str = "pass",
     acceptance_verdict: str = "pass",
+    plan_verdict: str = "pass",
+    impl_requests: list[ImplementationRequest] | None = None,
+    context_requests: list[ContextRequest] | None = None,
     scan_requests: list[ScanChangeRequest] | None = None,
     scan_blocking_findings: int = 0,
+    scan_result_findings: list[ScanFindingRecord] | None = None,
+    scan_result_severity_counts: dict[str, int] | None = None,
     policy_requests: list[EvaluatePromotionRequest] | None = None,
     policy_allow: bool = True,
     policy_reasons: list[str] | None = None,
@@ -154,11 +164,15 @@ def _make_activities(
 
     @activity.defn(name="record_usage_metrics")
     async def fake_usage(payload: UsageMetrics) -> str:
+        if usage is not None:
+            usage.append(payload)
         return payload.execution_id
 
     @activity.defn(name="gather_repo_context")
     async def fake_context(req: ContextRequest) -> ContextResult:
-        return ContextResult(summary="repo context", package={})
+        if context_requests is not None:
+            context_requests.append(req)
+        return ContextResult(summary="repo context", package={"nodes": ["feature.py"]})
 
     @activity.defn(name="claim_work_unit")
     async def fake_claim(req: ClaimRequest) -> ClaimResult:
@@ -170,6 +184,8 @@ def _make_activities(
 
     @activity.defn(name="run_implementation_stage")
     async def fake_stage(req: ImplementationRequest) -> ImplementationResult:
+        if impl_requests is not None:
+            impl_requests.append(req)
         return ImplementationResult(
             status="finished",
             terminal_reason=COMPLETED,
@@ -356,18 +372,30 @@ def _make_activities(
             review_requests.append(req)
         return _review_outcome("acceptance-verification", acceptance_verdict)
 
+    @activity.defn(name="invoke_model")
+    async def fake_invoke_model(req: ModelRequest) -> ModelResponse:
+        return ModelResponse(
+            logical_model=req.logical_model,
+            content="Plan:\n- Edit feature.py to add the change\n- Update README.md",
+            model_id="planning-model",
+        )
+
+    @activity.defn(name="review_plan")
+    async def fake_review_plan(req: ReviewRequest) -> ReviewOutcome:
+        return _review_outcome("plan-review", plan_verdict)
+
     @activity.defn(name="scan_change")
     async def fake_scan_change(req: ScanChangeRequest) -> ScanChangeResult:
         if scan_requests is not None:
             scan_requests.append(req)
         return ScanChangeResult(
             scanners=["semgrep", "trivy"],
-            findings=[],
+            findings=list(scan_result_findings or []),
             blocking_count=scan_blocking_findings,
             threshold="high",
             content_hash="sha256:scan",
             evidence_id="evidence-1",
-            severity_counts={},
+            severity_counts=dict(scan_result_severity_counts or {}),
         )
 
     @activity.defn(name="evaluate_promotion")
@@ -427,6 +455,8 @@ def _make_activities(
         fake_review_code,
         fake_review_security,
         fake_verify_acceptance,
+        fake_invoke_model,
+        fake_review_plan,
         fake_scan_change,
         fake_evaluate_promotion,
         fake_record_approval,
@@ -449,6 +479,7 @@ async def _run(*, existing_pr: FindOpenPrResult | None = None, claim_version: in
                 ImplementationWorkflow,
                 BranchSyncWorkflow,
                 PullRequestWorkflow,
+                PlanReviewWorkflow,
             ],
             workflow_runner=SandboxedWorkflowRunner(
                 restrictions=SandboxRestrictions.default.with_passthrough_modules("beartype")
@@ -653,8 +684,10 @@ def _ci_input(
     run_reviews: bool = False,
     run_policy: bool = False,
     run_approval: bool = False,
+    run_planning: bool = False,
     max_repair_attempts: int = 5,
     unavailable_threshold: int = 3,
+    max_cost_usd: float = 5.0,
 ) -> DraftPullRequestInput:
     return DraftPullRequestInput(
         task_id="T-1",
@@ -671,9 +704,11 @@ def _ci_input(
         ci_poll_max_attempts=5,
         ci_unavailable_alert_threshold=unavailable_threshold,
         max_repair_attempts=max_repair_attempts,
+        max_cost_usd=max_cost_usd,
         run_reviews=run_reviews,
         run_policy=run_policy,
         run_approval=run_approval,
+        run_planning=run_planning,
         jira_project="AGENTDEV",
         plan_approved=True,
     )
@@ -688,6 +723,7 @@ async def _start_ci_worker(env, task_queue: str, activities):
             ImplementationWorkflow,
             BranchSyncWorkflow,
             PullRequestWorkflow,
+            PlanReviewWorkflow,
         ],
         workflow_runner=SandboxedWorkflowRunner(
             restrictions=SandboxRestrictions.default.with_passthrough_modules("beartype")
@@ -796,7 +832,9 @@ async def test_ci_unavailable_parks_alerts_then_resumes_when_ci_returns():
     assert result.status == CI_PASSED
     assert result.ci_status == "passed"
     assert len(alerts) == 1
-    assert "unreachable" in alerts[0].failure_summary
+    assert "unreachable" in alerts[0].detail
+    assert alerts[0].reason == "ci_unavailable"
+    assert alerts[0].stage == "ci"
 
 
 async def test_ci_failure_repairs_and_passes():
@@ -903,7 +941,54 @@ async def test_ci_repair_exhausted_parks_for_human_and_abandons():
     assert len(ci_triggers) == 3
     assert ci_triggers[2].sequence == 18
     assert len(alerts) == 1
-    assert alerts[0].attempts == 2
+    assert alerts[0].reason == "repair_exhausted"
+    assert alerts[0].stage == "repair"
+
+
+async def test_ci_repair_stops_on_cumulative_budget():
+    commits: list[CommitPushRequest] = []
+    pr_opens: list[OpenPrRequest] = []
+    linkbacks: list[LinkbackRequest] = []
+    ci_triggers: list[TriggerCIRequest] = []
+    repairs: list[ApplyCIRepairRequest] = []
+    alerts: list[AlertHumanInterventionRequest] = []
+    usage: list[UsageMetrics] = []
+    activities = _make_activities(
+        None,
+        1,
+        commits,
+        pr_opens,
+        linkbacks,
+        ci_triggers=ci_triggers,
+        ci_result=FAILURE,
+        repairs=repairs,
+        alerts=alerts,
+        usage=usage,
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(max_repair_attempts=10, max_cost_usd=0.35),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+            state = await _await_human_park(handle)
+            assert state["reason"] == SuspendReason.AWAITING_HUMAN.value
+            assert state["stage"] == "repair"
+            await handle.signal("submit_repair_decision", args=[False, "release-manager"])
+            result = await handle.result()
+
+    assert result.repair_attempts == 3
+    assert len(repairs) == 3
+    repair_usage = [record for record in usage if record.stage == "REPAIRING"]
+    assert len(repair_usage) == 3
+    assert all(record.cost_usd == 0.1 for record in repair_usage)
+    assert len(alerts) == 1
+    assert alerts[0].reason == "cost_budget_exceeded"
+    assert alerts[0].stage == "repair"
 
 
 async def test_ci_repair_retry_decision_reruns_and_passes():
@@ -1094,6 +1179,7 @@ async def test_review_blocking_finding_stops_before_policy_gate():
     pr_opens: list[OpenPrRequest] = []
     linkbacks: list[LinkbackRequest] = []
     review_requests: list[ReviewRequest] = []
+    alerts: list[AlertHumanInterventionRequest] = []
     activities = _make_activities(
         None,
         1,
@@ -1103,6 +1189,7 @@ async def test_review_blocking_finding_stops_before_policy_gate():
         ci_result=SUCCESS,
         review_requests=review_requests,
         security_verdict="block",
+        alerts=alerts,
     )
 
     async with await WorkflowEnvironment.start_time_skipping() as env:
@@ -1124,10 +1211,148 @@ async def test_review_blocking_finding_stops_before_policy_gate():
         "code-review": "sha256:code-review",
         "security-review": "sha256:security-review",
     }
+    assert result.review_findings == {
+        "code-review": [],
+        "security-review": ["security-review blocking finding"],
+    }
+    assert result.review_summaries == {
+        "code-review": "reviewed",
+        "security-review": "reviewed",
+    }
     assert len(review_requests) == 2
+    assert len(alerts) == 1
+    assert alerts[0].reason == REVIEW_BLOCKED
+    assert alerts[0].stage == "review"
 
 
-async def test_policy_allow_scans_and_promotes():
+async def test_plan_stage_feeds_the_reviewed_plan_to_the_coder():
+    commits: list[CommitPushRequest] = []
+    pr_opens: list[OpenPrRequest] = []
+    linkbacks: list[LinkbackRequest] = []
+    impl_requests: list[ImplementationRequest] = []
+    activities = _make_activities(
+        None,
+        1,
+        commits,
+        pr_opens,
+        linkbacks,
+        ci_result=SUCCESS,
+        impl_requests=impl_requests,
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            result = await env.client.execute_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(run_reviews=True, run_planning=True),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+
+    assert result.status == REVIEW_PASSED
+    assert len(impl_requests) == 1
+    assert "Edit feature.py" in impl_requests[0].plan
+    assert impl_requests[0].context_package == {"nodes": ["feature.py"]}
+
+
+async def test_plan_rejected_stops_before_implementation():
+    commits: list[CommitPushRequest] = []
+    pr_opens: list[OpenPrRequest] = []
+    linkbacks: list[LinkbackRequest] = []
+    impl_requests: list[ImplementationRequest] = []
+    alerts: list[AlertHumanInterventionRequest] = []
+    activities = _make_activities(
+        None,
+        1,
+        commits,
+        pr_opens,
+        linkbacks,
+        ci_result=SUCCESS,
+        plan_verdict="block",
+        impl_requests=impl_requests,
+        alerts=alerts,
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            result = await env.client.execute_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(run_reviews=True, run_planning=True),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+
+    assert result.status == PLAN_REJECTED
+    assert result.plan_status == "rejected"
+    assert result.plan_verdict == "block"
+    assert impl_requests == []
+    assert len(alerts) == 1
+    assert alerts[0].reason == PLAN_REJECTED
+    assert alerts[0].stage == "plan"
+
+
+async def test_planning_and_coding_pin_one_ris_commit():
+    commits: list[CommitPushRequest] = []
+    pr_opens: list[OpenPrRequest] = []
+    linkbacks: list[LinkbackRequest] = []
+    context_requests: list[ContextRequest] = []
+    activities = _make_activities(
+        None,
+        1,
+        commits,
+        pr_opens,
+        linkbacks,
+        ci_result=SUCCESS,
+        context_requests=context_requests,
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            await env.client.execute_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(run_reviews=True, run_planning=True),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+
+    assert len(context_requests) == 1
+    assert context_requests[0].commit == "a" * 40
+
+
+async def test_agent_summary_reaches_pr_and_review_subject():
+    commits: list[CommitPushRequest] = []
+    pr_opens: list[OpenPrRequest] = []
+    linkbacks: list[LinkbackRequest] = []
+    review_requests: list[ReviewRequest] = []
+    activities = _make_activities(
+        None,
+        1,
+        commits,
+        pr_opens,
+        linkbacks,
+        ci_result=SUCCESS,
+        review_requests=review_requests,
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            result = await env.client.execute_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(run_reviews=True),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+
+    assert result.status == REVIEW_PASSED
+    assert "done" in pr_opens[0].body
+    assert any(
+        "Implementation summary:" in request.subject and "done" in request.subject
+        for request in review_requests
+    )
     commits: list[CommitPushRequest] = []
     pr_opens: list[OpenPrRequest] = []
     linkbacks: list[LinkbackRequest] = []
@@ -1176,6 +1401,7 @@ async def test_policy_deny_on_blocking_finding_blocks_promotion():
     pr_opens: list[OpenPrRequest] = []
     linkbacks: list[LinkbackRequest] = []
     policy_requests: list[EvaluatePromotionRequest] = []
+    alerts: list[AlertHumanInterventionRequest] = []
     activities = _make_activities(
         None,
         1,
@@ -1187,6 +1413,7 @@ async def test_policy_deny_on_blocking_finding_blocks_promotion():
         policy_requests=policy_requests,
         policy_allow=False,
         policy_reasons=["blocking_security_findings"],
+        alerts=alerts,
     )
 
     async with await WorkflowEnvironment.start_time_skipping() as env:
@@ -1205,6 +1432,77 @@ async def test_policy_deny_on_blocking_finding_blocks_promotion():
     assert result.policy_reasons == ["blocking_security_findings"]
     assert result.scan_blocking_findings == 1
     assert policy_requests[0].blocking_findings == 1
+    assert len(alerts) == 1
+    assert alerts[0].reason == POLICY_DENIED
+    assert alerts[0].stage == "policy"
+
+
+async def test_scan_findings_and_severity_reach_policy_and_result():
+    commits: list[CommitPushRequest] = []
+    pr_opens: list[OpenPrRequest] = []
+    linkbacks: list[LinkbackRequest] = []
+    scan_requests: list[ScanChangeRequest] = []
+    policy_requests: list[EvaluatePromotionRequest] = []
+    findings = [
+        ScanFindingRecord(
+            finding_id="f1",
+            scanner="semgrep",
+            kind="sast",
+            severity="high",
+            title="SQL injection",
+            detail="tainted input",
+            location="app/db.py:20",
+            rule_id="python.sql-injection",
+        ),
+        ScanFindingRecord(
+            finding_id="f2",
+            scanner="trivy",
+            kind="dependency",
+            severity="medium",
+            title="Vulnerable dependency",
+            location="requirements.txt",
+            rule_id="CVE-2024-0001",
+        ),
+    ]
+    activities = _make_activities(
+        None,
+        1,
+        commits,
+        pr_opens,
+        linkbacks,
+        ci_result=SUCCESS,
+        scan_blocking_findings=1,
+        scan_result_findings=findings,
+        scan_result_severity_counts={"high": 1, "medium": 1},
+        scan_requests=scan_requests,
+        policy_requests=policy_requests,
+        policy_allow=False,
+        policy_reasons=["blocking_security_findings"],
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            result = await env.client.execute_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(run_reviews=True, run_policy=True),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+
+    assert result.scan_blocking_findings == 1
+    assert result.scan_severity_counts == {"high": 1, "medium": 1}
+    assert [finding["rule_id"] for finding in result.scan_findings] == [
+        "python.sql-injection",
+        "CVE-2024-0001",
+    ]
+    assert [finding["severity"] for finding in result.scan_findings] == ["high", "medium"]
+    assert policy_requests[0].blocking_findings == 1
+    assert policy_requests[0].severity_counts == {"high": 1, "medium": 1}
+    assert [finding["rule_id"] for finding in policy_requests[0].scan_findings] == [
+        "python.sql-injection",
+        "CVE-2024-0001",
+    ]
 
 
 async def _await_approval_park(handle) -> dict[str, str]:
@@ -1223,6 +1521,7 @@ async def _await_approval_park(handle) -> dict[str, str]:
 async def test_approval_parks_and_promotes_pr_on_approve():
     approvals: list[RecordApprovalRequest] = []
     promotions: list[PromotePrRequest] = []
+    alerts: list[AlertHumanInterventionRequest] = []
     activities = _make_activities(
         None,
         1,
@@ -1232,6 +1531,7 @@ async def test_approval_parks_and_promotes_pr_on_approve():
         ci_result=SUCCESS,
         approvals=approvals,
         promotions=promotions,
+        alerts=alerts,
     )
 
     async with await WorkflowEnvironment.start_time_skipping() as env:
@@ -1261,6 +1561,7 @@ async def test_approval_parks_and_promotes_pr_on_approve():
     assert approvals[0].sequence == 25
     assert len(promotions) == 1
     assert promotions[0].sequence == 26
+    assert alerts == []
 
 
 async def test_approval_rejection_cancels_promotion():

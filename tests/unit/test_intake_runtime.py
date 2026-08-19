@@ -46,3 +46,4 @@ async def test_start_requests_ci_with_repo_scoped_job(monkeypatch: pytest.Monkey
     assert arg.run_reviews is False
     assert arg.run_policy is False
     assert arg.run_approval is False
+    assert arg.run_planning is True

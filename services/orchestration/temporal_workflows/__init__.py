@@ -7,14 +7,11 @@ from services.orchestration.temporal_workflows.intake import IntakeWorkflow
 from services.orchestration.temporal_workflows.pull_request import PullRequestWorkflow
 from services.orchestration.temporal_workflows.reap import ReapWorkflow
 from services.orchestration.temporal_workflows.review import (
-    CodeReviewWorkflow,
     PlanReviewWorkflow,
-    ReviewPipelineWorkflow,
 )
 
 __all__ = [
     "BranchSyncWorkflow",
-    "CodeReviewWorkflow",
     "CountingWorkflow",
     "DraftPullRequestWorkflow",
     "DurableTaskWorkflow",
@@ -23,5 +20,4 @@ __all__ = [
     "PlanReviewWorkflow",
     "PullRequestWorkflow",
     "ReapWorkflow",
-    "ReviewPipelineWorkflow",
 ]

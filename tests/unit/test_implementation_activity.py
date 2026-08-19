@@ -66,6 +66,7 @@ class _FakeRuntime:
             "execution_id": execution_id,
             "workspace_source": workspace_source,
             "task_id": task_id,
+            "context": context,
         }
         return ImplementationOutcome(
             status=FINISHED,
@@ -103,3 +104,25 @@ async def test_stage_binds_the_materialized_sub_path_into_the_runtime(tmp_path, 
     assert result.tokens == 100
     assert result.llm_calls == 3
     assert result.changed_files == ["feature.py"]
+
+
+async def test_stage_appends_the_plan_to_the_coder_context(tmp_path, monkeypatch):
+    materializer = _FakeMaterializer(tmp_path)
+    runtime = _FakeRuntime()
+    monkeypatch.setattr(impl, "_build_materializer", lambda: materializer)
+    monkeypatch.setattr(impl, "_build_runtime", lambda: runtime)
+
+    await run_implementation_stage(
+        ImplementationRequest(
+            task_id="AGENTDEV-1",
+            execution_id="exec-1",
+            repo="agentic-demo-service",
+            base="main",
+            commit="a" * 40,
+            task="Implement",
+            context="briefing pack",
+            plan="Edit feature.py",
+        )
+    )
+
+    assert runtime.received["context"] == "briefing pack\n\nApproved change plan:\nEdit feature.py"

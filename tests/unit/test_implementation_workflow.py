@@ -71,7 +71,7 @@ async def _run_workflow(
     @activity.defn(name="gather_repo_context")
     async def fake_context(req: ContextRequest) -> ContextResult:
         contexts.append(req)
-        return ContextResult(summary="repo context", package={})
+        return ContextResult(summary="repo context", package={"nodes": ["feature.py"]})
 
     @activity.defn(name="find_open_pr")
     async def fake_find_open_pr(req: FindOpenPrRequest) -> FindOpenPrResult:
@@ -159,7 +159,7 @@ async def test_implementation_claims_drives_and_records_audit_events():
     assert result.changed_files == ["README.md", "feature.py"]
     assert len(claims) == 1
     assert len(stages) == 1
-    assert stages[0].context == "repo context"
+    assert stages[0].context_package == {"nodes": ["feature.py"]}
     assert states == ["IMPLEMENTING"]
     assert _event_types(audits) == [
         "WORK_UNIT_CLAIMED",

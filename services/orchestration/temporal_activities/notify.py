@@ -14,9 +14,9 @@ class AlertHumanInterventionRequest:
     workflow_id: str
     repo: str
     issue_key: str
-    attempts: int
-    ci_build_id: str
-    failure_summary: str = ""
+    reason: str
+    stage: str
+    detail: str = ""
 
 
 @dataclass
@@ -40,9 +40,9 @@ async def alert_human_intervention(
             workflow_id=req.workflow_id,
             repo=req.repo,
             issue_key=req.issue_key,
-            attempts=req.attempts,
-            ci_build_id=req.ci_build_id,
-            failure_summary=req.failure_summary,
+            reason=req.reason,
+            stage=req.stage,
+            detail=req.detail,
         )
     )
     return AlertHumanInterventionResult(channels=channels)

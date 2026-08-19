@@ -161,6 +161,8 @@ async def test_policy_input_document_uses_policy_field_names():
         "jira_snapshot_current",
         "acceptance_verified",
         "pr_authorized",
+        "severity_counts",
+        "scan_findings",
     }
 
 

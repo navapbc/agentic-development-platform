@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from temporalio import activity
 
@@ -36,6 +37,8 @@ class ImplementationRequest:
     commit: str
     task: str
     context: str = ""
+    context_package: dict[str, Any] = field(default_factory=dict)
+    plan: str = ""
 
 
 @dataclass
@@ -134,6 +137,15 @@ async def claim_work_unit(req: ClaimRequest) -> ClaimResult:
 async def run_implementation_stage(req: ImplementationRequest) -> ImplementationResult:
     from scripts.config import get_settings
 
+    from services.repository_intelligence.normalization.serialization import (
+        render_context_summary,
+    )
+
+    context = render_context_summary(req.context_package) if req.context_package else req.context
+    if req.plan:
+        plan_block = f"Approved change plan:\n{req.plan}"
+        context = f"{context}\n\n{plan_block}" if context else plan_block
+
     materializer = _build_materializer()
     workspace = await materializer.materialize(
         repo=req.repo,
@@ -146,7 +158,7 @@ async def run_implementation_stage(req: ImplementationRequest) -> Implementation
     outcome = await runtime.run_implementation(
         execution_id=req.execution_id,
         task=req.task,
-        context=req.context,
+        context=context,
         workspace_source=str(Path(workspace.path).resolve()),
         task_id=req.task_id,
     )

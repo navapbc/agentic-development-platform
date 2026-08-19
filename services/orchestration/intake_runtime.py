@@ -53,6 +53,7 @@ class TemporalStarter:
                 parked_status=self._settings.jira_parked_status,
                 jira_project=start.jira_project,
                 ci_job=f"{start.repo}-ci",
+                run_planning=True,
             ),
             id=workflow_id,
             task_queue=self._settings.temporal_task_queue,

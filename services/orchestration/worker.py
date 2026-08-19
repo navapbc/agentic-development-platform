@@ -51,7 +51,6 @@ from services.orchestration.temporal_activities import (
 )
 from services.orchestration.temporal_workflows import (
     BranchSyncWorkflow,
-    CodeReviewWorkflow,
     CountingWorkflow,
     DraftPullRequestWorkflow,
     DurableTaskWorkflow,
@@ -60,7 +59,6 @@ from services.orchestration.temporal_workflows import (
     PlanReviewWorkflow,
     PullRequestWorkflow,
     ReapWorkflow,
-    ReviewPipelineWorkflow,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -75,8 +73,6 @@ _WORKFLOWS = [
     DurableTaskWorkflow,
     CountingWorkflow,
     PlanReviewWorkflow,
-    CodeReviewWorkflow,
-    ReviewPipelineWorkflow,
     ImplementationWorkflow,
     BranchSyncWorkflow,
     PullRequestWorkflow,

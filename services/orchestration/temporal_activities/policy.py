@@ -22,6 +22,8 @@ class EvaluatePromotionRequest:
     jira_snapshot_current: bool
     acceptance_verified: bool
     pr_authorized: bool
+    severity_counts: dict[str, int] = field(default_factory=dict)
+    scan_findings: list[dict[str, str]] = field(default_factory=list)
 
 
 @dataclass
@@ -58,6 +60,8 @@ async def evaluate_promotion(req: EvaluatePromotionRequest) -> EvaluatePromotion
             jira_snapshot_current=req.jira_snapshot_current,
             acceptance_verified=req.acceptance_verified,
             pr_authorized=req.pr_authorized,
+            severity_counts=dict(req.severity_counts),
+            scan_findings=list(req.scan_findings),
         )
     )
     return EvaluatePromotionResult(
