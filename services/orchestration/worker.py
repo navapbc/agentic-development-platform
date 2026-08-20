@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 
+from observability import configure_tracing, temporal_interceptors
 from scripts.config import get_settings
 from temporalio.client import Client
 from temporalio.worker import Worker
@@ -138,7 +139,9 @@ def _resolve_role() -> str:
 
 def build_worker(client: Client, task_queue: str, role: str) -> Worker:
     runner = SandboxedWorkflowRunner(
-        restrictions=SandboxRestrictions.default.with_passthrough_modules("beartype")
+        restrictions=SandboxRestrictions.default.with_passthrough_modules(
+            "beartype", "opentelemetry"
+        )
     )
     settings = get_settings()
     versioning: dict[str, object] = {}
@@ -170,12 +173,17 @@ def build_worker(client: Client, task_queue: str, role: str) -> Worker:
 async def main() -> None:
     settings = get_settings()
     role = _resolve_role()
+    configure_tracing(f"workflow-worker.{role}")
     log.info(
         "connecting to Temporal at %s (ns=%s)",
         settings.temporal_host,
         settings.temporal_namespace,
     )
-    client = await Client.connect(settings.temporal_host, namespace=settings.temporal_namespace)
+    client = await Client.connect(
+        settings.temporal_host,
+        namespace=settings.temporal_namespace,
+        interceptors=temporal_interceptors(),
+    )
 
     worker = build_worker(client, settings.temporal_task_queue, role)
     log.info(

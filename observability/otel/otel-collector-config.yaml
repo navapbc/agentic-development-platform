@@ -13,11 +13,35 @@ processors:
     actions:
       - key: aws.secret_access_key
         action: delete
+      - key: aws.access_key_id
+        action: delete
+      - key: aws.session_token
+        action: delete
       - key: authorization
+        action: delete
+      - key: proxy-authorization
+        action: delete
+      - key: x-api-key
+        action: delete
+      - key: api_key
+        action: delete
+      - key: cookie
+        action: delete
+      - key: set-cookie
+        action: delete
+      - key: password
+        action: delete
+      - key: secret
         action: delete
       - key: jira.api_token
         action: delete
       - key: github.token
+        action: delete
+      - key: litellm.master_key
+        action: delete
+      - key: langfuse.public_key
+        action: delete
+      - key: langfuse.secret_key
         action: delete
   memory_limiter:
     check_interval: 5s

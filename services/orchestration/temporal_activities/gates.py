@@ -7,6 +7,7 @@ import json
 import uuid
 from dataclasses import dataclass, field
 
+from observability import stage_span
 from temporalio import activity
 
 from services.orchestration.gates.contract import (
@@ -132,8 +133,15 @@ async def evaluate_gate(req: EvaluateGateRequest) -> GateResult:
 
     registry = registry_for_config(load_gates_config())
     gate = registry.resolve(req.gate)
-    result = await gate.evaluate(req.context)
-    await _persist_gate_evidence(req.context, result)
+    with stage_span(
+        f"gate.{req.gate}",
+        stage=gate.kind or REVIEW,
+        gate=req.gate,
+        execution_id=req.context.execution_id,
+        task_id=req.context.task_id,
+    ):
+        result = await gate.evaluate(req.context)
+        await _persist_gate_evidence(req.context, result)
     return result
 
 

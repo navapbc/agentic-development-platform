@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import httpx
+from observability import record_generation, stage_span
 from scripts.config import get_settings
 from temporalio import activity
 
@@ -34,17 +35,27 @@ async def invoke_model(req: ModelRequest) -> ModelResponse:
         "messages": [{"role": "user", "content": req.prompt}],
         "max_tokens": req.max_tokens,
     }
-    async with httpx.AsyncClient(base_url=settings.litellm_base_url, timeout=120.0) as client:
-        resp = await client.post("/v1/chat/completions", json=payload, headers=headers)
-        resp.raise_for_status()
-        data = resp.json()
+    with stage_span("llm.invoke", stage="model") as span:
+        async with httpx.AsyncClient(base_url=settings.litellm_base_url, timeout=120.0) as client:
+            resp = await client.post("/v1/chat/completions", json=payload, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
 
-    choice = (data.get("choices") or [{}])[0]
-    content = (choice.get("message") or {}).get("content", "")
+        choice = (data.get("choices") or [{}])[0]
+        content = (choice.get("message") or {}).get("content", "")
+        model_id = data.get("model")
+        usage = data.get("usage") or {}
+        record_generation(
+            span,
+            request_model=req.logical_model,
+            response_model=model_id,
+            input_tokens=usage.get("prompt_tokens"),
+            output_tokens=usage.get("completion_tokens"),
+        )
     return ModelResponse(
         logical_model=req.logical_model,
         content=content,
-        model_id=data.get("model"),
+        model_id=model_id,
     )
 
 

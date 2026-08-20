@@ -37,6 +37,11 @@ sandbox = [
 gateway = [
     "mcp>=1.8,<2",
 ]
+observability = [
+    "opentelemetry-sdk>=1.39,<2",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.39,<2",
+    "opentelemetry-exporter-otlp-proto-http>=1.39,<2",
+]
 dev = [
     "ruff>=0.5,<0.13",
     "pytest>=8.2,<9",
@@ -50,12 +55,12 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["services", "adapters", "schemas", "database", "scripts"]
+packages = ["services", "adapters", "schemas", "database", "scripts", "observability"]
 
 [tool.ruff]
 target-version = "py312"
 line-length = 100
-src = ["services", "adapters", "schemas", "database", "scripts", "openhands", "tests"]
+src = ["services", "adapters", "schemas", "database", "scripts", "observability", "openhands", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
@@ -73,5 +78,5 @@ pythonVersion = "3.12"
 typeCheckingMode = "standard"
 venvPath = "."
 venv = ".venv"
-include = ["services", "adapters", "schemas", "database", "scripts", "openhands", "tests"]
+include = ["services", "adapters", "schemas", "database", "scripts", "observability", "openhands", "tests"]
 extraPaths = [".venv/lib/python3.14/site-packages/rebar/_engine"]
