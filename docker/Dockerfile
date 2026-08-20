@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM python:3.12-slim-trixie@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -14,9 +14,6 @@ RUN ARCH="$(dpkg --print-architecture)" \
     && curl -fsSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/v1.34.1/bin/linux/${ARCH}/kubectl" \
     && chmod +x /usr/local/bin/kubectl
 
-COPY --from=rebar pyproject.toml hatch_build.py README.md LICENSE /opt/rebar/
-COPY --from=rebar src /opt/rebar/src
-
 COPY pyproject.toml README.md alembic.ini ./
 COPY services ./services
 COPY adapters ./adapters
@@ -26,8 +23,7 @@ COPY scripts ./scripts
 COPY openhands ./openhands
 
 RUN pip install --upgrade pip \
-    && pip install -e "/opt/rebar[agents,jira-datacenter]" "pydantic-ai-slim[openai]>=1,<2" \
-    && pip install -e ".[reasoning,sandbox]"
+    && pip install -e ".[reasoning,sandbox,review]" "pydantic-ai-slim[openai]>=1,<2"
 
 ARG TARGETOS
 ARG TARGETARCH

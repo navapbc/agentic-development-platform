@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 
-from scripts.operator import local_operator
+from scripts.operator_identity import local_operator
 
 
 def test_local_operator_matches_the_os_account():

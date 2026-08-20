@@ -4,14 +4,12 @@ x-python-service: &python-service
   build:
     context: .
     dockerfile: docker/Dockerfile
-    additional_contexts:
-      rebar: ../rebar
   env_file: [.env]
   restart: unless-stopped
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-platform}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-locally}
@@ -28,7 +26,7 @@ services:
       retries: 10
 
   temporal:
-    image: temporalio/auto-setup:1.24.2
+    image: temporalio/auto-setup:1.29.7@sha256:f14912b699cf73015ad5c4fc18d522d4b014db90e794039214dfb7c022c2644f
     depends_on:
       postgres:
         condition: service_healthy
@@ -48,7 +46,7 @@ services:
       retries: 15
 
   temporal-ui:
-    image: temporalio/ui:2.31.2
+    image: temporalio/ui:2.53.3@sha256:eef301146e60fad34b47adaecfae4149016e34b2d44ba94fca5fd8e5441f182a
     depends_on: [temporal]
     environment:
       TEMPORAL_ADDRESS: temporal:7233
@@ -160,7 +158,7 @@ services:
     ports: ["8100:8100"]
 
   litellm:
-    image: ghcr.io/berriai/litellm:main-stable
+    image: ghcr.io/berriai/litellm:v1.97.0@sha256:468c25f35f3e5ec4e414974f00deab93337b1b4d9953cabcfd3722e59415f834
     command: ["--config", "/app/config/litellm-config.yaml", "--port", "4000"]
     environment:
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
@@ -173,7 +171,7 @@ services:
     restart: unless-stopped
 
   opa:
-    image: openpolicyagent/opa:0.66.0
+    image: openpolicyagent/opa:1.19.1@sha256:378b7db7218985444b7bc14f0b0f5b05c864b9481fe470e133654a7fc084072c
     command:
       - "run"
       - "--server"
@@ -200,7 +198,7 @@ services:
     restart: unless-stopped
 
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.104.0
+    image: otel/opentelemetry-collector-contrib:0.159.0@sha256:1f2c54a30e713fac6b3ae77a1ec84010c2007e29ced8ec666214fc2f6739c1cc
     command: ["--config=/etc/otel/config.yaml"]
     volumes:
       - ./observability/otel/otel-collector-config.yaml:/etc/otel/config.yaml:ro

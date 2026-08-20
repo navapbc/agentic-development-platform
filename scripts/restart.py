@@ -15,7 +15,7 @@ async def _restart(issue_key: str, *, actor: str, repo: str | None) -> int:
 
 
 def main() -> int:
-    from scripts.operator import local_operator
+    from scripts.operator_identity import local_operator
 
     parser = argparse.ArgumentParser(
         description="Abandon a parked workflow and re-trigger intake for a fresh execution."

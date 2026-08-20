@@ -1,7 +1,7 @@
 """Container-gated evaluation of the promotion policy against the pinned OPA image.
 
 Runs the authored `config/policies/promotion.rego` through the same
-`openpolicyagent/opa:0.66.0` image the compose stack serves, so the data-driven
+`openpolicyagent/opa:1.19.1` image the compose stack serves, so the data-driven
 gate rules are exercised rather than reimplemented. Skipped when no container
 runtime (docker, podman, or nerdctl) is available.
 """
@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-_OPA_IMAGE = "openpolicyagent/opa:0.66.0"
+_OPA_IMAGE = "openpolicyagent/opa:1.19.1"
 _POLICIES = Path(__file__).resolve().parents[2] / "config" / "policies"
 _RUNTIMES = ("docker", "podman", "nerdctl")
 

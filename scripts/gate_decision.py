@@ -15,7 +15,7 @@ async def _decide(issue_key: str, *, gate: str, approved: bool, actor: str) -> i
 
 
 def main() -> int:
-    from scripts.operator import local_operator
+    from scripts.operator_identity import local_operator
 
     parser = argparse.ArgumentParser(
         description="Resume a workflow parked at a configured human intervention gate."

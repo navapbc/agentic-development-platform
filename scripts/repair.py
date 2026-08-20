@@ -15,7 +15,7 @@ async def _decide(issue_key: str, *, retry: bool, actor: str) -> int:
 
 
 def main() -> int:
-    from scripts.operator import local_operator
+    from scripts.operator_identity import local_operator
 
     parser = argparse.ArgumentParser(
         description="Resume a workflow parked for human repair after CI failure."

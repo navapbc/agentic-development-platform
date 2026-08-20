@@ -368,7 +368,7 @@ def k8s_deploy(c, build=False):
     image = f"{_K8S_IMAGE}:{_k8s_image_tag()}"
     if build:
         c.run(
-            f"docker build --build-context rebar=../rebar -f docker/Dockerfile -t {image} .",
+            f"docker build -f docker/Dockerfile -t {image} .",
             pty=True,
         )
     _write_k8s_secret_env()

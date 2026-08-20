@@ -44,7 +44,7 @@ def _parse_args() -> argparse.Namespace:
 
 
 async def main() -> int:
-    from scripts.operator import local_operator
+    from scripts.operator_identity import local_operator
 
     args = _parse_args()
     settings = get_settings()

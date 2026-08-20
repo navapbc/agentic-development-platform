@@ -27,7 +27,7 @@ reasoning = [
     "langchain-openai>=0.1,<0.4",
 ]
 review = [
-    "rebar[agents]>=0.1,<1",
+    "nava-rebar[agents,jira-datacenter]~=0.12.0",
 ]
 sandbox = [
     "kubernetes>=29,<32",
@@ -74,4 +74,4 @@ typeCheckingMode = "standard"
 venvPath = "."
 venv = ".venv"
 include = ["services", "adapters", "schemas", "database", "scripts", "openhands", "tests"]
-extraPaths = ["../rebar/src/rebar/_engine"]
+extraPaths = [".venv/lib/python3.14/site-packages/rebar/_engine"]

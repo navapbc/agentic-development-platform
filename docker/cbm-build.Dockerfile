@@ -6,7 +6,7 @@
 #     --output type=local,dest=vendor/bin <path-to-codebase-memory-mcp>
 # Produces vendor/bin/codebase-memory-mcp for docker/cbm.Dockerfile to COPY.
 
-FROM debian:bookworm AS build
+FROM debian:trixie@sha256:34cd9e9fd437c0a095ec39cb2e73422c9f30821b0d0848ed74fd0d43bae4d958 AS build
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       gcc g++ make zlib1g-dev pkg-config python3 git ca-certificates \

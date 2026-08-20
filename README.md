@@ -21,7 +21,7 @@ Install these on the host before you start.
 | git | Clone this repo and its siblings | |
 | An AWS profile with Bedrock access | Inference | An IAM principal with `bedrock:InvokeModel` and credentials under `~/.aws`. Set the profile and region in `.env` |
 
-Check out the `rebar` repository next to this one, under the same parent directory. The container build and the review path both install it from `../rebar`.
+The review path installs `rebar` (distribution `nava-rebar`) from PyPI through the `review` extra, so no local checkout of the library is required.
 
 The Repository Intelligence profile and the demo tasks mount a set of test repositories read-only from the same parent directory. Check out the ones you plan to exercise, or remove the mounts you do not need from `compose.override.yaml`.
 
@@ -303,6 +303,6 @@ fixtures/          scripts/           tests/               docker/
 | `inv local-up` fails on a missing mount | A sibling demo repo is not checked out next to this one. Clone it, or remove its mount from `compose.override.yaml` |
 | `inv connectivity-check` fails | The Bedrock path is not open. Confirm `BEDROCK_CONNECTIVITY_PROVIDER` and its keys, then rerun `inv tunnel-start` |
 | Smoke test reports a database failure | Migrations have not run. Apply them with `inv db-migrate` |
-| Container build fails resolving `rebar` | The `../rebar` sibling is missing. Clone it next to this repo |
+| Container build fails resolving `nava-rebar` | The PyPI index is unreachable. Confirm network access to install the `review` extra |
 | Live-agent demos cannot reach the cluster | No kubeconfig at `~/.kube/config`. Provide one or skip the live-agent flag |
 | A ticket is stuck at `AWAITING_HUMAN` | CI repair exhausted and the workflow parked. Fix the branch and run `inv repair ISSUE --retry`, or edit the ticket and run `inv restart ISSUE` |
