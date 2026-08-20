@@ -141,7 +141,15 @@ def get_settings() -> Settings:
 
 
 _COMPOSE_SERVICE_HOSTS = frozenset(
-    {"litellm", "opa", "langfuse", "postgres", "temporal", "langgraph-service", "otel-collector"}
+    {
+        "litellm",
+        "opa",
+        "langfuse-web",
+        "postgres",
+        "temporal",
+        "langgraph-service",
+        "otel-collector",
+    }
 )
 
 

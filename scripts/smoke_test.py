@@ -53,10 +53,12 @@ def main() -> int:
 
     litellm_health = to_host_url(f"{settings.litellm_base_url}/health/liveliness")
     langfuse_health = to_host_url(f"{settings.langfuse_host}/api/public/health")
+    minio_health = "http://localhost:9090/minio/health/live"
     results.append(_check("postgres + agent_platform schema", db_check))
     results.append(_check("litellm", lambda: http_check(litellm_health)))
     results.append(_check("opa", lambda: http_check(to_host_url(f"{settings.opa_url}/health"))))
     results.append(_check("langfuse", lambda: http_check(langfuse_health)))
+    results.append(_check("minio object store", lambda: http_check(minio_health)))
 
     bedrock_ok, bedrock_detail = _bedrock_inference(settings)
     print(f"[{'ok' if bedrock_ok else 'skip'}] bedrock inference via litellm: {bedrock_detail}")

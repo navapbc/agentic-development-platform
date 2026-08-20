@@ -199,10 +199,14 @@ The `bedrock-vpce` module provisions an interface endpoint that admits 443 only 
 | `langgraph-service` | 8100 | Bounded reasoning stages |
 | `litellm` | 4000 | Single gateway to Bedrock |
 | `opa` | 8181 | Policy decisions |
-| `langfuse` | 3000 | LLM tracing UI |
+| `langfuse-web` | 3000 | LLM tracing and prompt UI |
+| `langfuse-worker` | none | Langfuse ingestion and background jobs |
+| `clickhouse` | none | Langfuse analytics store |
+| `redis` | none | Langfuse ingestion queue |
+| `minio` | 9090, 9091 | Shared S3-compatible object store |
 | `otel-collector` | 4317, 4318 | Telemetry pipeline |
 
-Migrations only touch the platform's own `agent_platform` schema. Temporal and Langfuse manage their own schemas.
+Migrations only touch the platform's own `agent_platform` schema. Temporal and Langfuse manage their own schemas. Langfuse v4 runs as `langfuse-web` and `langfuse-worker` backed by ClickHouse, Redis, and the shared MinIO object store, reusing the `langfuse` Postgres database.
 
 ## Inbound webhooks and CI
 

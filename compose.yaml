@@ -183,19 +183,102 @@ services:
     ports: ["8181:8181"]
     restart: unless-stopped
 
-  langfuse:
-    image: langfuse/langfuse:2
-    depends_on:
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.12@sha256:8a790dd3468db22b1d4e7b18a176f378ff5ff6053b9c48dd4ea1fa71a24c5ba6
+    user: "101:101"
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-clickhouse}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-change-me-locally}
+    volumes:
+      - langfuse-clickhouse-data:/var/lib/clickhouse
+      - langfuse-clickhouse-logs:/var/log/clickhouse-server
+    healthcheck:
+      test: wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 1s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.4-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
+    command: ["redis-server", "--requirepass", "${REDIS_AUTH:-change-me-locally}", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - langfuse-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 10s
+      retries: 10
+    restart: unless-stopped
+
+  minio:
+    image: cgr.dev/chainguard/minio:latest@sha256:cfdf1bed85da055bc031883d0959f373c4dbe9f3cb120855dcdc13943cd6284b
+    entrypoint: sh
+    command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" --console-address ":9001" /data'
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-change-me-locally}
+    ports:
+      - "9090:9000"
+      - "9091:9001"
+    volumes:
+      - langfuse-minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 2s
+    restart: unless-stopped
+
+  langfuse-worker: &langfuse-service
+    image: docker.langfuse.com/langfuse/langfuse-worker:4@sha256:37a7c4251b602e60fd39451e6c252195908bf61837d4e252adbd752c0809e835
+    depends_on: &langfuse-depends-on
       postgres:
         condition: service_healthy
-    environment:
+      clickhouse:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment: &langfuse-env
       DATABASE_URL: postgresql://${POSTGRES_USER:-platform}:${POSTGRES_PASSWORD:-change-me-locally}@postgres:5432/langfuse
+      SALT: ${LANGFUSE_SALT:-change-me-locally}
+      ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:-0000000000000000000000000000000000000000000000000000000000000000}
+      TELEMETRY_ENABLED: "false"
       NEXTAUTH_URL: http://localhost:3000
       NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-change-me-locally}
-      SALT: ${LANGFUSE_SALT:-change-me-locally}
-      TELEMETRY_ENABLED: "false"
-    ports: ["3000:3000"]
+      CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-clickhouse}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-change-me-locally}
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_AUTH: ${REDIS_AUTH:-change-me-locally}
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minio}
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-change-me-locally}
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
+      LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minio}
+      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-change-me-locally}
+      LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: media/
     restart: unless-stopped
+
+  langfuse-web:
+    <<: *langfuse-service
+    image: docker.langfuse.com/langfuse/langfuse:4@sha256:c2350a95d710f726f6466ffd47675eb704d0ff77fa1df1b9e6751ada6134ef75
+    ports: ["3000:3000"]
 
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.159.0@sha256:1f2c54a30e713fac6b3ae77a1ec84010c2007e29ced8ec666214fc2f6739c1cc
@@ -241,3 +324,7 @@ volumes:
   postgres-data:
   repo-index-data:
   jenkins-home:
+  langfuse-clickhouse-data:
+  langfuse-clickhouse-logs:
+  langfuse-minio-data:
+  langfuse-redis-data:
