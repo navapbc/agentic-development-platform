@@ -12,6 +12,10 @@ config/*/jira.yaml
 !config/*/jira.yaml.example
 config/*/integrations.yaml
 !config/*/integrations.yaml.example
+config/*/gates.yaml
+!config/*/gates.yaml.example
+config/*/gate_engine.yaml
+!config/*/gate_engine.yaml.example
 
 # AWS / credentials
 .aws/

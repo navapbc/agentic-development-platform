@@ -11,8 +11,6 @@ from dataclasses import asdict, dataclass, field
 from adapters.interfaces.security_scanner import ScanReport, ScanTarget
 from temporalio import activity
 
-_SOURCE_COMPONENT = "security-scanner"
-
 
 @dataclass
 class ScanChangeRequest:
@@ -44,16 +42,16 @@ class ScanChangeResult:
     content_hash: str
     evidence_id: str
     severity_counts: dict[str, int] = field(default_factory=dict)
+    scanner_verdicts: dict[str, str] = field(default_factory=dict)
 
 
 def _build_security_mediator():
-    from adapters.real.security_scanner import RealSemgrepScanner, RealTrivyScanner
-
     from services.integration.security.mediator import SecurityScanMediator
+    from services.orchestration.gates.config import load_gates_config
+    from services.orchestration.gates.plugins import scanner_backends_for_config
 
-    return SecurityScanMediator.from_settings(
-        (RealSemgrepScanner.from_settings(), RealTrivyScanner.from_settings())
-    )
+    config = load_gates_config()
+    return SecurityScanMediator.from_settings(scanner_backends_for_config(config))
 
 
 def _content_hash(report: ScanReport) -> str:
@@ -64,8 +62,19 @@ def _content_hash(report: ScanReport) -> str:
     return f"sha256:{hashlib.sha256(payload.encode('utf-8')).hexdigest()}"
 
 
+def _scanner_content_hash(report: ScanReport, scanner: str, findings: list) -> str:
+    ordered = sorted((asdict(f) for f in findings), key=lambda f: f["finding_id"])
+    payload = json.dumps(
+        {"repo": report.repo, "ref": report.ref, "scanner": scanner, "findings": ordered},
+        sort_keys=True,
+    )
+    return f"sha256:{hashlib.sha256(payload.encode('utf-8')).hexdigest()}"
+
+
 @activity.defn
 async def scan_change(req: ScanChangeRequest) -> ScanChangeResult:
+    from adapters.interfaces.security_scanner import is_blocking
+
     from services.review.evidence import EvidenceRecord, PostgresEvidenceSink
 
     mediator = _build_security_mediator()
@@ -73,26 +82,40 @@ async def scan_change(req: ScanChangeRequest) -> ScanChangeResult:
     content_hash = _content_hash(report)
     severity_counts = dict(Counter(f.severity for f in report.findings))
 
-    evidence_id = uuid.uuid4().hex
-    record = EvidenceRecord(
-        artifact_id=evidence_id,
-        execution_id=req.execution_id,
-        content_hash=content_hash,
-        source_component=_SOURCE_COMPONENT,
-        classification="final",
-        location=None,
-        metadata={
-            "repo": report.repo,
-            "ref": report.ref,
-            "scanners": list(report.scanners),
-            "threshold": report.threshold,
-            "blocking_count": report.blocking_count,
-            "finding_count": len(report.findings),
-            "severity_counts": severity_counts,
-            "findings": [asdict(f) for f in report.findings],
-        },
-    )
-    await PostgresEvidenceSink().persist(record)
+    scanner_verdicts = {name: "pass" for name in report.scanners}
+    for finding in report.findings:
+        if finding.scanner in scanner_verdicts and is_blocking(
+            finding.severity, threshold=report.threshold
+        ):
+            scanner_verdicts[finding.scanner] = "block"
+
+    sink = PostgresEvidenceSink()
+    evidence_ids: dict[str, str] = {}
+    for scanner in report.scanners:
+        scoped = [f for f in report.findings if f.scanner == scanner]
+        scanner_hash = _scanner_content_hash(report, scanner, scoped)
+        artifact_id = uuid.uuid4().hex
+        evidence_ids[scanner] = artifact_id
+        await sink.persist(
+            EvidenceRecord(
+                artifact_id=artifact_id,
+                execution_id=req.execution_id,
+                content_hash=scanner_hash,
+                source_component=f"gate:{scanner}",
+                classification="final",
+                location=None,
+                metadata={
+                    "gate": scanner,
+                    "kind": "scanner",
+                    "repo": report.repo,
+                    "ref": report.ref,
+                    "threshold": report.threshold,
+                    "verdict": scanner_verdicts[scanner],
+                    "finding_count": len(scoped),
+                    "findings": [asdict(f) for f in scoped],
+                },
+            )
+        )
 
     return ScanChangeResult(
         scanners=list(report.scanners),
@@ -100,6 +123,7 @@ async def scan_change(req: ScanChangeRequest) -> ScanChangeResult:
         blocking_count=report.blocking_count,
         threshold=report.threshold,
         content_hash=content_hash,
-        evidence_id=evidence_id,
+        evidence_id=next(iter(evidence_ids.values()), ""),
         severity_counts=severity_counts,
+        scanner_verdicts=scanner_verdicts,
     )

@@ -6,6 +6,11 @@ from services.orchestration.temporal_activities.branch_sync import (
 )
 from services.orchestration.temporal_activities.ci import poll_ci, read_ci_log, trigger_ci
 from services.orchestration.temporal_activities.counter import count_tick
+from services.orchestration.temporal_activities.gates import (
+    classify_test_failures,
+    evaluate_gate,
+    load_gate_plan,
+)
 from services.orchestration.temporal_activities.implementation import (
     claim_work_unit,
     run_implementation_stage,
@@ -15,6 +20,7 @@ from services.orchestration.temporal_activities.intake import (
     IntakeReconcileRequest,
     reconcile_intake_pass,
 )
+from services.orchestration.temporal_activities.manifest import record_manifest
 from services.orchestration.temporal_activities.notify import alert_human_intervention
 from services.orchestration.temporal_activities.persistence import (
     persist_execution_state,
@@ -59,10 +65,13 @@ __all__ = [
     "apply_ci_repair",
     "apply_task_status",
     "claim_work_unit",
+    "classify_test_failures",
     "clear_suspension",
     "commit_and_push",
     "count_tick",
     "create_draft_pr",
+    "evaluate_gate",
+    "load_gate_plan",
     "evaluate_promotion",
     "find_open_pr",
     "gather_repo_context",
@@ -77,6 +86,7 @@ __all__ = [
     "reap_orphans",
     "reconcile_intake_pass",
     "record_audit_event",
+    "record_manifest",
     "record_pr_approval",
     "record_suspension",
     "record_usage_metrics",

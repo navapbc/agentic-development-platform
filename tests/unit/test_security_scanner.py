@@ -203,9 +203,11 @@ async def test_scan_change_activity_records_evidence_and_surfaces_blocking(monke
     assert len(result.findings) == 2
     assert result.content_hash.startswith("sha256:")
     assert len(persisted) == 1
-    assert persisted[0].content_hash == result.content_hash
-    assert persisted[0].metadata["blocking_count"] == 1
-    assert persisted[0].metadata["scanners"] == ["semgrep"]
+    assert persisted[0].source_component == "gate:semgrep"
+    assert persisted[0].content_hash.startswith("sha256:")
+    assert persisted[0].metadata["gate"] == "semgrep"
+    assert persisted[0].metadata["verdict"] == "block"
+    assert persisted[0].metadata["finding_count"] == 1
 
 
 async def test_scan_change_content_hash_is_deterministic(monkeypatch):
@@ -236,3 +238,44 @@ async def test_scan_change_content_hash_is_deterministic(monkeypatch):
     second = await security_activity.scan_change(req)
 
     assert first.content_hash == second.content_hash
+
+
+async def test_scan_change_writes_one_evidence_record_per_scanner(monkeypatch):
+    from services.orchestration.temporal_activities import security as security_activity
+
+    mediator = SecurityScanMediator(
+        backends=(
+            MockSecurityScanner(
+                "semgrep", [ScanFinding("s1", "semgrep", STATIC, HIGH, "sql injection")]
+            ),
+            MockSecurityScanner(
+                "trivy", [ScanFinding("t1", "trivy", DEPENDENCY, LOW, "minor cve")]
+            ),
+        ),
+        allowed_repos=frozenset({"agentic-demo-service"}),
+        threshold=HIGH,
+    )
+    monkeypatch.setattr(security_activity, "_build_security_mediator", lambda: mediator)
+
+    persisted: list[EvidenceRecord] = []
+
+    class _FakeSink:
+        async def persist(self, record):
+            persisted.append(record)
+            return record.artifact_id
+
+    monkeypatch.setattr("services.review.evidence.PostgresEvidenceSink", _FakeSink)
+
+    req = security_activity.ScanChangeRequest(
+        task_id="T-1",
+        execution_id="exec-1",
+        repo="agentic-demo-service",
+        ref="c" * 40,
+        repo_root="/tmp/ws/agent-T-1",
+    )
+    result = await security_activity.scan_change(req)
+
+    assert {record.source_component for record in persisted} == {"gate:semgrep", "gate:trivy"}
+    verdicts = {record.metadata["gate"]: record.metadata["verdict"] for record in persisted}
+    assert verdicts == {"semgrep": "block", "trivy": "pass"}
+    assert result.scanner_verdicts == {"semgrep": "block", "trivy": "pass"}

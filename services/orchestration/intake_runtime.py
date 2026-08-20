@@ -29,6 +29,10 @@ class TemporalStarter:
         self._gh = gh_resolver
 
     async def start(self, start: IntakeStart) -> str:
+        from services.orchestration.gates.engine_source import (
+            load_gate_engine_configs,
+            triage_engine,
+        )
         from services.orchestration.temporal_workflows.draft_pull_request import (
             DraftPullRequestInput,
             DraftPullRequestWorkflow,
@@ -36,6 +40,7 @@ class TemporalStarter:
 
         base = self._settings.github_default_base_branch
         base_sha = remote_head(self._gh.git_remote_url(start.repo), base)
+        run_test_triage = triage_engine(load_gate_engine_configs(self._settings)) is not None
         workflow_id = f"draft-pr-{start.issue_key}-{start.execution_id}"
         await self._client.start_workflow(
             DraftPullRequestWorkflow.run,
@@ -54,6 +59,8 @@ class TemporalStarter:
                 jira_project=start.jira_project,
                 ci_job=f"{start.repo}-ci",
                 run_planning=True,
+                snapshot_version=start.snapshot_version,
+                run_test_triage=run_test_triage,
             ),
             id=workflow_id,
             task_queue=self._settings.temporal_task_queue,

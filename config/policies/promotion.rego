@@ -4,7 +4,7 @@ import rego.v1
 
 default allow := false
 
-bundle_version := "0.2.0"
+bundle_version := "0.4.0"
 
 allowed_projects := {"AGENTDEV"}
 
@@ -22,14 +22,6 @@ reasons contains "ci_not_successful" if {
 	input.ci_status != "success"
 }
 
-reasons contains "scan_incomplete" if {
-	not input.scan_completed
-}
-
-reasons contains "blocking_security_findings" if {
-	input.blocking_findings > 0
-}
-
 reasons contains "repair_attempts_exceeded" if {
 	input.repair_attempts > input.max_repair_attempts
 }
@@ -38,23 +30,45 @@ reasons contains "jira_snapshot_stale" if {
 	not input.jira_snapshot_current
 }
 
-reasons contains "acceptance_not_verified" if {
-	not input.acceptance_verified
-}
-
 reasons contains "pr_not_authorized" if {
 	not input.pr_authorized
 }
 
-reasons contains "plan_not_approved" if {
-	not input.plan_approved
+ran_gates contains name if {
+	some gate in input.gates
+	name := gate.name
+}
+
+reasons contains sprintf("gate_failed:%s", [gate.name]) if {
+	some gate in input.gates
+	gate.required
+	gate.verdict != "pass"
+	object.get(gate, "on_block", "fail_closed") != "pause_for_human"
+}
+
+human_review contains sprintf("gate_failed:%s", [gate.name]) if {
+	some gate in input.gates
+	gate.required
+	gate.verdict != "pass"
+	object.get(gate, "on_block", "fail_closed") == "pause_for_human"
+}
+
+reasons contains sprintf("required_gate_missing:%s", [name]) if {
+	some name in input.required_gates
+	not ran_gates[name]
 }
 
 allow if {
 	count(reasons) == 0
+	count(human_review) == 0
 }
 
 next_action := "proceed" if allow
+
+else := "await_human" if {
+	count(reasons) == 0
+	count(human_review) > 0
+}
 
 else := "block_and_report"
 
@@ -62,5 +76,6 @@ decision := {
 	"allow": allow,
 	"bundle_version": bundle_version,
 	"reasons": reasons,
+	"human_review": human_review,
 	"next_action": next_action,
 }

@@ -10,6 +10,12 @@ from adapters.interfaces.ci_host import FAILURE, RUNNING, SUCCESS
 from adapters.interfaces.ci_host import UNAVAILABLE as CI_UNAVAILABLE
 from openhands.runtime.caps import COMPLETED
 from services.orchestration.branch_sync import FAST_FORWARD
+from services.orchestration.gates.contract import (
+    GateContext,
+    GateFinding,
+    GateNode,
+    GateResult,
+)
 from services.orchestration.suspension import (
     RESUME_SIGNAL,
     ResumeOn,
@@ -32,12 +38,19 @@ from services.orchestration.temporal_activities.ci import (
     TriggerCIRequest,
     TriggerCIResult,
 )
+from services.orchestration.temporal_activities.gates import (
+    ClassifyTestFailuresRequest,
+    EvaluateGateRequest,
+    GatePlan,
+    TriageResult,
+)
 from services.orchestration.temporal_activities.implementation import (
     ClaimRequest,
     ClaimResult,
     ImplementationRequest,
     ImplementationResult,
 )
+from services.orchestration.temporal_activities.manifest import RecordManifestRequest
 from services.orchestration.temporal_activities.notify import (
     AlertHumanInterventionRequest,
     AlertHumanInterventionResult,
@@ -135,7 +148,7 @@ def _make_activities(
     repair_actionable: bool = True,
     alerts: list[AlertHumanInterventionRequest] | None = None,
     usage: list[UsageMetrics] | None = None,
-    review_requests: list[ReviewRequest] | None = None,
+    review_requests: list[GateContext] | None = None,
     code_verdict: str = "pass",
     security_verdict: str = "pass",
     acceptance_verdict: str = "pass",
@@ -153,10 +166,26 @@ def _make_activities(
     promotions: list[PromotePrRequest] | None = None,
     recheck_requires_pause: bool = False,
     recheck_category: str = "",
+    manifest_requests: list[RecordManifestRequest] | None = None,
+    triage_enabled: bool = False,
+    triage_action_value: str = "patch",
+    review_on_block: dict[str, str] | None = None,
+    policy_human_review: list[str] | None = None,
+    plan_pause: bool = False,
 ):
     @activity.defn(name="persist_execution_state")
     async def fake_persist(payload: ExecutionState) -> str:
         return payload.execution_id
+
+    @activity.defn(name="classify_test_failures")
+    async def fake_classify(req: ClassifyTestFailuresRequest) -> TriageResult:
+        return TriageResult(enabled=triage_enabled, action=triage_action_value)
+
+    @activity.defn(name="record_manifest")
+    async def fake_record_manifest(req: RecordManifestRequest) -> str:
+        if manifest_requests is not None:
+            manifest_requests.append(req)
+        return "manifest-event"
 
     @activity.defn(name="record_audit_event")
     async def fake_audit(event: AuditEvent) -> str:
@@ -354,23 +383,49 @@ def _make_activities(
             findings=[f"{stage} blocking finding"] if verdict == "block" else [],
         )
 
-    @activity.defn(name="review_code")
-    async def fake_review_code(req: ReviewRequest) -> ReviewOutcome:
-        if review_requests is not None:
-            review_requests.append(req)
-        return _review_outcome("code-review", code_verdict)
+    @activity.defn(name="load_gate_plan")
+    async def fake_load_gate_plan() -> GatePlan:
+        on_block = review_on_block or {}
+        return GatePlan(
+            review=[
+                GateNode(name="code-review", on_block=on_block.get("code-review", "fail_closed")),
+                GateNode(
+                    name="security-review",
+                    on_block=on_block.get("security-review", "fail_closed"),
+                ),
+                GateNode(name="acceptance", on_block=on_block.get("acceptance", "fail_closed")),
+            ],
+            scanner=[
+                GateNode(name="semgrep"),
+                GateNode(name="trivy"),
+            ],
+            fail_fast_review=False,
+            fail_fast_scanner=False,
+            plan_pause=plan_pause,
+        )
 
-    @activity.defn(name="review_security")
-    async def fake_review_security(req: ReviewRequest) -> ReviewOutcome:
-        if review_requests is not None:
-            review_requests.append(req)
-        return _review_outcome("security-review", security_verdict)
+    _gate_verdicts = {
+        "code-review": code_verdict,
+        "security-review": security_verdict,
+        "acceptance": acceptance_verdict,
+    }
 
-    @activity.defn(name="verify_acceptance")
-    async def fake_verify_acceptance(req: ReviewRequest) -> ReviewOutcome:
+    @activity.defn(name="evaluate_gate")
+    async def fake_evaluate_gate(req: EvaluateGateRequest) -> GateResult:
         if review_requests is not None:
-            review_requests.append(req)
-        return _review_outcome("acceptance-verification", acceptance_verdict)
+            review_requests.append(req.context)
+        verdict = _gate_verdicts[req.gate]
+        return GateResult(
+            name=req.gate,
+            kind="review",
+            verdict=verdict,
+            attestation_hash=f"sha256:{req.gate}",
+            summary="reviewed",
+            findings=[GateFinding(severity="block", title=f"{req.gate} blocking finding")]
+            if verdict == "block"
+            else [],
+            metadata={"model_id": "review-model", "prompt_version": f"{req.gate}/v1"},
+        )
 
     @activity.defn(name="invoke_model")
     async def fake_invoke_model(req: ModelRequest) -> ModelResponse:
@@ -388,14 +443,20 @@ def _make_activities(
     async def fake_scan_change(req: ScanChangeRequest) -> ScanChangeResult:
         if scan_requests is not None:
             scan_requests.append(req)
+        findings = list(scan_result_findings or [])
+        scanner_verdicts = {"semgrep": "pass", "trivy": "pass"}
+        for finding in findings:
+            if finding.scanner in scanner_verdicts and finding.severity in {"high", "critical"}:
+                scanner_verdicts[finding.scanner] = "block"
         return ScanChangeResult(
             scanners=["semgrep", "trivy"],
-            findings=list(scan_result_findings or []),
+            findings=findings,
             blocking_count=scan_blocking_findings,
             threshold="high",
             content_hash="sha256:scan",
             evidence_id="evidence-1",
             severity_counts=dict(scan_result_severity_counts or {}),
+            scanner_verdicts=scanner_verdicts,
         )
 
     @activity.defn(name="evaluate_promotion")
@@ -404,9 +465,10 @@ def _make_activities(
             policy_requests.append(req)
         return EvaluatePromotionResult(
             allow=policy_allow,
-            bundle_version="0.2.0",
+            bundle_version="0.4.0",
             next_action="proceed" if policy_allow else "block_and_report",
             reasons=list(policy_reasons or []),
+            human_review=list(policy_human_review or []),
         )
 
     @activity.defn(name="record_pr_approval")
@@ -429,6 +491,8 @@ def _make_activities(
 
     return [
         fake_persist,
+        fake_classify,
+        fake_record_manifest,
         fake_audit,
         fake_usage,
         fake_context,
@@ -452,9 +516,8 @@ def _make_activities(
         fake_analyze,
         fake_apply_repair,
         fake_alert,
-        fake_review_code,
-        fake_review_security,
-        fake_verify_acceptance,
+        fake_load_gate_plan,
+        fake_evaluate_gate,
         fake_invoke_model,
         fake_review_plan,
         fake_scan_change,
@@ -685,6 +748,7 @@ def _ci_input(
     run_policy: bool = False,
     run_approval: bool = False,
     run_planning: bool = False,
+    run_test_triage: bool = False,
     max_repair_attempts: int = 5,
     unavailable_threshold: int = 3,
     max_cost_usd: float = 5.0,
@@ -709,6 +773,7 @@ def _ci_input(
         run_policy=run_policy,
         run_approval=run_approval,
         run_planning=run_planning,
+        run_test_triage=run_test_triage,
         jira_project="AGENTDEV",
         plan_approved=True,
     )
@@ -876,6 +941,107 @@ async def test_ci_failure_repairs_and_passes():
     assert commits[1].sequence == 15
 
 
+async def test_triage_patch_verdict_runs_the_repair():
+    ci_triggers: list[TriggerCIRequest] = []
+    repairs: list[ApplyCIRepairRequest] = []
+    activities = _make_activities(
+        None,
+        1,
+        [],
+        [],
+        [],
+        ci_triggers=ci_triggers,
+        ci_results=[FAILURE, SUCCESS],
+        repairs=repairs,
+        triage_enabled=True,
+        triage_action_value="patch",
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            result = await env.client.execute_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(run_test_triage=True),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+
+    assert result.status == CI_PASSED
+    assert result.repair_attempts == 1
+    assert len(repairs) == 1
+
+
+async def test_triage_flaky_verdict_reruns_without_a_repair():
+    ci_triggers: list[TriggerCIRequest] = []
+    repairs: list[ApplyCIRepairRequest] = []
+    activities = _make_activities(
+        None,
+        1,
+        [],
+        [],
+        [],
+        ci_triggers=ci_triggers,
+        ci_results=[FAILURE, SUCCESS],
+        repairs=repairs,
+        triage_enabled=True,
+        triage_action_value="rerun",
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            result = await env.client.execute_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(run_test_triage=True),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+
+    assert result.status == CI_PASSED
+    assert result.repair_attempts == 0
+    assert len(repairs) == 0
+    assert len(ci_triggers) == 2
+
+
+async def test_triage_environment_verdict_escalates_to_human():
+    ci_triggers: list[TriggerCIRequest] = []
+    repairs: list[ApplyCIRepairRequest] = []
+    alerts: list[AlertHumanInterventionRequest] = []
+    activities = _make_activities(
+        None,
+        1,
+        [],
+        [],
+        [],
+        ci_triggers=ci_triggers,
+        ci_result=FAILURE,
+        repairs=repairs,
+        alerts=alerts,
+        triage_enabled=True,
+        triage_action_value="escalate",
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(run_test_triage=True, max_repair_attempts=2),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+            state = await _await_human_park(handle)
+            assert state["reason"] == SuspendReason.AWAITING_HUMAN.value
+            await handle.signal("submit_repair_decision", args=[False, "release-manager"])
+            result = await handle.result()
+
+    assert result.status == CI_FAILED
+    assert result.terminal_reason == "human_abandoned"
+    assert len(repairs) == 0
+    assert len(alerts) == 1
+
+
 async def _await_human_park(handle) -> dict[str, str]:
     state: dict[str, str] = {}
     for _ in range(50):
@@ -883,6 +1049,19 @@ async def _await_human_park(handle) -> dict[str, str]:
         if (
             state.get("reason") == SuspendReason.AWAITING_HUMAN.value
             and state.get("stage") == "repair"
+        ):
+            return state
+        await asyncio.sleep(0.05)
+    return state
+
+
+async def _await_human_park_stage(handle, stage: str) -> dict[str, str]:
+    state: dict[str, str] = {}
+    for _ in range(50):
+        state = await handle.query(DraftPullRequestWorkflow.suspension_state)
+        if (
+            state.get("reason") == SuspendReason.AWAITING_HUMAN.value
+            and state.get("stage") == stage
         ):
             return state
         await asyncio.sleep(0.05)
@@ -1138,7 +1317,7 @@ async def test_ci_pass_flows_through_review_gates_with_attestations():
     commits: list[CommitPushRequest] = []
     pr_opens: list[OpenPrRequest] = []
     linkbacks: list[LinkbackRequest] = []
-    review_requests: list[ReviewRequest] = []
+    review_requests: list[GateContext] = []
     activities = _make_activities(
         None,
         1,
@@ -1167,7 +1346,7 @@ async def test_ci_pass_flows_through_review_gates_with_attestations():
     assert result.review_attestations == {
         "code-review": "sha256:code-review",
         "security-review": "sha256:security-review",
-        "acceptance-verification": "sha256:acceptance-verification",
+        "acceptance": "sha256:acceptance",
     }
     assert len(review_requests) == 3
     assert review_requests[0].ref == "c" * 40
@@ -1178,7 +1357,7 @@ async def test_review_blocking_finding_stops_before_policy_gate():
     commits: list[CommitPushRequest] = []
     pr_opens: list[OpenPrRequest] = []
     linkbacks: list[LinkbackRequest] = []
-    review_requests: list[ReviewRequest] = []
+    review_requests: list[GateContext] = []
     alerts: list[AlertHumanInterventionRequest] = []
     activities = _make_activities(
         None,
@@ -1206,23 +1385,302 @@ async def test_review_blocking_finding_stops_before_policy_gate():
     assert result.review_status == "blocked"
     assert result.code_verdict == "pass"
     assert result.security_verdict == "block"
-    assert result.acceptance_verdict == ""
+    assert result.acceptance_verdict == "pass"
     assert result.review_attestations == {
         "code-review": "sha256:code-review",
         "security-review": "sha256:security-review",
+        "acceptance": "sha256:acceptance",
     }
     assert result.review_findings == {
         "code-review": [],
         "security-review": ["security-review blocking finding"],
+        "acceptance": [],
     }
     assert result.review_summaries == {
         "code-review": "reviewed",
         "security-review": "reviewed",
+        "acceptance": "reviewed",
     }
-    assert len(review_requests) == 2
+    assert len(review_requests) == 3
     assert len(alerts) == 1
     assert alerts[0].reason == REVIEW_BLOCKED
     assert alerts[0].stage == "review"
+
+
+async def test_review_pause_for_human_parks_then_approve_proceeds():
+    commits: list[CommitPushRequest] = []
+    pr_opens: list[OpenPrRequest] = []
+    linkbacks: list[LinkbackRequest] = []
+    alerts: list[AlertHumanInterventionRequest] = []
+    activities = _make_activities(
+        None,
+        1,
+        commits,
+        pr_opens,
+        linkbacks,
+        ci_result=SUCCESS,
+        security_verdict="block",
+        review_on_block={"security-review": "pause_for_human"},
+        alerts=alerts,
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(run_reviews=True),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+            state = await _await_human_park_stage(handle, "review")
+            assert state["reason"] == SuspendReason.AWAITING_HUMAN.value
+            assert state["resume_on"] == ResumeOn.HUMAN_APPROVAL.value
+            await handle.signal(
+                "submit_gate_decision", args=["security-review", True, "security-lead"]
+            )
+            result = await handle.result()
+
+    assert result.status == REVIEW_PASSED
+    assert result.review_status == "passed"
+    assert alerts[0].reason == "gate_paused:security-review"
+    assert alerts[0].stage == "review"
+
+
+async def test_review_pause_for_human_reject_blocks():
+    commits: list[CommitPushRequest] = []
+    pr_opens: list[OpenPrRequest] = []
+    linkbacks: list[LinkbackRequest] = []
+    alerts: list[AlertHumanInterventionRequest] = []
+    activities = _make_activities(
+        None,
+        1,
+        commits,
+        pr_opens,
+        linkbacks,
+        ci_result=SUCCESS,
+        security_verdict="block",
+        review_on_block={"security-review": "pause_for_human"},
+        alerts=alerts,
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(run_reviews=True),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+            await _await_human_park_stage(handle, "review")
+            await handle.signal(
+                "submit_gate_decision", args=["security-review", False, "security-lead"]
+            )
+            result = await handle.result()
+
+    assert result.status == REVIEW_BLOCKED
+    assert result.review_status == "blocked"
+    assert any(alert.reason == "gate_paused:security-review" for alert in alerts)
+    assert any(alert.reason == REVIEW_BLOCKED for alert in alerts)
+
+
+async def test_fail_closed_gate_still_blocks_beside_a_pause_gate():
+    commits: list[CommitPushRequest] = []
+    pr_opens: list[OpenPrRequest] = []
+    linkbacks: list[LinkbackRequest] = []
+    alerts: list[AlertHumanInterventionRequest] = []
+    activities = _make_activities(
+        None,
+        1,
+        commits,
+        pr_opens,
+        linkbacks,
+        ci_result=SUCCESS,
+        code_verdict="block",
+        security_verdict="block",
+        review_on_block={"security-review": "pause_for_human"},
+        alerts=alerts,
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            result = await env.client.execute_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(run_reviews=True),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+
+    assert result.status == REVIEW_BLOCKED
+    assert len(alerts) == 1
+    assert alerts[0].reason == REVIEW_BLOCKED
+
+
+async def test_policy_human_review_parks_then_approve_promotes():
+    commits: list[CommitPushRequest] = []
+    pr_opens: list[OpenPrRequest] = []
+    linkbacks: list[LinkbackRequest] = []
+    alerts: list[AlertHumanInterventionRequest] = []
+    activities = _make_activities(
+        None,
+        1,
+        commits,
+        pr_opens,
+        linkbacks,
+        ci_result=SUCCESS,
+        policy_allow=False,
+        policy_human_review=["gate_failed:security-review"],
+        alerts=alerts,
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(run_reviews=True, run_policy=True),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+            state = await _await_human_park_stage(handle, "policy")
+            assert state["reason"] == SuspendReason.AWAITING_HUMAN.value
+            await handle.signal(
+                "submit_gate_decision",
+                args=["gate_failed:security-review", True, "release-manager"],
+            )
+            result = await handle.result()
+
+    assert result.status == POLICY_ALLOWED
+    assert result.policy_status == "allowed"
+
+
+async def test_policy_human_review_reject_denies():
+    commits: list[CommitPushRequest] = []
+    pr_opens: list[OpenPrRequest] = []
+    linkbacks: list[LinkbackRequest] = []
+    alerts: list[AlertHumanInterventionRequest] = []
+    activities = _make_activities(
+        None,
+        1,
+        commits,
+        pr_opens,
+        linkbacks,
+        ci_result=SUCCESS,
+        policy_allow=False,
+        policy_human_review=["gate_failed:security-review"],
+        alerts=alerts,
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(run_reviews=True, run_policy=True),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+            await _await_human_park_stage(handle, "policy")
+            await handle.signal(
+                "submit_gate_decision",
+                args=["gate_failed:security-review", False, "release-manager"],
+            )
+            result = await handle.result()
+
+    assert result.status == POLICY_DENIED
+    assert result.policy_status == "denied"
+    assert any(alert.reason == POLICY_DENIED for alert in alerts)
+
+
+async def test_plan_human_gate_parks_then_approve_continues():
+    commits: list[CommitPushRequest] = []
+    pr_opens: list[OpenPrRequest] = []
+    linkbacks: list[LinkbackRequest] = []
+    activities = _make_activities(
+        None,
+        1,
+        commits,
+        pr_opens,
+        linkbacks,
+        ci_result=SUCCESS,
+        plan_pause=True,
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(run_reviews=True, run_planning=True),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+            state = await _await_human_park_stage(handle, "plan")
+            assert state["reason"] == SuspendReason.AWAITING_HUMAN.value
+            await handle.signal("submit_gate_decision", args=["plan", True, "tech-lead"])
+            result = await handle.result()
+
+    assert result.status == REVIEW_PASSED
+
+
+async def test_plan_human_gate_reject_stops_the_run():
+    commits: list[CommitPushRequest] = []
+    pr_opens: list[OpenPrRequest] = []
+    linkbacks: list[LinkbackRequest] = []
+    activities = _make_activities(
+        None,
+        1,
+        commits,
+        pr_opens,
+        linkbacks,
+        ci_result=SUCCESS,
+        plan_pause=True,
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(run_reviews=True, run_planning=True),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+            await _await_human_park_stage(handle, "plan")
+            await handle.signal("submit_gate_decision", args=["plan", False, "tech-lead"])
+            result = await handle.result()
+
+    assert result.status == PLAN_REJECTED
+    assert result.plan_status == "rejected"
+
+
+async def test_plan_human_gate_is_inert_by_default():
+    commits: list[CommitPushRequest] = []
+    pr_opens: list[OpenPrRequest] = []
+    linkbacks: list[LinkbackRequest] = []
+    activities = _make_activities(
+        None,
+        1,
+        commits,
+        pr_opens,
+        linkbacks,
+        ci_result=SUCCESS,
+        plan_pause=False,
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            result = await env.client.execute_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(run_reviews=True, run_planning=True),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+
+    assert result.status == REVIEW_PASSED
 
 
 async def test_plan_stage_feeds_the_reviewed_plan_to_the_coder():
@@ -1326,7 +1784,7 @@ async def test_agent_summary_reaches_pr_and_review_subject():
     commits: list[CommitPushRequest] = []
     pr_opens: list[OpenPrRequest] = []
     linkbacks: list[LinkbackRequest] = []
-    review_requests: list[ReviewRequest] = []
+    review_requests: list[GateContext] = []
     activities = _make_activities(
         None,
         1,
@@ -1353,6 +1811,9 @@ async def test_agent_summary_reaches_pr_and_review_subject():
         "Implementation summary:" in request.subject and "done" in request.subject
         for request in review_requests
     )
+
+
+async def test_ci_pass_reaches_the_policy_gate_and_promotes():
     commits: list[CommitPushRequest] = []
     pr_opens: list[OpenPrRequest] = []
     linkbacks: list[LinkbackRequest] = []
@@ -1381,7 +1842,7 @@ async def test_agent_summary_reaches_pr_and_review_subject():
 
     assert result.status == POLICY_ALLOWED
     assert result.policy_status == "allowed"
-    assert result.policy_bundle_version == "0.2.0"
+    assert result.policy_bundle_version == "0.4.0"
     assert result.policy_next_action == "proceed"
     assert result.policy_reasons == []
     assert result.scan_blocking_findings == 0
@@ -1391,9 +1852,53 @@ async def test_agent_summary_reaches_pr_and_review_subject():
     assert len(policy_requests) == 1
     assert policy_requests[0].jira_project == "AGENTDEV"
     assert policy_requests[0].ci_status == "success"
-    assert policy_requests[0].plan_approved is True
-    assert policy_requests[0].acceptance_verified is True
     assert policy_requests[0].pr_authorized is True
+    assert {gate.name for gate in policy_requests[0].gates} == {
+        "code-review",
+        "security-review",
+        "acceptance",
+        "semgrep",
+        "trivy",
+    }
+    assert all(gate.verdict == "pass" for gate in policy_requests[0].gates)
+    assert set(policy_requests[0].required_gates) == {
+        "code-review",
+        "security-review",
+        "acceptance",
+        "semgrep",
+        "trivy",
+    }
+
+
+async def test_run_emits_the_determinism_manifest_first():
+    commits: list[CommitPushRequest] = []
+    pr_opens: list[OpenPrRequest] = []
+    linkbacks: list[LinkbackRequest] = []
+    manifest_requests: list[RecordManifestRequest] = []
+    activities = _make_activities(
+        None,
+        1,
+        commits,
+        pr_opens,
+        linkbacks,
+        ci_result=SUCCESS,
+        manifest_requests=manifest_requests,
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            await env.client.execute_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+
+    assert len(manifest_requests) == 1
+    assert manifest_requests[0].execution_id == "exec-1"
+    assert manifest_requests[0].task_id == "T-1"
+    assert manifest_requests[0].repository_sha == "a" * 40
 
 
 async def test_policy_deny_on_blocking_finding_blocks_promotion():
@@ -1412,7 +1917,7 @@ async def test_policy_deny_on_blocking_finding_blocks_promotion():
         scan_blocking_findings=1,
         policy_requests=policy_requests,
         policy_allow=False,
-        policy_reasons=["blocking_security_findings"],
+        policy_reasons=["gate_failed:semgrep"],
         alerts=alerts,
     )
 
@@ -1429,9 +1934,9 @@ async def test_policy_deny_on_blocking_finding_blocks_promotion():
     assert result.status == POLICY_DENIED
     assert result.policy_status == "denied"
     assert result.policy_next_action == "block_and_report"
-    assert result.policy_reasons == ["blocking_security_findings"]
+    assert result.policy_reasons == ["gate_failed:semgrep"]
     assert result.scan_blocking_findings == 1
-    assert policy_requests[0].blocking_findings == 1
+    assert "semgrep" in {gate.name for gate in policy_requests[0].gates}
     assert len(alerts) == 1
     assert alerts[0].reason == POLICY_DENIED
     assert alerts[0].stage == "policy"
@@ -1477,7 +1982,7 @@ async def test_scan_findings_and_severity_reach_policy_and_result():
         scan_requests=scan_requests,
         policy_requests=policy_requests,
         policy_allow=False,
-        policy_reasons=["blocking_security_findings"],
+        policy_reasons=["gate_failed:semgrep"],
     )
 
     async with await WorkflowEnvironment.start_time_skipping() as env:
@@ -1497,7 +2002,12 @@ async def test_scan_findings_and_severity_reach_policy_and_result():
         "CVE-2024-0001",
     ]
     assert [finding["severity"] for finding in result.scan_findings] == ["high", "medium"]
-    assert policy_requests[0].blocking_findings == 1
+    scanner_gates = {
+        gate.name: gate.verdict
+        for gate in policy_requests[0].gates
+        if gate.name in {"semgrep", "trivy"}
+    }
+    assert scanner_gates == {"semgrep": "block", "trivy": "pass"}
     assert policy_requests[0].severity_counts == {"high": 1, "medium": 1}
     assert [finding["rule_id"] for finding in policy_requests[0].scan_findings] == [
         "python.sql-injection",

@@ -35,6 +35,7 @@ class IntakeStart:
     jira_project: str
     stored_issue: dict[str, Any]
     base: str = "main"
+    snapshot_version: int = 0
 
 
 class IntakeReadSource(Protocol):
@@ -243,7 +244,7 @@ async def _start(
     async def _launch() -> dict[str, str]:
         execution_id = f"intake-{uuid.uuid4().hex[:8]}"
         await execution_seeder.seed(execution_id=execution_id, task_id=issue_key, repo=repo)
-        await capture_task_snapshot(
+        snapshot = await capture_task_snapshot(
             raw,
             execution_id=execution_id,
             jira_source=jira_source,
@@ -259,6 +260,7 @@ async def _start(
                 summary=normalized_summary,
                 jira_project=project,
                 stored_issue=stored_issue,
+                snapshot_version=snapshot.version,
             )
         )
         return {"workflow_id": workflow_id}

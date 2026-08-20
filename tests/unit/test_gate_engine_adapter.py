@@ -1,0 +1,420 @@
+"""Unit tests for the AI-CLI security-compliance reviewer adapter."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+import pytest
+from adapters.interfaces.security_scanner import HIGH, LOW, ScanTarget
+from services.orchestration.gates.engine_source import (
+    CommandResult,
+    GateEngineConfig,
+    ResolvedEngineSource,
+)
+from services.orchestration.gates.gate_engine import (
+    AiReviewScanner,
+    AiTestClassifier,
+    GateEngineError,
+    map_classifications,
+    map_review_findings,
+    triage_action,
+)
+
+pytestmark = pytest.mark.asyncio
+
+
+def test_map_review_findings_maps_severity_location_and_rule():
+    review = {
+        "review_action": "REQUEST_CHANGES",
+        "comments": [
+            {
+                "path": "app/db.py",
+                "line": 20,
+                "severity": "HIGH",
+                "title": "SQL injection",
+                "perspective": "security",
+            },
+            {
+                "path": "infra/main.tf",
+                "line": 5,
+                "severity": "LOW",
+                "message": "loose egress",
+                "category": "compliance",
+            },
+        ],
+    }
+
+    findings = map_review_findings(review, scanner="ai-security-review")
+
+    assert [f.severity for f in findings] == [HIGH, LOW]
+    assert findings[0].location == "app/db.py:20"
+    assert findings[0].rule_id == "security"
+    assert findings[0].title == "SQL injection"
+    assert findings[1].rule_id == "compliance"
+    assert all(f.scanner == "ai-security-review" for f in findings)
+
+
+def test_map_review_findings_on_approve_is_empty():
+    assert map_review_findings({"review_action": "APPROVE", "comments": []}, scanner="x") == []
+
+
+def _resolved(path: str) -> ResolvedEngineSource:
+    return ResolvedEngineSource(path=path, mode="local", version="c" * 40)
+
+
+def _install_entrypoint(root: Path) -> None:
+    entry = root / "engines" / "security-compliance-review" / "harness" / "ai-pr-review"
+    entry.parent.mkdir(parents=True)
+    entry.write_text("#!/usr/bin/env bash\n")
+    entry.chmod(0o755)
+
+
+async def test_scan_runs_the_entrypoint_and_maps_findings(tmp_path):
+    source_root = tmp_path / "engine"
+    source_root.mkdir()
+    _install_entrypoint(source_root)
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+
+    captured: dict[str, Any] = {}
+
+    async def fake_runner(args, cwd, env):
+        captured["args"] = list(args)
+        captured["cwd"] = cwd
+        captured["env"] = dict(env)
+        json_out = Path(args[args.index("--json-out") + 1])
+        json_out.write_text(
+            json.dumps(
+                {
+                    "review_action": "REQUEST_CHANGES",
+                    "comments": [
+                        {"path": "a.py", "line": 1, "severity": "HIGH", "title": "leak"}
+                    ],
+                }
+            )
+        )
+        return CommandResult(returncode=1, stdout="", stderr="")
+
+    scanner = AiReviewScanner(
+        name="ai-security-review",
+        config=GateEngineConfig(
+            enabled=True,
+            mode="local",
+            local_path=str(source_root),
+            review_model="security-review-model",
+        ),
+        profile="cms-ars",
+        litellm_base_url="http://litellm:4000",
+        litellm_api_key="sk-gateway",
+        runner=fake_runner,
+        source=_resolved(str(source_root)),
+    )
+
+    findings = await scanner.scan(
+        ScanTarget(repo="agentic-demo-service", ref="origin/main", repo_root=str(repo_root))
+    )
+
+    assert [f.severity for f in findings] == [HIGH]
+    assert "--against" in captured["args"]
+    assert captured["args"][captured["args"].index("--against") + 1] == "origin/main"
+    assert "--profile" in captured["args"]
+    assert captured["cwd"] == str(repo_root)
+    assert captured["env"]["ANTHROPIC_BASE_URL"] == "http://litellm:4000"
+    assert captured["env"]["OPENAI_BASE_URL"] == "http://litellm:4000"
+    assert captured["env"]["ANTHROPIC_API_KEY"] == "sk-gateway"
+    assert captured["env"]["OPENAI_API_KEY"] == "sk-gateway"
+    assert captured["env"]["AI_REVIEW_PROVIDER"] == "api"
+    assert captured["env"]["AI_REVIEW_SCM"] == "github"
+    assert not any(p.name.startswith(".ai-review-") for p in repo_root.iterdir())
+
+
+async def test_scan_fails_closed_without_a_gateway_base_url(tmp_path):
+    source_root = tmp_path / "engine"
+    source_root.mkdir()
+    _install_entrypoint(source_root)
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+
+    calls: list[object] = []
+
+    async def spy_runner(args, cwd, env):
+        calls.append(args)
+        return CommandResult(returncode=0, stdout="", stderr="")
+
+    scanner = AiReviewScanner(
+        name="ai-security-review",
+        config=GateEngineConfig(enabled=True, mode="local", local_path=str(source_root)),
+        litellm_base_url="",
+        runner=spy_runner,
+        source=_resolved(str(source_root)),
+    )
+
+    with pytest.raises(GateEngineError):
+        await scanner.scan(ScanTarget(repo="r", ref="origin/main", repo_root=str(repo_root)))
+    assert calls == []
+
+
+
+async def test_scan_fails_closed_when_the_engine_errors(tmp_path):
+    source_root = tmp_path / "engine"
+    source_root.mkdir()
+    _install_entrypoint(source_root)
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+
+    async def failing_runner(args, cwd, env):
+        return CommandResult(returncode=2, stdout="", stderr="bad config")
+
+    scanner = AiReviewScanner(
+        name="ai-security-review",
+        config=GateEngineConfig(
+            enabled=True,
+            mode="local",
+            local_path=str(source_root),
+            review_model="security-review-model",
+        ),
+        litellm_base_url="http://litellm:4000",
+        litellm_api_key="sk-gateway",
+        runner=failing_runner,
+        source=_resolved(str(source_root)),
+    )
+
+    with pytest.raises(GateEngineError):
+        await scanner.scan(ScanTarget(repo="r", ref="origin/main", repo_root=str(repo_root)))
+
+
+async def test_scan_fails_closed_when_entrypoint_missing(tmp_path):
+    source_root = tmp_path / "engine"
+    source_root.mkdir()
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+
+    async def unused_runner(args, cwd, env):
+        return CommandResult(returncode=0, stdout="", stderr="")
+
+    scanner = AiReviewScanner(
+        name="ai-security-review",
+        config=GateEngineConfig(enabled=True, mode="local", local_path=str(source_root)),
+        runner=unused_runner,
+        source=_resolved(str(source_root)),
+    )
+
+    with pytest.raises(GateEngineError):
+        await scanner.scan(ScanTarget(repo="r", ref="origin/main", repo_root=str(repo_root)))
+
+
+async def test_scan_fails_closed_when_engine_disabled(tmp_path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    scanner = AiReviewScanner(
+        name="ai-security-review",
+        config=GateEngineConfig(enabled=False),
+    )
+
+    with pytest.raises(GateEngineError):
+        await scanner.scan(ScanTarget(repo="r", ref="origin/main", repo_root=str(repo_root)))
+
+
+async def test_scan_drives_a_config_driven_entrypoint(tmp_path):
+    source_root = tmp_path / "engine"
+    entry = source_root / "bin" / "review"
+    entry.parent.mkdir(parents=True)
+    entry.write_text("#!/usr/bin/env bash\n")
+    entry.chmod(0o755)
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+
+    captured: dict[str, Any] = {}
+
+    async def fake_runner(args, cwd, env):
+        captured["args"] = list(args)
+        json_out = Path(args[args.index("--json-out") + 1])
+        json_out.write_text(json.dumps({"review_action": "APPROVE", "comments": []}))
+        return CommandResult(returncode=0, stdout="", stderr="")
+
+    scanner = AiReviewScanner(
+        name="ai-security-review",
+        config=GateEngineConfig(
+            enabled=True,
+            mode="local",
+            local_path=str(source_root),
+            review_model="security-review-model",
+            review_entrypoint="bin/review",
+        ),
+        litellm_base_url="http://litellm:4000",
+        litellm_api_key="sk-gateway",
+        runner=fake_runner,
+        source=_resolved(str(source_root)),
+    )
+
+    await scanner.scan(ScanTarget(repo="r", ref="origin/main", repo_root=str(repo_root)))
+
+    assert captured["args"][0] == str(entry)
+
+
+def test_map_classifications_patches_for_application_and_test_bugs():
+    payload = {
+        "mode": "OBSERVED",
+        "summary": "1 app bug, 1 test bug",
+        "classifications": [
+            {
+                "test": "t1",
+                "path": "a.py",
+                "line": 1,
+                "verdict": "APPLICATION_BUG",
+                "in_scope": True,
+            },
+            {"test": "t2", "path": "b.py", "line": 2, "verdict": "TEST_BUG", "in_scope": True},
+        ],
+    }
+
+    triage = map_classifications(payload)
+
+    assert triage.should_patch is True
+    assert triage.flaky_only is False
+    assert [c.verdict for c in triage.classifications] == ["APPLICATION_BUG", "TEST_BUG"]
+
+
+def test_map_classifications_test_bug_alone_still_patches():
+    payload = {"classifications": [{"test": "t", "verdict": "TEST_BUG", "in_scope": True}]}
+
+    assert map_classifications(payload).should_patch is True
+
+
+def test_map_classifications_flaky_only_reruns_without_patch():
+    payload = {
+        "classifications": [
+            {"test": "t1", "verdict": "FLAKY_FAILURE", "in_scope": False},
+            {"test": "t2", "verdict": "FLAKY_FAILURE", "in_scope": False},
+        ]
+    }
+
+    triage = map_classifications(payload)
+
+    assert triage.should_patch is False
+    assert triage.flaky_only is True
+    assert triage.has_environment_issue is False
+
+
+def test_map_classifications_environment_issue_is_flagged():
+    payload = {
+        "classifications": [
+            {"test": "t1", "verdict": "ENVIRONMENT_ISSUE", "in_scope": False},
+        ]
+    }
+
+    triage = map_classifications(payload)
+
+    assert triage.should_patch is False
+    assert triage.flaky_only is False
+    assert triage.has_environment_issue is True
+
+
+def test_map_classifications_patchable_dominates_mixed_failures():
+    payload = {
+        "classifications": [
+            {"test": "t1", "verdict": "APPLICATION_BUG", "in_scope": True},
+            {"test": "t2", "verdict": "FLAKY_FAILURE", "in_scope": False},
+            {"test": "t3", "verdict": "ENVIRONMENT_ISSUE", "in_scope": False},
+        ]
+    }
+
+    triage = map_classifications(payload)
+
+    assert triage.should_patch is True
+    assert triage.flaky_only is False
+
+
+def test_map_classifications_ignores_out_of_scope_application_bug():
+    payload = {
+        "classifications": [
+            {"test": "t1", "verdict": "APPLICATION_BUG", "in_scope": False},
+        ]
+    }
+
+    assert map_classifications(payload).should_patch is False
+
+
+def _install_classifier_entrypoint(root: Path) -> None:
+    entry = root / "engines" / "test-classifier" / "harness" / "ai-test-classifier"
+    entry.parent.mkdir(parents=True)
+    entry.write_text("#!/usr/bin/env bash\n")
+    entry.chmod(0o755)
+
+
+async def test_classify_runs_the_entrypoint_and_maps_verdicts(tmp_path):
+    source_root = tmp_path / "engine"
+    source_root.mkdir()
+    _install_classifier_entrypoint(source_root)
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+
+    async def fake_runner(args, cwd, env):
+        json_out = Path(args[args.index("--json-out") + 1])
+        json_out.write_text(
+            json.dumps(
+                {
+                    "mode": "OBSERVED",
+                    "summary": "1 failed",
+                    "classifications": [
+                        {"test": "t1", "verdict": "APPLICATION_BUG", "in_scope": True}
+                    ],
+                }
+            )
+        )
+        return CommandResult(returncode=0, stdout="", stderr="")
+
+    classifier = AiTestClassifier(
+        name="test-triage",
+        config=GateEngineConfig(
+            enabled=True,
+            mode="local",
+            local_path=str(source_root),
+            triage_model="review-model",
+        ),
+        litellm_base_url="http://litellm:4000",
+        litellm_api_key="sk-gateway",
+        runner=fake_runner,
+        source=_resolved(str(source_root)),
+    )
+
+    triage = await classifier.classify(
+        ScanTarget(repo="r", ref="origin/main", repo_root=str(repo_root))
+    )
+
+    assert triage.mode == "OBSERVED"
+    assert triage.should_patch is True
+    assert not any(p.name.startswith(".ai-classify-") for p in repo_root.iterdir())
+
+
+def _triage(**kw):
+    from services.orchestration.gates.gate_engine import FailureTriage
+
+    base = dict(
+        mode="OBSERVED",
+        summary="",
+        classifications=[],
+        should_patch=False,
+        flaky_only=False,
+        has_environment_issue=False,
+    )
+    base.update(kw)
+    return FailureTriage(**base)
+
+
+def test_triage_action_patch_dominates():
+    assert triage_action(_triage(should_patch=True, has_environment_issue=True)) == "patch"
+
+
+def test_triage_action_environment_escalates():
+    assert triage_action(_triage(has_environment_issue=True)) == "escalate"
+
+
+def test_triage_action_flaky_only_reruns():
+    assert triage_action(_triage(flaky_only=True)) == "rerun"
+
+
+def test_triage_action_unclassified_escalates():
+    assert triage_action(_triage()) == "escalate"

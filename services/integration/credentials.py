@@ -18,6 +18,8 @@ _CURRENT_CONFIG_VERSIONS: dict[str, int] = {
     "github": 1,
     "jira": 1,
     "integrations": 1,
+    "gates": 1,
+    "gate_engine": 1,
 }
 
 

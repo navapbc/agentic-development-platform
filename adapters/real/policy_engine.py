@@ -12,15 +12,18 @@ from adapters.interfaces.policy_engine import BLOCK_AND_REPORT, PolicyDecision, 
 from scripts.config import Settings, get_settings
 
 _DECISION_PATH = "/v1/data/agentic/promotion/decision"
+_BUNDLE_VERSION_PATH = "/v1/data/agentic/promotion/bundle_version"
 
 
 def _decision_from_result(result: dict) -> PolicyDecision:
     reasons = tuple(str(r) for r in (result.get("reasons") or ()))
+    human_review = tuple(str(r) for r in (result.get("human_review") or ()))
     return PolicyDecision(
         allow=bool(result.get("allow", False)),
         bundle_version=str(result.get("bundle_version") or ""),
         reasons=reasons,
         next_action=str(result.get("next_action") or BLOCK_AND_REPORT),
+        human_review=human_review,
     )
 
 
@@ -54,3 +57,12 @@ class RealOpaClient:
             resp.raise_for_status()
             body = resp.json()
         return _decision_from_result(body.get("result") or {})
+
+    async def bundle_version(self) -> str:
+        async with httpx.AsyncClient(
+            base_url=self._base_url, transport=self._transport, timeout=self._timeout
+        ) as client:
+            resp = await client.get(_BUNDLE_VERSION_PATH)
+            resp.raise_for_status()
+            body = resp.json()
+        return str(body.get("result") or "")

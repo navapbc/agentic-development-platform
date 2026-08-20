@@ -171,6 +171,14 @@ async def test_default_repo_starts_one_execution():
     assert alerter.alerts == []
 
 
+async def test_intake_threads_the_snapshot_version_to_the_starter():
+    read = _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV")]})
+    starter, alerter, ledger, store, resolver = _defaults()
+    await _run(read, starter, alerter, ledger, store, resolver)
+    assert starter.starts[0].snapshot_version == 1
+
+
+
 async def test_marker_fans_out_to_each_repo():
     read = _ReadSource(
         {"ADEV": [_issue("ADEV-1", "ADEV", description="repos: repo-a, repo-b")]}

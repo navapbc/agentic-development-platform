@@ -1,0 +1,67 @@
+# Optional external review engines that back their own gates plus the advisory test classifier.
+# The adapter is engine-agnostic. It drives any engine whose harness accepts --against <ref> and
+# --json-out <path> and emits the review and classifier JSON contract. The path is inert unless at
+# least one engine is enabled, so with this file absent or every engine disabled the built-in rebar
+# security review stays the gate and neither the engine code nor its overlay deploys.
+#
+# engines is a list. Each entry backs one gate, named by name, and is enabled and required
+# independently in gates.yaml. Add an entry per engine to run several side by side, for example the
+# ai-common-workflows reviewer plus a wrapped SonarQube or a custom script. The values shown are
+# the ai-common-workflows reference example. Change name, the source, and the entrypoints per engine.
+
+config_version: 1
+
+engines:
+  - name: ai-security-review
+
+    enabled: false
+
+    # The AI CLI the engine drives (claude, codex, or copilot). It is pointed at the platform
+    # LiteLLM gateway, so every model call is monitored by Guardrails and routed to Bedrock. Direct
+    # provider access is never used.
+    tool: claude
+
+    # LiteLLM model-list names the gateway maps to Bedrock. review_model runs the review gate,
+    # triage_model runs the advisory test classifier. Both must exist in the LiteLLM config. Set
+    # classifier_entrypoint to "" for a review-only engine that runs no classifier.
+    review_model: security-review-model
+    triage_model: review-model
+
+    # Output token cap passed to the CLI, kept under the Bedrock provider output limit.
+    max_output_tokens: 8192
+
+    # Source mode. Set mode to one of local, tag, or zip, then fill the fields that mode reads.
+    #   local: local_path
+    #   tag:   repo_url, tag, cache_root
+    #   zip:   zip_path, cache_root (create with: gh api repos/<org>/<repo>/zipball/<ref> > x.zip)
+    # tag pulls only when the tag moved, as a pre-flight fail-fast check. The resolver records the
+    # resolved commit or zip hash so the run pins the exact engine version into the manifest.
+    mode: local
+
+    # Harness paths inside the engine checkout, relative to its root. Point them at another engine's
+    # harness to integrate a different review or classifier workflow with no code change.
+    review_entrypoint: engines/security-compliance-review/harness/ai-pr-review
+    classifier_entrypoint: engines/test-classifier/harness/ai-test-classifier
+
+    # local mode reads this
+    local_path: ../ai-common-workflows
+
+    # tag mode reads these
+    repo_url: https://github.com/navapbc/ai-common-workflows.git
+    tag: ""
+    cache_root: .agent-context/engine-cache
+
+    # zip mode reads this and cache_root
+    zip_path: ""
+
+  # A second engine, for example a wrapped SonarQube or a custom review script. It registers the
+  # sonarqube-review gate. Enable it in gates.yaml the same as any other gate.
+  # - name: sonarqube-review
+  #   enabled: true
+  #   tool: claude
+  #   mode: tag
+  #   repo_url: https://github.com/your-org/sonar-review-engine.git
+  #   tag: v1.0.0
+  #   cache_root: .agent-context/engine-cache
+  #   review_entrypoint: bin/review
+  #   classifier_entrypoint: ""

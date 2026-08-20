@@ -152,7 +152,19 @@ def _allowlist_from_config(monkeypatch):
     )
 
 
-async def test_two_tenants_reach_a_draft_pr_with_no_shared_credential(tmp_path) -> None:
+async def test_two_tenants_reach_a_draft_pr_with_no_shared_credential(
+    tmp_path, monkeypatch
+) -> None:
+    from services.integration.jira._engine import ensure_engine_on_path
+
+    ensure_engine_on_path()
+    from rebar_reconciler.adapters.jira_datacenter import transport
+
+    class _FakeJira:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    monkeypatch.setattr(transport, "_jira_client_class", lambda: _FakeJira)
     remotes = {
         "repo-a": _bare_remote(tmp_path, "repo-a"),
         "repo-b": _bare_remote(tmp_path, "repo-b"),
@@ -249,7 +261,7 @@ async def test_two_tenants_reach_a_draft_pr_with_no_shared_credential(tmp_path) 
     cloud_adapter = build_jira_adapter_for_issue("CLOUDP-1", settings, resolver=jira)
     dc_adapter = build_jira_adapter_for_issue("DCP-1", settings, resolver=jira)
     assert type(cloud_adapter.client).__name__ == "AcliClient"
-    assert type(dc_adapter.client).__name__ == "JiraDataCenterClient"
+    assert type(dc_adapter.client).__name__ == "JiraDataCenterTransport"
 
 
 @pytest.mark.skipif(

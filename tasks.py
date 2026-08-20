@@ -172,6 +172,22 @@ def repair(c, issue, retry=False, abandon=False):
 
 @task(
     help={
+        "issue": "Jira issue key parked at a human gate, for example ADSER-24.",
+        "gate": "Name of the human gate to resolve, for example plan.",
+        "approve": "Approve the gate and continue the run.",
+        "reject": "Reject the gate and cancel the run.",
+    }
+)
+def gate(c, issue, gate, approve=False, reject=False):
+    """Release the AWAITING_HUMAN pause on a workflow parked at a configured human gate."""
+    if approve == reject:
+        raise Exit("pass exactly one of --approve or --reject")
+    decision = "--approve" if approve else "--reject"
+    c.run(f"python -m scripts.gate_decision {issue} --gate {gate} {decision}", pty=True)
+
+
+@task(
+    help={
         "issue": "Jira issue key to restart, for example ADSER-24.",
         "repo": "Scope the intake retry to one repository when the issue fanned out to several.",
     }
@@ -418,6 +434,7 @@ for _t in (
     reap,
     intake,
     repair,
+    gate,
     restart,
     demo_durable_task,
     demo_durable_counter,

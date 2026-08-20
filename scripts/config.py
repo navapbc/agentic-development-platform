@@ -53,7 +53,7 @@ class Settings(BaseSettings):
     jumphost_env: str = ""
     jumphost_connect_script: str = ""
     ssh_bastion_target: str = ""
-    bedrock_tunnel_local_port: int = 8443
+    bedrock_tunnel_local_port: int = 8444
 
     opa_url: str = "http://localhost:8181"
     langfuse_host: str = "http://localhost:3000"

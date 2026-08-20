@@ -18,6 +18,8 @@ def _manifest(**overrides) -> DeterminismManifest:
         "policy_bundle_version": "policy/v2",
         "prompt_versions": {"plan-review": "plan-review/v1"},
         "resolved_models": {"classification-summary": "bedrock/anthropic.claude-3"},
+        "gate_versions": {"code-review": "1", "semgrep": "1"},
+        "gate_config_hash": "sha256:abc123",
     }
     values.update(overrides)
     return DeterminismManifest(**values)
@@ -36,7 +38,17 @@ def test_to_dict_carries_every_manifest_input():
         "policy_bundle_version": "policy/v2",
         "prompt_versions": {"plan-review": "plan-review/v1"},
         "resolved_models": {"classification-summary": "bedrock/anthropic.claude-3"},
+        "gate_versions": {"code-review": "1", "semgrep": "1"},
+        "gate_config_hash": "sha256:abc123",
     }
+
+
+async def test_record_writes_the_gate_set_into_the_audit_event():
+    store = InMemoryManifestStore()
+    record = await store.record(_manifest())
+    correlation = record.manifest.to_dict()
+    assert correlation["gate_versions"] == {"code-review": "1", "semgrep": "1"}
+    assert correlation["gate_config_hash"] == "sha256:abc123"
 
 
 async def test_record_populates_execution_manifest_columns():

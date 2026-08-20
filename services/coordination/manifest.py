@@ -24,6 +24,8 @@ class DeterminismManifest:
     policy_bundle_version: str = ""
     prompt_versions: dict[str, str] = field(default_factory=dict)
     resolved_models: dict[str, str] = field(default_factory=dict)
+    gate_versions: dict[str, str] = field(default_factory=dict)
+    gate_config_hash: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -32,6 +34,8 @@ class DeterminismManifest:
             "policy_bundle_version": self.policy_bundle_version,
             "prompt_versions": dict(self.prompt_versions),
             "resolved_models": dict(self.resolved_models),
+            "gate_versions": dict(self.gate_versions),
+            "gate_config_hash": self.gate_config_hash,
         }
 
 

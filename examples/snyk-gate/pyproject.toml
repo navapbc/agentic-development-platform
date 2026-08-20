@@ -1,0 +1,12 @@
+[project]
+name = "snyk-gate"
+version = "0.1.0"
+description = "A Snyk dependency-scan gate for the agentic delivery platform"
+requires-python = ">=3.11"
+
+[project.entry-points."agentic_dev_platform.gates"]
+snyk = "snyk_gate:SnykScanner"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"

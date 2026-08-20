@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 from temporalio import activity
@@ -86,6 +87,22 @@ _ACCEPTANCE = _PromptSpec(
     ),
     subject_label="Completion evidence under acceptance verification",
 )
+
+_PROMPT_VERSIONS_BY_GATE = {
+    "plan-review": _PLAN.version,
+    "code-review": _CODE.version,
+    "security-review": _SECURITY.version,
+    "acceptance": _ACCEPTANCE.version,
+}
+
+
+def review_prompt_versions(gate_names: Iterable[str]) -> dict[str, str]:
+    return {
+        name: _PROMPT_VERSIONS_BY_GATE[name]
+        for name in gate_names
+        if name in _PROMPT_VERSIONS_BY_GATE
+    }
+
 
 
 def build_review_gate():

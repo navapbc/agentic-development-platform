@@ -1,0 +1,45 @@
+# Gate selection for the review and scan stages. Name a shipped bundle with profile, then override
+# individual gates by name. profile is government or private. Each gate entry sets enabled, required,
+# an after list of gate names the gate waits on, an on_block response of fail_closed or
+# pause_for_human, and a params map such as a scanner threshold. fail_fast is per stage, review and
+# scanner. A bare profile with no gates list yields that bundle's working default set. An explicit
+# gate entry overrides only that gate without restating the rest.
+#
+# on_block selects the response to a blocking verdict on a required gate. fail_closed is the default
+# and fails the run. pause_for_human parks the run at AWAITING_HUMAN so an operator resolves it with
+# `inv gate --issue <KEY> --gate <NAME> --approve` (or --reject). Approve continues the run, reject
+# cancels it. The reserved gate name plan is a human checkpoint on the reviewed plan. It is off in
+# both bundles, so a deployment that wants a person to approve every plan enables it here.
+
+config_version: 1
+
+profile: private
+
+fail_fast:
+  review: false
+  scanner: false
+
+gates:
+  - name: semgrep
+    required: true
+    params:
+      threshold: high
+  # - name: security-review
+  #   required: true
+  #   on_block: pause_for_human
+  # - name: plan
+  #   enabled: true
+  # - name: snyk
+  #   enabled: true
+  #   required: true
+  #   plugin:
+  #     distribution: snyk-gate
+  #     entry_point: snyk
+  #   params:
+  #     org: my-org
+  #     threshold: high
+  # - name: ai-security-review
+  #   enabled: true
+  #   required: false
+  #   params:
+  #     profile: cms-ars

@@ -10,6 +10,8 @@ from temporalio import workflow
 from temporalio.common import RetryPolicy
 
 with workflow.unsafe.imports_passed_through():
+    from services.orchestration.gates.contract import PAUSE_FOR_HUMAN, GateContext
+    from services.orchestration.gates.runner import run_gate_stage
     from services.orchestration.temporal_activities.branch_sync import (
         RecheckRequest,
         RecheckResult,
@@ -25,6 +27,19 @@ with workflow.unsafe.imports_passed_through():
         poll_ci,
         read_ci_log,
         trigger_ci,
+    )
+    from services.orchestration.temporal_activities.gates import (
+        ClassifyTestFailuresRequest,
+        EvaluateGateRequest,
+        GatePlan,
+        TriageResult,
+        classify_test_failures,
+        evaluate_gate,
+        load_gate_plan,
+    )
+    from services.orchestration.temporal_activities.manifest import (
+        RecordManifestRequest,
+        record_manifest,
     )
     from services.orchestration.temporal_activities.notify import (
         AlertHumanInterventionRequest,
@@ -76,13 +91,6 @@ with workflow.unsafe.imports_passed_through():
         analyze_ci_failure,
         apply_ci_repair,
     )
-    from services.orchestration.temporal_activities.review import (
-        ReviewOutcome,
-        ReviewRequest,
-        review_code,
-        review_security,
-        verify_acceptance,
-    )
     from services.orchestration.temporal_activities.security import (
         ScanChangeRequest,
         ScanChangeResult,
@@ -120,6 +128,7 @@ with workflow.unsafe.imports_passed_through():
     )
 
 from adapters.interfaces.ci_host import SUCCESS, UNAVAILABLE
+from adapters.interfaces.policy_engine import PolicyGate
 
 from services.orchestration.suspension import ResumeOn, SuspendReason, Suspension
 from services.orchestration.temporal_workflows.suspendable import (
@@ -161,9 +170,10 @@ _REPAIR_STRIDE = 2
 _APPROVAL_OFFSET = 1
 _PROMOTE_OFFSET = 2
 
-_CODE_REVIEW = "CODE_REVIEW"
-_SECURITY_REVIEW = "SECURITY_REVIEW"
-_ACCEPTANCE_VERIFICATION = "ACCEPTANCE_VERIFICATION"
+_CODE_REVIEW = "code-review"
+_SECURITY_REVIEW = "security-review"
+_ACCEPTANCE = "acceptance"
+_REVIEW = "REVIEW"
 
 
 @dataclass
@@ -197,9 +207,11 @@ class DraftPullRequestInput:
     run_reviews: bool = False
     run_planning: bool = False
     run_policy: bool = False
+    run_test_triage: bool = False
     run_approval: bool = False
     await_pr_close: bool = False
     jira_project: str = ""
+    snapshot_version: int = 0
     plan_approved: bool = False
     jira_snapshot_current: bool = True
 
@@ -224,6 +236,7 @@ class DraftPullRequestOutput:
     code_verdict: str = ""
     security_verdict: str = ""
     acceptance_verdict: str = ""
+    review_verdicts: dict[str, str] = field(default_factory=dict)
     review_attestations: dict[str, str] = field(default_factory=dict)
     review_findings: dict[str, list[str]] = field(default_factory=dict)
     review_summaries: dict[str, str] = field(default_factory=dict)
@@ -258,6 +271,13 @@ class _RepairDecision:
     actor: str = ""
 
 
+@dataclass(frozen=True)
+class _GateDecision:
+    gate: str
+    approved: bool
+    actor: str = ""
+
+
 def _project_from_issue(issue_key: str) -> str:
     return issue_key.split("-", 1)[0] if "-" in issue_key else ""
 
@@ -280,6 +300,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         self._pr_approval: _PrApproval | None = None
         self._pr_closed: _PrClosed | None = None
         self._repair_decision: _RepairDecision | None = None
+        self._gate_decision: _GateDecision | None = None
         self._max_attempt_used: int = 0
         self._repair_cost: float = 0.0
         self._repair_tokens: int = 0
@@ -305,6 +326,12 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         self._resume_trigger = ResumeOn.HUMAN_APPROVAL.value
         self._resume_requested = True
 
+    @workflow.signal(name="submit_gate_decision")
+    def submit_gate_decision(self, gate: str, approved: bool, actor: str = "") -> None:
+        self._gate_decision = _GateDecision(gate=gate, approved=approved, actor=actor)
+        self._resume_trigger = ResumeOn.HUMAN_APPROVAL.value
+        self._resume_requested = True
+
     @workflow.signal(name="submit_ci_result")
     def submit_ci_result(self) -> None:
         self._resume_trigger = ResumeOn.CI_RESULT.value
@@ -317,6 +344,18 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         workflow_id = workflow.info().workflow_id
 
         title = params.title or f"[{params.task_id}] {params.task}"
+
+        await workflow.execute_activity(
+            record_manifest,
+            RecordManifestRequest(
+                execution_id=params.execution_id,
+                task_id=params.task_id,
+                repository_sha=params.base_sha,
+                snapshot_version=params.snapshot_version,
+            ),
+            start_to_close_timeout=short,
+            retry_policy=retry,
+        )
 
         async def linkback_existing(pr_url: str, branch: str) -> str:
             if not params.issue_key:
@@ -378,6 +417,33 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 )
             plan_text = plan_out.plan
             self._plan_approved = True
+
+            plan: GatePlan = await workflow.execute_activity(
+                load_gate_plan, start_to_close_timeout=short, retry_policy=retry
+            )
+            if plan.plan_pause:
+                approved = await self._park_for_gate_decision(
+                    params,
+                    workflow_id,
+                    gate="plan",
+                    stage="plan",
+                    detail="plan approval requested",
+                )
+                if not approved:
+                    await self._terminal_alert(
+                        params,
+                        workflow_id,
+                        reason=PLAN_REJECTED,
+                        stage="plan",
+                        detail="plan rejected by human gate",
+                    )
+                    return DraftPullRequestOutput(
+                        execution_id=params.execution_id,
+                        status=PLAN_REJECTED,
+                        terminal_reason=PLAN_REJECTED,
+                        plan_status="rejected",
+                        plan_verdict=plan_out.verdict,
+                    )
 
         impl: ImplementationOutput = await workflow.execute_child_workflow(
             ImplementationWorkflow.run,
@@ -663,7 +729,16 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         repairs = base
         limit = base + params.max_repair_attempts
         budget_reason = ""
+        flaky_reran = False
         while result.status == CI_FAILED and repairs < limit:
+            if params.run_test_triage:
+                action = await self._triage_ci_failure(params, impl, result, workflow_id)
+                if action == "rerun" and not flaky_reran:
+                    flaky_reran = True
+                    result = await self._run_ci(params, impl, result, workflow_id, attempt=repairs)
+                    continue
+                if action in ("escalate", "rerun"):
+                    break
             attempt = repairs + 1
             repair = await self._repair(params, impl, result, workflow_id, attempt)
             if repair is None:
@@ -674,6 +749,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             budget_reason = self._budget_breach(params, impl)
             if repair.applied:
                 repairs = attempt
+                flaky_reran = False
             if budget_reason or not repair.applied:
                 break
             result = await self._run_ci(params, impl, result, workflow_id, attempt=repairs)
@@ -860,6 +936,117 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             )
         )
         return decision
+
+    async def _park_for_gate_decision(
+        self,
+        params: DraftPullRequestInput,
+        workflow_id: str,
+        *,
+        gate: str,
+        stage: str,
+        detail: str = "",
+        parked_build_id: str = "",
+    ) -> bool:
+        retry = RetryPolicy(maximum_attempts=3)
+        short = timedelta(seconds=30)
+        commit_sha = self._commit.commit_sha if self._commit else params.base_sha
+        await workflow.execute_activity(
+            persist_execution_state,
+            ExecutionState(
+                execution_id=params.execution_id,
+                task_id=params.task_id,
+                state=AWAITING_HUMAN,
+                workflow_id=workflow_id,
+                repository=params.repo or None,
+                repository_sha=commit_sha or None,
+            ),
+            start_to_close_timeout=short,
+            retry_policy=retry,
+        )
+        await self._terminal_alert(
+            params,
+            workflow_id,
+            reason=f"gate_paused:{gate}",
+            stage=stage,
+            detail=detail,
+        )
+        await self._audit(
+            AuditEvent(
+                event_id=f"{params.execution_id}:HUMAN_INTERVENTION_REQUESTED:{stage}:{gate}",
+                task_id=params.task_id,
+                execution_id=params.execution_id,
+                event_type="HUMAN_INTERVENTION_REQUESTED",
+                stage=stage,
+                new_state=AWAITING_HUMAN,
+                workflow_id=workflow_id,
+                reason=gate,
+            )
+        )
+        self._gate_decision = None
+        await self.await_resume(
+            Suspension(
+                reason=SuspendReason.AWAITING_HUMAN,
+                resume_on=ResumeOn.HUMAN_APPROVAL,
+                stage=stage,
+                parked_build_id=parked_build_id,
+            )
+        )
+        decision = self._gate_decision or _GateDecision(gate=gate, approved=False)
+        self._gate_decision = None
+        await self._audit(
+            AuditEvent(
+                event_id=f"{params.execution_id}:HUMAN_INTERVENTION_DECISION:{stage}:{gate}",
+                task_id=params.task_id,
+                execution_id=params.execution_id,
+                event_type="HUMAN_INTERVENTION_DECISION",
+                stage=stage,
+                new_state=AWAITING_HUMAN,
+                workflow_id=workflow_id,
+                decision="approved" if decision.approved else "rejected",
+                reason=decision.actor,
+            )
+        )
+        return decision.approved
+
+    async def _triage_ci_failure(
+        self,
+        params: DraftPullRequestInput,
+        impl: ImplementationOutput,
+        outcome: DraftPullRequestOutput,
+        workflow_id: str,
+    ) -> str:
+        retry = RetryPolicy(maximum_attempts=3)
+        model_timeout = timedelta(minutes=10)
+        commit_sha = self._commit.commit_sha if self._commit else params.base_sha
+
+        triage: TriageResult = await workflow.execute_activity(
+            classify_test_failures,
+            ClassifyTestFailuresRequest(
+                task_id=params.task_id,
+                execution_id=params.execution_id,
+                repo=params.repo,
+                ref=commit_sha,
+                repo_root=impl.workspace_path,
+            ),
+            start_to_close_timeout=model_timeout,
+            retry_policy=retry,
+        )
+        if not triage.enabled:
+            return ""
+        await self._audit(
+            AuditEvent(
+                event_id=f"{params.execution_id}:TEST_TRIAGE:{outcome.ci_build_number}",
+                task_id=params.task_id,
+                execution_id=params.execution_id,
+                event_type="TEST_TRIAGE",
+                stage="repair",
+                new_state=REPAIRING,
+                workflow_id=workflow_id,
+                decision=triage.action,
+                reason=triage.summary,
+            )
+        )
+        return triage.action
 
     async def _repair(
         self,
@@ -1154,74 +1341,129 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         outcome: DraftPullRequestOutput,
         workflow_id: str,
     ) -> DraftPullRequestOutput:
+        retry = RetryPolicy(maximum_attempts=3)
+        short = timedelta(seconds=30)
+        model_timeout = timedelta(minutes=5)
         commit_sha = self._commit.commit_sha if self._commit else params.base_sha
         subject = _change_subject(impl, commit_sha)
+
+        plan: GatePlan = await workflow.execute_activity(
+            load_gate_plan, start_to_close_timeout=short, retry_policy=retry
+        )
+        if not plan.review:
+            return replace(outcome, status=REVIEW_PASSED, review_status="passed")
+
+        await workflow.execute_activity(
+            persist_execution_state,
+            ExecutionState(
+                execution_id=params.execution_id,
+                task_id=params.task_id,
+                state=_REVIEW,
+                workflow_id=workflow_id,
+                repository=params.repo or None,
+                repository_sha=commit_sha or None,
+            ),
+            start_to_close_timeout=short,
+            retry_policy=retry,
+        )
+
+        context = GateContext(
+            task_id=params.task_id,
+            execution_id=params.execution_id,
+            repo=params.repo,
+            ref=commit_sha,
+            repo_root=impl.workspace_path or "",
+            subject=subject,
+        )
+
+        async def execute(spec: Any, gate_context: GateContext) -> Any:
+            return await workflow.execute_activity(
+                evaluate_gate,
+                EvaluateGateRequest(gate=spec.name, context=gate_context),
+                start_to_close_timeout=model_timeout,
+                retry_policy=retry,
+            )
+
+        results = await run_gate_stage(
+            plan.review, context, execute=execute, fail_fast=plan.fail_fast_review
+        )
+
+        required = {spec.name: spec.required for spec in plan.review}
+        on_block = {spec.name: spec.on_block for spec in plan.review}
         attestations: dict[str, str] = {}
         findings: dict[str, list[str]] = {}
         summaries: dict[str, str] = {}
-
-        code = await self._review_gate(
-            params, review_code, _CODE_REVIEW, subject, commit_sha, impl, workflow_id
-        )
-        attestations["code-review"] = code.attestation_hash
-        findings["code-review"] = list(code.findings)
-        summaries["code-review"] = code.summary
-        security = await self._review_gate(
-            params, review_security, _SECURITY_REVIEW, subject, commit_sha, impl, workflow_id
-        )
-        attestations["security-review"] = security.attestation_hash
-        findings["security-review"] = list(security.findings)
-        summaries["security-review"] = security.summary
-
-        if code.verdict == "block" or security.verdict == "block":
-            await self._terminal_alert(
-                params,
-                workflow_id,
-                reason=REVIEW_BLOCKED,
-                stage="review",
-                detail=f"code {code.verdict}, security {security.verdict}",
+        verdicts: dict[str, str] = {}
+        blocked = False
+        for result in results:
+            if result.verdict == "cancelled":
+                continue
+            attestations[result.name] = result.attestation_hash
+            findings[result.name] = [finding.title for finding in result.findings]
+            summaries[result.name] = result.summary
+            verdicts[result.name] = result.verdict
+            await self._audit(
+                AuditEvent(
+                    event_id=f"{params.execution_id}:REVIEW_COMPLETED:{result.name}",
+                    task_id=params.task_id,
+                    execution_id=params.execution_id,
+                    event_type="REVIEW_COMPLETED",
+                    stage=_REVIEW,
+                    prev_state=_REVIEW,
+                    new_state=_REVIEW,
+                    model_id=result.metadata.get("model_id", ""),
+                    decision=result.verdict,
+                    prompt_version=result.metadata.get("prompt_version", ""),
+                    artifact_hashes={"attestation": result.attestation_hash},
+                    workflow_id=workflow_id,
+                )
             )
-            return replace(
-                outcome,
-                status=REVIEW_BLOCKED,
-                review_status="blocked",
-                code_verdict=code.verdict,
-                security_verdict=security.verdict,
-                review_attestations=attestations,
-                review_findings=findings,
-                review_summaries=summaries,
-            )
-
-        acceptance = await self._review_gate(
-            params,
-            verify_acceptance,
-            _ACCEPTANCE_VERIFICATION,
-            subject,
-            commit_sha,
-            impl,
-            workflow_id,
-        )
-        attestations["acceptance-verification"] = acceptance.attestation_hash
-        findings["acceptance-verification"] = list(acceptance.findings)
-        summaries["acceptance-verification"] = acceptance.summary
-        blocked = acceptance.verdict == "block"
+            if required.get(result.name) and result.verdict == "block":
+                blocked = True
 
         if blocked:
-            await self._terminal_alert(
-                params,
-                workflow_id,
-                reason=REVIEW_BLOCKED,
-                stage="review",
-                detail=f"acceptance {acceptance.verdict}",
+            blocking = sorted(
+                name
+                for name, verdict in verdicts.items()
+                if verdict == "block" and required.get(name)
             )
+            paused = [name for name in blocking if on_block.get(name) == PAUSE_FOR_HUMAN]
+            fail_closed = [name for name in blocking if on_block.get(name) != PAUSE_FOR_HUMAN]
+            if not fail_closed and paused:
+                approved = await self._park_for_gate_decision(
+                    params,
+                    workflow_id,
+                    gate=",".join(paused),
+                    stage="review",
+                    detail=f"paused gates: {', '.join(paused)}",
+                    parked_build_id=outcome.ci_build_id,
+                )
+                blocked = not approved
+                if not approved:
+                    await self._terminal_alert(
+                        params,
+                        workflow_id,
+                        reason=REVIEW_BLOCKED,
+                        stage="review",
+                        detail=f"gate decision rejected: {', '.join(paused)}",
+                    )
+            else:
+                await self._terminal_alert(
+                    params,
+                    workflow_id,
+                    reason=REVIEW_BLOCKED,
+                    stage="review",
+                    detail=f"blocking gates: {', '.join(blocking)}",
+                )
 
         return replace(
             outcome,
             status=REVIEW_BLOCKED if blocked else REVIEW_PASSED,
             review_status="blocked" if blocked else "passed",
-            code_verdict=code.verdict,
-            security_verdict=security.verdict,
-            acceptance_verdict=acceptance.verdict,
+            code_verdict=verdicts.get(_CODE_REVIEW, ""),
+            security_verdict=verdicts.get(_SECURITY_REVIEW, ""),
+            acceptance_verdict=verdicts.get(_ACCEPTANCE, ""),
+            review_verdicts=verdicts,
             review_attestations=attestations,
             review_findings=findings,
             review_summaries=summaries,
@@ -1253,6 +1495,10 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             retry_policy=retry,
         )
 
+        plan: GatePlan = await workflow.execute_activity(
+            load_gate_plan, start_to_close_timeout=short, retry_policy=retry
+        )
+
         scan: ScanChangeResult = await workflow.execute_activity(
             scan_change,
             ScanChangeRequest(
@@ -1277,6 +1523,33 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             for finding in scan.findings
         ]
 
+        gates: list[PolicyGate] = []
+        for node in plan.review:
+            verdict = outcome.review_verdicts.get(node.name)
+            if verdict is not None:
+                gates.append(
+                    PolicyGate(
+                        name=node.name,
+                        required=node.required,
+                        verdict=verdict,
+                        on_block=node.on_block,
+                    )
+                )
+        for node in plan.scanner:
+            verdict = scan.scanner_verdicts.get(node.name)
+            if verdict is not None:
+                gates.append(
+                    PolicyGate(
+                        name=node.name,
+                        required=node.required,
+                        verdict=verdict,
+                        on_block=node.on_block,
+                    )
+                )
+        required_gates = [
+            node.name for node in [*plan.review, *plan.scanner] if node.required
+        ]
+
         ci_status = "success" if outcome.ci_status == "passed" else (outcome.ci_status or "unknown")
         decision: EvaluatePromotionResult = await workflow.execute_activity(
             evaluate_promotion,
@@ -1286,14 +1559,12 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 jira_project=params.jira_project or _project_from_issue(params.issue_key),
                 repository=params.repo,
                 ci_status=ci_status,
-                blocking_findings=scan.blocking_count,
-                scan_completed=True,
-                plan_approved=self._plan_approved,
                 repair_attempts=outcome.repair_attempts,
                 max_repair_attempts=params.max_repair_attempts,
                 jira_snapshot_current=params.jira_snapshot_current,
-                acceptance_verified=outcome.acceptance_verdict == "pass",
                 pr_authorized=outcome.pr_number > 0,
+                gates=gates,
+                required_gates=required_gates,
                 severity_counts=dict(scan.severity_counts),
                 scan_findings=scan_findings,
             ),
@@ -1316,7 +1587,25 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             )
         )
 
-        if not decision.allow:
+        allowed = decision.allow
+        if not decision.allow and not decision.reasons and decision.human_review:
+            allowed = await self._park_for_gate_decision(
+                params,
+                workflow_id,
+                gate=",".join(decision.human_review),
+                stage="policy",
+                detail=f"policy human review: {', '.join(decision.human_review)}",
+                parked_build_id=outcome.ci_build_id,
+            )
+            if not allowed:
+                await self._terminal_alert(
+                    params,
+                    workflow_id,
+                    reason=POLICY_DENIED,
+                    stage="policy",
+                    detail=f"policy human review rejected: {', '.join(decision.human_review)}",
+                )
+        elif not decision.allow:
             await self._terminal_alert(
                 params,
                 workflow_id,
@@ -1327,8 +1616,8 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
 
         return replace(
             outcome,
-            status=POLICY_ALLOWED if decision.allow else POLICY_DENIED,
-            policy_status="allowed" if decision.allow else "denied",
+            status=POLICY_ALLOWED if allowed else POLICY_DENIED,
+            policy_status="allowed" if allowed else "denied",
             policy_bundle_version=decision.bundle_version,
             policy_next_action=decision.next_action,
             policy_reasons=list(decision.reasons),
@@ -1591,64 +1880,6 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             pr_merged=merged,
             pr_close_status=terminal_state,
         )
-
-    async def _review_gate(
-        self,
-        params: DraftPullRequestInput,
-        gate: Any,
-        state: str,
-        subject: str,
-        commit_sha: str,
-        impl: ImplementationOutput,
-        workflow_id: str,
-    ) -> ReviewOutcome:
-        retry = RetryPolicy(maximum_attempts=3)
-        short = timedelta(seconds=30)
-        model_timeout = timedelta(minutes=5)
-
-        await workflow.execute_activity(
-            persist_execution_state,
-            ExecutionState(
-                execution_id=params.execution_id,
-                task_id=params.task_id,
-                state=state,
-                workflow_id=workflow_id,
-                repository=params.repo or None,
-                repository_sha=commit_sha or None,
-            ),
-            start_to_close_timeout=short,
-            retry_policy=retry,
-        )
-        outcome: ReviewOutcome = await workflow.execute_activity(
-            gate,
-            ReviewRequest(
-                task_id=params.task_id,
-                execution_id=params.execution_id,
-                subject=subject,
-                context_ref=commit_sha,
-                repo_root=impl.workspace_path or None,
-                ref=commit_sha or None,
-            ),
-            start_to_close_timeout=model_timeout,
-            retry_policy=retry,
-        )
-        await self._audit(
-            AuditEvent(
-                event_id=f"{params.execution_id}:REVIEW_COMPLETED:{state}",
-                task_id=params.task_id,
-                execution_id=params.execution_id,
-                event_type="REVIEW_COMPLETED",
-                stage=state,
-                prev_state=state,
-                new_state=state,
-                model_id=outcome.model_id,
-                decision=outcome.verdict,
-                prompt_version=outcome.prompt_version,
-                artifact_hashes={"attestation": outcome.attestation_hash},
-                workflow_id=workflow_id,
-            )
-        )
-        return outcome
 
     async def _audit(self, event: AuditEvent) -> None:
         await workflow.execute_activity(

@@ -1,0 +1,23 @@
+# Opt-in overlay that provisions the AI-CLI engine (ai-common-workflows) for the workers that run
+# the security-compliance review gate. It is not part of the default stack, so include it explicitly:
+#   docker compose -f compose.yaml -f compose.gate-engine.yaml up
+# With this overlay absent the engine path stays inert. Enabling the gate also requires
+# config/local/gate_engine.yaml with enabled: true and, in a container, cache_root set to the mounted
+# cache path below. A live review run additionally needs an AI CLI in the worker image; the base
+# worker image ships git and bash but not the AI CLIs, so a live run uses an engine-capable image.
+
+services:
+  activity-worker:
+    volumes:
+      - gate-engine-cache:/app/.engine-cache
+    environment:
+      AI_REVIEW_LLM_BASE_URL: http://litellm:4000
+
+  workflow-worker:
+    volumes:
+      - gate-engine-cache:/app/.engine-cache
+    environment:
+      AI_REVIEW_LLM_BASE_URL: http://litellm:4000
+
+volumes:
+  gate-engine-cache:

@@ -12,7 +12,7 @@ from dataclasses import replace
 import httpx
 import pytest
 import services.orchestration.temporal_activities.policy as policy_activity
-from adapters.interfaces.policy_engine import PolicyDecision, PolicyInput
+from adapters.interfaces.policy_engine import PolicyDecision, PolicyGate, PolicyInput
 from adapters.real.policy_engine import RealOpaClient
 from services.integration.opa.mediator import PromotionPolicyMediator, RepoNotAllowedError
 from services.orchestration.temporal_activities.policy import (
@@ -22,37 +22,47 @@ from services.orchestration.temporal_activities.policy import (
 
 _ALLOWED_PROJECTS = {"AGENTDEV"}
 _ALLOWED_REPOS = {"agentic-demo-service", "agentic-demo-greenfield"}
-_BUNDLE_VERSION = "0.2.0"
+_BUNDLE_VERSION = "0.4.0"
 
 
 def _policy_decision(inp: dict) -> dict:
     reasons: list[str] = []
+    human_review: list[str] = []
     if inp["jira_project"] not in _ALLOWED_PROJECTS:
         reasons.append("jira_project_not_allowlisted")
     if inp["repository"] not in _ALLOWED_REPOS:
         reasons.append("repository_not_allowlisted")
     if inp["ci_status"] != "success":
         reasons.append("ci_not_successful")
-    if not inp["scan_completed"]:
-        reasons.append("scan_incomplete")
-    if inp["blocking_findings"] > 0:
-        reasons.append("blocking_security_findings")
     if inp["repair_attempts"] > inp["max_repair_attempts"]:
         reasons.append("repair_attempts_exceeded")
     if not inp["jira_snapshot_current"]:
         reasons.append("jira_snapshot_stale")
-    if not inp["acceptance_verified"]:
-        reasons.append("acceptance_not_verified")
     if not inp["pr_authorized"]:
         reasons.append("pr_not_authorized")
-    if not inp["plan_approved"]:
-        reasons.append("plan_not_approved")
-    allow = len(reasons) == 0
+    ran = {gate["name"] for gate in inp.get("gates", [])}
+    for gate in inp.get("gates", []):
+        if gate["required"] and gate["verdict"] != "pass":
+            if gate.get("on_block", "fail_closed") == "pause_for_human":
+                human_review.append(f"gate_failed:{gate['name']}")
+            else:
+                reasons.append(f"gate_failed:{gate['name']}")
+    for name in inp.get("required_gates", []):
+        if name not in ran:
+            reasons.append(f"required_gate_missing:{name}")
+    allow = len(reasons) == 0 and len(human_review) == 0
+    if allow:
+        next_action = "proceed"
+    elif not reasons and human_review:
+        next_action = "await_human"
+    else:
+        next_action = "block_and_report"
     return {
         "allow": allow,
         "bundle_version": _BUNDLE_VERSION,
         "reasons": reasons,
-        "next_action": "proceed" if allow else "block_and_report",
+        "human_review": human_review,
+        "next_action": next_action,
     }
 
 
@@ -75,14 +85,15 @@ _COMPLIANT = PolicyInput(
     jira_project="AGENTDEV",
     repository="agentic-demo-service",
     ci_status="success",
-    blocking_findings=0,
-    scan_completed=True,
-    plan_approved=True,
     repair_attempts=0,
     max_repair_attempts=2,
     jira_snapshot_current=True,
-    acceptance_verified=True,
     pr_authorized=True,
+    gates=[
+        PolicyGate(name="code-review", required=True, verdict="pass"),
+        PolicyGate(name="semgrep", required=True, verdict="pass"),
+    ],
+    required_gates=["code-review", "semgrep"],
 )
 
 
@@ -99,6 +110,18 @@ async def test_compliant_change_is_allowed():
     assert decision.bundle_version == _BUNDLE_VERSION
 
 
+async def test_bundle_version_reads_the_policy_at_start():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/data/agentic/promotion/bundle_version"
+        assert request.method == "GET"
+        return httpx.Response(200, json={"result": "0.3.0"})
+
+    client = RealOpaClient(base_url="http://opa:8181", transport=httpx.MockTransport(handler))
+
+    assert await client.bundle_version() == "0.3.0"
+
+
+
 async def test_missing_ci_success_denies():
     decision = await _client().evaluate(_compliant(ci_status="failure"))
 
@@ -107,11 +130,61 @@ async def test_missing_ci_success_denies():
     assert "ci_not_successful" in decision.reasons
 
 
-async def test_blocking_finding_over_threshold_denies():
-    decision = await _client().evaluate(_compliant(blocking_findings=1))
+async def test_a_required_blocking_gate_denies():
+    decision = await _client().evaluate(
+        _compliant(gates=[PolicyGate(name="code-review", required=True, verdict="block")])
+    )
 
     assert decision.allow is False
-    assert "blocking_security_findings" in decision.reasons
+    assert "gate_failed:code-review" in decision.reasons
+
+
+async def test_a_pause_for_human_gate_routes_to_human_review():
+    decision = await _client().evaluate(
+        _compliant(
+            gates=[
+                PolicyGate(
+                    name="security-review",
+                    required=True,
+                    verdict="block",
+                    on_block="pause_for_human",
+                )
+            ],
+            required_gates=["security-review"],
+        )
+    )
+
+    assert decision.allow is False
+    assert decision.reasons == ()
+    assert "gate_failed:security-review" in decision.human_review
+    assert decision.next_action == "await_human"
+
+
+async def test_an_advisory_blocking_gate_is_allowed():
+    decision = await _client().evaluate(
+        _compliant(
+            gates=[
+                PolicyGate(name="code-review", required=True, verdict="pass"),
+                PolicyGate(name="semgrep", required=False, verdict="block"),
+            ],
+            required_gates=["code-review"],
+        )
+    )
+
+    assert decision.allow is True
+    assert decision.reasons == ()
+
+
+async def test_a_required_gate_that_did_not_run_fails_closed():
+    decision = await _client().evaluate(
+        _compliant(
+            gates=[PolicyGate(name="code-review", required=True, verdict="pass")],
+            required_gates=["code-review", "trivy"],
+        )
+    )
+
+    assert decision.allow is False
+    assert "required_gate_missing:trivy" in decision.reasons
 
 
 async def test_stale_jira_snapshot_denies():
@@ -119,13 +192,6 @@ async def test_stale_jira_snapshot_denies():
 
     assert decision.allow is False
     assert "jira_snapshot_stale" in decision.reasons
-
-
-async def test_missing_approval_denies():
-    decision = await _client().evaluate(_compliant(plan_approved=False))
-
-    assert decision.allow is False
-    assert "plan_not_approved" in decision.reasons
 
 
 async def test_undefined_result_fails_closed():
@@ -148,19 +214,24 @@ async def test_policy_input_document_uses_policy_field_names():
     document = _compliant().as_document()
 
     assert document["jira_project"] == "AGENTDEV"
-    assert document["blocking_findings"] == 0
+    gates = document["gates"]
+    assert isinstance(gates, list)
+    assert gates[0] == {
+        "name": "code-review",
+        "required": True,
+        "verdict": "pass",
+        "on_block": "fail_closed",
+    }
     assert set(document) == {
         "jira_project",
         "repository",
         "ci_status",
-        "blocking_findings",
-        "scan_completed",
-        "plan_approved",
         "repair_attempts",
         "max_repair_attempts",
         "jira_snapshot_current",
-        "acceptance_verified",
         "pr_authorized",
+        "gates",
+        "required_gates",
         "severity_counts",
         "scan_findings",
     }
@@ -179,20 +250,18 @@ async def test_evaluate_promotion_activity_surfaces_the_decision(monkeypatch):
             jira_project="AGENTDEV",
             repository="agentic-demo-service",
             ci_status="success",
-            blocking_findings=2,
-            scan_completed=True,
-            plan_approved=True,
             repair_attempts=0,
             max_repair_attempts=2,
             jira_snapshot_current=True,
-            acceptance_verified=True,
             pr_authorized=True,
+            gates=[PolicyGate(name="semgrep", required=True, verdict="block")],
+            required_gates=["semgrep"],
         )
     )
 
     assert result.allow is False
     assert result.next_action == "block_and_report"
-    assert result.reasons == ["blocking_security_findings"]
+    assert result.reasons == ["gate_failed:semgrep"]
     assert result.bundle_version == _BUNDLE_VERSION
 
 
@@ -210,7 +279,7 @@ async def test_mock_engine_returns_seeded_decision():
     from adapters.mock.policy_engine import MockPolicyEngine
 
     seeded = PolicyDecision(
-        allow=False, bundle_version="x", reasons=("plan_not_approved",), next_action="block"
+        allow=False, bundle_version="x", reasons=("gate_failed:code-review",), next_action="block"
     )
     engine = MockPolicyEngine(seeded)
 

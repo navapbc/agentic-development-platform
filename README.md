@@ -43,14 +43,15 @@ Run these once from the repository root.
 
 1. Copy the environment file with `cp .env.example .env`, then fill in the placeholders. See [Configuration](#configuration). Never commit `.env`.
 2. Copy the integration source configs with `cp config/local/github.yaml.example config/local/github.yaml`, `cp config/local/jira.yaml.example config/local/jira.yaml`, and `cp config/local/integrations.yaml.example config/local/integrations.yaml`, then edit the copies. See [Integration credentials](#integration-credentials). Never commit the `config/local/*.yaml` operator files.
-3. Create and activate a virtual environment with `python -m venv .venv && source .venv/bin/activate`.
-4. Install the package with its development extras using `pip install -e ".[dev,reasoning]"`. Add `sandbox` for the OpenHands agent, and see [CONTRIBUTING.md](CONTRIBUTING.md) for the editable `rebar` install needed on the review path.
-5. Choose a Bedrock connectivity provider in `.env` and open the path with `inv tunnel-start`. See [Bedrock connectivity](#bedrock-connectivity).
-6. Validate the Bedrock path and local reachability with `inv connectivity-check`.
-7. Start the stack with `inv local-up`.
-8. Apply database migrations with `inv db-migrate`.
-9. Confirm everything is healthy with `inv smoke-test`.
-10. Load allowlisted seed data with `inv seed` when you need demo fixtures.
+3. Copy the gate selection config with `cp config/local/gates.yaml.example config/local/gates.yaml`. It is required for any run that evaluates gates. Copying `config/local/gate_engine.yaml.example` to `config/local/gate_engine.yaml` is optional and adds an external gate engine. See [Configurable gates](#configurable-gates).
+4. Create and activate a virtual environment with `python -m venv .venv && source .venv/bin/activate`.
+5. Install the package with its development extras using `pip install -e ".[dev,reasoning]"`. Add `sandbox` for the OpenHands agent, and see [CONTRIBUTING.md](CONTRIBUTING.md) for the editable `rebar` install needed on the review path.
+6. Choose a Bedrock connectivity provider in `.env` and open the path with `inv tunnel-start`. See [Bedrock connectivity](#bedrock-connectivity).
+7. Validate the Bedrock path and local reachability with `inv connectivity-check`.
+8. Start the stack with `inv local-up`.
+9. Apply database migrations with `inv db-migrate`.
+10. Confirm everything is healthy with `inv smoke-test`.
+11. Load allowlisted seed data with `inv seed` when you need demo fixtures.
 
 ## Vendored binaries
 
@@ -75,7 +76,7 @@ Two binaries live under `vendor/bin` and are provisioned outside the Python inst
 | Jira tooling | `JIRA_ACLI_PATH`, `ACLI_VERSION`, `ACLI_DOWNLOAD_URL`, `ACLI_SHA256` | Path and provisioning for the vendored acli binary |
 | Policy and observability | `OPA_URL`, `LANGFUSE_*`, `OTEL_EXPORTER_OTLP_ENDPOINT` | Defaults work locally |
 
-The non-secret integration settings, including the repository and project allowlists, live in the `config/local` YAML files rather than `.env`. See [Integration credentials](#integration-credentials).
+The non-secret integration settings, including the repository and project allowlists, live in the `config/local` YAML files rather than `.env`. See [Integration credentials](#integration-credentials). The gate selection and the optional AI-CLI engine live in `config/local/gates.yaml` and `config/local/gate_engine.yaml`. See [Configurable gates](#configurable-gates).
 
 ### Integration credentials
 
@@ -230,6 +231,7 @@ Run `inv --list` for the full set. The common tasks are below.
 | `inv reap [--apply]` | Reap expired orphan artifacts, dry-run by default |
 | `inv intake [--schedule]` | Reconcile Jira intake into draft PR executions, single pass by default |
 | `inv approve-pr --workflow-id ID [--reject] [--pr-closed] [--merged]` | Release an approval or PR-close pause on a running workflow |
+| `inv gate --issue KEY --gate NAME [--approve\|--reject]` | Resolve a configured human-intervention gate parked at `AWAITING_HUMAN` |
 
 See [Recovering a stuck intake](#recovering-a-stuck-intake) for the retry, repair, and restart commands that drive a ticket after a failure.
 
@@ -250,6 +252,19 @@ When automated CI repair exhausts its attempts, the draft-PR workflow parks at t
 Every decision records the operator identity in the audit trail. The identity is read from the operating system account that runs the command, not a flag, so it cannot be recorded under another name.
 
 When the review and approval gates are enabled, a workflow instead pauses at `AWAITING_PR_APPROVAL` and `AWAITING_PR_CLOSE`. Release those with `inv approve-pr --workflow-id ID`, add `--reject` to reject the pull request, and pass `--pr-closed` with `--merged` to stand in for the GitHub PR-closed webhook. The workflow id prints when the pipeline starts.
+
+## Configurable gates
+
+The review and scan stages run a set of gates chosen from config, not a fixed sequence. `config/<env>/gates.yaml` names a shipped bundle with `profile` (`government` or `private`) and overrides individual gates by name. Each gate entry sets `enabled`, `required`, an `after` list, an `on_block` response, and a `params` map, and `fail_fast` is set per stage. A bundle names the working default, and an explicit entry overrides one gate without restating the rest. The promotion policy is data-driven over the resulting gate verdicts, so enabling or disabling a gate changes the run without a policy edit.
+
+`gates.yaml` is required for any run that evaluates gates. Copy it from `gates.yaml.example` during setup. A run with reviews or policy enabled fails with a config-missing error until the file exists, and `inv config-check` reports it as not created. `gate_engine.yaml` is optional. With no `gate_engine.yaml`, no engine gate registers and the built-in rebar `security-review` gate stays the reviewer. Both operator files are git-ignored, and the repository ships only their `.example` templates.
+
+The gate set is pluggable through two mechanisms, and each ships a worked example rather than a hard dependency.
+
+- Scanner-tool plugins. A review or scanner gate can come from its own installable package through the `agentic_dev_platform.gates` entry-point group, bound only to the distribution a deployment names in config. `examples/snyk-gate` is the worked example. See [docs/gate-plugins.md](docs/gate-plugins.md).
+- External AI-CLI review engines. One or more external engines drive their own gates and the advisory test classifier through an invocation and JSON contract, configured as a list in `config/<env>/gate_engine.yaml`. The adapter is engine-agnostic, and `ai-common-workflows` is the reference example beside which a wrapped tool such as SonarQube or a custom script can run. See [docs/gate-engine.md](docs/gate-engine.md). The path is inert until configured, so the built-in rebar `security-review` gate is the default reviewer.
+
+A gate entry set to `on_block: pause_for_human` parks the run at `AWAITING_HUMAN` on a blocking verdict rather than failing closed, and a promotion condition the policy classifies as human review parks the same way. The reserved `plan` gate is a config-only human checkpoint on the reviewed plan, off in both bundles. Resolve any parked human gate with `inv gate --issue KEY --gate NAME --approve` or `--reject`. Approve continues the run, reject cancels it, and the operator identity is read from the operating system account.
 
 ## Demos
 

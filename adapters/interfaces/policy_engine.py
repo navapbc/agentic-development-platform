@@ -10,18 +10,24 @@ BLOCK_AND_REPORT = "block_and_report"
 
 
 @dataclass(frozen=True)
+class PolicyGate:
+    name: str
+    required: bool
+    verdict: str
+    on_block: str = "fail_closed"
+
+
+@dataclass(frozen=True)
 class PolicyInput:
     jira_project: str
     repository: str
     ci_status: str
-    blocking_findings: int
-    scan_completed: bool
-    plan_approved: bool
     repair_attempts: int
     max_repair_attempts: int
     jira_snapshot_current: bool
-    acceptance_verified: bool
     pr_authorized: bool
+    gates: list[PolicyGate] = field(default_factory=list)
+    required_gates: list[str] = field(default_factory=list)
     severity_counts: dict[str, int] = field(default_factory=dict)
     scan_findings: list[dict[str, str]] = field(default_factory=list)
 
@@ -35,6 +41,7 @@ class PolicyDecision:
     bundle_version: str
     reasons: tuple[str, ...]
     next_action: str
+    human_review: tuple[str, ...] = ()
 
 
 class PolicyEngine(Protocol):

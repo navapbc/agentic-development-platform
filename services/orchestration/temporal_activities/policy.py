@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from adapters.interfaces.policy_engine import PolicyGate
 from temporalio import activity
 
 
@@ -14,14 +15,12 @@ class EvaluatePromotionRequest:
     jira_project: str
     repository: str
     ci_status: str
-    blocking_findings: int
-    scan_completed: bool
-    plan_approved: bool
     repair_attempts: int
     max_repair_attempts: int
     jira_snapshot_current: bool
-    acceptance_verified: bool
     pr_authorized: bool
+    gates: list[PolicyGate] = field(default_factory=list)
+    required_gates: list[str] = field(default_factory=list)
     severity_counts: dict[str, int] = field(default_factory=dict)
     scan_findings: list[dict[str, str]] = field(default_factory=list)
 
@@ -32,6 +31,7 @@ class EvaluatePromotionResult:
     bundle_version: str
     next_action: str
     reasons: list[str] = field(default_factory=list)
+    human_review: list[str] = field(default_factory=list)
 
 
 def _build_policy_mediator():
@@ -52,14 +52,12 @@ async def evaluate_promotion(req: EvaluatePromotionRequest) -> EvaluatePromotion
             jira_project=req.jira_project,
             repository=req.repository,
             ci_status=req.ci_status,
-            blocking_findings=req.blocking_findings,
-            scan_completed=req.scan_completed,
-            plan_approved=req.plan_approved,
             repair_attempts=req.repair_attempts,
             max_repair_attempts=req.max_repair_attempts,
             jira_snapshot_current=req.jira_snapshot_current,
-            acceptance_verified=req.acceptance_verified,
             pr_authorized=req.pr_authorized,
+            gates=list(req.gates),
+            required_gates=list(req.required_gates),
             severity_counts=dict(req.severity_counts),
             scan_findings=list(req.scan_findings),
         )
@@ -69,4 +67,5 @@ async def evaluate_promotion(req: EvaluatePromotionRequest) -> EvaluatePromotion
         bundle_version=decision.bundle_version,
         next_action=decision.next_action,
         reasons=list(decision.reasons),
+        human_review=list(decision.human_review),
     )

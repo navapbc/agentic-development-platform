@@ -27,6 +27,7 @@ EXPECTED_TASKS = {
     "reap",
     "intake",
     "repair",
+    "gate",
     "restart",
     "demo-durable-task",
     "demo-durable-counter",
