@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any, Protocol, runtime_checkable
 
 from services.review.types import (
@@ -13,6 +14,8 @@ from services.review.types import (
     TokenUsage,
     Verdict,
 )
+
+DEFAULT_BLOCKING_SEVERITIES = frozenset({"medium", "high", "critical"})
 
 
 @runtime_checkable
@@ -28,20 +31,27 @@ class FakeReviewKernel:
         return self._raw
 
 
-def _finding_from_rebar(index: int, raw: dict[str, Any]) -> Finding:
+def _finding_from_rebar(
+    index: int, raw: dict[str, Any], blocking_severities: frozenset[str]
+) -> Finding:
+    severity = str(raw.get("severity") or "unknown").lower()
+    explicit = raw.get("blocking")
+    blocking = bool(explicit) if explicit is not None else severity in blocking_severities
     return Finding(
         finding_id=str(raw.get("id") or index),
-        severity=str(raw.get("severity") or "unknown"),
-        blocking=bool(raw.get("blocking", False)),
+        severity=severity,
+        blocking=blocking,
         title=str(raw.get("title") or raw.get("finding") or ""),
         detail=str(raw.get("detail") or raw.get("body") or raw.get("description") or ""),
         location=raw.get("location"),
     )
 
 
-def _raw_from_runner_result(result: dict[str, Any], tier: str) -> RawReview:
+def _raw_from_runner_result(
+    result: dict[str, Any], tier: str, blocking_severities: frozenset[str]
+) -> RawReview:
     raw_findings = result.get("findings") or []
-    findings = [_finding_from_rebar(i, f) for i, f in enumerate(raw_findings)]
+    findings = [_finding_from_rebar(i, f, blocking_severities) for i, f in enumerate(raw_findings)]
     verdict = Verdict.BLOCK if any(f.blocking for f in findings) else Verdict.PASS
     provenance = [ModelProvenance(leg="finder", tier=tier, model_id=result.get("model"))]
     return RawReview(
@@ -66,6 +76,13 @@ def _usage_from_runner_result(result: dict[str, Any]) -> TokenUsage:
 
 
 class RebarReviewKernel:
+    def __init__(self, blocking_severities: Iterable[str] | None = None) -> None:
+        self._blocking_severities = (
+            frozenset(s.lower() for s in blocking_severities)
+            if blocking_severities is not None
+            else DEFAULT_BLOCKING_SEVERITIES
+        )
+
     def run(self, review: ReviewInput) -> RawReview:
         from rebar.llm.gate_source import (
             annotate_result,
@@ -91,4 +108,4 @@ class RebarReviewKernel:
                 )
             )
         result = annotate_result(result, handle)
-        return _raw_from_runner_result(result, tier)
+        return _raw_from_runner_result(result, tier, self._blocking_severities)

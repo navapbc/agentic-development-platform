@@ -80,11 +80,14 @@ def review_prompt_versions(gate_names: Iterable[str]) -> dict[str, str]:
 
 
 def build_review_gate():
+    from services.orchestration.gates.config import load_gates_config
     from services.review.evidence import PostgresEvidenceSink
     from services.review.gate import ReviewGate
     from services.review.kernel import RebarReviewKernel
 
-    return ReviewGate(RebarReviewKernel(), PostgresEvidenceSink())
+    blocking_severities = load_gates_config().blocking_severities
+    kernel = RebarReviewKernel(blocking_severities=blocking_severities)
+    return ReviewGate(kernel, PostgresEvidenceSink())
 
 
 def _subject_ref(subject: str) -> str:

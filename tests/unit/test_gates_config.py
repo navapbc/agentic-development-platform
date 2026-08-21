@@ -132,3 +132,22 @@ def test_shipped_bundles_are_registered_gates():
 
 def test_empty_registry_reports_no_names():
     assert GateRegistry().names() == frozenset()
+
+
+def test_blocking_severities_default_when_absent():
+    config = parse_gates_config({"profile": "private"})
+    assert config.blocking_severities == ("medium", "high", "critical")
+
+
+def test_blocking_severities_parsed_from_review_block():
+    config = parse_gates_config(
+        {"profile": "private", "review": {"blocking_severities": ["high", "critical"]}}
+    )
+    assert config.blocking_severities == ("high", "critical")
+
+
+def test_unknown_blocking_severity_is_rejected():
+    with pytest.raises(ConfigError):
+        parse_gates_config(
+            {"profile": "private", "review": {"blocking_severities": ["catastrophic"]}}
+        )

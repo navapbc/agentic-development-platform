@@ -15,6 +15,11 @@ config_version: 1
 
 profile: private
 
+# Review-gate blocking policy. A rebar review finding blocks the gate when its severity is in this
+# list. Severities are info, low, medium, high, and critical. Remove a severity to make it advisory.
+review:
+  blocking_severities: [medium, high, critical]
+
 fail_fast:
   review: false
   scanner: false

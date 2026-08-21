@@ -1,0 +1,137 @@
+{
+  "commit": "17d8b160fdc7615deaa90225702e19201b49afef",
+  "comparison": {
+    "overall": {
+      "delta": 0.2,
+      "keyword-baseline": 0.6,
+      "rebar-kernel": 0.8
+    },
+    "per_stage": [
+      {
+        "delta": 0.0,
+        "keyword-baseline": 0.6,
+        "rebar-kernel": 0.6,
+        "stage": "plan-review"
+      },
+      {
+        "delta": 0.2,
+        "keyword-baseline": 0.6,
+        "rebar-kernel": 0.8,
+        "stage": "code-review"
+      },
+      {
+        "delta": 0.4,
+        "keyword-baseline": 0.6,
+        "rebar-kernel": 1.0,
+        "stage": "security-review"
+      },
+      {
+        "delta": 0.2,
+        "keyword-baseline": 0.6,
+        "rebar-kernel": 0.8,
+        "stage": "acceptance-verification"
+      }
+    ]
+  },
+  "gate_config_hash": "sha256:d2d6167c2991cb0c51cd4e8eb723a7b3eddcaf566c0889c6d7bd7b1865bc7953",
+  "generated_at": "2026-08-21T04:36:15.452777+00:00",
+  "gold": {
+    "cases": 20,
+    "generated_at": "2026-08-20",
+    "path": "services/review/eval/gold/review-gates.jsonl",
+    "sha256": "sha256:b7974999af0031220fe1a86ba0bc75af119b194bff8088f8d7da3145f3b09547"
+  },
+  "harness_version": "review-comparison-harness/1",
+  "metric": "verdict_accuracy",
+  "model_tier": "evaluation-model",
+  "prompt_versions": {
+    "acceptance-verification": "acceptance-verification/v1",
+    "code-review": "code-review/v1",
+    "plan-review": "plan-review/v1",
+    "security-review": "security-review/v1"
+  },
+  "record_type": "review_comparison_scorecard",
+  "reviewers": {
+    "keyword-baseline": {
+      "labels_scored": true,
+      "overall": {
+        "macro_f1": 0.5,
+        "verdict_accuracy": 0.6
+      },
+      "stages": [
+        {
+          "cases": 5,
+          "f1": 0.5,
+          "fn": 2,
+          "fp": 0,
+          "precision": 1.0,
+          "recall": 0.3333,
+          "stage": "plan-review",
+          "tp": 1,
+          "verdict_accuracy": 0.6
+        },
+        {
+          "cases": 5,
+          "f1": 0.5,
+          "fn": 2,
+          "fp": 0,
+          "precision": 1.0,
+          "recall": 0.3333,
+          "stage": "code-review",
+          "tp": 1,
+          "verdict_accuracy": 0.6
+        },
+        {
+          "cases": 5,
+          "f1": 0.5,
+          "fn": 2,
+          "fp": 0,
+          "precision": 1.0,
+          "recall": 0.3333,
+          "stage": "security-review",
+          "tp": 1,
+          "verdict_accuracy": 0.6
+        },
+        {
+          "cases": 5,
+          "f1": 0.5,
+          "fn": 2,
+          "fp": 0,
+          "precision": 1.0,
+          "recall": 0.3333,
+          "stage": "acceptance-verification",
+          "tp": 1,
+          "verdict_accuracy": 0.6
+        }
+      ]
+    },
+    "rebar-kernel": {
+      "labels_scored": false,
+      "overall": {
+        "verdict_accuracy": 0.8
+      },
+      "stages": [
+        {
+          "cases": 5,
+          "stage": "plan-review",
+          "verdict_accuracy": 0.6
+        },
+        {
+          "cases": 5,
+          "stage": "code-review",
+          "verdict_accuracy": 0.8
+        },
+        {
+          "cases": 5,
+          "stage": "security-review",
+          "verdict_accuracy": 1.0
+        },
+        {
+          "cases": 5,
+          "stage": "acceptance-verification",
+          "verdict_accuracy": 0.8
+        }
+      ]
+    }
+  }
+}

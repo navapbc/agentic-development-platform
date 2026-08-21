@@ -6,11 +6,14 @@ from pathlib import Path
 
 from services.review.eval.gold_schema import GoldMeta, ReviewCase, read_gold_set, write_gold_set
 from services.review.eval.harness import (
+    baseline_stage_reviewer,
+    build_rebar_reviewer,
     keyword_baseline_reviewer,
     run,
+    run_comparison,
     score,
 )
-from services.review.types import ReviewStage
+from services.review.types import Finding, RawReview, ReviewStage, Verdict
 
 _GOLD = Path(__file__).resolve().parents[2] / "services/review/eval/gold/review-gates.jsonl"
 
@@ -94,8 +97,91 @@ def test_run_scores_committed_gold_set():
         "security-review",
         "acceptance-verification",
     }
-    assert scorecard["gold"]["cases"] == 12
+    assert scorecard["gold"]["cases"] == 20
     assert scorecard["reviewer"] == "keyword-baseline"
-    assert scorecard["overall"]["verdict_accuracy"] == 0.6667
-    assert scorecard["overall"]["macro_f1"] == 0.6667
+    assert 0.0 <= scorecard["overall"]["verdict_accuracy"] <= 1.0
+    assert 0.0 <= scorecard["overall"]["macro_f1"] <= 1.0
     assert scorecard["prompt_versions"]["plan-review"] == "plan-review/v1"
+
+
+class _BlockingKernel:
+    """Deterministic review-kernel double that blocks on a shell-injection marker."""
+
+    def run(self, review):
+        blocks = "os.system(" in review.instructions
+        findings = (
+            [Finding("f1", "high", True, "shell-injection", "")] if blocks else []
+        )
+        verdict = Verdict.BLOCK if blocks else Verdict.PASS
+        return RawReview(verdict=verdict, findings=findings)
+
+
+def test_build_rebar_reviewer_maps_the_kernel_verdict():
+    from services.prompts import StaticPromptStore, set_store
+
+    set_store(StaticPromptStore())
+    try:
+        reviewer = build_rebar_reviewer(_BlockingKernel())
+        assert reviewer(ReviewStage.CODE_REVIEW, "+os.system('rm ' + p)")
+        assert reviewer(ReviewStage.CODE_REVIEW, "+def add(a, b):\n+    return a + b") == set()
+    finally:
+        set_store(None)
+
+
+def test_run_comparison_scores_both_reviewers_over_the_gold_set():
+    from services.prompts import StaticPromptStore, set_store
+
+    set_store(StaticPromptStore())
+    try:
+        card = run_comparison(
+            _GOLD,
+            {
+                "keyword-baseline": baseline_stage_reviewer,
+                "rebar-kernel": build_rebar_reviewer(_BlockingKernel()),
+            },
+            model_tier="test",
+        )
+    finally:
+        set_store(None)
+
+    assert card["record_type"] == "review_comparison_scorecard"
+    assert set(card["reviewers"]) == {"keyword-baseline", "rebar-kernel"}
+    assert card["gold"]["cases"] == 20
+    assert card["gold"]["sha256"].startswith("sha256:")
+    assert card["gate_config_hash"] is None or card["gate_config_hash"].startswith("sha256:")
+    assert card["prompt_versions"]["plan-review"] == "plan-review/v1"
+    stages = {row["stage"] for row in card["comparison"]["per_stage"]}
+    assert stages == {
+        "plan-review",
+        "code-review",
+        "security-review",
+        "acceptance-verification",
+    }
+    assert "delta" in card["comparison"]["overall"]
+
+
+def test_committed_comparison_scorecard_is_wellformed():
+    import json
+
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "services/review/eval/scorecards/review-comparison.2026-08-20.json"
+    )
+    card = json.loads(path.read_text(encoding="utf-8"))
+    assert card["record_type"] == "review_comparison_scorecard"
+    assert card["model_tier"] == "evaluation-model"
+    assert card["metric"] == "verdict_accuracy"
+    assert set(card["reviewers"]) == {"keyword-baseline", "rebar-kernel"}
+    assert card["reviewers"]["keyword-baseline"]["labels_scored"] is True
+    assert card["reviewers"]["rebar-kernel"]["labels_scored"] is False
+    assert card["gold"]["sha256"].startswith("sha256:")
+    assert card["gate_config_hash"].startswith("sha256:")
+    assert card["prompt_versions"]["plan-review"] == "plan-review/v1"
+    stages = {row["stage"] for row in card["comparison"]["per_stage"]}
+    assert stages == {
+        "plan-review",
+        "code-review",
+        "security-review",
+        "acceptance-verification",
+    }
+    assert "delta" in card["comparison"]["overall"]

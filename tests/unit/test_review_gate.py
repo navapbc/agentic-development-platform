@@ -5,7 +5,11 @@ from __future__ import annotations
 import pytest
 from services.review.attestation import HmacAttestor, ReviewAttestationError
 from services.review.gate import ReviewGate, verdict_payload
-from services.review.kernel import FakeReviewKernel, _raw_from_runner_result
+from services.review.kernel import (
+    DEFAULT_BLOCKING_SEVERITIES,
+    FakeReviewKernel,
+    _raw_from_runner_result,
+)
 from services.review.types import (
     Finding,
     ModelProvenance,
@@ -123,6 +127,7 @@ def test_runner_result_maps_to_blocking_verdict():
             "findings": [{"severity": "high", "blocking": True, "title": "SQLi", "detail": "bad"}],
         },
         "review-model",
+        DEFAULT_BLOCKING_SEVERITIES,
     )
 
     assert raw.verdict is Verdict.BLOCK
@@ -132,8 +137,57 @@ def test_runner_result_maps_to_blocking_verdict():
 
 def test_runner_result_maps_clean_to_pass():
     raw = _raw_from_runner_result(
-        {"model": "m", "summary": "clean", "findings": []}, "review-model"
+        {"model": "m", "summary": "clean", "findings": []},
+        "review-model",
+        DEFAULT_BLOCKING_SEVERITIES,
     )
 
     assert raw.verdict is Verdict.PASS
     assert raw.findings == []
+
+
+def test_severity_drives_blocking_without_an_explicit_flag():
+    raw = _raw_from_runner_result(
+        {
+            "model": "m",
+            "findings": [{"severity": "high", "title": "TLS disabled", "detail": "mitm"}],
+        },
+        "security-review-model",
+        DEFAULT_BLOCKING_SEVERITIES,
+    )
+
+    assert raw.verdict is Verdict.BLOCK
+    assert raw.findings[0].blocking is True
+
+
+def test_below_threshold_severity_is_advisory():
+    raw = _raw_from_runner_result(
+        {"model": "m", "findings": [{"severity": "low", "title": "style nit", "detail": "x"}]},
+        "review-model",
+        DEFAULT_BLOCKING_SEVERITIES,
+    )
+
+    assert raw.verdict is Verdict.PASS
+    assert raw.findings[0].blocking is False
+
+
+def test_explicit_blocking_flag_overrides_the_severity_threshold():
+    raw = _raw_from_runner_result(
+        {"model": "m", "findings": [{"severity": "low", "blocking": True, "title": "must fix"}]},
+        "review-model",
+        DEFAULT_BLOCKING_SEVERITIES,
+    )
+
+    assert raw.verdict is Verdict.BLOCK
+    assert raw.findings[0].blocking is True
+
+
+def test_configured_threshold_narrows_blocking_to_high_and_critical():
+    raw = _raw_from_runner_result(
+        {"model": "m", "findings": [{"severity": "medium", "title": "maybe"}]},
+        "review-model",
+        frozenset({"high", "critical"}),
+    )
+
+    assert raw.verdict is Verdict.PASS
+    assert raw.findings[0].blocking is False

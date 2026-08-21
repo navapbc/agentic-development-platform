@@ -18,6 +18,9 @@ from services.orchestration.gates.registry import GateRegistry, builtin_registry
 
 _ON_BLOCK = frozenset({FAIL_CLOSED, PAUSE_FOR_HUMAN})
 
+DEFAULT_BLOCKING_SEVERITIES: tuple[str, ...] = ("medium", "high", "critical")
+_KNOWN_SEVERITIES = frozenset({"info", "low", "medium", "high", "critical"})
+
 PLAN_GATE = "plan"
 HUMAN_GATES = frozenset({PLAN_GATE})
 
@@ -43,6 +46,7 @@ class GatesConfig:
     profile: str
     gates: tuple[GateSpec, ...]
     fail_fast: dict[str, bool] = field(default_factory=dict)
+    blocking_severities: tuple[str, ...] = DEFAULT_BLOCKING_SEVERITIES
 
     def gate(self, name: str) -> GateSpec | None:
         for spec in self.gates:
@@ -184,7 +188,33 @@ def parse_gates_config(
     for stage, value in fail_fast_raw.items():
         fail_fast[str(stage)] = bool(value)
 
-    return GatesConfig(profile=str(profile), gates=gates, fail_fast=fail_fast)
+    blocking_severities = _parse_blocking_severities(raw)
+
+    return GatesConfig(
+        profile=str(profile),
+        gates=gates,
+        fail_fast=fail_fast,
+        blocking_severities=blocking_severities,
+    )
+
+
+def _parse_blocking_severities(raw: Mapping[str, Any]) -> tuple[str, ...]:
+    review_raw = raw.get("review", {})
+    if not isinstance(review_raw, Mapping):
+        raise ConfigError("gates.review must be a mapping")
+    severities_raw = review_raw.get("blocking_severities")
+    if severities_raw is None:
+        return DEFAULT_BLOCKING_SEVERITIES
+    if not isinstance(severities_raw, list | tuple):
+        raise ConfigError("gates.review.blocking_severities must be a list")
+    severities = tuple(str(item).lower() for item in severities_raw)
+    unknown = [s for s in severities if s not in _KNOWN_SEVERITIES]
+    if unknown:
+        raise ConfigError(
+            f"gates.review.blocking_severities has unknown severities {unknown}; "
+            f"expected a subset of {sorted(_KNOWN_SEVERITIES)}"
+        )
+    return severities
 
 
 def load_gates_config(

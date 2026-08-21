@@ -108,6 +108,14 @@ def prompts_seed(c):
     c.run("python -m scripts.seed_prompts", pty=True)
 
 
+@task(help={"offline": "Use the deterministic offline fixture instead of the rebar kernel."})
+def review_eval(c, offline=False, out=""):
+    """Score the rebar review kernel against the keyword baseline on the gold set."""
+    flags = " --offline" if offline else ""
+    flags += f" --out {out}" if out else ""
+    c.run(f"python -m scripts.review_eval{flags}", pty=True)
+
+
 @task
 def test(c):
     """Run the pytest suite."""
@@ -434,6 +442,7 @@ for _t in (
     seed,
     smoke_test,
     prompts_seed,
+    review_eval,
     test,
     workflow_status,
     durability_proof,
