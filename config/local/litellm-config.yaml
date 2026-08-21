@@ -60,6 +60,7 @@ litellm_settings:
   drop_params: true
   num_retries: 2
   request_timeout: 600
+  callbacks: ["langfuse_otel"]
 
 router_settings:
   routing_strategy: simple-shuffle
