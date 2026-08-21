@@ -60,12 +60,12 @@ class PlanReviewOutput:
 
 
 def _plan_prompt(params: PlanReviewInput, context_summary: str, prior_findings: list[str]) -> str:
-    parts = [f"Task {params.task_id}: produce a concrete change plan."]
+    parts = [f"Task {params.task_id}."]
     if context_summary:
         parts.append(f"Repository context:\n{context_summary}")
     if prior_findings:
         joined = "\n".join(f"- {f}" for f in prior_findings)
-        parts.append(f"Revise the plan to resolve these blocking review findings:\n{joined}")
+        parts.append(f"Blocking review findings to resolve:\n{joined}")
     return "\n\n".join(parts)
 
 
@@ -142,6 +142,7 @@ class PlanReviewWorkflow:
                 execution_id=params.execution_id,
                 task_id=params.task_id,
                 stage="plan",
+                system_prompt_name="planning",
             ),
             start_to_close_timeout=model_timeout,
             retry_policy=retry,
@@ -283,6 +284,7 @@ class PlanReviewWorkflow:
                     execution_id=params.execution_id,
                     task_id=params.task_id,
                     stage="plan",
+                    system_prompt_name="planning",
                 ),
                 start_to_close_timeout=model_timeout,
                 retry_policy=retry,

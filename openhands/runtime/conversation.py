@@ -82,7 +82,7 @@ class RemoteConversationDriver:
         working_dir: str = "",
         metadata: dict[str, str] | None = None,
     ) -> ImplementationOutcome:
-        from openhands.sdk import LLM, Conversation, Workspace
+        from openhands.sdk import LLM, AgentContext, Conversation, Workspace
         from openhands.sdk.event import ActionEvent
         from openhands.tools.preset.default import get_default_agent
         from pydantic import SecretStr
@@ -102,6 +102,11 @@ class RemoteConversationDriver:
             litellm_extra_body=extra_body,
         )
         agent = get_default_agent(llm=llm, cli_mode=True)
+        suffix = _coding_agent_directive()
+        if suffix:
+            agent = agent.model_copy(
+                update={"agent_context": AgentContext(system_message_suffix=suffix)}
+            )
         workspace = Workspace(host=base_url, working_dir=working_dir or "workspace/project")
 
         def on_event(event: object) -> None:
@@ -169,6 +174,16 @@ def _compose(task: str, context: str) -> str:
     if not context:
         return task
     return f"{task}\n\n---\n\n{context}"
+
+
+def _coding_agent_directive() -> str:
+    """Load the platform coding-agent directive from Langfuse. Never raises."""
+    try:
+        from services.prompts import load_prompt
+
+        return load_prompt("coding-agent").text
+    except Exception:  # noqa: BLE001 - a prompt load must not break the coding step
+        return ""
 
 
 class FakeConversationDriver:

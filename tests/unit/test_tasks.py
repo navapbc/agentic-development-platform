@@ -20,6 +20,7 @@ EXPECTED_TASKS = {
     "db-reset",
     "seed",
     "smoke-test",
+    "prompts-seed",
     "test",
     "workflow-status",
     "durability-proof",

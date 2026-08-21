@@ -136,12 +136,6 @@ def plan_repair(failure_summary: str) -> RepairPlan:
 
 _MAX_SUMMARY_CHARS = 8000
 
-_MODEL_SYSTEM_PROMPT = (
-    "You are a CI repair planner. Given a failing CI job log, produce a single concrete "
-    "instruction for a coding agent to fix the failure with the smallest change. Never weaken, "
-    "skip, or delete a test to hide the failure. Respond with the fix instruction only."
-)
-
 
 def _repair_llm_config(settings=None):
     from rebar.llm.config import LLMConfig
@@ -161,11 +155,13 @@ def _repair_llm_config(settings=None):
 def _model_instruction(failure_summary: str, category: str, *, runner=None, settings=None) -> str:
     from rebar.llm.runner import RunRequest, get_runner
 
+    from services.prompts import load_prompt
+
     cfg = _repair_llm_config(settings)
     run = runner or get_runner(cfg)
     result = run.run(
         RunRequest(
-            system_prompt=_MODEL_SYSTEM_PROMPT,
+            system_prompt=load_prompt("ci-repair").text,
             instructions=(
                 f"Failure category: {category}.\n"
                 f"Failing job log:\n{failure_summary[:_MAX_SUMMARY_CHARS]}"

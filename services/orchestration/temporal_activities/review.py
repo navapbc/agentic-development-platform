@@ -8,6 +8,13 @@ from dataclasses import dataclass, field
 
 from temporalio import activity
 
+from services.prompts import load_prompt
+from services.prompts.library import (
+    ACCEPTANCE_VERIFICATION,
+    CODE_REVIEW,
+    PLAN_REVIEW,
+    SECURITY_REVIEW,
+)
 from services.review.types import ReviewStage
 
 
@@ -42,57 +49,24 @@ class ReviewOutcome:
 @dataclass(frozen=True)
 class _PromptSpec:
     name: str
-    version: str
-    system_prompt: str
     subject_label: str
 
 
-_PLAN = _PromptSpec(
-    name="plan-review",
-    version="plan-review/v1",
-    system_prompt=(
-        "You are a rigorous software change-plan reviewer. Assess the plan for correctness, "
-        "safety, scope discipline, and testability. Raise blocking findings only for defects "
-        "that would make the plan unsafe or incorrect to implement."
-    ),
-    subject_label="Change plan under review",
-)
-_CODE = _PromptSpec(
-    name="code-review",
-    version="code-review/v1",
-    system_prompt=(
-        "You are a rigorous code reviewer. Assess the diff for correctness, regressions, and "
-        "adherence to the plan. Raise blocking findings only for defects that would make the "
-        "change unsafe or incorrect to merge."
-    ),
-    subject_label="Code diff under review",
-)
+_PLAN = _PromptSpec(name="plan-review", subject_label="Change plan under review")
+_CODE = _PromptSpec(name="code-review", subject_label="Code diff under review")
 _SECURITY = _PromptSpec(
-    name="security-review",
-    version="security-review/v1",
-    system_prompt=(
-        "You are a rigorous application security reviewer. Assess the diff for injection, "
-        "authorization, secret-handling, and other OWASP-class weaknesses. Raise blocking "
-        "findings only for exploitable vulnerabilities the change introduces."
-    ),
-    subject_label="Code diff under security review",
+    name="security-review", subject_label="Code diff under security review"
 )
 _ACCEPTANCE = _PromptSpec(
     name="acceptance-verification",
-    version="acceptance-verification/v1",
-    system_prompt=(
-        "You are a rigorous completion verifier. Judge whether the implemented change satisfies "
-        "the task's acceptance criteria and whether the supporting evidence substantiates the "
-        "completion claim. Raise blocking findings only for unmet criteria or unsupported claims."
-    ),
     subject_label="Completion evidence under acceptance verification",
 )
 
 _PROMPT_VERSIONS_BY_GATE = {
-    "plan-review": _PLAN.version,
-    "code-review": _CODE.version,
-    "security-review": _SECURITY.version,
-    "acceptance": _ACCEPTANCE.version,
+    "plan-review": PLAN_REVIEW.version,
+    "code-review": CODE_REVIEW.version,
+    "security-review": SECURITY_REVIEW.version,
+    "acceptance": ACCEPTANCE_VERIFICATION.version,
 }
 
 
@@ -128,14 +102,15 @@ def _instructions(spec: _PromptSpec, req: ReviewRequest) -> str:
 async def _run_gate(stage: ReviewStage, spec: _PromptSpec, req: ReviewRequest) -> ReviewOutcome:
     from services.review.types import ReviewInput
 
+    loaded = load_prompt(spec.name)
     gate = build_review_gate()
     review_input = ReviewInput(
         stage=stage,
         subject_ref=_subject_ref(req.subject),
         context_ref=req.context_ref,
         prompt_name=spec.name,
-        prompt_version=spec.version,
-        system_prompt=spec.system_prompt,
+        prompt_version=loaded.version,
+        system_prompt=loaded.text,
         instructions=_instructions(spec, req),
         repo_root=req.repo_root,
         ref=req.ref,

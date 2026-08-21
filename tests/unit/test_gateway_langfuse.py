@@ -135,3 +135,49 @@ async def test_invoke_model_sends_metadata_and_stamps_the_span(monkeypatch) -> N
     assert span.attributes[attrs.GEN_AI_RESPONSE_MODEL] == "bedrock/claude-x"
     assert span.attributes[attrs.GEN_AI_USAGE_INPUT_TOKENS] == 11
     reset_for_testing()
+
+
+@pytest.mark.asyncio
+async def test_invoke_model_resolves_a_system_prompt(monkeypatch) -> None:
+    from services.orchestration.temporal_activities import bedrock
+    from services.prompts import StaticPromptStore, set_store
+
+    set_store(StaticPromptStore())
+    reset_for_testing()
+    memory = InMemorySpanExporter()
+    assert configure_tracing("gateway-system-prompt", exporter=memory) is True
+
+    captured: dict = {}
+    response_data = {
+        "choices": [{"message": {"content": "ok"}}],
+        "model": "bedrock/claude-x",
+        "usage": {"prompt_tokens": 3, "completion_tokens": 2},
+    }
+    monkeypatch.setattr(
+        bedrock.httpx,
+        "AsyncClient",
+        lambda **_: _FakeClient(captured, response_data),
+    )
+
+    await bedrock.invoke_model(
+        bedrock.ModelRequest(
+            logical_model="planning-model",
+            prompt="Task T-1.",
+            execution_id="exec-p",
+            task_id="TASK-p",
+            stage="plan",
+            system_prompt_name="planning",
+        )
+    )
+
+    messages = captured["json"]["messages"]
+    assert messages[0]["role"] == "system"
+    assert "change plan" in messages[0]["content"]
+    assert messages[1]["role"] == "user"
+    assert captured["json"]["metadata"]["version"] == "planning/v1"
+
+    force_flush()
+    span = next(s for s in memory.get_finished_spans() if s.name == "llm.invoke")
+    assert span.attributes[attrs.PROMPT_VERSION] == "planning/v1"
+    set_store(None)
+    reset_for_testing()

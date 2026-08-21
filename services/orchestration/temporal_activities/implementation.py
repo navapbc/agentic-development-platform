@@ -9,7 +9,9 @@ from typing import Any
 
 from temporalio import activity
 
-IMPLEMENTATION_PROMPT_VERSION = "implementation/v1"
+from services.prompts.library import IMPLEMENTATION_VERSION
+
+IMPLEMENTATION_PROMPT_VERSION = IMPLEMENTATION_VERSION
 
 
 @dataclass

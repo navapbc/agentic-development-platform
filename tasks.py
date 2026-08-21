@@ -103,6 +103,12 @@ def smoke_test(c):
 
 
 @task
+def prompts_seed(c):
+    """Publish the platform prompt library to Langfuse."""
+    c.run("python -m scripts.seed_prompts", pty=True)
+
+
+@task
 def test(c):
     """Run the pytest suite."""
     c.run("pytest", pty=True)
@@ -427,6 +433,7 @@ for _t in (
     db_reset,
     seed,
     smoke_test,
+    prompts_seed,
     test,
     workflow_status,
     durability_proof,

@@ -11,6 +11,8 @@ from observability import langfuse_request_metadata, record_generation, stage_sp
 from scripts.config import get_settings
 from temporalio import activity
 
+from services.prompts import load_prompt
+
 
 @dataclass
 class ModelRequest:
@@ -21,6 +23,7 @@ class ModelRequest:
     task_id: str | None = None
     stage: str | None = None
     prompt_version: str | None = None
+    system_prompt_name: str | None = None
 
 
 @dataclass
@@ -34,16 +37,23 @@ class ModelResponse:
 async def invoke_model(req: ModelRequest) -> ModelResponse:
     settings = get_settings()
     headers = {"Authorization": f"Bearer {settings.litellm_master_key}"}
+    messages: list[dict[str, str]] = []
+    prompt_version = req.prompt_version
+    if req.system_prompt_name:
+        loaded = load_prompt(req.system_prompt_name)
+        messages.append({"role": "system", "content": loaded.text})
+        prompt_version = loaded.version
+    messages.append({"role": "user", "content": req.prompt})
     payload: dict[str, object] = {
         "model": req.logical_model,
-        "messages": [{"role": "user", "content": req.prompt}],
+        "messages": messages,
         "max_tokens": req.max_tokens,
     }
     metadata = langfuse_request_metadata(
         execution_id=req.execution_id,
         task_id=req.task_id,
         stage=req.stage,
-        prompt_version=req.prompt_version,
+        prompt_version=prompt_version,
     )
     if metadata:
         payload["metadata"] = metadata
@@ -52,7 +62,7 @@ async def invoke_model(req: ModelRequest) -> ModelResponse:
         stage=req.stage or "model",
         execution_id=req.execution_id,
         task_id=req.task_id,
-        prompt_version=req.prompt_version,
+        prompt_version=prompt_version,
     ) as span:
         async with httpx.AsyncClient(base_url=settings.litellm_base_url, timeout=120.0) as client:
             resp = await client.post("/v1/chat/completions", json=payload, headers=headers)
