@@ -59,7 +59,7 @@ Two binaries live under `vendor/bin` and are provisioned outside the Python inst
 
 `acli` is the Atlassian CLI used for Jira Cloud writes. The worker image build runs `scripts/fetch_acli.py` during `inv local-up`, which downloads and checksum-verifies the binary into the image at `/app/vendor/bin/acli`. The download is driven by `ACLI_VERSION`, `ACLI_DOWNLOAD_URL`, and `ACLI_SHA256` in `.env`, where `ACLI_SHA256` is required and verifies the artifact whatever its source. To place the same binary on the host for host-side runs, use `inv fetch-acli`, which writes `vendor/bin/acli`.
 
-`codebase-memory-mcp` is the optional CBM provider for Repository Intelligence, still under evaluation. It is not downloaded. Build it from a separate CBM source checkout with `docker build -f docker/cbm-build.Dockerfile --target export --output type=local,dest=vendor/bin <path-to-cbm-source>`, which writes `vendor/bin/codebase-memory-mcp`. The Repository Intelligence containers mount that path read-only, and the stack runs without it when the CBM provider is not in use.
+`codebase-memory-mcp` is an optional Repository Intelligence provider that supplies file-level reference and caller candidates. It has no release binary and is built from its upstream MIT-licensed source at `https://github.com/DeusData/codebase-memory-mcp`. Run `inv cbm-build`, which clones the upstream repository at the pinned tag and builds the binary into `vendor/bin/codebase-memory-mcp`. Pass `--source <path>` to build from an existing local checkout for a closed environment, or `--ref <tag>` to build a different upstream version. The Repository Intelligence services mount that path read-only and drive the binary as a per-call subprocess, so CBM engages automatically once the binary is present. When the binary is absent the provider is skipped and the stack runs on its other providers.
 
 ## Configuration
 
@@ -232,6 +232,7 @@ Run `inv --list` for the full set. The common tasks are below.
 | `inv test` | Run the pytest suite |
 | `inv tunnel-start`, `inv tunnel-stop`, `inv tunnel-status` | Manage the Bedrock connectivity tunnel |
 | `inv fetch-acli` | Vendor the Atlassian `acli` binary |
+| `inv cbm-build [--source PATH] [--ref TAG]` | Build and vendor the `codebase-memory-mcp` binary, cloning upstream by default |
 | `inv reap [--apply]` | Reap expired orphan artifacts, dry-run by default |
 | `inv intake [--schedule]` | Reconcile Jira intake into draft PR executions, single pass by default |
 | `inv approve-pr --workflow-id ID [--reject] [--pr-closed] [--merged]` | Release an approval or PR-close pause on a running workflow |

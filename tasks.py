@@ -146,6 +146,20 @@ def fetch_acli(c, dest="vendor/bin/acli"):
     c.run(f"python -m scripts.fetch_acli --dest {dest}", pty=True)
 
 
+@task(
+    help={
+        "source": "Existing CBM source checkout to build from (default clones upstream).",
+        "ref": "Upstream tag, branch, or commit to clone (default v0.9.0).",
+        "dest": "Output directory for the binary (default vendor/bin).",
+    }
+)
+def cbm_build(c, source="", ref="", dest="vendor/bin"):
+    """Build and vendor the codebase-memory-mcp binary from upstream or a local checkout."""
+    flags = f" --source {source}" if source else ""
+    flags += f" --ref {ref}" if ref else ""
+    c.run(f"python -m scripts.build_cbm --dest {dest}{flags}", pty=True)
+
+
 @task(help={"apply": "Perform real deletions instead of a dry-run."})
 def reap(c, apply=False):
     """Reap expired platform orphan artifacts (dry-run by default)."""
@@ -447,6 +461,7 @@ for _t in (
     workflow_status,
     durability_proof,
     fetch_acli,
+    cbm_build,
     reap,
     intake,
     repair,

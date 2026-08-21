@@ -26,6 +26,7 @@ EXPECTED_TASKS = {
     "workflow-status",
     "durability-proof",
     "fetch-acli",
+    "cbm-build",
     "reap",
     "intake",
     "repair",
