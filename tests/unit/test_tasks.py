@@ -22,6 +22,7 @@ EXPECTED_TASKS = {
     "smoke-test",
     "prompts-seed",
     "review-eval",
+    "context-eval",
     "test",
     "workflow-status",
     "durability-proof",

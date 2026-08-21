@@ -203,7 +203,13 @@ class ImplementationWorkflow:
         if not context_package and params.repo:
             gathered: ContextResult = await workflow.execute_activity(
                 gather_repo_context,
-                ContextRequest(repo=params.repo, commit=params.commit, focus=params.focus),
+                ContextRequest(
+                    repo=params.repo,
+                    commit=params.commit,
+                    focus=params.focus,
+                    execution_id=params.execution_id,
+                    task_id=params.task_id,
+                ),
                 start_to_close_timeout=context_timeout,
                 retry_policy=retry,
             )

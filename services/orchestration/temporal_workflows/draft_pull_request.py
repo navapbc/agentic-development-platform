@@ -382,7 +382,13 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         if params.run_planning:
             gathered: ContextResult = await workflow.execute_activity(
                 gather_repo_context,
-                ContextRequest(repo=params.repo, commit=params.base_sha, focus=params.focus),
+                ContextRequest(
+                    repo=params.repo,
+                    commit=params.base_sha,
+                    focus=params.focus,
+                    execution_id=params.execution_id,
+                    task_id=params.task_id,
+                ),
                 start_to_close_timeout=timedelta(minutes=5),
                 retry_policy=retry,
             )

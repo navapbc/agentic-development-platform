@@ -129,10 +129,19 @@ def stage_span(
     prompt_version: str | None = None,
     attributes: Mapping[str, Any] | None = None,
 ) -> Iterator[Span | None]:
-    """Start a span carrying the pinned platform attributes. Never raises."""
+    """Start a span carrying the pinned platform attributes.
+
+    Span setup never raises; when a span cannot be started the block runs with
+    ``None``. Exceptions from the wrapped block propagate so instrumentation does
+    not swallow a caller's error, and the span records the exception.
+    """
     try:
-        tracer = get_tracer()
-        with tracer.start_as_current_span(name) as span:
+        cm = get_tracer().start_as_current_span(name)
+    except Exception:  # noqa: BLE001
+        yield None
+        return
+    with cm as span:
+        try:
             _apply_attributes(
                 span,
                 {
@@ -146,9 +155,9 @@ def stage_span(
             )
             if attributes:
                 _apply_attributes(span, attributes)
-            yield span
-    except Exception:  # noqa: BLE001
-        yield None
+        except Exception:  # noqa: BLE001
+            pass
+        yield span
 
 
 def record_generation(

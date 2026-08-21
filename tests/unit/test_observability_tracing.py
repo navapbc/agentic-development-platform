@@ -115,6 +115,17 @@ def test_stage_span_never_raises_without_tracing() -> None:
     reset_for_testing()
 
 
+def test_stage_span_propagates_a_body_exception(exporter: InMemorySpanExporter) -> None:
+    class Boom(Exception):
+        pass
+
+    with pytest.raises(Boom), stage_span("explode", stage="plan"):
+        raise Boom()
+
+    span = _by_name(exporter)["explode"]
+    assert span.status.status_code.name == "ERROR"
+
+
 def test_temporal_interceptors_available() -> None:
     interceptors = temporal_interceptors()
     assert len(interceptors) == 2

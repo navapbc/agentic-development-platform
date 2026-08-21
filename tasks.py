@@ -116,6 +116,13 @@ def review_eval(c, offline=False, out=""):
     c.run(f"python -m scripts.review_eval{flags}", pty=True)
 
 
+@task(help={"out": "Optional path to write the consolidated scorecard."})
+def context_eval(c, out=""):
+    """Reproduce the consolidated repository-context accuracy scorecard on the demo corpora."""
+    flags = f" --out {out}" if out else ""
+    c.run(f"python -m services.repository_intelligence.eval.consolidate{flags}", pty=True)
+
+
 @task
 def test(c):
     """Run the pytest suite."""
@@ -457,6 +464,7 @@ for _t in (
     smoke_test,
     prompts_seed,
     review_eval,
+    context_eval,
     test,
     workflow_status,
     durability_proof,
