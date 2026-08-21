@@ -23,6 +23,7 @@ EXPECTED_TASKS = {
     "prompts-seed",
     "review-eval",
     "context-eval",
+    "cost-rollup",
     "test",
     "workflow-status",
     "durability-proof",

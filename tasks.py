@@ -123,6 +123,14 @@ def context_eval(c, out=""):
     c.run(f"python -m services.repository_intelligence.eval.consolidate{flags}", pty=True)
 
 
+@task(help={"execution-id": "The execution id to roll up."})
+def cost_rollup(c, execution_id=""):
+    """Print the per-stage cost, token, and budget rollup for one execution."""
+    if not execution_id:
+        raise Exit("provide --execution-id")
+    c.run(f"python -m scripts.cost_rollup --execution-id {execution_id}", pty=True)
+
+
 @task
 def test(c):
     """Run the pytest suite."""
@@ -465,6 +473,7 @@ for _t in (
     prompts_seed,
     review_eval,
     context_eval,
+    cost_rollup,
     test,
     workflow_status,
     durability_proof,

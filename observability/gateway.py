@@ -46,6 +46,13 @@ def langfuse_request_metadata(
     return metadata
 
 
+def langfuse_session_url(host: str, project_id: str, session_id: str) -> str:
+    """Build the Langfuse session URL that groups an execution's generations."""
+    if not (host and project_id and session_id):
+        return ""
+    return f"{host.rstrip('/')}/project/{project_id}/sessions/{session_id}"
+
+
 @dataclass(frozen=True)
 class Reconciliation:
     ok: bool

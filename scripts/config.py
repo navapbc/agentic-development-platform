@@ -57,6 +57,7 @@ class Settings(BaseSettings):
 
     opa_url: str = "http://localhost:8181"
     langfuse_host: str = "http://localhost:3000"
+    langfuse_project_id: str = "agentic-dev-platform"
     otel_exporter_otlp_endpoint: str = "http://localhost:4317"
 
     repo_intelligence_url: str = "http://localhost:8120"
