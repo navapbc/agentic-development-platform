@@ -62,3 +62,4 @@ vendor/bin/*
 
 # Generated local k8s secret env (derived from .env at deploy time)
 deploy/kubernetes/local/*.secret.env
+.context/compound-engineering/

@@ -33,8 +33,8 @@ from services.orchestration.gates.registry import (
 from services.orchestration.gates.runner import run_gate_stage
 from services.orchestration.suspension import ResumeOn, SuspendReason
 from services.orchestration.temporal_workflows.draft_pull_request import (
+    PR_PROMOTED,
     REVIEW_BLOCKED,
-    REVIEW_PASSED,
     DraftPullRequestWorkflow,
 )
 from temporalio.testing import WorkflowEnvironment
@@ -333,5 +333,5 @@ async def test_a_pause_for_human_gate_parks_and_resumes():
             )
             rejected = await reject_handle.result()
 
-    assert approved.status == REVIEW_PASSED
+    assert approved.status == PR_PROMOTED
     assert rejected.status == REVIEW_BLOCKED

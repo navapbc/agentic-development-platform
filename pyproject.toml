@@ -52,6 +52,10 @@ dev = [
     "coverage>=7.5,<8",
     "basedpyright>=1.13,<2",
 ]
+all = [
+    "agentic-dev-platform[reasoning,review,sandbox,gateway,observability,prompts]",
+    "pydantic-ai-slim[openai]>=1,<2",
+]
 
 [build-system]
 requires = ["hatchling"]
