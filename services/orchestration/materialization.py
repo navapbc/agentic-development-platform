@@ -50,6 +50,15 @@ async def _git(*args: str, cwd: str | None = None) -> str:
     return await asyncio.to_thread(_run_git, list(args), cwd)
 
 
+def _run_git_ok(args: list[str], cwd: str | None) -> bool:
+    proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+    return proc.returncode == 0
+
+
+async def _git_ok(*args: str, cwd: str | None = None) -> bool:
+    return await asyncio.to_thread(_run_git_ok, list(args), cwd)
+
+
 @dataclass
 class WorkspaceMaterializer:
     registry: OrphanRegistry
@@ -136,11 +145,14 @@ class WorkspaceMaterializer:
         branch: str,
         commit_sha: str,
     ) -> None:
-        if (path / ".git").is_dir():
+        reused = (path / ".git").is_dir()
+        if reused:
             head = await _git("rev-parse", "HEAD", cwd=str(path))
             current = await _git("rev-parse", "--abbrev-ref", "HEAD", cwd=str(path))
             if head == commit_sha and current == branch:
                 return
+            if not await _git_ok("cat-file", "-e", f"{commit_sha}^{{commit}}", cwd=str(path)):
+                await _git("fetch", "--quiet", "origin", branch, cwd=str(path))
         else:
             path.parent.mkdir(parents=True, exist_ok=True)
             await _git("clone", "--quiet", self.remote_url_for(repo), str(path))
@@ -148,11 +160,15 @@ class WorkspaceMaterializer:
             "-c",
             "advice.detachedHead=false",
             "checkout",
+            "-f",
             "-B",
             branch,
             commit_sha,
             cwd=str(path),
         )
+        if reused:
+            await _git("reset", "--hard", commit_sha, cwd=str(path))
+            await _git("clean", "-fd", cwd=str(path))
 
     async def collect_changes(self, workspace: MaterializedWorkspace) -> dict[str, str]:
         path = Path(workspace.path)

@@ -54,6 +54,14 @@ def render_context_summary(package: Mapping[str, Any]) -> str:
         lines.append("Candidate files:")
         lines.extend(f"  - {path}" for path in candidate_files[:_MAX_ITEMS])
 
+    structural = package.get("structural") or []
+    if structural:
+        lines.append("Structural matches:")
+        for hit in structural[:_MAX_ITEMS]:
+            snippet = " ".join((hit.get("snippet") or "").split())
+            location = _location(hit)
+            lines.append(f"  - {location} {snippet}".rstrip())
+
     for label, key in (("Callers", "callers"), ("Callees", "callees")):
         edges = package.get(key) or []
         if edges:

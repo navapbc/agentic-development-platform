@@ -1,13 +1,15 @@
-# Optional external review engines that back their own gates plus the advisory test classifier.
-# The adapter is engine-agnostic. It drives any engine whose harness accepts --against <ref> and
-# --json-out <path> and emits the review and classifier JSON contract. The path is inert unless at
-# least one engine is enabled, so with this file absent or every engine disabled the built-in rebar
-# security review stays the gate and neither the engine code nor its overlay deploys.
+# Optional external gates that back their own review or scanner gates plus the advisory test
+# classifier. The adapter is tool-agnostic. It drives any tool whose entrypoint accepts
+# --against <ref> and --json-out <path> and writes either SARIF 2.1.0 or the review and classifier
+# JSON contract, selected per entry by output_format. The path is inert unless at least one engine
+# is enabled, so with this file absent or every engine disabled the built-in rebar security review
+# stays the gate and neither the engine code nor its overlay deploys. There is no plugin or
+# pip-install path; every external gate is added here by config.
 #
 # engines is a list. Each entry backs one gate, named by name, and is enabled and required
-# independently in gates.yaml. Add an entry per engine to run several side by side, for example the
-# ai-common-workflows reviewer plus a wrapped SonarQube or a custom script. The values shown are
-# the ai-common-workflows reference example. Change name, the source, and the entrypoints per engine.
+# independently in gates.yaml. Add an entry per tool to run several side by side, for example the
+# ai-common-workflows reviewer plus a Semgrep or Snyk SARIF gate. The first entry shown is the
+# ai-common-workflows reference example. Change name, the source, and the entrypoints per tool.
 
 config_version: 1
 
@@ -29,6 +31,12 @@ engines:
 
     # Output token cap passed to the CLI, kept under the Bedrock provider output limit.
     max_output_tokens: 8192
+
+    # How the platform parses the engine's --json-out file.
+    #   review-json: the AI-review JSON contract (default). Requires a model and the gateway.
+    #   sarif:       SARIF 2.1.0, the native output of Semgrep, Snyk, CodeQL, Trivy, and most
+    #                scanners. No model is needed, so tool/review_model are ignored for a sarif gate.
+    output_format: review-json
 
     # Source mode. Set mode to one of local, tag, or zip, then fill the fields that mode reads.
     #   local: local_path
@@ -65,3 +73,17 @@ engines:
   #   cache_root: .agent-context/engine-cache
   #   review_entrypoint: bin/review
   #   classifier_entrypoint: ""
+
+  # A SARIF scanner gate, for example Semgrep or Snyk. output_format sarif needs no model. The
+  # entrypoint is a one-line wrapper that runs the tool and writes SARIF to the --json-out path.
+  # The tool binary must be present in the worker image (see docs/gate-engine.md).
+  # - name: semgrep-sarif
+  #   enabled: true
+  #   output_format: sarif
+  #   mode: tag
+  #   repo_url: https://github.com/your-org/semgrep-gate.git
+  #   tag: v1.0.0
+  #   cache_root: .agent-context/engine-cache
+  #   review_entrypoint: bin/scan
+  #   classifier_entrypoint: ""
+

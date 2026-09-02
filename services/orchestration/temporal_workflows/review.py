@@ -46,6 +46,8 @@ class PlanReviewInput:
     focus: str = ""
     plan: str = ""
     context_summary: str = ""
+    task: str = ""
+    description: str = ""
 
 
 @dataclass
@@ -61,6 +63,10 @@ class PlanReviewOutput:
 
 def _plan_prompt(params: PlanReviewInput, context_summary: str, prior_findings: list[str]) -> str:
     parts = [f"Task {params.task_id}."]
+    if params.task:
+        parts.append(f"Summary:\n{params.task}")
+    if params.description:
+        parts.append(f"Requirements:\n{params.description}")
     if context_summary:
         parts.append(f"Repository context:\n{context_summary}")
     if prior_findings:
@@ -116,6 +122,7 @@ class PlanReviewWorkflow:
                     cache_write_tokens=outcome.cache_write_tokens,
                     total_tokens=outcome.total_tokens,
                     llm_calls=outcome.llm_calls,
+                    cost_usd=outcome.cost_usd,
                 ),
                 start_to_close_timeout=short,
                 retry_policy=retry,
@@ -185,6 +192,7 @@ class PlanReviewWorkflow:
                     subject=plan,
                     context_ref=params.commit,
                     context_summary=context_summary,
+                    repo=params.repo,
                 ),
                 start_to_close_timeout=model_timeout,
                 retry_policy=retry,

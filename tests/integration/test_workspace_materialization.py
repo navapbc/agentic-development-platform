@@ -99,6 +99,130 @@ async def test_retry_reuses_the_same_branch_and_workspace(remote, tmp_path) -> N
     assert len(branches) == 1
 
 
+async def test_reuse_fetches_a_commit_pushed_after_the_workspace_was_created(
+    remote, tmp_path
+) -> None:
+    remote_path, manifest_sha = remote
+    materializer = _materializer(remote, tmp_path)
+    branch = agent_branch_name(TASK_ID)
+    args = dict(
+        repo=REPO,
+        task_id=TASK_ID,
+        execution_id=EXECUTION_ID,
+        base="main",
+    )
+
+    first = await materializer.materialize(commit_sha=manifest_sha, **args)
+
+    sidecar = tmp_path / "sidecar"
+    subprocess.run(
+        ["git", "clone", "-q", remote_path, str(sidecar)], check=True, capture_output=True
+    )
+    identity = ["-c", "user.email=sync@example.invalid", "-c", "user.name=sync"]
+    _git(["checkout", "-q", "-B", branch, manifest_sha], str(sidecar))
+    (sidecar / "sync.py").write_text("value = 1\n", encoding="utf-8")
+    _git(["add", "."], str(sidecar))
+    _git([*identity, "commit", "-q", "-m", "sync commit"], str(sidecar))
+    pushed_sha = _git(["rev-parse", "HEAD"], str(sidecar))
+    _git(["push", "-q", "origin", branch], str(sidecar))
+
+    second = await materializer.materialize(commit_sha=pushed_sha, **args)
+
+    assert second.path == first.path
+    assert second.commit_sha == pushed_sha
+    assert _git(["rev-parse", "HEAD"], second.path) == pushed_sha
+    assert _git(["rev-parse", "--abbrev-ref", "HEAD"], second.path) == branch
+
+
+async def test_reuse_resets_a_dirty_workspace_to_the_target_commit(remote, tmp_path) -> None:
+    remote_path, manifest_sha = remote
+    materializer = _materializer(remote, tmp_path)
+    branch = agent_branch_name(TASK_ID)
+    args = dict(
+        repo=REPO,
+        task_id=TASK_ID,
+        execution_id=EXECUTION_ID,
+        base="main",
+    )
+
+    first = await materializer.materialize(commit_sha=manifest_sha, **args)
+    (Path(first.path) / "README.md").write_text("dirty tracked edit\n", encoding="utf-8")
+    (Path(first.path) / "scratch.py").write_text("stale = True\n", encoding="utf-8")
+
+    sidecar = tmp_path / "sidecar"
+    subprocess.run(
+        ["git", "clone", "-q", remote_path, str(sidecar)], check=True, capture_output=True
+    )
+    identity = ["-c", "user.email=sync@example.invalid", "-c", "user.name=sync"]
+    _git(["checkout", "-q", "-B", branch, manifest_sha], str(sidecar))
+    (sidecar / "README.md").write_text("committed content\n", encoding="utf-8")
+    (sidecar / "scratch.py").write_text("committed = True\n", encoding="utf-8")
+    _git(["add", "."], str(sidecar))
+    _git([*identity, "commit", "-q", "-m", "sync commit"], str(sidecar))
+    pushed_sha = _git(["rev-parse", "HEAD"], str(sidecar))
+    _git(["push", "-q", "origin", branch], str(sidecar))
+
+    second = await materializer.materialize(commit_sha=pushed_sha, **args)
+
+    assert second.path == first.path
+    assert _git(["rev-parse", "HEAD"], second.path) == pushed_sha
+    assert (Path(second.path) / "README.md").read_text(encoding="utf-8") == "committed content\n"
+    assert _git(["status", "--porcelain"], second.path) == ""
+
+
+async def _push_impl_commit(remote_path: str, tmp_path, branch: str, base_sha: str) -> str:
+    impl = tmp_path / "impl"
+    subprocess.run(
+        ["git", "clone", "-q", remote_path, str(impl)], check=True, capture_output=True
+    )
+    identity = ["-c", "user.email=impl@example.invalid", "-c", "user.name=impl"]
+    _git(["checkout", "-q", "-B", branch, base_sha], str(impl))
+    (impl / "app.py").write_text("import os\n\nVALUE = 1\n", encoding="utf-8")
+    _git(["add", "."], str(impl))
+    _git([*identity, "commit", "-q", "-m", "impl"], str(impl))
+    tip = _git(["rev-parse", "HEAD"], str(impl))
+    _git(["push", "-q", "origin", branch], str(impl))
+    return tip
+
+
+async def test_repair_changes_survive_a_commit_materialized_at_the_branch_tip(
+    remote, tmp_path
+) -> None:
+    remote_path, base_sha = remote
+    materializer = _materializer(remote, tmp_path)
+    branch = agent_branch_name(TASK_ID)
+    tip = await _push_impl_commit(remote_path, tmp_path, branch, base_sha)
+    args = dict(repo=REPO, task_id=TASK_ID, execution_id=EXECUTION_ID, base="main")
+
+    repair_ws = await materializer.materialize(commit_sha=tip, **args)
+    (Path(repair_ws.path) / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
+
+    commit_ws = await materializer.materialize(commit_sha=tip, **args)
+
+    assert (Path(commit_ws.path) / "app.py").read_text(encoding="utf-8") == "VALUE = 1\n"
+    request = await materializer.build_commit_request(commit_ws, message="repair")
+    assert request.files.get("app.py") == "VALUE = 1\n"
+
+
+async def test_repair_changes_are_lost_when_the_commit_materializes_at_base(
+    remote, tmp_path
+) -> None:
+    remote_path, base_sha = remote
+    materializer = _materializer(remote, tmp_path)
+    branch = agent_branch_name(TASK_ID)
+    tip = await _push_impl_commit(remote_path, tmp_path, branch, base_sha)
+    args = dict(repo=REPO, task_id=TASK_ID, execution_id=EXECUTION_ID, base="main")
+
+    repair_ws = await materializer.materialize(commit_sha=tip, **args)
+    (Path(repair_ws.path) / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
+
+    commit_ws = await materializer.materialize(commit_sha=base_sha, **args)
+
+    assert not (Path(commit_ws.path) / "app.py").exists()
+    request = await materializer.build_commit_request(commit_ws, message="repair")
+    assert "app.py" not in request.files
+
+
 async def test_refuses_a_non_allowlisted_repository(remote, tmp_path) -> None:
     _, manifest_sha = remote
     materializer = _materializer(remote, tmp_path)

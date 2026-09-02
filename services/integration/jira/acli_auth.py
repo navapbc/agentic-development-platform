@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import subprocess
+import time
 from urllib.parse import urlsplit
 
 from services.integration.jira.credentials import JiraProjectCredential
+
+_AUTH_TTL_SECONDS = 60.0
+_last_ensured: dict[str, float] = {}
 
 
 def _acli_command(acli_path: str) -> list[str]:
@@ -59,4 +63,20 @@ def ensure_acli_authenticated(cred: JiraProjectCredential, *, acli_path: str = "
     )
     if result.returncode != 0:
         raise RuntimeError(f"acli login failed: {result.stderr.strip() or result.stdout.strip()}")
+    return True
+
+
+def ensure_acli_authenticated_cached(
+    cred: JiraProjectCredential,
+    *,
+    acli_path: str = "",
+    ttl_seconds: float = _AUTH_TTL_SECONDS,
+) -> bool:
+    key = f"{_site_host(cred.url)}|{acli_path}"
+    now = time.monotonic()
+    last = _last_ensured.get(key)
+    if last is not None and now - last < ttl_seconds:
+        return False
+    ensure_acli_authenticated(cred, acli_path=acli_path)
+    _last_ensured[key] = now
     return True

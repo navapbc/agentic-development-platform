@@ -7,6 +7,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from adapters.interfaces.security_scanner import (
     CRITICAL,
@@ -19,6 +20,7 @@ from adapters.interfaces.security_scanner import (
 )
 
 from services.orchestration.gates.engine_source import (
+    SARIF,
     CommandResult,
     GateEngineConfig,
     ResolvedEngineSource,
@@ -51,7 +53,12 @@ def map_review_findings(review: dict, *, scanner: str) -> list[ScanFinding]:
                 kind=_KIND,
                 severity=severity,
                 title=str(comment.get("title") or comment.get("message") or "AI review finding"),
-                detail=str(comment.get("detail") or comment.get("body") or ""),
+                detail=str(
+                    comment.get("detail")
+                    or comment.get("description")
+                    or comment.get("body")
+                    or ""
+                ),
                 location=location,
                 rule_id=str(comment.get("perspective") or comment.get("category") or ""),
             )
@@ -78,50 +85,80 @@ async def _default_runner(args: Sequence[str], cwd: str, env: dict[str, str]) ->
     )
 
 
+def _engine_env(
+    *,
+    config: GateEngineConfig,
+    profile: str,
+    gateway_base_url: str,
+    gateway_api_key: str,
+    execution_id: str = "",
+    generation_name: str = "",
+    model: str = "",
+) -> dict[str, str]:
+    """The environment the engine harness reads, shared by the subprocess and pod paths.
+
+    The compliance profile is passed as ``AI_REVIEW_PROFILE`` because the harness reads it from
+    the environment, not a flag. Model routing env is added only for a model-driven engine, so a
+    SARIF tool needs no gateway or model configuration. When an execution id is present, the
+    ``langfuse_`` join headers are injected through the CLI's ``ANTHROPIC_CUSTOM_HEADERS`` so the
+    engine's model calls group under the execution and its stage in Langfuse, the same headers the
+    platform stamps on its own calls to the gateway.
+    """
+    env = {"AI_REVIEW_SCM": "github"}
+    if profile:
+        env["AI_REVIEW_PROFILE"] = profile
+    if config.needs_model:
+        env.update(
+            {
+                "AI_REVIEW_PROVIDER": "api",
+                "AI_REVIEW_TOOL": config.tool,
+                "AI_REVIEW_MODEL": model or config.review_model,
+                "ANTHROPIC_BASE_URL": gateway_base_url,
+                "OPENAI_BASE_URL": gateway_base_url,
+                "ANTHROPIC_API_KEY": gateway_api_key,
+                "OPENAI_API_KEY": gateway_api_key,
+            }
+        )
+        if config.tool == "claude" and config.max_output_tokens > 0:
+            env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(config.max_output_tokens)
+        if execution_id:
+            headers = [f"langfuse_session_id: {execution_id}"]
+            if generation_name:
+                headers.append(f"langfuse_generation_name: {generation_name}")
+            env["ANTHROPIC_CUSTOM_HEADERS"] = "\n".join(headers)
+    return env
+
+
 async def _run_engine_json(
     *,
     name: str,
     entrypoint: Path,
-    target: ScanTarget,
-    extra_args: list[str],
+    repo_root: str,
+    base_ref: str,
+    env: dict[str, str],
     gateway_base_url: str,
-    gateway_api_key: str,
-    tool: str,
     model: str,
-    max_output_tokens: int,
     runner: EngineRunner,
     marker: str,
+    needs_model: bool = True,
 ) -> dict:
     if not entrypoint.is_file():
         raise GateEngineError(f"engine entrypoint missing at {entrypoint}")
-    if not gateway_base_url:
+    if needs_model and not gateway_base_url:
         raise GateEngineError(
             f"engine {name!r} has no LiteLLM gateway base URL; refusing to run so no model "
             "call bypasses the platform gateway"
         )
-    if not model:
+    if needs_model and not model:
         raise GateEngineError(
             f"engine {name!r} has no model configured; a LiteLLM model name is required so the "
             "gateway routes the call to Bedrock"
         )
 
-    json_out = Path(target.repo_root) / f".ai-{marker}-{uuid.uuid4().hex}.json"
-    args = [str(entrypoint), "--against", target.ref, "--json-out", str(json_out), *extra_args]
-    env = {
-        "AI_REVIEW_SCM": "github",
-        "AI_REVIEW_PROVIDER": "api",
-        "AI_REVIEW_TOOL": tool,
-        "AI_REVIEW_MODEL": model,
-        "ANTHROPIC_BASE_URL": gateway_base_url,
-        "OPENAI_BASE_URL": gateway_base_url,
-        "ANTHROPIC_API_KEY": gateway_api_key,
-        "OPENAI_API_KEY": gateway_api_key,
-    }
-    if tool == "claude" and max_output_tokens > 0:
-        env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(max_output_tokens)
-
+    json_out = Path(repo_root) / f".ai-{marker}-{uuid.uuid4().hex}.json"
+    args = [str(entrypoint), "--against", base_ref, "--json-out", str(json_out)]
     try:
-        result = await runner(args, target.repo_root, env)
+        result = await runner(args, repo_root, env)
         if result.returncode not in (0, 1):
             raise GateEngineError(
                 f"engine {name!r} exited {result.returncode}: {result.stderr.strip()[:400]}"
@@ -144,6 +181,9 @@ class AiReviewScanner:
         litellm_api_key: str = "",
         runner: EngineRunner | None = None,
         source: ResolvedEngineSource | None = None,
+        pod_runner: Any | None = None,
+        tls_verify: bool = True,
+        review_model: str = "",
     ) -> None:
         self._name = name
         self._config = config
@@ -152,6 +192,11 @@ class AiReviewScanner:
         self._litellm_api_key = litellm_api_key
         self._runner = runner or _default_runner
         self._source = source
+        self._pod_runner = pod_runner
+        self._tls_verify = tls_verify
+        # The model actually sent to the gateway, resolved by the caller to a client-recognized id.
+        # Falls back to the config value when the caller does not resolve.
+        self._review_model = review_model or config.review_model
 
     @property
     def name(self) -> str:
@@ -171,21 +216,67 @@ class AiReviewScanner:
 
     async def scan(self, target: ScanTarget) -> list[ScanFinding]:
         source = await self._resolve()
-        extra = ["--profile", self._profile] if self._profile else []
-        review = await _run_engine_json(
-            name=self._name,
-            entrypoint=Path(source.path).joinpath(*self._config.review_entrypoint.split("/")),
-            target=target,
-            extra_args=extra,
+        env = _engine_env(
+            config=self._config,
+            profile=self._profile,
             gateway_base_url=self._litellm_base_url,
             gateway_api_key=self._litellm_api_key,
-            tool=self._config.tool,
-            model=self._config.review_model,
-            max_output_tokens=self._config.max_output_tokens,
-            runner=self._runner,
-            marker="review",
+            execution_id=target.execution_id,
+            generation_name=self._name,
+            model=self._review_model,
         )
-        return map_review_findings(review, scanner=self._name)
+        against = target.base_ref or target.ref
+        if self._pod_runner is not None:
+            document = await self._run_in_pod(source, target, against, env)
+        else:
+            document = await _run_engine_json(
+                name=self._name,
+                entrypoint=Path(source.path).joinpath(
+                    *self._config.review_entrypoint.split("/")
+                ),
+                repo_root=target.repo_root,
+                base_ref=against,
+                env=env,
+                gateway_base_url=self._litellm_base_url,
+                model=self._review_model,
+                runner=self._runner,
+                marker="review",
+                needs_model=self._config.needs_model,
+            )
+        if self._config.output_format == SARIF:
+            from services.orchestration.gates.sarif import parse_sarif
+
+            return parse_sarif(document, scanner=self._name)
+        return map_review_findings(document, scanner=self._name)
+
+    async def _run_in_pod(
+        self, source: ResolvedEngineSource, target: ScanTarget, against: str, env: dict[str, str]
+    ) -> dict:
+        from adapters.interfaces.security_scanner import ScannerUnavailableError
+
+        from services.orchestration.gates.engine_source import IMAGE
+        from services.orchestration.gates.pod_runner import PodEngineError, PodEngineSpec
+
+        # config.image, when set, is a runtime override: the pod pulls it instead of building the
+        # engine Dockerfile, while the source is still mounted at the engine path so the harness
+        # stays current. In pure image mode the source path is empty and the image is the whole
+        # tool. In local mode with an image set, the pull provides the runtime and the mount
+        # provides the source.
+        spec = PodEngineSpec(
+            name=self._name,
+            execution_id=target.execution_id,
+            checkout_dir=target.repo_root,
+            entrypoint=self._config.review_entrypoint,
+            base_ref=against,
+            source_path="" if source.mode == IMAGE else source.path,
+            image=self._config.image,
+            tls_verify=self._tls_verify,
+            env=env,
+        )
+        try:
+            return await self._pod_runner.run_engine(spec)
+        except PodEngineError as exc:
+            raise ScannerUnavailableError(str(exc)) from exc
 
 
 APPLICATION_BUG = "APPLICATION_BUG"
@@ -304,16 +395,22 @@ class AiTestClassifier:
 
     async def classify(self, target: ScanTarget) -> FailureTriage:
         source = await self._resolve()
+        env = _engine_env(
+            config=self._config,
+            profile="",
+            gateway_base_url=self._litellm_base_url,
+            gateway_api_key=self._litellm_api_key,
+            execution_id=target.execution_id,
+            generation_name=self._name,
+        )
         payload = await _run_engine_json(
             name=self._name,
             entrypoint=Path(source.path).joinpath(*self._config.classifier_entrypoint.split("/")),
-            target=target,
-            extra_args=[],
+            repo_root=target.repo_root,
+            base_ref=target.base_ref or target.ref,
+            env=env,
             gateway_base_url=self._litellm_base_url,
-            gateway_api_key=self._litellm_api_key,
-            tool=self._config.tool,
             model=self._config.triage_model,
-            max_output_tokens=self._config.max_output_tokens,
             runner=self._runner,
             marker="classify",
         )

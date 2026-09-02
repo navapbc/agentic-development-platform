@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any, Protocol
 
-from adapters.interfaces.ci_host import BuildResult
 from adapters.interfaces.git_host import CodeHit, FileContent, PRFeedback
 from scripts.config import Settings, get_settings
 
@@ -20,7 +19,6 @@ READ_TOOL_NAMES = (
     "github_read_file",
     "github_search_code",
     "github_read_pr_feedback",
-    "jenkins_get_build_result",
     "security_get_findings",
     "evidence_read_artifact",
     "repo_get_context_package",
@@ -32,7 +30,6 @@ READ_TOOL_DESCRIPTIONS = {
     "github_read_file": "Read a file at a ref from an allowlisted repository.",
     "github_search_code": "Search code in an allowlisted repository.",
     "github_read_pr_feedback": "Read review comments and state for a pull request.",
-    "jenkins_get_build_result": "Read the result of a Jenkins build.",
     "security_get_findings": "Read stored security findings for an execution.",
     "evidence_read_artifact": "Read a persisted evidence artifact by id.",
     "repo_get_context_package": "Fetch a repository context package for a focus area.",
@@ -51,9 +48,6 @@ class RepoReader(Protocol):
     async def read_pr_feedback(self, repo: str, number: int) -> PRFeedback: ...
 
 
-class BuildReader(Protocol):
-    async def get_build(self, repo: str, job: str, build_number: int) -> BuildResult: ...
-
 
 class ContextFetch(Protocol):
     async def __call__(self, repo: str, commit: str, focus: str) -> dict[str, Any]: ...
@@ -63,20 +57,17 @@ class ContextFetch(Protocol):
 class ReadOnlyToolset:
     jira: IssueReader
     github: RepoReader
-    jenkins: BuildReader
     evidence: EvidenceReader
     context_fetch: ContextFetch
     acceptance_field: str = ""
 
     @classmethod
     def from_settings(cls, settings: Settings | None = None) -> ReadOnlyToolset:
-        from adapters.real.ci_host import RealJenkins
         from adapters.real.git_host import RealGitHost
 
         from services.coordination.idempotency import PostgresSideEffectLedger
         from services.coordination.sequencing import PostgresSequenceGate
         from services.integration.github.mediator import GitHubMediator
-        from services.integration.jenkins.mediator import JenkinsMediator
         from services.integration.jira.adapter import ProjectRoutingJiraReader
         from services.orchestration.repo_intelligence_client import fetch_context_package
 
@@ -87,9 +78,6 @@ class ReadOnlyToolset:
             jira=ProjectRoutingJiraReader(resolved),
             github=GitHubMediator.from_settings(
                 RealGitHost.from_settings(), ledger, gate, resolved
-            ),
-            jenkins=JenkinsMediator.from_settings(
-                RealJenkins.from_settings(), ledger, gate, resolved
             ),
             evidence=PostgresEvidenceReader(),
             context_fetch=fetch_context_package,
@@ -123,11 +111,6 @@ class ReadOnlyToolset:
 
     async def github_read_pr_feedback(self, repo: str, number: int) -> dict[str, Any]:
         return asdict(await self.github.read_pr_feedback(repo, number))
-
-    async def jenkins_get_build_result(
-        self, repo: str, job: str, build_number: int
-    ) -> dict[str, Any]:
-        return asdict(await self.jenkins.get_build(repo, job, build_number))
 
     async def security_get_findings(self, execution_id: str) -> dict[str, Any]:
         findings = await self.evidence.get_security_findings(execution_id)

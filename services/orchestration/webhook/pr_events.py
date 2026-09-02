@@ -16,7 +16,6 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from services.orchestration.webhook.inbound import DispatchNotReady
 
 PR_CLOSED_SIGNAL = "submit_pr_closed"
-CI_RESULT_SIGNAL = "submit_ci_result"
 _AWAITING_PR_CLOSE = "AWAITING_PR_CLOSE"
 _TERMINAL_STATES = ("COMPLETED", "FAILED", "CANCELLED")
 _SIGNATURE_PREFIX = "sha256="
@@ -185,17 +184,6 @@ class TemporalSignaller:
         handle = self._client.get_workflow_handle(workflow_id)
         try:
             await handle.signal(PR_CLOSED_SIGNAL, merged)
-        except RPCError as exc:
-            if exc.status == RPCStatusCode.NOT_FOUND:
-                return
-            raise
-
-    async def signal_ci_result(self, workflow_id: str) -> None:
-        from temporalio.service import RPCError, RPCStatusCode
-
-        handle = self._client.get_workflow_handle(workflow_id)
-        try:
-            await handle.signal(CI_RESULT_SIGNAL)
         except RPCError as exc:
             if exc.status == RPCStatusCode.NOT_FOUND:
                 return

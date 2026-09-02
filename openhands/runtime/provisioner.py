@@ -14,6 +14,7 @@ from typing import Protocol, runtime_checkable
 
 _NAME_SANITISE = re.compile(r"[^a-z0-9-]+")
 _SANDBOX_UID = 10001
+_BASE_TAG = "__openhands_base"
 
 
 class SandboxExecError(RuntimeError):
@@ -170,12 +171,35 @@ class KubernetesSandboxProvisioner:
 
     async def provision(self, spec: SandboxSpec) -> SandboxHandle:
         core = self._client()
+        from kubernetes.client.exceptions import ApiException
+
         manifest = build_pod_manifest(spec)
         name = manifest["metadata"]["name"]
-        await asyncio.to_thread(core.create_namespaced_pod, spec.namespace, manifest)
+        try:
+            await asyncio.to_thread(core.create_namespaced_pod, spec.namespace, manifest)
+        except ApiException as exc:
+            if exc.status != 409:
+                raise
+            await self._wait_absent(core, name, spec.namespace)
+            await asyncio.to_thread(core.create_namespaced_pod, spec.namespace, manifest)
         pod_ip = await self._wait_ready(core, name, spec.namespace)
         base_url = f"http://{pod_ip}:{spec.server_port}"
         return SandboxHandle(name=name, namespace=spec.namespace, base_url=base_url)
+
+    async def _wait_absent(self, core, name: str, namespace: str) -> None:
+        from kubernetes.client.exceptions import ApiException
+
+        deadline = asyncio.get_running_loop().time() + self._ready_timeout
+        while True:
+            try:
+                await asyncio.to_thread(core.read_namespaced_pod, name, namespace)
+            except ApiException as exc:
+                if exc.status == 404:
+                    return
+                raise
+            if asyncio.get_running_loop().time() >= deadline:
+                raise TimeoutError(f"sandbox pod {name} still present after {self._ready_timeout}s")
+            await asyncio.sleep(self._poll_interval)
 
     async def _wait_ready(self, core, name: str, namespace: str) -> str:
         deadline = asyncio.get_running_loop().time() + self._ready_timeout
@@ -200,10 +224,13 @@ class KubernetesSandboxProvisioner:
                 core.delete_namespaced_pod,
                 handle.name,
                 handle.namespace,
+                grace_period_seconds=0,
             )
         except ApiException as exc:
-            if exc.status != 404:
-                raise
+            if exc.status == 404:
+                return
+            raise
+        await self._wait_absent(core, handle.name, handle.namespace)
 
     async def copy_in(self, handle: SandboxHandle, source_dir: str, dest_dir: str) -> None:
         await asyncio.to_thread(self._copy_in_sync, handle, source_dir, dest_dir)
@@ -211,7 +238,11 @@ class KubernetesSandboxProvisioner:
     def _copy_in_sync(self, handle: SandboxHandle, source_dir: str, dest_dir: str) -> None:
         extract = (
             f"mkdir -p {dest_dir} && "
-            f"tar xmf - --no-overwrite-dir --no-same-owner -C {dest_dir}"
+            f"tar xmf - --no-overwrite-dir --no-same-owner -C {dest_dir} && "
+            f"cd {dest_dir} && "
+            f'git config user.email "openhands@all-hands.dev" && '
+            f'git config user.name "openhands" && '
+            f"git tag -f {_BASE_TAG} HEAD"
         )
         tar = subprocess.Popen(
             ["tar", "-C", source_dir, "-cf", "-", "."], stdout=subprocess.PIPE
@@ -253,7 +284,8 @@ class KubernetesSandboxProvisioner:
                 "--",
                 "sh",
                 "-c",
-                f"cd {project_dir} && git add -A && git diff --cached",
+                f"cd {project_dir} && git add -A && "
+                f"(git diff --cached {_BASE_TAG} 2>/dev/null || git diff --cached)",
             ],
             capture_output=True,
             text=True,

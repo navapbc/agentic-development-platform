@@ -75,3 +75,25 @@ def test_heading_level_is_captured():
         "attrs": {"level": 3},
         "content": [{"type": "text", "text": "deep"}],
     }
+
+
+def test_large_markdown_is_capped_to_adf_limit():
+    import json
+
+    from services.integration.jira.markdown_adf import (
+        _ADF_DESCRIPTION_LIMIT,
+        markdown_to_adf_json,
+    )
+
+    body = "paragraph one is long. " * 4000
+    rendered = markdown_to_adf_json(body)
+    assert len(rendered) <= _ADF_DESCRIPTION_LIMIT
+    tail_text = json.loads(rendered)["content"][-1]["content"][0]["text"]
+    assert "truncated to fit the Jira field" in tail_text
+
+
+def test_small_markdown_is_unchanged_by_the_cap():
+    from services.integration.jira.markdown_adf import _fit_markdown_to_adf_limit
+
+    text = "# Title\n\nA short paragraph."
+    assert _fit_markdown_to_adf_limit(text) == text

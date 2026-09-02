@@ -11,7 +11,16 @@ from pathlib import Path
 LOCAL = "local"
 TAG = "tag"
 ZIP = "zip"
-_MODES = frozenset({LOCAL, TAG, ZIP})
+IMAGE = "image"
+_MODES = frozenset({LOCAL, TAG, ZIP, IMAGE})
+
+REVIEW_JSON = "review-json"
+SARIF = "sarif"
+_OUTPUT_FORMATS = frozenset({REVIEW_JSON, SARIF})
+
+WARN = "warn"
+ABORT = "abort"
+_ON_UNAVAILABLE = frozenset({WARN, ABORT})
 
 
 class EngineSourceError(Exception):
@@ -38,12 +47,19 @@ class GateEngineConfig:
     cache_root: str = ""
     local_path: str = ""
     zip_path: str = ""
+    image: str = ""
     tool: str = "claude"
     review_model: str = ""
     triage_model: str = ""
+    on_unavailable: str = "abort"
     max_output_tokens: int = 8192
+    output_format: str = REVIEW_JSON
     review_entrypoint: str = "engines/security-compliance-review/harness/ai-pr-review"
     classifier_entrypoint: str = "engines/test-classifier/harness/ai-test-classifier"
+
+    @property
+    def needs_model(self) -> bool:
+        return self.output_format == REVIEW_JSON
 
 
 @dataclass(frozen=True)
@@ -52,6 +68,7 @@ class ResolvedEngineSource:
     mode: str
     version: str
     tag: str = ""
+    image: str = ""
 
 
 async def run_git(args: Sequence[str], cwd: str) -> CommandResult:
@@ -156,6 +173,14 @@ async def _resolve_zip(config: GateEngineConfig) -> ResolvedEngineSource:
     return ResolvedEngineSource(path=str(_engine_root(dest)), mode=ZIP, version=version)
 
 
+async def _resolve_image(config: GateEngineConfig) -> ResolvedEngineSource:
+    if not config.image:
+        raise EngineSourceError("engine image mode needs an image reference")
+    return ResolvedEngineSource(
+        path="", mode=IMAGE, version=config.image, image=config.image
+    )
+
+
 async def resolve_engine_source(
     config: GateEngineConfig, *, runner: GitRunner = run_git
 ) -> ResolvedEngineSource | None:
@@ -169,6 +194,8 @@ async def resolve_engine_source(
         return await _resolve_local(config, runner)
     if config.mode == TAG:
         return await _resolve_tag(config, runner)
+    if config.mode == IMAGE:
+        return await _resolve_image(config)
     return await _resolve_zip(config)
 
 
@@ -180,6 +207,20 @@ def parse_gate_engine_config(raw: dict) -> GateEngineConfig:
     mode = str(raw.get("mode", LOCAL))
     if enabled and mode not in _MODES:
         raise ConfigError(f"gate_engine.mode must be one of {sorted(_MODES)}, got {mode!r}")
+    if enabled and mode == IMAGE and not str(raw.get("image", "")):
+        raise ConfigError("gate_engine.mode image needs an image reference")
+    output_format = str(raw.get("output_format", REVIEW_JSON))
+    if output_format not in _OUTPUT_FORMATS:
+        raise ConfigError(
+            f"gate_engine.output_format must be one of {sorted(_OUTPUT_FORMATS)}, "
+            f"got {output_format!r}"
+        )
+    on_unavailable = str(raw.get("on_unavailable", ABORT))
+    if enabled and on_unavailable not in _ON_UNAVAILABLE:
+        raise ConfigError(
+            f"gate_engine.on_unavailable must be one of {sorted(_ON_UNAVAILABLE)}, "
+            f"got {on_unavailable!r}"
+        )
     return GateEngineConfig(
         name=name,
         enabled=enabled,
@@ -189,10 +230,13 @@ def parse_gate_engine_config(raw: dict) -> GateEngineConfig:
         cache_root=str(raw.get("cache_root", "")),
         local_path=str(raw.get("local_path", "")),
         zip_path=str(raw.get("zip_path", "")),
+        image=str(raw.get("image", "")),
         tool=str(raw.get("tool", "claude")),
         review_model=str(raw.get("review_model", "")),
         triage_model=str(raw.get("triage_model", "")),
+        on_unavailable=on_unavailable,
         max_output_tokens=int(raw.get("max_output_tokens", 8192)),
+        output_format=output_format,
         review_entrypoint=str(
             raw.get("review_entrypoint", GateEngineConfig.review_entrypoint)
         ),

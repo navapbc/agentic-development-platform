@@ -8,7 +8,7 @@ from typing import Any, Protocol
 
 from database.models.schema import audit_events, sequence_gate
 from scripts.config import get_settings
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
@@ -107,6 +107,11 @@ class PostgresSequenceGate:
             DISCARDED, action.task_id, action.sequence, current, STALE_REVIEW_DISCARDED
         )
 
+    async def reset(self, task_id: str) -> None:
+        engine = self._get_engine()
+        async with engine.begin() as conn:
+            await conn.execute(delete(sequence_gate).where(sequence_gate.c.task_id == task_id))
+
 
 class InMemorySequenceGate:
     def __init__(self) -> None:
@@ -125,3 +130,6 @@ class InMemorySequenceGate:
         )
         self.receipts.append(decision)
         return decision
+
+    async def reset(self, task_id: str) -> None:
+        self._current.pop(task_id, None)

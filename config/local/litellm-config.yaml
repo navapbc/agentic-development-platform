@@ -8,14 +8,14 @@ model_list:
       aws_region_name: us-east-1
   - model_name: planning-model
     litellm_params:
-      model: bedrock/us.amazon.nova-premier-v1:0
+      model: bedrock/us.amazon.nova-2-lite-v1:0
       aws_region_name: us-east-1
 
   - model_name: coding-model
     litellm_params:
       model: bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0
       aws_region_name: us-east-1
-  - model_name: coding-model
+  - model_name: coding-model-fallback
     litellm_params:
       model: bedrock/us.amazon.nova-pro-v1:0
       aws_region_name: us-east-1
@@ -44,7 +44,7 @@ model_list:
       aws_region_name: us-east-1
   - model_name: evaluation-model
     litellm_params:
-      model: bedrock/us.amazon.nova-premier-v1:0
+      model: bedrock/us.amazon.nova-2-lite-v1:0
       aws_region_name: us-east-1
 
   - model_name: classification-summary
@@ -56,17 +56,24 @@ model_list:
       model: bedrock/us.amazon.nova-lite-v1:0
       aws_region_name: us-east-1
 
+  # Canonical-id model groups. Named by the provider model id that AI-CLI engines (claude-code)
+  # recognize, so a gate can route a review through a client-recognized model. Bedrock-backed.
+  - model_name: claude-opus-4-5-20251101
+    litellm_params:
+      model: bedrock/us.anthropic.claude-opus-4-5-20251101-v1:0
+      aws_region_name: us-east-1
+
 litellm_settings:
   drop_params: true
   num_retries: 2
   request_timeout: 600
-  callbacks: ["langfuse_otel"]
+  callbacks: ["langfuse_otel", "litellm_redaction.redactor"]
 
 router_settings:
   routing_strategy: simple-shuffle
   fallbacks:
     - planning-model: [planning-model]
-    - coding-model: [coding-model]
+    - coding-model: [coding-model-fallback]
     - review-model: [review-model]
     - security-review-model: [security-review-model]
     - evaluation-model: [evaluation-model]

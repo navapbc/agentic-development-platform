@@ -6,7 +6,7 @@ default allow := false
 
 bundle_version := "0.4.0"
 
-allowed_projects := {"AGENTDEV"}
+allowed_projects := {"AGENTDEV", "ADSER", "ADEV"}
 
 allowed_repos := {"agentic-demo-service", "agentic-demo-greenfield"}
 

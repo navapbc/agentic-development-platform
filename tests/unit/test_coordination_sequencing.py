@@ -81,3 +81,15 @@ async def test_sequences_are_tracked_per_task():
     other = await gate.admit(_action(1, task_id="AGENTDEV-2"))
     assert other.outcome == ADMITTED
     assert other.current_sequence == 1
+
+
+async def test_reset_clears_the_gate_high_water():
+    gate = InMemorySequenceGate()
+    await gate.admit(SequencedAction(task_id="AGENTDEV-1", execution_id="exec-1", sequence=5))
+
+    await gate.reset("AGENTDEV-1")
+    decision = await gate.admit(
+        SequencedAction(task_id="AGENTDEV-1", execution_id="exec-2", sequence=1)
+    )
+
+    assert decision.outcome == ADMITTED

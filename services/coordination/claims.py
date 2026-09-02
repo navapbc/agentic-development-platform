@@ -85,6 +85,8 @@ class WorkClaimStore(Protocol):
         self, claim_id: str, *, expected_version: int, new_state: str
     ) -> int | None: ...
 
+    async def release(self, claim_id: str, *, owner_workflow_id: str) -> bool: ...
+
 
 class PostgresWorkClaimStore:
     def __init__(
@@ -186,6 +188,23 @@ class PostgresWorkClaimStore:
             ).first()
         return row.claim_version if row is not None else None
 
+    async def release(self, claim_id: str, *, owner_workflow_id: str) -> bool:
+        engine = self._get_engine()
+        async with engine.begin() as conn:
+            row = (
+                await conn.execute(
+                    update(work_claims)
+                    .where(
+                        work_claims.c.claim_id == claim_id,
+                        work_claims.c.owner_workflow_id == owner_workflow_id,
+                        work_claims.c.state != COMPLETED,
+                    )
+                    .values(state=RELEASED)
+                    .returning(work_claims.c.claim_id)
+                )
+            ).first()
+        return row is not None
+
 
 class InMemoryWorkClaimStore:
     def __init__(self, *, owner_active: OwnerActive | None = None) -> None:
@@ -227,3 +246,14 @@ class InMemoryWorkClaimStore:
         row["claim_version"] = int(row["claim_version"]) + 1
         row["state"] = new_state
         return int(row["claim_version"])
+
+    async def release(self, claim_id: str, *, owner_workflow_id: str) -> bool:
+        row = self._claims.get(claim_id)
+        if (
+            row is None
+            or str(row.get("owner_workflow_id") or "") != owner_workflow_id
+            or row["state"] == COMPLETED
+        ):
+            return False
+        row["state"] = RELEASED
+        return True

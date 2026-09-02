@@ -1,8 +1,9 @@
 """End-to-end test that two configured gate bundles drive promotion from config alone.
 
-It exercises the plugin gate, the engine gate, parallel and fail-fast stages, the fail-closed
-missing plugin, and the human-pause gate. The gate engine and Snyk plugin have separate
-environment-gated smoke tests under tests/integration.
+It exercises the built-in gates, a config-sourced SARIF engine gate, an AI-CLI engine gate,
+parallel and fail-fast stages, and the human-pause gate, all selected from config with no
+installed package. The gate engines have separate environment-gated smoke tests under
+tests/integration.
 """
 
 from __future__ import annotations
@@ -14,7 +15,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from adapters.interfaces.ci_host import SUCCESS
 from adapters.interfaces.policy_engine import PolicyGate
 from adapters.interfaces.security_scanner import HIGH, ScanFinding, ScanTarget
 from services.orchestration.gates.builtin import scanner_gate
@@ -26,8 +26,7 @@ from services.orchestration.gates.engine_source import (
     ResolvedEngineSource,
 )
 from services.orchestration.gates.gate_engine import AiReviewScanner
-from services.orchestration.gates.plugins import (
-    PluginError,
+from services.orchestration.gates.registry import (
     registry_for_config,
     scanner_backends_for_config,
 )
@@ -49,20 +48,7 @@ from tests.unit.test_policy_engine import _client, _compliant
 
 pytestmark = pytest.mark.asyncio
 
-
-class _FakeDist:
-    def __init__(self, name: str) -> None:
-        self.name = name
-
-
-class _FakeEntryPoint:
-    def __init__(self, name: str, distribution: str, loaded) -> None:
-        self.name = name
-        self.dist = _FakeDist(distribution)
-        self._loaded = loaded
-
-    def load(self):
-        return self._loaded
+SUCCESS = "SUCCESS"
 
 
 class _SnykScanner:
@@ -81,16 +67,17 @@ class _SnykScanner:
         ]
 
 
-def _snyk_discover():
-    return lambda group: [_FakeEntryPoint("snyk", "snyk-gate", _SnykScanner)]
-
-
-def _empty_discover():
-    return lambda group: []
-
-
 _ENGINE = GateEngineConfig(
     name="ai-security-review", enabled=True, mode="local", local_path="/tmp/engine"
+)
+
+_SNYK_ENGINE = GateEngineConfig(
+    name="snyk",
+    enabled=True,
+    mode="local",
+    local_path="/tmp/snyk",
+    output_format="sarif",
+    review_entrypoint="bin/scan",
 )
 
 
@@ -100,6 +87,7 @@ def _engine_registry():
 
     registry = builtin_registry()
     registry.register("ai-security-review", lambda: engine_gate(_ENGINE))
+    registry.register("snyk", lambda: engine_gate(_SNYK_ENGINE))
     return registry
 
 
@@ -107,12 +95,7 @@ def _government_raw() -> dict[str, Any]:
     return {
         "profile": "government",
         "gates": [
-            {
-                "name": "snyk",
-                "enabled": True,
-                "required": True,
-                "plugin": {"distribution": "snyk-gate", "entry_point": "snyk"},
-            },
+            {"name": "snyk", "enabled": True, "required": True},
             {"name": "ai-security-review", "enabled": True, "required": True},
         ],
     }
@@ -142,9 +125,9 @@ def test_two_bundles_select_different_gate_sets():
     assert semgrep is not None and semgrep.required is False
 
 
-def test_government_bundle_resolves_the_plugin_and_engine_gate():
+def test_government_bundle_resolves_the_engine_gates_from_config():
     config = parse_gates_config(_government_raw(), registry=_engine_registry())
-    registry = registry_for_config(config, discover=_snyk_discover(), engines=(_ENGINE,))
+    registry = registry_for_config(config, engines=(_ENGINE, _SNYK_ENGINE))
 
     assert registry.has("snyk")
     assert registry.resolve("snyk").kind == "scanner"
@@ -291,26 +274,19 @@ async def test_fail_fast_cancels_siblings_on_a_required_block():
     assert verdicts["trivy"] == CANCELLED
 
 
-def test_a_missing_required_plugin_fails_closed():
+def test_a_required_gate_with_no_backend_is_unresolved():
     config = parse_gates_config(_government_raw(), registry=_engine_registry())
-    with pytest.raises(PluginError):
-        registry_for_config(config, discover=_empty_discover(), engines=(_ENGINE,))
+    registry = registry_for_config(config, engines=(_ENGINE,))
+    assert not registry.has("snyk")
 
 
-def test_an_advisory_missing_plugin_drops_from_the_backends():
+def test_an_absent_engine_drops_from_the_backends():
     raw = {
         "profile": "private",
-        "gates": [
-            {
-                "name": "snyk",
-                "enabled": True,
-                "required": False,
-                "plugin": {"distribution": "snyk-gate", "entry_point": "snyk"},
-            }
-        ],
+        "gates": [{"name": "snyk", "enabled": True, "required": False}],
     }
-    config = parse_gates_config(raw)
-    backends = scanner_backends_for_config(config, discover=_empty_discover(), engines=())
+    config = parse_gates_config(raw, registry=_engine_registry())
+    backends = scanner_backends_for_config(config, engines=())
     assert all(getattr(backend, "name", "") != "snyk" for backend in backends)
 
 

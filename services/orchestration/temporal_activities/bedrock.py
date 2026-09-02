@@ -33,10 +33,14 @@ class ModelResponse:
     model_id: str | None = None
 
 
+def _litellm_auth_headers(settings: Any) -> dict[str, str]:
+    return {"Authorization": f"Bearer {settings.litellm_master_key}"}
+
+
 @activity.defn
 async def invoke_model(req: ModelRequest) -> ModelResponse:
     settings = get_settings()
-    headers = {"Authorization": f"Bearer {settings.litellm_master_key}"}
+    headers = _litellm_auth_headers(settings)
     messages: list[dict[str, str]] = []
     prompt_version = req.prompt_version
     if req.system_prompt_name:
@@ -95,7 +99,7 @@ async def resolve_logical_models(
 ) -> dict[str, str]:
     resolved = settings or get_settings()
     wanted = list(dict.fromkeys(logical_models))
-    headers = {"Authorization": f"Bearer {resolved.litellm_master_key}"}
+    headers = _litellm_auth_headers(resolved)
     async with httpx.AsyncClient(
         base_url=resolved.litellm_base_url, timeout=30.0, transport=transport
     ) as client:

@@ -43,15 +43,11 @@ def main(argv: list[str] | None = None) -> int:
         }
         model_tier = "offline-fixture"
     else:
-        from services.orchestration.gates.config import load_gates_config
         from services.review.kernel import RebarReviewKernel
 
-        blocking_severities = load_gates_config().blocking_severities
         reviewers = {
             "keyword-baseline": baseline_stage_reviewer,
-            "rebar-kernel": build_rebar_reviewer(
-                RebarReviewKernel(blocking_severities=blocking_severities)
-            ),
+            "rebar-kernel": build_rebar_reviewer(RebarReviewKernel()),
         }
         model_tier = "evaluation-model"
 

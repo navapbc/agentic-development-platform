@@ -98,7 +98,6 @@ services:
       COORDINATION_URL: http://coordination-service:8130
       JIRA_ACLI_PATH: /app/vendor/bin/acli
       EXECUTION_WORKSPACE_ROOT: /home/appuser/agent-workspaces
-      JENKINS_URL: ${JENKINS_URL:-http://jenkins:8080}
     depends_on:
       temporal:
         condition: service_healthy
@@ -122,22 +121,6 @@ services:
         condition: service_started
       activity-worker:
         condition: service_started
-
-  jenkins:
-    build:
-      context: .
-      dockerfile: docker/jenkins.Dockerfile
-    ports:
-      - "8080:8080"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    environment:
-      PLATFORM_WEBHOOK_BASE_URL: ${PLATFORM_WEBHOOK_BASE_URL:-http://host.docker.internal:8140}
-    volumes:
-      - jenkins-home:/var/jenkins_home
-      - ./docker/jenkins/init.groovy.d:/var/jenkins_home/init.groovy.d:ro
-    profiles: ["ci"]
-    restart: unless-stopped
 
   coordination-service:
     <<: *python-service
@@ -169,6 +152,7 @@ services:
       LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY}
     volumes:
       - ./config/local/litellm-config.yaml:/app/config/litellm-config.yaml:ro
+      - ./config/local/litellm_redaction.py:/app/litellm_redaction.py:ro
       - ${HOME}/.aws:/root/.aws:ro
     ports: ["4000:4000"]
     restart: unless-stopped
@@ -219,7 +203,7 @@ services:
   minio:
     image: cgr.dev/chainguard/minio:latest@sha256:cfdf1bed85da055bc031883d0959f373c4dbe9f3cb120855dcdc13943cd6284b
     entrypoint: sh
-    command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" --console-address ":9001" /data'
+    command: -c 'mkdir -p /data/langfuse /data/tempo && minio server --address ":9000" --console-address ":9001" /data'
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minio}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-change-me-locally}
@@ -302,6 +286,52 @@ services:
     ports:
       - "4317:4317"
       - "4318:4318"
+      - "8889:8889"
+    depends_on:
+      - tempo
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.1.0@sha256:6559acbd5d770b15bb3c954629ce190ac3cbbdb2b7f1c30f0385c4e05104e218
+    command: ["--config.file=/etc/prometheus/prometheus.yaml"]
+    volumes:
+      - ./observability/prometheus/prometheus.yaml:/etc/prometheus/prometheus.yaml:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      - otel-collector
+    ports:
+      - "9092:9090"
+    restart: unless-stopped
+
+  tempo:
+    image: grafana/tempo:2.6.1@sha256:ef4384fce6e8ad22b95b243d8fc165628cda655376fd50e7850536ad89d71d50
+    command: ["-config.file=/etc/tempo/tempo.yaml", "-config.expand-env=true"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-change-me-locally}
+    volumes:
+      - ./observability/tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    depends_on:
+      minio:
+        condition: service_healthy
+    ports:
+      - "3200:3200"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.3.0@sha256:a0f881232a6fb71a0554a47d0fe2203b6888fe77f4cefb7ea62bed7eb54e13c3
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - tempo
+    ports:
+      - "3300:3000"
     restart: unless-stopped
 
   repo-intelligence:
@@ -309,7 +339,6 @@ services:
       context: .
       dockerfile: docker/repo-intelligence.Dockerfile
     env_file: [.env]
-    profiles: ["repo-intelligence"]
     ports: ["8120:8120"]
     volumes:
       - repo-index-data:/app/repository_indexes
@@ -322,7 +351,6 @@ services:
       dockerfile: docker/repo-intelligence.Dockerfile
     command: ["python", "-m", "services.repository_intelligence.indexing.worker"]
     env_file: [.env]
-    profiles: ["repo-intelligence"]
     volumes:
       - repo-index-data:/app/repository_indexes
     restart: unless-stopped
@@ -330,8 +358,10 @@ services:
 volumes:
   postgres-data:
   repo-index-data:
-  jenkins-home:
   langfuse-clickhouse-data:
   langfuse-clickhouse-logs:
   langfuse-minio-data:
   langfuse-redis-data:
+  tempo-data:
+  grafana-data:
+  prometheus-data:

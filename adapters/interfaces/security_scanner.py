@@ -18,6 +18,16 @@ DEPENDENCY = "dependency"
 
 DEFAULT_BLOCKING_THRESHOLD = HIGH
 
+
+class ScannerUnavailableError(Exception):
+    """A scanner backend could not run because of an infrastructure failure.
+
+    This is distinct from a scanner that ran and reported findings, and from a backend that is
+    misconfigured or broken. It signals a transient condition, for example a build-and-run pod that
+    failed to build or whose model gateway was unreachable, so the caller may retry the scan before
+    failing the gate closed.
+    """
+
 _SEVERITY_RANK = {
     CRITICAL: 5,
     HIGH: 4,
@@ -33,6 +43,8 @@ class ScanTarget:
     repo: str
     ref: str
     repo_root: str
+    base_ref: str = ""
+    execution_id: str = ""
 
 
 @dataclass(frozen=True)

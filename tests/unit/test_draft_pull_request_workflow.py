@@ -5,9 +5,6 @@ from __future__ import annotations
 import asyncio
 import uuid
 
-from adapters.interfaces.ci_host import COMPLETED as CI_COMPLETED
-from adapters.interfaces.ci_host import FAILURE, RUNNING, SUCCESS
-from adapters.interfaces.ci_host import UNAVAILABLE as CI_UNAVAILABLE
 from openhands.runtime.caps import COMPLETED
 from services.orchestration.branch_sync import FAST_FORWARD
 from services.orchestration.gates.contract import (
@@ -30,13 +27,9 @@ from services.orchestration.temporal_activities.branch_sync import (
     SyncRequest,
     SyncResult,
 )
-from services.orchestration.temporal_activities.ci import (
-    PollCIRequest,
-    PollCIResult,
-    ReadCILogRequest,
-    ReadCILogResult,
-    TriggerCIRequest,
-    TriggerCIResult,
+from services.orchestration.temporal_activities.checks import (
+    RunChecksRequest,
+    RunChecksResult,
 )
 from services.orchestration.temporal_activities.gates import (
     ClassifyTestFailuresRequest,
@@ -49,6 +42,8 @@ from services.orchestration.temporal_activities.implementation import (
     ClaimResult,
     ImplementationRequest,
     ImplementationResult,
+    ResetCoordinationRequest,
+    ResetCoordinationResult,
 )
 from services.orchestration.temporal_activities.manifest import RecordManifestRequest
 from services.orchestration.temporal_activities.notify import (
@@ -105,17 +100,17 @@ from services.orchestration.temporal_activities.suspension import (
 )
 from services.orchestration.temporal_workflows.branch_sync import BranchSyncWorkflow
 from services.orchestration.temporal_workflows.draft_pull_request import (
+    _CI_TRIGGER_OFFSET,
+    _PROMOTE_OFFSET,
+    _REPAIR_STRIDE,
+    _SEQUENCE_STRIDE,
     CI_FAILED,
-    CI_PASSED,
-    DRAFT_PR_OPEN,
     EXISTING_PR_REUSED,
     PLAN_REJECTED,
-    POLICY_ALLOWED,
     POLICY_DENIED,
     PR_PROMOTED,
     PROMOTION_CANCELLED,
     REVIEW_BLOCKED,
-    REVIEW_PASSED,
     DraftPullRequestInput,
     DraftPullRequestWorkflow,
 )
@@ -128,6 +123,9 @@ from temporalio.worker import Worker
 from temporalio.worker.workflow_sandbox import SandboxedWorkflowRunner, SandboxRestrictions
 from tests.unit._draft_pr_park_support import DefectOnceDraftPr
 
+FAILURE = "FAILURE"
+SUCCESS = "SUCCESS"
+
 
 def _make_activities(
     existing_pr: FindOpenPrResult | None,
@@ -139,11 +137,12 @@ def _make_activities(
     unparks: list[UnparkTaskRequest] | None = None,
     *,
     status_moves: list[ApplyStatusRequest] | None = None,
-    ci_triggers: list[TriggerCIRequest] | None = None,
+    ci_triggers: list | None = None,
     ci_result: str = SUCCESS,
     ci_results: list[str] | None = None,
     ci_running_polls: int = 0,
     ci_unavailable_polls: int = 0,
+    checks_ran: bool = True,
     repairs: list[ApplyCIRepairRequest] | None = None,
     repair_actionable: bool = True,
     alerts: list[AlertHumanInterventionRequest] | None = None,
@@ -159,6 +158,7 @@ def _make_activities(
     scan_blocking_findings: int = 0,
     scan_result_findings: list[ScanFindingRecord] | None = None,
     scan_result_severity_counts: dict[str, int] | None = None,
+    scan_change_raises: bool = False,
     policy_requests: list[EvaluatePromotionRequest] | None = None,
     policy_allow: bool = True,
     policy_reasons: list[str] | None = None,
@@ -302,50 +302,23 @@ def _make_activities(
             status_moves.append(req)
         return ApplyStatusResult(status=req.stage, transitioned=bool(req.stage))
 
-    trigger_count = {"n": 0}
-    build_result: dict[int, str] = {}
+    checks_count = {"n": 0}
 
-    @activity.defn(name="trigger_ci")
-    async def fake_trigger_ci(req: TriggerCIRequest) -> TriggerCIResult:
-        idx = trigger_count["n"]
-        trigger_count["n"] += 1
-        build_number = 7 + idx
-        if ci_results is not None:
-            build_result[build_number] = ci_results[min(idx, len(ci_results) - 1)]
-        else:
-            build_result[build_number] = ci_result
+    @activity.defn(name="run_checks")
+    async def fake_run_checks(req: RunChecksRequest) -> RunChecksResult:
+        idx = checks_count["n"]
+        checks_count["n"] += 1
+        outcome = (
+            ci_results[min(idx, len(ci_results) - 1)] if ci_results is not None else ci_result
+        )
         if ci_triggers is not None:
             ci_triggers.append(req)
-        return TriggerCIResult(
-            build_number=build_number,
-            queue_id=42,
-            url=f"https://ci.example/{build_number}",
-            triggered=True,
-        )
-
-    poll_counts: dict[int, int] = {}
-
-    @activity.defn(name="poll_ci")
-    async def fake_poll_ci(req: PollCIRequest) -> PollCIResult:
-        n = poll_counts.get(req.build_number, 0) + 1
-        poll_counts[req.build_number] = n
-        url = f"https://ci.example/{req.build_number}"
-        if n <= ci_unavailable_polls:
-            return PollCIResult(status=CI_UNAVAILABLE, result="", url="", completed=False)
-        if n <= ci_unavailable_polls + ci_running_polls:
-            return PollCIResult(status=RUNNING, result="", url=url, completed=False)
-        return PollCIResult(
-            status=CI_COMPLETED,
-            result=build_result.get(req.build_number, ci_result),
-            url=url,
-            completed=True,
-        )
-
-    @activity.defn(name="read_ci_log")
-    async def fake_read_ci_log(req: ReadCILogRequest) -> ReadCILogResult:
-        return ReadCILogResult(
-            failure_summary="AssertionError: expected 1 got 2",
-            text="FAILED tests/test_x.py::test_x - AssertionError",
+        passed = outcome == SUCCESS
+        return RunChecksResult(
+            ran=checks_ran,
+            exit_code=0 if passed else 1,
+            output="" if passed else "AssertionError: expected 1 got 2",
+            skipped_reason="" if checks_ran else "no checks configured",
         )
 
     @activity.defn(name="analyze_ci_failure")
@@ -371,6 +344,10 @@ def _make_activities(
         if alerts is not None:
             alerts.append(req)
         return AlertHumanInterventionResult(channels=["jira"])
+
+    @activity.defn(name="reset_task_coordination")
+    async def fake_reset(req: ResetCoordinationRequest) -> ResetCoordinationResult:
+        return ResetCoordinationResult(released=True, sequence_reset=True)
 
     def _review_outcome(stage: str, verdict: str) -> ReviewOutcome:
         return ReviewOutcome(
@@ -443,6 +420,8 @@ def _make_activities(
     async def fake_scan_change(req: ScanChangeRequest) -> ScanChangeResult:
         if scan_requests is not None:
             scan_requests.append(req)
+        if scan_change_raises:
+            raise RuntimeError("scan backend unavailable")
         findings = list(scan_result_findings or [])
         scanner_verdicts = {"semgrep": "pass", "trivy": "pass"}
         for finding in findings:
@@ -510,12 +489,11 @@ def _make_activities(
         fake_mark_parked,
         fake_unmark_parked,
         fake_apply_status,
-        fake_trigger_ci,
-        fake_poll_ci,
-        fake_read_ci_log,
+        fake_run_checks,
         fake_analyze,
         fake_apply_repair,
         fake_alert,
+        fake_reset,
         fake_load_gate_plan,
         fake_evaluate_gate,
         fake_invoke_model,
@@ -571,24 +549,24 @@ async def _run(*, existing_pr: FindOpenPrResult | None = None, claim_version: in
 async def test_orchestrator_opens_draft_pr_through_the_full_chain():
     result, commits, pr_opens, linkbacks = await _run()
 
-    assert result.status == DRAFT_PR_OPEN
+    assert result.status == PR_PROMOTED
     assert result.branch == "agent/T-1"
     assert result.pr_number == 5
     assert result.pr_url == "https://github.com/org/agentic-demo-service/pull/5"
     assert result.linkback == "applied"
     assert len(commits) == 1
-    assert commits[0].sequence == 12
+    assert commits[0].sequence == 102
     assert len(pr_opens) == 1
-    assert pr_opens[0].sequence == 13
+    assert pr_opens[0].sequence == 103
     assert len(linkbacks) == 1
 
 
 async def test_reclaimed_execution_uses_higher_gate_sequences():
     result, commits, pr_opens, _ = await _run(claim_version=2)
 
-    assert result.status == DRAFT_PR_OPEN
-    assert commits[0].sequence == 22
-    assert pr_opens[0].sequence == 23
+    assert result.status == PR_PROMOTED
+    assert commits[0].sequence == 202
+    assert pr_opens[0].sequence == 203
 
 
 async def test_orchestrator_reuses_existing_pr_without_committing():
@@ -661,16 +639,16 @@ async def test_finalize_code_defect_parks_then_resumes_and_completes():
             assert state["reason"] == SuspendReason.AWAITING_FIX.value
             assert state["resume_on"] == ResumeOn.NEWER_BUILD.value
             assert state["parked_build_id"] == "1.4.1"
-            assert state["stage"] == "finalize"
+            assert state["stage"] == "push_branch"
             assert commits == []
 
             await handle.signal(RESUME_SIGNAL, ResumeOn.NEWER_BUILD.value)
             result = await handle.result()
 
-    assert result.status == DRAFT_PR_OPEN
+    assert result.status == PR_PROMOTED
     assert result.pr_number == 5
     assert len(commits) == 1
-    assert commits[0].sequence == 12
+    assert commits[0].sequence == 102
     assert len(pr_opens) == 1
 
 
@@ -735,7 +713,7 @@ async def test_park_mirrors_jira_status_and_restores_on_resume():
             await handle.signal(RESUME_SIGNAL, ResumeOn.NEWER_BUILD.value)
             result = await handle.result()
 
-    assert result.status == DRAFT_PR_OPEN
+    assert result.status == PR_PROMOTED
     assert len(unparks) == 1
     assert unparks[0].issue_key == "T-1"
     assert unparks[0].target_status == "In Progress"
@@ -763,10 +741,6 @@ def _ci_input(
         issue_key="T-1",
         file_impact=["feature.py"],
         stored_issue={"summary": "Implement the change"},
-        ci_job="agentic-demo-service-ci",
-        ci_poll_interval_seconds=poll_interval,
-        ci_poll_max_attempts=5,
-        ci_unavailable_alert_threshold=unavailable_threshold,
         max_repair_attempts=max_repair_attempts,
         max_cost_usd=max_cost_usd,
         run_reviews=run_reviews,
@@ -801,7 +775,7 @@ async def test_open_draft_pr_triggers_ci_and_advances_on_pass():
     commits: list[CommitPushRequest] = []
     pr_opens: list[OpenPrRequest] = []
     linkbacks: list[LinkbackRequest] = []
-    ci_triggers: list[TriggerCIRequest] = []
+    ci_triggers: list = []
     activities = _make_activities(
         None, 1, commits, pr_opens, linkbacks, ci_triggers=ci_triggers, ci_result=SUCCESS
     )
@@ -816,97 +790,18 @@ async def test_open_draft_pr_triggers_ci_and_advances_on_pass():
                 task_queue=task_queue,
             )
 
-    assert result.status == CI_PASSED
+    assert result.status == PR_PROMOTED
     assert result.ci_status == "passed"
-    assert result.ci_build_number == 7
-    assert result.ci_build_id == "7"
     assert len(ci_triggers) == 1
-    assert ci_triggers[0].job == "agentic-demo-service-ci"
-    assert ci_triggers[0].branch == "agent/T-1"
+    assert ci_triggers[0].repo == "agentic-demo-service"
     assert ci_triggers[0].commit_sha == "c" * 40
-    assert ci_triggers[0].sequence == 14
-
-
-async def test_ci_webhook_signal_resumes_parked_wait_to_pass():
-    activities = _make_activities(
-        None, 1, [], [], [], ci_result=SUCCESS, ci_running_polls=1
-    )
-
-    async with await WorkflowEnvironment.start_time_skipping() as env:
-        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
-        async with await _start_ci_worker(env, task_queue, activities):
-            handle = await env.client.start_workflow(
-                DraftPullRequestWorkflow.run,
-                _ci_input(poll_interval=0.0),
-                id=f"wf-{uuid.uuid4().hex[:8]}",
-                task_queue=task_queue,
-            )
-            state = await _await_ci_park(handle)
-            assert state["reason"] == SuspendReason.AWAITING_CI.value
-            assert state["resume_on"] == ResumeOn.CI_RESULT.value
-            assert state["stage"] == "ci"
-            await handle.signal(DraftPullRequestWorkflow.submit_ci_result)
-            result = await handle.result()
-
-    assert result.status == CI_PASSED
-    assert result.ci_status == "passed"
-
-
-async def test_ci_poll_fallback_resumes_without_a_webhook():
-    activities = _make_activities(
-        None, 1, [], [], [], ci_result=SUCCESS, ci_running_polls=1
-    )
-
-    async with await WorkflowEnvironment.start_time_skipping() as env:
-        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
-        async with await _start_ci_worker(env, task_queue, activities):
-            result = await env.client.execute_workflow(
-                DraftPullRequestWorkflow.run,
-                _ci_input(poll_interval=1.0),
-                id=f"wf-{uuid.uuid4().hex[:8]}",
-                task_queue=task_queue,
-            )
-
-    assert result.status == CI_PASSED
-    assert result.ci_status == "passed"
-
-
-async def test_ci_unavailable_parks_alerts_then_resumes_when_ci_returns():
-    alerts: list[AlertHumanInterventionRequest] = []
-    activities = _make_activities(
-        None,
-        1,
-        [],
-        [],
-        [],
-        ci_result=SUCCESS,
-        ci_unavailable_polls=2,
-        alerts=alerts,
-    )
-
-    async with await WorkflowEnvironment.start_time_skipping() as env:
-        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
-        async with await _start_ci_worker(env, task_queue, activities):
-            result = await env.client.execute_workflow(
-                DraftPullRequestWorkflow.run,
-                _ci_input(poll_interval=1.0, unavailable_threshold=2),
-                id=f"wf-{uuid.uuid4().hex[:8]}",
-                task_queue=task_queue,
-            )
-
-    assert result.status == CI_PASSED
-    assert result.ci_status == "passed"
-    assert len(alerts) == 1
-    assert "unreachable" in alerts[0].detail
-    assert alerts[0].reason == "ci_unavailable"
-    assert alerts[0].stage == "ci"
 
 
 async def test_ci_failure_repairs_and_passes():
     commits: list[CommitPushRequest] = []
     pr_opens: list[OpenPrRequest] = []
     linkbacks: list[LinkbackRequest] = []
-    ci_triggers: list[TriggerCIRequest] = []
+    ci_triggers: list = []
     repairs: list[ApplyCIRepairRequest] = []
     activities = _make_activities(
         None,
@@ -929,20 +824,18 @@ async def test_ci_failure_repairs_and_passes():
                 task_queue=task_queue,
             )
 
-    assert result.status == CI_PASSED
+    assert result.status == PR_PROMOTED
     assert result.ci_status == "passed"
     assert result.repair_attempts == 1
-    assert result.ci_build_number == 8
     assert len(repairs) == 1
     assert repairs[0].instruction == "Fix the failing assertion"
     assert len(ci_triggers) == 2
-    assert ci_triggers[1].sequence == 16
     assert len(commits) == 2
-    assert commits[1].sequence == 15
+    assert commits[1].sequence == 105
 
 
 async def test_triage_patch_verdict_runs_the_repair():
-    ci_triggers: list[TriggerCIRequest] = []
+    ci_triggers: list = []
     repairs: list[ApplyCIRepairRequest] = []
     activities = _make_activities(
         None,
@@ -967,13 +860,13 @@ async def test_triage_patch_verdict_runs_the_repair():
                 task_queue=task_queue,
             )
 
-    assert result.status == CI_PASSED
+    assert result.status == PR_PROMOTED
     assert result.repair_attempts == 1
     assert len(repairs) == 1
 
 
 async def test_triage_flaky_verdict_reruns_without_a_repair():
-    ci_triggers: list[TriggerCIRequest] = []
+    ci_triggers: list = []
     repairs: list[ApplyCIRepairRequest] = []
     activities = _make_activities(
         None,
@@ -998,14 +891,14 @@ async def test_triage_flaky_verdict_reruns_without_a_repair():
                 task_queue=task_queue,
             )
 
-    assert result.status == CI_PASSED
+    assert result.status == PR_PROMOTED
     assert result.repair_attempts == 0
     assert len(repairs) == 0
     assert len(ci_triggers) == 2
 
 
 async def test_triage_environment_verdict_escalates_to_human():
-    ci_triggers: list[TriggerCIRequest] = []
+    ci_triggers: list = []
     repairs: list[ApplyCIRepairRequest] = []
     alerts: list[AlertHumanInterventionRequest] = []
     activities = _make_activities(
@@ -1082,7 +975,7 @@ async def test_ci_repair_exhausted_parks_for_human_and_abandons():
     commits: list[CommitPushRequest] = []
     pr_opens: list[OpenPrRequest] = []
     linkbacks: list[LinkbackRequest] = []
-    ci_triggers: list[TriggerCIRequest] = []
+    ci_triggers: list = []
     repairs: list[ApplyCIRepairRequest] = []
     alerts: list[AlertHumanInterventionRequest] = []
     activities = _make_activities(
@@ -1118,7 +1011,6 @@ async def test_ci_repair_exhausted_parks_for_human_and_abandons():
     assert result.repair_attempts == 2
     assert len(repairs) == 2
     assert len(ci_triggers) == 3
-    assert ci_triggers[2].sequence == 18
     assert len(alerts) == 1
     assert alerts[0].reason == "repair_exhausted"
     assert alerts[0].stage == "repair"
@@ -1128,7 +1020,7 @@ async def test_ci_repair_stops_on_cumulative_budget():
     commits: list[CommitPushRequest] = []
     pr_opens: list[OpenPrRequest] = []
     linkbacks: list[LinkbackRequest] = []
-    ci_triggers: list[TriggerCIRequest] = []
+    ci_triggers: list = []
     repairs: list[ApplyCIRepairRequest] = []
     alerts: list[AlertHumanInterventionRequest] = []
     usage: list[UsageMetrics] = []
@@ -1174,7 +1066,7 @@ async def test_ci_repair_retry_decision_reruns_and_passes():
     commits: list[CommitPushRequest] = []
     pr_opens: list[OpenPrRequest] = []
     linkbacks: list[LinkbackRequest] = []
-    ci_triggers: list[TriggerCIRequest] = []
+    ci_triggers: list = []
     repairs: list[ApplyCIRepairRequest] = []
     alerts: list[AlertHumanInterventionRequest] = []
     activities = _make_activities(
@@ -1202,7 +1094,7 @@ async def test_ci_repair_retry_decision_reruns_and_passes():
             await handle.signal("submit_repair_decision", args=[True, "release-manager"])
             result = await handle.result()
 
-    assert result.status == CI_PASSED
+    assert result.status == PR_PROMOTED
     assert result.repair_attempts == 2
     assert len(repairs) == 1
     assert len(ci_triggers) == 3
@@ -1213,7 +1105,7 @@ async def test_ci_failure_unactionable_parks_for_human():
     commits: list[CommitPushRequest] = []
     pr_opens: list[OpenPrRequest] = []
     linkbacks: list[LinkbackRequest] = []
-    ci_triggers: list[TriggerCIRequest] = []
+    ci_triggers: list = []
     repairs: list[ApplyCIRepairRequest] = []
     alerts: list[AlertHumanInterventionRequest] = []
     activities = _make_activities(
@@ -1246,71 +1138,9 @@ async def test_ci_failure_unactionable_parks_for_human():
     assert result.terminal_reason == "human_abandoned"
     assert result.ci_status == "failed"
     assert result.repair_attempts == 0
-    assert result.ci_build_number == 7
     assert len(repairs) == 0
     assert len(ci_triggers) == 1
     assert len(alerts) == 1
-
-
-async def test_ci_parks_on_awaiting_ci_and_resumes_on_build_result():
-    commits: list[CommitPushRequest] = []
-    pr_opens: list[OpenPrRequest] = []
-    linkbacks: list[LinkbackRequest] = []
-    activities = _make_activities(
-        None, 1, commits, pr_opens, linkbacks, ci_result=SUCCESS, ci_running_polls=1
-    )
-
-    async with await WorkflowEnvironment.start_time_skipping() as env:
-        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
-        async with await _start_ci_worker(env, task_queue, activities):
-            handle = await env.client.start_workflow(
-                DraftPullRequestWorkflow.run,
-                _ci_input(poll_interval=0.0),
-                id=f"wf-{uuid.uuid4().hex[:8]}",
-                task_queue=task_queue,
-            )
-
-            state: dict[str, str] = {}
-            for _ in range(50):
-                state = await handle.query(DraftPullRequestWorkflow.suspension_state)
-                if state.get("reason") == SuspendReason.AWAITING_CI.value:
-                    break
-                await asyncio.sleep(0.05)
-
-            assert state["reason"] == SuspendReason.AWAITING_CI.value
-            assert state["resume_on"] == ResumeOn.CI_RESULT.value
-            assert state["parked_build_id"] == "7"
-            assert state["stage"] == "ci"
-
-            await handle.signal(RESUME_SIGNAL, ResumeOn.CI_RESULT.value)
-            result = await handle.result()
-
-    assert result.status == CI_PASSED
-    assert result.ci_status == "passed"
-    assert result.ci_build_number == 7
-
-
-async def test_ci_bounded_poll_resumes_without_a_signal():
-    commits: list[CommitPushRequest] = []
-    pr_opens: list[OpenPrRequest] = []
-    linkbacks: list[LinkbackRequest] = []
-    activities = _make_activities(
-        None, 1, commits, pr_opens, linkbacks, ci_result=SUCCESS, ci_running_polls=1
-    )
-
-    async with await WorkflowEnvironment.start_time_skipping() as env:
-        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
-        async with await _start_ci_worker(env, task_queue, activities):
-            result = await env.client.execute_workflow(
-                DraftPullRequestWorkflow.run,
-                _ci_input(poll_interval=30.0),
-                id=f"wf-{uuid.uuid4().hex[:8]}",
-                task_queue=task_queue,
-            )
-
-    assert result.status == CI_PASSED
-    assert result.ci_status == "passed"
-    assert result.ci_build_number == 7
 
 
 async def test_ci_pass_flows_through_review_gates_with_attestations():
@@ -1338,7 +1168,7 @@ async def test_ci_pass_flows_through_review_gates_with_attestations():
                 task_queue=task_queue,
             )
 
-    assert result.status == REVIEW_PASSED
+    assert result.status == PR_PROMOTED
     assert result.review_status == "passed"
     assert result.code_verdict == "pass"
     assert result.security_verdict == "pass"
@@ -1441,7 +1271,7 @@ async def test_review_pause_for_human_parks_then_approve_proceeds():
             )
             result = await handle.result()
 
-    assert result.status == REVIEW_PASSED
+    assert result.status == PR_PROMOTED
     assert result.review_status == "passed"
     assert alerts[0].reason == "gate_paused:security-review"
     assert alerts[0].stage == "review"
@@ -1552,7 +1382,7 @@ async def test_policy_human_review_parks_then_approve_promotes():
             )
             result = await handle.result()
 
-    assert result.status == POLICY_ALLOWED
+    assert result.status == PR_PROMOTED
     assert result.policy_status == "allowed"
 
 
@@ -1622,7 +1452,7 @@ async def test_plan_human_gate_parks_then_approve_continues():
             await handle.signal("submit_gate_decision", args=["plan", True, "tech-lead"])
             result = await handle.result()
 
-    assert result.status == REVIEW_PASSED
+    assert result.status == PR_PROMOTED
 
 
 async def test_plan_human_gate_reject_stops_the_run():
@@ -1680,7 +1510,7 @@ async def test_plan_human_gate_is_inert_by_default():
                 task_queue=task_queue,
             )
 
-    assert result.status == REVIEW_PASSED
+    assert result.status == PR_PROMOTED
 
 
 async def test_plan_stage_feeds_the_reviewed_plan_to_the_coder():
@@ -1708,7 +1538,7 @@ async def test_plan_stage_feeds_the_reviewed_plan_to_the_coder():
                 task_queue=task_queue,
             )
 
-    assert result.status == REVIEW_PASSED
+    assert result.status == PR_PROMOTED
     assert len(impl_requests) == 1
     assert "Edit feature.py" in impl_requests[0].plan
     assert impl_requests[0].context_package == {"nodes": ["feature.py"]}
@@ -1805,7 +1635,7 @@ async def test_agent_summary_reaches_pr_and_review_subject():
                 task_queue=task_queue,
             )
 
-    assert result.status == REVIEW_PASSED
+    assert result.status == PR_PROMOTED
     assert "done" in pr_opens[0].body
     assert any(
         "Implementation summary:" in request.subject and "done" in request.subject
@@ -1840,7 +1670,7 @@ async def test_ci_pass_reaches_the_policy_gate_and_promotes():
                 task_queue=task_queue,
             )
 
-    assert result.status == POLICY_ALLOWED
+    assert result.status == PR_PROMOTED
     assert result.policy_status == "allowed"
     assert result.policy_bundle_version == "0.4.0"
     assert result.policy_next_action == "proceed"
@@ -2015,6 +1845,54 @@ async def test_scan_findings_and_severity_reach_policy_and_result():
     ]
 
 
+async def test_scan_backend_unavailable_fails_closed_after_retries():
+    commits: list[CommitPushRequest] = []
+    pr_opens: list[OpenPrRequest] = []
+    linkbacks: list[LinkbackRequest] = []
+    scan_requests: list[ScanChangeRequest] = []
+    policy_requests: list[EvaluatePromotionRequest] = []
+    activities = _make_activities(
+        None,
+        1,
+        commits,
+        pr_opens,
+        linkbacks,
+        ci_result=SUCCESS,
+        scan_change_raises=True,
+        scan_requests=scan_requests,
+        policy_requests=policy_requests,
+        policy_allow=False,
+        policy_reasons=["gate_failed:semgrep"],
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            result = await env.client.execute_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(run_reviews=True, run_policy=True),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+
+    # The activity was retried to exhaustion, then the workflow failed the scanner gates closed
+    # rather than crashing, and no pull request was opened.
+    assert len(scan_requests) == 3
+    assert result.status != PR_PROMOTED
+    assert result.pr_number == 0
+    assert [f["rule_id"] for f in result.scan_findings] == [
+        "gate-backend-error",
+        "gate-backend-error",
+    ]
+    assert result.scan_blocking_findings == 2
+    scanner_gates = {
+        gate.name: gate.verdict
+        for gate in policy_requests[0].gates
+        if gate.name in {"semgrep", "trivy"}
+    }
+    assert scanner_gates == {"semgrep": "block", "trivy": "block"}
+
+
 async def _await_approval_park(handle) -> dict[str, str]:
     state: dict[str, str] = {}
     for _ in range(50):
@@ -2068,9 +1946,9 @@ async def test_approval_parks_and_promotes_pr_on_approve():
     assert result.promoted is True
     assert len(approvals) == 1
     assert approvals[0].approved is True
-    assert approvals[0].sequence == 25
+    assert approvals[0].sequence == 115
     assert len(promotions) == 1
-    assert promotions[0].sequence == 26
+    assert promotions[0].sequence == 116
     assert alerts == []
 
 
@@ -2147,3 +2025,9 @@ async def test_approval_snapshot_drift_cancels_promotion():
     assert result.promoted is False
     assert len(approvals) == 1
     assert len(promotions) == 0
+
+
+def test_sequence_stride_exceeds_the_worst_case_intra_execution_offset():
+    max_repair_attempts = DraftPullRequestInput.max_repair_attempts
+    worst_case_offset = _CI_TRIGGER_OFFSET + _REPAIR_STRIDE * max_repair_attempts + _PROMOTE_OFFSET
+    assert worst_case_offset < _SEQUENCE_STRIDE

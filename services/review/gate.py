@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from typing import Any
 
@@ -59,7 +60,7 @@ class ReviewGate:
         self._retention = retention
 
     async def review(self, review: ReviewInput, *, execution_id: str) -> ReviewResult:
-        raw = self._kernel.run(review)
+        raw = await asyncio.to_thread(self._kernel.run, review)
         payload = verdict_payload(review, raw)
         attestation = self._attestor.sign(payload)
         if not self._attestor.verify(attestation, payload):
@@ -84,6 +85,8 @@ class ReviewGate:
                 "issued_at": attestation.issued_at,
                 "signature": attestation.signature,
                 "finding_count": len(raw.findings),
+                "findings": payload["findings"],
+                "summary": raw.summary,
                 "provenance": payload["provenance"],
             },
         )

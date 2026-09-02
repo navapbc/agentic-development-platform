@@ -51,17 +51,23 @@ processors:
 exporters:
   debug:
     verbosity: normal
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+  prometheus:
+    endpoint: 0.0.0.0:8889
 
 service:
   pipelines:
     traces:
       receivers: [otlp]
       processors: [memory_limiter, attributes/redact, batch]
-      exporters: [debug]
+      exporters: [debug, otlp/tempo]
     metrics:
       receivers: [otlp]
       processors: [memory_limiter, batch]
-      exporters: [debug]
+      exporters: [debug, prometheus]
     logs:
       receivers: [otlp]
       processors: [memory_limiter, attributes/redact, batch]

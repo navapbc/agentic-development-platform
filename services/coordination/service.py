@@ -148,19 +148,31 @@ def _work_unit(payload: dict[str, Any]) -> WorkUnit:
 
 def _temporal_owner_active() -> Callable[[str], Awaitable[bool]]:
     settings = get_settings()
+    cache: dict[str, Any] = {"client": None}
+    lock = asyncio.Lock()
+
+    async def _client() -> Any:
+        from temporalio.client import Client
+
+        if cache["client"] is None:
+            async with lock:
+                if cache["client"] is None:
+                    cache["client"] = await Client.connect(
+                        settings.temporal_host, namespace=settings.temporal_namespace
+                    )
+        return cache["client"]
 
     async def _active(workflow_id: str) -> bool:
-        from temporalio.client import Client, WorkflowExecutionStatus
+        from temporalio.client import WorkflowExecutionStatus
         from temporalio.service import RPCError, RPCStatusCode
 
         try:
-            client = await Client.connect(
-                settings.temporal_host, namespace=settings.temporal_namespace
-            )
+            client = await _client()
             description = await client.get_workflow_handle(workflow_id).describe()
         except RPCError as exc:
             return exc.status != RPCStatusCode.NOT_FOUND
         except Exception:  # noqa: BLE001
+            cache["client"] = None
             return True
         return description.status == WorkflowExecutionStatus.RUNNING
 

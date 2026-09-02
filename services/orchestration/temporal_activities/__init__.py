@@ -4,7 +4,7 @@ from services.orchestration.temporal_activities.branch_sync import (
     resolve_conflicts,
     synchronize_branch,
 )
-from services.orchestration.temporal_activities.ci import poll_ci, read_ci_log, trigger_ci
+from services.orchestration.temporal_activities.checks import run_checks
 from services.orchestration.temporal_activities.counter import count_tick
 from services.orchestration.temporal_activities.gates import (
     classify_test_failures,
@@ -13,6 +13,7 @@ from services.orchestration.temporal_activities.gates import (
 )
 from services.orchestration.temporal_activities.implementation import (
     claim_work_unit,
+    reset_task_coordination,
     run_implementation_stage,
 )
 from services.orchestration.temporal_activities.intake import (
@@ -65,6 +66,7 @@ __all__ = [
     "apply_ci_repair",
     "apply_task_status",
     "claim_work_unit",
+    "reset_task_coordination",
     "classify_test_failures",
     "clear_suspension",
     "commit_and_push",
@@ -79,9 +81,7 @@ __all__ = [
     "link_pr_to_issue",
     "mark_task_parked",
     "persist_execution_state",
-    "poll_ci",
     "promote_pr",
-    "read_ci_log",
     "recheck_issue",
     "reap_orphans",
     "reconcile_intake_pass",
@@ -94,10 +94,10 @@ __all__ = [
     "review_code",
     "review_plan",
     "review_security",
+    "run_checks",
     "run_implementation_stage",
     "scan_change",
     "synchronize_branch",
-    "trigger_ci",
     "unmark_task_parked",
     "verify_acceptance",
 ]

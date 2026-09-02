@@ -9,6 +9,7 @@ from services.repository_intelligence.normalization.models import (
     Provenance,
     RecentChange,
     Reference,
+    SearchHit,
     Source,
     Symbol,
     SymbolKind,
@@ -38,6 +39,9 @@ def _package() -> ContextPackage:
             CallEdge(_sym("caller", "app/main.py", 5), _sym("callee", "app/store.py", 1), _prov()),
         ),
         candidate_files=("app/store.py",),
+        structural=(
+            SearchHit(Location("app/main.py", 17), '@app.get("/health")', 1.0, _prov()),
+        ),
         build_targets=("console_script:pytest",),
         config_files=("pyproject.toml",),
         repository="agentic-demo-service",
@@ -64,6 +68,8 @@ def test_render_context_summary_includes_key_sections():
     assert "app.main.health (function) app/main.py:17" in summary
     assert "Candidate files:" in summary
     assert "  - app/store.py" in summary
+    assert "Structural matches:" in summary
+    assert 'app/main.py:17 @app.get("/health")' in summary
     assert "caller -> callee" in summary
     assert "Build targets: console_script:pytest" in summary
     assert "Config files: pyproject.toml" in summary

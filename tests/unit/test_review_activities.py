@@ -63,7 +63,9 @@ async def _invoke(monkeypatch, activity_fn, raw: RawReview):
     kernel = _CapturingKernel(raw)
     sink = _Sink()
     monkeypatch.setattr(
-        review, "build_review_gate", lambda: ReviewGate(kernel, sink, HmacAttestor("t"))
+        review,
+        "build_review_gate",
+        lambda stage=None: ReviewGate(kernel, sink, HmacAttestor("t")),
     )
     req = ReviewRequest(
         task_id="T-1", execution_id="exec-1", subject="a diff", context_summary="ctx"
@@ -130,3 +132,40 @@ async def test_verify_acceptance_blocking(monkeypatch):
     assert outcome.verdict == "block"
     assert outcome.findings == ["SQLi"]
     assert len(sink.records) == 1
+
+
+def test_resolve_repo_root_prefers_explicit_existing_root(tmp_path):
+    req = ReviewRequest(
+        task_id="T", execution_id="E", subject="s", repo_root=str(tmp_path)
+    )
+    assert review._resolve_repo_root(req) == str(tmp_path)
+
+
+def test_resolve_repo_root_maps_repo_to_ris_path(tmp_path, monkeypatch):
+    class _Settings:
+        def repo_intelligence_registry(self):
+            return {"demo": (str(tmp_path), None)}
+
+    monkeypatch.setattr(review, "get_settings", lambda: _Settings(), raising=False)
+    monkeypatch.setattr(
+        "scripts.config.get_settings", lambda: _Settings(), raising=False
+    )
+    req = ReviewRequest(task_id="T", execution_id="E", subject="s", repo="demo")
+    assert review._resolve_repo_root(req) == str(tmp_path)
+
+
+def test_resolve_repo_root_returns_none_for_missing_path(monkeypatch):
+    class _Settings:
+        def repo_intelligence_registry(self):
+            return {"demo": ("/nonexistent/path/xyz", None)}
+
+    monkeypatch.setattr(
+        "scripts.config.get_settings", lambda: _Settings(), raising=False
+    )
+    req = ReviewRequest(task_id="T", execution_id="E", subject="s", repo="demo")
+    assert review._resolve_repo_root(req) is None
+
+
+def test_resolve_repo_root_none_without_repo():
+    req = ReviewRequest(task_id="T", execution_id="E", subject="s")
+    assert review._resolve_repo_root(req) is None

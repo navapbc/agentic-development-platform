@@ -31,6 +31,19 @@ class ClaimResult:
 
 
 @dataclass
+class ResetCoordinationRequest:
+    task_id: str
+    work_unit: str
+    workflow_id: str
+
+
+@dataclass
+class ResetCoordinationResult:
+    released: bool
+    sequence_reset: bool
+
+
+@dataclass
 class ImplementationRequest:
     task_id: str
     execution_id: str
@@ -133,6 +146,22 @@ async def claim_work_unit(req: ClaimRequest) -> ClaimResult:
         won=outcome.won,
         claim_version=outcome.claim_version,
     )
+
+
+@activity.defn
+async def reset_task_coordination(req: ResetCoordinationRequest) -> ResetCoordinationResult:
+    from services.coordination.claims import (
+        PostgresWorkClaimStore,
+        claim_id_for,
+    )
+    from services.coordination.sequencing import PostgresSequenceGate
+
+    claim_id = claim_id_for(req.task_id, req.work_unit)
+    released = await PostgresWorkClaimStore().release(
+        claim_id, owner_workflow_id=req.workflow_id
+    )
+    await PostgresSequenceGate().reset(req.task_id)
+    return ResetCoordinationResult(released=released, sequence_reset=True)
 
 
 @activity.defn

@@ -8,6 +8,7 @@ from typing import Any
 
 from temporalio import workflow
 from temporalio.common import RetryPolicy
+from temporalio.exceptions import ActivityError
 
 with workflow.unsafe.imports_passed_through():
     from services.orchestration.gates.contract import PAUSE_FOR_HUMAN, GateContext
@@ -17,16 +18,10 @@ with workflow.unsafe.imports_passed_through():
         RecheckResult,
         recheck_issue,
     )
-    from services.orchestration.temporal_activities.ci import (
-        PollCIRequest,
-        PollCIResult,
-        ReadCILogRequest,
-        ReadCILogResult,
-        TriggerCIRequest,
-        TriggerCIResult,
-        poll_ci,
-        read_ci_log,
-        trigger_ci,
+    from services.orchestration.temporal_activities.checks import (
+        RunChecksRequest,
+        RunChecksResult,
+        run_checks,
     )
     from services.orchestration.temporal_activities.gates import (
         ClassifyTestFailuresRequest,
@@ -36,6 +31,10 @@ with workflow.unsafe.imports_passed_through():
         classify_test_failures,
         evaluate_gate,
         load_gate_plan,
+    )
+    from services.orchestration.temporal_activities.implementation import (
+        ResetCoordinationRequest,
+        reset_task_coordination,
     )
     from services.orchestration.temporal_activities.manifest import (
         RecordManifestRequest,
@@ -94,6 +93,7 @@ with workflow.unsafe.imports_passed_through():
     from services.orchestration.temporal_activities.security import (
         ScanChangeRequest,
         ScanChangeResult,
+        ScanFindingRecord,
         scan_change,
     )
     from services.orchestration.temporal_activities.suspension import (
@@ -127,7 +127,6 @@ with workflow.unsafe.imports_passed_through():
         PlanReviewWorkflow,
     )
 
-from adapters.interfaces.ci_host import SUCCESS, UNAVAILABLE
 from adapters.interfaces.policy_engine import PolicyGate
 
 from services.orchestration.suspension import ResumeOn, SuspendReason, Suspension
@@ -140,10 +139,11 @@ CLAIM_DENIED = "claim_denied"
 IMPL_FAILED = "impl_failed"
 PLAN_REJECTED = "plan_rejected"
 SYNC_PAUSED = "sync_paused"
+BRANCH_READY = "branch_ready"
 DRAFT_PR_OPEN = "draft_pr_open"
 CI_PASSED = "ci_passed"
 CI_FAILED = "ci_failed"
-CI_RUNNING = "CI_RUNNING"
+CHECKS_RUNNING = "CHECKS_RUNNING"
 REPAIRING = "REPAIRING"
 REVIEW_PASSED = "review_passed"
 REVIEW_BLOCKED = "review_blocked"
@@ -162,7 +162,7 @@ COMPLETED = "COMPLETED"
 PR_MERGED = "pr_merged"
 PR_CLOSED_UNMERGED = "pr_closed_unmerged"
 
-_SEQUENCE_STRIDE = 10
+_SEQUENCE_STRIDE = 100
 _COMMIT_OFFSET = 2
 _OPEN_PR_OFFSET = 3
 _CI_TRIGGER_OFFSET = 4
@@ -174,6 +174,7 @@ _CODE_REVIEW = "code-review"
 _SECURITY_REVIEW = "security-review"
 _ACCEPTANCE = "acceptance"
 _REVIEW = "REVIEW"
+_REVIEW_KIND = "review"
 
 
 @dataclass
@@ -186,6 +187,7 @@ class DraftPullRequestInput:
     task: str
     issue_key: str = ""
     focus: str = ""
+    task_description: str = ""
     work_unit: str = "unit-1"
     agent_id: str = "agent-a"
     file_impact: list[str] = field(default_factory=list)
@@ -199,10 +201,7 @@ class DraftPullRequestInput:
     activity_timeout_seconds: float = 2400.0
     build_id: str = ""
     parked_status: str = ""
-    ci_job: str = ""
-    ci_poll_interval_seconds: float = 60.0
-    ci_poll_max_attempts: int = 20
-    ci_unavailable_alert_threshold: int = 3
+    checks_timeout_minutes: int = 25
     max_repair_attempts: int = 5
     run_reviews: bool = False
     run_planning: bool = False
@@ -229,8 +228,6 @@ class DraftPullRequestOutput:
     linkback: str = "none"
     reused: bool = False
     ci_status: str = ""
-    ci_build_id: str = ""
-    ci_build_number: int = 0
     repair_attempts: int = 0
     review_status: str = ""
     code_verdict: str = ""
@@ -282,6 +279,32 @@ def _project_from_issue(issue_key: str) -> str:
     return issue_key.split("-", 1)[0] if "-" in issue_key else ""
 
 
+def _scanner_unavailable_result(plan: GatePlan) -> ScanChangeResult:
+    names = [node.name for node in plan.scanner]
+    findings = [
+        ScanFindingRecord(
+            finding_id=f"{name}-backend-error",
+            scanner=name,
+            kind="error",
+            severity="critical",
+            title=f"gate {name!r} backend failed",
+            detail="scanner backend unavailable after retries",
+            rule_id="gate-backend-error",
+        )
+        for name in names
+    ]
+    return ScanChangeResult(
+        scanners=names,
+        findings=findings,
+        blocking_count=len(findings),
+        threshold="high",
+        content_hash="",
+        evidence_id="",
+        severity_counts={"critical": len(findings)} if findings else {},
+        scanner_verdicts={name: "block" for name in names},
+    )
+
+
 def _change_subject(impl: ImplementationOutput, commit_sha: str) -> str:
     files = "\n".join(impl.changed_files) if impl.changed_files else "(no file list)"
     subject = f"Change on branch {impl.branch} at {commit_sha}.\nChanged files:\n{files}"
@@ -307,6 +330,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         self._repair_llm_calls: int = 0
         self._plan_approved: bool = False
         self._alert_seq: int = 0
+        self._checks_output: str = ""
 
     @workflow.signal(name="submit_pr_approval")
     def submit_pr_approval(self, approved: bool, approver: str = "") -> None:
@@ -330,11 +354,6 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
     def submit_gate_decision(self, gate: str, approved: bool, actor: str = "") -> None:
         self._gate_decision = _GateDecision(gate=gate, approved=approved, actor=actor)
         self._resume_trigger = ResumeOn.HUMAN_APPROVAL.value
-        self._resume_requested = True
-
-    @workflow.signal(name="submit_ci_result")
-    def submit_ci_result(self) -> None:
-        self._resume_trigger = ResumeOn.CI_RESULT.value
         self._resume_requested = True
 
     @workflow.run
@@ -403,6 +422,8 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                     commit=params.base_sha,
                     focus=params.focus,
                     context_summary=context_summary,
+                    task=params.task,
+                    description=params.task_description,
                 ),
                 id=f"{workflow_id}-plan",
             )
@@ -533,7 +554,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
 
         while True:
             try:
-                outcome = await self._finalize(params, impl, workflow_id, title)
+                outcome = await self._push_branch(params, impl, workflow_id)
                 break
             except Exception as exc:  # noqa: BLE001
                 if not is_code_defect(exc):
@@ -541,7 +562,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 suspension = Suspension(
                     reason=SuspendReason.AWAITING_FIX,
                     resume_on=ResumeOn.NEWER_BUILD,
-                    stage="finalize",
+                    stage="push_branch",
                     parked_build_id=params.build_id,
                     detail=str(exc),
                 )
@@ -588,15 +609,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                     retry_policy=retry,
                 )
 
-        if params.issue_key and outcome.status == DRAFT_PR_OPEN:
-            await workflow.execute_activity(
-                apply_task_status,
-                ApplyStatusRequest(issue_key=params.issue_key, stage="ready_for_review"),
-                start_to_close_timeout=short,
-                retry_policy=retry,
-            )
-
-        if params.ci_job and outcome.status == DRAFT_PR_OPEN:
+        if outcome.status == BRANCH_READY:
             outcome = await self._ci_and_repair(params, impl, outcome, workflow_id)
             while outcome.status == CI_FAILED:
                 await self._alert_human_intervention(params, outcome, workflow_id)
@@ -621,20 +634,26 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 outcome = await self._ci_and_repair(
                     params, impl, outcome, workflow_id, base=self._max_attempt_used + 1
                 )
-            if outcome.status == CI_PASSED and params.run_reviews:
-                outcome = await self._review(params, impl, outcome, workflow_id)
-                if params.run_policy and outcome.status == REVIEW_PASSED:
+            if outcome.status == CI_PASSED:
+                passed = True
+                if params.run_reviews:
+                    outcome = await self._review(params, impl, outcome, workflow_id)
+                    passed = outcome.status == REVIEW_PASSED
+                if passed and params.run_policy:
                     outcome = await self._policy(params, impl, outcome, workflow_id)
-                    if params.run_approval and outcome.status == POLICY_ALLOWED:
-                        return await self._promote(params, impl, outcome, workflow_id)
+                    passed = outcome.status == POLICY_ALLOWED
+                if passed:
+                    outcome = await self._open_pull_request(
+                        params, impl, outcome, workflow_id, title
+                    )
+                    return await self._promote(params, impl, outcome, workflow_id)
         return outcome
 
-    async def _finalize(
+    async def _push_branch(
         self,
         params: DraftPullRequestInput,
         impl: ImplementationOutput,
         workflow_id: str,
-        title: str,
     ) -> DraftPullRequestOutput:
         retry = RetryPolicy(maximum_attempts=3)
         commit_timeout = timedelta(minutes=5)
@@ -689,8 +708,27 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             )
         commit = self._commit
 
+        return DraftPullRequestOutput(
+            execution_id=params.execution_id,
+            status=BRANCH_READY,
+            terminal_reason=impl.terminal_reason,
+            branch=commit.branch,
+        )
+
+    async def _open_pull_request(
+        self,
+        params: DraftPullRequestInput,
+        impl: ImplementationOutput,
+        outcome: DraftPullRequestOutput,
+        workflow_id: str,
+        title: str,
+    ) -> DraftPullRequestOutput:
+        sequence_base = impl.claim_version * _SEQUENCE_STRIDE
+        commit = self._commit
+        commit_branch = commit.branch if commit else outcome.branch
+
         body = params.body or (
-            f"Automated draft for {params.issue_key} (execution {params.execution_id})."
+            f"Automated change for {params.issue_key} (execution {params.execution_id})."
         )
         if impl.summary:
             body = f"{body}\n\n{impl.summary}"
@@ -702,7 +740,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                     execution_id=params.execution_id,
                     repo=params.repo,
                     base=params.base,
-                    branch=commit.branch,
+                    branch=commit_branch,
                     title=title,
                     body=body,
                     issue_key=params.issue_key,
@@ -713,11 +751,10 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             )
         pr = self._pr
 
-        return DraftPullRequestOutput(
-            execution_id=params.execution_id,
+        return replace(
+            outcome,
             status=DRAFT_PR_OPEN,
-            terminal_reason=impl.terminal_reason,
-            branch=commit.branch,
+            branch=commit_branch,
             pr_number=pr.number,
             pr_url=pr.url,
             linkback=pr.linkback,
@@ -843,6 +880,16 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 reason=reason,
             )
         )
+        await workflow.execute_activity(
+            reset_task_coordination,
+            ResetCoordinationRequest(
+                task_id=params.task_id,
+                work_unit=params.work_unit,
+                workflow_id=workflow_id,
+            ),
+            start_to_close_timeout=short,
+            retry_policy=retry,
+        )
 
     async def _alert_human_intervention(
         self,
@@ -850,21 +897,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         outcome: DraftPullRequestOutput,
         workflow_id: str,
     ) -> None:
-        retry = RetryPolicy(maximum_attempts=3)
-        short = timedelta(seconds=30)
-        failure_summary = ""
-        if params.ci_job and outcome.ci_build_number:
-            log: ReadCILogResult = await workflow.execute_activity(
-                read_ci_log,
-                ReadCILogRequest(
-                    repo=params.repo,
-                    job=params.ci_job,
-                    build_number=outcome.ci_build_number,
-                ),
-                start_to_close_timeout=short,
-                retry_policy=retry,
-            )
-            failure_summary = log.failure_summary
+        failure_summary = self._checks_output
         reason = "repair_exhausted"
         if outcome.terminal_reason in (
             COST_BUDGET_EXCEEDED,
@@ -922,7 +955,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 reason=SuspendReason.AWAITING_HUMAN,
                 resume_on=ResumeOn.HUMAN_APPROVAL,
                 stage="repair",
-                parked_build_id=outcome.ci_build_id,
+                parked_build_id=params.build_id,
             )
         )
         decision = self._repair_decision or _RepairDecision(retry=False)
@@ -1041,7 +1074,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             return ""
         await self._audit(
             AuditEvent(
-                event_id=f"{params.execution_id}:TEST_TRIAGE:{outcome.ci_build_number}",
+                event_id=f"{params.execution_id}:TEST_TRIAGE:{params.build_id}",
                 task_id=params.task_id,
                 execution_id=params.execution_id,
                 event_type="TEST_TRIAGE",
@@ -1090,23 +1123,13 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 new_state=REPAIRING,
                 workflow_id=workflow_id,
                 reason=str(attempt),
-                decision=outcome.ci_build_id,
+                decision=params.build_id,
             )
         )
 
-        log: ReadCILogResult = await workflow.execute_activity(
-            read_ci_log,
-            ReadCILogRequest(
-                repo=params.repo,
-                job=params.ci_job,
-                build_number=outcome.ci_build_number,
-            ),
-            start_to_close_timeout=short,
-            retry_policy=retry,
-        )
         plan: AnalyzeCIFailureResult = await workflow.execute_activity(
             analyze_ci_failure,
-            AnalyzeCIFailureRequest(failure_summary=log.failure_summary),
+            AnalyzeCIFailureRequest(failure_summary=self._checks_output),
             start_to_close_timeout=short,
             retry_policy=retry,
         )
@@ -1122,7 +1145,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 base=params.base,
                 commit=commit_sha,
                 instruction=plan.instruction,
-                failure_summary=log.failure_summary,
+                failure_summary=self._checks_output,
             ),
             start_to_close_timeout=timedelta(seconds=params.activity_timeout_seconds),
             retry_policy=RetryPolicy(maximum_attempts=1),
@@ -1154,7 +1177,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 task_id=params.task_id,
                 execution_id=params.execution_id,
                 base=params.base,
-                commit=params.base_sha,
+                commit=commit_sha,
                 message=params.commit_message,
                 sequence=sequence,
             ),
@@ -1186,9 +1209,6 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
     ) -> DraftPullRequestOutput:
         retry = RetryPolicy(maximum_attempts=3)
         short = timedelta(seconds=30)
-        sequence = (
-            impl.claim_version * _SEQUENCE_STRIDE + _CI_TRIGGER_OFFSET + _REPAIR_STRIDE * attempt
-        )
         commit_sha = self._commit.commit_sha if self._commit else params.base_sha
 
         await workflow.execute_activity(
@@ -1196,7 +1216,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             ExecutionState(
                 execution_id=params.execution_id,
                 task_id=params.task_id,
-                state=CI_RUNNING,
+                state=CHECKS_RUNNING,
                 workflow_id=workflow_id,
                 repository=params.repo or None,
                 repository_sha=commit_sha or None,
@@ -1205,54 +1225,48 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             retry_policy=retry,
         )
 
-        trigger: TriggerCIResult = await workflow.execute_activity(
-            trigger_ci,
-            TriggerCIRequest(
+        result: RunChecksResult = await workflow.execute_activity(
+            run_checks,
+            RunChecksRequest(
                 repo=params.repo,
-                task_id=params.task_id,
                 execution_id=params.execution_id,
-                job=params.ci_job,
-                branch=outcome.branch,
+                workspace_path=impl.workspace_path or "",
                 commit_sha=commit_sha,
-                sequence=sequence,
             ),
-            start_to_close_timeout=short,
-            retry_policy=retry,
+            start_to_close_timeout=timedelta(minutes=params.checks_timeout_minutes),
+            retry_policy=RetryPolicy(maximum_attempts=2),
         )
-        build_id = str(trigger.build_number)
 
-        await self._audit(
-            AuditEvent(
-                event_id=f"{params.execution_id}:CI_TRIGGERED:{build_id}",
-                task_id=params.task_id,
-                execution_id=params.execution_id,
-                event_type="CI_TRIGGERED",
-                stage="ci",
-                new_state=CI_RUNNING,
-                workflow_id=workflow_id,
-                reason=build_id,
-                artifact_hashes={"build_url": trigger.url},
+        if not result.ran:
+            await self._audit(
+                AuditEvent(
+                    event_id=f"{params.execution_id}:CHECKS_SKIPPED:{attempt}",
+                    task_id=params.task_id,
+                    execution_id=params.execution_id,
+                    event_type="CHECKS_SKIPPED",
+                    stage="checks",
+                    new_state=CHECKS_RUNNING,
+                    workflow_id=workflow_id,
+                    decision="skipped",
+                    reason=result.skipped_reason,
+                )
             )
-        )
+            return replace(outcome, status=CI_PASSED, ci_status="skipped")
 
-        result = await self._await_ci_result(params, trigger, build_id, workflow_id)
-        resolved_number = result.build_number or trigger.build_number
-        resolved_build_id = str(resolved_number)
-        passed = result.result == SUCCESS
+        self._checks_output = result.output
+        passed = result.exit_code == 0
         event_type = "CI_PASSED" if passed else "CI_FAILED"
-
         await self._audit(
             AuditEvent(
-                event_id=f"{params.execution_id}:{event_type}:{resolved_build_id}",
+                event_id=f"{params.execution_id}:{event_type}:{attempt}",
                 task_id=params.task_id,
                 execution_id=params.execution_id,
                 event_type=event_type,
-                stage="ci",
-                new_state=CI_RUNNING,
+                stage="checks",
+                new_state=CHECKS_RUNNING,
                 workflow_id=workflow_id,
-                reason=resolved_build_id,
-                decision=result.result,
-                artifact_hashes={"build_url": result.url},
+                reason=str(result.exit_code),
+                decision="passed" if passed else "failed",
             )
         )
 
@@ -1260,84 +1274,6 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             outcome,
             status=CI_PASSED if passed else CI_FAILED,
             ci_status="passed" if passed else "failed",
-            ci_build_id=resolved_build_id,
-            ci_build_number=resolved_number,
-        )
-
-    async def _await_ci_result(
-        self,
-        params: DraftPullRequestInput,
-        trigger: TriggerCIResult,
-        build_id: str,
-        workflow_id: str,
-    ) -> PollCIResult:
-        retry = RetryPolicy(maximum_attempts=3)
-        short = timedelta(seconds=30)
-        request = PollCIRequest(
-            repo=params.repo,
-            job=params.ci_job,
-            build_number=trigger.build_number,
-            execution_id=params.execution_id,
-        )
-        suspension = Suspension(
-            reason=SuspendReason.AWAITING_CI,
-            resume_on=ResumeOn.CI_RESULT,
-            stage="ci",
-            parked_build_id=build_id,
-        )
-        self._suspension = suspension
-        poll_interval = (
-            timedelta(seconds=params.ci_poll_interval_seconds)
-            if params.ci_poll_interval_seconds > 0
-            else None
-        )
-
-        result: PollCIResult | None = None
-        unavailable_polls = 0
-        alerted_unavailable = False
-        for _ in range(max(1, params.ci_poll_max_attempts)):
-            poll: PollCIResult = await workflow.execute_activity(
-                poll_ci,
-                request,
-                start_to_close_timeout=short,
-                retry_policy=retry,
-            )
-            if poll.build_number > 0 and request.build_number <= 0:
-                request = replace(request, build_number=poll.build_number)
-            if poll.completed:
-                result = poll
-                break
-            if poll.status == UNAVAILABLE:
-                unavailable_polls += 1
-                if (
-                    not alerted_unavailable
-                    and unavailable_polls >= max(1, params.ci_unavailable_alert_threshold)
-                ):
-                    await self._alert_ci_unavailable(params, workflow_id)
-                    alerted_unavailable = True
-            else:
-                unavailable_polls = 0
-            await self.wait_resume_or_timeout(suspension, timeout=poll_interval)
-
-        self._suspension = None
-        if result is None:
-            result = await workflow.execute_activity(
-                poll_ci,
-                request,
-                start_to_close_timeout=short,
-                retry_policy=retry,
-            )
-        return result
-
-    async def _alert_ci_unavailable(
-        self, params: DraftPullRequestInput, workflow_id: str
-    ) -> None:
-        await self._terminal_alert(
-            params,
-            workflow_id,
-            reason="ci_unavailable",
-            stage="ci",
-            detail="CI system unreachable, the execution is parked awaiting CI",
         )
 
     async def _review(
@@ -1424,6 +1360,26 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                     workflow_id=workflow_id,
                 )
             )
+            if result.kind == _REVIEW_KIND and "total_tokens" in result.metadata:
+                await workflow.execute_activity(
+                    record_usage_metrics,
+                    UsageMetrics(
+                        execution_id=params.execution_id,
+                        task_id=params.task_id,
+                        stage=result.name.upper().replace("-", "_"),
+                        workflow_id=workflow_id,
+                        model_id=result.metadata.get("model_id") or None,
+                        prompt_tokens=int(result.metadata.get("prompt_tokens", 0)),
+                        completion_tokens=int(result.metadata.get("completion_tokens", 0)),
+                        cache_read_tokens=int(result.metadata.get("cache_read_tokens", 0)),
+                        cache_write_tokens=int(result.metadata.get("cache_write_tokens", 0)),
+                        total_tokens=int(result.metadata.get("total_tokens", 0)),
+                        llm_calls=int(result.metadata.get("llm_calls", 0)),
+                        cost_usd=float(result.metadata.get("cost_usd", 0.0)),
+                    ),
+                    start_to_close_timeout=short,
+                    retry_policy=retry,
+                )
             if required.get(result.name) and result.verdict == "block":
                 blocked = True
 
@@ -1442,7 +1398,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                     gate=",".join(paused),
                     stage="review",
                     detail=f"paused gates: {', '.join(paused)}",
-                    parked_build_id=outcome.ci_build_id,
+                    parked_build_id=params.build_id,
                 )
                 blocked = not approved
                 if not approved:
@@ -1484,7 +1440,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
     ) -> DraftPullRequestOutput:
         retry = RetryPolicy(maximum_attempts=3)
         short = timedelta(seconds=30)
-        scan_timeout = timedelta(minutes=10)
+        scan_timeout = timedelta(minutes=20)
         commit_sha = self._commit.commit_sha if self._commit else params.base_sha
 
         await workflow.execute_activity(
@@ -1505,18 +1461,24 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             load_gate_plan, start_to_close_timeout=short, retry_policy=retry
         )
 
-        scan: ScanChangeResult = await workflow.execute_activity(
-            scan_change,
-            ScanChangeRequest(
-                task_id=params.task_id,
-                execution_id=params.execution_id,
-                repo=params.repo,
-                ref=commit_sha,
-                repo_root=impl.workspace_path,
-            ),
-            start_to_close_timeout=scan_timeout,
-            retry_policy=retry,
-        )
+        try:
+            scan: ScanChangeResult = await workflow.execute_activity(
+                scan_change,
+                ScanChangeRequest(
+                    task_id=params.task_id,
+                    execution_id=params.execution_id,
+                    repo=params.repo,
+                    ref=commit_sha,
+                    repo_root=impl.workspace_path,
+                    base_ref=params.base_sha,
+                ),
+                start_to_close_timeout=scan_timeout,
+                retry_policy=retry,
+            )
+        except ActivityError:
+            # The scan could not run after its retries were exhausted. Fail the scanner gates
+            # closed rather than crash the workflow, mirroring an in-band backend-error finding.
+            scan = _scanner_unavailable_result(plan)
         scan_findings = [
             {
                 "rule_id": finding.rule_id,
@@ -1568,7 +1530,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 repair_attempts=outcome.repair_attempts,
                 max_repair_attempts=params.max_repair_attempts,
                 jira_snapshot_current=params.jira_snapshot_current,
-                pr_authorized=outcome.pr_number > 0,
+                pr_authorized=True,
                 gates=gates,
                 required_gates=required_gates,
                 severity_counts=dict(scan.severity_counts),
@@ -1601,7 +1563,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 gate=",".join(decision.human_review),
                 stage="policy",
                 detail=f"policy human review: {', '.join(decision.human_review)}",
-                parked_build_id=outcome.ci_build_id,
+                parked_build_id=params.build_id,
             )
             if not allowed:
                 await self._terminal_alert(
@@ -1662,89 +1624,92 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 retry_policy=retry,
             )
 
-        await persist(AWAITING_PR_APPROVAL)
-        await self._audit(
-            AuditEvent(
-                event_id=f"{params.execution_id}:PR_APPROVAL_REQUESTED",
-                task_id=params.task_id,
-                execution_id=params.execution_id,
-                event_type="PR_APPROVAL_REQUESTED",
-                stage="approval",
-                new_state=AWAITING_PR_APPROVAL,
-                workflow_id=workflow_id,
-                reason=str(outcome.pr_number),
-            )
-        )
-
-        suspension = Suspension(
-            reason=SuspendReason.AWAITING_REVIEW,
-            resume_on=ResumeOn.HUMAN_APPROVAL,
-            stage="approval",
-            parked_build_id=outcome.ci_build_id,
-        )
-        await self.await_resume(suspension)
-        approval = self._pr_approval
-        self._pr_approval = None
-        approver = approval.approver if approval else ""
-        approved = bool(approval and approval.approved)
-
-        await workflow.execute_activity(
-            record_pr_approval,
-            RecordApprovalRequest(
-                repo=params.repo,
-                task_id=params.task_id,
-                execution_id=params.execution_id,
-                number=outcome.pr_number,
-                approved=approved,
-                approver=approver,
-                sequence=sequence_base + promotion_base + _APPROVAL_OFFSET,
-            ),
-            start_to_close_timeout=short,
-            retry_policy=retry,
-        )
-        await self._audit(
-            AuditEvent(
-                event_id=f"{params.execution_id}:PR_APPROVAL_RECORDED",
-                task_id=params.task_id,
-                execution_id=params.execution_id,
-                event_type="PR_APPROVAL_RECORDED",
-                stage="approval",
-                new_state=AWAITING_PR_APPROVAL,
-                workflow_id=workflow_id,
-                decision="approved" if approved else "rejected",
-                reason=approver,
-            )
-        )
-
-        if not approved:
-            await persist(CANCELLED)
+        approver = ""
+        approved = True
+        if params.run_approval:
+            await persist(AWAITING_PR_APPROVAL)
             await self._audit(
                 AuditEvent(
-                    event_id=f"{params.execution_id}:PROMOTION_CANCELLED",
+                    event_id=f"{params.execution_id}:PR_APPROVAL_REQUESTED",
                     task_id=params.task_id,
                     execution_id=params.execution_id,
-                    event_type="PROMOTION_CANCELLED",
+                    event_type="PR_APPROVAL_REQUESTED",
                     stage="approval",
-                    new_state=CANCELLED,
+                    new_state=AWAITING_PR_APPROVAL,
                     workflow_id=workflow_id,
-                    decision="cancel",
-                    reason="approval_rejected",
+                    reason=str(outcome.pr_number),
                 )
             )
-            await self._terminal_alert(
-                params,
-                workflow_id,
-                reason=PROMOTION_CANCELLED,
+
+            suspension = Suspension(
+                reason=SuspendReason.AWAITING_REVIEW,
+                resume_on=ResumeOn.HUMAN_APPROVAL,
                 stage="approval",
-                detail="approval_rejected",
+                parked_build_id=params.build_id,
             )
-            return replace(
-                outcome,
-                status=PROMOTION_CANCELLED,
-                terminal_reason="approval_rejected",
-                approval_status="rejected",
-                approver=approver,
+            await self.await_resume(suspension)
+            approval = self._pr_approval
+            self._pr_approval = None
+            approver = approval.approver if approval else ""
+            approved = bool(approval and approval.approved)
+
+            await workflow.execute_activity(
+                record_pr_approval,
+                RecordApprovalRequest(
+                    repo=params.repo,
+                    task_id=params.task_id,
+                    execution_id=params.execution_id,
+                    number=outcome.pr_number,
+                    approved=approved,
+                    approver=approver,
+                    sequence=sequence_base + promotion_base + _APPROVAL_OFFSET,
+                ),
+                start_to_close_timeout=short,
+                retry_policy=retry,
             )
+            await self._audit(
+                AuditEvent(
+                    event_id=f"{params.execution_id}:PR_APPROVAL_RECORDED",
+                    task_id=params.task_id,
+                    execution_id=params.execution_id,
+                    event_type="PR_APPROVAL_RECORDED",
+                    stage="approval",
+                    new_state=AWAITING_PR_APPROVAL,
+                    workflow_id=workflow_id,
+                    decision="approved" if approved else "rejected",
+                    reason=approver,
+                )
+            )
+
+            if not approved:
+                await persist(CANCELLED)
+                await self._audit(
+                    AuditEvent(
+                        event_id=f"{params.execution_id}:PROMOTION_CANCELLED",
+                        task_id=params.task_id,
+                        execution_id=params.execution_id,
+                        event_type="PROMOTION_CANCELLED",
+                        stage="approval",
+                        new_state=CANCELLED,
+                        workflow_id=workflow_id,
+                        decision="cancel",
+                        reason="approval_rejected",
+                    )
+                )
+                await self._terminal_alert(
+                    params,
+                    workflow_id,
+                    reason=PROMOTION_CANCELLED,
+                    stage="approval",
+                    detail="approval_rejected",
+                )
+                return replace(
+                    outcome,
+                    status=PROMOTION_CANCELLED,
+                    terminal_reason="approval_rejected",
+                    approval_status="rejected",
+                    approver=approver,
+                )
 
         if params.issue_key:
             recheck: RecheckResult = await workflow.execute_activity(
@@ -1801,6 +1766,13 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             retry_policy=retry,
         )
         await persist(PR_CREATED)
+        if params.issue_key:
+            await workflow.execute_activity(
+                apply_task_status,
+                ApplyStatusRequest(issue_key=params.issue_key, stage="ready_for_review"),
+                start_to_close_timeout=short,
+                retry_policy=retry,
+            )
         await self._audit(
             AuditEvent(
                 event_id=f"{params.execution_id}:PR_CREATED",

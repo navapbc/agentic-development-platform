@@ -13,6 +13,9 @@ _QUOTE_RE = re.compile(r"^> (.*)$")
 _INLINE_RE = re.compile(r"\*\*(?P<strong>.+?)\*\*|\*(?P<em>.+?)\*|`(?P<code>[^`]+)`")
 _FENCE = "```"
 
+_ADF_DESCRIPTION_LIMIT = 32000
+_TRUNCATION_SUFFIX = "\n\n… [truncated to fit the Jira field]"
+
 
 def _marked(text: str, mark: str) -> dict[str, Any]:
     return {"type": "text", "text": text, "marks": [{"type": mark}]}
@@ -106,5 +109,26 @@ def markdown_to_adf(text: str) -> dict[str, Any]:
     return {"type": "doc", "version": 1, "content": content}
 
 
+def _fit_markdown_to_adf_limit(text: str, *, limit: int = _ADF_DESCRIPTION_LIMIT) -> str:
+    """Truncate markdown so its ADF serialization fits ``limit``, the size Jira enforces.
+
+    Measures this module's own ADF output, so the cap is exact for the document Jira
+    receives. Binary search on the markdown length, idempotent for text already within
+    the limit.
+    """
+    if len(json.dumps(markdown_to_adf(text))) <= limit:
+        return text
+    lo, hi, best = 0, len(text), _TRUNCATION_SUFFIX
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        candidate = text[:mid] + _TRUNCATION_SUFFIX
+        if len(json.dumps(markdown_to_adf(candidate))) <= limit:
+            best = candidate
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    return best
+
+
 def markdown_to_adf_json(text: str) -> str:
-    return json.dumps(markdown_to_adf(text))
+    return json.dumps(markdown_to_adf(_fit_markdown_to_adf_limit(text)))

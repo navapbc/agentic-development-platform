@@ -1,0 +1,12 @@
+# Per-repository project checks. The platform runs each repo's own deterministic checks
+# (lint, unit tests, SAST) in an isolated ephemeral pod, decoupled from any CI system.
+# Each entry names an environment and the command that runs the checks. The command does
+# its own dependency setup. A repo with no entry skips the checks gate with a warning.
+config_version: 1
+
+checks:
+  # example-repo:
+  #   image: python:3.12-slim
+  #   command: "pip install -r requirements-dev.txt && ruff check . && pytest -q && bandit -r app -ll"
+  #   working_dir: /workspace
+  #   timeout_minutes: 15

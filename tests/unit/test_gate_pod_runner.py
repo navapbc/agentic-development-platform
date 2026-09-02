@@ -1,0 +1,179 @@
+import json
+
+import pytest
+from services.orchestration.gates.pod_runner import (
+    PodEngineError,
+    PodEngineRunner,
+    PodEngineSpec,
+    _run_script,
+    _tail,
+    pod_name_for,
+)
+
+pytestmark = pytest.mark.asyncio
+
+
+class _FakePodOps:
+    def __init__(self, *, exec_result=(0, "{}", ""), fail_ready=False):
+        self._exec_result = exec_result
+        self._fail_ready = fail_ready
+        self.created = []
+        self.copied = []
+        self.execed = []
+        self.deleted = []
+        self.ready = []
+
+    async def create(self, manifest):
+        self.created.append(manifest)
+
+    async def wait_ready(self, pod, namespace):
+        if self._fail_ready:
+            raise PodEngineError("not ready")
+        self.ready.append((pod, namespace))
+
+    async def copy_in(self, pod, namespace, source_dir, dest_dir):
+        self.copied.append((source_dir, dest_dir))
+
+    async def exec_capture(self, pod, namespace, script):
+        self.execed.append(script)
+        return self._exec_result
+
+    async def delete(self, pod, namespace):
+        self.deleted.append((pod, namespace))
+
+
+def _spec(**over):
+    base = dict(
+        name="ai-security-review",
+        execution_id="exec-1",
+        checkout_dir="/tmp/checkout",
+        entrypoint="engines/security-compliance-review/harness/ai-pr-review",
+        base_ref="abc123",
+        source_path="/tmp/engine",
+        env={"AI_REVIEW_TOOL": "claude", "AI_REVIEW_PROFILE": "cms-ars"},
+    )
+    base.update(over)
+    return PodEngineSpec(**base)
+
+
+async def test_run_engine_builds_copies_execs_and_parses():
+    doc = {"review_action": "COMMENT", "comments": [{"severity": "HIGH"}]}
+    ops = _FakePodOps(exec_result=(0, json.dumps(doc), ""))
+    runner = PodEngineRunner(ops)
+
+    result = await runner.run_engine(_spec())
+
+    assert result == doc
+    assert ops.copied == [("/tmp/engine", "/engine"), ("/tmp/checkout", "/workspace")]
+    assert ops.deleted, "pod must be torn down"
+    script = ops.execed[0]
+    assert "buildah bud -t gate-tool /engine" in script
+    assert "--against abc123" in script
+    assert "-e AI_REVIEW_PROFILE=cms-ars" in script
+    assert "-e AI_REVIEW_TOOL=claude" in script
+
+
+async def test_image_mode_skips_the_build():
+    ops = _FakePodOps(exec_result=(0, "{}", ""))
+    runner = PodEngineRunner(ops)
+    await runner.run_engine(_spec(source_path="", image="returntocorp/semgrep:1.0"))
+    script = ops.execed[0]
+    assert "buildah bud" not in script
+    assert "img=returntocorp/semgrep:1.0" in script
+    assert ops.copied == [("/tmp/checkout", "/workspace")]
+
+
+async def test_nonzero_exit_raises_and_tears_down():
+    ops = _FakePodOps(exec_result=(2, "", "boom"))
+    runner = PodEngineRunner(ops)
+    with pytest.raises(PodEngineError, match="exited 2"):
+        await runner.run_engine(_spec())
+    assert ops.deleted, "pod must be torn down even on failure"
+
+
+async def test_unparseable_output_raises():
+    ops = _FakePodOps(exec_result=(0, "not json", ""))
+    runner = PodEngineRunner(ops)
+    with pytest.raises(PodEngineError, match="no parseable JSON"):
+        await runner.run_engine(_spec())
+
+
+async def test_teardown_runs_when_ready_fails():
+    ops = _FakePodOps(fail_ready=True)
+    runner = PodEngineRunner(ops)
+    with pytest.raises(PodEngineError):
+        await runner.run_engine(_spec())
+    assert ops.deleted
+
+
+def test_run_script_treats_exit_1_as_success():
+    script = _run_script(_spec())
+    assert "[ $rc -ne 0 ] && [ $rc -ne 1 ]" in script
+
+
+def test_run_script_makes_the_workspace_writable_for_a_nonroot_engine_user():
+    script = _run_script(_spec())
+    assert "chmod 0777 /workspace" in script
+
+
+def test_run_script_commits_the_working_tree_snapshot_before_review():
+    script = _run_script(_spec())
+    # The agent's change is the uncommitted working tree, committed as root so the engine's
+    # `git diff <base> HEAD` sees it. The commit must precede the review invocation.
+    assert "git add -A" in script
+    assert "commit -q -m gate-review-snapshot" in script
+    assert "buildah run --user root" in script
+    assert script.index("gate-review-snapshot") < script.index("--against")
+
+
+def test_run_script_disables_git_ownership_check_for_the_mounted_checkout():
+    script = _run_script(_spec())
+    assert "GIT_CONFIG_KEY_0=safe.directory" in script
+    assert "GIT_CONFIG_VALUE_0=*" in script
+
+
+def test_run_script_repoints_the_host_gateway_alias_to_pod_dns():
+    script = _run_script(_spec())
+    assert "getent hosts host.docker.internal" in script
+    assert "--add-host host.docker.internal:$gw" in script
+    assert "buildah from $hostflag" in script
+
+
+def test_run_script_disables_tls_verify_for_an_insecure_registry_pull():
+    script = _run_script(
+        _spec(source_path="", image="host.docker.internal:5001/gate-tool:519dd2f", tls_verify=False)
+    )
+    assert "buildah from --tls-verify=false $hostflag" in script
+
+
+def test_run_script_keeps_tls_verify_on_by_default_in_image_mode():
+    script = _run_script(
+        _spec(source_path="", image="host.docker.internal:5001/gate-tool:519dd2f")
+    )
+    assert "--tls-verify=false" not in script
+    assert "buildah from $hostflag" in script
+
+
+def test_run_script_never_adds_tls_flag_in_build_mode():
+    # Build mode uses a local tag with no registry pull, so tls_verify is irrelevant even if off.
+    script = _run_script(_spec(tls_verify=False))
+    assert "--tls-verify=false" not in script
+
+
+def test_tail_returns_the_end_of_a_long_stream():
+    text = "head-marker " + ("x" * 5000) + " tail-marker"
+    tailed = _tail(text, limit=100)
+    assert tailed.endswith("tail-marker")
+    assert "head-marker" not in tailed
+    assert tailed.startswith("...(truncated)...")
+
+
+def test_tail_returns_short_text_unchanged():
+    assert _tail("  brief error  ") == "brief error"
+
+
+def test_pod_name_is_sanitised_and_bounded():
+    name = pod_name_for("AI_Security/Review", "exec-1")
+    assert name.startswith("gate-engine-")
+    assert len(name) <= 63
+    assert name == name.lower()

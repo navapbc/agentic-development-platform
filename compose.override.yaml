@@ -22,6 +22,7 @@ services:
       - ./adapters:/app/adapters
       - ./schemas:/app/schemas
       - ./database:/app/database
+      - ./scripts:/app/scripts
     environment:
       LOG_LEVEL: DEBUG
 
@@ -32,16 +33,31 @@ services:
       - ./adapters:/app/adapters
       - ./schemas:/app/schemas
       - ./database:/app/database
+      - ./scripts:/app/scripts
       - ./openhands:/app/openhands
       - ./docker/activity-worker-entrypoint.sh:/entrypoint.sh:ro
       - ./.agent-workspaces:/workspaces
       - ${HOME}/.kube/config:/kube/config:ro
+      - ../agentic-demo-service:/repos/agentic-demo-service:ro
+      - ../agentic-demo-greenfield:/repos/agentic-demo-greenfield:ro
+      - ../agentic-demo-ts:/repos/agentic-demo-ts:ro
+      - ../agentic-demo-tf:/repos/agentic-demo-tf:ro
+      - ../agentic-demo-java:/repos/agentic-demo-java:ro
+      - ../agentic-demo-php:/repos/agentic-demo-php:ro
+      - ../agentic-demo-ruby:/repos/agentic-demo-ruby:ro
+      - ../ai-common-workflows:/engines/ai-common-workflows:ro
     environment:
       LOG_LEVEL: DEBUG
       EXECUTION_WORKSPACE_ROOT: /workspaces
       KUBECONFIG: /home/appuser/.kube/config
       OPENHANDS_IN_CLUSTER: "false"
       SANDBOX_LITELLM_BASE_URL: http://host.docker.internal:4000
+      GATE_ENGINE_EXECUTION: pod
+      GATE_REGISTRY_TLS_VERIFY: "false"
+      OPENHANDS_MAX_TOOL_CALLS: "100"
+      INTAKE_RUN_REVIEWS: "true"
+      INTAKE_RUN_POLICY: "true"
+      REPO_INTELLIGENCE_REPOS: "agentic-demo-service=/repos/agentic-demo-service,agentic-demo-greenfield=/repos/agentic-demo-greenfield,agentic-demo-ts=/repos/agentic-demo-ts,agentic-demo-tf=/repos/agentic-demo-tf,agentic-demo-java=/repos/agentic-demo-java,agentic-demo-php=/repos/agentic-demo-php,agentic-demo-ruby=/repos/agentic-demo-ruby"
     extra_hosts:
       - "host.docker.internal:host-gateway"
       - "kubernetes.docker.internal:host-gateway"

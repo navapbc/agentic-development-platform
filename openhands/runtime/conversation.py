@@ -89,7 +89,7 @@ class RemoteConversationDriver:
 
         tracker = CapTracker(caps)
         breach: dict[str, str] = {}
-        extra_body = {"requestMetadata": dict(metadata)} if metadata else {}
+        extra_body = _coding_extra_body(metadata)
 
         llm = LLM(
             usage_id="coding",
@@ -97,7 +97,7 @@ class RemoteConversationDriver:
             base_url=self._litellm_base_url,
             api_key=SecretStr(self._api_key or "unused"),
             max_output_tokens=_MAX_OUTPUT_TOKENS,
-            caching_prompt=False,
+            caching_prompt=True,
             reasoning_effort="none",
             litellm_extra_body=extra_body,
         )
@@ -184,6 +184,43 @@ def _coding_agent_directive() -> str:
         return load_prompt("coding-agent").text
     except Exception:  # noqa: BLE001 - a prompt load must not break the coding step
         return ""
+
+
+def _coding_agent_version() -> str:
+    """Return the coding-agent prompt version. Never raises."""
+    try:
+        from services.prompts.library import PROMPTS
+
+        return PROMPTS["coding-agent"].version
+    except Exception:  # noqa: BLE001 - a version lookup must not break the coding step
+        return ""
+
+
+def _coding_extra_body(metadata: dict[str, str] | None) -> dict[str, object]:
+    """Build the LiteLLM request body that joins the coding generation to the session.
+
+    The Bedrock ``requestMetadata`` carries the AWS-side attribution. The LiteLLM
+    ``metadata`` carries the Langfuse join keys, so the coding generation groups
+    under the execution session with its stage and prompt version.
+    """
+    if not metadata:
+        return {}
+    extra_body: dict[str, object] = {"requestMetadata": dict(metadata)}
+    join: dict[str, str] = {}
+    if metadata.get("execution_id"):
+        join["session_id"] = metadata["execution_id"]
+    if metadata.get("stage"):
+        join["generation_name"] = metadata["stage"]
+    version = _coding_agent_version()
+    if version:
+        join["version"] = version
+    if metadata.get("execution_id") or metadata.get("ticket"):
+        join["trace_metadata"] = {
+            key: metadata[key] for key in ("execution_id", "ticket") if metadata.get(key)
+        }
+    if join:
+        extra_body["metadata"] = join
+    return extra_body
 
 
 class FakeConversationDriver:

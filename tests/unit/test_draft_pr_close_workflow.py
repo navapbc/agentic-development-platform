@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import uuid
 
-from adapters.interfaces.ci_host import SUCCESS
 from services.orchestration.suspension import SuspendReason
 from services.orchestration.temporal_workflows.draft_pull_request import (
     CANCELLED,
@@ -22,6 +21,8 @@ from tests.unit.test_draft_pull_request_workflow import (
     _start_ci_worker,
 )
 
+SUCCESS = "SUCCESS"
+
 
 def _pr_close_input() -> DraftPullRequestInput:
     return DraftPullRequestInput(
@@ -34,9 +35,6 @@ def _pr_close_input() -> DraftPullRequestInput:
         issue_key="T-1",
         file_impact=["feature.py"],
         stored_issue={"summary": "Implement the change"},
-        ci_job="agentic-demo-service-ci",
-        ci_poll_interval_seconds=1.0,
-        ci_poll_max_attempts=5,
         run_reviews=True,
         run_policy=True,
         run_approval=True,

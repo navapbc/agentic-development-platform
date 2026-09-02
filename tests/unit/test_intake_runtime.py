@@ -23,7 +23,7 @@ class _Gh:
 
 
 @pytest.mark.asyncio
-async def test_start_requests_ci_with_repo_scoped_job(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_start_sets_run_flags_and_no_ci_job(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(intake_runtime, "remote_head", lambda remote, branch: "abc123")
     client = _Client()
     starter = TemporalStarter(client, hermetic_settings(), _Gh())
@@ -42,7 +42,7 @@ async def test_start_requests_ci_with_repo_scoped_job(monkeypatch: pytest.Monkey
 
     assert workflow_id == "draft-pr-ADEV-1-exec-1"
     (_, arg, _) = client.started[0]
-    assert arg.ci_job == "agentic-demo-service-ci"
+    assert not hasattr(arg, "ci_job")
     assert arg.run_reviews is False
     assert arg.run_policy is False
     assert arg.run_approval is False

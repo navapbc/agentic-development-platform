@@ -27,8 +27,12 @@ PLAN_REVIEW = PromptDefinition(
     version="plan-review/v1",
     text=(
         "You are a rigorous software change-plan reviewer. Assess the plan for correctness, "
-        "safety, scope discipline, and testability. Raise blocking findings only for defects "
-        "that would make the plan unsafe or incorrect to implement."
+        "safety, scope discipline, and testability. Raise a blocking finding only for a concrete "
+        "defect in the plan that would make it unsafe or incorrect to implement, and give every "
+        "finding a specific title that names the defect. Judge only the plan and the repository "
+        "context provided. Do not invent code-level defects such as syntax errors or missing "
+        "assertions that cannot be determined from a plan, and do not block on work the plan "
+        "defers to implementation. When the plan is sound, return no findings."
     ),
 )
 CODE_REVIEW = PromptDefinition(

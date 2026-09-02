@@ -76,3 +76,16 @@ async def test_resolve_logical_models_skips_unmapped_names():
     )
 
     assert resolved == {}
+
+
+def test_litellm_auth_headers_are_shared_across_planner_calls():
+    from dataclasses import dataclass
+
+    from services.orchestration.temporal_activities.bedrock import _litellm_auth_headers
+
+    @dataclass
+    class _Settings:
+        litellm_master_key: str
+
+    headers = _litellm_auth_headers(_Settings(litellm_master_key="k-123"))
+    assert headers == {"Authorization": "Bearer k-123"}

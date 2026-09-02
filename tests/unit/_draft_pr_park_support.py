@@ -20,14 +20,13 @@ class DefectOnceDraftPr(DraftPullRequestWorkflow):
     async def run(self, params: DraftPullRequestInput) -> DraftPullRequestOutput:
         return await super().run(params)
 
-    async def _finalize(
+    async def _push_branch(
         self,
         params: DraftPullRequestInput,
         impl,
         workflow_id: str,
-        title: str,
     ) -> DraftPullRequestOutput:
         self._defects += 1
         if self._defects == 1:
-            raise AttributeError("simulated finalize defect")
-        return await super()._finalize(params, impl, workflow_id, title)
+            raise AttributeError("simulated push-branch defect")
+        return await super()._push_branch(params, impl, workflow_id)

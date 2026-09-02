@@ -103,6 +103,7 @@ COPY scripts ./scripts
 RUN pip install -e ".[dev]"
 
 RUN useradd --create-home --uid 10001 appuser
+RUN mkdir -p /app/repository_indexes && chown -R 10001:10001 /app/repository_indexes
 USER appuser
 
 CMD ["python", "-m", "services.repository_intelligence.server"]

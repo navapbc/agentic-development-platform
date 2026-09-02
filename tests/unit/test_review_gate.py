@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import pytest
 from services.review.attestation import HmacAttestor, ReviewAttestationError
 from services.review.gate import ReviewGate, verdict_payload
 from services.review.kernel import (
-    DEFAULT_BLOCKING_SEVERITIES,
     FakeReviewKernel,
-    _raw_from_runner_result,
+    RebarReviewKernel,
+    _raw_from_decided,
 )
 from services.review.types import (
     Finding,
@@ -90,6 +92,18 @@ async def test_gate_returns_normalized_verdict_and_persists_evidence():
     assert record.classification == "final"
     assert record.content_hash == result.attestation.content_hash
     assert record.metadata["verdict"] == "block"
+    assert record.metadata["finding_count"] == 1
+    assert record.metadata["summary"] == "1 blocking"
+    assert record.metadata["findings"] == [
+        {
+            "finding_id": "1",
+            "severity": "high",
+            "blocking": True,
+            "title": "bug",
+            "detail": "boom",
+            "location": None,
+        }
+    ]
 
 
 async def test_gate_attestation_verifies_and_detects_tampering():
@@ -119,75 +133,61 @@ async def test_gate_fails_closed_when_attestation_does_not_verify():
     assert sink.records == []
 
 
-def test_runner_result_maps_to_blocking_verdict():
-    raw = _raw_from_runner_result(
-        {
-            "model": "openai:review-model",
-            "summary": "1 finding",
-            "findings": [{"severity": "high", "blocking": True, "title": "SQLi", "detail": "bad"}],
-        },
-        "review-model",
-        DEFAULT_BLOCKING_SEVERITIES,
-    )
+def test_raw_from_decided_maps_block_advisory_and_indeterminate():
+    decided = [
+        {"finding": "real defect", "decision": "block", "reason": "high", "severity": "high"},
+        {"finding": "polish", "decision": "advisory", "reason": "default", "severity": "low"},
+        {"finding": "unverified", "decision": "indeterminate", "reason": "no-verification"},
+        {"finding": "noise", "decision": "dropped", "reason": "veto:cited-reference-inaccurate"},
+        {"finding": "", "decision": "advisory"},
+    ]
+
+    raw = _raw_from_decided(decided, "review-model", "m")
 
     assert raw.verdict is Verdict.BLOCK
-    assert raw.findings[0].title == "SQLi"
-    assert raw.provenance[0].model_id == "openai:review-model"
+    assert [f.title for f in raw.findings] == ["real defect", "polish", "unverified"]
+    assert [f.blocking for f in raw.findings] == [True, False, False]
 
 
-def test_runner_result_maps_clean_to_pass():
-    raw = _raw_from_runner_result(
-        {"model": "m", "summary": "clean", "findings": []},
-        "review-model",
-        DEFAULT_BLOCKING_SEVERITIES,
-    )
+def test_raw_from_decided_passes_when_nothing_blocks():
+    decided = [{"finding": "polish", "decision": "advisory", "severity": "low"}]
+
+    raw = _raw_from_decided(decided, "review-model", "m")
 
     assert raw.verdict is Verdict.PASS
-    assert raw.findings == []
 
 
-def test_severity_drives_blocking_without_an_explicit_flag():
-    raw = _raw_from_runner_result(
-        {
-            "model": "m",
-            "findings": [{"severity": "high", "title": "TLS disabled", "detail": "mitm"}],
-        },
-        "security-review-model",
-        DEFAULT_BLOCKING_SEVERITIES,
-    )
-
-    assert raw.verdict is Verdict.BLOCK
-    assert raw.findings[0].blocking is True
+@dataclass
+class _StubCfg:
+    temperature: float = 1.0
+    model: str = "review-model"
+    repo_path: str | None = None
 
 
-def test_below_threshold_severity_is_advisory():
-    raw = _raw_from_runner_result(
-        {"model": "m", "findings": [{"severity": "low", "title": "style nit", "detail": "x"}]},
-        "review-model",
-        DEFAULT_BLOCKING_SEVERITIES,
-    )
-
-    assert raw.verdict is Verdict.PASS
-    assert raw.findings[0].blocking is False
-
-
-def test_explicit_blocking_flag_overrides_the_severity_threshold():
-    raw = _raw_from_runner_result(
-        {"model": "m", "findings": [{"severity": "low", "blocking": True, "title": "must fix"}]},
-        "review-model",
-        DEFAULT_BLOCKING_SEVERITIES,
-    )
-
-    assert raw.verdict is Verdict.BLOCK
-    assert raw.findings[0].blocking is True
+class _StubRunner:
+    def run(self, request):
+        if str(request.output_schema or "").endswith("_findings"):
+            return {
+                "findings": [
+                    {
+                        "finding": "store.update crashes on a missing id",
+                        "criteria": ["correctness"],
+                        "evidence": ["app/store.py:20"],
+                        "impact": "crash",
+                    }
+                ]
+            }
+        return {"verifications": [{"index": 0, "binary": {"cited_reference_accurate": "no"}}]}
 
 
-def test_configured_threshold_narrows_blocking_to_high_and_critical():
-    raw = _raw_from_runner_result(
-        {"model": "m", "findings": [{"severity": "medium", "title": "maybe"}]},
-        "review-model",
-        frozenset({"high", "critical"}),
-    )
+def test_run_multipass_drops_a_fabricated_citation_and_passes(monkeypatch):
+    from rebar.llm import runner as rebar_runner
 
-    assert raw.verdict is Verdict.PASS
-    assert raw.findings[0].blocking is False
+    monkeypatch.setattr(rebar_runner, "get_runner", lambda cfg: _StubRunner())
+    kernel = RebarReviewKernel()
+
+    for stage in (ReviewStage.PLAN_REVIEW, ReviewStage.CODE_REVIEW, ReviewStage.SECURITY_REVIEW):
+        raw = kernel._run_multipass(_input(stage), _StubCfg(), "review-model")
+        assert raw.verdict is Verdict.PASS
+        assert raw.findings == []
+

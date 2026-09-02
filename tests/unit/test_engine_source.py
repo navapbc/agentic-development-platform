@@ -284,6 +284,32 @@ def test_parse_rejects_an_unknown_mode():
         parse_gate_engine_config({"enabled": True, "mode": "svn"})
 
 
+def test_on_unavailable_defaults_to_abort():
+    from services.orchestration.gates.engine_source import parse_gate_engine_config
+
+    config = parse_gate_engine_config({"enabled": True, "mode": "local", "local_path": "/e"})
+    assert config.on_unavailable == "abort"
+
+
+def test_on_unavailable_reads_warn():
+    from services.orchestration.gates.engine_source import parse_gate_engine_config
+
+    config = parse_gate_engine_config(
+        {"enabled": True, "mode": "local", "local_path": "/e", "on_unavailable": "warn"}
+    )
+    assert config.on_unavailable == "warn"
+
+
+def test_parse_rejects_an_unknown_on_unavailable():
+    from services.integration.credentials import ConfigError
+    from services.orchestration.gates.engine_source import parse_gate_engine_config
+
+    with pytest.raises(ConfigError):
+        parse_gate_engine_config(
+            {"enabled": True, "mode": "local", "local_path": "/e", "on_unavailable": "explode"}
+        )
+
+
 def test_entrypoints_default_to_the_reference_engine_layout():
     from services.orchestration.gates.engine_source import parse_gate_engine_config
 

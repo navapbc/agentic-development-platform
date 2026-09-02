@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 
-from adapters.interfaces.ci_host import BuildResult
 from adapters.interfaces.git_host import CodeHit, FileContent, PRComment, PRFeedback
 from mcp.shared.memory import create_connected_server_and_client_session
 from services.integration.mcp_gateway.server import build_server
@@ -39,19 +38,6 @@ class _FakeGitHub:
         )
 
 
-class _FakeJenkins:
-    async def get_build(self, repo: str, job: str, build_number: int) -> BuildResult:
-        return BuildResult(
-            repo=repo,
-            job=job,
-            build_number=build_number,
-            status="COMPLETED",
-            result="SUCCESS",
-            url="https://ci.example/1",
-            completed=True,
-        )
-
-
 class _FakeEvidence:
     async def get_artifact(self, artifact_id: str) -> dict:
         return {"artifact_id": artifact_id, "execution_id": "exec-1", "metadata": {"k": "v"}}
@@ -68,7 +54,6 @@ def _toolset() -> ReadOnlyToolset:
     return ReadOnlyToolset(
         jira=_FakeJira(),
         github=_FakeGitHub(),
-        jenkins=_FakeJenkins(),
         evidence=_FakeEvidence(),
         context_fetch=_fake_context,
         acceptance_field="customfield_accept",
@@ -124,7 +109,6 @@ async def test_gateway_read_tools_return_results():
 
         build = _result_dict(
             await session.call_tool(
-                "jenkins_get_build_result",
                 {"repo": "agentic-demo-service", "job": "ci", "build_number": 7},
             )
         )

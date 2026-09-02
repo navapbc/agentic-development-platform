@@ -18,9 +18,6 @@ from services.orchestration.gates.registry import GateRegistry, builtin_registry
 
 _ON_BLOCK = frozenset({FAIL_CLOSED, PAUSE_FOR_HUMAN})
 
-DEFAULT_BLOCKING_SEVERITIES: tuple[str, ...] = ("medium", "high", "critical")
-_KNOWN_SEVERITIES = frozenset({"info", "low", "medium", "high", "critical"})
-
 PLAN_GATE = "plan"
 HUMAN_GATES = frozenset({PLAN_GATE})
 
@@ -33,12 +30,6 @@ class GateSpec:
     after: tuple[str, ...] = ()
     on_block: str = FAIL_CLOSED
     params: dict[str, Any] = field(default_factory=dict)
-    distribution: str = ""
-    entry_point: str = ""
-
-    @property
-    def is_plugin(self) -> bool:
-        return bool(self.distribution)
 
 
 @dataclass(frozen=True)
@@ -46,7 +37,6 @@ class GatesConfig:
     profile: str
     gates: tuple[GateSpec, ...]
     fail_fast: dict[str, bool] = field(default_factory=dict)
-    blocking_severities: tuple[str, ...] = DEFAULT_BLOCKING_SEVERITIES
 
     def gate(self, name: str) -> GateSpec | None:
         for spec in self.gates:
@@ -105,14 +95,6 @@ def _parse_override(raw: Mapping[str, Any], base: GateSpec | None) -> GateSpec:
     params = raw.get("params", start.params)
     if not isinstance(params, Mapping):
         raise ConfigError(f"gates.{name}.params must be a mapping")
-    plugin_raw = raw.get("plugin")
-    distribution = start.distribution
-    entry_point = start.entry_point
-    if plugin_raw is not None:
-        if not isinstance(plugin_raw, Mapping) or "distribution" not in plugin_raw:
-            raise ConfigError(f"gates.{name}.plugin must name a distribution")
-        distribution = str(plugin_raw["distribution"])
-        entry_point = str(plugin_raw.get("entry_point", name))
     return replace(
         start,
         name=name,
@@ -121,8 +103,6 @@ def _parse_override(raw: Mapping[str, Any], base: GateSpec | None) -> GateSpec:
         after=tuple(str(item) for item in after_raw),
         on_block=on_block,
         params=dict(params),
-        distribution=distribution,
-        entry_point=entry_point,
     )
 
 
@@ -178,7 +158,7 @@ def parse_gates_config(
     for spec in gates:
         if spec.name in HUMAN_GATES:
             continue
-        if spec.enabled and not spec.is_plugin and spec.name not in known:
+        if spec.enabled and spec.name not in known:
             raise ConfigError(f"gate {spec.name!r} is enabled but not registered")
 
     fail_fast = dict(base.fail_fast)
@@ -188,33 +168,11 @@ def parse_gates_config(
     for stage, value in fail_fast_raw.items():
         fail_fast[str(stage)] = bool(value)
 
-    blocking_severities = _parse_blocking_severities(raw)
-
     return GatesConfig(
         profile=str(profile),
         gates=gates,
         fail_fast=fail_fast,
-        blocking_severities=blocking_severities,
     )
-
-
-def _parse_blocking_severities(raw: Mapping[str, Any]) -> tuple[str, ...]:
-    review_raw = raw.get("review", {})
-    if not isinstance(review_raw, Mapping):
-        raise ConfigError("gates.review must be a mapping")
-    severities_raw = review_raw.get("blocking_severities")
-    if severities_raw is None:
-        return DEFAULT_BLOCKING_SEVERITIES
-    if not isinstance(severities_raw, list | tuple):
-        raise ConfigError("gates.review.blocking_severities must be a list")
-    severities = tuple(str(item).lower() for item in severities_raw)
-    unknown = [s for s in severities if s not in _KNOWN_SEVERITIES]
-    if unknown:
-        raise ConfigError(
-            f"gates.review.blocking_severities has unknown severities {unknown}; "
-            f"expected a subset of {sorted(_KNOWN_SEVERITIES)}"
-        )
-    return severities
 
 
 def load_gates_config(

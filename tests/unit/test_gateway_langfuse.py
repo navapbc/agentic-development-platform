@@ -15,6 +15,7 @@ from observability import (
     langfuse_request_metadata,
     reconcile_usage,
     reset_for_testing,
+    token_cost_usd,
 )
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
@@ -181,3 +182,46 @@ async def test_invoke_model_resolves_a_system_prompt(monkeypatch) -> None:
     assert span.attributes[attrs.PROMPT_VERSION] == "planning/v1"
     set_store(None)
     reset_for_testing()
+
+
+def test_token_cost_prices_a_known_model():
+    cost = token_cost_usd("bedrock/us.amazon.nova-lite-v1:0", 1000, 500)
+    assert cost > 0.0
+
+
+def test_token_cost_zero_without_model_or_tokens():
+    assert token_cost_usd(None, 1000, 500) == 0.0
+    assert token_cost_usd("bedrock/us.amazon.nova-lite-v1:0", 0, 0) == 0.0
+
+
+def test_token_cost_zero_for_unknown_model():
+    assert token_cost_usd("not-a-real-model-xyz", 1000, 500) == 0.0
+
+
+def test_review_gate_metadata_carries_usage():
+    import asyncio
+
+    from services.orchestration.gates.builtin import review_gate
+    from services.orchestration.gates.contract import GateContext
+    from services.orchestration.temporal_activities.review import ReviewOutcome
+
+    async def fake_review(req):
+        return ReviewOutcome(
+            verdict="pass",
+            attestation_hash="h",
+            prompt_version="code-review/v1",
+            model_id="bedrock/us.amazon.nova-lite-v1:0",
+            prompt_tokens=100,
+            completion_tokens=40,
+            total_tokens=140,
+            llm_calls=1,
+            cost_usd=0.25,
+        )
+
+    gate = review_gate("code-review", fake_review)
+    context = GateContext(task_id="TASK-1", execution_id="exec-1", repo="r", ref="sha")
+    result = asyncio.run(gate.evaluate(context))
+    assert result.metadata["total_tokens"] == 140
+    assert result.metadata["llm_calls"] == 1
+    assert result.metadata["cost_usd"] == 0.25
+    assert result.metadata["model_id"] == "bedrock/us.amazon.nova-lite-v1:0"

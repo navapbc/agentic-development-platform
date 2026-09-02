@@ -5,7 +5,9 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from pathlib import Path
 
+from observability import bind_execution, token_cost_usd
 from temporalio import activity
 
 from services.prompts import load_prompt
@@ -25,6 +27,7 @@ class ReviewRequest:
     subject: str
     context_ref: str = ""
     context_summary: str = ""
+    repo: str = ""
     repo_root: str | None = None
     ref: str | None = None
 
@@ -44,6 +47,7 @@ class ReviewOutcome:
     cache_write_tokens: int = 0
     total_tokens: int = 0
     llm_calls: int = 0
+    cost_usd: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -80,14 +84,11 @@ def review_prompt_versions(gate_names: Iterable[str]) -> dict[str, str]:
 
 
 def build_review_gate():
-    from services.orchestration.gates.config import load_gates_config
     from services.review.evidence import PostgresEvidenceSink
     from services.review.gate import ReviewGate
     from services.review.kernel import RebarReviewKernel
 
-    blocking_severities = load_gates_config().blocking_severities
-    kernel = RebarReviewKernel(blocking_severities=blocking_severities)
-    return ReviewGate(kernel, PostgresEvidenceSink())
+    return ReviewGate(RebarReviewKernel(), PostgresEvidenceSink())
 
 
 def _subject_ref(subject: str) -> str:
@@ -102,11 +103,32 @@ def _instructions(spec: _PromptSpec, req: ReviewRequest) -> str:
     return "\n\n".join(parts)
 
 
+def _resolve_repo_root(req: ReviewRequest) -> str | None:
+    """Resolve a read-only repository root for the reviewer, reusing the RIS checkout.
+
+    Prefers an explicit root on the request. Otherwise maps the repository name to
+    its configured repository-intelligence path, so the reviewer reads the same
+    read-only checkout the intelligence service indexes rather than a second copy.
+    Returns ``None`` when no path resolves or the resolved path is not present, so
+    the reviewer falls back to the context summary rather than a missing directory.
+    """
+    candidate = req.repo_root
+    if not candidate and req.repo:
+        from scripts.config import get_settings
+
+        entry = get_settings().repo_intelligence_registry().get(req.repo)
+        candidate = entry[0] if entry else None
+    if candidate and Path(candidate).is_dir():
+        return candidate
+    return None
+
+
 async def _run_gate(stage: ReviewStage, spec: _PromptSpec, req: ReviewRequest) -> ReviewOutcome:
     from services.review.types import ReviewInput
 
     loaded = load_prompt(spec.name)
     gate = build_review_gate()
+    repo_root = _resolve_repo_root(req)
     review_input = ReviewInput(
         stage=stage,
         subject_ref=_subject_ref(req.subject),
@@ -115,13 +137,15 @@ async def _run_gate(stage: ReviewStage, spec: _PromptSpec, req: ReviewRequest) -
         prompt_version=loaded.version,
         system_prompt=loaded.text,
         instructions=_instructions(spec, req),
-        repo_root=req.repo_root,
+        repo_root=repo_root,
         ref=req.ref,
         source="local",
     )
-    result = await gate.review(review_input, execution_id=req.execution_id)
+    with bind_execution(stage=stage.value, prompt_version=loaded.version):
+        result = await gate.review(review_input, execution_id=req.execution_id)
     model_id = result.provenance[0].model_id if result.provenance else None
     usage = result.usage
+    cost_usd = token_cost_usd(model_id, usage.prompt_tokens, usage.completion_tokens)
     return ReviewOutcome(
         verdict=result.verdict.value,
         attestation_hash=result.attestation.content_hash,
@@ -136,6 +160,7 @@ async def _run_gate(stage: ReviewStage, spec: _PromptSpec, req: ReviewRequest) -
         cache_write_tokens=usage.cache_write_tokens,
         total_tokens=usage.prompt_tokens + usage.completion_tokens,
         llm_calls=usage.llm_calls,
+        cost_usd=cost_usd,
     )
 
 

@@ -6,7 +6,13 @@ import asyncio
 import logging
 import os
 
-from observability import configure_tracing, temporal_interceptors
+from observability import (
+    configure_logging,
+    configure_metrics,
+    configure_tracing,
+    install_litellm_header_propagation,
+    temporal_interceptors,
+)
 from scripts.config import get_settings
 from temporalio.client import Client
 from temporalio.worker import Worker
@@ -32,9 +38,7 @@ from services.orchestration.temporal_activities import (
     load_gate_plan,
     mark_task_parked,
     persist_execution_state,
-    poll_ci,
     promote_pr,
-    read_ci_log,
     reap_orphans,
     recheck_issue,
     reconcile_intake_pass,
@@ -43,14 +47,15 @@ from services.orchestration.temporal_activities import (
     record_pr_approval,
     record_suspension,
     record_usage_metrics,
+    reset_task_coordination,
     resolve_conflicts,
     review_code,
     review_plan,
     review_security,
+    run_checks,
     run_implementation_stage,
     scan_change,
     synchronize_branch,
-    trigger_ci,
     unmark_task_parked,
     verify_acceptance,
 )
@@ -112,11 +117,10 @@ _ACTIVITIES = [
     record_pr_approval,
     promote_pr,
     reap_orphans,
+    reset_task_coordination,
     record_suspension,
     clear_suspension,
-    trigger_ci,
-    poll_ci,
-    read_ci_log,
+    run_checks,
     analyze_ci_failure,
     apply_ci_repair,
     alert_human_intervention,
@@ -170,10 +174,40 @@ def build_worker(client: Client, task_queue: str, role: str) -> Worker:
     )
 
 
+def _warm_acli_auth(settings) -> None:
+    """Authenticate the cloud Jira acli client once at worker startup.
+
+    The acli credential lives in an ephemeral container path that an image
+    rebuild or task replacement discards, so ticket activities re-authenticate
+    from the configured credential here rather than failing on first use.
+    """
+    from services.integration.jira.acli_auth import ensure_acli_authenticated
+    from services.integration.jira.credentials import (
+        CLOUD,
+        build_jira_credential_resolver,
+    )
+
+    try:
+        resolver = build_jira_credential_resolver(settings)
+        for project in sorted(resolver.projects()):
+            cred = resolver.resolve(project)
+            if cred is not None and cred.auth_mode == CLOUD:
+                ensure_acli_authenticated(cred, acli_path=settings.jira_acli_path)
+                log.info("acli authenticated for cloud Jira at startup")
+                return
+    except Exception as exc:  # noqa: BLE001
+        log.warning("acli startup authentication skipped: %s", exc)
+
+
 async def main() -> None:
     settings = get_settings()
     role = _resolve_role()
-    configure_tracing(f"workflow-worker.{role}")
+    service_name = f"workflow-worker.{role}"
+    configure_tracing(service_name)
+    configure_metrics(service_name)
+    configure_logging(service_name)
+    install_litellm_header_propagation(settings.rebar_llm_base_url)
+    _warm_acli_auth(settings)
     log.info(
         "connecting to Temporal at %s (ns=%s)",
         settings.temporal_host,

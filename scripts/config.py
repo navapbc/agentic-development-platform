@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     rebar_llm_api_key: str = "change-me-locally"
     rebar_llm_model_provider: str = "openai"
     rebar_llm_max_tokens: int = 8192
+    rebar_llm_temperature: float = 0.0
     review_attestation_secret: str = "change-me-locally"
     repair_analysis_use_llm: bool = True
 
@@ -76,11 +77,7 @@ class Settings(BaseSettings):
     github_default_base_branch: str = "main"
     github_webhook_secret: str = ""
     jira_webhook_secret: str = ""
-    jenkins_webhook_secret: str = ""
 
-    jenkins_url: str = "http://localhost:8080"
-    jenkins_user: str = ""
-    jenkins_api_token: str = ""
 
     semgrep_binary: str = "semgrep"
     trivy_binary: str = "trivy"
@@ -102,6 +99,10 @@ class Settings(BaseSettings):
     implementation_activity_timeout_seconds: float = 2400.0
     sandbox_workspace_mount_path: str = "/workspace"
     sandbox_litellm_base_url: str = "http://host.docker.internal:4000"
+    gate_engine_execution: str = "subprocess"
+    gate_engine_namespace: str = "agent-sandbox"
+    gate_engine_builder_image: str = "quay.io/buildah/stable:v1.37"
+    gate_registry_tls_verify: bool = True
 
     reap_schedule_id: str = "orphan-reaper"
     reap_schedule_interval_minutes: int = 60
@@ -109,6 +110,9 @@ class Settings(BaseSettings):
 
     intake_schedule_id: str = "jira-intake"
     intake_schedule_interval_seconds: int = 60
+    intake_run_reviews: bool = False
+    intake_run_policy: bool = False
+    intake_run_approval: bool = False
 
     def repo_intelligence_registry(self) -> dict[str, tuple[str, str | None]]:
         """Parse configured repositories into a name to (root, commit) mapping."""

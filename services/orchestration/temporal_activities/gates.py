@@ -7,13 +7,15 @@ import json
 import uuid
 from dataclasses import dataclass, field
 
-from observability import stage_span
+from observability import record_gate_outcome, stage_span
 from temporalio import activity
 
 from services.orchestration.gates.contract import (
+    BLOCK,
     REVIEW,
     SCANNER,
     GateContext,
+    GateFinding,
     GateNode,
     GateResult,
 )
@@ -126,10 +128,35 @@ async def _persist_gate_evidence(context: GateContext, result: GateResult) -> No
     await PostgresEvidenceSink().persist(record)
 
 
+def _backend_error_result(name: str, kind: str, exc: Exception) -> GateResult:
+    """A gate whose backend is absent or broken fails closed as a deterministic block.
+
+    A required gate then blocks promotion and honors its on_block response the same as any
+    block verdict, rather than crashing the workflow, so a misconfigured or unavailable
+    external tool never silently skips and never takes the run down.
+    """
+    reason = f"{type(exc).__name__}: {exc}".strip()
+    return GateResult(
+        name=name,
+        kind=kind or SCANNER,
+        verdict=BLOCK,
+        findings=[
+            GateFinding(
+                severity="high",
+                title=f"gate {name!r} backend failed",
+                detail=reason[:800],
+                rule_id="gate-backend-error",
+            )
+        ],
+        summary=f"gate backend error: {reason[:200]}",
+        metadata={"backend_error": True},
+    )
+
+
 @activity.defn
 async def evaluate_gate(req: EvaluateGateRequest) -> GateResult:
     from services.orchestration.gates.config import load_gates_config
-    from services.orchestration.gates.plugins import registry_for_config
+    from services.orchestration.gates.registry import registry_for_config
 
     registry = registry_for_config(load_gates_config())
     gate = registry.resolve(req.gate)
@@ -140,8 +167,12 @@ async def evaluate_gate(req: EvaluateGateRequest) -> GateResult:
         execution_id=req.context.execution_id,
         task_id=req.context.task_id,
     ):
-        result = await gate.evaluate(req.context)
+        try:
+            result = await gate.evaluate(req.context)
+        except Exception as exc:  # noqa: BLE001 - a backend failure fails closed, never crashes
+            result = _backend_error_result(req.gate, gate.kind, exc)
         await _persist_gate_evidence(req.context, result)
+    record_gate_outcome(result.name, result.verdict)
     return result
 
 
@@ -153,7 +184,7 @@ async def load_gate_plan() -> GatePlan:
         PLAN_GATE,
         load_gates_config,
     )
-    from services.orchestration.gates.plugins import registry_for_config
+    from services.orchestration.gates.registry import registry_for_config
 
     config = load_gates_config()
     registry = registry_for_config(config)

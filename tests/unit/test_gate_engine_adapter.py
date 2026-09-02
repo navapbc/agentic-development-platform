@@ -56,12 +56,100 @@ def test_map_review_findings_maps_severity_location_and_rule():
     assert all(f.scanner == "ai-security-review" for f in findings)
 
 
+def test_map_review_findings_reads_description_as_detail():
+    review = {
+        "review_action": "COMMENT",
+        "comments": [
+            {
+                "path": "app.py",
+                "line": 3,
+                "side": "RIGHT",
+                "perspective": "security",
+                "severity": "HIGH",
+                "title": "SQL injection vulnerability",
+                "description": "User-controlled name is interpolated into the SQL string.",
+                "suggestion_kind": "applicable",
+            }
+        ],
+    }
+    findings = map_review_findings(review, scanner="ai-security-review")
+    assert len(findings) == 1
+    assert findings[0].detail == "User-controlled name is interpolated into the SQL string."
+    assert findings[0].severity == HIGH
+    assert findings[0].title == "SQL injection vulnerability"
+
+
 def test_map_review_findings_on_approve_is_empty():
     assert map_review_findings({"review_action": "APPROVE", "comments": []}, scanner="x") == []
 
 
 def _resolved(path: str) -> ResolvedEngineSource:
     return ResolvedEngineSource(path=path, mode="local", version="c" * 40)
+
+
+def _install_sarif_entrypoint(root: Path) -> None:
+    entry = root / "bin" / "scan"
+    entry.parent.mkdir(parents=True)
+    entry.write_text("#!/usr/bin/env bash\n")
+    entry.chmod(0o755)
+
+
+async def test_sarif_engine_runs_without_a_model_and_parses_findings(tmp_path):
+    source_root = tmp_path / "engine"
+    source_root.mkdir()
+    _install_sarif_entrypoint(source_root)
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+
+    captured: dict[str, Any] = {}
+
+    async def fake_runner(args, cwd, env):
+        captured["env"] = dict(env)
+        json_out = Path(args[args.index("--json-out") + 1])
+        json_out.write_text(
+            json.dumps(
+                {
+                    "version": "2.1.0",
+                    "runs": [
+                        {
+                            "tool": {"driver": {"name": "semgrep"}},
+                            "results": [
+                                {
+                                    "ruleId": "py/sqli",
+                                    "level": "error",
+                                    "message": {"text": "SQL injection"},
+                                    "properties": {"security-severity": "9.1"},
+                                }
+                            ],
+                        }
+                    ],
+                }
+            )
+        )
+        return CommandResult(returncode=1, stdout="", stderr="")
+
+    scanner = AiReviewScanner(
+        name="semgrep-sarif",
+        config=GateEngineConfig(
+            enabled=True,
+            mode="local",
+            local_path=str(source_root),
+            output_format="sarif",
+            review_entrypoint="bin/scan",
+        ),
+        runner=fake_runner,
+        source=_resolved(str(source_root)),
+    )
+
+    findings = await scanner.scan(
+        ScanTarget(repo="agentic-demo-service", ref="origin/main", repo_root=str(repo_root))
+    )
+
+    assert [f.severity for f in findings] == ["critical"]
+    assert findings[0].rule_id == "py/sqli"
+    assert "ANTHROPIC_BASE_URL" not in captured["env"]
+    assert "AI_REVIEW_MODEL" not in captured["env"]
+    assert captured["env"]["AI_REVIEW_SCM"] == "github"
 
 
 def _install_entrypoint(root: Path) -> None:
@@ -113,13 +201,19 @@ async def test_scan_runs_the_entrypoint_and_maps_findings(tmp_path):
     )
 
     findings = await scanner.scan(
-        ScanTarget(repo="agentic-demo-service", ref="origin/main", repo_root=str(repo_root))
+        ScanTarget(
+            repo="agentic-demo-service",
+            ref="headsha",
+            repo_root=str(repo_root),
+            base_ref="basesha",
+        )
     )
 
     assert [f.severity for f in findings] == [HIGH]
     assert "--against" in captured["args"]
-    assert captured["args"][captured["args"].index("--against") + 1] == "origin/main"
-    assert "--profile" in captured["args"]
+    assert captured["args"][captured["args"].index("--against") + 1] == "basesha"
+    assert "--profile" not in captured["args"]
+    assert captured["env"]["AI_REVIEW_PROFILE"] == "cms-ars"
     assert captured["cwd"] == str(repo_root)
     assert captured["env"]["ANTHROPIC_BASE_URL"] == "http://litellm:4000"
     assert captured["env"]["OPENAI_BASE_URL"] == "http://litellm:4000"
@@ -418,3 +512,187 @@ def test_triage_action_flaky_only_reruns():
 
 def test_triage_action_unclassified_escalates():
     assert triage_action(_triage()) == "escalate"
+
+
+async def test_scan_uses_the_pod_runner_when_provided(tmp_path):
+    source_root = tmp_path / "engine"
+    source_root.mkdir()
+    _install_entrypoint(source_root)
+
+    class _FakePodRunner:
+        def __init__(self):
+            self.specs = []
+
+        async def run_engine(self, spec):
+            self.specs.append(spec)
+            return {
+                "review_action": "COMMENT",
+                "comments": [
+                    {"path": "a.py", "line": 2, "severity": "HIGH",
+                     "title": "sqli", "description": "bad"}
+                ],
+            }
+
+    pod = _FakePodRunner()
+    scanner = AiReviewScanner(
+        name="ai-security-review",
+        config=GateEngineConfig(
+            enabled=True, mode="local", local_path=str(source_root),
+            review_model="security-review-model",
+        ),
+        profile="cms-ars",
+        litellm_base_url="http://host.docker.internal:4000",
+        litellm_api_key="sk-gateway",
+        source=_resolved(str(source_root)),
+        pod_runner=pod,
+    )
+
+    findings = await scanner.scan(
+        ScanTarget(
+            repo="agentic-demo-service", ref="head", repo_root="/checkout",
+            base_ref="base", execution_id="exec-1",
+        )
+    )
+
+    assert [f.severity for f in findings] == [HIGH]
+    assert findings[0].detail == "bad"
+    assert len(pod.specs) == 1
+    spec = pod.specs[0]
+    assert spec.base_ref == "base"
+    assert spec.checkout_dir == "/checkout"
+    assert spec.source_path == str(source_root)
+    assert spec.env["AI_REVIEW_PROFILE"] == "cms-ars"
+    assert spec.env["ANTHROPIC_BASE_URL"] == "http://host.docker.internal:4000"
+    assert spec.env["ANTHROPIC_CUSTOM_HEADERS"] == (
+        "langfuse_session_id: exec-1\nlangfuse_generation_name: ai-security-review"
+    )
+
+
+async def test_scan_threads_tls_verify_into_the_pod_spec(tmp_path):
+    source_root = tmp_path / "engine"
+    source_root.mkdir()
+    _install_entrypoint(source_root)
+
+    class _CapturingPodRunner:
+        def __init__(self):
+            self.specs = []
+
+        async def run_engine(self, spec):
+            self.specs.append(spec)
+            return {"review_action": "COMMENT", "comments": []}
+
+    pod = _CapturingPodRunner()
+    scanner = AiReviewScanner(
+        name="ai-security-review",
+        config=GateEngineConfig(
+            enabled=True, mode="local", local_path=str(source_root),
+            review_model="security-review-model",
+        ),
+        profile="cms-ars",
+        litellm_base_url="http://host.docker.internal:4000",
+        litellm_api_key="sk-gateway",
+        source=_resolved(str(source_root)),
+        pod_runner=pod,
+        tls_verify=False,
+    )
+
+    await scanner.scan(
+        ScanTarget(
+            repo="agentic-demo-service", ref="head", repo_root="/checkout",
+            base_ref="base", execution_id="exec-1",
+        )
+    )
+
+    assert pod.specs[0].tls_verify is False
+
+
+async def test_image_acts_as_runtime_override_with_local_source(tmp_path):
+    source_root = tmp_path / "engine"
+    source_root.mkdir()
+    _install_entrypoint(source_root)
+
+    class _CapturingPodRunner:
+        def __init__(self):
+            self.specs = []
+
+        async def run_engine(self, spec):
+            self.specs.append(spec)
+            return {"review_action": "COMMENT", "comments": []}
+
+    pod = _CapturingPodRunner()
+    scanner = AiReviewScanner(
+        name="ai-security-review",
+        config=GateEngineConfig(
+            enabled=True, mode="local", local_path=str(source_root),
+            image="host.docker.internal:5001/gate-tool:519dd2f",
+            review_model="security-review-model",
+        ),
+        profile="cms-ars",
+        litellm_base_url="http://host.docker.internal:4000",
+        litellm_api_key="sk-gateway",
+        source=_resolved(str(source_root)),
+        pod_runner=pod,
+    )
+
+    await scanner.scan(
+        ScanTarget(
+            repo="agentic-demo-service", ref="head", repo_root="/checkout",
+            base_ref="base", execution_id="exec-1",
+        )
+    )
+
+    spec = pod.specs[0]
+    # The pre-built image is pulled as the runtime, and the local source is still mounted.
+    assert spec.image == "host.docker.internal:5001/gate-tool:519dd2f"
+    assert spec.source_path == str(source_root)
+
+
+async def test_scan_raises_scanner_unavailable_when_pod_engine_fails(tmp_path):
+    from adapters.interfaces.security_scanner import ScannerUnavailableError
+    from services.orchestration.gates.pod_runner import PodEngineError
+
+    source_root = tmp_path / "engine"
+    source_root.mkdir()
+    _install_entrypoint(source_root)
+
+    class _FailingPodRunner:
+        async def run_engine(self, spec):
+            raise PodEngineError("gate 'ai-security-review' engine pod exited 1: gateway down")
+
+    scanner = AiReviewScanner(
+        name="ai-security-review",
+        config=GateEngineConfig(
+            enabled=True, mode="local", local_path=str(source_root),
+            review_model="security-review-model",
+        ),
+        profile="cms-ars",
+        litellm_base_url="http://host.docker.internal:4000",
+        litellm_api_key="sk-gateway",
+        source=_resolved(str(source_root)),
+        pod_runner=_FailingPodRunner(),
+    )
+
+    with pytest.raises(ScannerUnavailableError):
+        await scanner.scan(
+            ScanTarget(
+                repo="agentic-demo-service", ref="head", repo_root="/checkout",
+                base_ref="base", execution_id="exec-1",
+            )
+        )
+
+
+async def test_engine_env_injects_trace_headers_only_with_execution():
+    from services.orchestration.gates.gate_engine import _engine_env
+
+    cfg = GateEngineConfig(enabled=True, mode="local", review_model="review-model")
+    with_exec = _engine_env(
+        config=cfg, profile="cms-ars", gateway_base_url="http://gw", gateway_api_key="k",
+        execution_id="exec-9", generation_name="ai-security-review",
+    )
+    assert with_exec["ANTHROPIC_CUSTOM_HEADERS"] == (
+        "langfuse_session_id: exec-9\nlangfuse_generation_name: ai-security-review"
+    )
+    without = _engine_env(
+        config=cfg, profile="cms-ars", gateway_base_url="http://gw", gateway_api_key="k",
+    )
+    assert "ANTHROPIC_CUSTOM_HEADERS" not in without

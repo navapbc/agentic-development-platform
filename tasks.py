@@ -131,10 +131,26 @@ def cost_rollup(c, execution_id=""):
     c.run(f"python -m scripts.cost_rollup --execution-id {execution_id}", pty=True)
 
 
+@task(help={"execution-id": "The execution id to reconcile."})
+def reconcile_usage(c, execution_id=""):
+    """Reconcile an execution's Langfuse generations against its usage metrics."""
+    if not execution_id:
+        raise Exit("provide --execution-id")
+    c.run(f"python -m scripts.reconcile_usage --execution-id {execution_id}", pty=True)
+
+
 @task
 def test(c):
     """Run the pytest suite."""
     c.run("pytest", pty=True)
+
+
+@task
+def ci(c):
+    """Run the portable CI checks: lint, the hermetic test tiers, and the evaluation gate."""
+    c.run("ruff check", pty=True)
+    c.run("pytest -q tests/unit tests/end_to_end", pty=True)
+    c.run("python -m scripts.eval_gate", pty=True)
 
 
 @task
@@ -474,7 +490,9 @@ for _t in (
     review_eval,
     context_eval,
     cost_rollup,
+    reconcile_usage,
     test,
+    ci,
     workflow_status,
     durability_proof,
     fetch_acli,

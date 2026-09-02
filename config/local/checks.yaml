@@ -1,0 +1,11 @@
+# E2E validation (ADEVX-90): project-run deterministic checks for the demo service.
+# Mirrors the four Jenkinsfile stages (venv/dev-deps, ruff, pytest, bandit) as a
+# single command the platform runs in an isolated pod, with no CI system involved.
+config_version: 1
+
+checks:
+  agentic-demo-service:
+    image: python:3.12-slim
+    command: "pip install -r requirements-dev.txt && ruff check . && pytest -q && bandit -r app -ll"
+    working_dir: /workspace
+    timeout_minutes: 15

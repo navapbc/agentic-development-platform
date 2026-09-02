@@ -10,6 +10,30 @@ from langgraph.graph import END, START, StateGraph
 ACTIONABLE = "actionable"
 UNREPAIRABLE = "unrepairable"
 
+_FAILURE_MARKERS = (
+    "fail",
+    "error",
+    "traceback",
+    "assert",
+    "reformat",
+    "severity",
+    "ruff",
+    "bandit",
+    "pytest",
+    "security",
+    "issue",
+    "shell=",
+)
+
+
+def failure_summary(log_text: str, *, max_lines: int = 20) -> str:
+    """Pick the failure-relevant lines from a check log, keeping the last max_lines."""
+    picked = [
+        line for line in log_text.splitlines() if any(m in line.lower() for m in _FAILURE_MARKERS)
+    ]
+    return "\n".join(picked[-max_lines:])
+
+
 TEST_FAILURE = "test_failure"
 LINT = "lint"
 SECURITY = "security"
@@ -19,7 +43,7 @@ UNKNOWN = "unknown"
 _TEST_MARKERS = ("AssertionError", "FAILED", "assert ", "pytest", "test failed")
 _LINT_MARKERS = ("ruff", "flake8", "lint", "E501", "would reformat", "format")
 _SECURITY_MARKERS = (
-    "bandit",
+    ">> issue:",
     "security issue",
     "shell=true",
     "severity: high",
@@ -138,38 +162,32 @@ _MAX_SUMMARY_CHARS = 8000
 
 
 def _repair_llm_config(settings=None):
-    from rebar.llm.config import LLMConfig
-    from scripts.config import get_settings
+    from services.model_gateway.llm_config import llm_config_for
 
-    settings = settings or get_settings()
-    return LLMConfig(
-        runner="pydantic_ai",
-        model="repair-model",
-        model_provider=settings.rebar_llm_model_provider,
-        base_url=settings.rebar_llm_base_url,
-        api_key=settings.rebar_llm_api_key,
-        max_tokens=settings.rebar_llm_max_tokens,
-    )
+    return llm_config_for("repair-model", settings)
 
 
 def _model_instruction(failure_summary: str, category: str, *, runner=None, settings=None) -> str:
+    from observability import bind_execution
     from rebar.llm.runner import RunRequest, get_runner
 
     from services.prompts import load_prompt
 
     cfg = _repair_llm_config(settings)
     run = runner or get_runner(cfg)
-    result = run.run(
-        RunRequest(
-            system_prompt=load_prompt("ci-repair").text,
-            instructions=(
-                f"Failure category: {category}.\n"
-                f"Failing job log:\n{failure_summary[:_MAX_SUMMARY_CHARS]}"
-            ),
-            config=cfg,
-            reviewers=[],
+    loaded = load_prompt("ci-repair")
+    with bind_execution(stage="repair", prompt_version=loaded.version):
+        result = run.run(
+            RunRequest(
+                system_prompt=loaded.text,
+                instructions=(
+                    f"Failure category: {category}.\n"
+                    f"Failing job log:\n{failure_summary[:_MAX_SUMMARY_CHARS]}"
+                ),
+                config=cfg,
+                reviewers=[],
+            )
         )
-    )
     return str(result.get("summary") or "").strip()
 
 

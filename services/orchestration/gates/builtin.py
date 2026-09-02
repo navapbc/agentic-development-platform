@@ -32,6 +32,7 @@ def review_gate(name: str, review_fn: ReviewFn) -> Gate:
                 subject=context.subject,
                 context_ref=context.ref,
                 context_summary=context.context_summary,
+                repo=context.repo,
                 repo_root=context.repo_root or None,
                 ref=context.ref or None,
             )
@@ -47,6 +48,13 @@ def review_gate(name: str, review_fn: ReviewFn) -> Gate:
             metadata={
                 "model_id": outcome.model_id,
                 "prompt_version": outcome.prompt_version,
+                "prompt_tokens": outcome.prompt_tokens,
+                "completion_tokens": outcome.completion_tokens,
+                "cache_read_tokens": outcome.cache_read_tokens,
+                "cache_write_tokens": outcome.cache_write_tokens,
+                "total_tokens": outcome.total_tokens,
+                "llm_calls": outcome.llm_calls,
+                "cost_usd": outcome.cost_usd,
             },
         )
 
@@ -97,18 +105,66 @@ def builtin_scanner_backends() -> dict[str, ScannerFactory]:
     }
 
 
+def _resolve_gate_model(config: Any, settings: Any) -> str:
+    """Resolve the gate's requested model to a client-recognized id that the gateway can route.
+
+    Reads the available canonical-id model groups from the gateway config and maps the gate's
+    ``review_model`` onto one. An exact or same-version match returns that model. A within-major
+    substitution honours the gate's ``on_unavailable`` policy of warn or abort. When the catalog
+    cannot be read or the model needs no resolution, the requested value passes through.
+    """
+    import logging
+
+    from services.integration.credentials import ConfigError, load_env_config
+    from services.orchestration.gates.model_resolver import (
+        available_gate_model_groups,
+        resolve_from_available,
+    )
+
+    requested = getattr(config, "review_model", "")
+    if not requested or not getattr(config, "needs_model", False):
+        return requested
+    try:
+        litellm_config = load_env_config("litellm-config", environment=settings.environment)
+    except ConfigError:
+        return requested
+    groups = available_gate_model_groups(litellm_config)
+    if not groups:
+        return requested
+    resolution = resolve_from_available(
+        requested, groups, on_unavailable=getattr(config, "on_unavailable", "abort")
+    )
+    if resolution.substituted:
+        logging.getLogger("gates").warning(resolution.note)
+    return resolution.model_id
+
+
 def engine_review_backend(config: Any, profile: str = "") -> Any:
     from scripts.config import get_settings
 
     from services.orchestration.gates.gate_engine import AiReviewScanner
 
     settings = get_settings()
+    pod_runner = None
+    litellm_base_url = settings.litellm_base_url
+    if settings.gate_engine_execution == "pod":
+        from services.orchestration.gates.pod_runner import KubectlPodOps, PodEngineRunner
+
+        pod_runner = PodEngineRunner(
+            KubectlPodOps(),
+            namespace=settings.gate_engine_namespace,
+            builder_image=settings.gate_engine_builder_image,
+        )
+        litellm_base_url = settings.sandbox_litellm_base_url
     return AiReviewScanner(
         name=config.name,
         config=config,
         profile=profile,
-        litellm_base_url=settings.litellm_base_url,
+        litellm_base_url=litellm_base_url,
         litellm_api_key=settings.litellm_master_key,
+        pod_runner=pod_runner,
+        tls_verify=settings.gate_registry_tls_verify,
+        review_model=_resolve_gate_model(config, settings),
     )
 
 

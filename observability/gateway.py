@@ -53,6 +53,25 @@ def langfuse_session_url(host: str, project_id: str, session_id: str) -> str:
     return f"{host.rstrip('/')}/project/{project_id}/sessions/{session_id}"
 
 
+def token_cost_usd(
+    model_id: str | None, prompt_tokens: int, completion_tokens: int
+) -> float:
+    """Price a token count for a model through LiteLLM. Returns 0.0 when unknown."""
+    if not model_id or (prompt_tokens <= 0 and completion_tokens <= 0):
+        return 0.0
+    try:
+        from litellm import cost_per_token
+
+        prompt_cost, completion_cost = cost_per_token(
+            model=model_id,
+            prompt_tokens=max(prompt_tokens, 0),
+            completion_tokens=max(completion_tokens, 0),
+        )
+        return float(prompt_cost) + float(completion_cost)
+    except Exception:  # noqa: BLE001 - pricing must not break a stage
+        return 0.0
+
+
 @dataclass(frozen=True)
 class Reconciliation:
     ok: bool

@@ -18,6 +18,14 @@ from services.integration.jira.credentials import (
 _GIT_MARKERS = ("apply_outbound", "git_adapter", "_ref_lock", "_advisory_lock")
 
 
+@pytest.fixture(autouse=True)
+def _no_acli_auth(monkeypatch):
+    monkeypatch.setattr(
+        "services.integration.jira.adapter.ensure_acli_authenticated_cached",
+        lambda *args, **kwargs: False,
+    )
+
+
 @pytest.fixture
 def fake_dc_jira(monkeypatch):
     from services.integration.jira._engine import ensure_engine_on_path

@@ -279,3 +279,53 @@ async def test_scan_change_writes_one_evidence_record_per_scanner(monkeypatch):
     verdicts = {record.metadata["gate"]: record.metadata["verdict"] for record in persisted}
     assert verdicts == {"semgrep": "block", "trivy": "pass"}
     assert result.scanner_verdicts == {"semgrep": "block", "trivy": "pass"}
+
+
+async def test_mediator_fails_closed_when_a_backend_errors():
+    from adapters.interfaces.security_scanner import CRITICAL
+
+    class _BoomScanner:
+        name = "ai-security-review"
+
+        async def scan(self, target):
+            raise RuntimeError("engine pod build failed")
+
+    class _CleanScanner:
+        name = "trivy"
+
+        async def scan(self, target):
+            return []
+
+    mediator = SecurityScanMediator(
+        backends=(_BoomScanner(), _CleanScanner()),
+        allowed_repos=frozenset({"agentic-demo-service"}),
+        threshold="high",
+    )
+    report = await mediator.scan(_target())
+
+    err = [f for f in report.findings if f.scanner == "ai-security-review"]
+    assert len(err) == 1
+    assert err[0].severity == CRITICAL
+    assert err[0].rule_id == "gate-backend-error"
+    assert "engine pod build failed" in err[0].detail
+    assert report.blocking_count == 1
+    assert "trivy" in report.scanners
+
+
+async def test_mediator_propagates_scanner_unavailable_for_retry():
+    from adapters.interfaces.security_scanner import ScannerUnavailableError
+
+    class _UnavailableScanner:
+        name = "ai-security-review"
+
+        async def scan(self, target):
+            raise ScannerUnavailableError("engine pod exited 1: gateway unreachable")
+
+    mediator = SecurityScanMediator(
+        backends=(_UnavailableScanner(),),
+        allowed_repos=frozenset({"agentic-demo-service"}),
+        threshold="high",
+    )
+
+    with pytest.raises(ScannerUnavailableError):
+        await mediator.scan(_target())

@@ -244,8 +244,8 @@ async def _run_via_temporal(
     task_id: str,
     summary: str,
     raw_issue: dict,
+    description: str = "",
     full_pipeline: bool = False,
-    ci_job: str = "",
     await_pr_close: bool = False,
 ) -> int:
     from services.orchestration.temporal_workflows.draft_pull_request import (
@@ -270,9 +270,9 @@ async def _run_via_temporal(
     if full_pipeline:
         print(
             "[demo] full pipeline: the platform claims the work, writes the change in a "
-            "sandbox pod, syncs, commits, opens the pull request, runs CI with the repair "
-            "loop, runs the review gates, scans and evaluates policy, parks for approval, "
-            "and promotes the pull request"
+            "sandbox pod, syncs, commits, runs the project checks with the repair loop, runs "
+            "the review gates, scans and evaluates policy, parks for approval, opens the "
+            "pull request, and promotes it"
         )
         print(f"[demo] approve the pause with: inv approve-pr --workflow-id {workflow_id}")
     else:
@@ -291,11 +291,11 @@ async def _run_via_temporal(
             task=summary,
             issue_key=task_id,
             focus=summary,
+            task_description=description,
             commit_message="Add automated draft demo marker",
             stored_issue=stored_issue,
             build_id=settings.agent_build_id,
             parked_status=settings.jira_parked_status,
-            ci_job=ci_job,
             run_reviews=full_pipeline,
             run_policy=full_pipeline,
             run_approval=full_pipeline,
@@ -356,11 +356,6 @@ def _parse_args() -> argparse.Namespace:
         "--full-pipeline",
         action="store_true",
         help="Run CI, reviews, scan, policy, and the approval pause on Temporal (via-temporal).",
-    )
-    parser.add_argument(
-        "--ci-job",
-        default=os.environ.get("DEMO_CI_JOB", ""),
-        help="CI job for the full pipeline. Defaults to <repo>-ci.",
     )
     parser.add_argument(
         "--await-pr-close",
@@ -465,8 +460,8 @@ async def main() -> int:
             task_id=task_id,
             summary=summary,
             raw_issue=dict(raw_issue),
+            description=description,
             full_pipeline=args.full_pipeline,
-            ci_job=args.ci_job or (f"{repo}-ci" if args.full_pipeline else ""),
             await_pr_close=args.await_pr_close,
         )
         return rc

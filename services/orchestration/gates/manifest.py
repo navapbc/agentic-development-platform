@@ -28,8 +28,6 @@ def gate_config_hash(config: GatesConfig) -> str:
                 "after": list(spec.after),
                 "on_block": spec.on_block,
                 "params": spec.params,
-                "distribution": spec.distribution,
-                "entry_point": spec.entry_point,
             }
             for spec in config.gates
         ],
@@ -39,18 +37,7 @@ def gate_config_hash(config: GatesConfig) -> str:
 
 
 def gate_versions(config: GatesConfig) -> dict[str, str]:
-    from importlib.metadata import PackageNotFoundError, version
-
-    versions: dict[str, str] = {}
-    for spec in config.enabled_gates():
-        if spec.is_plugin:
-            try:
-                versions[spec.name] = version(spec.distribution)
-            except PackageNotFoundError:
-                versions[spec.name] = "unknown"
-        else:
-            versions[spec.name] = GATE_CONTRACT_VERSION
-    return versions
+    return {spec.name: GATE_CONTRACT_VERSION for spec in config.enabled_gates()}
 
 
 def gate_manifest(config: GatesConfig) -> GateManifest:

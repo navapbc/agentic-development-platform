@@ -170,3 +170,64 @@ def test_empty_rows_yield_empty_rollup():
     assert rollup.by_stage == ()
     assert rollup.totals.total_tokens == 0
     assert rollup.budget.breach_reason == ""
+
+
+def test_backfill_refills_zeroed_review_stage():
+    from services.orchestration.usage_rollup import backfill_zeroed_stages
+
+    rows = [
+        UsageRow(
+            execution_id=EXECUTION,
+            stage="IMPLEMENTING",
+            model_id="impl-model",
+            prompt_tokens=500,
+            completion_tokens=300,
+            total_tokens=800,
+            llm_calls=5,
+            cost_usd=1.50,
+        ),
+        UsageRow(
+            execution_id=EXECUTION,
+            stage="CODE_REVIEW",
+            model_id=None,
+            prompt_tokens=0,
+            completion_tokens=0,
+            total_tokens=0,
+            llm_calls=0,
+            cost_usd=0.0,
+        ),
+    ]
+    generations = [
+        {"stage": "code-review", "model_id": "review-model",
+         "prompt_tokens": 1200, "completion_tokens": 300, "cost_usd": 0.45},
+        {"stage": "code-review", "model_id": "review-model",
+         "prompt_tokens": 800, "completion_tokens": 100, "cost_usd": 0.25},
+        {"stage": "implementing", "model_id": "impl-model",
+         "prompt_tokens": 9999, "completion_tokens": 9999, "cost_usd": 99.0},
+    ]
+
+    merged = {row.stage: row for row in backfill_zeroed_stages(rows, generations)}
+
+    review = merged["CODE_REVIEW"]
+    assert review.prompt_tokens == 2000
+    assert review.completion_tokens == 400
+    assert review.total_tokens == 2400
+    assert review.llm_calls == 2
+    assert review.cost_usd == 0.70
+    assert review.model_id == "review-model"
+
+    impl = merged["IMPLEMENTING"]
+    assert impl.prompt_tokens == 500
+    assert impl.cost_usd == 1.50
+
+
+def test_backfill_leaves_rows_without_matching_generations():
+    from services.orchestration.usage_rollup import backfill_zeroed_stages
+
+    rows = [
+        UsageRow(execution_id=EXECUTION, stage="SECURITY_REVIEW", prompt_tokens=0,
+                 completion_tokens=0, total_tokens=0, cost_usd=0.0),
+    ]
+    merged = backfill_zeroed_stages(rows, [])
+    assert merged[0].prompt_tokens == 0
+    assert merged[0].cost_usd == 0.0

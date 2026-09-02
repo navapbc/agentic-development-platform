@@ -8,6 +8,7 @@ from typing import Any, Protocol
 from scripts.config import Settings, get_settings
 
 from services.integration.jira._engine import ensure_engine_on_path
+from services.integration.jira.acli_auth import ensure_acli_authenticated_cached
 from services.integration.jira.credentials import (
     CLOUD,
     DATACENTER,
@@ -104,6 +105,7 @@ def _build_cloud_client(cred: JiraProjectCredential, *, acli_path: str) -> _Vend
     ensure_engine_on_path()
     from rebar_reconciler.adapters.jira.acli import AcliClient
 
+    ensure_acli_authenticated_cached(cred, acli_path=acli_path)
     acli_cmd = [acli_path] if acli_path else None
     return AcliClient(
         cred.url,

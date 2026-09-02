@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from database.models.schema import audit_events, executions, usage_metrics
+from observability import record_stage_cost, record_stage_latency
 from scripts.config import get_settings
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
@@ -159,4 +160,6 @@ async def record_usage_metrics(payload: UsageMetrics) -> str:
     engine = _get_engine()
     async with engine.begin() as conn:
         await conn.execute(stmt)
+    record_stage_cost(payload.stage, payload.model_id, payload.cost_usd)
+    record_stage_latency(payload.stage, payload.elapsed_seconds)
     return payload.execution_id

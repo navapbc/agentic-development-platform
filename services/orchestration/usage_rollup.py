@@ -9,8 +9,9 @@ session link for the execution.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 from database.models.schema import usage_metrics
 
@@ -30,7 +31,8 @@ def _is_implementation(stage: str) -> bool:
 
 
 def _is_gate(stage: str) -> bool:
-    return stage.upper().endswith("_REVIEW")
+    upper = stage.upper()
+    return upper.endswith("_REVIEW") or upper == "ACCEPTANCE"
 
 
 @dataclass(frozen=True)
@@ -272,3 +274,59 @@ async def read_usage_rows(engine: object, execution_id: str) -> list[UsageRow]:
             )
             for row in result.mappings()
         ]
+
+
+def _stage_norm(name: str) -> str:
+    return name.strip().upper().replace("-", "_")
+
+
+def backfill_zeroed_stages(
+    rows: Sequence[UsageRow], generations: Sequence[Mapping[str, Any]]
+) -> list[UsageRow]:
+    """Refill zeroed per-stage usage from the true usage in Langfuse generations.
+
+    A stage whose in-process row rebar returned as zero (the review gates, whose token
+    usage rebar does not report) is refilled from the summed Langfuse generations that
+    carry the same stage. The Langfuse generation name is the hyphenated stage, so it
+    normalizes onto the uppercase in-process stage. Rows that already hold usage stay
+    untouched, so implementation and repair spend is never double counted.
+    """
+    from dataclasses import replace
+
+    by_stage: dict[str, dict[str, Any]] = {}
+    for generation in generations:
+        stage = _stage_norm(str(generation.get("stage") or ""))
+        if not stage:
+            continue
+        bucket = by_stage.setdefault(
+            stage,
+            {"prompt": 0, "completion": 0, "cost": 0.0, "calls": 0, "model_id": None},
+        )
+        bucket["prompt"] += int(generation.get("prompt_tokens", 0) or 0)
+        bucket["completion"] += int(generation.get("completion_tokens", 0) or 0)
+        bucket["cost"] += float(generation.get("cost_usd", 0.0) or 0.0)
+        bucket["calls"] += 1
+        if bucket["model_id"] is None and generation.get("model_id"):
+            bucket["model_id"] = generation.get("model_id")
+
+    merged: list[UsageRow] = []
+    for row in rows:
+        zeroed = row.prompt_tokens == 0 and row.completion_tokens == 0 and row.cost_usd == 0.0
+        bucket = by_stage.get(_stage_norm(row.stage)) if zeroed else None
+        if bucket is None:
+            merged.append(row)
+            continue
+        prompt = int(bucket["prompt"])
+        completion = int(bucket["completion"])
+        merged.append(
+            replace(
+                row,
+                model_id=row.model_id or bucket["model_id"],
+                prompt_tokens=prompt,
+                completion_tokens=completion,
+                total_tokens=prompt + completion,
+                llm_calls=row.llm_calls or int(bucket["calls"]),
+                cost_usd=float(bucket["cost"]),
+            )
+        )
+    return merged

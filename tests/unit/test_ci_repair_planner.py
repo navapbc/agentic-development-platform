@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from adapters.interfaces.ci_host import failure_summary
 from rebar.llm.runner import FakeRunner
 from services.orchestration.langgraph.ci_repair import (
     ACTIONABLE,
@@ -14,6 +13,7 @@ from services.orchestration.langgraph.ci_repair import (
     UNREPAIRABLE,
     analyze_failure,
     classify_failure,
+    failure_summary,
     plan_repair,
 )
 
@@ -48,6 +48,19 @@ def test_failure_summary_captures_a_ruff_finding_and_classifies_lint():
     summary = failure_summary(_RUFF_LOG)
 
     assert "ruff check" in summary
+    assert classify_failure(summary) == LINT
+
+
+def test_lint_failure_is_not_misclassified_by_dependency_install_noise():
+    summary = failure_summary(
+        "Requirement already satisfied: bandit>=1.7 in ./.venv/lib/python3.13/site-packages\n"
+        "+ ruff check .\n"
+        "B904 Within an `except` clause, raise exceptions with `raise ... from err`\n"
+        "Found 2 errors.\n"
+        "ERROR: script returned exit code 1\n"
+        "Finished: FAILURE\n"
+    )
+
     assert classify_failure(summary) == LINT
 
 

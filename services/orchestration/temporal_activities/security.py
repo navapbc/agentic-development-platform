@@ -19,6 +19,7 @@ class ScanChangeRequest:
     repo: str
     ref: str
     repo_root: str
+    base_ref: str = ""
 
 
 @dataclass
@@ -48,7 +49,7 @@ class ScanChangeResult:
 def _build_security_mediator():
     from services.integration.security.mediator import SecurityScanMediator
     from services.orchestration.gates.config import load_gates_config
-    from services.orchestration.gates.plugins import scanner_backends_for_config
+    from services.orchestration.gates.registry import scanner_backends_for_config
 
     config = load_gates_config()
     return SecurityScanMediator.from_settings(scanner_backends_for_config(config))
@@ -78,7 +79,15 @@ async def scan_change(req: ScanChangeRequest) -> ScanChangeResult:
     from services.review.evidence import EvidenceRecord, PostgresEvidenceSink
 
     mediator = _build_security_mediator()
-    report = await mediator.scan(ScanTarget(repo=req.repo, ref=req.ref, repo_root=req.repo_root))
+    report = await mediator.scan(
+        ScanTarget(
+            repo=req.repo,
+            ref=req.ref,
+            repo_root=req.repo_root,
+            base_ref=req.base_ref,
+            execution_id=req.execution_id,
+        )
+    )
     content_hash = _content_hash(report)
     severity_counts = dict(Counter(f.severity for f in report.findings))
 

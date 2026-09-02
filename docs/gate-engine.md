@@ -1,19 +1,51 @@
-# Integrating an external AI-CLI review engine
+# Integrating an external gate
 
-The platform can drive one or more external AI-CLI review engines as gates, the same way `docs/gate-plugins.md` drives external scanner tools. The adapter is engine-agnostic. It targets any engine whose harness satisfies the invocation and JSON contract below, so a deployment can point it at a different review or test-triage workflow without a code change. The `ai-common-workflows` repository is the reference example the defaults describe.
+The platform drives every external review or scanner tool as a gate through one config-driven mechanism. A tool is never installed into the platform. It is named in `config/<env>/gate_engine.yaml`, resolved from a config-selected source, and run as a subprocess whose output the platform parses onto the shared finding scale. The adapter is tool-agnostic, so a SARIF-emitting scanner such as Semgrep, Snyk, or SonarQube and an AI-CLI reviewer such as `ai-common-workflows` are added the same way, with no packaging and no code change. This is the only way to add an external gate. There is no plugin or pip-install path.
 
 ## Inert by default
 
-The engine path is off until a deployment writes `config/<env>/gate_engine.yaml` with at least one enabled engine. With the file absent or every engine disabled, `load_gate_engine_configs` returns no engines, no engine gate registers, and neither the engine code nor the `compose.gate-engine.yaml` overlay runs. The built-in rebar `security-review` gate stays the reviewer. The repository ships only `config/local/gate_engine.yaml.example`.
+The external-gate path is off until a deployment writes `config/<env>/gate_engine.yaml` with at least one enabled engine. With the file absent or every engine disabled, `load_gate_engine_configs` returns no engines and no engine gate registers. The built-in rebar `security-review` gate stays the reviewer. The repository ships only `config/local/gate_engine.yaml.example`.
 
-## The contract an engine satisfies
+## The contract a tool satisfies
 
-The adapter invokes a harness script and reads a JSON file it writes, so the engine is a subprocess boundary rather than a linked library.
+The adapter invokes an entrypoint and reads a JSON file it writes, so the tool is a subprocess boundary rather than a linked library.
 
-- Invocation. The adapter runs `<entrypoint> --against <ref> --json-out <path>` in the checkout under review, adding `--profile <name>` when a gate `params.profile` is set. It sets `AI_REVIEW_SCM=github` so the harness reads the local diff and carries no source-control token. The entrypoint returns `0` or `1`, and writes the JSON result to the `--json-out` path.
-- Model routing. Every model call routes through the platform LiteLLM gateway so Guardrails monitors it. The adapter sets `ANTHROPIC_BASE_URL` and `OPENAI_BASE_URL` to the gateway, `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` to the gateway key, `AI_REVIEW_PROVIDER=api`, `AI_REVIEW_TOOL`, and `AI_REVIEW_MODEL` to a LiteLLM model-list name. The adapter fails closed when no gateway base URL is configured, so no call reaches a vendor API directly.
-- Review JSON. `{"review_action": "APPROVE|COMMENT|REQUEST_CHANGES", "comments": [{"path": ..., "line": ..., "severity": "CRITICAL|HIGH|MEDIUM|LOW", "title": ..., "detail": ..., "perspective": ...}]}`. Each comment maps onto one `ScanFinding` on the shared severity scale, and the gate derives its verdict against the configured threshold.
+- Invocation. The adapter runs `<entrypoint> --against <ref> --json-out <path>` in the checkout under review, adding `--profile <name>` when a gate `params.profile` is set. It sets `AI_REVIEW_SCM=github` so the entrypoint reads the local diff and carries no source-control token. The entrypoint returns `0` or `1` and writes its result to the `--json-out` path.
+- Output format. The `output_format` field selects how the platform parses that file. `sarif` reads SARIF 2.1.0, the native output of Semgrep, Snyk, CodeQL, Trivy, and most scanners, so a SARIF-emitting tool needs no wrapper beyond a one-line entrypoint that runs it and writes SARIF to the given path. `review-json` reads the AI-review JSON below. Both map onto one `ScanFinding` per result on the shared severity scale, and the gate derives its verdict against the configured threshold.
+- Severity. For SARIF the platform reads the numeric `security-severity` property when a tool emits it (the CVSS 0-10 scale: 9.0+ critical, 7.0+ high, 4.0+ medium, above 0 low), and otherwise maps the SARIF `level` (`error` to high, `warning` to medium, `note` to low). For review JSON the `severity` field is `CRITICAL|HIGH|MEDIUM|LOW`.
+- Model routing (AI-CLI tools only, `output_format: review-json`). Every model call routes through the platform LiteLLM gateway. The adapter sets `ANTHROPIC_BASE_URL` and `OPENAI_BASE_URL` to the gateway, `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` to the gateway key, `AI_REVIEW_PROVIDER=api`, `AI_REVIEW_TOOL`, and `AI_REVIEW_MODEL` to a LiteLLM model-list name. The adapter fails closed when no gateway base URL is configured, so no call reaches a vendor API directly. A `sarif` tool needs no model, so none of these are set and no model configuration is required.
+- Review JSON. `{"review_action": "APPROVE|COMMENT|REQUEST_CHANGES", "comments": [{"path": ..., "line": ..., "severity": "CRITICAL|HIGH|MEDIUM|LOW", "title": ..., "detail": ..., "perspective": ...}]}`.
 - Classifier JSON. `{"mode": ..., "summary": ..., "classifications": [{"test": ..., "path": ..., "line": ..., "verdict": "APPLICATION_BUG|TEST_BUG|FLAKY_FAILURE|ENVIRONMENT_ISSUE", "in_scope": true, "rationale": ...}]}`. The advisory classifier feeds the CI repair loop, which patches an in-scope application or test bug, re-runs once for a flaky-only failure, and escalates an environment issue.
+
+## A SARIF scanner, config only
+
+A scanner that emits SARIF is added with a config entry and a one-line wrapper in its own source, no packaging and no model. The wrapper runs the tool and writes SARIF to the `--json-out` path.
+
+```yaml
+config_version: 1
+engines:
+  - name: semgrep-sarif
+    enabled: true
+    output_format: sarif
+    mode: tag
+    repo_url: https://github.com/your-org/semgrep-gate.git
+    tag: v1.0.0
+    cache_root: .agent-context/engine-cache
+    review_entrypoint: bin/scan        # runs `semgrep --sarif` and writes it to --json-out
+    classifier_entrypoint: ""
+```
+
+```yaml
+# gates.yaml
+gates:
+  - name: semgrep-sarif
+    enabled: true
+    required: true
+    params:
+      threshold: high
+```
+
+A Snyk or SonarQube gate is the same shape, with `review_entrypoint` pointing at a wrapper that runs `snyk test --sarif-file-output` or the SonarQube scanner and writes SARIF.
 
 ## Enabling engines
 
@@ -105,4 +137,15 @@ Because the boundary is the invocation and JSON contract, another review or clas
 
 ## Adding more engines and tools
 
-`gate_engine.yaml` takes a list, so add an engine entry per external AI-CLI review or classifier workflow you want to pin and run from config without packaging it, for example the ai-common-workflows reviewer beside a wrapped SonarQube or a custom script. Each entry backs its own named gate. Separately, scanner or self-contained gate tools are added as gate plugins, an installable package per tool that a deployment names in `gates.yaml`, with no limit on how many run. See [gate-plugins.md](gate-plugins.md) and the `examples/snyk-gate` worked example. Use a plugin when the tool is a packaged scanner or gate, and use a gate engine entry when the tool is a config-pinned external CLI review or classifier workflow.
+`gate_engine.yaml` takes a list, so add an entry per external tool you want to pin and run from config, for example the `ai-common-workflows` reviewer beside a Semgrep, Snyk, or SonarQube SARIF gate and a custom script. Each entry backs its own named gate, enabled in `gates.yaml`, with no limit on how many run and no package to install.
+
+## Runtime provisioning and AWS
+
+Config selects and runs a gate, but the tool's own executable must exist in the worker that runs it, because the gate runs as a subprocess inside the activity worker. This is the one operational step config cannot cover.
+
+- Source, not runtime. The `local`, `tag`, and `zip` modes fetch the tool's entrypoint and wrapper into the worker, and they pin the exact version. They do not install the tool the wrapper calls. A wrapper that runs `semgrep` or an AI CLI needs that binary on the worker's `PATH`.
+- Base image. The base worker image ships `git` and `bash` but not scanner binaries or AI CLIs. In subprocess execution mode the external-gate path is inert until both the config and the runtime are present. In pod execution mode the gate builds the tool image in an isolated build-and-run pod, so no tool binary is needed in the worker.
+- Providing the binary. Build a derived worker image from the base that installs the tools a deployment enables, for example `FROM <platform-worker>` then `RUN pip install semgrep` or a `COPY` of a vendored CLI, and deploy that image. On EKS this is the worker image the deployment runs. There is no in-pod install step, because the container is immutable, so the binary is baked into the image the same way in local Docker and on AWS.
+- Model-only gates need no binary. An `output_format: review-json` AI-CLI gate still needs its CLI (`AI_REVIEW_TOOL`) in the image. A gate whose wrapper calls only tools already present needs no image change.
+
+The rule of thumb: adding or swapping a gate is config alone, but introducing a new tool binary is a one-time worker-image change, identical in local Docker and on AWS.

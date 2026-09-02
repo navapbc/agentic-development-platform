@@ -144,3 +144,40 @@ def test_scheduler_admits_all_disjoint_units():
     )
     assert len(schedule.admitted) == 3
     assert schedule.deferred == ()
+
+
+def _owned_unit(work_unit: str, workflow_id: str, *, task_id: str = "AGENTDEV-1") -> WorkUnit:
+    return WorkUnit(
+        task_id=task_id,
+        work_unit=work_unit,
+        execution_id="exec-1",
+        agent_id=f"agent-{work_unit}",
+        workflow_id=workflow_id,
+    )
+
+
+async def test_release_makes_a_claim_reclaimable_and_advances_the_version():
+    store = InMemoryWorkClaimStore()
+    first = await store.try_claim(_owned_unit("u1", "wf-1"))
+
+    released = await store.release(first.claim_id, owner_workflow_id="wf-1")
+    reclaim = await store.try_claim(_owned_unit("u1", "wf-2"))
+
+    assert released is True
+    assert reclaim.won is True
+    assert reclaim.claim_version == first.claim_version + 1
+
+
+async def test_release_requires_the_matching_owner():
+    store = InMemoryWorkClaimStore()
+    first = await store.try_claim(_owned_unit("u1", "wf-1"))
+
+    assert await store.release(first.claim_id, owner_workflow_id="wf-other") is False
+
+
+async def test_release_refuses_a_completed_claim():
+    store = InMemoryWorkClaimStore()
+    first = await store.try_claim(_owned_unit("u1", "wf-1"))
+    await store.transition(first.claim_id, expected_version=1, new_state=COMPLETED)
+
+    assert await store.release(first.claim_id, owner_workflow_id="wf-1") is False

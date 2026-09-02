@@ -23,7 +23,6 @@ from services.integration.jira.credentials import (
     build_jira_credential_resolver,
 )
 from services.orchestration.intake_runtime import build_intake_context
-from services.orchestration.webhook.ci_events import CIWebhookHandler
 from services.orchestration.webhook.inbound import IntegrationHandler, handle_inbound
 from services.orchestration.webhook.jira_events import JiraIntakeHandler
 from services.orchestration.webhook.pr_events import (
@@ -64,18 +63,11 @@ async def build_routes(settings: Settings) -> dict[str, Route]:
         jira_resolver=jira_resolver,
         context=build_intake_context(settings, client=client, gh_resolver=gh_resolver),
     )
-    ci_status = CIWebhookHandler(
-        github_secret=settings.github_webhook_secret,
-        jenkins_secret=settings.jenkins_webhook_secret,
-        resolver=PostgresWorkflowResolver(),
-        signaller=TemporalSignaller(client),
-    )
     return {
         "/webhook/pr": Route(handler=pr_closed, allowed=frozenset(allowed_repos(settings))),
         "/webhook/jira": Route(
             handler=jira_intake, allowed=frozenset(allowed_projects(settings))
         ),
-        "/webhook/ci": Route(handler=ci_status, allowed=frozenset(allowed_repos(settings))),
     }
 
 
