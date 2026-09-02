@@ -22,7 +22,7 @@ from services.orchestration.gates.pod_runner import (
     build_pod_manifest,
 )
 
-DEFAULT_BUILDER_IMAGE = "quay.io/buildah/stable:v1.37"
+DEFAULT_BUILDER_IMAGE = "quay.io/buildah/stable:v1.43.2"
 DEFAULT_NAMESPACE = "agent-sandbox"
 
 _WORKSPACE_MOUNT = "/workspace"

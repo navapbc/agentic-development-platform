@@ -169,6 +169,9 @@ async def test_two_tenants_reach_a_draft_pr_with_no_shared_credential(
         "services.integration.jira.adapter.ensure_acli_authenticated_cached",
         lambda *args, **kwargs: False,
     )
+    monkeypatch.setattr(
+        "services.integration.jira.edits.acceptance_field", lambda settings: ""
+    )
     remotes = {
         "repo-a": _bare_remote(tmp_path, "repo-a"),
         "repo-b": _bare_remote(tmp_path, "repo-b"),

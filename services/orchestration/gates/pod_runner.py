@@ -25,7 +25,7 @@ _OUTPUT_PATH = "/workspace/.gate-engine-out.json"
 _BUILD_TAG = "gate-tool"
 _HOST_GATEWAY_ALIAS = "host.docker.internal"
 
-DEFAULT_BUILDER_IMAGE = "quay.io/buildah/stable:v1.37"
+DEFAULT_BUILDER_IMAGE = "quay.io/buildah/stable:v1.43.2"
 DEFAULT_NAMESPACE = "agent-sandbox"
 
 

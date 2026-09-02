@@ -101,7 +101,7 @@ class Settings(BaseSettings):
     sandbox_litellm_base_url: str = "http://host.docker.internal:4000"
     gate_engine_execution: str = "subprocess"
     gate_engine_namespace: str = "agent-sandbox"
-    gate_engine_builder_image: str = "quay.io/buildah/stable:v1.37"
+    gate_engine_builder_image: str = "quay.io/buildah/stable:v1.43.2"
     gate_registry_tls_verify: bool = True
 
     reap_schedule_id: str = "orphan-reaper"

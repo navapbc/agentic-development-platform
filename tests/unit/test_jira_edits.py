@@ -131,7 +131,10 @@ def _raw_issue(summary: str = "Add retry to the client") -> dict:
     }
 
 
-async def test_recheck_before_pr_pauses_on_material_edit():
+async def test_recheck_before_pr_pauses_on_material_edit(monkeypatch):
+    monkeypatch.setattr(
+        "services.integration.jira.edits.acceptance_field", lambda settings: ""
+    )
     settings = hermetic_settings()
     store = _RecordingPauseStore()
     stored = _payload()
@@ -150,7 +153,10 @@ async def test_recheck_before_pr_pauses_on_material_edit():
     assert len(store.records) == 1
 
 
-async def test_recheck_before_pr_continues_when_unchanged():
+async def test_recheck_before_pr_continues_when_unchanged(monkeypatch):
+    monkeypatch.setattr(
+        "services.integration.jira.edits.acceptance_field", lambda settings: ""
+    )
     settings = hermetic_settings()
     store = _RecordingPauseStore()
     stored = _payload()
