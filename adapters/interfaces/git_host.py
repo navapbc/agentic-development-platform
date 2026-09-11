@@ -79,6 +79,45 @@ class PRFeedback:
     comments: tuple[PRComment, ...] = ()
 
 
+@dataclass(frozen=True)
+class PublishResult:
+    """Source-control artifacts of a published change.
+
+    Carries only what the source-control backend owns. Approval and status stay
+    with the ticket backend and are never present here.
+    """
+
+    repo: str
+    branch: str
+    completion_signal_id: str
+    summary_path: str = ""
+    patch_path: str = ""
+    created: bool = False
+    reused: bool = False
+
+
+def publish_from_pull_request(repo: str, head: str, pr: PullRequest) -> PublishResult:
+    return PublishResult(
+        repo=repo,
+        branch=head,
+        completion_signal_id=str(pr.number),
+        created=pr.created,
+    )
+
+
+def reuse_from_pull_request(repo: str, head: str, pr: PullRequest | None) -> PublishResult | None:
+    if pr is None:
+        return None
+    if pr.draft or pr.state in {"open", "merged"}:
+        return PublishResult(
+            repo=repo,
+            branch=head,
+            completion_signal_id=str(pr.number),
+            reused=True,
+        )
+    return None
+
+
 def agent_branch_name(task_id: str) -> str:
     return f"agent/{task_id}"
 
@@ -87,6 +126,8 @@ class GitHost(Protocol):
     async def read_file(self, repo: str, path: str, ref: str) -> FileContent: ...
 
     async def search_code(self, repo: str, query: str, ref: str = "") -> list[CodeHit]: ...
+
+    def source_location(self, repo: str) -> str: ...
 
     async def ensure_branch(self, repo: str, name: str, base: str) -> BranchRef: ...
 
@@ -97,6 +138,12 @@ class GitHost(Protocol):
     ) -> PullRequest: ...
 
     async def find_open_pr(self, repo: str, head: str) -> PullRequest | None: ...
+
+    async def publish(
+        self, repo: str, head: str, base: str, title: str, body: str
+    ) -> PublishResult: ...
+
+    async def find_published_branch(self, repo: str, head: str) -> PublishResult | None: ...
 
     async def read_pr_feedback(self, repo: str, number: int) -> PRFeedback: ...
 

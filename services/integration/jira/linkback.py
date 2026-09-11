@@ -13,11 +13,11 @@ LINKBACK_KIND = "pr_link"
 
 
 class LinkbackClient(Protocol):
-    source: str
-
     def list_comment_bodies(self, issue_key: str) -> Sequence[str]: ...
 
     def add_comment(self, issue_key: str, body: str) -> Any: ...
+
+    def render_comment(self, document: list[Block]) -> str: ...
 
 
 def build_linkback_document(*, pr_url: str, pr_title: str, repo: str, branch: str) -> list[Block]:
@@ -59,5 +59,5 @@ def post_pr_linkback(
     if any(_comment_mentions_url(body, pr_url) for body in existing_bodies):
         return WriteResult(SKIPPED, f"linkback {kind!r} already present")
     document = build_linkback_document(pr_url=pr_url, pr_title=pr_title, repo=repo, branch=branch)
-    client.add_comment(issue_key, render_linkback(document, source=client.source))
+    client.add_comment(issue_key, client.render_comment(document))
     return WriteResult(APPLIED, f"linkback {kind!r} posted")

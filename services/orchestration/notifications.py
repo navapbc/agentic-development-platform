@@ -34,9 +34,9 @@ class HumanInterventionAlert:
 def _post_jira_comment(settings: Settings, message: AlertMessage) -> bool:
     if not message.issue_key:
         return False
-    from services.integration.jira.adapter import build_jira_adapter_for_issue
+    from services.integration.tickets import build_ticket_backend_for_issue
 
-    build_jira_adapter_for_issue(message.issue_key, settings).add_comment(
+    build_ticket_backend_for_issue(message.issue_key, settings).add_comment(
         message.issue_key, message.body
     )
     return True
@@ -110,14 +110,14 @@ def send_intake_unroutable_alert(
     *, issue_key: str, project: str, reason: str, settings: Settings | None = None
 ) -> list[str]:
     body = (
-        f"Jira intake could not resolve a target repository for {issue_key} "
+        f"Ticket intake could not resolve a target repository for {issue_key} "
         f"in project {project}.\n"
         f"{reason}.\n"
         "Add a repos marker to the ticket description or set a default_repo for the project, "
         "then intake retries on the next poll."
     )
     message = AlertMessage(
-        subject=f"Jira intake could not route {issue_key}",
+        subject=f"Ticket intake could not route {issue_key}",
         body=body,
         issue_key=issue_key,
     )

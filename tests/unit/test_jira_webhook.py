@@ -167,7 +167,7 @@ def _hermetic_config(monkeypatch):
         lambda settings=None: set(_ALLOWED_PROJECTS),
     )
     monkeypatch.setattr(
-        "services.orchestration.intake_reconciler.allowed_repos",
+        "services.orchestration.intake_reconciler.source_control_repos",
         lambda settings=None: set(_ALLOWED_REPOS),
     )
     monkeypatch.setattr(

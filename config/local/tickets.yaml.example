@@ -1,0 +1,57 @@
+config_version: 1
+
+# Operational config for the rebar ticket backend. repo_root points at the
+# git-backed rebar store working tree. status_flow resolves the platform's
+# logical lifecycle stages to the store's own statuses. rebar's status
+# vocabulary is idea, open, in_progress, closed, blocked, cancelled, deleted.
+backend:
+  repo_root: .agent-workspaces/rebar-tickets
+  project: ADSER
+  default_repo: agentic-demo-service
+  status_flow:
+    work_started: in_progress
+    ready_for_review: in_progress
+    terminal: closed
+
+# The change-detection poll runs under an authenticated reader identity
+# restricted to approved roles. Non-allowlisted fields are redacted from poll
+# output by default.
+poll:
+  reader_roles:
+    - tickets-reader
+  identity_roles:
+    agent-platform@users.noreply.invalid: tickets-reader
+  allowed_fields:
+    - ticket_id
+    - title
+    - status
+    - ticket_type
+    - priority
+    - description
+    - repos
+    - tags
+    - comments
+
+# The rebar ticket store uses its own bucket or prefix, isolated from the
+# evidence and audit stores. The read-only polling role and the write role are
+# distinct, and neither reuses the evidence or audit writer role.
+store:
+  bucket: rebar-tickets
+  prefix: tickets/
+
+roles:
+  read_only: arn:aws:iam::000000000000:role/rebar-tickets-reader
+  write: arn:aws:iam::000000000000:role/rebar-tickets-writer
+
+# Actor and run provenance are required on every tickets-branch ref write.
+provenance:
+  require_actor: true
+  require_run_id: true
+
+# The buckets and writer roles the tickets store must never reuse. Validation
+# fails closed on any overlap.
+isolation:
+  evidence_bucket: agentic-evidence
+  audit_bucket: agentic-audit
+  evidence_writer_role: arn:aws:iam::000000000000:role/evidence-writer
+  audit_writer_role: arn:aws:iam::000000000000:role/audit-writer

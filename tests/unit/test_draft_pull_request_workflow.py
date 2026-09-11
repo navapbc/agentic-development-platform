@@ -75,6 +75,8 @@ from services.orchestration.temporal_activities.pull_request import (
     ParkTaskResult,
     PromotePrRequest,
     PromotePrResult,
+    ReadStatusRequest,
+    ReadStatusResult,
     RecordApprovalRequest,
     RecordApprovalResult,
     UnparkTaskRequest,
@@ -302,6 +304,10 @@ def _make_activities(
             status_moves.append(req)
         return ApplyStatusResult(status=req.stage, transitioned=bool(req.stage))
 
+    @activity.defn(name="read_ticket_status")
+    async def fake_read_status(req: ReadStatusRequest) -> ReadStatusResult:
+        return ReadStatusResult(status="", is_terminal=False)
+
     checks_count = {"n": 0}
 
     @activity.defn(name="run_checks")
@@ -489,6 +495,7 @@ def _make_activities(
         fake_mark_parked,
         fake_unmark_parked,
         fake_apply_status,
+        fake_read_status,
         fake_run_checks,
         fake_analyze,
         fake_apply_repair,

@@ -10,7 +10,7 @@ from typing import Any
 
 from scripts.config import get_settings
 
-from services.integration.github.credentials import allowed_repos
+from services.integration.source_control import source_control_repos
 from services.repository_intelligence.context_builder.registry import (
     RepositoryIntelligenceRegistry,
     RepoSpec,
@@ -53,6 +53,9 @@ class Handler(BaseHTTPRequestHandler):
             self._respond(404, {"error": "not found"})
 
     def do_POST(self) -> None:
+        if self.path == "/warm":
+            self._warm()
+            return
         if self.path != "/context_package":
             self._respond(404, {"error": "not found"})
             return
@@ -66,7 +69,7 @@ class Handler(BaseHTTPRequestHandler):
         if not repo or not focus:
             self._respond(400, {"error": "repo and focus are required"})
             return
-        if repo not in allowed_repos(get_settings()):
+        if repo not in source_control_repos(get_settings()):
             self._respond(403, {"error": "repo not allowlisted"})
             return
         registry = build_registry()
@@ -76,6 +79,27 @@ class Handler(BaseHTTPRequestHandler):
             return
         package = service.context_package(RepoRef(repo, commit), focus)
         self._respond(200, context_package_to_dict(package))
+
+    def _warm(self) -> None:
+        payload = self._read_json()
+        if payload is None:
+            self._respond(400, {"error": "invalid json"})
+            return
+        repo = payload.get("repo")
+        commit = payload.get("commit", "")
+        if not repo:
+            self._respond(400, {"error": "repo is required"})
+            return
+        if repo not in source_control_repos(get_settings()):
+            self._respond(403, {"error": "repo not allowlisted"})
+            return
+        registry = build_registry()
+        service = registry.service(repo) if registry is not None else None
+        if service is None:
+            self._respond(503, {"error": "repository intelligence not configured"})
+            return
+        reindexed = service.ensure_fresh(RepoRef(repo, commit))
+        self._respond(200, {"repo": repo, "commit": commit, "reindexed": reindexed})
 
     def _read_json(self) -> dict[str, Any] | None:
         length = int(self.headers.get("Content-Length") or 0)

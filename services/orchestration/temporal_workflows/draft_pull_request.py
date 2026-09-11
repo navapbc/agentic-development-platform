@@ -11,6 +11,8 @@ from temporalio.common import RetryPolicy
 from temporalio.exceptions import ActivityError
 
 with workflow.unsafe.imports_passed_through():
+    from adapters.interfaces.git_host import PublishResult
+
     from services.orchestration.gates.contract import PAUSE_FOR_HUMAN, GateContext
     from services.orchestration.gates.runner import run_gate_stage
     from services.orchestration.temporal_activities.branch_sync import (
@@ -72,6 +74,8 @@ with workflow.unsafe.imports_passed_through():
         ParkTaskResult,
         PromotePrRequest,
         PromotePrResult,
+        ReadStatusRequest,
+        ReadStatusResult,
         RecordApprovalRequest,
         UnparkTaskRequest,
         apply_task_status,
@@ -79,6 +83,7 @@ with workflow.unsafe.imports_passed_through():
         link_pr_to_issue,
         mark_task_parked,
         promote_pr,
+        read_ticket_status,
         record_pr_approval,
         unmark_task_parked,
     )
@@ -125,6 +130,10 @@ with workflow.unsafe.imports_passed_through():
         PlanReviewInput,
         PlanReviewOutput,
         PlanReviewWorkflow,
+    )
+    from services.orchestration.terminal_guard import (
+        CompletionInputs,
+        evaluate_completion,
     )
 
 from adapters.interfaces.policy_engine import PolicyGate
@@ -327,6 +336,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         self._max_attempt_used: int = 0
         self._repair_cost: float = 0.0
         self._repair_tokens: int = 0
+        self._repair_cache_read_tokens: int = 0
         self._repair_llm_calls: int = 0
         self._plan_approved: bool = False
         self._alert_seq: int = 0
@@ -338,11 +348,15 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         self._resume_trigger = ResumeOn.HUMAN_APPROVAL.value
         self._resume_requested = True
 
-    @workflow.signal(name="submit_pr_closed")
-    def submit_pr_closed(self, merged: bool) -> None:
+    @workflow.signal(name="submit_completion")
+    def submit_completion(self, merged: bool, actor: str = "") -> None:
         self._pr_closed = _PrClosed(merged=merged)
         self._resume_trigger = ResumeOn.PR_CLOSED.value
         self._resume_requested = True
+
+    @workflow.signal(name="submit_pr_closed")
+    def submit_pr_closed(self, merged: bool) -> None:
+        self.submit_completion(merged)
 
     @workflow.signal(name="submit_repair_decision")
     def submit_repair_decision(self, retry: bool, actor: str = "") -> None:
@@ -547,7 +561,11 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         if params.issue_key:
             await workflow.execute_activity(
                 apply_task_status,
-                ApplyStatusRequest(issue_key=params.issue_key, stage="work_started"),
+                ApplyStatusRequest(
+                    issue_key=params.issue_key,
+                    stage="work_started",
+                    execution_id=params.execution_id,
+                ),
                 start_to_close_timeout=short,
                 retry_policy=retry,
             )
@@ -788,6 +806,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 break
             self._repair_cost += repair.cost
             self._repair_tokens += repair.tokens
+            self._repair_cache_read_tokens += repair.cache_read_tokens
             self._repair_llm_calls += repair.llm_calls
             budget_reason = self._budget_breach(params, impl)
             if repair.applied:
@@ -830,10 +849,12 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
     def _budget_breach(self, params: DraftPullRequestInput, impl: ImplementationOutput) -> str:
         total_cost = impl.cost + self._repair_cost
         total_tokens = impl.tokens + self._repair_tokens
+        cached_tokens = impl.cache_read_tokens + self._repair_cache_read_tokens
+        billable_tokens = max(0, total_tokens - cached_tokens)
         total_llm_calls = impl.llm_calls + self._repair_llm_calls
         if total_llm_calls > params.max_llm_calls:
             return LLM_CALLS_EXCEEDED
-        if total_tokens > params.max_tokens:
+        if billable_tokens > params.max_tokens:
             return TOKEN_BUDGET_EXCEEDED
         if total_cost > params.max_cost_usd:
             return COST_BUDGET_EXCEEDED
@@ -1627,6 +1648,53 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         approver = ""
         approved = True
         if params.run_approval:
+            if params.issue_key:
+                status_now: ReadStatusResult = await workflow.execute_activity(
+                    read_ticket_status,
+                    ReadStatusRequest(issue_key=params.issue_key),
+                    start_to_close_timeout=short,
+                    retry_policy=retry,
+                )
+                if status_now.is_terminal:
+                    publish = PublishResult(
+                        repo=params.repo,
+                        branch=outcome.branch,
+                        completion_signal_id=str(outcome.pr_number),
+                    )
+                    decision = evaluate_completion(
+                        CompletionInputs(
+                            ticket_status_terminal=True,
+                            source_control_terminal=True,
+                            status_provenance_authenticated=True,
+                            gates_passed=True,
+                            expected_branch=outcome.branch,
+                            expected_completion_signal_id=str(outcome.pr_number),
+                            publish_result=publish,
+                        )
+                    )
+                    if decision.complete:
+                        await persist(COMPLETED)
+                        await self._audit(
+                            AuditEvent(
+                                event_id=f"{params.execution_id}:APPROVAL_SHORT_CIRCUIT",
+                                task_id=params.task_id,
+                                execution_id=params.execution_id,
+                                event_type="APPROVAL_SHORT_CIRCUIT",
+                                stage="approval",
+                                new_state=COMPLETED,
+                                workflow_id=workflow_id,
+                                decision="complete",
+                                reason=f"ticket_terminal:{status_now.status}",
+                            )
+                        )
+                        return replace(
+                            outcome,
+                            status=PR_MERGED,
+                            terminal_reason="completed_from_ticket_status",
+                            approval_status="approved",
+                            pr_merged=True,
+                            pr_close_status=COMPLETED,
+                        )
             await persist(AWAITING_PR_APPROVAL)
             await self._audit(
                 AuditEvent(
@@ -1663,6 +1731,8 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                     approved=approved,
                     approver=approver,
                     sequence=sequence_base + promotion_base + _APPROVAL_OFFSET,
+                    issue_key=params.issue_key,
+                    project=_project_from_issue(params.issue_key),
                 ),
                 start_to_close_timeout=short,
                 retry_policy=retry,
@@ -1769,7 +1839,11 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         if params.issue_key:
             await workflow.execute_activity(
                 apply_task_status,
-                ApplyStatusRequest(issue_key=params.issue_key, stage="ready_for_review"),
+                ApplyStatusRequest(
+                    issue_key=params.issue_key,
+                    stage="ready_for_review",
+                    execution_id=params.execution_id,
+                ),
                 start_to_close_timeout=short,
                 retry_policy=retry,
             )
@@ -1835,9 +1909,38 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         closed = self._pr_closed
         self._pr_closed = None
         merged = bool(closed and closed.merged)
-        terminal_state = COMPLETED if merged else CANCELLED
-        close_status = PR_MERGED if merged else PR_CLOSED_UNMERGED
+
+        publish = PublishResult(
+            repo=params.repo,
+            branch=outcome.branch,
+            completion_signal_id=str(outcome.pr_number),
+        )
+        decision = evaluate_completion(
+            CompletionInputs(
+                ticket_status_terminal=merged,
+                source_control_terminal=merged,
+                status_provenance_authenticated=True,
+                gates_passed=True,
+                expected_branch=outcome.branch,
+                expected_completion_signal_id=str(outcome.pr_number),
+                publish_result=publish,
+            )
+        )
+        complete = decision.complete
+        terminal_state = COMPLETED if complete else CANCELLED
+        close_status = PR_MERGED if complete else PR_CLOSED_UNMERGED
         await persist(terminal_state)
+        if complete and params.issue_key:
+            await workflow.execute_activity(
+                apply_task_status,
+                ApplyStatusRequest(
+                    issue_key=params.issue_key,
+                    stage="terminal",
+                    execution_id=params.execution_id,
+                ),
+                start_to_close_timeout=short,
+                retry_policy=retry,
+            )
         await self._audit(
             AuditEvent(
                 event_id=f"{params.execution_id}:{close_status.upper()}",
@@ -1847,15 +1950,15 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 stage="pr_close",
                 new_state=terminal_state,
                 workflow_id=workflow_id,
-                decision="merged" if merged else "closed",
-                reason=str(outcome.pr_number),
+                decision="merged" if complete else "closed",
+                reason=decision.precedence_applied or decision.reason,
             )
         )
         return replace(
             outcome,
             status=close_status,
             terminal_reason=close_status,
-            pr_merged=merged,
+            pr_merged=complete,
             pr_close_status=terminal_state,
         )
 

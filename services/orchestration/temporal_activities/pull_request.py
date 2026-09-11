@@ -4,7 +4,34 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import structlog
 from temporalio import activity
+
+log = structlog.get_logger("ticket_write_back")
+
+PLATFORM_ACTOR = "agent-platform"
+
+
+def _enforce_write_back(
+    *, actor: str, backend: str, project: str, issue_key: str, run_id: str, scope: str
+) -> None:
+    from services.integration.tickets.write_contract import (
+        WriteBackContext,
+        authorize_write_back,
+        load_write_back_scopes,
+        write_back_audit,
+    )
+
+    ctx = WriteBackContext(
+        actor=actor, backend=backend, project=project, issue_key=issue_key, run_id=run_id
+    )
+    authorize_write_back(
+        ctx,
+        scope=scope,
+        run_owner_issue_key=issue_key,
+        allowed_scopes=load_write_back_scopes(),
+    )
+    log.info(**write_back_audit(ctx, scope=scope, outcome="authorized"))
 
 
 @dataclass
@@ -68,12 +95,24 @@ class UnparkTaskRequest:
 class ApplyStatusRequest:
     issue_key: str
     stage: str
+    execution_id: str = ""
 
 
 @dataclass
 class ApplyStatusResult:
     status: str
     transitioned: bool
+
+
+@dataclass
+class ReadStatusRequest:
+    issue_key: str
+
+
+@dataclass
+class ReadStatusResult:
+    status: str
+    is_terminal: bool
 
 
 @dataclass
@@ -137,6 +176,8 @@ class RecordApprovalRequest:
     approved: bool
     approver: str
     sequence: int
+    issue_key: str = ""
+    project: str = ""
 
 
 @dataclass
@@ -147,14 +188,13 @@ class RecordApprovalResult:
 
 
 def _build_mediator():
-    from adapters.real.git_host import RealGitHost
-
     from services.coordination.idempotency import PostgresSideEffectLedger
     from services.coordination.sequencing import PostgresSequenceGate
+    from services.integration.github.factory import build_git_host
     from services.integration.github.mediator import GitHubMediator
 
     return GitHubMediator.from_settings(
-        RealGitHost.from_settings(),
+        build_git_host(),
         PostgresSideEffectLedger(),
         PostgresSequenceGate(),
     )
@@ -166,10 +206,10 @@ def _build_registry():
     return PostgresOrphanRegistry()
 
 
-def _build_jira_adapter(issue_key: str):
-    from services.integration.jira.adapter import build_jira_adapter_for_issue
+def _build_ticket_backend(issue_key: str):
+    from services.integration.tickets import build_ticket_backend_for_issue
 
-    return build_jira_adapter_for_issue(issue_key)
+    return build_ticket_backend_for_issue(issue_key)
 
 
 @activity.defn
@@ -247,9 +287,19 @@ async def commit_and_push(req: CommitPushRequest) -> CommitPushResult:
 
 @activity.defn
 async def link_pr_to_issue(req: LinkbackRequest) -> LinkbackResult:
+    from services.integration.jira.adapter import project_of
     from services.integration.jira.linkback import post_pr_linkback
+    from services.integration.tickets import resolve_ticket_backend_name
 
-    adapter = _build_jira_adapter(req.issue_key)
+    _enforce_write_back(
+        actor=PLATFORM_ACTOR,
+        backend=resolve_ticket_backend_name(),
+        project=project_of(req.issue_key),
+        issue_key=req.issue_key,
+        run_id=req.execution_id,
+        scope="comment",
+    )
+    adapter = _build_ticket_backend(req.issue_key)
     result = post_pr_linkback(
         adapter,
         req.issue_key,
@@ -264,7 +314,7 @@ async def link_pr_to_issue(req: LinkbackRequest) -> LinkbackResult:
 
 @activity.defn
 async def mark_task_parked(req: ParkTaskRequest) -> ParkTaskResult:
-    adapter = _build_jira_adapter(req.issue_key)
+    adapter = _build_ticket_backend(req.issue_key)
     current = adapter.get_status(req.issue_key)
     if current.strip().lower() == req.parked_status.strip().lower():
         return ParkTaskResult(previous_status=current, transitioned=False)
@@ -275,28 +325,60 @@ async def mark_task_parked(req: ParkTaskRequest) -> ParkTaskResult:
 @activity.defn
 async def unmark_task_parked(req: UnparkTaskRequest) -> str:
     if req.target_status:
-        adapter = _build_jira_adapter(req.issue_key)
+        adapter = _build_ticket_backend(req.issue_key)
         adapter.transition(req.issue_key, req.target_status)
     return req.issue_key
 
 
 @activity.defn
 async def apply_task_status(req: ApplyStatusRequest) -> ApplyStatusResult:
-    from services.integration.jira.adapter import (
-        apply_status,
-        build_jira_adapter_for_issue,
-        project_of,
+    from services.integration.jira.adapter import apply_status, project_of
+    from services.integration.tickets import (
+        build_ticket_backend_for_issue,
+        resolve_status_flow,
     )
-    from services.integration.jira.credentials import build_jira_credential_resolver
 
-    resolver = build_jira_credential_resolver()
-    flow = resolver.status_flow(project_of(req.issue_key))
-    target = flow.work_started if req.stage == "work_started" else flow.ready_for_review
+    flow = resolve_status_flow(project=project_of(req.issue_key))
+    targets = {
+        "work_started": flow.work_started,
+        "ready_for_review": flow.ready_for_review,
+        "terminal": flow.terminal,
+    }
+    if req.stage not in targets:
+        return ApplyStatusResult(status="", transitioned=False)
+    target = targets[req.stage]
     if not target:
         return ApplyStatusResult(status="", transitioned=False)
-    adapter = build_jira_adapter_for_issue(req.issue_key, resolver=resolver)
-    transitioned = apply_status(adapter, req.issue_key, target)
+    from services.integration.tickets import resolve_ticket_backend_name
+
+    _enforce_write_back(
+        actor=PLATFORM_ACTOR,
+        backend=resolve_ticket_backend_name(),
+        project=project_of(req.issue_key),
+        issue_key=req.issue_key,
+        run_id=req.execution_id or req.issue_key,
+        scope="status",
+    )
+    backend = build_ticket_backend_for_issue(req.issue_key)
+    transitioned = apply_status(backend, req.issue_key, target)
     return ApplyStatusResult(status=target, transitioned=transitioned)
+
+
+@activity.defn
+async def read_ticket_status(req: ReadStatusRequest) -> ReadStatusResult:
+    from services.integration.jira.adapter import project_of
+    from services.integration.tickets import (
+        build_ticket_backend_for_issue,
+        resolve_status_flow,
+    )
+
+    if not req.issue_key:
+        return ReadStatusResult(status="", is_terminal=False)
+    backend = build_ticket_backend_for_issue(req.issue_key)
+    status = backend.get_status(req.issue_key)
+    flow = resolve_status_flow(project=project_of(req.issue_key))
+    is_terminal = bool(flow.terminal) and status.strip().lower() == flow.terminal.strip().lower()
+    return ReadStatusResult(status=status, is_terminal=is_terminal)
 
 
 @activity.defn
@@ -311,10 +393,32 @@ async def record_pr_approval(req: RecordApprovalRequest) -> RecordApprovalResult
         approver=req.approver,
         sequence=req.sequence,
     )
+    approved = bool(outcome.get("approved", req.approved))
+    approver = str(outcome.get("approver", req.approver))
+    if req.issue_key:
+        from services.integration.jira.adapter import project_of
+        from services.integration.tickets import resolve_ticket_backend_name
+
+        project = req.project or project_of(req.issue_key)
+        _enforce_write_back(
+            actor=approver or PLATFORM_ACTOR,
+            backend=resolve_ticket_backend_name(),
+            project=project,
+            issue_key=req.issue_key,
+            run_id=req.execution_id,
+            scope="approval",
+        )
+        verdict = "approved" if approved else "rejected"
+        backend = _build_ticket_backend(req.issue_key)
+        actor = approver or PLATFORM_ACTOR
+        note = f"Promotion {verdict} by {actor} (execution {req.execution_id})."
+        existing = backend.list_comment_bodies(req.issue_key)
+        if not any(note in body for body in existing):
+            backend.add_comment(req.issue_key, note)
     return RecordApprovalResult(
         recorded=True,
-        approved=bool(outcome.get("approved", req.approved)),
-        approver=str(outcome.get("approver", req.approver)),
+        approved=approved,
+        approver=approver,
     )
 
 

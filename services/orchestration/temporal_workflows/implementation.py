@@ -88,6 +88,7 @@ class ImplementationOutput:
     escalated: bool = False
     changed_files: list[str] = field(default_factory=list)
     tokens: int = 0
+    cache_read_tokens: int = 0
     llm_calls: int = 0
     claim_version: int = 0
     summary: str = ""
@@ -268,7 +269,7 @@ class ImplementationWorkflow:
         )
 
         llm_calls_exceeded = result.llm_calls > params.max_llm_calls
-        tokens_exceeded = result.tokens > params.max_tokens
+        tokens_exceeded = max(0, result.tokens - result.cache_read_tokens) > params.max_tokens
         cost_exceeded = result.cost > params.max_cost_usd
         budget_breach = llm_calls_exceeded or tokens_exceeded or cost_exceeded
         cap_breach = budget_breach or result.terminal_reason in _CAP_BREACH_REASONS
@@ -313,6 +314,7 @@ class ImplementationWorkflow:
                 escalated=True,
                 changed_files=result.changed_files,
                 tokens=result.tokens,
+                cache_read_tokens=result.cache_read_tokens,
                 llm_calls=result.llm_calls,
             )
 
@@ -345,6 +347,7 @@ class ImplementationWorkflow:
             escalated=False,
             changed_files=result.changed_files,
             tokens=result.tokens,
+            cache_read_tokens=result.cache_read_tokens,
             llm_calls=result.llm_calls,
             claim_version=claim_version,
             summary=result.summary,

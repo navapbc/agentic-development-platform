@@ -148,9 +148,10 @@ def _accumulate(rows: Iterable[UsageRow]) -> Spend:
 
 def _budget_status(counted: Spend, caps: BudgetCaps) -> BudgetStatus:
     breach = ""
+    billable_tokens = max(0, counted.total_tokens - counted.cache_read_tokens)
     if counted.llm_calls > caps.max_llm_calls:
         breach = LLM_CALLS_EXCEEDED
-    elif counted.total_tokens > caps.max_tokens:
+    elif billable_tokens > caps.max_tokens:
         breach = TOKEN_BUDGET_EXCEEDED
     elif counted.cost_usd > caps.max_cost_usd:
         breach = COST_BUDGET_EXCEEDED
@@ -160,7 +161,7 @@ def _budget_status(counted: Spend, caps: BudgetCaps) -> BudgetStatus:
         max_tokens=caps.max_tokens,
         counted_cost_usd=counted.cost_usd,
         counted_llm_calls=counted.llm_calls,
-        counted_tokens=counted.total_tokens,
+        counted_tokens=billable_tokens,
         breach_reason=breach,
     )
 

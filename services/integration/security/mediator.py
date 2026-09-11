@@ -15,7 +15,7 @@ from adapters.interfaces.security_scanner import (
     blocking_count,
 )
 from scripts.config import Settings, get_settings
-from services.integration.github.credentials import allowed_repos
+from services.integration.source_control import source_control_repos
 
 
 def _backend_error_finding(scanner: str, exc: Exception) -> ScanFinding:
@@ -59,7 +59,7 @@ class SecurityScanMediator:
         resolved = settings or get_settings()
         return cls(
             backends=backends,
-            allowed_repos=frozenset(allowed_repos(resolved)),
+            allowed_repos=frozenset(source_control_repos(resolved)),
             threshold=resolved.security_blocking_threshold,
         )
 

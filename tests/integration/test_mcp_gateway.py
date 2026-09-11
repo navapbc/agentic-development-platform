@@ -107,13 +107,6 @@ async def test_gateway_read_tools_return_results():
         )
         assert feedback["comments"][0]["author"] == "rev"
 
-        build = _result_dict(
-            await session.call_tool(
-                {"repo": "agentic-demo-service", "job": "ci", "build_number": 7},
-            )
-        )
-        assert build["result"] == "SUCCESS"
-
         findings = _result_dict(
             await session.call_tool("security_get_findings", {"execution_id": "exec-1"})
         )

@@ -141,6 +141,21 @@ def test_ensure_fresh_reindexes_on_commit_change(tmp_path):
     assert reindexed == [(_REPO, "oldsha")]
 
 
+def test_ensure_fresh_resolves_empty_commit_to_head(tmp_path, monkeypatch):
+    from services.repository_intelligence.context_builder import context_service as cs
+
+    monkeypatch.setattr(cs, "resolve_commit", lambda root: "headsha1")
+    reindexed: list[tuple[RepoRef, str | None]] = []
+    service = RepositoryIntelligenceService(
+        FakeRouter(status=None),
+        repo_root=tmp_path,
+        reindex=lambda repo, prior: reindexed.append((repo, prior)),
+    )
+
+    assert service.ensure_fresh(RepoRef("archive-massgov-pfml", "")) is False
+    assert reindexed == [(RepoRef("archive-massgov-pfml", "headsha1"), None)]
+
+
 def test_ensure_fresh_reindexes_when_index_stale(tmp_path):
     status = IndexStatus(_REPO, "0744a6e", False, ("python",))
     reindexed: list[tuple[RepoRef, str | None]] = []

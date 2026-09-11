@@ -242,18 +242,17 @@ class JumphostConnectivity:
     key = "jumphost"
 
     def summary(self, settings: Settings) -> str:
+        env = f" (env {settings.jumphost_env})" if settings.jumphost_env else ""
         return (
-            f"jump-host {settings.jumphost_name or '<unset>'} (env "
-            f"{settings.jumphost_env or '<unset>'}) forwarding "
+            f"jump-host {settings.jumphost_name or '<unset>'}{env} forwarding "
             f"{settings.bedrock_tunnel_local_port} -> {settings.bedrock_runtime_host}:443"
         )
 
     def start(self, settings: Settings, *, detach: bool = False) -> int:
         script = _resolve_connect_script(settings.jumphost_connect_script)
-        if not settings.jumphost_name or not settings.jumphost_env:
+        if not settings.jumphost_name:
             print(
-                "[tunnel] FAIL: JUMPHOST_NAME and JUMPHOST_ENV must be set for the "
-                "jumphost provider.",
+                "[tunnel] FAIL: JUMPHOST_NAME must be set for the jumphost provider.",
                 file=sys.stderr,
             )
             return 2
@@ -266,15 +265,14 @@ class JumphostConnectivity:
             return 2
 
         forwarding = f"{settings.bedrock_tunnel_local_port}:{settings.bedrock_runtime_host}:443"
-        cmd = [
-            str(script),
-            "-n",
-            settings.jumphost_name,
-            "-e",
-            settings.jumphost_env,
-            "-p",
-            forwarding,
-        ]
+        cmd = [str(script), "-n", settings.jumphost_name]
+        if settings.jumphost_env:
+            cmd += ["-e", settings.jumphost_env]
+        if settings.jumphost_session_duration_seconds > 0:
+            cmd += ["-d", str(settings.jumphost_session_duration_seconds)]
+        if settings.jumphost_keepalive_seconds > 0:
+            cmd += ["-k", str(settings.jumphost_keepalive_seconds)]
+        cmd += ["-p", forwarding]
         env = {
             **os.environ,
             "AWS_PROFILE": settings.aws_profile,
@@ -282,7 +280,11 @@ class JumphostConnectivity:
         }
         if detach:
             return _spawn_detached(
-                cmd, env, label="jump-host tunnel", ready=lambda: self.verify(settings)
+                cmd,
+                env,
+                label="jump-host tunnel",
+                ready=lambda: self.verify(settings),
+                ready_timeout=180.0,
             )
         print(f"[tunnel] exec: {' '.join(cmd)}")
         os.execvpe(cmd[0], cmd, env)

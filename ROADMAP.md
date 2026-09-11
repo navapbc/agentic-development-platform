@@ -9,11 +9,12 @@ Total remaining scope is roughly 151 to 187 hours across 20 features.
 ## v0.1.0 Pluggable ticket and source-control backends
 
 Status. Next up. The implementation plan is ready.
-Goal. A deployment can track work in a non-Jira tracker and target a non-GitHub source control, and a deployment that configures neither behaves exactly as today. This version also stands up the rebar S3 and MinIO object store that later versions build on.
+Goal. A deployment can track work in a non-Jira tracker and target a non-GitHub source control, and a deployment that configures neither behaves exactly as today. This version also stands up the rebar S3 and MinIO object store that later versions build on, bounds concurrent runs with a platform admission cap, and re-grounds a run when it discovers a cross-ticket dependency during planning.
 
 | Feature | Effort | Detail |
 |---|---|---|
 | Pluggable ticket-tracker and source-control backends | 32-48h (low) | [plan](docs/plans/2026-09-02-2022-feat-pluggable-ticket-source-control-backends-plan.md) |
+| Cross-ticket dependency discovery and re-plan | 16-24h (low) | [plan](docs/plans/2026-09-03-1417-feat-cross-ticket-dependency-discovery-plan.md) |
 
 ## v0.2.0 rebar review integration
 

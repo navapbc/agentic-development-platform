@@ -115,7 +115,7 @@ def _hermetic_config(monkeypatch):
         lambda settings=None: set(_PROJECTS),
     )
     monkeypatch.setattr(
-        "services.orchestration.intake_reconciler.allowed_repos",
+        "services.orchestration.intake_reconciler.source_control_repos",
         lambda settings=None: set(_ALLOW),
     )
     monkeypatch.setattr(
@@ -333,3 +333,59 @@ async def test_material_change_starts_again_after_execution_terminates():
     )
     assert len(starter.starts) == 2
 
+
+
+class _RunCounter:
+    def __init__(self, active: int) -> None:
+        self._active = active
+
+    async def count_active_runs(self) -> int:
+        return self._active
+
+
+async def test_admission_caps_new_starts_and_defers_the_rest():
+    read = _ReadSource(
+        {"ADEV": [_issue("ADEV-1", "ADEV"), _issue("ADEV-2", "ADEV")], "ADSER": []}
+    )
+    starter, alerter, ledger, store, resolver = _defaults()
+    report = await reconcile_intake(
+        read_source=read,
+        starter=starter,
+        alerter=alerter,
+        ledger=ledger,
+        execution_seeder=_Seeder(),
+        settings=hermetic_settings(max_concurrent_runs=1),
+        jira_resolver=resolver,
+        snapshot_store=store,
+        run_counter=_RunCounter(0),
+    )
+    assert len(starter.starts) == 1
+    assert len(report.deferred) == 1
+
+
+async def test_admission_defers_all_when_already_at_capacity():
+    read = _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV")], "ADSER": []})
+    starter, alerter, ledger, store, resolver = _defaults()
+    report = await reconcile_intake(
+        read_source=read,
+        starter=starter,
+        alerter=alerter,
+        ledger=ledger,
+        execution_seeder=_Seeder(),
+        settings=hermetic_settings(max_concurrent_runs=4),
+        jira_resolver=resolver,
+        snapshot_store=store,
+        run_counter=_RunCounter(4),
+    )
+    assert starter.starts == []
+    assert report.deferred == ["ADEV-1"]
+
+
+async def test_no_counter_means_unbounded():
+    read = _ReadSource(
+        {"ADEV": [_issue("ADEV-1", "ADEV"), _issue("ADEV-2", "ADEV")], "ADSER": []}
+    )
+    starter, alerter, ledger, store, resolver = _defaults()
+    report = await _run(read, starter, alerter, ledger, store, resolver)
+    assert len(starter.starts) == 2
+    assert report.deferred == []

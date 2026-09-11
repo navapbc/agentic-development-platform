@@ -21,6 +21,7 @@ _CURRENT_CONFIG_VERSIONS: dict[str, int] = {
     "gates": 1,
     "gate_engine": 1,
     "checks": 1,
+    "tickets": 1,
 }
 
 

@@ -63,10 +63,9 @@ class ReadOnlyToolset:
 
     @classmethod
     def from_settings(cls, settings: Settings | None = None) -> ReadOnlyToolset:
-        from adapters.real.git_host import RealGitHost
-
         from services.coordination.idempotency import PostgresSideEffectLedger
         from services.coordination.sequencing import PostgresSequenceGate
+        from services.integration.github.factory import build_git_host
         from services.integration.github.mediator import GitHubMediator
         from services.integration.jira.adapter import ProjectRoutingJiraReader
         from services.orchestration.repo_intelligence_client import fetch_context_package
@@ -77,7 +76,7 @@ class ReadOnlyToolset:
         return cls(
             jira=ProjectRoutingJiraReader(resolved),
             github=GitHubMediator.from_settings(
-                RealGitHost.from_settings(), ledger, gate, resolved
+                build_git_host(resolved), ledger, gate, resolved
             ),
             evidence=PostgresEvidenceReader(),
             context_fetch=fetch_context_package,

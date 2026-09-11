@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from services.integration.jira.linkback import post_pr_linkback
+from services.integration.jira.linkback import post_pr_linkback, render_linkback
 from services.integration.jira.render import CLOUD, DATACENTER
 from services.integration.jira.writes import APPLIED, SKIPPED
 
@@ -20,6 +20,9 @@ class _FakeAdapter:
     def add_comment(self, issue_key: str, body: str):
         self.comments.append(body)
         return {"id": len(self.comments)}
+
+    def render_comment(self, document):
+        return render_linkback(document, source=self.source)
 
 
 def _adf_visible_text(node) -> str:
@@ -43,6 +46,9 @@ class _CloudNormalizingAdapter:
     def add_comment(self, issue_key: str, body: str):
         self._raw.append(body)
         return {"id": len(self._raw)}
+
+    def render_comment(self, document):
+        return render_linkback(document, source=self.source)
 
 
 def test_datacenter_linkback_renders_wiki_and_is_idempotent():

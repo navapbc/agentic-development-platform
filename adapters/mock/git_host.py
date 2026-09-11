@@ -13,7 +13,10 @@ from adapters.interfaces.git_host import (
     FileContent,
     PRComment,
     PRFeedback,
+    PublishResult,
     PullRequest,
+    publish_from_pull_request,
+    reuse_from_pull_request,
 )
 
 _UNIT_SEPARATOR = "\x1f"
@@ -56,6 +59,9 @@ class MockGitHost:
             self._repos[repo].trees["main"] = {}
             self._repos[repo].heads["main"] = _sha(repo, "main")
         return self._repos[repo]
+
+    def source_location(self, repo: str) -> str:
+        return f"mock://{repo}"
 
     async def read_file(self, repo: str, path: str, ref: str) -> FileContent:
         tree = self._repo(repo).trees.get(ref, {})
@@ -153,6 +159,15 @@ class MockGitHost:
             if existing.head == head and existing.state == "open":
                 return existing
         return None
+
+    async def publish(
+        self, repo: str, head: str, base: str, title: str, body: str
+    ) -> PublishResult:
+        pr = await self.open_draft_pr(repo, head, base, title, body)
+        return publish_from_pull_request(repo, head, pr)
+
+    async def find_published_branch(self, repo: str, head: str) -> PublishResult | None:
+        return reuse_from_pull_request(repo, head, await self.find_open_pr(repo, head))
 
     async def read_pr_feedback(self, repo: str, number: int) -> PRFeedback:
         record = self._repo(repo)

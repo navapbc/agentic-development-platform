@@ -158,6 +158,7 @@ class RepositoryIntelligenceService:
         return replace(repo, commit_sha=head) if head else repo
 
     def ensure_fresh(self, repo: RepoRef) -> bool:
+        repo = self._resolve_commit(repo)
         status = self._safe(lambda: self._router.repo_get_index_status(repo), None)
         if status is not None and status.is_fresh and status.indexed_commit == repo.commit_sha:
             self._indexed_commit = status.indexed_commit

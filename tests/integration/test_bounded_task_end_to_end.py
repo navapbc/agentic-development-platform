@@ -185,6 +185,13 @@ class _FakeReader:
         self.calls += 1
         return dict(self.issue)
 
+    def recheck_payload(self, issue_key: str, *, raw_comments: tuple = ()) -> dict:
+        from services.integration.jira.normalize import normalize_issue
+
+        return normalize_issue(
+            self.get_issue(issue_key), raw_comments=raw_comments, acceptance_field=""
+        ).to_dict()
+
     def get_status(self, issue_key: str) -> str:
         return self.status
 
@@ -203,6 +210,11 @@ class _FakeLinkbackClient:
 
     def add_comment(self, issue_key: str, body: str) -> None:
         self.comments.append(body)
+
+    def render_comment(self, document: list) -> str:
+        from services.integration.jira.linkback import render_linkback
+
+        return render_linkback(document, source=self.source)
 
 
 class _FakeCodeStep:

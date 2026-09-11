@@ -6,19 +6,34 @@ default allow := false
 
 bundle_version := "0.4.0"
 
-allowed_projects := {"AGENTDEV", "ADSER", "ADEV"}
+default_allowed_projects := {"AGENTDEV", "ADSER", "ADEV"}
 
-allowed_repos := {"agentic-demo-service", "agentic-demo-greenfield"}
+default_allowed_repos := {"agentic-demo-service", "agentic-demo-greenfield"}
+
+input_projects := {p | some p in object.get(input, "allowed_projects", [])}
+
+input_repos := {r | some r in object.get(input, "allowed_repos", [])}
+
+effective_projects := input_projects if {
+	count(input_projects) > 0
+} else := default_allowed_projects
+
+effective_repos := input_repos if {
+	count(input_repos) > 0
+} else := default_allowed_repos
+
+ci_required := object.get(input, "ci_required", true)
 
 reasons contains "jira_project_not_allowlisted" if {
-	not allowed_projects[input.jira_project]
+	not effective_projects[input.jira_project]
 }
 
 reasons contains "repository_not_allowlisted" if {
-	not allowed_repos[input.repository]
+	not effective_repos[input.repository]
 }
 
 reasons contains "ci_not_successful" if {
+	ci_required
 	input.ci_status != "success"
 }
 

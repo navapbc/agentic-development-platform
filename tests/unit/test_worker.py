@@ -71,6 +71,7 @@ class _FakeResolver:
 
 class _FakeSettings:
     jira_acli_path = ""
+    ticket_backend = "jira"
 
 
 def test_warm_acli_auth_authenticates_a_cloud_project(monkeypatch: pytest.MonkeyPatch) -> None:

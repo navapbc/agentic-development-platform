@@ -38,6 +38,7 @@ from services.orchestration.temporal_activities.pull_request import (
     link_pr_to_issue,
     mark_task_parked,
     promote_pr,
+    read_ticket_status,
     record_pr_approval,
     unmark_task_parked,
 )
@@ -82,6 +83,7 @@ __all__ = [
     "mark_task_parked",
     "persist_execution_state",
     "promote_pr",
+    "read_ticket_status",
     "recheck_issue",
     "reap_orphans",
     "reconcile_intake_pass",

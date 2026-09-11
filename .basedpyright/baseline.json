@@ -142,16 +142,6 @@
                 }
             }
         ],
-        "./services/orchestration/temporal_activities/pull_request.py": [
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 8,
-                    "endColumn": 15,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./services/orchestration/worker.py": [
             {
                 "code": "reportArgumentType",

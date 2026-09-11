@@ -115,6 +115,13 @@ class _FakeReader:
     def get_issue(self, issue_key: str) -> dict:
         return self._raw
 
+    def recheck_payload(self, issue_key: str, *, raw_comments: tuple = ()) -> dict:
+        from services.integration.jira.normalize import normalize_issue
+
+        return normalize_issue(
+            self._raw, raw_comments=raw_comments, acceptance_field=""
+        ).to_dict()
+
 
 def _raw_issue(summary: str = "Add retry to the client") -> dict:
     return {
@@ -131,10 +138,7 @@ def _raw_issue(summary: str = "Add retry to the client") -> dict:
     }
 
 
-async def test_recheck_before_pr_pauses_on_material_edit(monkeypatch):
-    monkeypatch.setattr(
-        "services.integration.jira.edits.acceptance_field", lambda settings: ""
-    )
+async def test_recheck_before_pr_pauses_on_material_edit():
     settings = hermetic_settings()
     store = _RecordingPauseStore()
     stored = _payload()
@@ -153,10 +157,7 @@ async def test_recheck_before_pr_pauses_on_material_edit(monkeypatch):
     assert len(store.records) == 1
 
 
-async def test_recheck_before_pr_continues_when_unchanged(monkeypatch):
-    monkeypatch.setattr(
-        "services.integration.jira.edits.acceptance_field", lambda settings: ""
-    )
+async def test_recheck_before_pr_continues_when_unchanged():
     settings = hermetic_settings()
     store = _RecordingPauseStore()
     stored = _payload()

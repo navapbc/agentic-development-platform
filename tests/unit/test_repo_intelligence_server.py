@@ -14,7 +14,7 @@ from services.repository_intelligence.normalization.models import ContextPackage
 def _allowlist_from_config(monkeypatch):
     monkeypatch.setattr(
         server,
-        "allowed_repos",
+        "source_control_repos",
         lambda settings=None: {"agentic-demo-service", "agentic-demo-greenfield"},
     )
 

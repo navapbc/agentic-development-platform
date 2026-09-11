@@ -141,6 +141,26 @@ def test_a_deployment_invariant_still_denies():
     assert "ci_not_successful" in decision["reasons"]
 
 
+def test_input_allowlists_admit_a_backend_the_defaults_omit():
+    document = _compliant(
+        jira_project="PFMLPB",
+        repository="archive-massgov-pfml",
+        allowed_projects=["PFMLPB"],
+        allowed_repos=["archive-massgov-pfml"],
+        ci_status="skipped",
+        ci_required=False,
+    )
+    decision = _decision(document)
+    assert decision["allow"] is True
+    assert decision["reasons"] == []
+
+
+def test_ci_not_required_skips_the_ci_gate():
+    decision = _decision(_compliant(ci_status="skipped", ci_required=False))
+    assert decision["allow"] is True
+    assert "ci_not_successful" not in decision["reasons"]
+
+
 def test_a_disabled_gate_drops_from_the_decision():
     document = _compliant(
         gates=[{"name": "code-review", "required": True, "verdict": "pass"}],

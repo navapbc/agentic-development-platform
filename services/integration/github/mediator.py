@@ -26,7 +26,6 @@ from services.coordination.sequencing import (
     SequenceDecision,
     SequenceGate,
 )
-from services.integration.github.credentials import allowed_repos
 
 
 class RepoNotAllowedError(Exception):
@@ -59,12 +58,14 @@ class GitHubMediator:
         gate: SequenceGate,
         settings: Settings | None = None,
     ) -> GitHubMediator:
+        from services.integration.source_control import source_control_repos
+
         resolved = settings or get_settings()
         return cls(
             backend=backend,
             ledger=ledger,
             gate=gate,
-            allowed_repos=frozenset(allowed_repos(resolved)),
+            allowed_repos=frozenset(source_control_repos(resolved)),
         )
 
     def _guard(self, repo: str) -> None:

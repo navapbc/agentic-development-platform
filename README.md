@@ -1,6 +1,8 @@
 # agentic-dev-platform
 
-A Docker-based agentic software delivery platform. Given a Jira ticket it plans, writes code, runs tests, scans for security issues, and opens a pull request against an allowlisted repository, with human approvals, a full audit trail, and observability. Parallel multi-agent execution is a design goal.
+A Docker-based agentic software delivery platform. Given a ticket it plans, writes code, runs tests, scans for security issues, and delivers a change against an allowlisted repository, with human approvals, a full audit trail, and observability. Parallel multi-agent execution is a design goal.
+
+The ticket source and the source-control target are pluggable and selected independently. The platform reads work from a Jira project or a git-backed rebar ticket store, and it delivers to GitHub as a draft pull request or to a local git folder as a promoted branch with a summary and patch. See [Ticket and source-control backends](#ticket-and-source-control-backends).
 
 The end goal is a hosted deployment on AWS. The Docker Compose stack in this repository is the development environment that stands the platform up on a workstation. Components are built to move to AWS without changing platform code. Inference targets Amazon Bedrock through a swappable connectivity provider, so the same code path runs in development and in the hosted environment.
 
@@ -42,7 +44,7 @@ Two host tools are optional and only needed for specific paths.
 Run these once from the repository root.
 
 1. Copy the environment file with `cp .env.example .env`, then fill in the placeholders. See [Configuration](#configuration). Never commit `.env`.
-2. Copy the integration source configs with `cp config/local/github.yaml.example config/local/github.yaml`, `cp config/local/jira.yaml.example config/local/jira.yaml`, and `cp config/local/integrations.yaml.example config/local/integrations.yaml`, then edit the copies. See [Integration credentials](#integration-credentials). Never commit the `config/local/*.yaml` operator files.
+2. Copy the integration source configs with `cp config/local/github.yaml.example config/local/github.yaml`, `cp config/local/jira.yaml.example config/local/jira.yaml`, and `cp config/local/integrations.yaml.example config/local/integrations.yaml`, then edit the copies. See [Integration credentials](#integration-credentials). Never commit the `config/local/*.yaml` operator files. If you set `TICKET_BACKEND=rebar`, also copy `config/local/tickets.yaml.example` to `config/local/tickets.yaml`. See [Ticket and source-control backends](#ticket-and-source-control-backends).
 3. Copy the gate selection config with `cp config/local/gates.yaml.example config/local/gates.yaml`. It is required for any run that evaluates gates. Copying `config/local/gate_engine.yaml.example` to `config/local/gate_engine.yaml` is optional and adds an external gate engine. See [Configurable gates](#configurable-gates).
 4. Create and activate a virtual environment with `python -m venv .venv && source .venv/bin/activate`.
 5. Install the package with its development extras using `pip install -e ".[dev,reasoning]"`. Add `sandbox` for the OpenHands agent, and see [CONTRIBUTING.md](CONTRIBUTING.md) for the editable `rebar` install needed on the review path.
@@ -72,6 +74,8 @@ Two binaries live under `vendor/bin` and are provisioned outside the Python inst
 | Bedrock | `AWS_PROFILE`, `AWS_REGION`, `BEDROCK_CONNECTIVITY_PROVIDER`, `BEDROCK_ENDPOINT_URL`, provider keys | Set your profile and provider. See [Bedrock connectivity](#bedrock-connectivity) |
 | LiteLLM | `LITELLM_BASE_URL`, `LITELLM_MASTER_KEY` | Set a local master key |
 | Review (rebar) | `REBAR_LLM_*`, `REVIEW_ATTESTATION_SECRET` | Point at LiteLLM, set an attestation secret |
+| Backends | `TICKET_BACKEND`, `SOURCE_CONTROL_BACKEND`, `SOURCE_CONTROL_LOCAL_*` | Select the ticket and source-control backends. Defaults are Jira and GitHub. See [Ticket and source-control backends](#ticket-and-source-control-backends) |
+| Admission | `MAX_CONCURRENT_RUNS`, `EXECUTION_ORPHAN_GRACE_SECONDS` | Cap on runs in flight and the grace window before a dead run's slot is reclaimed. Defaults work locally |
 | Integration tokens | `GITHUB_TOKEN`, `JIRA_API_TOKEN`, `JIRA_PAT` | The secrets named by `token_ref` in `github.yaml` and `jira.yaml`. See [Integration credentials](#integration-credentials) |
 | Jira tooling | `JIRA_ACLI_PATH`, `ACLI_VERSION`, `ACLI_DOWNLOAD_URL`, `ACLI_SHA256` | Path and provisioning for the vendored acli binary |
 | Policy and observability | `OPA_URL`, `LANGFUSE_*`, `OTEL_EXPORTER_OTLP_ENDPOINT` | Defaults work locally |
@@ -163,25 +167,49 @@ projects:
 
 `config/local/integrations.yaml` sets how each inbound integration is delivered. Copy the committed template with `cp config/local/integrations.yaml.example config/local/integrations.yaml` and edit the copy. `modes` names the three integrations `pr_closed`, `jira_intake`, and `ci_status`, and gives each a mode of `polling`, `webhook`, or `hybrid`. `polling` reconciles on the level-triggered poll only, `webhook` accepts inbound deliveries only, and `hybrid` runs both with the poll as the fallback. `config_version` records the schema version of the file. Every inbound path is duplicate-safe through the coordination idempotency ledger, so a webhook and a poll for the same event converge on one outcome.
 
-## Bedrock connectivity
+### Ticket and source-control backends
+
+The platform reads work from a ticket backend and delivers changes to a source-control backend, and each is selected independently in `.env`. `TICKET_BACKEND` is `jira` (default) or `rebar`, and `SOURCE_CONTROL_BACKEND` is `github` (default) or `local`. Leaving both unset behaves exactly as a Jira plus GitHub deployment, so [GitHub source configuration](#github-source-configuration) and [Jira source configuration](#jira-source-configuration) apply unchanged. The two axes are orthogonal, so a rebar store can target GitHub and a Jira project can target a local folder.
+
+`MAX_CONCURRENT_RUNS` caps the runs in flight at once across every ticket source, and excess candidates are deferred to a later intake pass. At the start of each pass the reconciler reclaims the slot of any non-terminal execution whose workflow is missing or closed, once the execution is older than `EXECUTION_ORPHAN_GRACE_SECONDS`, so a crashed run does not hold a slot forever.
+
+#### Rebar ticket backend
+
+Set `TICKET_BACKEND=rebar` to track work in a git-backed rebar ticket store instead of Jira. Copy the committed template with `cp config/local/tickets.yaml.example config/local/tickets.yaml` and edit the copy. The file is git-ignored and is required whenever the rebar backend is selected. `inv config-check` reports whether it is current.
+
+`backend.repo_root` points at the rebar store working tree. `backend.project` labels the ticket source, and `backend.default_repo` names the repository a ticket targets when it names none. `backend.status_flow` maps the platform's lifecycle stages `work_started`, `ready_for_review`, and `terminal` onto the store's own statuses, drawn from rebar's vocabulary of `idea`, `open`, `in_progress`, `closed`, `blocked`, `cancelled`, and `deleted`. The `poll` section runs change detection under an authenticated reader identity restricted to approved roles and redacts any field outside `allowed_fields`. The `store`, `roles`, `provenance`, and `isolation` sections keep the ticket store's object-store location and credentials separate from the evidence and audit stores, and the loader fails closed on any overlap. See [docs/tickets-store-credentials.md](docs/tickets-store-credentials.md) for the credential fields and [docs/rebar-ticket-api.md](docs/rebar-ticket-api.md) for the store API the backend calls.
+
+Seed the store from an operator-provided Excel export with `inv import-rebar-tickets --xlsx <path>`, which imports through rebar's own capability. Add `--reset` to wipe and re-initialize the store first, `--status` to import only selected statuses, and `--limit` to cap the count.
+
+#### Local source-control backend
+
+Set `SOURCE_CONTROL_BACKEND=local` to deliver changes to a git folder on disk instead of GitHub. `SOURCE_CONTROL_LOCAL_ROOT` is the parent directory that holds the target repositories, and `SOURCE_CONTROL_LOCAL_REPOS` is an optional comma-separated allowlist where an empty value discovers every git repository under the root. The local backend commits the change to an `agent/<task_id>` branch in the repository, performs no push, and opens no pull request. It writes a `SUMMARY.md` and a `change.patch` per run under `SOURCE_CONTROL_LOCAL_ARTIFACTS_ROOT`, along with a done ledger, and an empty artifacts root defaults to `<root>/.agent-publish`.
+
+A local-backend run has no merge webhook, so an operator completes it. When the run reaches the promoted branch it parks at `AWAITING_PR_CLOSE`. Run `inv operator-done --workflow-id ID --repo REPO --branch agent/<task_id>` to verify the published artifacts and signal completion, which advances the ticket to its terminal status. Add `--closed-unmerged` to complete as closed-unmerged rather than merged. `SOURCE_CONTROL_LOCAL_OPERATORS` is the comma-separated allowlist of operators authorized to run the command, matched against the operating system account, and the workflow id prints when the pipeline starts.
+
+
 
 `inv tunnel-start` and `inv connectivity-check` dispatch to the provider named by `BEDROCK_CONNECTIVITY_PROVIDER`. Every provider satisfies the same reachability contract, so the platform code runs unchanged when you swap providers. Every path terminates at a private endpoint, so inference stays inside the compliance boundary. There is no public-endpoint provider.
 
 | Provider | Path | Required config |
 | --- | --- | --- |
-| `jumphost` (default) | SSM port-forward through an on-demand jump-host | `JUMPHOST_NAME`, `JUMPHOST_ENV`, `JUMPHOST_CONNECT_SCRIPT` |
+| `jumphost` (default) | SSM port-forward through an on-demand jump-host | `JUMPHOST_NAME`, `JUMPHOST_ENV`, `JUMPHOST_CONNECT_SCRIPT`, `JUMPHOST_SESSION_DURATION_SECONDS`, `JUMPHOST_KEEPALIVE_SECONDS` |
 | `ssh-bastion` | SSH local forward through a bastion | `SSH_BASTION_TARGET` |
 | `direct` | No tunnel. The caller originates inside the VPC | `BEDROCK_ENDPOINT_URL` optional |
 
-`BEDROCK_ENDPOINT_URL` is the injected endpoint used by boto3 and the Bedrock model client. An empty value uses the default regional resolver. A project with no interface endpoint can apply the optional `infra/terraform/bedrock-vpce` module to provision one.
+`BEDROCK_ENDPOINT_URL` is the injected endpoint used by boto3 and the Bedrock model client. An empty value uses the default regional resolver. A project with no interface endpoint can apply the `infra/terraform/vpc-endpoints` module to provision one, or apply the `infra/terraform/examples/private-bedrock` composition to stand up the whole private path at once.
 
 ### Reaching the private endpoint
 
-The `bedrock-vpce` module provisions an interface endpoint that admits 443 only from the in-VPC subnet CIDRs you pass, with private DNS on. That means `bedrock-runtime.<region>.amazonaws.com` resolves to the endpoint's private IPs for any caller inside the VPC and is unreachable from outside it.
+The `vpc-endpoints` module provisions a `bedrock-runtime` interface endpoint that admits 443 only from the in-VPC subnet CIDRs you pass, with private DNS on. That means `bedrock-runtime.<region>.amazonaws.com` resolves to the endpoint's private IPs for any caller inside the VPC and is unreachable from outside it.
 
-- From in-VPC compute (an EKS pod or an EC2 host in an allowed subnet): set `BEDROCK_CONNECTIVITY_PROVIDER=direct` and leave `BEDROCK_ENDPOINT_URL` empty. Private DNS routes the call over the endpoint. Attach the module's `bedrock:InvokeModel` policy to the workload role.
+- From in-VPC compute (an EKS pod or an EC2 host in an allowed subnet): set `BEDROCK_CONNECTIVITY_PROVIDER=direct` and leave `BEDROCK_ENDPOINT_URL` empty. Private DNS routes the call over the endpoint. Attach the `bedrock-iam` module's `bedrock:InvokeModel` policy to the workload role.
 - From a developer laptop: the private endpoint is not reachable directly, so forward through an in-VPC hop. Set `BEDROCK_CONNECTIVITY_PROVIDER=jumphost` for an SSM port-forward through a host in an allowed subnet, or `ssh-bastion` for an SSH local forward through a bastion, then run `inv tunnel-start` followed by `inv connectivity-check`. The hop resolves and originates the request inside the VPC.
 - `inv connectivity-check` runs a TLS handshake to `bedrock-runtime` over the selected provider and reports the result, so use it to confirm any path.
+
+### Provisioning modules
+
+The AWS infrastructure is split into reusable Terraform modules under `infra/terraform`. `vpc-endpoints` owns the shared interface and gateway endpoints, `ecr` owns the jumphost image registry, `cloudtrail` owns the audit trail, `bedrock-iam` owns the `bedrock:InvokeModel` policy, and `bedrock-jumphost-fargate` provisions an ephemeral ECS Exec hop to the private endpoint. Each is toggleable so an account reuses infrastructure it already has. The `infra/terraform/examples/private-bedrock` composition root wires them into one apply and works from zero or against an existing VPC through tfvars. After the apply, build and push the jumphost image with `inv publish-jumphost-image --tag v1` and attach the emitted `bedrock:InvokeModel` policy to the workload role. See [infra/terraform/examples/private-bedrock/README.md](infra/terraform/examples/private-bedrock/README.md).
 
 ## Services and ports
 
@@ -234,7 +262,10 @@ Run `inv --list` for the full set. The common tasks are below.
 | `inv fetch-acli` | Vendor the Atlassian `acli` binary |
 | `inv cbm-build [--source PATH] [--ref TAG]` | Build and vendor the `codebase-memory-mcp` binary, cloning upstream by default |
 | `inv reap [--apply]` | Reap expired orphan artifacts, dry-run by default |
-| `inv intake [--schedule]` | Reconcile Jira intake into draft PR executions, single pass by default |
+| `inv intake [--schedule]` | Reconcile ticket intake into runs, single pass by default. Add `--local` to run on the host instead of the worker container |
+| `inv import-rebar-tickets --xlsx PATH [--reset] [--status S] [--limit N]` | Seed the rebar ticket store from a Jira xlsx export |
+| `inv operator-done --workflow-id ID --repo REPO --branch BRANCH [--closed-unmerged]` | Complete a local source-control run by verifying artifacts and signaling the workflow |
+| `inv publish-jumphost-image [--tag TAG]` | Build and push the jumphost base image to the account ECR repository |
 | `inv approve-pr --workflow-id ID [--reject] [--pr-closed] [--merged]` | Release an approval or PR-close pause on a running workflow |
 | `inv gate --issue KEY --gate NAME [--approve\|--reject]` | Resolve a configured human-intervention gate parked at `AWAITING_HUMAN` |
 
@@ -242,7 +273,7 @@ See [Recovering a stuck intake](#recovering-a-stuck-intake) for the retry, repai
 
 ## Recovering a stuck intake
 
-The Jira intake reconciler turns a labeled ticket into a draft-PR execution on each pass. `inv intake` runs one pass and `inv intake --schedule` installs the recurring Temporal schedule. When an execution fails, or a ticket needs another attempt, the commands below drive it without signalling Temporal by hand.
+The Jira intake reconciler turns a labeled ticket into a draft-PR execution on each pass, and the rebar reconciler does the same for a ready ticket in the store. `inv intake` runs one pass and `inv intake --schedule` installs the recurring Temporal schedule. When an execution fails, or a ticket needs another attempt, the commands below drive it without signalling Temporal by hand.
 
 `inv intake --retry ISSUE [--repo REPO]` clears the intake dedup for a failed issue, marks its stale executions failed, and resets its sequence gate, so the next poll relaunches the ticket from a clean state. Add `--repo` to scope the retry to one repository when the ticket fanned out to several. It refuses while a workflow for the ticket is still running.
 
@@ -256,11 +287,11 @@ When automated CI repair exhausts its attempts, the draft-PR workflow parks at t
 
 Every decision records the operator identity in the audit trail. The identity is read from the operating system account that runs the command, not a flag, so it cannot be recorded under another name.
 
-When the review and approval gates are enabled, a workflow instead pauses at `AWAITING_PR_APPROVAL` and `AWAITING_PR_CLOSE`. Release those with `inv approve-pr --workflow-id ID`, add `--reject` to reject the pull request, and pass `--pr-closed` with `--merged` to stand in for the GitHub PR-closed webhook. The workflow id prints when the pipeline starts.
+When the review and approval gates are enabled, a workflow instead pauses at `AWAITING_PR_APPROVAL` and `AWAITING_PR_CLOSE`. Release those with `inv approve-pr --workflow-id ID`, add `--reject` to reject the pull request, and pass `--pr-closed` with `--merged` to stand in for the GitHub PR-closed webhook. The workflow id prints when the pipeline starts. On the local source-control backend a run parks at `AWAITING_PR_CLOSE` on every run rather than only under the approval gate, because there is no merge webhook, and `inv operator-done` is what releases it. See [Local source-control backend](#local-source-control-backend).
 
 ## Configurable gates
 
-The review and scan stages run a set of gates chosen from config, not a fixed sequence. `config/<env>/gates.yaml` names a shipped bundle with `profile` (`government` or `private`) and overrides individual gates by name. Each gate entry sets `enabled`, `required`, an `after` list, an `on_block` response, and a `params` map, and `fail_fast` is set per stage. A bundle names the working default, and an explicit entry overrides one gate without restating the rest. The promotion policy is data-driven over the resulting gate verdicts, so enabling or disabling a gate changes the run without a policy edit.
+The review and scan stages run a set of gates chosen from config, not a fixed sequence. `config/<env>/gates.yaml` names a shipped bundle with `profile` (`government` or `private`) and overrides individual gates by name. Each gate entry sets `enabled`, `required`, an `after` list, an `on_block` response, and a `params` map, and `fail_fast` is set per stage. A bundle names the working default, and an explicit entry overrides one gate without restating the rest. The promotion policy is data-driven over the resulting gate verdicts, so enabling or disabling a gate changes the run without a policy edit. The policy's repository and project allowlists and its continuous-integration requirement follow the configured ticket and source-control backends, so a local source-control run that runs no continuous integration is not denied for a GitHub or Jira-specific check.
 
 `gates.yaml` is required for any run that evaluates gates. Copy it from `gates.yaml.example` during setup. A run with reviews or policy enabled fails with a config-missing error until the file exists, and `inv config-check` reports it as not created. `gate_engine.yaml` is optional. With no `gate_engine.yaml`, no engine gate registers and the built-in rebar `security-review` gate stays the reviewer. Both operator files are git-ignored, and the repository ships only their `.example` templates.
 
@@ -288,7 +319,7 @@ The demo tasks walk the platform in four acts. Each is an `inv` task with its ow
 | Repository Intelligence | SCIP, Zoekt, LSP, ast-grep, coverage and build-metadata readers | The router, index worker, per-repo registry, and context package |
 | Orchestration | Temporal, LangGraph | The workflows, budget caps, suspend and resume, and the write pipeline |
 | Coordination | PostgreSQL | The whole component, claims, exactly-once effects, ordering, and reaping |
-| Integration | Jira, GitHub, Jenkins, OPA | The adapters, snapshot, recheck, and linkback |
+| Integration | Jira or rebar, GitHub or a local git folder, Jenkins, OPA | The adapters, backend selection, snapshot, recheck, and linkback |
 | Review | rebar as a library | The kernel wrapper, verdict and attestation logic, and the gate |
 | Agent runtime | OpenHands, LiteLLM to Bedrock | The spend and time caps, request tagging, and connectivity options |
 

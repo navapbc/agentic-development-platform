@@ -20,13 +20,14 @@ from services.integration.credentials import (
 CLOUD = "cloud"
 DATACENTER = "datacenter"
 _AUTH_MODES = {CLOUD, DATACENTER}
-_FLOW_STAGES = ("work_started", "ready_for_review")
+_FLOW_STAGES = ("work_started", "ready_for_review", "terminal")
 
 
 @dataclass(frozen=True)
 class StatusFlow:
     work_started: str = ""
     ready_for_review: str = ""
+    terminal: str = ""
 
 
 @dataclass(frozen=True)
@@ -165,6 +166,7 @@ def _parse_flow(raw: object, context: str) -> StatusFlow | None:
     return StatusFlow(
         work_started=values.get("work_started", ""),
         ready_for_review=values.get("ready_for_review", ""),
+        terminal=values.get("terminal", ""),
     )
 
 

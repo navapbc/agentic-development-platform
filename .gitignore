@@ -16,6 +16,8 @@ config/*/gates.yaml
 !config/*/gates.yaml.example
 config/*/gate_engine.yaml
 !config/*/gate_engine.yaml.example
+config/*/tickets.yaml
+!config/*/tickets.yaml.example
 
 # AWS / credentials
 .aws/
@@ -49,6 +51,11 @@ vendor/bin/*
 *.tfstate
 *.tfstate.*
 .terraform.lock.hcl
+*.tfvars
+!*.tfvars.example
+*.tfplan
+crash.log
+crash.*.log
 
 # Editor / OS
 .DS_Store

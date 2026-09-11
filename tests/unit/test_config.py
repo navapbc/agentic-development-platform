@@ -59,7 +59,7 @@ def test_repo_intelligence_registry_falls_back_to_single_root():
 def test_region_and_profile_defaults_are_fedramp_aligned():
     s = Settings()
     assert s.aws_region == "us-east-1"
-    assert s.aws_profile == "mpse-legacy"
+    assert s.aws_profile == "agentic-platform"
 
 
 def test_bedrock_endpoint_is_standard_regional_host():

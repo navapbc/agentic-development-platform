@@ -17,6 +17,14 @@ def _compose_files() -> str:
     return " ".join(files)
 
 
+def _run_scripted(c, command: str, *, local: bool, service: str = "activity-worker") -> None:
+    """Run a python -m command in the activity-worker container, or on the host with local=True."""
+    if local:
+        c.run(command, pty=True)
+    else:
+        c.run(f"{COMPOSE} {_compose_files()} exec -T {service} {command}", pty=True)
+
+
 @task(help={"detach": "Run the tunnel in the background."})
 def tunnel_start(c, detach=False):
     """Start the jump-host tunnel to Bedrock."""
@@ -94,6 +102,73 @@ def db_reset(c):
 def seed(c):
     """Load local seed/fixture data (allowlisted AGENTDEV + demo repos)."""
     c.run("python -m scripts.seed", pty=True)
+
+
+@task(
+    help={
+        "xlsx": "Path to the Jira xlsx export to import.",
+        "root": "Optional store path (defaults to the tickets backend repo_root).",
+        "status": "Comma-separated Jira statuses to import (default: all).",
+        "limit": "Import at most N tickets (0 means no limit).",
+        "reset": "Wipe the store and re-init empty before importing.",
+        "local": "Run on the host instead of the activity-worker container.",
+    }
+)
+def import_rebar_tickets(c, xlsx="", root="", status="", limit=0, reset=False, local=False):
+    """Import a Jira xlsx export into the local rebar ticket store."""
+    flags = xlsx
+    if root:
+        flags += f" --root {root}"
+    if status:
+        flags += f' --status "{status}"'
+    if limit:
+        flags += f" --limit {limit}"
+    if reset:
+        flags += " --reset"
+    _run_scripted(c, f"python -m scripts.import_rebar_tickets {flags}".strip(), local=local)
+
+
+@task(
+    help={
+        "new": "Report new tickets.",
+        "field-changes": "Report field changes.",
+        "status-changes": "Report status changes.",
+        "report-only": "Do not drive intake side effects.",
+    }
+)
+def rebar_poll(c, new=False, field_changes=False, status_changes=False, report_only=False):
+    """Poll the rebar tickets branch for new tickets, field changes, and status changes."""
+    flags = []
+    if new:
+        flags.append("--new")
+    if field_changes:
+        flags.append("--field-changes")
+    if status_changes:
+        flags.append("--status-changes")
+    if report_only:
+        flags.append("--report-only")
+    c.run(f"python -m scripts.rebar_poll {' '.join(flags)}".strip(), pty=True)
+
+
+@task(
+    help={
+        "workflow-id": "The draft-PR workflow id to complete.",
+        "repo": "The repository of the promoted branch.",
+        "branch": "The promoted local branch.",
+        "completion-signal-id": "Expected completion-signal id to verify before signaling.",
+        "closed-unmerged": "Complete as closed-unmerged rather than merged.",
+    }
+)
+def operator_done(
+    c, workflow_id, repo, branch, completion_signal_id="", closed_unmerged=False
+):
+    """Complete a local-backend run by verifying artifacts and signaling the workflow."""
+    flags = f"--workflow-id {workflow_id} --repo {repo} --branch {branch}"
+    if completion_signal_id:
+        flags += f" --completion-signal-id {completion_signal_id}"
+    if closed_unmerged:
+        flags += " --closed-unmerged"
+    c.run(f"python -m scripts.operator_done {flags}", pty=True)
 
 
 @task
@@ -191,6 +266,28 @@ def cbm_build(c, source="", ref="", dest="vendor/bin"):
     c.run(f"python -m scripts.build_cbm --dest {dest}{flags}", pty=True)
 
 
+@task(
+    help={
+        "tag": "Image tag to build and push (default v1). Bump to ship a new image.",
+        "arch": "Target architecture, arm64 or amd64 (default arm64).",
+        "base_image": "Override the Dockerfile base image, for an approved registry.",
+        "repo": "ECR repository name (default agentic-platform/jumphost-base).",
+        "region": "AWS region (empty uses AWS_REGION).",
+    }
+)
+def publish_jumphost_image(c, tag="v1", arch="arm64", base_image="", repo="", region=""):
+    """Build and push the Fargate jumphost-base image to the account ECR repository."""
+    from scripts.config import get_settings
+
+    settings = get_settings()
+    flags = f"-t {tag} -a {arch}"
+    flags += f" -b {base_image}" if base_image else ""
+    flags += f" -r {repo}" if repo else ""
+    flags += f" -R {region}" if region else ""
+    env = {"AWS_PROFILE": settings.aws_profile, "AWS_REGION": settings.aws_region}
+    c.run(f"bash infra/bin/publish_jumphost_image.sh {flags}".strip(), pty=True, env=env)
+
+
 @task(help={"apply": "Perform real deletions instead of a dry-run."})
 def reap(c, apply=False):
     """Reap expired platform orphan artifacts (dry-run by default)."""
@@ -199,19 +296,33 @@ def reap(c, apply=False):
 
 @task(
     help={
-        "schedule": "Install the Temporal intake schedule instead of running a single pass.",
+        "schedule": "Install the Temporal intake schedule.",
         "retry": "Clear the intake dedup for a failed issue so the next poll relaunches it.",
-        "repo": "Scope a --retry to one repository when the issue fanned out to several.",
+        "repo": "Scope a --retry to one repository.",
+        "local": "Run on the host instead of the activity-worker container.",
     }
 )
-def intake(c, schedule=False, retry="", repo=""):
-    """Reconcile Jira intake into draft PR executions (single pass by default)."""
+def intake(c, schedule=False, retry="", repo="", local=False):
+    """Reconcile ticket intake into draft PR executions (single pass by default)."""
     flags = ""
     if retry:
         flags = f"--retry {retry}" + (f" --repo {repo}" if repo else "")
     elif schedule:
         flags = "--schedule"
-    c.run(f"python -m scripts.intake {flags}".strip(), pty=True)
+    _run_scripted(c, f"python -m scripts.intake {flags}".strip(), local=local)
+
+
+@task(
+    help={
+        "repo": "Allowlisted repository name to pre-index.",
+        "commit": "Commit to index (empty uses the head).",
+        "local": "Run on the host instead of the activity-worker container.",
+    }
+)
+def index_repo(c, repo, commit="", local=False):
+    """Pre-index a repository in repository intelligence before intake."""
+    flags = f"--repo {repo}" + (f" --commit {commit}" if commit else "")
+    _run_scripted(c, f"python -m scripts.index_repo {flags}", local=local)
 
 
 @task(
@@ -485,6 +596,9 @@ for _t in (
     db_migrate,
     db_reset,
     seed,
+    import_rebar_tickets,
+    rebar_poll,
+    operator_done,
     smoke_test,
     prompts_seed,
     review_eval,
@@ -497,8 +611,10 @@ for _t in (
     durability_proof,
     fetch_acli,
     cbm_build,
+    publish_jumphost_image,
     reap,
     intake,
+    index_repo,
     repair,
     gate,
     restart,

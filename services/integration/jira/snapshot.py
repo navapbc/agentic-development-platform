@@ -140,6 +140,28 @@ def _enforce_allowlist(project: str, settings: Settings) -> None:
         )
 
 
+async def capture_candidate_snapshot(
+    payload: dict[str, Any],
+    *,
+    execution_id: str,
+    task_id: str,
+    project: str,
+    source: str,
+    store: TaskSnapshotStore | None = None,
+) -> TaskSnapshot:
+    """Persist a snapshot from an already-normalized, ticket-neutral payload."""
+    candidate = SnapshotCandidate(
+        execution_id=execution_id,
+        task_id=task_id,
+        jira_project=project,
+        jira_source=source,
+        content_hash=content_hash(payload),
+        payload=payload,
+    )
+    store = store or PostgresTaskSnapshotStore()
+    return await store.persist(candidate)
+
+
 async def capture_task_snapshot(
     raw_issue: dict[str, Any],
     *,

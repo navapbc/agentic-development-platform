@@ -1,0 +1,34 @@
+# Existing-network example. Reuse a VPC and private subnets that already exist,
+# and skip any core infrastructure the account already provides. Apply with:
+#   AWS_PROFILE=agentic-platform terraform apply -var-file=existing-network.tfvars
+
+region      = "us-east-1"
+name_prefix = "agentic-platform"
+
+create_network         = false
+vpc_id                 = "vpc-REPLACE_ME"
+subnet_ids             = ["subnet-REPLACE_ME"]
+endpoint_allowed_cidrs = ["10.0.0.0/16"]
+# route_table_ids is optional. Empty auto-discovers the route tables for subnet_ids.
+# route_table_ids = ["rtb-REPLACE_ME"]
+
+# Flip these to false for endpoints or a registry the account already has.
+# When false, also set the matching existing_* values below.
+create_endpoints      = true
+create_ecr_repository = true
+
+# Required only when create_endpoints = false.
+# existing_endpoints_security_group_id = "sg-REPLACE_ME"
+
+# Required only when create_ecr_repository = false.
+# existing_ecr_repository_url = "111122223333.dkr.ecr.us-east-1.amazonaws.com/agentic-platform/jumphost-base"
+# existing_ecr_repository_arn = "arn:aws:ecr:us-east-1:111122223333:repository/agentic-platform/jumphost-base"
+
+# Leave false when an organization CloudTrail already covers this account.
+create_cloudtrail = false
+
+jumphost_session_duration_seconds = 10800
+
+tags = {
+  project = "agentic-dev-platform"
+}

@@ -101,7 +101,7 @@ def test_jira_channel_posts_comment(monkeypatch):
             comments.append((issue_key, body))
 
     monkeypatch.setattr(
-        "services.integration.jira.adapter.build_jira_adapter_for_issue",
+        "services.integration.tickets.build_ticket_backend_for_issue",
         lambda issue_key, settings=None: _Adapter(),
     )
     settings = Settings(
@@ -121,7 +121,7 @@ def test_channel_error_is_swallowed(monkeypatch):
     def boom(issue_key, settings=None):
         raise RuntimeError("no jira")
 
-    monkeypatch.setattr("services.integration.jira.adapter.build_jira_adapter_for_issue", boom)
+    monkeypatch.setattr("services.integration.tickets.build_ticket_backend_for_issue", boom)
     settings = Settings(
         slack_webhook_url="",
         smtp_host="",

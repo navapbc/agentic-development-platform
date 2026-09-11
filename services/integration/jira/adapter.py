@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from scripts.config import Settings, get_settings
 
@@ -19,6 +20,9 @@ from services.integration.jira.credentials import (
 )
 from services.integration.jira.markdown_adf import markdown_to_adf_json
 from services.integration.jira.normalize import _name_of, _normalize_rich_text
+
+if TYPE_CHECKING:
+    from services.integration.jira.render import Block
 
 
 class _VendorJiraClient(Protocol):
@@ -43,6 +47,18 @@ class JiraAdapter:
 
     def get_issue(self, issue_key: str) -> dict[str, Any]:
         return self.client.get_issue(issue_key)
+
+    def recheck_payload(
+        self, issue_key: str, *, raw_comments: Sequence[Any] = ()
+    ) -> dict[str, Any]:
+        from services.integration.jira.credentials import acceptance_field
+        from services.integration.jira.normalize import normalize_issue
+
+        return normalize_issue(
+            self.get_issue(issue_key),
+            raw_comments=tuple(raw_comments),
+            acceptance_field=acceptance_field(get_settings()),
+        ).to_dict()
 
     def search_issues(self, jql: str, *, page_size: int = 50) -> list[dict[str, Any]]:
         issues: list[dict[str, Any]] = []
@@ -80,6 +96,11 @@ class JiraAdapter:
             entry = self.client.get_comment_map(self.project).get(issue_key) or {}
             raw = entry.get("comments") or []
         return tuple(_normalize_rich_text(item.get("body")) for item in raw)
+
+    def render_comment(self, document: list[Block]) -> str:
+        from services.integration.jira.linkback import render_linkback
+
+        return render_linkback(document, source=self.source)
 
 
 def _build_datacenter_client(cred: JiraProjectCredential) -> _VendorJiraClient:

@@ -39,6 +39,7 @@ from services.orchestration.temporal_activities import (
     mark_task_parked,
     persist_execution_state,
     promote_pr,
+    read_ticket_status,
     reap_orphans,
     recheck_issue,
     reconcile_intake_pass,
@@ -114,6 +115,7 @@ _ACTIVITIES = [
     mark_task_parked,
     unmark_task_parked,
     apply_task_status,
+    read_ticket_status,
     record_pr_approval,
     promote_pr,
     reap_orphans,
@@ -186,7 +188,10 @@ def _warm_acli_auth(settings) -> None:
         CLOUD,
         build_jira_credential_resolver,
     )
+    from services.integration.tickets import JIRA, resolve_ticket_backend_name
 
+    if resolve_ticket_backend_name(settings) != JIRA:
+        return
     try:
         resolver = build_jira_credential_resolver(settings)
         for project in sorted(resolver.projects()):
