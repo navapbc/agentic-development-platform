@@ -20,7 +20,8 @@ from services.integration.credentials import ConfigError
 STATUS = "status"
 COMMENT = "comment"
 APPROVAL = "approval"
-WRITE_SCOPES = (STATUS, COMMENT, APPROVAL)
+LINK = "link"
+WRITE_SCOPES = (STATUS, COMMENT, APPROVAL, LINK)
 
 _DEFAULT_ALLOWED_SCOPES = WRITE_SCOPES
 

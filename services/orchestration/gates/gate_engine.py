@@ -257,6 +257,10 @@ class AiReviewScanner:
         from services.orchestration.gates.engine_source import IMAGE
         from services.orchestration.gates.pod_runner import PodEngineError, PodEngineSpec
 
+        runner = self._pod_runner
+        if runner is None:
+            raise ScannerUnavailableError("pod runner is not configured")
+
         # config.image, when set, is a runtime override: the pod pulls it instead of building the
         # engine Dockerfile, while the source is still mounted at the engine path so the harness
         # stays current. In pure image mode the source path is empty and the image is the whole
@@ -274,7 +278,7 @@ class AiReviewScanner:
             env=env,
         )
         try:
-            return await self._pod_runner.run_engine(spec)
+            return await runner.run_engine(spec)
         except PodEngineError as exc:
             raise ScannerUnavailableError(str(exc)) from exc
 

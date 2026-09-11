@@ -51,3 +51,15 @@ def evaluate_completion(inputs: CompletionInputs) -> CompletionDecision:
         "precedence_applied",
         precedence_applied=PRECEDENCE_SOURCE_CONTROL,
     )
+
+
+def blocking_ticket_present_in_base(status: str, terminal_status: str) -> bool:
+    """Return whether a blocking ticket has reached the terminal status.
+
+    A dependent run may resume only once its blocker is terminal, which under the
+    shared-base model means the blocker's change is merged into the base branch a
+    dependent re-captures on resume. An empty terminal status never certifies.
+    """
+    if not terminal_status:
+        return False
+    return status.strip().lower() == terminal_status.strip().lower()

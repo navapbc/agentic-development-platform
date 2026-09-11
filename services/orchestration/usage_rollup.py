@@ -11,9 +11,12 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from database.models.schema import usage_metrics
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncEngine
 
 COST_BUDGET_EXCEEDED = "cost_budget_exceeded"
 LLM_CALLS_EXCEEDED = "llm_calls_exceeded"
@@ -250,7 +253,7 @@ def rollup_to_dict(rollup: ExecutionCostRollup) -> dict[str, object]:
     }
 
 
-async def read_usage_rows(engine: object, execution_id: str) -> list[UsageRow]:
+async def read_usage_rows(engine: AsyncEngine, execution_id: str) -> list[UsageRow]:
     """Read the recorded usage rows for one execution from the usage_metrics table."""
     from sqlalchemy import select
 

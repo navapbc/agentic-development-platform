@@ -178,6 +178,49 @@ class RebarTicketBackend:
     def render_comment(self, document: list[Block]) -> str:
         return render_blocks_to_text(document)
 
+    def link(self, from_issue: str, to_issue: str, *, relationship: str = "depends_on") -> None:
+        import rebar
+
+        _repair_store_worktrees(self.repo_root)
+        existing = {dep.get("target_id") for dep in self._deps(from_issue).get("deps", [])}
+        if to_issue in existing:
+            return
+        rebar.link(from_issue, to_issue, relationship, repo_root=self.repo_root)
+
+    def record_file_impact(self, issue_key: str, paths: Sequence[str]) -> None:
+        import rebar
+
+        _repair_store_worktrees(self.repo_root)
+        impact = [{"path": path, "reason": "agent-platform planned change"} for path in paths]
+        rebar.set_file_impact(issue_key, impact, repo_root=self.repo_root)
+
+    def read_file_impact(self, issue_key: str) -> tuple[str, ...]:
+        import rebar
+
+        entries = rebar.get_file_impact(issue_key, repo_root=self.repo_root)
+        return tuple(str(entry.get("path") or "") for entry in entries if entry.get("path"))
+
+    def declared_dependencies(self, issue_key: str) -> tuple[str, ...]:
+        return tuple(str(dep) for dep in self._deps(issue_key).get("blockers", []))
+
+    def dependents(self, issue_key: str) -> tuple[str, ...]:
+        import rebar
+
+        ticket: dict[str, Any] = dict(
+            rebar.show_ticket(issue_key, repo_root=self.repo_root, include_inbound=True)
+        )
+        inbound = ticket.get("inbound_deps") or []
+        return tuple(
+            str(entry.get("from_id"))
+            for entry in inbound
+            if entry.get("from_id") and entry.get("relation") == "depends_on"
+        )
+
+    def _deps(self, issue_key: str) -> dict[str, Any]:
+        import rebar
+
+        return dict(rebar.deps(issue_key, repo_root=self.repo_root))
+
 
 def build_rebar_ticket_backend(
     settings: Settings | None = None, *, project: str = ""

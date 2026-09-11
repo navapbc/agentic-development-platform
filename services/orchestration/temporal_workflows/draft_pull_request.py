@@ -25,6 +25,19 @@ with workflow.unsafe.imports_passed_through():
         RunChecksResult,
         run_checks,
     )
+    from services.orchestration.temporal_activities.dependency import (
+        CaptureBaseHeadRequest,
+        CaptureBaseHeadResult,
+        CheckDependencyCycleRequest,
+        CheckDependencyCycleResult,
+        DetectDependencyRequest,
+        DetectDependencyResult,
+        SignalDependencyReadyRequest,
+        capture_base_head,
+        check_dependency_cycle,
+        detect_dependency,
+        signal_dependency_ready,
+    )
     from services.orchestration.temporal_activities.gates import (
         ClassifyTestFailuresRequest,
         EvaluateGateRequest,
@@ -77,6 +90,7 @@ with workflow.unsafe.imports_passed_through():
         ReadStatusRequest,
         ReadStatusResult,
         RecordApprovalRequest,
+        RecordDependencyLinkRequest,
         UnparkTaskRequest,
         apply_task_status,
         commit_and_push,
@@ -84,6 +98,7 @@ with workflow.unsafe.imports_passed_through():
         mark_task_parked,
         promote_pr,
         read_ticket_status,
+        record_dependency_link,
         record_pr_approval,
         unmark_task_parked,
     )
@@ -164,6 +179,9 @@ PROMOTION_CANCELLED = "promotion_cancelled"
 AWAITING_PR_APPROVAL = "AWAITING_PR_APPROVAL"
 PR_CREATED = "PR_CREATED"
 AWAITING_PR_CLOSE = "AWAITING_PR_CLOSE"
+AWAITING_DEPENDENCY = "AWAITING_DEPENDENCY"
+DEPENDENCY_CYCLE = "dependency_cycle"
+DEPENDENCY_UNRESOLVED = "dependency_replans_exhausted"
 AWAITING_HUMAN = "AWAITING_HUMAN"
 HUMAN_ABANDONED = "human_abandoned"
 CANCELLED = "CANCELLED"
@@ -217,6 +235,8 @@ class DraftPullRequestInput:
     run_policy: bool = False
     run_test_triage: bool = False
     run_approval: bool = False
+    run_dependency_detection: bool = False
+    max_dependency_replans: int = 3
     await_pr_close: bool = False
     jira_project: str = ""
     snapshot_version: int = 0
@@ -284,6 +304,22 @@ class _GateDecision:
     actor: str = ""
 
 
+@dataclass
+class _PlanResult:
+    rejected: bool
+    output: DraftPullRequestOutput | None = None
+    plan_text: str = ""
+    context_summary: str = ""
+    context_package: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class _DependencyOutcome:
+    plan_text: str
+    context_package: dict[str, Any]
+    rejection: DraftPullRequestOutput | None = None
+
+
 def _project_from_issue(issue_key: str) -> str:
     return issue_key.split("-", 1)[0] if "-" in issue_key else ""
 
@@ -341,6 +377,10 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         self._plan_approved: bool = False
         self._alert_seq: int = 0
         self._checks_output: str = ""
+        self._dependency_finding: DetectDependencyResult | None = None
+        self._replan_attempts: int = 0
+        self._dependency_seq: int = 0
+        self._base_sha: str = ""
 
     @workflow.signal(name="submit_pr_approval")
     def submit_pr_approval(self, approved: bool, approver: str = "") -> None:
@@ -409,82 +449,24 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             return result.action
 
         self._plan_approved = params.plan_approved
+        self._base_sha = params.base_sha
         plan_text = ""
-        context_summary = ""
         context_package: dict[str, Any] = {}
         if params.run_planning:
-            gathered: ContextResult = await workflow.execute_activity(
-                gather_repo_context,
-                ContextRequest(
-                    repo=params.repo,
-                    commit=params.base_sha,
-                    focus=params.focus,
-                    execution_id=params.execution_id,
-                    task_id=params.task_id,
-                ),
-                start_to_close_timeout=timedelta(minutes=5),
-                retry_policy=retry,
-            )
-            context_summary = gathered.summary
-            context_package = gathered.package
-            plan_out: PlanReviewOutput = await workflow.execute_child_workflow(
-                PlanReviewWorkflow.run,
-                PlanReviewInput(
-                    task_id=params.task_id,
-                    execution_id=params.execution_id,
-                    repo=params.repo,
-                    commit=params.base_sha,
-                    focus=params.focus,
-                    context_summary=context_summary,
-                    task=params.task,
-                    description=params.task_description,
-                ),
-                id=f"{workflow_id}-plan",
-            )
-            if not plan_out.approved:
-                await self._terminal_alert(
-                    params,
-                    workflow_id,
-                    reason=PLAN_REJECTED,
-                    stage="plan",
-                    detail=plan_out.verdict,
-                )
-                return DraftPullRequestOutput(
-                    execution_id=params.execution_id,
-                    status=PLAN_REJECTED,
-                    terminal_reason=PLAN_REJECTED,
-                    plan_status="rejected",
-                    plan_verdict=plan_out.verdict,
-                )
-            plan_text = plan_out.plan
-            self._plan_approved = True
+            plan_result = await self._produce_plan(params, workflow_id)
+            if plan_result.rejected and plan_result.output is not None:
+                return plan_result.output
+            plan_text = plan_result.plan_text
+            context_package = plan_result.context_package
 
-            plan: GatePlan = await workflow.execute_activity(
-                load_gate_plan, start_to_close_timeout=short, retry_policy=retry
+        if params.run_dependency_detection and context_package:
+            outcome = await self._resolve_dependencies(
+                params, workflow_id, plan_text, context_package
             )
-            if plan.plan_pause:
-                approved = await self._park_for_gate_decision(
-                    params,
-                    workflow_id,
-                    gate="plan",
-                    stage="plan",
-                    detail="plan approval requested",
-                )
-                if not approved:
-                    await self._terminal_alert(
-                        params,
-                        workflow_id,
-                        reason=PLAN_REJECTED,
-                        stage="plan",
-                        detail="plan rejected by human gate",
-                    )
-                    return DraftPullRequestOutput(
-                        execution_id=params.execution_id,
-                        status=PLAN_REJECTED,
-                        terminal_reason=PLAN_REJECTED,
-                        plan_status="rejected",
-                        plan_verdict=plan_out.verdict,
-                    )
+            if outcome.rejection is not None:
+                return outcome.rejection
+            plan_text = outcome.plan_text
+            context_package = outcome.context_package
 
         impl: ImplementationOutput = await workflow.execute_child_workflow(
             ImplementationWorkflow.run,
@@ -492,7 +474,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 task_id=params.task_id,
                 execution_id=params.execution_id,
                 repo=params.repo,
-                commit=params.base_sha,
+                commit=self._base_sha,
                 task=params.task,
                 base=params.base,
                 focus=params.focus,
@@ -1452,6 +1434,362 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             review_summaries=summaries,
         )
 
+    async def _produce_plan(
+        self, params: DraftPullRequestInput, workflow_id: str
+    ) -> _PlanResult:
+        retry = RetryPolicy(maximum_attempts=3)
+        short = timedelta(seconds=30)
+        gathered: ContextResult = await workflow.execute_activity(
+            gather_repo_context,
+            ContextRequest(
+                repo=params.repo,
+                commit=self._base_sha,
+                focus=params.focus,
+                detail=params.task_description,
+                execution_id=params.execution_id,
+                task_id=params.task_id,
+            ),
+            start_to_close_timeout=timedelta(minutes=5),
+            retry_policy=retry,
+        )
+        context_summary = gathered.summary
+        context_package = gathered.package
+        plan_out: PlanReviewOutput = await workflow.execute_child_workflow(
+            PlanReviewWorkflow.run,
+            PlanReviewInput(
+                task_id=params.task_id,
+                execution_id=params.execution_id,
+                repo=params.repo,
+                commit=self._base_sha,
+                focus=params.focus,
+                context_summary=context_summary,
+                task=params.task,
+                description=params.task_description,
+            ),
+            id=f"{workflow_id}-plan-{self._replan_attempts}",
+        )
+        if not plan_out.approved:
+            await self._terminal_alert(
+                params,
+                workflow_id,
+                reason=PLAN_REJECTED,
+                stage="plan",
+                detail=plan_out.verdict,
+            )
+            return _PlanResult(
+                rejected=True,
+                output=DraftPullRequestOutput(
+                    execution_id=params.execution_id,
+                    status=PLAN_REJECTED,
+                    terminal_reason=PLAN_REJECTED,
+                    plan_status="rejected",
+                    plan_verdict=plan_out.verdict,
+                ),
+            )
+        self._plan_approved = True
+        plan: GatePlan = await workflow.execute_activity(
+            load_gate_plan, start_to_close_timeout=short, retry_policy=retry
+        )
+        if plan.plan_pause:
+            approved = await self._park_for_gate_decision(
+                params,
+                workflow_id,
+                gate="plan",
+                stage="plan",
+                detail="plan approval requested",
+            )
+            if not approved:
+                await self._terminal_alert(
+                    params,
+                    workflow_id,
+                    reason=PLAN_REJECTED,
+                    stage="plan",
+                    detail="plan rejected by human gate",
+                )
+                return _PlanResult(
+                    rejected=True,
+                    output=DraftPullRequestOutput(
+                        execution_id=params.execution_id,
+                        status=PLAN_REJECTED,
+                        terminal_reason=PLAN_REJECTED,
+                        plan_status="rejected",
+                        plan_verdict=plan_out.verdict,
+                    ),
+                )
+        return _PlanResult(
+            rejected=False,
+            plan_text=plan_out.plan,
+            context_summary=context_summary,
+            context_package=context_package,
+        )
+
+    async def _recapture_base(
+        self, params: DraftPullRequestInput, workflow_id: str
+    ) -> str:
+        retry = RetryPolicy(maximum_attempts=3)
+        short = timedelta(seconds=30)
+        result: CaptureBaseHeadResult = await workflow.execute_activity(
+            capture_base_head,
+            CaptureBaseHeadRequest(repo=params.repo, base=params.base),
+            start_to_close_timeout=short,
+            retry_policy=retry,
+        )
+        return result.base_sha or self._base_sha
+
+    async def _resolve_dependencies(
+        self,
+        params: DraftPullRequestInput,
+        workflow_id: str,
+        plan_text: str,
+        context_package: dict[str, Any],
+    ) -> _DependencyOutcome:
+        while context_package:
+            finding = await self._detect_dependency(params, context_package, workflow_id)
+            if not finding.detected:
+                return _DependencyOutcome(plan_text, context_package)
+            if await self._is_dependency_cycle(params, finding, workflow_id):
+                rejection = await self._fail_dependency(
+                    params, workflow_id, finding, DEPENDENCY_CYCLE
+                )
+                return _DependencyOutcome(plan_text, context_package, rejection)
+            if self._replan_attempts >= params.max_dependency_replans:
+                rejection = await self._fail_dependency(
+                    params, workflow_id, finding, DEPENDENCY_UNRESOLVED
+                )
+                return _DependencyOutcome(plan_text, context_package, rejection)
+            await self._record_dependency_link(params, finding, workflow_id)
+            await self._dependency_audit(
+                params, workflow_id, "DEPENDENCY_RECORDED", "record", finding.blocking_task_id
+            )
+            await self._park_for_dependency(params, finding, workflow_id)
+            self._replan_attempts += 1
+            self._base_sha = await self._recapture_base(params, workflow_id)
+            await self._dependency_audit(
+                params, workflow_id, "DEPENDENCY_REBASED", "rebase", self._base_sha
+            )
+            replan = await self._produce_plan(params, workflow_id)
+            if replan.rejected:
+                return _DependencyOutcome(plan_text, context_package, replan.output)
+            await self._dependency_audit(
+                params, workflow_id, "DEPENDENCY_REPLANNED", "replan", finding.blocking_task_id
+            )
+            plan_text = replan.plan_text
+            context_package = replan.context_package
+        return _DependencyOutcome(plan_text, context_package)
+
+    async def _dependency_audit(
+        self,
+        params: DraftPullRequestInput,
+        workflow_id: str,
+        event_type: str,
+        decision: str,
+        reason: str,
+    ) -> None:
+        self._dependency_seq += 1
+        await self._audit(
+            AuditEvent(
+                event_id=f"{params.execution_id}:{event_type}:{self._dependency_seq}",
+                task_id=params.task_id,
+                execution_id=params.execution_id,
+                event_type=event_type,
+                stage="dependency",
+                workflow_id=workflow_id,
+                decision=decision,
+                reason=reason,
+            )
+        )
+
+    async def _is_dependency_cycle(
+        self,
+        params: DraftPullRequestInput,
+        finding: DetectDependencyResult,
+        workflow_id: str,
+    ) -> bool:
+        retry = RetryPolicy(maximum_attempts=3)
+        short = timedelta(seconds=30)
+        result: CheckDependencyCycleResult = await workflow.execute_activity(
+            check_dependency_cycle,
+            CheckDependencyCycleRequest(
+                dependent_task_id=params.task_id,
+                blocking_issue_key=finding.blocking_task_id,
+                blocking_task_id=finding.blocking_task_id,
+            ),
+            start_to_close_timeout=short,
+            retry_policy=retry,
+        )
+        return result.is_cycle
+
+    async def _fail_dependency(
+        self,
+        params: DraftPullRequestInput,
+        workflow_id: str,
+        finding: DetectDependencyResult,
+        reason: str,
+    ) -> DraftPullRequestOutput:
+        retry = RetryPolicy(maximum_attempts=3)
+        short = timedelta(seconds=30)
+        await workflow.execute_activity(
+            persist_execution_state,
+            ExecutionState(
+                execution_id=params.execution_id,
+                task_id=params.task_id,
+                state=CANCELLED,
+                workflow_id=workflow_id,
+                repository=params.repo or None,
+            ),
+            start_to_close_timeout=short,
+            retry_policy=retry,
+        )
+        self._dependency_seq += 1
+        await self._audit(
+            AuditEvent(
+                event_id=f"{params.execution_id}:DEPENDENCY_FAILED:{self._dependency_seq}",
+                task_id=params.task_id,
+                execution_id=params.execution_id,
+                event_type="DEPENDENCY_FAILED",
+                stage="dependency",
+                new_state=CANCELLED,
+                workflow_id=workflow_id,
+                decision=reason,
+                reason=finding.blocking_task_id,
+            )
+        )
+        return DraftPullRequestOutput(
+            execution_id=params.execution_id,
+            status=reason,
+            terminal_reason=reason,
+        )
+
+    async def _record_dependency_link(
+        self,
+        params: DraftPullRequestInput,
+        finding: DetectDependencyResult,
+        workflow_id: str,
+    ) -> None:
+        retry = RetryPolicy(maximum_attempts=3)
+        short = timedelta(seconds=30)
+        await workflow.execute_activity(
+            record_dependency_link,
+            RecordDependencyLinkRequest(
+                dependent_issue_key=params.issue_key,
+                blocking_issue_key=finding.blocking_task_id,
+                execution_id=params.execution_id,
+            ),
+            start_to_close_timeout=short,
+            retry_policy=retry,
+        )
+
+    async def _park_for_dependency(
+        self,
+        params: DraftPullRequestInput,
+        finding: DetectDependencyResult,
+        workflow_id: str,
+    ) -> None:
+        retry = RetryPolicy(maximum_attempts=3)
+        short = timedelta(seconds=30)
+        await workflow.execute_activity(
+            persist_execution_state,
+            ExecutionState(
+                execution_id=params.execution_id,
+                task_id=params.task_id,
+                state=AWAITING_DEPENDENCY,
+                workflow_id=workflow_id,
+                repository=params.repo or None,
+            ),
+            start_to_close_timeout=short,
+            retry_policy=retry,
+        )
+        suspension = Suspension(
+            reason=SuspendReason.AWAITING_DEPENDENCY,
+            resume_on=ResumeOn.DEPENDENCY_READY,
+            stage="dependency",
+            detail=finding.blocking_task_id,
+        )
+        await workflow.execute_activity(
+            record_suspension,
+            RecordSuspensionRequest(
+                workflow_id=workflow_id,
+                reason=suspension.reason.value,
+                resume_on=suspension.resume_on.value,
+                parked_build_id=suspension.parked_build_id,
+                stage=suspension.stage,
+                detail=suspension.detail,
+            ),
+            start_to_close_timeout=short,
+            retry_policy=retry,
+        )
+        self._dependency_seq += 1
+        await self._audit(
+            AuditEvent(
+                event_id=f"{params.execution_id}:DEPENDENCY_PAUSED:{self._dependency_seq}",
+                task_id=params.task_id,
+                execution_id=params.execution_id,
+                event_type="DEPENDENCY_PAUSED",
+                stage="dependency",
+                new_state=AWAITING_DEPENDENCY,
+                workflow_id=workflow_id,
+                decision="pause",
+                reason=finding.blocking_task_id,
+            )
+        )
+        await self.await_resume(suspension)
+        await workflow.execute_activity(
+            clear_suspension,
+            ClearSuspensionRequest(workflow_id=workflow_id),
+            start_to_close_timeout=short,
+            retry_policy=retry,
+        )
+        self._dependency_seq += 1
+        await self._audit(
+            AuditEvent(
+                event_id=f"{params.execution_id}:DEPENDENCY_RESUMED:{self._dependency_seq}",
+                task_id=params.task_id,
+                execution_id=params.execution_id,
+                event_type="DEPENDENCY_RESUMED",
+                stage="dependency",
+                workflow_id=workflow_id,
+                decision="resume",
+                reason=finding.blocking_task_id,
+            )
+        )
+
+    async def _detect_dependency(
+        self,
+        params: DraftPullRequestInput,
+        context_package: dict[str, Any],
+        workflow_id: str,
+    ) -> DetectDependencyResult:
+        retry = RetryPolicy(maximum_attempts=3)
+        short = timedelta(seconds=30)
+        result: DetectDependencyResult = await workflow.execute_activity(
+            detect_dependency,
+            DetectDependencyRequest(
+                repo=params.repo,
+                task_id=params.task_id,
+                execution_id=params.execution_id,
+                issue_key=params.issue_key,
+                context_package=context_package,
+            ),
+            start_to_close_timeout=short,
+            retry_policy=retry,
+        )
+        self._dependency_finding = result
+        if result.detected:
+            self._dependency_seq += 1
+            await self._audit(
+                AuditEvent(
+                    event_id=f"{params.execution_id}:DEPENDENCY_DETECTED:{self._dependency_seq}",
+                    task_id=params.task_id,
+                    execution_id=params.execution_id,
+                    event_type="DEPENDENCY_DETECTED",
+                    stage="dependency",
+                    workflow_id=workflow_id,
+                    decision=result.reason,
+                    reason=result.blocking_task_id,
+                )
+            )
+        return result
+
     async def _policy(
         self,
         params: DraftPullRequestInput,
@@ -1941,6 +2279,16 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 start_to_close_timeout=short,
                 retry_policy=retry,
             )
+            if params.run_dependency_detection:
+                await workflow.execute_activity(
+                    signal_dependency_ready,
+                    SignalDependencyReadyRequest(
+                        blocking_task_id=params.task_id,
+                        blocking_issue_key=params.issue_key,
+                    ),
+                    start_to_close_timeout=short,
+                    retry_policy=retry,
+                )
         await self._audit(
             AuditEvent(
                 event_id=f"{params.execution_id}:{close_status.upper()}",

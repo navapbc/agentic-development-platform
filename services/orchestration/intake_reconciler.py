@@ -40,6 +40,7 @@ class IntakeStart:
     summary: str
     jira_project: str
     stored_issue: dict[str, Any]
+    description: str = ""
     base: str = "main"
     snapshot_version: int = 0
 
@@ -367,6 +368,7 @@ async def _start(
                 repo=repo,
                 issue_key=issue_key,
                 summary=candidate.summary,
+                description=candidate.description,
                 jira_project=project,
                 stored_issue=candidate.stored_payload,
                 snapshot_version=snapshot.version,

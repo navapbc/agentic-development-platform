@@ -110,6 +110,20 @@ class ReadStatusRequest:
 
 
 @dataclass
+class RecordDependencyLinkRequest:
+    dependent_issue_key: str
+    blocking_issue_key: str
+    execution_id: str = ""
+    relationship: str = "depends_on"
+
+
+@dataclass
+class RecordDependencyLinkResult:
+    linked: bool
+    detail: str = ""
+
+
+@dataclass
 class ReadStatusResult:
     status: str
     is_terminal: bool
@@ -362,6 +376,36 @@ async def apply_task_status(req: ApplyStatusRequest) -> ApplyStatusResult:
     backend = build_ticket_backend_for_issue(req.issue_key)
     transitioned = apply_status(backend, req.issue_key, target)
     return ApplyStatusResult(status=target, transitioned=transitioned)
+
+
+@activity.defn
+async def record_dependency_link(
+    req: RecordDependencyLinkRequest,
+) -> RecordDependencyLinkResult:
+    from services.integration.jira.adapter import project_of
+    from services.integration.tickets import DependencyBackend, resolve_ticket_backend_name
+
+    if not req.dependent_issue_key or not req.blocking_issue_key:
+        return RecordDependencyLinkResult(linked=False, detail="missing ticket")
+    backend = _build_ticket_backend(req.dependent_issue_key)
+    if not isinstance(backend, DependencyBackend):
+        return RecordDependencyLinkResult(
+            linked=False, detail="backend has no dependency capability"
+        )
+    _enforce_write_back(
+        actor=PLATFORM_ACTOR,
+        backend=resolve_ticket_backend_name(),
+        project=project_of(req.dependent_issue_key),
+        issue_key=req.dependent_issue_key,
+        run_id=req.execution_id or req.dependent_issue_key,
+        scope="link",
+    )
+    backend.link(
+        req.dependent_issue_key,
+        req.blocking_issue_key,
+        relationship=req.relationship,
+    )
+    return RecordDependencyLinkResult(linked=True, detail=req.blocking_issue_key)
 
 
 @activity.defn

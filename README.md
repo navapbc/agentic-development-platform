@@ -76,6 +76,7 @@ Two binaries live under `vendor/bin` and are provisioned outside the Python inst
 | Review (rebar) | `REBAR_LLM_*`, `REVIEW_ATTESTATION_SECRET` | Point at LiteLLM, set an attestation secret |
 | Backends | `TICKET_BACKEND`, `SOURCE_CONTROL_BACKEND`, `SOURCE_CONTROL_LOCAL_*` | Select the ticket and source-control backends. Defaults are Jira and GitHub. See [Ticket and source-control backends](#ticket-and-source-control-backends) |
 | Admission | `MAX_CONCURRENT_RUNS`, `EXECUTION_ORPHAN_GRACE_SECONDS` | Cap on runs in flight and the grace window before a dead run's slot is reclaimed. Defaults work locally |
+| Dependency discovery | `DEPENDENCY_DETECTION_ENABLED`, `DEPENDENCY_REPLAN_ATTEMPTS` | Enable cross-ticket dependency discovery and set the re-plan attempt cap. Defaults to off. See [Cross-ticket dependency discovery](#cross-ticket-dependency-discovery) |
 | Integration tokens | `GITHUB_TOKEN`, `JIRA_API_TOKEN`, `JIRA_PAT` | The secrets named by `token_ref` in `github.yaml` and `jira.yaml`. See [Integration credentials](#integration-credentials) |
 | Jira tooling | `JIRA_ACLI_PATH`, `ACLI_VERSION`, `ACLI_DOWNLOAD_URL`, `ACLI_SHA256` | Path and provisioning for the vendored acli binary |
 | Policy and observability | `OPA_URL`, `LANGFUSE_*`, `OTEL_EXPORTER_OTLP_ENDPOINT` | Defaults work locally |
@@ -187,7 +188,13 @@ Set `SOURCE_CONTROL_BACKEND=local` to deliver changes to a git folder on disk in
 
 A local-backend run has no merge webhook, so an operator completes it. When the run reaches the promoted branch it parks at `AWAITING_PR_CLOSE`. Run `inv operator-done --workflow-id ID --repo REPO --branch agent/<task_id>` to verify the published artifacts and signal completion, which advances the ticket to its terminal status. Add `--closed-unmerged` to complete as closed-unmerged rather than merged. `SOURCE_CONTROL_LOCAL_OPERATORS` is the comma-separated allowlist of operators authorized to run the command, matched against the operating system account, and the workflow id prints when the pipeline starts.
 
+### Cross-ticket dependency discovery
 
+Two tickets admitted together can turn out to depend on each other even when neither ticket declares it. Set `DEPENDENCY_DETECTION_ENABLED=true` to have a run detect during planning whether its change depends on another in-flight run, through file-impact overlap and unresolved-symbol references against the runs still in flight. On a hit the run records the dependency on the ticket store, pauses on a dependency checkpoint without holding compute, and resumes only once the blocking ticket reaches certified terminal completion. On resume it re-captures its base and re-plans against the updated tree, then re-verifies. A dependency-cycle guard fails a mutual dependency rather than looping, and `DEPENDENCY_REPLAN_ATTEMPTS` bounds the re-plan attempts before a run whose dependency stays unresolved fails with a recorded reason.
+
+Detection is off by default, so a deployment that does not set the flag behaves exactly as before. Detection is active only for a ticket backend that carries a dependency graph, which the rebar backend does. Jira support is planned. See [docs/plans/2026-09-11-1410-feat-jira-dependency-backend-plan.md](docs/plans/2026-09-11-1410-feat-jira-dependency-backend-plan.md).
+
+## Bedrock connectivity
 
 `inv tunnel-start` and `inv connectivity-check` dispatch to the provider named by `BEDROCK_CONNECTIVITY_PROVIDER`. Every provider satisfies the same reachability contract, so the platform code runs unchanged when you swap providers. Every path terminates at a private endpoint, so inference stays inside the compliance boundary. There is no public-endpoint provider.
 

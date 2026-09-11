@@ -6,6 +6,7 @@ from services.integration.tickets.backend import (
     JIRA,
     REBAR,
     TICKET_BACKENDS,
+    DependencyBackend,
     TicketBackend,
 )
 from services.integration.tickets.factory import (
@@ -19,6 +20,7 @@ __all__ = [
     "JIRA",
     "REBAR",
     "TICKET_BACKENDS",
+    "DependencyBackend",
     "TicketBackend",
     "build_ticket_backend",
     "build_ticket_backend_for_issue",

@@ -4,7 +4,7 @@ This roadmap groups the remaining platform work into versions. The authoritative
 
 Two features have dedicated implementation plans already. The rest link to their entry in the roadmap plan.
 
-Total remaining scope is roughly 151 to 187 hours across 20 features.
+Total remaining scope is roughly 163 to 207 hours across 21 features.
 
 ## v0.1.0 Pluggable ticket and source-control backends
 
@@ -15,6 +15,7 @@ Goal. A deployment can track work in a non-Jira tracker and target a non-GitHub 
 |---|---|---|
 | Pluggable ticket-tracker and source-control backends | 32-48h (low) | [plan](docs/plans/2026-09-02-2022-feat-pluggable-ticket-source-control-backends-plan.md) |
 | Cross-ticket dependency discovery and re-plan | 16-24h (low) | [plan](docs/plans/2026-09-03-1417-feat-cross-ticket-dependency-discovery-plan.md) |
+| Cross-ticket dependency discovery on Jira | 12-20h (low) | [plan](docs/plans/2026-09-11-1410-feat-jira-dependency-backend-plan.md) |
 
 ## v0.2.0 rebar review integration
 

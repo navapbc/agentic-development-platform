@@ -12,7 +12,7 @@ from services.orchestration.temporal_activities.planning import (
 
 
 def test_gather_repo_context_renders_summary(monkeypatch):
-    async def fake_fetch(repo, commit, focus):
+    async def fake_fetch(repo, commit, focus, detail=""):
         return {
             "repository": repo,
             "indexed_commit": commit,

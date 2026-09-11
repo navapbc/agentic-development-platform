@@ -81,7 +81,7 @@ class _FakeSettings:
 
 
 class _FakeService:
-    def context_package(self, repo, focus):
+    def context_package(self, repo, focus, detail=""):
         return ContextPackage(
             focus=focus,
             symbols=(),

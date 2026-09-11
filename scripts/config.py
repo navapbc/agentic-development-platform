@@ -67,7 +67,7 @@ class Settings(BaseSettings):
     )
     @classmethod
     def _blank_optional_int_to_default(cls, value: object, info: ValidationInfo) -> object:
-        if value is None or value == "":
+        if info.field_name is not None and (value is None or value == ""):
             return cls.model_fields[info.field_name].default
         return value
 
@@ -138,6 +138,9 @@ class Settings(BaseSettings):
 
     max_concurrent_runs: int = 4
     execution_orphan_grace_seconds: int = 120
+
+    dependency_detection_enabled: bool = False
+    dependency_replan_attempts: int = 3
 
     def repo_intelligence_registry(self) -> dict[str, tuple[str, str | None]]:
         """Parse configured repositories into a name to (root, commit) mapping."""

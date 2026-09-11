@@ -19,6 +19,7 @@ class ContextRequest:
     repo: str
     commit: str = ""
     focus: str = ""
+    detail: str = ""
     execution_id: str | None = None
     task_id: str | None = None
 
@@ -39,7 +40,7 @@ async def gather_repo_context(req: ContextRequest) -> ContextResult:
         attributes={"repo": req.repo, "commit": req.commit},
     ) as span:
         started = time.monotonic()
-        package = await fetch_context_package(req.repo, req.commit, req.focus)
+        package = await fetch_context_package(req.repo, req.commit, req.focus, req.detail)
         warm_latency_ms = (time.monotonic() - started) * 1000.0
         if span is not None:
             span.set_attribute("context.warm_latency_ms", round(warm_latency_ms, 2))

@@ -66,6 +66,7 @@ class Handler(BaseHTTPRequestHandler):
         repo = payload.get("repo")
         focus = payload.get("focus")
         commit = payload.get("commit", "")
+        detail = payload.get("detail", "")
         if not repo or not focus:
             self._respond(400, {"error": "repo and focus are required"})
             return
@@ -77,7 +78,7 @@ class Handler(BaseHTTPRequestHandler):
         if service is None:
             self._respond(503, {"error": "repository intelligence not configured"})
             return
-        package = service.context_package(RepoRef(repo, commit), focus)
+        package = service.context_package(RepoRef(repo, commit), focus, detail)
         self._respond(200, context_package_to_dict(package))
 
     def _warm(self) -> None:

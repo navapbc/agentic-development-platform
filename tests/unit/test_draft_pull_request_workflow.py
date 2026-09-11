@@ -31,6 +31,16 @@ from services.orchestration.temporal_activities.checks import (
     RunChecksRequest,
     RunChecksResult,
 )
+from services.orchestration.temporal_activities.dependency import (
+    CaptureBaseHeadRequest,
+    CaptureBaseHeadResult,
+    CheckDependencyCycleRequest,
+    CheckDependencyCycleResult,
+    DetectDependencyRequest,
+    DetectDependencyResult,
+    SignalDependencyReadyRequest,
+    SignalDependencyReadyResult,
+)
 from services.orchestration.temporal_activities.gates import (
     ClassifyTestFailuresRequest,
     EvaluateGateRequest,
@@ -79,6 +89,8 @@ from services.orchestration.temporal_activities.pull_request import (
     ReadStatusResult,
     RecordApprovalRequest,
     RecordApprovalResult,
+    RecordDependencyLinkRequest,
+    RecordDependencyLinkResult,
     UnparkTaskRequest,
 )
 from services.orchestration.temporal_activities.repair import (
@@ -107,6 +119,8 @@ from services.orchestration.temporal_workflows.draft_pull_request import (
     _REPAIR_STRIDE,
     _SEQUENCE_STRIDE,
     CI_FAILED,
+    DEPENDENCY_CYCLE,
+    DEPENDENCY_UNRESOLVED,
     EXISTING_PR_REUSED,
     PLAN_REJECTED,
     POLICY_DENIED,
@@ -657,6 +671,261 @@ async def test_finalize_code_defect_parks_then_resumes_and_completes():
     assert len(commits) == 1
     assert commits[0].sequence == 102
     assert len(pr_opens) == 1
+
+
+async def test_dependency_detected_parks_then_resumes_and_completes():
+    commits: list[CommitPushRequest] = []
+    pr_opens: list[OpenPrRequest] = []
+    linkbacks: list[LinkbackRequest] = []
+    activities = _make_activities(None, 1, commits, pr_opens, linkbacks)
+    calls = {"detect": 0, "link": 0, "signal": 0, "recapture": 0}
+
+    @activity.defn(name="detect_dependency")
+    async def fake_detect(req: DetectDependencyRequest) -> DetectDependencyResult:
+        calls["detect"] += 1
+        if calls["detect"] == 1:
+            return DetectDependencyResult(
+                detected=True,
+                active=True,
+                blocking_task_id="T-2",
+                blocking_execution_id="exec-2",
+                reason="file_overlap",
+                overlap=["feature.py"],
+            )
+        return DetectDependencyResult(detected=False, active=True)
+
+    @activity.defn(name="record_dependency_link")
+    async def fake_link(req: RecordDependencyLinkRequest) -> RecordDependencyLinkResult:
+        calls["link"] += 1
+        return RecordDependencyLinkResult(linked=True, detail=req.blocking_issue_key)
+
+    @activity.defn(name="signal_dependency_ready")
+    async def fake_signal(req: SignalDependencyReadyRequest) -> SignalDependencyReadyResult:
+        calls["signal"] += 1
+        return SignalDependencyReadyResult(0)
+
+    @activity.defn(name="capture_base_head")
+    async def fake_capture(req: CaptureBaseHeadRequest) -> CaptureBaseHeadResult:
+        calls["recapture"] += 1
+        return CaptureBaseHeadResult(base_sha="b" * 40)
+
+    @activity.defn(name="check_dependency_cycle")
+    async def fake_cycle(req: CheckDependencyCycleRequest) -> CheckDependencyCycleResult:
+        return CheckDependencyCycleResult(is_cycle=False)
+
+    activities = [
+        *activities,
+        fake_detect,
+        fake_link,
+        fake_signal,
+        fake_capture,
+        fake_cycle,
+    ]
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with Worker(
+            env.client,
+            task_queue=task_queue,
+            workflows=[
+                DraftPullRequestWorkflow,
+                ImplementationWorkflow,
+                BranchSyncWorkflow,
+                PullRequestWorkflow,
+                PlanReviewWorkflow,
+            ],
+            workflow_runner=SandboxedWorkflowRunner(
+                restrictions=SandboxRestrictions.default.with_passthrough_modules("beartype")
+            ),
+            activities=activities,
+        ):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                DraftPullRequestInput(
+                    task_id="T-1",
+                    execution_id="exec-1",
+                    repo="agentic-demo-service",
+                    base="main",
+                    base_sha="a" * 40,
+                    task="Implement the change",
+                    issue_key="T-1",
+                    file_impact=["feature.py"],
+                    stored_issue={"summary": "Implement the change"},
+                    run_planning=True,
+                    run_dependency_detection=True,
+                ),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+
+            state: dict[str, str] = {}
+            for _ in range(80):
+                state = await handle.query(DraftPullRequestWorkflow.suspension_state)
+                if state.get("reason") == SuspendReason.AWAITING_DEPENDENCY.value:
+                    break
+                await asyncio.sleep(0.05)
+
+            assert state["reason"] == SuspendReason.AWAITING_DEPENDENCY.value
+            assert state["resume_on"] == ResumeOn.DEPENDENCY_READY.value
+            assert state["detail"] == "T-2"
+
+            await handle.signal(RESUME_SIGNAL, ResumeOn.DEPENDENCY_READY.value)
+            result = await handle.result()
+
+    assert result.status == PR_PROMOTED
+    assert calls["detect"] == 2
+    assert calls["link"] == 1
+    assert calls["recapture"] == 1
+
+
+async def test_dependency_cycle_fails_the_run():
+    activities = _make_activities(None, 1, [], [], [])
+
+    @activity.defn(name="detect_dependency")
+    async def fake_detect(req: DetectDependencyRequest) -> DetectDependencyResult:
+        return DetectDependencyResult(
+            detected=True,
+            active=True,
+            blocking_task_id="T-2",
+            blocking_execution_id="exec-2",
+            reason="file_overlap",
+            overlap=["feature.py"],
+        )
+
+    @activity.defn(name="record_dependency_link")
+    async def fake_link(req: RecordDependencyLinkRequest) -> RecordDependencyLinkResult:
+        return RecordDependencyLinkResult(linked=True)
+
+    @activity.defn(name="signal_dependency_ready")
+    async def fake_signal(req: SignalDependencyReadyRequest) -> SignalDependencyReadyResult:
+        return SignalDependencyReadyResult(0)
+
+    @activity.defn(name="capture_base_head")
+    async def fake_capture(req: CaptureBaseHeadRequest) -> CaptureBaseHeadResult:
+        return CaptureBaseHeadResult(base_sha="b" * 40)
+
+    @activity.defn(name="check_dependency_cycle")
+    async def fake_cycle(req: CheckDependencyCycleRequest) -> CheckDependencyCycleResult:
+        return CheckDependencyCycleResult(is_cycle=True)
+
+    activities = [*activities, fake_detect, fake_link, fake_signal, fake_capture, fake_cycle]
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with Worker(
+            env.client,
+            task_queue=task_queue,
+            workflows=[
+                DraftPullRequestWorkflow,
+                ImplementationWorkflow,
+                BranchSyncWorkflow,
+                PullRequestWorkflow,
+                PlanReviewWorkflow,
+            ],
+            workflow_runner=SandboxedWorkflowRunner(
+                restrictions=SandboxRestrictions.default.with_passthrough_modules("beartype")
+            ),
+            activities=activities,
+        ):
+            result = await env.client.execute_workflow(
+                DraftPullRequestWorkflow.run,
+                DraftPullRequestInput(
+                    task_id="T-1",
+                    execution_id="exec-1",
+                    repo="agentic-demo-service",
+                    base="main",
+                    base_sha="a" * 40,
+                    task="Implement the change",
+                    issue_key="T-1",
+                    file_impact=["feature.py"],
+                    stored_issue={"summary": "Implement the change"},
+                    run_planning=True,
+                    run_dependency_detection=True,
+                ),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+
+    assert result.status == DEPENDENCY_CYCLE
+
+
+async def test_dependency_replans_exhausted_fails_the_run():
+    activities = _make_activities(None, 1, [], [], [])
+
+    @activity.defn(name="detect_dependency")
+    async def fake_detect(req: DetectDependencyRequest) -> DetectDependencyResult:
+        return DetectDependencyResult(
+            detected=True,
+            active=True,
+            blocking_task_id="T-2",
+            blocking_execution_id="exec-2",
+            reason="file_overlap",
+            overlap=["feature.py"],
+        )
+
+    @activity.defn(name="record_dependency_link")
+    async def fake_link(req: RecordDependencyLinkRequest) -> RecordDependencyLinkResult:
+        return RecordDependencyLinkResult(linked=True)
+
+    @activity.defn(name="signal_dependency_ready")
+    async def fake_signal(req: SignalDependencyReadyRequest) -> SignalDependencyReadyResult:
+        return SignalDependencyReadyResult(0)
+
+    @activity.defn(name="capture_base_head")
+    async def fake_capture(req: CaptureBaseHeadRequest) -> CaptureBaseHeadResult:
+        return CaptureBaseHeadResult(base_sha="b" * 40)
+
+    @activity.defn(name="check_dependency_cycle")
+    async def fake_cycle(req: CheckDependencyCycleRequest) -> CheckDependencyCycleResult:
+        return CheckDependencyCycleResult(is_cycle=False)
+
+    activities = [*activities, fake_detect, fake_link, fake_signal, fake_capture, fake_cycle]
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with Worker(
+            env.client,
+            task_queue=task_queue,
+            workflows=[
+                DraftPullRequestWorkflow,
+                ImplementationWorkflow,
+                BranchSyncWorkflow,
+                PullRequestWorkflow,
+                PlanReviewWorkflow,
+            ],
+            workflow_runner=SandboxedWorkflowRunner(
+                restrictions=SandboxRestrictions.default.with_passthrough_modules("beartype")
+            ),
+            activities=activities,
+        ):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                DraftPullRequestInput(
+                    task_id="T-1",
+                    execution_id="exec-1",
+                    repo="agentic-demo-service",
+                    base="main",
+                    base_sha="a" * 40,
+                    task="Implement the change",
+                    issue_key="T-1",
+                    file_impact=["feature.py"],
+                    stored_issue={"summary": "Implement the change"},
+                    run_planning=True,
+                    run_dependency_detection=True,
+                    max_dependency_replans=1,
+                ),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+            for _ in range(80):
+                state = await handle.query(DraftPullRequestWorkflow.suspension_state)
+                if state.get("reason") == SuspendReason.AWAITING_DEPENDENCY.value:
+                    break
+                await asyncio.sleep(0.05)
+            await handle.signal(RESUME_SIGNAL, ResumeOn.DEPENDENCY_READY.value)
+            result = await handle.result()
+
+    assert result.status == DEPENDENCY_UNRESOLVED
 
 
 async def test_park_mirrors_jira_status_and_restores_on_resume():
