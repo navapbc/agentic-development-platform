@@ -104,18 +104,10 @@ def test_file_overlap_takes_precedence_over_symbol():
 
 
 class _CapableBackend:
-    def __init__(self, impacts: dict[str, tuple[str, ...]] | None = None) -> None:
-        self.impacts: dict[str, tuple[str, ...]] = dict(impacts or {})
-        self.recorded: dict[str, tuple[str, ...]] = {}
-
     def link(self, from_issue: str, to_issue: str, *, relationship: str) -> None: ...
 
-    def record_file_impact(self, issue_key: str, paths) -> None:
-        self.recorded[issue_key] = tuple(paths)
-        self.impacts[issue_key] = tuple(paths)
-
-    def read_file_impact(self, issue_key: str) -> tuple[str, ...]:
-        return self.impacts.get(issue_key, ())
+    def dependency_graph_active(self) -> bool:
+        return True
 
     def declared_dependencies(self, issue_key: str) -> tuple[str, ...]:
         return ()
@@ -127,6 +119,17 @@ class _CapableBackend:
 class _PlainBackend:
     def get_issue(self, issue_key: str) -> dict:
         return {}
+
+
+class _FakeStore:
+    def __init__(self, impacts: dict[str, tuple[str, ...]] | None = None) -> None:
+        self.impacts: dict[str, tuple[str, ...]] = dict(impacts or {})
+
+    async def write(self, task_id: str, paths, execution_id: str) -> None:
+        self.impacts[task_id] = tuple(paths)
+
+    async def read(self, task_id: str) -> tuple[str, ...]:
+        return self.impacts.get(task_id, ())
 
 
 class _Exec:
@@ -145,9 +148,10 @@ def _seeder(execs):
     return _FakeSeeder
 
 
-def _patch(monkeypatch, backend, execs):
+def _patch(monkeypatch, backend, execs, store=None):
     from services.orchestration.temporal_activities import dependency as dep
 
+    store = store or _FakeStore()
     monkeypatch.setattr(
         "services.integration.tickets.build_ticket_backend_for_issue",
         lambda issue_key: backend,
@@ -155,12 +159,16 @@ def _patch(monkeypatch, backend, execs):
     monkeypatch.setattr(
         "services.orchestration.intake_runtime.PostgresExecutionSeeder", _seeder(execs)
     )
-    return dep
+    monkeypatch.setattr(
+        "services.orchestration.file_impact_store.FileImpactStore", lambda: store
+    )
+    return dep, store
 
 
 async def test_activity_detects_and_publishes(monkeypatch):
-    backend = _CapableBackend(impacts={"T2": ("portal/src/a.ts",)})
-    dep = _patch(monkeypatch, backend, [_Exec("e2", "T2")])
+    store = _FakeStore(impacts={"T2": ("portal/src/a.ts",)})
+    backend = _CapableBackend()
+    dep, store = _patch(monkeypatch, backend, [_Exec("e2", "T2")], store=store)
     result = await dep.detect_dependency(
         dep.DetectDependencyRequest(
             repo="archive-massgov-pfml",
@@ -174,11 +182,11 @@ async def test_activity_detects_and_publishes(monkeypatch):
     assert result.active is True
     assert result.blocking_task_id == "T2"
     assert result.reason == FILE_OVERLAP
-    assert backend.recorded["T1"] == ("portal/src/a.ts",)
+    assert store.impacts["T1"] == ("portal/src/a.ts",)
 
 
 async def test_activity_without_capability_is_inactive(monkeypatch):
-    dep = _patch(monkeypatch, _PlainBackend(), [])
+    dep, _store = _patch(monkeypatch, _PlainBackend(), [])
     result = await dep.detect_dependency(
         dep.DetectDependencyRequest(
             repo="r", task_id="T1", execution_id="e1", issue_key="T1"
@@ -189,8 +197,9 @@ async def test_activity_without_capability_is_inactive(monkeypatch):
 
 
 async def test_activity_excludes_self(monkeypatch):
-    backend = _CapableBackend(impacts={"T1": ("portal/src/a.ts",)})
-    dep = _patch(monkeypatch, backend, [_Exec("e1", "T1")])
+    store = _FakeStore(impacts={"T1": ("portal/src/a.ts",)})
+    backend = _CapableBackend()
+    dep, store = _patch(monkeypatch, backend, [_Exec("e1", "T1")], store=store)
     result = await dep.detect_dependency(
         dep.DetectDependencyRequest(
             repo="r",
@@ -214,10 +223,8 @@ class _ProducerBackend:
 
     def link(self, from_issue: str, to_issue: str, *, relationship: str) -> None: ...
 
-    def record_file_impact(self, issue_key: str, paths) -> None: ...
-
-    def read_file_impact(self, issue_key: str) -> tuple[str, ...]:
-        return ()
+    def dependency_graph_active(self) -> bool:
+        return True
 
     def declared_dependencies(self, issue_key: str) -> tuple[str, ...]:
         return ()
@@ -308,10 +315,8 @@ class _CycleBackend:
 
     def link(self, from_issue: str, to_issue: str, *, relationship: str) -> None: ...
 
-    def record_file_impact(self, issue_key: str, paths) -> None: ...
-
-    def read_file_impact(self, issue_key: str) -> tuple[str, ...]:
-        return ()
+    def dependency_graph_active(self) -> bool:
+        return True
 
     def declared_dependencies(self, issue_key: str) -> tuple[str, ...]:
         return self._deps.get(issue_key, ())

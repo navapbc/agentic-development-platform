@@ -14,6 +14,11 @@
 # names to one repository or a list, and a ticket routes to the union of its components' repos.
 # An explicit repos: marker in the description overrides it, and a component with no mapping is
 # ignored. It resolves per project with the default as the fallback.
+# dependency_link_type names an existing Jira issue link type (for example "Blocks") used to
+# record a discovered cross-ticket dependency, where the blocking issue blocks the dependent
+# issue. It resolves per project with the default as the fallback. Leaving it unset turns off
+# dependency recording for that project, so the run publishes its touch set but records nothing
+# and pauses on nothing. Projects that share a repository must use the same link type.
 
 config_version: 1
 
@@ -37,6 +42,7 @@ default:
   board: AGENTDEV
   default_repo: agentic-demo-service
   intake_label: adp
+  dependency_link_type: Blocks
   component_repos:
     Backend: agentic-demo-service
     # Frontend: agentic-demo-ts

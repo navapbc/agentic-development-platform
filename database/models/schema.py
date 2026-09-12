@@ -232,6 +232,16 @@ usage_metrics = Table(
 )
 
 
+run_file_impact = Table(
+    "run_file_impact",
+    metadata,
+    Column("task_id", String(64), primary_key=True),
+    Column("execution_id", String(64), nullable=False),
+    Column("paths", JSON, nullable=False),
+    Column("updated_at", DateTime(timezone=True), server_default=func.now(), onupdate=func.now()),
+)
+
+
 __all__ = [
     "SCHEMA",
     "metadata",
@@ -245,4 +255,5 @@ __all__ = [
     "side_effects",
     "suspended_flows",
     "usage_metrics",
+    "run_file_impact",
 ]

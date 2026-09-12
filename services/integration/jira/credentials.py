@@ -54,6 +54,7 @@ class JiraProjectCredential:
     status_flow: StatusFlow = field(default_factory=StatusFlow)
     default_repo: str = ""
     intake_label: str = ""
+    dependency_link_type: str = ""
     component_repos: ComponentRepos = field(default_factory=ComponentRepos)
 
 
@@ -73,6 +74,7 @@ class _Identity:
     flow: StatusFlow = field(default_factory=StatusFlow)
     default_repo: str = ""
     intake_label: str = ""
+    dependency_link_type: str = ""
     component_repos: ComponentRepos = field(default_factory=ComponentRepos)
 
 
@@ -86,6 +88,7 @@ class _ProjectOverride:
     flow: StatusFlow | None = None
     default_repo: str | None = None
     intake_label: str | None = None
+    dependency_link_type: str | None = None
     component_repos: ComponentRepos | None = None
 
 
@@ -99,6 +102,7 @@ class _Effective:
     flow: StatusFlow
     default_repo: str
     intake_label: str
+    dependency_link_type: str
     component_repos: ComponentRepos
 
 
@@ -229,6 +233,7 @@ def _parse_default(raw: Mapping[str, object], sites: dict[str, _Site]) -> _Ident
         flow=_parse_flow(default_raw.get("flow"), "default") or StatusFlow(),
         default_repo=parsed.get("default_repo", ""),
         intake_label=parsed.get("intake_label", ""),
+        dependency_link_type=parsed.get("dependency_link_type", ""),
         component_repos=_parse_component_repos(default_raw.get("component_repos"), "default")
         or ComponentRepos(),
     )
@@ -257,6 +262,7 @@ def _parse_projects(
             flow=_parse_flow(fields.get("flow"), f"project {name}"),
             default_repo=parsed.get("default_repo"),
             intake_label=parsed.get("intake_label"),
+            dependency_link_type=parsed.get("dependency_link_type"),
             component_repos=_parse_component_repos(
                 fields.get("component_repos"), f"project {name}"
             ),
@@ -328,6 +334,7 @@ class JiraCredentialResolver:
             status_flow=effective.flow,
             default_repo=effective.default_repo,
             intake_label=effective.intake_label,
+            dependency_link_type=effective.dependency_link_type,
             component_repos=effective.component_repos,
         )
 
@@ -376,6 +383,9 @@ class JiraCredentialResolver:
         intake_label = (override.intake_label if override else None) or (
             default.intake_label if default else ""
         )
+        dependency_link_type = (override.dependency_link_type if override else None) or (
+            default.dependency_link_type if default else ""
+        )
         if override is not None and override.component_repos is not None:
             component_repos = override.component_repos
         elif default is not None:
@@ -391,6 +401,7 @@ class JiraCredentialResolver:
             flow,
             default_repo or "",
             intake_label or "",
+            dependency_link_type or "",
             component_repos,
         )
 

@@ -388,7 +388,7 @@ async def record_dependency_link(
     if not req.dependent_issue_key or not req.blocking_issue_key:
         return RecordDependencyLinkResult(linked=False, detail="missing ticket")
     backend = _build_ticket_backend(req.dependent_issue_key)
-    if not isinstance(backend, DependencyBackend):
+    if not isinstance(backend, DependencyBackend) or not backend.dependency_graph_active():
         return RecordDependencyLinkResult(
             linked=False, detail="backend has no dependency capability"
         )

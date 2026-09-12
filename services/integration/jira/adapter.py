@@ -38,12 +38,19 @@ class _VendorJiraClient(Protocol):
         self, jql: str, start_at: int = 0, max_results: int = 50
     ) -> list[dict[str, Any]]: ...
 
+    def set_relationship(
+        self, from_key: str, to_key: str, link_type: str = "Blocks", /
+    ) -> dict[str, Any]: ...
+
+    def get_issue_links(self, remote_id: str, /) -> list[dict[str, Any]]: ...
+
 
 @dataclass(frozen=True)
 class JiraAdapter:
     source: str
     client: _VendorJiraClient
     project: str = ""
+    dependency_link_type: str = ""
 
     def get_issue(self, issue_key: str) -> dict[str, Any]:
         return self.client.get_issue(issue_key)
@@ -102,6 +109,36 @@ class JiraAdapter:
 
         return render_linkback(document, source=self.source)
 
+    def dependency_graph_active(self) -> bool:
+        return bool(self.dependency_link_type)
+
+    def link(self, from_issue: str, to_issue: str, *, relationship: str = "depends_on") -> None:
+        if not self.dependency_link_type:
+            return
+        if to_issue in self.declared_dependencies(from_issue):
+            return
+        self.client.set_relationship(to_issue, from_issue, self.dependency_link_type)
+
+    def declared_dependencies(self, issue_key: str) -> tuple[str, ...]:
+        return self._linked_keys(issue_key, "inwardIssue")
+
+    def dependents(self, issue_key: str) -> tuple[str, ...]:
+        return self._linked_keys(issue_key, "outwardIssue")
+
+    def _linked_keys(self, issue_key: str, side: str) -> tuple[str, ...]:
+        if not self.dependency_link_type:
+            return ()
+        keys: set[str] = set()
+        for link in self.client.get_issue_links(issue_key):
+            link_type = (link.get("type") or {}).get("name")
+            if link_type != self.dependency_link_type:
+                continue
+            linked = link.get(side) or {}
+            key = linked.get("key")
+            if key:
+                keys.add(str(key))
+        return tuple(sorted(keys))
+
 
 def _build_datacenter_client(cred: JiraProjectCredential) -> _VendorJiraClient:
     ensure_engine_on_path()
@@ -156,7 +193,12 @@ def build_jira_adapter(
         client = _build_datacenter_client(cred)
     else:
         client = _build_cloud_client(cred, acli_path=resolved.jira_acli_path)
-    return JiraAdapter(source=cred.auth_mode, client=client, project=cred.project)
+    return JiraAdapter(
+        source=cred.auth_mode,
+        client=client,
+        project=cred.project,
+        dependency_link_type=cred.dependency_link_type,
+    )
 
 
 def build_jira_adapter_for_issue(

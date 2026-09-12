@@ -35,10 +35,10 @@ Detection needs two inputs. It needs each in-flight run's predicted file touch s
 
 - R1. A run's predicted touch set is stored in a platform-owned table keyed by ticket id, written by the run and readable by any other run, independent of the ticket backend.
 - R2. Detection reads its own and its peers' touch sets from the platform store rather than the ticket backend, and its behavior on rebar is unchanged.
-- R3. The ticket backend exposes a dependency-graph capability of `link`, `declared_dependencies`, and `dependents`. rebar implements it over its native links as today. Jira implements it over Jira issue links.
+- R3. The ticket backend exposes a dependency-graph capability of `link`, `declared_dependencies`, `dependents`, and a `dependency_graph_active` predicate that reports whether the graph is usable. rebar implements it over its native links and reports active unconditionally. Jira implements it over Jira issue links and reports active only when a dependency link type is configured.
 - R4. Recording a dependency on Jira creates an issue link of a configured link type, so the dependent issue is blocked by the blocking issue and the relationship is visible in Jira and to the readiness query.
 - R5. Reading a Jira ticket's blockers returns the issues linked as blocking it, and reading its dependents returns the issues it is linked as blocking, both parsed from the issue's links.
-- R6. Detection is active for a backend that implements the dependency-graph capability. A Jira project with no configured dependency link type runs detection with empty graph reads, so it records and pauses on nothing.
+- R6. A run always publishes its own predicted touch set to the platform store, whatever the backend. Detection, recording, and pausing run only when the run's backend implements the dependency-graph capability and reports it active. A Jira project with no configured dependency link type publishes its touch set but records nothing and pauses on nothing.
 - R7. Every behavior proven for rebar, detection, recording, pause, resume, re-base, re-plan, cycle guard, and attempt cap, holds on Jira through the same orchestration code with no branch on backend.
 
 ### Scope Boundaries
@@ -47,12 +47,14 @@ Detection needs two inputs. It needs each in-flight run's predicted file touch s
 - The touch set stored in the database is the predicted set from the context package plus the ticket's declared impact, the same input the rebar path computes today.
 - Jira link-type administration is out of scope. The deployment configures the name of an existing link type. The plan does not create link types in Jira.
 - Mirroring the touch set into rebar's native file-impact store is out of scope. The database store is the single source of truth for detection.
+- Cross-project resume with mixed link-type configuration is out of scope. The dependency link type resolves per project with a default fallback, so a deployment is expected to use one link type across projects that share a repository. A mixed configuration where a blocker's project has no link type leaves that blocker unable to report its dependents on completion, so a dependent recorded against it is not auto-resumed. Projects that share a repository must share a dependency link type.
 
 ### Resolved Decisions
 
 - Resolved in planning. The touch set lives in a new `run_file_impact` table in the `agent_platform` schema, keyed by ticket id, with the paths and the writing execution id and an updated timestamp. A `FileImpactStore` reads and writes it. Detection uses the store for both backends, so the `record_file_impact` and `read_file_impact` methods leave the `DependencyBackend` capability.
-- Resolved in planning. `DependencyBackend` narrows to the graph operations `link`, `declared_dependencies`, and `dependents`. rebar keeps its implementation. Jira gains one. Detection resolves the graph through the ticket backend and the touch set through the store, and it is active when the ticket backend implements the graph capability.
-- Resolved in planning. The Jira link direction maps `link(dependent, blocking)` to an issue link where the blocking issue blocks the dependent issue, using the configured link type. `declared_dependencies` reads inward blocking links, and `dependents` reads outward blocking links, from the issue's links field already returned by `get_issue`.
+- Resolved in planning. `DependencyBackend` narrows to the graph operations `link`, `declared_dependencies`, and `dependents`, plus a `dependency_graph_active` predicate. rebar keeps its implementation and reports active unconditionally. Jira gains one and reports active only when a dependency link type is configured. Detection resolves the graph through the ticket backend and the touch set through the store, and it detects, records, and pauses only when the backend implements the capability and reports it active.
+- Resolved in planning. Activation is one authoritative signal, not the structural presence of the capability. The three dependency activities gate their side effects on `isinstance(backend, DependencyBackend) and backend.dependency_graph_active()`. Publishing the touch set is unconditional and precedes the gate, so a graph-inactive run still contributes its touch set for a graph-active peer to detect against, while it records and pauses on nothing itself. This replaces reliance on empty graph reads, which would not prevent a store-driven overlap from recording a link.
+- Resolved in planning. The Jira link direction maps `link(dependent, blocking)` to an issue link where the blocking issue blocks the dependent issue, using the configured link type. `declared_dependencies` reads inward blocking links, and `dependents` reads outward blocking links, from the issue's links field already returned by `get_issue`. The Jira adapter carries the resolved per-project link type, so `link` uses it and `dependency_graph_active` reports `True` only when it is set.
 
 ### Sources
 
@@ -72,6 +74,7 @@ Detection needs two inputs. It needs each in-flight run's predicted file touch s
 - KTD3. Implement the Jira graph over issue links, reading the links from the issue payload `get_issue` already returns and adding one client method to create a link. Governs R4, R5. Rationale: Jira issue links are the native dependency mechanism and most of the read path already exists.
 - KTD4. Gate Jira detection on a configured dependency link-type name. Governs R6. Rationale: a link type is a Jira administration artifact the deployment must name, and its absence is a safe signal to run detection without a graph.
 - KTD5. Keep the orchestration workflow and detection algorithm unchanged, routing touch-set reads to the store and graph reads to the backend behind the existing activity boundaries. Governs R7. Rationale: the shipped logic is tested, so the smallest change swaps the data sources the activities call.
+- KTD6. Gate the dependency side effects on an explicit `dependency_graph_active` predicate rather than on the structural presence of the capability. Governs R3, R6. Rationale: after Jira implements the graph methods they are always present, so `isinstance` alone cannot express the config-driven inactive state; an explicit predicate is one authoritative signal that rebar reports true and Jira reports from its configured link type, and it keeps the activity gate meaningful.
 
 ### High-Level Design
 
@@ -98,31 +101,31 @@ Approach. Add the table keyed by ticket id with the paths, the writing execution
 Test scenarios. The store round-trips a touch set. Detection over two runs finds overlap through the store. The rebar backend no longer needs a file-impact method for detection.
 Verification. `tests/unit/test_file_impact_store.py` (new), `tests/unit/test_dependency_detection.py` (updated), `inv test`.
 
-### U2. Jira issue-link client method
+### U2. Jira issue-link client access
 
-Goal. Add the ability to create a Jira issue link to the vendor client wrappers.
-Requirements. R4.
-Files. `services/integration/jira/adapter.py` (the `_VendorJiraClient` protocol and both transports gain `create_issue_link`).
-Approach. Add `create_issue_link(inward_key, outward_key, link_type)` to the Cloud and data-center clients over the issue-link REST endpoint. The read path uses the links already present in the issue payload, so only creation is new.
-Test scenarios. Creating a link posts the expected link body. A duplicate link is idempotent or tolerated.
-Verification. `tests/unit/test_jira_adapter.py` (extended), `inv test`.
+Goal. Expose the vendor Jira client's issue-link operations to the adapter.
+Requirements. R4, R5.
+Files. `services/integration/jira/adapter.py` (the `_VendorJiraClient` protocol gains `set_relationship` and `get_issue_links`).
+Approach. The vendor Cloud and data-center clients already implement `set_relationship(from_key, to_key, link_type)`, which creates a link so the from issue blocks the to issue, and `get_issue_links(issue_key)`, which returns the issue's links in REST-nested shape. Declare both on the protocol as positional-only so the two transports' differing parameter names both satisfy it. No new REST code is required.
+Test scenarios. The adapter's link path calls `set_relationship` with the blocking issue first. The read path parses `get_issue_links`.
+Verification. `tests/unit/test_jira_dependency_graph.py` (new), `inv test`.
 
 ### U3. Jira dependency-graph capability
 
-Goal. Implement `link`, `declared_dependencies`, and `dependents` on the Jira adapter.
-Requirements. R3, R4, R5.
-Files. `services/integration/jira/adapter.py` (`JiraAdapter` implements the graph methods), `services/integration/tickets/backend.py` (the narrowed `DependencyBackend`).
-Approach. `link(dependent, blocking)` creates an issue link of the configured type so the blocking issue blocks the dependent issue. `declared_dependencies(issue)` returns the keys of issues linked as blocking the issue, and `dependents(issue)` returns the keys of issues the issue is linked as blocking, both parsed from the issue links field. The adapter implements the capability only when a dependency link type is configured.
-Test scenarios. A recorded link makes the dependent report the blocker and the blocker report the dependent. An issue with no dependency links reports empty. The adapter does not implement the capability when no link type is configured.
+Goal. Implement `link`, `declared_dependencies`, `dependents`, and `dependency_graph_active` on the Jira adapter.
+Requirements. R3, R4, R5, R6.
+Files. `services/integration/jira/adapter.py` (`JiraAdapter` gains a `dependency_link_type` field and the graph methods), `services/integration/tickets/backend.py` (the narrowed `DependencyBackend` with the `dependency_graph_active` predicate), `services/integration/tickets/rebar_backend.py` (add `dependency_graph_active` returning `True`).
+Approach. `link(dependent, blocking)` calls the vendor `set_relationship(blocking, dependent, link_type)` so the blocking issue blocks the dependent issue, and is idempotent by skipping when the dependent already declares the blocker. `declared_dependencies(issue)` returns the keys of issues linked as blocking the issue, and `dependents(issue)` returns the keys of issues the issue is linked as blocking, both parsed from `get_issue_links` filtered to the configured link type. `dependency_graph_active` returns whether the adapter carries a configured link type. The adapter always defines the methods; the predicate reports whether they are usable.
+Test scenarios. A recorded link makes the dependent report the blocker and the blocker report the dependent. An issue with no dependency links reports empty. `dependency_graph_active` is true with a configured link type and false without.
 Verification. `tests/unit/test_jira_dependency_graph.py` (new), `inv test`.
 
 ### U4. Route detection through the store and the graph
 
-Goal. Make the detection, producer, and cycle activities resolve the touch set from the store and the graph from the ticket backend, for both backends.
+Goal. Make the detection, producer, and cycle activities resolve the touch set from the store and the graph from the ticket backend, for both backends, gated on one activation signal.
 Requirements. R2, R6, R7.
 Files. `services/orchestration/temporal_activities/dependency.py` (the detect, signal, and cycle activities).
-Approach. Read and write touch sets through the store, and read the graph through the ticket backend capability. Treat a backend that implements the graph capability as detection-active. Leave the workflow and the detection algorithm unchanged.
-Test scenarios. Detection with a Jira backend records a dependency and pauses. The producer signals dependents read from Jira links. The cycle guard reads the Jira graph. A Jira project with no link type runs detection with empty graph reads.
+Approach. Publish the run's own touch set to the store unconditionally, before any gate. Then treat a backend as graph-active only when `isinstance(backend, DependencyBackend) and backend.dependency_graph_active()`, and detect, record, pause, resume, and cycle-check only when active. Read peers' touch sets from the store and the graph through the ticket backend. Leave the workflow and the detection algorithm unchanged.
+Test scenarios. Detection with a Jira backend records a dependency and pauses. The producer signals dependents read from Jira links. The cycle guard reads the Jira graph. A Jira project with no link type publishes its touch set but records and pauses on nothing.
 Verification. `tests/unit/test_dependency_detection.py` (extended), `inv test`.
 
 ### U5. Jira dependency configuration

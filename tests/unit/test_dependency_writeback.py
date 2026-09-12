@@ -1,4 +1,4 @@
-"""U2: the dependency link and file-impact capability, and the link write-back."""
+"""The dependency link graph capability and the link write-back."""
 
 from __future__ import annotations
 
@@ -41,11 +41,12 @@ def test_link_is_idempotent(tmp_path):
     assert list(backend.declared_dependencies(ids[0])).count(ids[1]) == 1
 
 
-def test_file_impact_round_trips(tmp_path):
-    ids = seed_rebar_store(tmp_path, tickets=[{"title": "A"}])
+def test_file_impact_leaves_the_dependency_capability(tmp_path):
+    seed_rebar_store(tmp_path, tickets=[{"title": "A"}])
     backend = _backend(tmp_path)
-    backend.record_file_impact(ids[0], ["portal/src/a.ts", "portal/src/b.ts"])
-    assert set(backend.read_file_impact(ids[0])) == {"portal/src/a.ts", "portal/src/b.ts"}
+    assert not hasattr(backend, "record_file_impact")
+    assert not hasattr(backend, "read_file_impact")
+    assert backend.dependency_graph_active() is True
 
 
 def test_authorize_link_rejects_an_unowned_ticket():
@@ -75,10 +76,8 @@ class _CapableBackend:
     def link(self, from_issue: str, to_issue: str, *, relationship: str) -> None:
         self.links.append((from_issue, to_issue, relationship))
 
-    def record_file_impact(self, issue_key: str, paths) -> None: ...
-
-    def read_file_impact(self, issue_key: str) -> tuple[str, ...]:
-        return ()
+    def dependency_graph_active(self) -> bool:
+        return True
 
     def declared_dependencies(self, issue_key: str) -> tuple[str, ...]:
         return ()

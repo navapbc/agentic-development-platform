@@ -41,24 +41,26 @@ async def detect_dependency(req: DetectDependencyRequest) -> DetectDependencyRes
     from services.orchestration.dependency_detection import (
         detect_dependency as run_detection,
     )
+    from services.orchestration.file_impact_store import FileImpactStore
     from services.orchestration.intake_runtime import PostgresExecutionSeeder
 
     if not req.issue_key:
         return DetectDependencyResult(detected=False, active=False)
-    backend = build_ticket_backend_for_issue(req.issue_key)
-    if not isinstance(backend, DependencyBackend):
-        return DetectDependencyResult(detected=False, active=False)
 
-    declared = backend.read_file_impact(req.issue_key)
-    touch = predicted_touch_set(req.context_package, declared)
+    store = FileImpactStore()
+    touch = predicted_touch_set(req.context_package)
     symbol_files = unresolved_symbol_files(req.context_package)
-    backend.record_file_impact(req.issue_key, touch)
+    await store.write(req.task_id, touch, req.execution_id or req.task_id)
+
+    backend = build_ticket_backend_for_issue(req.issue_key)
+    if not isinstance(backend, DependencyBackend) or not backend.dependency_graph_active():
+        return DetectDependencyResult(detected=False, active=False)
 
     peers: list[PeerRun] = []
     for execution in await PostgresExecutionSeeder().list_active_executions():
         if execution.execution_id == req.execution_id or execution.task_id == req.task_id:
             continue
-        impact = backend.read_file_impact(execution.task_id)
+        impact = await store.read(execution.task_id)
         peers.append(
             PeerRun(
                 execution_id=execution.execution_id,
@@ -121,7 +123,7 @@ async def check_dependency_cycle(
     if not req.blocking_issue_key or not req.dependent_task_id:
         return CheckDependencyCycleResult(False)
     backend = build_ticket_backend_for_issue(req.blocking_issue_key)
-    if not isinstance(backend, DependencyBackend):
+    if not isinstance(backend, DependencyBackend) or not backend.dependency_graph_active():
         return CheckDependencyCycleResult(False)
     seen: set[str] = set()
     frontier = [req.blocking_task_id]
@@ -174,7 +176,7 @@ async def signal_dependency_ready(
     if not req.blocking_issue_key:
         return SignalDependencyReadyResult(0)
     backend = build_ticket_backend_for_issue(req.blocking_issue_key)
-    if not isinstance(backend, DependencyBackend):
+    if not isinstance(backend, DependencyBackend) or not backend.dependency_graph_active():
         return SignalDependencyReadyResult(0)
 
     flow = resolve_status_flow(project=project_of(req.blocking_issue_key))

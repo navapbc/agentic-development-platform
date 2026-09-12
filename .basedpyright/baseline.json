@@ -1426,6 +1426,24 @@
                 }
             }
         ],
+        "./tests/integration/test_jira_dependency_detection.py": [
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 36,
+                    "endColumn": 42,
+                    "lineCount": 1
+                }
+            },
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 36,
+                    "endColumn": 42,
+                    "lineCount": 1
+                }
+            }
+        ],
         "./tests/integration/test_promotion_policy_rego.py": [
             {
                 "code": "reportCallIssue",
@@ -1984,6 +2002,16 @@
                 "range": {
                     "startColumn": 22,
                     "endColumn": 30,
+                    "lineCount": 1
+                }
+            }
+        ],
+        "./tests/unit/test_jira_dependency_graph.py": [
+            {
+                "code": "reportArgumentType",
+                "range": {
+                    "startColumn": 36,
+                    "endColumn": 42,
                     "lineCount": 1
                 }
             }

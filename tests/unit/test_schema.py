@@ -15,6 +15,7 @@ EXPECTED_TABLES = {
     "side_effects",
     "suspended_flows",
     "usage_metrics",
+    "run_file_impact",
 }
 
 

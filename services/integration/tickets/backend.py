@@ -47,21 +47,22 @@ class TicketBackend(Protocol):
 
 @runtime_checkable
 class DependencyBackend(Protocol):
-    """Optional cross-ticket dependency operations a ticket backend may support.
+    """Optional cross-ticket dependency graph a ticket backend may support.
 
-    A backend that carries per-run file impact and a dependency graph, such as
-    the rebar store, implements this so the orchestration layer can discover and
-    record undeclared dependencies. A backend without it, such as the wrapped
-    Jira client that exposes no issue-link API, does not implement it, and
-    dependency discovery is inactive for that deployment.
+    A backend that can link two tickets, such as the rebar store or a Jira
+    deployment with a configured dependency link type, implements this so the
+    orchestration layer can record and read undeclared dependencies. The
+    per-run file touch set is platform run-state and lives in the database
+    rather than here. ``dependency_graph_active`` reports whether the graph is
+    usable, which rebar answers unconditionally and Jira answers from its
+    configured link type, so a backend without a usable graph records nothing
+    and pauses on nothing.
     """
 
     def link(self, from_issue: str, to_issue: str, *, relationship: str) -> None: ...
 
-    def record_file_impact(self, issue_key: str, paths: Sequence[str]) -> None: ...
-
-    def read_file_impact(self, issue_key: str) -> tuple[str, ...]: ...
-
     def declared_dependencies(self, issue_key: str) -> tuple[str, ...]: ...
 
     def dependents(self, issue_key: str) -> tuple[str, ...]: ...
+
+    def dependency_graph_active(self) -> bool: ...

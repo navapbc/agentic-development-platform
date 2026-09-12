@@ -187,18 +187,8 @@ class RebarTicketBackend:
             return
         rebar.link(from_issue, to_issue, relationship, repo_root=self.repo_root)
 
-    def record_file_impact(self, issue_key: str, paths: Sequence[str]) -> None:
-        import rebar
-
-        _repair_store_worktrees(self.repo_root)
-        impact = [{"path": path, "reason": "agent-platform planned change"} for path in paths]
-        rebar.set_file_impact(issue_key, impact, repo_root=self.repo_root)
-
-    def read_file_impact(self, issue_key: str) -> tuple[str, ...]:
-        import rebar
-
-        entries = rebar.get_file_impact(issue_key, repo_root=self.repo_root)
-        return tuple(str(entry.get("path") or "") for entry in entries if entry.get("path"))
+    def dependency_graph_active(self) -> bool:
+        return True
 
     def declared_dependencies(self, issue_key: str) -> tuple[str, ...]:
         return tuple(str(dep) for dep in self._deps(issue_key).get("blockers", []))
