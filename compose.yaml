@@ -10,6 +10,7 @@ x-python-service: &python-service
 services:
   postgres:
     image: postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
+    restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-platform}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-locally}
@@ -27,6 +28,7 @@ services:
 
   temporal:
     image: temporalio/auto-setup:1.29.7@sha256:f14912b699cf73015ad5c4fc18d522d4b014db90e794039214dfb7c022c2644f
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy

@@ -1,0 +1,20 @@
+# Greenfield example. Stand up a private VPC, endpoints, registry, audit trail,
+# and the jumphost from zero. Apply with:
+#   AWS_PROFILE=agentic-platform terraform apply -var-file=greenfield.tfvars
+
+region      = "us-east-1"
+name_prefix = "agentic-platform"
+
+create_network   = true
+vpc_cidr         = "10.0.0.0/16"
+new_subnet_cidrs = ["10.0.1.0/24"]
+
+create_endpoints      = true
+create_ecr_repository = true
+create_cloudtrail     = true
+
+jumphost_session_duration_seconds = 10800
+
+tags = {
+  project = "agentic-dev-platform"
+}

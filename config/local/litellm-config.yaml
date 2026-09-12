@@ -1,5 +1,5 @@
 # LiteLLM gateway config. Logical model names map to US Bedrock inference
-# profiles (Claude primary, Nova fallback), resolved under mpse-legacy.
+# profiles (Claude primary, Nova fallback), resolved under the configured AWS profile.
 
 model_list:
   - model_name: planning-model

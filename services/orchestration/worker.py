@@ -23,12 +23,15 @@ from services.orchestration.temporal_activities import (
     analyze_ci_failure,
     apply_ci_repair,
     apply_task_status,
+    capture_base_head,
+    check_dependency_cycle,
     claim_work_unit,
     classify_test_failures,
     clear_suspension,
     commit_and_push,
     count_tick,
     create_draft_pr,
+    detect_dependency,
     evaluate_gate,
     evaluate_promotion,
     find_open_pr,
@@ -39,10 +42,12 @@ from services.orchestration.temporal_activities import (
     mark_task_parked,
     persist_execution_state,
     promote_pr,
+    read_ticket_status,
     reap_orphans,
     recheck_issue,
     reconcile_intake_pass,
     record_audit_event,
+    record_dependency_link,
     record_manifest,
     record_pr_approval,
     record_suspension,
@@ -55,6 +60,7 @@ from services.orchestration.temporal_activities import (
     run_checks,
     run_implementation_stage,
     scan_change,
+    signal_dependency_ready,
     synchronize_branch,
     unmark_task_parked,
     verify_acceptance,
@@ -114,6 +120,12 @@ _ACTIVITIES = [
     mark_task_parked,
     unmark_task_parked,
     apply_task_status,
+    read_ticket_status,
+    record_dependency_link,
+    detect_dependency,
+    signal_dependency_ready,
+    capture_base_head,
+    check_dependency_cycle,
     record_pr_approval,
     promote_pr,
     reap_orphans,
@@ -186,7 +198,10 @@ def _warm_acli_auth(settings) -> None:
         CLOUD,
         build_jira_credential_resolver,
     )
+    from services.integration.tickets import JIRA, resolve_ticket_backend_name
 
+    if resolve_ticket_backend_name(settings) != JIRA:
+        return
     try:
         resolver = build_jira_credential_resolver(settings)
         for project in sorted(resolver.projects()):

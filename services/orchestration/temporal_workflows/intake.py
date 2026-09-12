@@ -26,6 +26,8 @@ class IntakeOutput:
     started: int
     duplicates: int
     held: int
+    deferred: int = 0
+    blocked: int = 0
 
 
 @workflow.defn
@@ -42,4 +44,6 @@ class IntakeWorkflow:
             started=report.started,
             duplicates=report.duplicates,
             held=report.held,
+            deferred=report.deferred,
+            blocked=report.blocked,
         )

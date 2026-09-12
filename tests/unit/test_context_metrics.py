@@ -65,7 +65,7 @@ async def test_gather_repo_context_stamps_accuracy_attributes(monkeypatch):
     memory = InMemorySpanExporter()
     assert configure_tracing("context-accuracy-test", exporter=memory) is True
 
-    async def fake_fetch(repo, commit, focus):
+    async def fake_fetch(repo, commit, focus, detail=""):
         return _package()
 
     monkeypatch.setattr(planning, "fetch_context_package", fake_fetch)

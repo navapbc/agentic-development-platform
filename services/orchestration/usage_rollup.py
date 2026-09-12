@@ -11,9 +11,12 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from database.models.schema import usage_metrics
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncEngine
 
 COST_BUDGET_EXCEEDED = "cost_budget_exceeded"
 LLM_CALLS_EXCEEDED = "llm_calls_exceeded"
@@ -148,9 +151,10 @@ def _accumulate(rows: Iterable[UsageRow]) -> Spend:
 
 def _budget_status(counted: Spend, caps: BudgetCaps) -> BudgetStatus:
     breach = ""
+    billable_tokens = max(0, counted.total_tokens - counted.cache_read_tokens)
     if counted.llm_calls > caps.max_llm_calls:
         breach = LLM_CALLS_EXCEEDED
-    elif counted.total_tokens > caps.max_tokens:
+    elif billable_tokens > caps.max_tokens:
         breach = TOKEN_BUDGET_EXCEEDED
     elif counted.cost_usd > caps.max_cost_usd:
         breach = COST_BUDGET_EXCEEDED
@@ -160,7 +164,7 @@ def _budget_status(counted: Spend, caps: BudgetCaps) -> BudgetStatus:
         max_tokens=caps.max_tokens,
         counted_cost_usd=counted.cost_usd,
         counted_llm_calls=counted.llm_calls,
-        counted_tokens=counted.total_tokens,
+        counted_tokens=billable_tokens,
         breach_reason=breach,
     )
 
@@ -249,7 +253,7 @@ def rollup_to_dict(rollup: ExecutionCostRollup) -> dict[str, object]:
     }
 
 
-async def read_usage_rows(engine: object, execution_id: str) -> list[UsageRow]:
+async def read_usage_rows(engine: AsyncEngine, execution_id: str) -> list[UsageRow]:
     """Read the recorded usage rows for one execution from the usage_metrics table."""
     from sqlalchemy import select
 

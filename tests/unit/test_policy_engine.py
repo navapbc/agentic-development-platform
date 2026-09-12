@@ -234,6 +234,9 @@ async def test_policy_input_document_uses_policy_field_names():
         "required_gates",
         "severity_counts",
         "scan_findings",
+        "allowed_projects",
+        "allowed_repos",
+        "ci_required",
     }
 
 

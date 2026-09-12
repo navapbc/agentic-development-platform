@@ -20,7 +20,10 @@ from adapters.interfaces.git_host import (
     FileContent,
     PRComment,
     PRFeedback,
+    PublishResult,
     PullRequest,
+    publish_from_pull_request,
+    reuse_from_pull_request,
 )
 from scripts.config import Settings, get_settings
 
@@ -74,6 +77,9 @@ class RealGitHost:
         if self._remote_url_for is not None:
             return self._remote_url_for(repo)
         return self._resolver.git_remote_url(repo)
+
+    def source_location(self, repo: str) -> str:
+        return self._remote_url(repo)
 
     async def _git(self, *args: str, cwd: str | None = None) -> str:
         def run() -> subprocess.CompletedProcess[str]:
@@ -246,6 +252,15 @@ class RealGitHost:
         if not found:
             return None
         return _pull_request(repo, found[0], created=False)
+
+    async def publish(
+        self, repo: str, head: str, base: str, title: str, body: str
+    ) -> PublishResult:
+        pr = await self.open_draft_pr(repo, head, base, title, body)
+        return publish_from_pull_request(repo, head, pr)
+
+    async def find_published_branch(self, repo: str, head: str) -> PublishResult | None:
+        return reuse_from_pull_request(repo, head, await self.find_open_pr(repo, head))
 
     async def read_pr_feedback(self, repo: str, number: int) -> PRFeedback:
         cred = self._credential(repo)

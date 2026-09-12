@@ -62,6 +62,29 @@ def test_non_allowlisted_project_resolves_none():
     assert resolver.projects() == {"PROJ-A"}
 
 
+def test_dependency_link_type_resolves_from_default_and_project_override():
+    raw = _config()
+    raw["default"]["dependency_link_type"] = "Blocks"
+    raw["projects"] = {"OPS": {"dependency_link_type": "Depends"}, "BARE": {}}
+    resolver = _resolver(raw, {"CORE", "OPS", "BARE"}, {"TOKEN_CLOUD": "ccc"})
+
+    core = resolver.resolve("CORE")
+    ops = resolver.resolve("OPS")
+    bare = resolver.resolve("BARE")
+
+    assert core is not None and ops is not None and bare is not None
+    assert core.dependency_link_type == "Blocks"
+    assert ops.dependency_link_type == "Depends"
+    assert bare.dependency_link_type == "Blocks"
+
+
+def test_dependency_link_type_defaults_empty_when_unset():
+    resolver = _resolver(_config(), {"CORE"}, {"TOKEN_CLOUD": "ccc"})
+    core = resolver.resolve("CORE")
+    assert core is not None
+    assert core.dependency_link_type == ""
+
+
 def test_per_project_board_override_on_the_same_site_and_account():
     raw = _config()
     raw["projects"] = {"OPS": {"board": "OPS"}}

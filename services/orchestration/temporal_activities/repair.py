@@ -37,6 +37,7 @@ class ApplyCIRepairResult:
     changed_files: list[str] = field(default_factory=list)
     cost: float = 0.0
     tokens: int = 0
+    cache_read_tokens: int = 0
     llm_calls: int = 0
 
 
@@ -92,6 +93,7 @@ async def apply_ci_repair(req: ApplyCIRepairRequest) -> ApplyCIRepairResult:
         changed_files=sorted(changes),
         cost=outcome.cost,
         tokens=outcome.tokens,
+        cache_read_tokens=outcome.cache_read_tokens,
         llm_calls=outcome.llm_calls,
     )
 

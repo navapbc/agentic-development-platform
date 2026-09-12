@@ -170,7 +170,7 @@ async def test_two_tenants_reach_a_draft_pr_with_no_shared_credential(
         lambda *args, **kwargs: False,
     )
     monkeypatch.setattr(
-        "services.integration.jira.edits.acceptance_field", lambda settings: ""
+        "services.integration.jira.credentials.acceptance_field", lambda *args, **kwargs: ""
     )
     remotes = {
         "repo-a": _bare_remote(tmp_path, "repo-a"),

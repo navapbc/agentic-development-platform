@@ -35,6 +35,7 @@ def test_fetch_context_package_posts_payload(monkeypatch):
         "repo": "agentic-demo-service",
         "commit": "0744a6e",
         "focus": "health",
+        "detail": "",
     }
     assert result["focus"] == "health"
 

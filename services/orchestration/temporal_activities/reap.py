@@ -39,9 +39,9 @@ def _build_registry():
 
 
 def _build_backend():
-    from adapters.real.git_host import RealGitHost
+    from services.integration.github.factory import build_git_host
 
-    return RealGitHost.from_settings()
+    return build_git_host()
 
 
 @activity.defn
@@ -49,13 +49,13 @@ async def reap_orphans(request: ReapRequest) -> ReapReport:
     from scripts.config import get_settings
 
     from services.coordination.reaper import reap
-    from services.integration.github.credentials import allowed_repos
+    from services.integration.source_control import source_control_repos
 
     settings = get_settings()
     receipt = await reap(
         registry=_build_registry(),
         backend=_build_backend(),
-        allowed_repos=frozenset(allowed_repos(settings)),
+        allowed_repos=frozenset(source_control_repos(settings)),
         now=datetime.now(UTC),
         dry_run=request.dry_run,
     )

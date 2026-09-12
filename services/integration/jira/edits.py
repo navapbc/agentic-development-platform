@@ -11,9 +11,6 @@ from scripts.config import Settings, get_settings
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
-from services.integration.jira.credentials import acceptance_field
-from services.integration.jira.normalize import normalize_issue
-
 UNCHANGED = "unchanged"
 METADATA_ONLY = "metadata_only"
 NON_MATERIAL = "non_material"
@@ -152,6 +149,10 @@ async def evaluate_task_edit(
 class _IssueReader(Protocol):
     def get_issue(self, issue_key: str) -> dict[str, Any]: ...
 
+    def recheck_payload(
+        self, issue_key: str, *, raw_comments: tuple[Any, ...] = ()
+    ) -> dict[str, Any]: ...
+
 
 async def recheck_issue_before_pr(
     reader: _IssueReader,
@@ -164,12 +165,7 @@ async def recheck_issue_before_pr(
     store: EditPauseStore | None = None,
     raw_comments: tuple[Any, ...] = (),
 ) -> EditClassification:
-    settings = settings or get_settings()
-    fresh = normalize_issue(
-        reader.get_issue(issue_key),
-        raw_comments=raw_comments,
-        acceptance_field=acceptance_field(settings),
-    ).to_dict()
+    fresh = reader.recheck_payload(issue_key, raw_comments=raw_comments)
     return await evaluate_task_edit(
         stored_payload,
         fresh,

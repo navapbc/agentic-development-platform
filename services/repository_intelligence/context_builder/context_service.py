@@ -13,8 +13,12 @@ import subprocess
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
-from typing import TypeVar
+from typing import Any, TypeVar
 
+from services.repository_intelligence.context_builder.focus import (
+    extract_file_paths,
+    extract_focus_terms,
+)
 from services.repository_intelligence.indexing.reindex import reindex_repo
 from services.repository_intelligence.indexing.scip_builder import resolve_commit, scip_indexer_for
 from services.repository_intelligence.languages import Language, primary_language
@@ -56,6 +60,8 @@ _CONFIG_FILENAMES = frozenset(
 )
 _RECENT_PATHS_LIMIT = 5
 _RECENT_CHANGES_PER_PATH = 5
+_MAX_QUERY_TERMS = 5
+_CANDIDATE_FILE_BUDGET = 200
 _GIT_FIELD_SEP = "\x1f"
 
 
@@ -158,6 +164,7 @@ class RepositoryIntelligenceService:
         return replace(repo, commit_sha=head) if head else repo
 
     def ensure_fresh(self, repo: RepoRef) -> bool:
+        repo = self._resolve_commit(repo)
         status = self._safe(lambda: self._router.repo_get_index_status(repo), None)
         if status is not None and status.is_fresh and status.indexed_commit == repo.commit_sha:
             self._indexed_commit = status.indexed_commit
@@ -168,14 +175,28 @@ class RepositoryIntelligenceService:
         self._indexed_commit = repo.commit_sha
         return False
 
-    def context_package(self, repo: RepoRef, focus: str) -> ContextPackage:
+    def context_package(self, repo: RepoRef, focus: str, detail: str = "") -> ContextPackage:
         repo = self._resolve_commit(repo)
         self.ensure_fresh(repo)
         base = self._router.repo_get_context_package(repo, focus)
-        candidate_files = self._candidate_files(repo, focus)
-        focus_paths = self._focus_paths(base, candidate_files)
+        if detail or any(char.isspace() for char in focus):
+            text = f"{focus}\n{detail}" if detail else focus
+            terms = (extract_focus_terms(text) or [focus])[:_MAX_QUERY_TERMS]
+            explicit = self._existing_paths(extract_file_paths(text))
+            symbols = self._symbols_for(repo, terms)
+            references = self._references_for(repo, terms)
+            derived = {ref.location.path for ref in references if ref.location.path}
+            derived |= {symbol.location.path for symbol in symbols if symbol.location.path}
+            candidate_files = sorted(derived | set(explicit))
+        else:
+            symbols = list(base.symbols)
+            references = list(base.references)
+            candidate_files = self._candidate_files(repo, [focus])
+        focus_paths = self._focus_paths(symbols, candidate_files)
         return replace(
             base,
+            symbols=tuple(symbols),
+            references=tuple(references),
             callers=tuple(self._safe(lambda: self._router.repo_get_callers(repo, focus), [])),
             callees=tuple(self._safe(lambda: self._router.repo_get_callees(repo, focus), [])),
             implementations=tuple(
@@ -191,10 +212,37 @@ class RepositoryIntelligenceService:
         )
 
     @staticmethod
-    def _focus_paths(base: ContextPackage, candidate_files: list[str]) -> list[str]:
-        paths = {symbol.location.path for symbol in base.symbols if symbol.location.path}
+    def _focus_paths(symbols: list[Any], candidate_files: list[str]) -> list[str]:
+        paths = {symbol.location.path for symbol in symbols if symbol.location.path}
         paths.update(candidate_files)
         return sorted(paths)[:_RECENT_PATHS_LIMIT]
+
+    def _existing_paths(self, paths: list[str]) -> list[str]:
+        return [path for path in paths if (self._root / path).is_file()]
+
+    def _symbols_for(self, repo: RepoRef, terms: list[str]) -> list[Any]:
+        out: list[Any] = []
+        seen: set[tuple[str, str, int]] = set()
+        for term in terms:
+            for symbol in self._safe(lambda t=term: self._router.repo_find_symbol(repo, t), []):
+                key = (symbol.name, symbol.location.path, symbol.location.start_line)
+                if key not in seen:
+                    seen.add(key)
+                    out.append(symbol)
+        return out
+
+    def _references_for(self, repo: RepoRef, terms: list[str]) -> list[Any]:
+        out: list[Any] = []
+        seen: set[tuple[str, str, int, bool]] = set()
+        for term in terms:
+            for ref in self._safe(lambda t=term: self._router.repo_find_references(repo, t), []):
+                key = (ref.symbol, ref.location.path, ref.location.start_line, ref.is_definition)
+                if key not in seen:
+                    seen.add(key)
+                    out.append(ref)
+            if len(out) >= _CANDIDATE_FILE_BUDGET:
+                break
+        return out
 
     def _recent_changes(self, paths: list[str]) -> list[RecentChange]:
         changes: list[RecentChange] = []
@@ -248,11 +296,16 @@ class RepositoryIntelligenceService:
             hits, key=lambda hit: (hit.location.path, hit.location.start_line, hit.snippet)
         )
 
-    def _candidate_files(self, repo: RepoRef, focus: str) -> list[str]:
+    def _candidate_files(self, repo: RepoRef, terms: list[str]) -> list[str]:
         if not self._cbm_ready():
             return []
-        refs = self._safe(lambda: self._cbm.candidate_references(repo, focus), [])
-        return sorted({ref.location.path for ref in refs if ref.location.path})
+        found: set[str] = set()
+        for term in terms:
+            refs = self._safe(lambda t=term: self._cbm.candidate_references(repo, t), [])
+            found.update(ref.location.path for ref in refs if ref.location.path)
+            if len(found) >= _CANDIDATE_FILE_BUDGET:
+                break
+        return sorted(found)
 
     def _build_targets(self) -> list[str]:
         if self._build_metadata is None:

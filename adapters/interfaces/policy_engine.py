@@ -30,6 +30,9 @@ class PolicyInput:
     required_gates: list[str] = field(default_factory=list)
     severity_counts: dict[str, int] = field(default_factory=dict)
     scan_findings: list[dict[str, str]] = field(default_factory=list)
+    allowed_projects: list[str] = field(default_factory=list)
+    allowed_repos: list[str] = field(default_factory=list)
+    ci_required: bool = True
 
     def as_document(self) -> dict[str, object]:
         return asdict(self)

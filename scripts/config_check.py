@@ -8,7 +8,7 @@ from services.integration.credentials import ConfigError, config_status
 
 from scripts.config import get_settings
 
-_CONFIGS = ("github", "jira", "integrations", "gates", "gate_engine")
+_CONFIGS = ("github", "jira", "integrations", "gates", "gate_engine", "tickets")
 
 
 def main() -> int:

@@ -14,7 +14,7 @@ from services.repository_intelligence.normalization.models import ContextPackage
 def _allowlist_from_config(monkeypatch):
     monkeypatch.setattr(
         server,
-        "allowed_repos",
+        "source_control_repos",
         lambda settings=None: {"agentic-demo-service", "agentic-demo-greenfield"},
     )
 
@@ -81,7 +81,7 @@ class _FakeSettings:
 
 
 class _FakeService:
-    def context_package(self, repo, focus):
+    def context_package(self, repo, focus, detail=""):
         return ContextPackage(
             focus=focus,
             symbols=(),

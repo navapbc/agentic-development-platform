@@ -48,9 +48,10 @@ def generation_row(observation: dict[str, Any]) -> dict[str, Any]:
     the stage whose in-process row rebar returned as zero.
     """
     usage = generation_usage(observation)
-    usage["stage"] = str(observation.get("name") or "")
-    usage["model_id"] = observation.get("model") or None
-    return usage
+    row: dict[str, Any] = dict(usage)
+    row["stage"] = str(observation.get("name") or "")
+    row["model_id"] = observation.get("model") or None
+    return row
 
 
 def _iter_session_observations(

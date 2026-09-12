@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from openhands.runtime.caps import (
     COMPLETED,
@@ -206,7 +206,7 @@ def _coding_extra_body(metadata: dict[str, str] | None) -> dict[str, object]:
     if not metadata:
         return {}
     extra_body: dict[str, object] = {"requestMetadata": dict(metadata)}
-    join: dict[str, str] = {}
+    join: dict[str, Any] = {}
     if metadata.get("execution_id"):
         join["session_id"] = metadata["execution_id"]
     if metadata.get("stage"):

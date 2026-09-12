@@ -37,12 +37,16 @@ def _slug(value: str) -> str:
 
 def _run_git(args: list[str], cwd: str | None) -> str:
     proc = subprocess.run(
-        ["git", *args],
+        ["git", "-c", "safe.directory=*", *args],
         cwd=cwd,
-        check=True,
         capture_output=True,
         text=True,
     )
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout).strip()
+        raise RuntimeError(
+            f"git {' '.join(args)} failed (exit {proc.returncode}): {detail}"
+        )
     return proc.stdout.rstrip()
 
 
@@ -51,7 +55,9 @@ async def _git(*args: str, cwd: str | None = None) -> str:
 
 
 def _run_git_ok(args: list[str], cwd: str | None) -> bool:
-    proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+    proc = subprocess.run(
+        ["git", "-c", "safe.directory=*", *args], cwd=cwd, capture_output=True, text=True
+    )
     return proc.returncode == 0
 
 
@@ -75,16 +81,14 @@ class WorkspaceMaterializer:
         settings: Settings | None = None,
     ) -> WorkspaceMaterializer:
         resolved = settings or get_settings()
-        from services.integration.github.credentials import (
-            allowed_repos,
-            build_github_credential_resolver,
-        )
+        from services.integration.github.factory import build_git_host
+        from services.integration.source_control import source_control_repos
 
         if remote_url_for is None:
-            remote_url_for = build_github_credential_resolver(resolved).git_remote_url
+            remote_url_for = build_git_host(resolved).source_location
         return cls(
             registry=registry,
-            allowed_repos=frozenset(allowed_repos(resolved)),
+            allowed_repos=frozenset(source_control_repos(resolved)),
             workspace_root=Path(resolved.execution_workspace_root),
             remote_url_for=remote_url_for,
         )

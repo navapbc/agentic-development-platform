@@ -44,18 +44,36 @@ def _match(path: str, line: int, text: str) -> StructuralMatch:
 
 
 class FakeRouter:
-    def __init__(self, *, status=None, package=None, callers=(), callees=(), implementations=()):
+    def __init__(
+        self,
+        *,
+        status=None,
+        package=None,
+        callers=(),
+        callees=(),
+        implementations=(),
+        find_symbols=None,
+        find_refs=None,
+    ):
         self._status = status
         self._package = package
         self._callers = list(callers)
         self._callees = list(callees)
         self._implementations = list(implementations)
+        self._find_symbols = dict(find_symbols or {})
+        self._find_refs = dict(find_refs or {})
 
     def repo_get_index_status(self, repo):
         return self._status
 
     def repo_get_context_package(self, repo, focus):
         return self._package
+
+    def repo_find_symbol(self, repo, name, *, limit=50):
+        return self._find_symbols.get(name, [])
+
+    def repo_find_references(self, repo, symbol, *, include_definition=True):
+        return self._find_refs.get(symbol, [])
 
     def repo_get_callers(self, repo, symbol):
         return self._callers
@@ -141,6 +159,21 @@ def test_ensure_fresh_reindexes_on_commit_change(tmp_path):
     assert reindexed == [(_REPO, "oldsha")]
 
 
+def test_ensure_fresh_resolves_empty_commit_to_head(tmp_path, monkeypatch):
+    from services.repository_intelligence.context_builder import context_service as cs
+
+    monkeypatch.setattr(cs, "resolve_commit", lambda root: "headsha1")
+    reindexed: list[tuple[RepoRef, str | None]] = []
+    service = RepositoryIntelligenceService(
+        FakeRouter(status=None),
+        repo_root=tmp_path,
+        reindex=lambda repo, prior: reindexed.append((repo, prior)),
+    )
+
+    assert service.ensure_fresh(RepoRef("archive-massgov-pfml", "")) is False
+    assert reindexed == [(RepoRef("archive-massgov-pfml", "headsha1"), None)]
+
+
 def test_ensure_fresh_reindexes_when_index_stale(tmp_path):
     status = IndexStatus(_REPO, "0744a6e", False, ("python",))
     reindexed: list[tuple[RepoRef, str | None]] = []
@@ -191,6 +224,41 @@ def test_context_package_composes_all_enrichments(tmp_path):
     assert package.candidate_files == ("app/main.py",)
     assert package.build_targets == ("console_script:pytest",)
     assert package.config_files == ("pyproject.toml", "requirements.txt")
+
+
+def test_context_package_extracts_terms_and_paths_from_detail(tmp_path):
+    (tmp_path / "portal" / "src" / "components").mkdir(parents=True)
+    (tmp_path / "portal" / "src" / "components" / "ExternalLink.tsx").write_text("export {}\n")
+    router = FakeRouter(
+        status=IndexStatus(_REPO, "0744a6e", True, ("typescript",)),
+        package=_base_package("Convert anchors to ExternalLink"),
+        find_symbols={
+            "ExternalLink": [_sym("ExternalLink", "portal/src/components/ExternalLink.tsx", 5)]
+        },
+        find_refs={
+            "ExternalLink": [
+                Reference(
+                    "ExternalLink",
+                    Location("portal/src/pages/get-ready.tsx", 97),
+                    False,
+                    _prov(),
+                )
+            ]
+        },
+    )
+    service = RepositoryIntelligenceService(router, repo_root=tmp_path, cbm=FakeCbm())
+
+    package = service.context_package(
+        _REPO,
+        "Convert anchors to ExternalLink",
+        "Affected Code: portal/src/components/ExternalLink.tsx#L1-L5 and missing/gone.tsx",
+    )
+
+    assert [sym.name for sym in package.symbols] == ["ExternalLink"]
+    assert [ref.location.path for ref in package.references] == ["portal/src/pages/get-ready.tsx"]
+    assert "portal/src/components/ExternalLink.tsx" in package.candidate_files
+    assert "portal/src/pages/get-ready.tsx" in package.candidate_files
+    assert "missing/gone.tsx" not in package.candidate_files
 
 
 def test_candidate_files_empty_when_cbm_unavailable(tmp_path):

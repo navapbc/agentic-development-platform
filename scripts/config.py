@@ -4,6 +4,7 @@ from functools import lru_cache
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
+from pydantic import ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -42,7 +43,7 @@ class Settings(BaseSettings):
     smtp_host: str = ""
     smtp_port: int = 587
 
-    aws_profile: str = "mpse-legacy"
+    aws_profile: str = "agentic-platform"
     aws_region: str = "us-east-1"
     bedrock_runtime_endpoint: str = "com.amazonaws.us-east-1.bedrock-runtime"
     bedrock_proxy_url: str = ""
@@ -53,8 +54,22 @@ class Settings(BaseSettings):
     jumphost_name: str = ""
     jumphost_env: str = ""
     jumphost_connect_script: str = ""
+    jumphost_session_duration_seconds: int = 0
+    jumphost_keepalive_seconds: int = 0
     ssh_bastion_target: str = ""
     bedrock_tunnel_local_port: int = 8444
+
+    @field_validator(
+        "jumphost_session_duration_seconds",
+        "jumphost_keepalive_seconds",
+        "execution_orphan_grace_seconds",
+        mode="before",
+    )
+    @classmethod
+    def _blank_optional_int_to_default(cls, value: object, info: ValidationInfo) -> object:
+        if info.field_name is not None and (value is None or value == ""):
+            return cls.model_fields[info.field_name].default
+        return value
 
     opa_url: str = "http://localhost:8181"
     langfuse_host: str = "http://localhost:3000"
@@ -73,6 +88,13 @@ class Settings(BaseSettings):
 
     jira_acli_path: str = ""
     jira_parked_status: str = ""
+
+    ticket_backend: str = "jira"
+    source_control_backend: str = "github"
+    source_control_local_root: str = ""
+    source_control_local_artifacts_root: str = ""
+    source_control_local_operators: str = ""
+    source_control_local_repos: str = ""
 
     github_default_base_branch: str = "main"
     github_webhook_secret: str = ""
@@ -113,6 +135,12 @@ class Settings(BaseSettings):
     intake_run_reviews: bool = False
     intake_run_policy: bool = False
     intake_run_approval: bool = False
+
+    max_concurrent_runs: int = 4
+    execution_orphan_grace_seconds: int = 120
+
+    dependency_detection_enabled: bool = False
+    dependency_replan_attempts: int = 3
 
     def repo_intelligence_registry(self) -> dict[str, tuple[str, str | None]]:
         """Parse configured repositories into a name to (root, commit) mapping."""

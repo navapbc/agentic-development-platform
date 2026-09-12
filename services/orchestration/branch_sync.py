@@ -11,7 +11,6 @@ from typing import Protocol
 
 from scripts.config import Settings, get_settings
 
-from services.integration.github.credentials import allowed_repos
 from services.integration.github.mediator import RepoNotAllowedError
 
 FAST_FORWARD = "fast_forward"
@@ -38,7 +37,9 @@ class SyncOutcome:
 
 
 def _run_git(args: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+    return subprocess.run(
+        ["git", "-c", "safe.directory=*", *args], cwd=cwd, capture_output=True, text=True
+    )
 
 
 async def _git(*args: str, cwd: str) -> str:
@@ -79,9 +80,11 @@ class GitBranchSynchronizer:
         remote_url_for: Callable[[str], str] | None = None,
         settings: Settings | None = None,
     ) -> GitBranchSynchronizer:
+        from services.integration.source_control import source_control_repos
+
         resolved = settings or get_settings()
         return cls(
-            allowed_repos=frozenset(allowed_repos(resolved)),
+            allowed_repos=frozenset(source_control_repos(resolved)),
             remote_url_for=remote_url_for or (lambda repo: repo),
         )
 
