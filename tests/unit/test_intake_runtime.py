@@ -22,9 +22,17 @@ class _Gh:
         return f"https://example.test/{repo}.git"
 
 
+class _Host:
+    def source_location(self, repo: str) -> str:
+        return f"https://example.test/{repo}.git"
+
+
 @pytest.mark.asyncio
 async def test_start_sets_run_flags_and_no_ci_job(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(intake_runtime, "remote_head", lambda remote, branch: "abc123")
+    monkeypatch.setattr(
+        "services.integration.github.factory.build_git_host", lambda settings: _Host()
+    )
     client = _Client()
     starter = TemporalStarter(client, hermetic_settings(), _Gh())
 
