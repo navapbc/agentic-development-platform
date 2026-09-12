@@ -2,9 +2,9 @@
 
 All notable changes to this platform are recorded here. The format follows Keep a Changelog, and the platform aims to follow semantic versioning once releases are tagged.
 
-## 0.1.0 (unreleased)
+## 0.1.0 (2026-09-11)
 
-First versioned release of the platform. This version makes the ticket tracker and the source-control target pluggable behind two orthogonal contracts, and a deployment that configures neither behaves exactly as before.
+First versioned release of the platform. This version makes the ticket tracker and the source-control target pluggable behind two orthogonal contracts, bounds concurrent runs with a platform admission cap, and re-grounds a run that discovers a cross-ticket dependency during planning on both the rebar and Jira backends. A deployment that configures neither backend behaves exactly as before.
 
 ### Added
 

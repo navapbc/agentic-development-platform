@@ -2,13 +2,13 @@
 
 This roadmap groups the remaining platform work into versions. The authoritative, code-verified feature list and per-feature detail live in the [remaining-work roadmap plan](docs/plans/2026-09-02-1801-feat-remaining-work-roadmap-plan.md). Each version below names its theme, its goal, and its features with an effort estimate in hours of uninterrupted work. Effort ranges carry the confidence the source plan recorded.
 
-Two features have dedicated implementation plans already. The rest link to their entry in the roadmap plan.
+One remaining feature has a dedicated implementation plan already. The rest link to their entry in the roadmap plan.
 
-Total remaining scope is roughly 163 to 207 hours across 21 features.
+Total remaining scope is roughly 119 to 139 hours across 19 features.
 
 ## v0.1.0 Pluggable ticket and source-control backends
 
-Status. Next up. The implementation plan is ready.
+Status. Shipped. Delivered as commits ADEVX-95, ADEVX-96, and ADEVX-97.
 Goal. A deployment can track work in a non-Jira tracker and target a non-GitHub source control, and a deployment that configures neither behaves exactly as today. This version also stands up the rebar S3 and MinIO object store that later versions build on, bounds concurrent runs with a platform admission cap, and re-grounds a run when it discovers a cross-ticket dependency during planning.
 
 | Feature | Effort | Detail |
