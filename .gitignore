@@ -22,6 +22,8 @@ config/*/review-trust-root.yaml
 !config/*/review-trust-root.yaml.example
 config/*/review-signing-key
 config/*/review-signing-key.pub
+config/*/authorship-signing-key
+config/*/authorship-signing-key.pub
 
 # AWS / credentials
 .aws/

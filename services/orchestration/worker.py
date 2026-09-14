@@ -62,10 +62,12 @@ from services.orchestration.temporal_activities import (
     run_checks,
     run_implementation_stage,
     scan_change,
+    sign_authorship,
     signal_dependency_ready,
     synchronize_branch,
     unmark_task_parked,
     verify_acceptance,
+    verify_authorship_merge,
 )
 from services.orchestration.temporal_workflows import (
     BranchSyncWorkflow,
@@ -152,6 +154,8 @@ _ACTIVITIES = [
     classify_test_failures,
     record_manifest,
     reconcile_intake_pass,
+    sign_authorship,
+    verify_authorship_merge,
 ]
 
 

@@ -1,3 +1,7 @@
+from services.orchestration.temporal_activities.authorship import (
+    sign_authorship,
+    verify_authorship_merge,
+)
 from services.orchestration.temporal_activities.bedrock import invoke_model
 from services.orchestration.temporal_activities.branch_sync import (
     recheck_issue,
@@ -110,8 +114,10 @@ __all__ = [
     "run_checks",
     "run_implementation_stage",
     "scan_change",
+    "sign_authorship",
     "signal_dependency_ready",
     "synchronize_branch",
     "unmark_task_parked",
     "verify_acceptance",
+    "verify_authorship_merge",
 ]

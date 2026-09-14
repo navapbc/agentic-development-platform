@@ -76,6 +76,7 @@ Two binaries live under `vendor/bin` and are provisioned outside the Python inst
 | LiteLLM | `LITELLM_BASE_URL`, `LITELLM_MASTER_KEY` | Set a local master key |
 | Review (rebar) | `REBAR_LLM_*`, `REVIEW_ATTESTATION_SECRET` | Point at LiteLLM, set an attestation secret for the HMAC fallback |
 | Review signing | `REVIEW_SIGNING_ENABLED`, `REVIEW_SIGNING_KEY_PATH`, `REVIEW_TRUST_ROOT_PATH` | On by default. Provision a signing key and trust root, or set enabled to false. See [docs/review-verdict-signing.md](docs/review-verdict-signing.md) |
+| Authorship signing | `AUTHORSHIP_SIGNING_ENABLED`, `AUTHORSHIP_IDENTITY_ID`, `AUTHORSHIP_SIGNING_KEY_PATH` | On by default, active only on the rebar backend with an identity set. Jira does not participate. See [docs/authored-identity-signing.md](docs/authored-identity-signing.md) |
 | Backends | `TICKET_BACKEND`, `SOURCE_CONTROL_BACKEND`, `SOURCE_CONTROL_LOCAL_*` | Select the ticket and source-control backends. Defaults are Jira and GitHub. See [Ticket and source-control backends](#ticket-and-source-control-backends) |
 | Admission | `MAX_CONCURRENT_RUNS`, `EXECUTION_ORPHAN_GRACE_SECONDS` | Cap on runs in flight and the grace window before a dead run's slot is reclaimed. Defaults work locally |
 | Dependency discovery | `DEPENDENCY_DETECTION_ENABLED`, `DEPENDENCY_REPLAN_ATTEMPTS` | Enable cross-ticket dependency discovery and set the re-plan attempt cap. Defaults to off. See [Cross-ticket dependency discovery](#cross-ticket-dependency-discovery) |

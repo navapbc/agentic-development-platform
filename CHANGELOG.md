@@ -4,7 +4,7 @@ All notable changes to this platform are recorded here. The format follows Keep 
 
 ## 0.2.0 (unreleased)
 
-rebar review integration. The review gates run on the native Bedrock path with per-leg failover, and every review verdict is signed with an asymmetric signature verified against a public trust root.
+rebar review integration. The review gates run on the native Bedrock path with per-leg failover, every review verdict is signed with an asymmetric signature verified against a public trust root, and each authoring agent signs its plan and code change under its own rebar identity for a merge gate to verify.
 
 ### Added
 
@@ -13,7 +13,9 @@ rebar review integration. The review gates run on the native Bedrock path with p
 - A versioned trust-root bundle of public signer keys with per-key identifiers and validity windows, revocation of a compromised key, and an overlapping rotation window that admits a new key before the old key retires.
 - A review-worker signing preflight that fails the worker at startup when signing is enabled without a usable key, a loadable trust root, and `ssh-keygen`, so a misconfiguration surfaces at startup rather than on the first review.
 - A trust-root change audit. The review worker records a `review_trust_root_change` event to the audit store at startup when the loaded bundle differs from the last recorded one, naming the actor, the change summary, and the affected key identifiers.
+- Authored-identity signing on the rebar backend. Each authoring agent signs the plan it produces and the code change it commits under its own rebar identity, and a merge gate verifies both signatures against the identity trust root and fails closed on an absent, tampered, or out-of-trust-root signature. The identity keyring supports trust-on-first-use genesis, signed key rotation with an overlapping window, revocation, and a keyring-change audit record. A Jira deployment has no rebar authorship substrate and does not participate.
 - `REVIEW_SIGNING_ENABLED`, `REVIEW_SIGNING_KEY_PATH`, and `REVIEW_TRUST_ROOT_PATH` settings, with signing on by default, and `openssh-client` in the runtime image so `ssh-keygen` is available.
+- `AUTHORSHIP_SIGNING_ENABLED`, `AUTHORSHIP_IDENTITY_ID`, and `AUTHORSHIP_SIGNING_KEY_PATH` settings for authored-identity signing.
 
 ### Changed
 

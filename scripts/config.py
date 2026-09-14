@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     review_signing_enabled: bool = True
     review_signing_key_path: str = ""
     review_trust_root_path: str = ""
+    authorship_signing_enabled: bool = True
+    authorship_identity_id: str = ""
+    authorship_signing_key_path: str = ""
     repair_analysis_use_llm: bool = True
 
     slack_webhook_url: str = ""

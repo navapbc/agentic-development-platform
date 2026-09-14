@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 
+import pytest
 from openhands.runtime.caps import COMPLETED
 from services.orchestration.branch_sync import FAST_FORWARD
 from services.orchestration.gates.contract import (
@@ -17,6 +18,10 @@ from services.orchestration.suspension import (
     RESUME_SIGNAL,
     ResumeOn,
     SuspendReason,
+)
+from services.orchestration.temporal_activities.authorship import (
+    SignAuthorshipRequest,
+    VerifyAuthorshipRequest,
 )
 from services.orchestration.temporal_activities.bedrock import ModelRequest, ModelResponse
 from services.orchestration.temporal_activities.branch_sync import (
@@ -188,6 +193,7 @@ def _make_activities(
     review_on_block: dict[str, str] | None = None,
     policy_human_review: list[str] | None = None,
     plan_pause: bool = False,
+    authorship_verify_raises: bool = False,
 ):
     @activity.defn(name="persist_execution_state")
     async def fake_persist(payload: ExecutionState) -> str:
@@ -488,6 +494,18 @@ def _make_activities(
             ready=True,
         )
 
+    @activity.defn(name="sign_authorship")
+    async def fake_sign_authorship(req: SignAuthorshipRequest) -> dict | None:
+        return None
+
+    @activity.defn(name="verify_authorship_merge")
+    async def fake_verify_authorship_merge(req: VerifyAuthorshipRequest) -> None:
+        if authorship_verify_raises:
+            from temporalio.exceptions import ApplicationError
+
+            raise ApplicationError("authorship signature did not verify", non_retryable=True)
+        return None
+
     return [
         fake_persist,
         fake_classify,
@@ -523,6 +541,8 @@ def _make_activities(
         fake_evaluate_promotion,
         fake_record_approval,
         fake_promote,
+        fake_sign_authorship,
+        fake_verify_authorship_merge,
     ]
 
 
@@ -2307,3 +2327,48 @@ def test_sequence_stride_exceeds_the_worst_case_intra_execution_offset():
     max_repair_attempts = DraftPullRequestInput.max_repair_attempts
     worst_case_offset = _CI_TRIGGER_OFFSET + _REPAIR_STRIDE * max_repair_attempts + _PROMOTE_OFFSET
     assert worst_case_offset < _SEQUENCE_STRIDE
+
+
+async def test_authorship_verification_failure_blocks_promotion():
+    from temporalio.client import WorkflowFailureError
+
+    promotions: list[PromotePrRequest] = []
+    activities = _make_activities(
+        None, 1, [], [], [], promotions=promotions, authorship_verify_raises=True
+    )
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with Worker(
+            env.client,
+            task_queue=task_queue,
+            workflows=[
+                DraftPullRequestWorkflow,
+                ImplementationWorkflow,
+                BranchSyncWorkflow,
+                PullRequestWorkflow,
+                PlanReviewWorkflow,
+            ],
+            workflow_runner=SandboxedWorkflowRunner(
+                restrictions=SandboxRestrictions.default.with_passthrough_modules("beartype")
+            ),
+            activities=activities,
+        ):
+            with pytest.raises(WorkflowFailureError):
+                await env.client.execute_workflow(
+                    DraftPullRequestWorkflow.run,
+                    DraftPullRequestInput(
+                        task_id="T-1",
+                        execution_id="exec-1",
+                        repo="agentic-demo-service",
+                        base="main",
+                        base_sha="a" * 40,
+                        task="Implement the change",
+                        issue_key="T-1",
+                        file_impact=["feature.py"],
+                        stored_issue={"summary": "Implement the change"},
+                    ),
+                    id=f"wf-{uuid.uuid4().hex[:8]}",
+                    task_queue=task_queue,
+                )
+
+    assert len(promotions) == 0
