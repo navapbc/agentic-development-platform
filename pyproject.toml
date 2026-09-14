@@ -55,7 +55,7 @@ dev = [
 ]
 all = [
     "agentic-dev-platform[reasoning,review,sandbox,gateway,observability,prompts]",
-    "pydantic-ai-slim[openai]>=1,<2",
+    "pydantic-ai-slim[openai,bedrock]>=1,<2",
 ]
 
 [build-system]
@@ -69,6 +69,7 @@ packages = ["services", "adapters", "schemas", "database", "scripts", "observabi
 target-version = "py312"
 line-length = 100
 src = ["services", "adapters", "schemas", "database", "scripts", "observability", "openhands", "tests"]
+extend-exclude = ["services/review/eval/acceptance_cases"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
@@ -87,4 +88,5 @@ typeCheckingMode = "standard"
 venvPath = "."
 venv = ".venv"
 include = ["services", "adapters", "schemas", "database", "scripts", "observability", "openhands", "tests"]
+exclude = ["services/review/eval/acceptance_cases"]
 extraPaths = [".venv/lib/python3.14/site-packages/rebar/_engine"]

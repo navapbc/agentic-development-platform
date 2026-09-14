@@ -83,12 +83,13 @@ def review_prompt_versions(gate_names: Iterable[str]) -> dict[str, str]:
 
 
 
-def build_review_gate():
+def build_review_gate(stage: ReviewStage | None = None):
     from services.review.evidence import PostgresEvidenceSink
-    from services.review.gate import ReviewGate
+    from services.review.gate import ReviewGate, select_attestor
     from services.review.kernel import RebarReviewKernel
 
-    return ReviewGate(RebarReviewKernel(), PostgresEvidenceSink())
+    attestor = select_attestor(stage) if stage is not None else None
+    return ReviewGate(RebarReviewKernel(), PostgresEvidenceSink(), attestor)
 
 
 def _subject_ref(subject: str) -> str:
@@ -101,6 +102,15 @@ def _instructions(spec: _PromptSpec, req: ReviewRequest) -> str:
         parts.append(f"Repository context:\n{req.context_summary}")
     parts.append(f"{spec.subject_label}:\n{req.subject}")
     return "\n\n".join(parts)
+
+
+_REPO_GROUNDED_STAGES = frozenset(
+    {
+        ReviewStage.CODE_REVIEW,
+        ReviewStage.SECURITY_REVIEW,
+        ReviewStage.ACCEPTANCE_VERIFICATION,
+    }
+)
 
 
 def _resolve_repo_root(req: ReviewRequest) -> str | None:
@@ -127,8 +137,8 @@ async def _run_gate(stage: ReviewStage, spec: _PromptSpec, req: ReviewRequest) -
     from services.review.types import ReviewInput
 
     loaded = load_prompt(spec.name)
-    gate = build_review_gate()
-    repo_root = _resolve_repo_root(req)
+    gate = build_review_gate(stage)
+    repo_root = _resolve_repo_root(req) if stage in _REPO_GROUNDED_STAGES else None
     review_input = ReviewInput(
         stage=stage,
         subject_ref=_subject_ref(req.subject),
@@ -145,7 +155,13 @@ async def _run_gate(stage: ReviewStage, spec: _PromptSpec, req: ReviewRequest) -
         result = await gate.review(review_input, execution_id=req.execution_id)
     model_id = result.provenance[0].model_id if result.provenance else None
     usage = result.usage
-    cost_usd = token_cost_usd(model_id, usage.prompt_tokens, usage.completion_tokens)
+    cost_usd = token_cost_usd(
+        model_id,
+        usage.prompt_tokens,
+        usage.completion_tokens,
+        cache_read_tokens=usage.cache_read_tokens,
+        cache_write_tokens=usage.cache_write_tokens,
+    )
     return ReviewOutcome(
         verdict=result.verdict.value,
         attestation_hash=result.attestation.content_hash,

@@ -6,9 +6,11 @@ instrumentation never raises into a workflow, an activity, or a request path.
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import logging
-from collections.abc import Iterator, Mapping
+import os
+from collections.abc import Iterator, Mapping, Sequence
 from typing import Any
 
 from opentelemetry import baggage, propagate, trace
@@ -16,7 +18,7 @@ from opentelemetry.baggage.propagation import W3CBaggagePropagator
 from opentelemetry.propagators.composite import CompositePropagator
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import SpanProcessor, TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor, SpanExporter
+from opentelemetry.sdk.trace.export import BatchSpanProcessor, SpanExporter, SpanExportResult
 from opentelemetry.trace import Span, Tracer
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
@@ -27,6 +29,7 @@ log = logging.getLogger("observability")
 _TRACER_NAME = "adevx"
 _configured = False
 _provider: TracerProvider | None = None
+_llm_instrumented = False
 
 
 class ContextStampingSpanProcessor(SpanProcessor):
@@ -39,8 +42,26 @@ class ContextStampingSpanProcessor(SpanProcessor):
                 value = items.get(key)
                 if value is not None:
                     span.set_attribute(key, str(value))
+            self._stamp_langfuse_join(span, items)
         except Exception:  # noqa: BLE001 - instrumentation must not raise
             pass
+
+    @staticmethod
+    def _stamp_langfuse_join(span: Span, items: Mapping[str, Any]) -> None:
+        """Map the execution and stage onto Langfuse-recognized span attributes.
+
+        Langfuse groups OTEL observations into a session by ``langfuse.session.id``,
+        the same join the proxied path carried as the LiteLLM ``session_id``. The
+        stage, task, and prompt version ride as trace metadata so a native review
+        generation is attributable to its execution and stage in Langfuse.
+        """
+        execution_id = items.get(attrs.EXECUTION_ID)
+        if execution_id is not None:
+            span.set_attribute(attrs.LANGFUSE_SESSION_ID, str(execution_id))
+        for key in (attrs.STAGE, attrs.TASK_ID, attrs.PROMPT_VERSION):
+            value = items.get(key)
+            if value is not None:
+                span.set_attribute(f"{attrs.LANGFUSE_TRACE_METADATA_PREFIX}{key}", str(value))
 
     def on_end(self, span: Any) -> None:
         return None
@@ -50,6 +71,36 @@ class ContextStampingSpanProcessor(SpanProcessor):
 
     def force_flush(self, timeout_millis: int = 30000) -> bool:
         return True
+
+
+class _GenAISpanExporter(SpanExporter):
+    """Forward only generative-AI spans to the wrapped exporter.
+
+    The platform provider fans every span out to the collector, but Langfuse should
+    receive only the model generations, matching the proxied path where only LLM
+    calls reach Langfuse. A span qualifies when it carries any ``gen_ai.*``
+    attribute, which pydantic-ai's instrumentation sets on each model request.
+    """
+
+    def __init__(self, inner: SpanExporter) -> None:
+        self._inner = inner
+
+    @staticmethod
+    def _is_generation(span: Any) -> bool:
+        attributes = getattr(span, "attributes", None) or {}
+        return any(str(key).startswith(attrs.GEN_AI_PREFIX) for key in attributes)
+
+    def export(self, spans: Sequence[Any]) -> SpanExportResult:
+        kept = [span for span in spans if self._is_generation(span)]
+        if not kept:
+            return SpanExportResult.SUCCESS
+        return self._inner.export(kept)
+
+    def shutdown(self) -> None:
+        self._inner.shutdown()
+
+    def force_flush(self, timeout_millis: int = 30000) -> bool:
+        return self._inner.force_flush(timeout_millis)
 
 
 def _composite_propagator() -> CompositePropagator:
@@ -66,6 +117,31 @@ def _build_exporter() -> SpanExporter | None:
         return None
 
 
+def _build_langfuse_exporter() -> SpanExporter | None:
+    """A Langfuse OTLP exporter for generative-AI spans, or ``None`` when unconfigured.
+
+    Native review calls bypass the LiteLLM Langfuse callback, so their generations
+    reach Langfuse only through pydantic-ai OTEL spans exported here. Returns
+    ``None`` without Langfuse credentials or the OTLP HTTP exporter, so the platform
+    degrades to collector-only tracing rather than failing.
+    """
+    host = os.getenv("LANGFUSE_HOST")
+    public_key = os.getenv("LANGFUSE_PUBLIC_KEY")
+    secret_key = os.getenv("LANGFUSE_SECRET_KEY")
+    if not (host and public_key and secret_key):
+        return None
+    try:
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+
+        auth = base64.b64encode(f"{public_key}:{secret_key}".encode()).decode()
+        endpoint = f"{host.rstrip('/')}/api/public/otel/v1/traces"
+        inner = OTLPSpanExporter(endpoint=endpoint, headers={"Authorization": f"Basic {auth}"})
+        return _GenAISpanExporter(inner)
+    except Exception:  # noqa: BLE001
+        log.warning("langfuse otlp exporter unavailable; native spans skip it", exc_info=True)
+        return None
+
+
 def configure_tracing(service_name: str, *, exporter: SpanExporter | None = None) -> bool:
     """Install a global tracer provider once. Returns True when tracing is active."""
     global _configured, _provider
@@ -77,6 +153,10 @@ def configure_tracing(service_name: str, *, exporter: SpanExporter | None = None
         span_exporter = exporter if exporter is not None else _build_exporter()
         if span_exporter is not None:
             provider.add_span_processor(BatchSpanProcessor(span_exporter))
+        if exporter is None:
+            langfuse_exporter = _build_langfuse_exporter()
+            if langfuse_exporter is not None:
+                provider.add_span_processor(BatchSpanProcessor(langfuse_exporter))
         trace.set_tracer_provider(provider)
         propagate.set_global_textmap(_composite_propagator())
         _provider = provider
@@ -87,11 +167,33 @@ def configure_tracing(service_name: str, *, exporter: SpanExporter | None = None
         return False
 
 
+def instrument_llm_tracing() -> bool:
+    """Emit pydantic-ai agent, LLM, and tool spans through the configured provider.
+
+    Idempotent and best effort. Native review calls are only traced to Langfuse
+    when pydantic-ai is instrumented, so the worker installs this at startup rather
+    than relying on a per-call side effect deeper in the runner.
+    """
+    global _llm_instrumented
+    if _llm_instrumented:
+        return True
+    try:
+        from pydantic_ai import Agent
+
+        Agent.instrument_all()
+        _llm_instrumented = True
+        return True
+    except Exception:  # noqa: BLE001
+        log.warning("pydantic-ai instrumentation unavailable; llm spans not traced", exc_info=True)
+        return False
+
+
 def reset_for_testing() -> None:
     """Clear the one-time configuration guard. For tests only."""
-    global _configured, _provider
+    global _configured, _provider, _llm_instrumented
     _configured = False
     _provider = None
+    _llm_instrumented = False
 
 
 def force_flush(timeout_millis: int = 5000) -> None:

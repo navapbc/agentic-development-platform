@@ -16,6 +16,21 @@ services:
     depends_on:
       - bedrock-tunnel
 
+  review-worker:
+    depends_on:
+      - bedrock-tunnel
+    volumes:
+      - ./services:/app/services
+      - ./adapters:/app/adapters
+      - ./schemas:/app/schemas
+      - ./database:/app/database
+      - ./scripts:/app/scripts
+      - ./observability:/app/observability
+      - ./.agent-workspaces:/workspaces:ro
+    environment:
+      LOG_LEVEL: DEBUG
+      EXECUTION_WORKSPACE_ROOT: /workspaces
+
   workflow-worker:
     volumes:
       - ./services:/app/services
@@ -23,8 +38,19 @@ services:
       - ./schemas:/app/schemas
       - ./database:/app/database
       - ./scripts:/app/scripts
+      - ./observability:/app/observability
     environment:
       LOG_LEVEL: DEBUG
+
+  db-migrate:
+    volumes:
+      - ./services:/app/services
+      - ./adapters:/app/adapters
+      - ./schemas:/app/schemas
+      - ./database:/app/database
+      - ./scripts:/app/scripts
+      - ./observability:/app/observability
+      - ./alembic.ini:/app/alembic.ini
 
   activity-worker:
     command: ["sh", "/entrypoint.sh"]
@@ -34,6 +60,7 @@ services:
       - ./schemas:/app/schemas
       - ./database:/app/database
       - ./scripts:/app/scripts
+      - ./observability:/app/observability
       - ./openhands:/app/openhands
       - ./docker/activity-worker-entrypoint.sh:/entrypoint.sh:ro
       - ./.agent-workspaces:/workspaces

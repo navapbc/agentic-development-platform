@@ -6,14 +6,47 @@ import asyncio
 import uuid
 from typing import Any
 
-from scripts.config import get_settings
+from scripts.config import Settings, get_settings
 
 from services.review.attestation import Attestor, HmacAttestor, ReviewAttestationError
 from services.review.evidence import EvidenceRecord, EvidenceSink
 from services.review.kernel import ReviewKernel
-from services.review.types import RawReview, ReviewInput, ReviewResult
+from services.review.types import RawReview, ReviewInput, ReviewResult, ReviewStage
 
 SOURCE_COMPONENT = "review-kernel"
+
+SIGNED_STAGES = frozenset(ReviewStage)
+
+
+class ReviewSigningNotConfigured(ReviewAttestationError):
+    """Signing is enabled for a signed stage but the key or trust root is missing."""
+
+
+def select_attestor(stage: ReviewStage, settings: Settings | None = None) -> Attestor:
+    """Select the verdict attestor for a review stage.
+
+    Signing is on by default and covers every review stage. A signed stage fails
+    closed when the signing key or trust root is not configured, so a verdict never
+    silently downgrades to the symmetric secret. Every stage uses the HMAC attestor
+    only when signing is disabled.
+    """
+    resolved = settings or get_settings()
+    if resolved.review_signing_enabled and stage in SIGNED_STAGES:
+        if not resolved.review_signing_key_path or not resolved.review_trust_root_path:
+            raise ReviewSigningNotConfigured(
+                "review signing is enabled but review_signing_key_path or "
+                f"review_trust_root_path is not set for stage {stage.value}"
+            )
+        from services.review.attestation import SshsigAttestor
+        from services.review.trust_root import load_trust_root
+
+        trust_root = load_trust_root(resolved.review_trust_root_path)
+        return SshsigAttestor(
+            key_path=resolved.review_signing_key_path,
+            principal=trust_root.principal,
+            trust_root=trust_root.allowed_signers(),
+        )
+    return HmacAttestor(resolved.review_attestation_secret)
 
 
 def verdict_payload(review: ReviewInput, raw: RawReview) -> dict[str, Any]:
@@ -84,6 +117,7 @@ class ReviewGate:
                 "key_id": attestation.key_id,
                 "issued_at": attestation.issued_at,
                 "signature": attestation.signature,
+                "envelope": attestation.envelope,
                 "finding_count": len(raw.findings),
                 "findings": payload["findings"],
                 "summary": raw.summary,

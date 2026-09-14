@@ -32,7 +32,7 @@ def test_library_versions_are_the_recorded_join_keys() -> None:
     assert REVIEW_PROMPTS["plan-review"].version == "plan-review/v1"
     assert REVIEW_PROMPTS["code-review"].version == "code-review/v1"
     assert REVIEW_PROMPTS["security-review"].version == "security-review/v1"
-    assert REVIEW_PROMPTS["acceptance-verification"].version == "acceptance-verification/v1"
+    assert REVIEW_PROMPTS["acceptance-verification"].version == "acceptance-verification/v2"
     assert IMPLEMENTATION_PROMPT_VERSION == "implementation/v1"
 
 
@@ -59,7 +59,7 @@ def test_review_gate_version_map_reconciles_to_the_library() -> None:
         "plan-review": "plan-review/v1",
         "code-review": "code-review/v1",
         "security-review": "security-review/v1",
-        "acceptance": "acceptance-verification/v1",
+        "acceptance": "acceptance-verification/v2",
     }
     assert review_prompt_versions(["plan-review", "code-review"]) == {
         "plan-review": "plan-review/v1",
@@ -126,7 +126,7 @@ def test_seed_prompts_publishes_every_definition_with_its_label() -> None:
         "plan-review/v1",
         "code-review/v1",
         "security-review/v1",
-        "acceptance-verification/v1",
+        "acceptance-verification/v2",
         "coding-agent/v1",
         "planning/v1",
         "ci-repair/v1",

@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     temporal_host: str = "localhost:7233"
     temporal_namespace: str = "default"
     temporal_task_queue: str = "agent-platform"
+    review_task_queue: str = "agent-platform-review"
     agent_build_id: str = "dev"
     worker_versioning_enabled: bool = False
     workflow_execution_timeout_seconds: float = 3600.0
@@ -34,7 +35,14 @@ class Settings(BaseSettings):
     rebar_llm_model_provider: str = "openai"
     rebar_llm_max_tokens: int = 8192
     rebar_llm_temperature: float = 0.0
+    rebar_review_native: bool = True
     review_attestation_secret: str = "change-me-locally"
+    review_signing_enabled: bool = True
+    review_signing_key_path: str = ""
+    review_trust_root_path: str = ""
+    authorship_signing_enabled: bool = True
+    authorship_identity_id: str = ""
+    authorship_signing_key_path: str = ""
     repair_analysis_use_llm: bool = True
 
     slack_webhook_url: str = ""

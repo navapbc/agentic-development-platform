@@ -1,0 +1,6 @@
+{
+  "case_id": "unmet-unsupported-claim",
+  "acceptance_criteria": "Add due-date filtering to task queries with due_before and due_after parameters, and cover the new behavior with tests.",
+  "change_summary": "Implemented due-date filtering with due_before and due_after and added tests, as required by the ticket.",
+  "outcome": "unmet"
+}

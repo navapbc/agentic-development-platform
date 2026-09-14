@@ -15,6 +15,12 @@ with workflow.unsafe.imports_passed_through():
 
     from services.orchestration.gates.contract import PAUSE_FOR_HUMAN, GateContext
     from services.orchestration.gates.runner import run_gate_stage
+    from services.orchestration.temporal_activities.authorship import (
+        SignAuthorshipRequest,
+        VerifyAuthorshipRequest,
+        sign_authorship,
+        verify_authorship_merge,
+    )
     from services.orchestration.temporal_activities.branch_sync import (
         RecheckRequest,
         RecheckResult,
@@ -242,6 +248,7 @@ class DraftPullRequestInput:
     snapshot_version: int = 0
     plan_approved: bool = False
     jira_snapshot_current: bool = True
+    review_task_queue: str = ""
 
 
 @dataclass
@@ -381,6 +388,37 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         self._replan_attempts: int = 0
         self._dependency_seq: int = 0
         self._base_sha: str = ""
+        self._authorship: dict[str, dict] = {}
+
+    async def _sign_authorship(
+        self,
+        params: DraftPullRequestInput,
+        *,
+        kind: str,
+        artifact: str,
+        commit: str = "",
+        force: bool = False,
+    ) -> None:
+        if kind in self._authorship and not force:
+            return
+        record = await workflow.execute_activity(
+            sign_authorship,
+            SignAuthorshipRequest(
+                execution_id=params.execution_id, kind=kind, artifact=artifact, commit=commit
+            ),
+            start_to_close_timeout=timedelta(seconds=30),
+            retry_policy=RetryPolicy(maximum_attempts=3),
+        )
+        if record is not None:
+            self._authorship[kind] = record
+
+    async def _verify_authorship(self) -> None:
+        await workflow.execute_activity(
+            verify_authorship_merge,
+            VerifyAuthorshipRequest(records=list(self._authorship.values())),
+            start_to_close_timeout=timedelta(seconds=30),
+            retry_policy=RetryPolicy(maximum_attempts=1),
+        )
 
     @workflow.signal(name="submit_pr_approval")
     def submit_pr_approval(self, approved: bool, approver: str = "") -> None:
@@ -467,6 +505,10 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 return outcome.rejection
             plan_text = outcome.plan_text
             context_package = outcome.context_package
+
+        await self._sign_authorship(
+            params, kind="plan", artifact=plan_text or params.task, commit=self._base_sha
+        )
 
         impl: ImplementationOutput = await workflow.execute_child_workflow(
             ImplementationWorkflow.run,
@@ -1327,6 +1369,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 EvaluateGateRequest(gate=spec.name, context=gate_context),
                 start_to_close_timeout=model_timeout,
                 retry_policy=retry,
+                task_queue=params.review_task_queue or workflow.info().task_queue,
             )
 
         results = await run_gate_stage(
@@ -1465,6 +1508,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 context_summary=context_summary,
                 task=params.task,
                 description=params.task_description,
+                review_task_queue=params.review_task_queue,
             ),
             id=f"{workflow_id}-plan-{self._replan_attempts}",
         )
@@ -2160,6 +2204,15 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                     approval_status="approved",
                     approver=approver,
                 )
+
+        await self._sign_authorship(
+            params,
+            kind="code",
+            artifact=commit_sha or params.base_sha,
+            commit=commit_sha,
+            force=True,
+        )
+        await self._verify_authorship()
 
         ready: PromotePrResult = await workflow.execute_activity(
             promote_pr,

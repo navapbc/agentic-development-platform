@@ -62,6 +62,7 @@ services:
     restart: "no"
     environment:
       ALEMBIC_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-platform}:${POSTGRES_PASSWORD:-change-me-locally}@postgres:5432/agent_platform
+      DB_MIGRATE_IN_CONTAINER: "1"
     depends_on:
       postgres:
         condition: service_healthy
@@ -100,6 +101,32 @@ services:
       COORDINATION_URL: http://coordination-service:8130
       JIRA_ACLI_PATH: /app/vendor/bin/acli
       EXECUTION_WORKSPACE_ROOT: /home/appuser/agent-workspaces
+    depends_on:
+      temporal:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
+      litellm:
+        condition: service_started
+
+  review-worker:
+    <<: *python-service
+    command: ["python", "-m", "services.orchestration.worker"]
+    volumes:
+      - ./config/local:/app/config/local:ro
+      - ${HOME}/.aws:/home/appuser/.aws:ro
+    environment:
+      WORKER_ROLE: review
+      AGENT_BUILD_ID: ${AGENT_BUILD_ID:-dev}
+      REPO_INTELLIGENCE_URL: http://repo-intelligence:8120
+      COORDINATION_URL: http://coordination-service:8130
+      JIRA_ACLI_PATH: /app/vendor/bin/acli
+      EXECUTION_WORKSPACE_ROOT: /home/appuser/agent-workspaces
+      AWS_PROFILE: ${AWS_PROFILE}
+      AWS_REGION: ${AWS_REGION}
+      REBAR_LLM_CONFIG_FILE: /app/config/local/rebar-review.toml
     depends_on:
       temporal:
         condition: service_healthy

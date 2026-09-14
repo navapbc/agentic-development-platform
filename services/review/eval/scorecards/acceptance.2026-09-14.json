@@ -1,0 +1,87 @@
+{
+  "adequacy_bar": {
+    "max_false_accepts": 0,
+    "max_false_block_rate": 0.2,
+    "min_agreement_rate": 0.8
+  },
+  "cases": [
+    {
+      "agreement": true,
+      "case_id": "met-aria-labels",
+      "false_accept": false,
+      "false_block": false,
+      "outcome": "met",
+      "predicted": "met",
+      "verdict": "pass"
+    },
+    {
+      "agreement": true,
+      "case_id": "met-config-default",
+      "false_accept": false,
+      "false_block": false,
+      "outcome": "met",
+      "predicted": "met",
+      "verdict": "pass"
+    },
+    {
+      "agreement": true,
+      "case_id": "met-error-status",
+      "false_accept": false,
+      "false_block": false,
+      "outcome": "met",
+      "predicted": "met",
+      "verdict": "pass"
+    },
+    {
+      "agreement": true,
+      "case_id": "met-external-link",
+      "false_accept": false,
+      "false_block": false,
+      "outcome": "met",
+      "predicted": "met",
+      "verdict": "pass"
+    },
+    {
+      "agreement": true,
+      "case_id": "unmet-partial-criteria",
+      "false_accept": false,
+      "false_block": false,
+      "outcome": "unmet",
+      "predicted": "unmet",
+      "verdict": "block"
+    },
+    {
+      "agreement": true,
+      "case_id": "unmet-silent-catch",
+      "false_accept": false,
+      "false_block": false,
+      "outcome": "unmet",
+      "predicted": "unmet",
+      "verdict": "block"
+    },
+    {
+      "agreement": true,
+      "case_id": "unmet-unsupported-claim",
+      "false_accept": false,
+      "false_block": false,
+      "outcome": "unmet",
+      "predicted": "unmet",
+      "verdict": "block"
+    }
+  ],
+  "generated_at": "2026-09-14T22:50:25.425046+00:00",
+  "harness_version": "acceptance-harness/2",
+  "rates": {
+    "agreement_rate": 1.0,
+    "false_block_rate": 0.0
+  },
+  "record_type": "acceptance_scorecard",
+  "totals": {
+    "agreements": 7,
+    "cases": 7,
+    "false_accepts": 0,
+    "false_blocks": 0,
+    "met_cases": 4,
+    "unmet_cases": 3
+  }
+}

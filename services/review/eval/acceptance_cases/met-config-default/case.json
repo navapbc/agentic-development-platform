@@ -1,0 +1,6 @@
+{
+  "case_id": "met-config-default",
+  "acceptance_criteria": "When the request timeout is not configured, the client must default to 30 seconds rather than leaving it undefined.",
+  "change_summary": "Defaulted the request timeout to 30 seconds when it is not configured.",
+  "outcome": "met"
+}

@@ -27,6 +27,29 @@ def _include_object(obj, name, type_, reflected, compare_to):
     return not (type_ == "table" and getattr(obj, "schema", None) not in (SCHEMA, None))
 
 
+def _guard_host_apply() -> None:
+    """Refuse to apply migrations from outside the db-migrate container.
+
+    Migrations are applied only through the db-migrate container so the applied
+    scripts always match the deployed image and no host run can advance the
+    database past what the container carries. The db-migrate service sets
+    DB_MIGRATE_IN_CONTAINER. Authoring commands such as revision autogenerate stay
+    available on the host because they do not change the database revision. This
+    guard covers the alembic command line and does not intercept the alembic Python
+    API.
+    """
+    if os.environ.get("DB_MIGRATE_IN_CONTAINER") == "1":
+        return
+    cmd_opts = getattr(config, "cmd_opts", None)
+    cmd = getattr(cmd_opts, "cmd", None)
+    command = cmd[0].__name__ if cmd else ""
+    if command in {"upgrade", "downgrade", "stamp"}:
+        raise SystemExit(
+            f"Refusing to run 'alembic {command}' on the host. Apply migrations with "
+            "'inv db-migrate', which runs the db-migrate container. See AGENTS.md."
+        )
+
+
 def run_migrations_offline() -> None:
     context.configure(
         url=config.get_main_option("sqlalchemy.url"),
@@ -65,6 +88,8 @@ def run_migrations_online() -> None:
 
 
 if context.is_offline_mode():
+    _guard_host_apply()
     run_migrations_offline()
 else:
+    _guard_host_apply()
     run_migrations_online()

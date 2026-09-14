@@ -18,7 +18,7 @@ def test_prompt_versions_map_enabled_review_gates():
     assert versions == {
         "code-review": "code-review/v1",
         "security-review": "security-review/v1",
-        "acceptance": "acceptance-verification/v1",
+        "acceptance": "acceptance-verification/v2",
     }
 
 
