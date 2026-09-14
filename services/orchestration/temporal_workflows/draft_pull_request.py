@@ -242,6 +242,7 @@ class DraftPullRequestInput:
     snapshot_version: int = 0
     plan_approved: bool = False
     jira_snapshot_current: bool = True
+    review_task_queue: str = ""
 
 
 @dataclass
@@ -1327,6 +1328,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 EvaluateGateRequest(gate=spec.name, context=gate_context),
                 start_to_close_timeout=model_timeout,
                 retry_policy=retry,
+                task_queue=params.review_task_queue or workflow.info().task_queue,
             )
 
         results = await run_gate_stage(
@@ -1465,6 +1467,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 context_summary=context_summary,
                 task=params.task,
                 description=params.task_description,
+                review_task_queue=params.review_task_queue,
             ),
             id=f"{workflow_id}-plan-{self._replan_attempts}",
         )

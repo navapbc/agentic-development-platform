@@ -184,9 +184,38 @@ async def test_invoke_model_resolves_a_system_prompt(monkeypatch) -> None:
     reset_for_testing()
 
 
+def test_token_cost_discounts_cached_tokens():
+    model = "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+    total = 1_000_000
+    full = token_cost_usd(model, total, 1000)
+    cached = token_cost_usd(
+        model, total, 1000, cache_read_tokens=950_000, cache_write_tokens=20_000
+    )
+    assert cached > 0.0
+    assert cached < full / 3
+
+
 def test_token_cost_prices_a_known_model():
     cost = token_cost_usd("bedrock/us.amazon.nova-lite-v1:0", 1000, 500)
     assert cost > 0.0
+
+
+def test_token_cost_prices_a_native_provider_qualified_model():
+    colon = token_cost_usd("bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0", 1000, 500)
+    slash = token_cost_usd("bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0", 1000, 500)
+    assert colon > 0.0
+    assert colon == slash
+
+
+def test_litellm_model_id_normalizes_only_the_provider_separator():
+    from observability.gateway import _litellm_model_id
+
+    assert (
+        _litellm_model_id("bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0")
+        == "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+    )
+    assert _litellm_model_id("review-model") == "review-model"
+    assert _litellm_model_id("bedrock/us.amazon.nova-pro-v1:0") == "bedrock/us.amazon.nova-pro-v1:0"
 
 
 def test_token_cost_zero_without_model_or_tokens():

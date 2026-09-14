@@ -11,6 +11,7 @@ from services.review.types import (
     RawReview,
     ReviewInput,
     ReviewStage,
+    TokenUsage,
     Verdict,
 )
 
@@ -101,6 +102,54 @@ def _raw_from_decided(
     return RawReview(verdict=verdict, findings=findings, provenance=provenance)
 
 
+def _accumulate_usage(acc: dict[str, int], result: dict[str, Any]) -> None:
+    """Add a runner result's per-call token usage into the accumulator."""
+    usage = result.get("_usage") or {}
+    keys = (
+        "input_tokens",
+        "output_tokens",
+        "cache_read_tokens",
+        "cache_write_tokens",
+        "requests",
+    )
+    for key in keys:
+        acc[key] = acc.get(key, 0) + int(usage.get(key, 0) or 0)
+
+
+def _usage_from_acc(acc: dict[str, int]) -> TokenUsage:
+    """Map the accumulated runner usage onto the review TokenUsage fields."""
+    return TokenUsage(
+        prompt_tokens=acc.get("input_tokens", 0),
+        completion_tokens=acc.get("output_tokens", 0),
+        cache_read_tokens=acc.get("cache_read_tokens", 0),
+        cache_write_tokens=acc.get("cache_write_tokens", 0),
+        llm_calls=acc.get("requests", 0),
+    )
+
+
+def _is_failover_exhaustion(exc: BaseException) -> bool:
+    """True when ``exc`` is, or wraps, an all-legs-failed FallbackModel error.
+
+    The runner can surface the group directly or nested inside chained or grouped
+    exceptions, so the cause, context, and any ExceptionGroup members are walked.
+    """
+    from pydantic_ai.exceptions import FallbackExceptionGroup
+
+    seen: set[int] = set()
+
+    def _walk(node: BaseException | None) -> bool:
+        if node is None or id(node) in seen:
+            return False
+        seen.add(id(node))
+        if isinstance(node, FallbackExceptionGroup):
+            return True
+        if isinstance(node, BaseExceptionGroup) and any(_walk(sub) for sub in node.exceptions):
+            return True
+        return _walk(node.__cause__) or _walk(node.__context__)
+
+    return _walk(exc)
+
+
 class RebarReviewKernel:
     def run(self, review: ReviewInput) -> RawReview:
         from dataclasses import replace
@@ -119,8 +168,32 @@ class RebarReviewKernel:
             cfg = replace(cfg, repo_path=review.repo_root)
         handle = resolve_gate_handle(review.ref, review.source, review.repo_root)
         cfg = apply_handle(cfg, handle)
-        with gate_read_root(handle):
-            return self._run_multipass(review, cfg, tier)
+        try:
+            with gate_read_root(handle):
+                return self._run_multipass(review, cfg, tier)
+        except BaseException as exc:  # noqa: BLE001  narrowed by _is_failover_exhaustion
+            if not _is_failover_exhaustion(exc):
+                raise
+            return self._block_on_failover(cfg, tier)
+
+    def _block_on_failover(self, cfg: Any, tier: str) -> RawReview:
+        """Return a blocking verdict when every native review leg was unavailable.
+
+        A both-leg failure follows the normal block path with a zero-usage row so
+        the gate attests and records it rather than raising into the workflow.
+        """
+        finding = Finding(
+            finding_id="0",
+            severity="high",
+            blocking=True,
+            title="Review model unavailable",
+            detail="Every review model leg failed to respond, so the change cannot be cleared.",
+            location=None,
+        )
+        provenance = [
+            ModelProvenance(leg="finder", tier=tier, model_id=self._provenance_model_id(cfg, tier))
+        ]
+        return RawReview(verdict=Verdict.BLOCK, findings=[finding], provenance=provenance)
 
     def _run_multipass(self, review: ReviewInput, cfg: Any, tier: str) -> RawReview:
         from dataclasses import replace
@@ -131,24 +204,26 @@ class RebarReviewKernel:
             suppress_and_dedup,
             verify_findings,
         )
-        from rebar.llm.runner import RunRequest, get_runner
+        from rebar.llm.runner import RunRequest
 
         spec = _MULTIPASS[review.stage]
         impact_fn = _register_and_impact(spec["finder_schema"])
-        runner = get_runner(cfg)
         cfg = replace(cfg, temperature=0.0)
-        exec_mode = "agentic" if review.repo_root else "single_turn"
         reviewers = list(review.reviewers) or ["plan-reviewer"]
         subject = spec["subject"]
+        usage_acc: dict[str, int] = {}
+        runner = self._runner_for(cfg)
+        answered_model: str | None = None
+        exec_mode = "agentic" if review.repo_root else "single_turn"
 
         finder = RunRequest(
             system_prompt=review.system_prompt,
             instructions=(
                 f"## The {subject} under review\n{review.instructions}\n\n"
-                f"Surface every grounded defect in this {subject}. Tag each finding with one "
-                f"or more criteria from {spec['criteria']}. Provide the evidence that grounds "
-                "it, a quote from the subject or a repository citation, and its impact. Return "
-                f"an empty list for a sound {subject}."
+                f"Surface every grounded defect in this {subject}. Tag each finding with "
+                f"one or more criteria from {spec['criteria']}. Provide the evidence that "
+                "grounds it, a quote from the subject or a repository citation, and its "
+                f"impact. Return an empty list for a sound {subject}."
             ),
             config=cfg,
             reviewers=reviewers,
@@ -156,7 +231,10 @@ class RebarReviewKernel:
             output_schema=spec["finder_schema"],
             execution_mode=exec_mode,
         )
-        pass1 = runner.run(finder).get("findings", []) or []
+        finder_result = runner.run(finder)
+        _accumulate_usage(usage_acc, finder_result)
+        answered_model = finder_result.get("model") or answered_model
+        pass1 = finder_result.get("findings", []) or []
         kept, _dropped = suppress_and_dedup(pass1)
 
         def run_chunk(instructions: str, context: str) -> list[dict[str, Any]]:
@@ -169,7 +247,9 @@ class RebarReviewKernel:
                 output_schema=spec["verify_schema"],
                 execution_mode=exec_mode,
             )
-            return runner.run(request).get("verifications", []) or []
+            chunk_result = runner.run(request)
+            _accumulate_usage(usage_acc, chunk_result)
+            return chunk_result.get("verifications", []) or []
 
         verified = verify_findings(
             kept,
@@ -184,5 +264,26 @@ class RebarReviewKernel:
             threshold_for=lambda _criteria: (0.95, True),
             impact_fn=impact_fn,
         )
-        model_id = getattr(cfg, "model", None)
-        return _raw_from_decided(decided, tier, model_id)
+        model_id = answered_model or self._provenance_model_id(cfg, tier)
+        raw = _raw_from_decided(decided, tier, model_id)
+        raw.usage = _usage_from_acc(usage_acc)
+        return raw
+
+    @staticmethod
+    def _runner_for(cfg: Any) -> Any:
+        """Build the rebar runner for a review config.
+
+        Native review runs through rebar's normal runner path, not the model-override
+        hook: the runner builds a real Bedrock model object (carrying a
+        ``BedrockModelProfile``), which is what enables Anthropic prompt caching, and
+        it reads the Claude-to-Nova fallback chain from the model-class config so the
+        failover is native. The model-override hook forces caching off, so it is not
+        used here.
+        """
+        from rebar.llm.runner import get_runner
+
+        return get_runner(cfg)
+
+    @staticmethod
+    def _provenance_model_id(cfg: Any, tier: str) -> str | None:
+        return getattr(cfg, "model", None)

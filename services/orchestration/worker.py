@@ -5,12 +5,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from typing import Any
 
 from observability import (
     configure_logging,
     configure_metrics,
     configure_tracing,
     install_litellm_header_propagation,
+    instrument_llm_tracing,
     temporal_interceptors,
 )
 from scripts.config import get_settings
@@ -83,7 +85,10 @@ log = logging.getLogger("workflow-worker")
 WORKER_ROLE_ALL = "all"
 WORKER_ROLE_WORKFLOW = "workflow"
 WORKER_ROLE_ACTIVITY = "activity"
-_WORKER_ROLES = frozenset({WORKER_ROLE_ALL, WORKER_ROLE_WORKFLOW, WORKER_ROLE_ACTIVITY})
+WORKER_ROLE_REVIEW = "review"
+_WORKER_ROLES = frozenset(
+    {WORKER_ROLE_ALL, WORKER_ROLE_WORKFLOW, WORKER_ROLE_ACTIVITY, WORKER_ROLE_REVIEW}
+)
 
 _WORKFLOWS = [
     DurableTaskWorkflow,
@@ -97,6 +102,14 @@ _WORKFLOWS = [
     IntakeWorkflow,
 ]
 
+_REVIEW_ACTIVITIES = [
+    evaluate_gate,
+    review_plan,
+    review_code,
+    review_security,
+    verify_acceptance,
+]
+
 _ACTIVITIES = [
     invoke_model,
     persist_execution_state,
@@ -104,10 +117,7 @@ _ACTIVITIES = [
     record_usage_metrics,
     gather_repo_context,
     count_tick,
-    review_plan,
-    review_code,
-    review_security,
-    verify_acceptance,
+    evaluate_gate,
     claim_work_unit,
     run_implementation_stage,
     synchronize_branch,
@@ -138,12 +148,21 @@ _ACTIVITIES = [
     alert_human_intervention,
     scan_change,
     evaluate_promotion,
-    evaluate_gate,
     load_gate_plan,
     classify_test_failures,
     record_manifest,
     reconcile_intake_pass,
 ]
+
+
+def _all_activities() -> list:
+    seen: set[int] = set()
+    combined = []
+    for activity in [*_ACTIVITIES, *_REVIEW_ACTIVITIES]:
+        if id(activity) not in seen:
+            seen.add(id(activity))
+            combined.append(activity)
+    return combined
 
 
 def _resolve_role() -> str:
@@ -160,7 +179,7 @@ def build_worker(client: Client, task_queue: str, role: str) -> Worker:
         )
     )
     settings = get_settings()
-    versioning: dict[str, object] = {}
+    versioning: dict[str, Any] = {}
     if settings.worker_versioning_enabled:
         versioning = {
             "build_id": settings.agent_build_id,
@@ -176,11 +195,13 @@ def build_worker(client: Client, task_queue: str, role: str) -> Worker:
         )
     if role == WORKER_ROLE_ACTIVITY:
         return Worker(client, task_queue=task_queue, activities=_ACTIVITIES, **versioning)
+    if role == WORKER_ROLE_REVIEW:
+        return Worker(client, task_queue=task_queue, activities=_REVIEW_ACTIVITIES, **versioning)
     return Worker(
         client,
         task_queue=task_queue,
         workflows=_WORKFLOWS,
-        activities=_ACTIVITIES,
+        activities=_all_activities(),
         workflow_runner=runner,
         **versioning,
     )
@@ -221,6 +242,7 @@ async def main() -> None:
     configure_tracing(service_name)
     configure_metrics(service_name)
     configure_logging(service_name)
+    instrument_llm_tracing()
     install_litellm_header_propagation(settings.rebar_llm_base_url)
     _warm_acli_auth(settings)
     log.info(
@@ -234,14 +256,24 @@ async def main() -> None:
         interceptors=temporal_interceptors(),
     )
 
-    worker = build_worker(client, settings.temporal_task_queue, role)
+    if role == WORKER_ROLE_REVIEW:
+        task_queue = settings.review_task_queue
+    else:
+        task_queue = settings.temporal_task_queue
+
+    workers = [build_worker(client, task_queue, role)]
+    queues = [task_queue]
+    if role == WORKER_ROLE_ALL:
+        workers.append(build_worker(client, settings.review_task_queue, WORKER_ROLE_REVIEW))
+        queues.append(settings.review_task_queue)
+
     log.info(
-        "worker started on task queue '%s' (role=%s, build=%s)",
-        settings.temporal_task_queue,
+        "worker started on task queues %s (role=%s, build=%s)",
+        queues,
         role,
         settings.agent_build_id,
     )
-    await worker.run()
+    await asyncio.gather(*(worker.run() for worker in workers))
 
 
 if __name__ == "__main__":

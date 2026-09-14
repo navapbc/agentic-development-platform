@@ -103,6 +103,15 @@ def _instructions(spec: _PromptSpec, req: ReviewRequest) -> str:
     return "\n\n".join(parts)
 
 
+_REPO_GROUNDED_STAGES = frozenset(
+    {
+        ReviewStage.CODE_REVIEW,
+        ReviewStage.SECURITY_REVIEW,
+        ReviewStage.ACCEPTANCE_VERIFICATION,
+    }
+)
+
+
 def _resolve_repo_root(req: ReviewRequest) -> str | None:
     """Resolve a read-only repository root for the reviewer, reusing the RIS checkout.
 
@@ -128,7 +137,7 @@ async def _run_gate(stage: ReviewStage, spec: _PromptSpec, req: ReviewRequest) -
 
     loaded = load_prompt(spec.name)
     gate = build_review_gate()
-    repo_root = _resolve_repo_root(req)
+    repo_root = _resolve_repo_root(req) if stage in _REPO_GROUNDED_STAGES else None
     review_input = ReviewInput(
         stage=stage,
         subject_ref=_subject_ref(req.subject),
@@ -145,7 +154,13 @@ async def _run_gate(stage: ReviewStage, spec: _PromptSpec, req: ReviewRequest) -
         result = await gate.review(review_input, execution_id=req.execution_id)
     model_id = result.provenance[0].model_id if result.provenance else None
     usage = result.usage
-    cost_usd = token_cost_usd(model_id, usage.prompt_tokens, usage.completion_tokens)
+    cost_usd = token_cost_usd(
+        model_id,
+        usage.prompt_tokens,
+        usage.completion_tokens,
+        cache_read_tokens=usage.cache_read_tokens,
+        cache_write_tokens=usage.cache_write_tokens,
+    )
     return ReviewOutcome(
         verdict=result.verdict.value,
         attestation_hash=result.attestation.content_hash,

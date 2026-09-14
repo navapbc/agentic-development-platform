@@ -191,3 +191,51 @@ def test_run_multipass_drops_a_fabricated_citation_and_passes(monkeypatch):
         assert raw.verdict is Verdict.PASS
         assert raw.findings == []
 
+
+class _UsageStubRunner:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def run(self, request):
+        self.calls += 1
+        usage = {
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "cache_read_tokens": 2,
+            "cache_write_tokens": 1,
+            "requests": 1,
+        }
+        if str(request.output_schema or "").endswith("_findings"):
+            return {
+                "findings": [
+                    {
+                        "finding": "store.update crashes on a missing id",
+                        "criteria": ["correctness"],
+                        "evidence": ["app/store.py:20"],
+                        "impact": "crash",
+                    }
+                ],
+                "_usage": usage,
+            }
+        return {
+            "verifications": [{"index": 0, "binary": {"cited_reference_accurate": "yes"}}],
+            "_usage": usage,
+        }
+
+
+def test_run_multipass_sums_usage_across_finder_and_verifiers(monkeypatch):
+    from rebar.llm import runner as rebar_runner
+
+    stub = _UsageStubRunner()
+    monkeypatch.setattr(rebar_runner, "get_runner", lambda cfg: stub)
+    kernel = RebarReviewKernel()
+
+    raw = kernel._run_multipass(_input(ReviewStage.CODE_REVIEW), _StubCfg(), "review-model")
+
+    assert stub.calls >= 2
+    assert raw.usage.prompt_tokens == 10 * stub.calls
+    assert raw.usage.completion_tokens == 5 * stub.calls
+    assert raw.usage.cache_read_tokens == 2 * stub.calls
+    assert raw.usage.cache_write_tokens == 1 * stub.calls
+    assert raw.usage.llm_calls == stub.calls
+

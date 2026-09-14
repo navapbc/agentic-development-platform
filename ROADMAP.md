@@ -2,7 +2,7 @@
 
 This roadmap groups the remaining platform work into versions. The authoritative, code-verified feature list and per-feature detail live in the [remaining-work roadmap plan](docs/plans/2026-09-02-1801-feat-remaining-work-roadmap-plan.md). Each version below names its theme, its goal, and its features with an effort estimate in hours of uninterrupted work. Effort ranges carry the confidence the source plan recorded.
 
-One remaining feature has a dedicated implementation plan already. The rest link to their entry in the roadmap plan.
+Every v0.2.0 feature has a dedicated implementation plan. Later versions link to their entry in the roadmap plan until their plans are written.
 
 Total remaining scope is roughly 119 to 139 hours across 19 features.
 
@@ -25,11 +25,13 @@ Goal. The rebar review gates run on the native Bedrock path with per-leg failove
 | Feature | Effort | Detail |
 |---|---|---|
 | Native Bedrock review path | 6h | [plan](docs/plans/2026-09-02-2042-feat-native-bedrock-review-path-plan.md) |
-| Signed review verdicts | 8h | [roadmap](docs/plans/2026-09-02-1801-feat-remaining-work-roadmap-plan.md) |
-| Acceptance-gate live validation | 3-6h (medium) | [roadmap](docs/plans/2026-09-02-1801-feat-remaining-work-roadmap-plan.md) |
-| Authored-identity signing | 8-16h (low) | [roadmap](docs/plans/2026-09-02-1801-feat-remaining-work-roadmap-plan.md) |
+| Signed review verdicts | 8h | [plan](docs/plans/2026-09-11-2100-feat-signed-review-verdicts-plan.md) |
+| Acceptance-gate live validation | 3-6h (medium) | [plan](docs/plans/2026-09-11-2110-feat-acceptance-gate-live-validation-plan.md) |
+| Authored-identity signing | 8-16h (low) | [plan](docs/plans/2026-09-11-2120-feat-authored-identity-signing-plan.md) |
 
 Version effort. 25-36h.
+
+Sequencing. Native Bedrock review path first, since it settles the review path and stands up the dedicated review worker the later features build on. Signed review verdicts next, mounting its signing key on that review worker. Acceptance-gate live validation after, so it validates the settled review path. Authored-identity signing last, since it carries the most uncertainty and gates on its own coupling evaluation.
 
 ## v0.3.0 AWS transition and FedRAMP readiness
 

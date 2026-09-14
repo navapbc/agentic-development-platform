@@ -6,6 +6,7 @@ from services.orchestration.temporal_activities import review
 from services.orchestration.temporal_activities.review import (
     ReviewRequest,
     review_code,
+    review_plan,
     review_security,
     verify_acceptance,
 )
@@ -169,3 +170,29 @@ def test_resolve_repo_root_returns_none_for_missing_path(monkeypatch):
 def test_resolve_repo_root_none_without_repo():
     req = ReviewRequest(task_id="T", execution_id="E", subject="s")
     assert review._resolve_repo_root(req) is None
+
+
+async def test_code_review_is_repo_grounded(monkeypatch):
+    monkeypatch.setattr(review, "_resolve_repo_root", lambda req: "/repos/demo")
+    _, kernel, _ = await _invoke(monkeypatch, review_code, _clean("review-model"))
+    assert kernel.seen[0].repo_root == "/repos/demo"
+
+
+async def test_security_review_is_repo_grounded(monkeypatch):
+    monkeypatch.setattr(review, "_resolve_repo_root", lambda req: "/repos/demo")
+    _, kernel, _ = await _invoke(monkeypatch, review_security, _clean("security-review-model"))
+    assert kernel.seen[0].repo_root == "/repos/demo"
+
+
+async def test_acceptance_is_repo_grounded(monkeypatch):
+    monkeypatch.setattr(review, "_resolve_repo_root", lambda req: "/repos/demo")
+    _, kernel, _ = await _invoke(monkeypatch, verify_acceptance, _clean("evaluation-model"))
+    assert kernel.seen[0].repo_root == "/repos/demo"
+
+
+async def test_plan_review_stays_single_turn(monkeypatch):
+    monkeypatch.setattr(
+        review, "_resolve_repo_root", lambda req: (_ for _ in ()).throw(AssertionError("called"))
+    )
+    _, kernel, _ = await _invoke(monkeypatch, review_plan, _clean("review-model"))
+    assert kernel.seen[0].repo_root is None

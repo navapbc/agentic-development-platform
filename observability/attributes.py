@@ -27,3 +27,8 @@ GEN_AI_REQUEST_MODEL = "gen_ai.request.model"
 GEN_AI_RESPONSE_MODEL = "gen_ai.response.model"
 GEN_AI_USAGE_INPUT_TOKENS = "gen_ai.usage.input_tokens"
 GEN_AI_USAGE_OUTPUT_TOKENS = "gen_ai.usage.output_tokens"
+
+GEN_AI_PREFIX = "gen_ai."
+
+LANGFUSE_SESSION_ID = "langfuse.session.id"
+LANGFUSE_TRACE_METADATA_PREFIX = "langfuse.trace.metadata."

@@ -107,6 +107,33 @@ def test_configure_logging_is_idempotent():
     reset_logging_for_testing()
 
 
+def test_logging_redacts_aws_credentials():
+
+    reset_logging_for_testing()
+    exporter = InMemoryLogExporter()
+    assert configure_logging("test-redaction", exporter=exporter) is True
+
+    logging.getLogger("adevx.test").warning(
+        "boto session AKIAIOSFODNN7EXAMPLE aws_secret_access_key=wJalrXUtnFEMIabcd1234"
+    )
+    force_flush_logs()
+
+    messages = [str(record.log_record.body) for record in exporter.get_finished_logs()]
+    assert messages
+    assert all("AKIAIOSFODNN7EXAMPLE" not in message for message in messages)
+    assert all("wJalrXUtnFEMIabcd1234" not in message for message in messages)
+
+    reset_logging_for_testing()
+
+
+def test_redact_secrets_scrubs_known_patterns():
+    from observability.logs import redact_secrets
+
+    assert "AKIAIOSFODNN7EXAMPLE" not in redact_secrets("id=AKIAIOSFODNN7EXAMPLE")
+    assert "topsecret" not in redact_secrets("aws_session_token=topsecret")
+    assert redact_secrets("gate parked for review") == "gate parked for review"
+
+
 def test_force_flush_metrics_never_raises_without_configuration():
     reset_metrics_for_testing()
     force_flush_metrics()

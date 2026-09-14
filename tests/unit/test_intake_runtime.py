@@ -56,6 +56,7 @@ async def test_start_sets_run_flags_and_no_ci_job(monkeypatch: pytest.MonkeyPatc
     assert arg.run_approval is False
     assert arg.run_planning is True
     assert arg.await_pr_close is False
+    assert arg.review_task_queue == "agent-platform-review"
 
 
 @pytest.mark.asyncio

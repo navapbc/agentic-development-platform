@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 from observability import (
     attributes as attrs,
@@ -16,6 +18,7 @@ from observability import (
     stage_span,
     temporal_interceptors,
 )
+from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 
@@ -71,6 +74,109 @@ def test_bound_identifiers_stamp_every_span(exporter: InMemorySpanExporter) -> N
     for name in ("plan", "implement"):
         assert spans[name].attributes[attrs.EXECUTION_ID] == "exec-9"
         assert spans[name].attributes[attrs.TASK_ID] == "TASK-9"
+
+
+def test_bound_execution_stamps_the_langfuse_session_join(exporter: InMemorySpanExporter) -> None:
+    tracer = get_tracer()
+    with (
+        bind_execution(
+            execution_id="exec-lf",
+            task_id="TASK-lf",
+            stage="plan-review",
+            prompt_version="v2",
+        ),
+        tracer.start_as_current_span("gen"),
+    ):
+        pass
+
+    span = cast(ReadableSpan, _by_name(exporter)["gen"])
+    attributes = span.attributes or {}
+    assert attributes[attrs.LANGFUSE_SESSION_ID] == "exec-lf"
+    assert attributes[f"{attrs.LANGFUSE_TRACE_METADATA_PREFIX}stage"] == "plan-review"
+    assert attributes[f"{attrs.LANGFUSE_TRACE_METADATA_PREFIX}task_id"] == "TASK-lf"
+    assert attributes[f"{attrs.LANGFUSE_TRACE_METADATA_PREFIX}prompt_version"] == "v2"
+
+
+def test_genai_exporter_forwards_only_generation_spans() -> None:
+    from observability.telemetry import _GenAISpanExporter
+    from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
+
+    class _Inner(SpanExporter):
+        def __init__(self) -> None:
+            self.exported: list[object] = []
+
+        def export(self, spans):
+            self.exported.extend(spans)
+            return SpanExportResult.SUCCESS
+
+        def shutdown(self) -> None:
+            return None
+
+        def force_flush(self, timeout_millis: int = 30000) -> bool:
+            return True
+
+    class _Span:
+        def __init__(self, attributes: dict[str, object]) -> None:
+            self.attributes = attributes
+
+    inner = _Inner()
+    exporter = _GenAISpanExporter(inner)
+    generation = _Span({attrs.GEN_AI_REQUEST_MODEL: "claude-x"})
+    other = _Span({attrs.STAGE: "plan-review"})
+
+    result = exporter.export([generation, other])
+
+    assert result is SpanExportResult.SUCCESS
+    assert inner.exported == [generation]
+
+
+def test_genai_exporter_skips_the_inner_export_without_generations() -> None:
+    from observability.telemetry import _GenAISpanExporter
+    from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
+
+    class _Inner(SpanExporter):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def export(self, spans):
+            self.calls += 1
+            return SpanExportResult.SUCCESS
+
+        def shutdown(self) -> None:
+            return None
+
+        def force_flush(self, timeout_millis: int = 30000) -> bool:
+            return True
+
+    class _Span:
+        attributes: dict[str, object] = {"stage": "plan-review"}
+
+    inner = _Inner()
+    result = _GenAISpanExporter(inner).export([_Span()])
+
+    assert result is SpanExportResult.SUCCESS
+    assert inner.calls == 0
+
+
+def test_build_langfuse_exporter_requires_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+    from observability.telemetry import _build_langfuse_exporter, _GenAISpanExporter
+
+    for key in ("LANGFUSE_HOST", "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY"):
+        monkeypatch.delenv(key, raising=False)
+    assert _build_langfuse_exporter() is None
+
+    monkeypatch.setenv("LANGFUSE_HOST", "http://langfuse-web:3000")
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-test")
+    exporter = _build_langfuse_exporter()
+    assert isinstance(exporter, _GenAISpanExporter)
+
+
+def test_instrument_llm_tracing_is_idempotent() -> None:
+    from observability import instrument_llm_tracing
+
+    assert instrument_llm_tracing() is True
+    assert instrument_llm_tracing() is True
 
 
 def test_spans_form_one_connected_tree(exporter: InMemorySpanExporter) -> None:

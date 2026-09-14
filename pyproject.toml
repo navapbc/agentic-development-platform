@@ -55,7 +55,7 @@ dev = [
 ]
 all = [
     "agentic-dev-platform[reasoning,review,sandbox,gateway,observability,prompts]",
-    "pydantic-ai-slim[openai]>=1,<2",
+    "pydantic-ai-slim[openai,bedrock]>=1,<2",
 ]
 
 [build-system]

@@ -73,6 +73,7 @@ class TemporalStarter:
                 run_approval=self._settings.intake_run_approval,
                 run_dependency_detection=self._settings.dependency_detection_enabled,
                 max_dependency_replans=self._settings.dependency_replan_attempts,
+                review_task_queue=self._settings.review_task_queue,
                 snapshot_version=start.snapshot_version,
                 run_test_triage=run_test_triage,
                 await_pr_close=await_pr_close,

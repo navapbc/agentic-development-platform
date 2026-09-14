@@ -48,6 +48,7 @@ class PlanReviewInput:
     context_summary: str = ""
     task: str = ""
     description: str = ""
+    review_task_queue: str = ""
 
 
 @dataclass
@@ -196,6 +197,7 @@ class PlanReviewWorkflow:
                 ),
                 start_to_close_timeout=model_timeout,
                 retry_policy=retry,
+                task_queue=params.review_task_queue or workflow.info().task_queue,
             )
             plan_prompt += outcome.prompt_tokens
             plan_completion += outcome.completion_tokens

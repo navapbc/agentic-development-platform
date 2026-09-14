@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import contextlib
+import types
+
+import pytest
 from rebar.llm.config import LLMConfig
 from rebar.llm.runner import FakeRunner, Runner, RunRequest, get_runner
+from services.review.types import ReviewInput, ReviewStage
 
 
 def _request(cfg: LLMConfig) -> RunRequest:
@@ -12,6 +17,19 @@ def _request(cfg: LLMConfig) -> RunRequest:
         instructions="return findings",
         config=cfg,
         reviewers=["reviewer-a"],
+    )
+
+
+def _review_input() -> ReviewInput:
+    return ReviewInput(
+        stage=ReviewStage.PLAN_REVIEW,
+        subject_ref="s",
+        context_ref="c",
+        prompt_name="plan-review",
+        prompt_version="v1",
+        system_prompt="review the plan",
+        instructions="the plan",
+        reviewers=("plan-reviewer",),
     )
 
 
@@ -38,3 +56,80 @@ def test_fake_runner_returns_a_validated_review_result():
     assert result["runner"] == "fake"
     assert result["findings"] == []
     assert result["summary"] == "clean"
+
+
+def test_is_failover_exhaustion_detects_group_cause_and_nesting():
+    from pydantic_ai.exceptions import FallbackExceptionGroup
+    from services.review.kernel import _is_failover_exhaustion
+
+    group = FallbackExceptionGroup("all failed", [ValueError("a")])
+    assert _is_failover_exhaustion(group) is True
+
+    wrapped = RuntimeError("wrapped")
+    wrapped.__cause__ = group
+    assert _is_failover_exhaustion(wrapped) is True
+
+    nested = ExceptionGroup("outer", [group])
+    assert _is_failover_exhaustion(nested) is True
+
+    assert _is_failover_exhaustion(ValueError("unrelated")) is False
+
+
+def test_block_on_failover_is_a_zero_usage_block():
+    from services.review.kernel import RebarReviewKernel
+    from services.review.types import TokenUsage, Verdict
+
+    raw = RebarReviewKernel()._block_on_failover(types.SimpleNamespace(), "review-model")
+
+    assert raw.verdict is Verdict.BLOCK
+    assert raw.usage == TokenUsage()
+    assert len(raw.findings) == 1
+    assert raw.findings[0].blocking is True
+    assert raw.provenance[0].tier == "review-model"
+
+
+def _patch_gate_source(monkeypatch, cfg) -> None:
+    import rebar.llm.gate_source as gate_source
+    import services.review.llm as review_llm
+
+    monkeypatch.setattr(gate_source, "resolve_gate_handle", lambda *a, **k: object())
+    monkeypatch.setattr(gate_source, "apply_handle", lambda config, handle: config)
+    monkeypatch.setattr(
+        gate_source, "gate_read_root", lambda handle: contextlib.nullcontext()
+    )
+    monkeypatch.setattr(review_llm, "review_llm_config", lambda tier: cfg)
+
+
+def test_run_converts_failover_exhaustion_to_a_block(monkeypatch):
+    from pydantic_ai.exceptions import FallbackExceptionGroup
+    from services.review.kernel import RebarReviewKernel
+    from services.review.types import Verdict
+
+    cfg = types.SimpleNamespace(model_provider="bedrock", model=None)
+    _patch_gate_source(monkeypatch, cfg)
+
+    def _raise(self, review, config, tier):
+        raise FallbackExceptionGroup("all failed", [ValueError("x")])
+
+    monkeypatch.setattr(RebarReviewKernel, "_run_multipass", _raise)
+
+    raw = RebarReviewKernel().run(_review_input())
+
+    assert raw.verdict is Verdict.BLOCK
+    assert raw.findings[0].blocking is True
+
+
+def test_run_propagates_a_non_failover_error(monkeypatch):
+    from services.review.kernel import RebarReviewKernel
+
+    cfg = types.SimpleNamespace(model_provider="bedrock", model=None)
+    _patch_gate_source(monkeypatch, cfg)
+
+    def _raise(self, review, config, tier):
+        raise ValueError("a real bug")
+
+    monkeypatch.setattr(RebarReviewKernel, "_run_multipass", _raise)
+
+    with pytest.raises(ValueError, match="a real bug"):
+        RebarReviewKernel().run(_review_input())
+
