@@ -122,7 +122,7 @@ async def test_verify_acceptance_clean(monkeypatch):
     outcome, kernel, _ = await _invoke(monkeypatch, verify_acceptance, _clean("evaluation-model"))
 
     assert outcome.verdict == "pass"
-    assert outcome.prompt_version == "acceptance-verification/v1"
+    assert outcome.prompt_version == "acceptance-verification/v2"
     assert kernel.seen[0].stage is ReviewStage.ACCEPTANCE_VERIFICATION
     assert STAGE_TIERS[kernel.seen[0].stage] == "evaluation-model"
 

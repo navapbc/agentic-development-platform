@@ -1,0 +1,6 @@
+{
+  "case_id": "met-error-status",
+  "acceptance_criteria": "Reading a task that does not exist must return a 404 response rather than a 200 with a null body.",
+  "change_summary": "Changed get_task to return a 404 when the task is not found instead of returning 200 with a null body.",
+  "outcome": "met"
+}

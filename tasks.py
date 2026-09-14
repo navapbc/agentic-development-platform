@@ -153,6 +153,38 @@ def rebar_poll(c, new=False, field_changes=False, status_changes=False, report_o
     c.run(f"python -m scripts.rebar_poll {' '.join(flags)}".strip(), pty=True)
 
 
+def _host_source_control_env() -> dict[str, str]:
+    """Rewrite the container mount roots used by the workers to their host directories.
+
+    operator-done runs on the host against the same checkouts the workers mount, so the
+    container-relative SOURCE_CONTROL_LOCAL paths from .env must resolve to the host
+    directories that back those compose mounts.
+    """
+    from scripts.config import get_settings
+
+    settings = get_settings()
+    platform_root = os.path.abspath(os.getcwd())
+    mounts = {
+        "/repos": os.path.dirname(platform_root),
+        "/workspaces": os.path.join(platform_root, ".agent-workspaces"),
+    }
+
+    def to_host(container_path: str) -> str:
+        for prefix, host_root in mounts.items():
+            if container_path == prefix:
+                return host_root
+            if container_path.startswith(prefix + "/"):
+                return host_root + container_path[len(prefix) :]
+        return container_path
+
+    local_root = settings.source_control_local_root or "/repos"
+    artifacts_root = settings.source_control_local_artifacts_root or f"{local_root}/.agent-publish"
+    return {
+        "SOURCE_CONTROL_LOCAL_ROOT": to_host(local_root),
+        "SOURCE_CONTROL_LOCAL_ARTIFACTS_ROOT": to_host(artifacts_root),
+    }
+
+
 @task(
     help={
         "workflow-id": "The draft-PR workflow id to complete.",
@@ -171,7 +203,7 @@ def operator_done(
         flags += f" --completion-signal-id {completion_signal_id}"
     if closed_unmerged:
         flags += " --closed-unmerged"
-    c.run(f"python -m scripts.operator_done {flags}", pty=True)
+    c.run(f"python -m scripts.operator_done {flags}", pty=True, env=_host_source_control_env())
 
 
 @task

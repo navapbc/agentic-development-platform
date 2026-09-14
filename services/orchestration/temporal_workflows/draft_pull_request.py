@@ -391,9 +391,15 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         self._authorship: dict[str, dict] = {}
 
     async def _sign_authorship(
-        self, params: DraftPullRequestInput, *, kind: str, artifact: str, commit: str = ""
+        self,
+        params: DraftPullRequestInput,
+        *,
+        kind: str,
+        artifact: str,
+        commit: str = "",
+        force: bool = False,
     ) -> None:
-        if kind in self._authorship:
+        if kind in self._authorship and not force:
             return
         record = await workflow.execute_activity(
             sign_authorship,
@@ -646,10 +652,6 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 )
 
         if outcome.status == BRANCH_READY:
-            commit_sha = self._commit.commit_sha if self._commit else params.base_sha
-            await self._sign_authorship(
-                params, kind="code", artifact=commit_sha or params.base_sha, commit=commit_sha
-            )
             outcome = await self._ci_and_repair(params, impl, outcome, workflow_id)
             while outcome.status == CI_FAILED:
                 await self._alert_human_intervention(params, outcome, workflow_id)
@@ -2203,6 +2205,13 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                     approver=approver,
                 )
 
+        await self._sign_authorship(
+            params,
+            kind="code",
+            artifact=commit_sha or params.base_sha,
+            commit=commit_sha,
+            force=True,
+        )
         await self._verify_authorship()
 
         ready: PromotePrResult = await workflow.execute_activity(

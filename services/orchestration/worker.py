@@ -276,6 +276,11 @@ async def main() -> None:
         if change is not None:
             log.info("recorded review trust-root change: %s", change)
 
+    if role in (WORKER_ROLE_ACTIVITY, WORKER_ROLE_ALL):
+        from services.orchestration.authorship import authorship_signing_preflight
+
+        authorship_signing_preflight(settings)
+
     workers = [build_worker(client, task_queue, role)]
     queues = [task_queue]
     if role == WORKER_ROLE_ALL:

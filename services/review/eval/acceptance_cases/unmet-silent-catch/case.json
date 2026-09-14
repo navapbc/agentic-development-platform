@@ -1,0 +1,6 @@
+{
+  "case_id": "unmet-silent-catch",
+  "acceptance_criteria": "When a webhook delivery fails, log the failure with the delivery id at error level so the failure is traceable.",
+  "change_summary": "Added error logging for failed webhook deliveries so each failure is traceable by delivery id.",
+  "outcome": "unmet"
+}

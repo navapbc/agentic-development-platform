@@ -16,12 +16,19 @@ rebar review integration. The review gates run on the native Bedrock path with p
 - Authored-identity signing on the rebar backend. Each authoring agent signs the plan it produces and the code change it commits under its own rebar identity, and a merge gate verifies both signatures against the identity trust root and fails closed on an absent, tampered, or out-of-trust-root signature. The identity keyring supports trust-on-first-use genesis, signed key rotation with an overlapping window, revocation, and a keyring-change audit record. A Jira deployment has no rebar authorship substrate and does not participate.
 - `REVIEW_SIGNING_ENABLED`, `REVIEW_SIGNING_KEY_PATH`, and `REVIEW_TRUST_ROOT_PATH` settings, with signing on by default, and `openssh-client` in the runtime image so `ssh-keygen` is available.
 - `AUTHORSHIP_SIGNING_ENABLED`, `AUTHORSHIP_IDENTITY_ID`, and `AUTHORSHIP_SIGNING_KEY_PATH` settings for authored-identity signing.
-- An acceptance-gate validation harness and a labeled acceptance set. The set pairs each ticket's acceptance criteria and completion evidence with a met or unmet outcome, and the harness runs the acceptance gate over the set and scores each verdict as an agreement, a false accept, or a false block against a fixed adequacy bar. The live scored run over the configured review path produces a recorded scorecard.
+- An acceptance-gate validation harness and a grounded labeled set. Each case carries a ticket's acceptance criteria, a completion summary, a met or unmet outcome, and a base and head file tree that the harness materializes into a temporary git repository, so the gate reviews a real change grounded at its commit the way production does. The harness scores each verdict as an agreement, a false accept, or a false block against a fixed adequacy bar and records a scorecard.
+- A dedicated acceptance-verification contract. The acceptance stage judges completion-criteria coverage rather than code defects, driving the finder criterion by criterion, framing the reviewer as an acceptance auditor, and blocking on the verification's validity so a confirmed unmet criterion blocks the completion. A live scored run over the grounded set clears the adequacy bar with no false accepts and no false blocks, replacing the borrowed code-review contract that accepted incomplete work.
 
 ### Changed
 
 - Review verdict signing is on by default and fails closed. When signing is enabled but the key or trust root is not configured, a review stage raises rather than downgrading to the symmetric HMAC path. Setting `REVIEW_SIGNING_ENABLED` to false selects the HMAC path for local development.
 - Database migrations apply only through the `db-migrate` container. `inv db-migrate` and `inv db-reset` run that container, which mounts the working-tree migrations so the applied scripts match the checkout, and a guard in the migration environment refuses `alembic upgrade`, `downgrade`, and `stamp` on the host so a host run cannot advance the database past the revisions the container carries.
+
+### Fixed
+
+- Code authorship is signed at promotion over the final commit, so a signature bound to the promoted change survives a CI-repair recommit that advances the branch head. The merge gate verifies the plan and code signatures on every promotion path.
+- The activity worker runs an authored-identity signing preflight at startup. When the capability is active it refuses to start unless `ssh-keygen`, the signing key, and the configured identity's trust root are usable, so a misconfiguration surfaces at startup rather than on the first signed run.
+- `inv operator-done` rewrites the container mount roots in `SOURCE_CONTROL_LOCAL_ROOT` and `SOURCE_CONTROL_LOCAL_ARTIFACTS_ROOT` to the host directories that back the compose mounts, so the host command verifies artifacts at the checkout the workers wrote.
 
 ## 0.1.0 (2026-09-11)
 

@@ -19,7 +19,7 @@ Goal. A deployment can track work in a non-Jira tracker and target a non-GitHub 
 
 ## v0.2.0 rebar review integration
 
-Status. In progress. The native Bedrock review path is delivered as ADEVX-99, signed review verdicts across every review stage as ADEVX-100, and authored-identity signing as ADEVX-101. Acceptance-gate live validation has its labeled set and scoring harness in place, with the live scored run and the contract assessment pending the batch end-to-end.
+Status. In progress. The native Bedrock review path is delivered as ADEVX-99, signed review verdicts across every review stage as ADEVX-100, and authored-identity signing as ADEVX-101. Acceptance-gate live validation is complete, with a dedicated acceptance contract whose grounded scored run clears the adequacy bar.
 Goal. The rebar review gates run on the native Bedrock path with per-leg failover and signed verdicts, and the review path's remaining rebar-dependent gaps are closed. Authored-identity signing depends on the object store introduced in v0.1.0.
 
 | Feature | Effort | Detail |

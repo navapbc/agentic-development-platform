@@ -1,0 +1,6 @@
+{
+  "case_id": "unmet-partial-criteria",
+  "acceptance_criteria": "Support three export formats, CSV, JSON, and XML, each covered by a test.",
+  "change_summary": "Added CSV and JSON export with tests. XML export is stubbed for now.",
+  "outcome": "unmet"
+}

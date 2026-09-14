@@ -1,9 +1,10 @@
-"""Score the acceptance gate over a labeled set and record a scorecard.
+"""Score the acceptance gate over a grounded labeled set and record a scorecard.
 
-The harness runs the acceptance gate through the production kernel path over each
-labeled case and scores the verdict against the known outcome. The adequacy bar is
-fixed below and read rather than computed from results, so the assessment measures
-against a bar set before the run.
+Each case is materialized into a temporary git repository carrying a real
+base-to-change diff, and the acceptance gate reviews that change grounded at its
+commit, the way production reviews an implemented change. The verdict is scored
+against the case's met or unmet label. The adequacy bar is fixed below and read
+rather than computed from results.
 
 Run the live scored run with:
 
@@ -18,7 +19,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import shutil
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -28,16 +31,17 @@ from services.review.eval.acceptance_schema import (
     OUTCOME_MET,
     OUTCOME_UNMET,
     AcceptanceCase,
+    materialize_case,
     read_acceptance_set,
 )
 from services.review.types import ReviewInput, ReviewStage, Verdict
 
-HARNESS_VERSION = "acceptance-harness/1"
+HARNESS_VERSION = "acceptance-harness/2"
 PROMPT_NAME = "acceptance-verification"
 PROMPT_VERSION_TAG = "v1"
 
 _ROOT = Path(__file__).resolve().parents[3]
-_DEFAULT_SET = _ROOT / "services/review/eval/acceptance_set.jsonl"
+_DEFAULT_SET = _ROOT / "services/review/eval/acceptance_cases"
 _SCORECARD_DIR = _ROOT / "services/review/eval/scorecards"
 
 
@@ -67,12 +71,18 @@ def predicted_outcome(verdict: Verdict) -> str:
     return OUTCOME_MET if verdict == Verdict.PASS else OUTCOME_UNMET
 
 
-def build_review_input(case: AcceptanceCase) -> ReviewInput:
+def build_review_input(case: AcceptanceCase, *, repo_root: str, ref: str) -> ReviewInput:
+    changed = "\n".join(case.changed_files()) or "(no file list)"
     subject = (
-        f"Acceptance criteria:\n{case.acceptance_criteria}\n\n"
-        f"Completion evidence:\n{case.completion_evidence}"
+        f"Change under acceptance verification at {ref}.\n"
+        f"Changed files:\n{changed}\n\n"
+        f"Implementation summary:\n{case.change_summary}"
     )
-    digest = hashlib.sha256(subject.encode("utf-8")).hexdigest()
+    instructions = (
+        f"Acceptance criteria:\n{case.acceptance_criteria}\n\n"
+        f"Completion evidence under acceptance verification:\n{subject}"
+    )
+    digest = hashlib.sha256(instructions.encode("utf-8")).hexdigest()
     return ReviewInput(
         stage=ReviewStage.ACCEPTANCE_VERIFICATION,
         subject_ref=f"sha256:{digest}",
@@ -80,8 +90,10 @@ def build_review_input(case: AcceptanceCase) -> ReviewInput:
         prompt_name=PROMPT_NAME,
         prompt_version=PROMPT_VERSION_TAG,
         system_prompt="You verify whether a change meets its acceptance criteria.",
-        instructions=subject,
-        source="acceptance-eval",
+        instructions=instructions,
+        repo_root=repo_root,
+        ref=ref,
+        source="local",
     )
 
 
@@ -175,10 +187,15 @@ class Scorecard:
 
 
 def score(cases: list[AcceptanceCase], kernel: Any) -> Scorecard:
-    """Run the acceptance gate over each case and score verdicts against the labels."""
+    """Materialize each case, run the acceptance gate over its change, and score it."""
     scorecard = Scorecard()
     for case in cases:
-        raw = kernel.run(build_review_input(case))
+        workdir = Path(tempfile.mkdtemp(prefix=f"acc-{case.case_id}-"))
+        try:
+            repo_root, ref = materialize_case(case, workdir)
+            raw = kernel.run(build_review_input(case, repo_root=repo_root, ref=ref))
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
         predicted = predicted_outcome(raw.verdict)
         scorecard.results.append(
             CaseResult(
@@ -199,9 +216,7 @@ def assess(scorecard: Scorecard, bar: AdequacyBar = ADEQUACY_BAR) -> tuple[bool,
             f"agreement rate {scorecard.agreement_rate:.2f} below {bar.min_agreement_rate:.2f}"
         )
     if scorecard.false_accepts > bar.max_false_accepts:
-        reasons.append(
-            f"{scorecard.false_accepts} false accepts exceed {bar.max_false_accepts}"
-        )
+        reasons.append(f"{scorecard.false_accepts} false accepts exceed {bar.max_false_accepts}")
     if scorecard.false_block_rate > bar.max_false_block_rate:
         rate = scorecard.false_block_rate
         reasons.append(f"false block rate {rate:.2f} above {bar.max_false_block_rate:.2f}")
@@ -218,7 +233,7 @@ def _write_scorecard(scorecard: Scorecard) -> Path:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the live acceptance-gate scored run.")
-    parser.add_argument("--set", default=str(_DEFAULT_SET), help="Path to the labeled set.")
+    parser.add_argument("--set", default=str(_DEFAULT_SET), help="Path to the labeled set dir.")
     args = parser.parse_args(argv)
 
     from services.review.kernel import RebarReviewKernel

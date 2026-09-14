@@ -183,6 +183,23 @@ def provision_authoring_identity(
     return identity_id
 
 
+def authorship_signing_preflight(settings: Settings | None = None) -> None:
+    """Fail the worker fast when authored-identity signing is active but unusable.
+
+    A no-op on a backend without the capability. On the rebar backend with an
+    identity configured it checks ssh-keygen, the signing key, and that the identity
+    resolves a trust root in the store, so a misconfiguration surfaces at startup
+    rather than on the first signed run.
+    """
+    resolved = settings or get_settings()
+    if not authorship_signing_active(resolved):
+        return
+    from rebar.attest.sshsig import ensure_available
+
+    ensure_available()
+    provision_authoring_identity(resolved)
+
+
 def build_authorship_event(
     *, execution_id: str, kind: str, artifact_hash: str, commit: str | None = None
 ) -> dict[str, Any]:

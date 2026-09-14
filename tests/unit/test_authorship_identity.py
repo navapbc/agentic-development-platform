@@ -10,6 +10,7 @@ import pytest
 from services.orchestration.authorship import (
     AuthorshipConfigError,
     authorship_signing_active,
+    authorship_signing_preflight,
     create_authoring_identity,
     provision_authoring_identity,
     public_key_line,
@@ -146,3 +147,47 @@ def test_provision_raises_when_identity_absent(tmp_path):
     )
     with pytest.raises(AuthorshipConfigError):
         provision_authoring_identity(settings, repo_root=str(store))
+
+
+def test_preflight_is_a_noop_on_a_non_capable_backend(monkeypatch):
+    from services.orchestration import authorship as lib
+
+    settings = hermetic_settings(ticket_backend="jira", authorship_identity_id="id-1")
+    monkeypatch.setattr(lib, "get_settings", lambda: settings)
+    authorship_signing_preflight(settings)
+
+
+@requires_ssh_keygen
+def test_preflight_passes_for_a_provisioned_identity(tmp_path, monkeypatch):
+    from services.orchestration import authorship as lib
+
+    store = tmp_path / "store"
+    _init_store(store)
+    key_path, pub = _keygen(tmp_path)
+    identity_id = create_authoring_identity("code-agent", "code@nava", pub, repo_root=str(store))
+    settings = hermetic_settings(
+        ticket_backend="rebar",
+        authorship_identity_id=identity_id,
+        authorship_signing_key_path=key_path,
+    )
+    monkeypatch.setattr(lib, "get_settings", lambda: settings)
+    monkeypatch.setattr(lib, "store_repo_root", lambda *a, **k: str(store))
+    authorship_signing_preflight(settings)
+
+
+@requires_ssh_keygen
+def test_preflight_raises_when_identity_absent(tmp_path, monkeypatch):
+    from services.orchestration import authorship as lib
+
+    store = tmp_path / "store"
+    _init_store(store)
+    key_path, _ = _keygen(tmp_path)
+    settings = hermetic_settings(
+        ticket_backend="rebar",
+        authorship_identity_id="0000000000000000",
+        authorship_signing_key_path=key_path,
+    )
+    monkeypatch.setattr(lib, "get_settings", lambda: settings)
+    monkeypatch.setattr(lib, "store_repo_root", lambda *a, **k: str(store))
+    with pytest.raises(AuthorshipConfigError):
+        authorship_signing_preflight(settings)

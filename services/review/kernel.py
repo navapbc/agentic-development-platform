@@ -43,6 +43,54 @@ _MULTIPASS: dict[ReviewStage, dict[str, str]] = {
 }
 
 
+def _finder_instructions(stage: ReviewStage, subject: str, criteria: str, review_body: str) -> str:
+    """Build the finder-pass instructions for a stage.
+
+    The acceptance stage judges completion-criteria coverage rather than code
+    defects, so it drives the finder criterion by criterion and blocks on any
+    criterion the change does not fully satisfy and evidence. Every other stage
+    surfaces grounded defects tagged with the stage's criteria.
+    """
+    header = f"## The {subject} under review\n{review_body}\n\n"
+    if stage is ReviewStage.ACCEPTANCE_VERIFICATION:
+        return header + (
+            "The acceptance criteria are stated in the subject above. Evaluate the change "
+            "against each acceptance criterion in turn. Emit one blocking finding for every "
+            "criterion the change does not fully satisfy, satisfies only partially, or that the "
+            "summary claims is complete without evidence in the change. Name the criterion, quote "
+            "the criterion and the change or its absence that grounds the gap, and state why the "
+            "criterion is not met. Judge only whether the change meets the stated acceptance "
+            "criteria, not code style or defects unrelated to the criteria. Return an empty list "
+            "only when every acceptance criterion is fully satisfied and evidenced by the change."
+        )
+    return header + (
+        f"Surface every grounded defect in this {subject}. Tag each finding with "
+        f"one or more criteria from {criteria}. Provide the evidence that "
+        "grounds it, a quote from the subject or a repository citation, and its "
+        f"impact. Return an empty list for a sound {subject}."
+    )
+
+
+CODE_BLOCK_THRESHOLD = 0.95
+ACCEPTANCE_BLOCK_THRESHOLD = 0.5
+
+
+def _decision_params(stage: ReviewStage, impact_fn: Any) -> tuple[Any, Any]:
+    """Select the pass-3 impact model and block threshold for a stage.
+
+    Acceptance coverage is binary rather than severity-graded. A code-defect impact
+    model scores an unmet-criterion finding too low to block, so the acceptance stage
+    scores every finding at full impact and blocks on the verification's validity
+    instead, meaning a verifier-confirmed unmet criterion blocks the completion. Every
+    other stage keeps its code or plan impact model and the high code threshold.
+    """
+    if stage is ReviewStage.ACCEPTANCE_VERIFICATION:
+        return (lambda _attrs: 1.0), (lambda _criteria: (ACCEPTANCE_BLOCK_THRESHOLD, True))
+    return impact_fn, (lambda _criteria: (CODE_BLOCK_THRESHOLD, True))
+
+
+
+
 @runtime_checkable
 class ReviewKernel(Protocol):
     def run(self, review: ReviewInput) -> RawReview: ...
@@ -218,12 +266,8 @@ class RebarReviewKernel:
 
         finder = RunRequest(
             system_prompt=review.system_prompt,
-            instructions=(
-                f"## The {subject} under review\n{review.instructions}\n\n"
-                f"Surface every grounded defect in this {subject}. Tag each finding with "
-                f"one or more criteria from {spec['criteria']}. Provide the evidence that "
-                "grounds it, a quote from the subject or a repository citation, and its "
-                f"impact. Return an empty list for a sound {subject}."
+            instructions=_finder_instructions(
+                review.stage, subject, spec["criteria"], review.instructions
             ),
             config=cfg,
             reviewers=reviewers,
@@ -258,11 +302,12 @@ class RebarReviewKernel:
             window_tokens=100_000,
             est_tokens=lambda text: len(text) // 4 + 1,
         )
+        decide_impact_fn, threshold_for = _decision_params(review.stage, impact_fn)
         decided = pass3_over_findings(
             kept,
             verified["verifications"],
-            threshold_for=lambda _criteria: (0.95, True),
-            impact_fn=impact_fn,
+            threshold_for=threshold_for,
+            impact_fn=decide_impact_fn,
         )
         model_id = answered_model or self._provenance_model_id(cfg, tier)
         raw = _raw_from_decided(decided, tier, model_id)

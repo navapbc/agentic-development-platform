@@ -89,3 +89,69 @@ async def test_jira_backend_signs_nothing_and_gate_is_inert(monkeypatch):
     )
     assert record is None
     await acts.verify_authorship_merge(acts.VerifyAuthorshipRequest(records=[]))
+
+
+def _record_signed_by(key_path: str, identity_id: str, kind: str) -> dict:
+    event = lib.build_authorship_event(
+        execution_id="e1", kind=kind, artifact_hash=f"{kind}-body", commit=""
+    )
+    envelope = lib.sign_authorship_event(event, key_path=key_path, identity_id=identity_id)
+    return lib.AuthorshipRecord(
+        kind=kind, identity_id=identity_id, event=event, envelope=envelope
+    ).to_dict()
+
+
+class _CollectingSink:
+    def __init__(self) -> None:
+        self.events: list[dict] = []
+
+    def record(self, event: dict) -> None:
+        self.events.append(event)
+
+
+async def test_merge_gate_admits_records_signed_by_a_rotated_key(rebar_signing, tmp_path):
+    settings, store = rebar_signing
+    identity_id = settings.authorship_identity_id
+    genesis_key = settings.authorship_signing_key_path
+    new_key, new_pub = _keygen(tmp_path, "rotated")
+    lib.rotate_identity_key(
+        identity_id,
+        new_pub,
+        current_key_path=genesis_key,
+        repo_root=store,
+        audit=_CollectingSink(),
+    )
+
+    records = [
+        _record_signed_by(new_key, identity_id, "plan"),
+        _record_signed_by(new_key, identity_id, "code"),
+    ]
+    await acts.verify_authorship_merge(acts.VerifyAuthorshipRequest(records=records))
+
+
+async def test_merge_gate_blocks_records_signed_by_a_revoked_key(rebar_signing, tmp_path):
+    settings, store = rebar_signing
+    identity_id = settings.authorship_identity_id
+    genesis_key = settings.authorship_signing_key_path
+    genesis_pub = lib.public_key_line(genesis_key)
+    new_key, new_pub = _keygen(tmp_path, "rotated")
+    audit = _CollectingSink()
+    lib.rotate_identity_key(
+        identity_id, new_pub, current_key_path=genesis_key, repo_root=store, audit=audit
+    )
+    lib.revoke_identity_key(
+        identity_id, genesis_pub, current_key_path=new_key, repo_root=store, audit=audit
+    )
+
+    revoked_records = [
+        _record_signed_by(genesis_key, identity_id, "plan"),
+        _record_signed_by(genesis_key, identity_id, "code"),
+    ]
+    with pytest.raises(lib.AuthorshipVerificationError):
+        await acts.verify_authorship_merge(acts.VerifyAuthorshipRequest(records=revoked_records))
+
+    current_records = [
+        _record_signed_by(new_key, identity_id, "plan"),
+        _record_signed_by(new_key, identity_id, "code"),
+    ]
+    await acts.verify_authorship_merge(acts.VerifyAuthorshipRequest(records=current_records))

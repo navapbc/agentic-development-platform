@@ -1,0 +1,6 @@
+{
+  "case_id": "met-aria-labels",
+  "acceptance_criteria": "Each row's Review application button must be distinguishable to assistive technology. Give every button a unique accessible name that names the application it acts on.",
+  "change_summary": "Added an aria-label to each Review application button that includes the applicant name, so screen readers announce a unique name per button.",
+  "outcome": "met"
+}

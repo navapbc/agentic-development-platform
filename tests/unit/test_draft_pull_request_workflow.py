@@ -194,6 +194,9 @@ def _make_activities(
     policy_human_review: list[str] | None = None,
     plan_pause: bool = False,
     authorship_verify_raises: bool = False,
+    authorship_active: bool = False,
+    authorship_verified: list[list[dict]] | None = None,
+    commit_shas: list[str] | None = None,
 ):
     @activity.defn(name="persist_execution_state")
     async def fake_persist(payload: ExecutionState) -> str:
@@ -277,9 +280,10 @@ def _make_activities(
     @activity.defn(name="commit_and_push")
     async def fake_commit(req: CommitPushRequest) -> CommitPushResult:
         commits.append(req)
-        return CommitPushResult(
-            branch="agent/T-1", commit_sha="c" * 40, pushed=True, replayed=False
-        )
+        sha = "c" * 40
+        if commit_shas:
+            sha = commit_shas[min(len(commits) - 1, len(commit_shas) - 1)]
+        return CommitPushResult(branch="agent/T-1", commit_sha=sha, pushed=True, replayed=False)
 
     @activity.defn(name="create_draft_pr")
     async def fake_create_pr(req: OpenPrRequest) -> OpenPrResult:
@@ -496,10 +500,24 @@ def _make_activities(
 
     @activity.defn(name="sign_authorship")
     async def fake_sign_authorship(req: SignAuthorshipRequest) -> dict | None:
-        return None
+        if not authorship_active:
+            return None
+        return {
+            "kind": req.kind,
+            "identity_id": "id-1",
+            "event": {
+                "uuid": f"{req.execution_id}:{req.kind}",
+                "kind": req.kind,
+                "commit": req.commit,
+                "artifact_hash": req.artifact,
+            },
+            "envelope": "{}",
+        }
 
     @activity.defn(name="verify_authorship_merge")
     async def fake_verify_authorship_merge(req: VerifyAuthorshipRequest) -> None:
+        if authorship_verified is not None:
+            authorship_verified.append(list(req.records))
         if authorship_verify_raises:
             from temporalio.exceptions import ApplicationError
 
@@ -1129,6 +1147,41 @@ async def test_ci_failure_repairs_and_passes():
     assert len(commits) == 2
     assert commits[1].sequence == 105
 
+
+async def test_code_authorship_binds_the_post_repair_commit():
+    verified: list[list[dict]] = []
+    ci_triggers: list = []
+    repairs: list[ApplyCIRepairRequest] = []
+    activities = _make_activities(
+        None,
+        1,
+        [],
+        [],
+        [],
+        ci_triggers=ci_triggers,
+        ci_results=[FAILURE, SUCCESS],
+        repairs=repairs,
+        authorship_active=True,
+        authorship_verified=verified,
+        commit_shas=["c" * 40, "d" * 40],
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            result = await env.client.execute_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+
+    assert result.status == PR_PROMOTED
+    assert result.repair_attempts == 1
+    assert verified, "merge gate verify was not reached"
+    records = {r["kind"]: r for r in verified[-1]}
+    assert set(records) == {"plan", "code"}
+    assert records["code"]["event"]["commit"] == "d" * 40
 
 async def test_triage_patch_verdict_runs_the_repair():
     ci_triggers: list = []
@@ -2321,6 +2374,59 @@ async def test_approval_snapshot_drift_cancels_promotion():
     assert result.promoted is False
     assert len(approvals) == 1
     assert len(promotions) == 0
+
+
+async def test_authorship_signs_both_and_code_binds_the_promoted_commit():
+    verified: list[list[dict]] = []
+    activities = _make_activities(
+        None,
+        1,
+        [],
+        [],
+        [],
+        authorship_active=True,
+        authorship_verified=verified,
+        commit_shas=["c" * 40],
+    )
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with Worker(
+            env.client,
+            task_queue=task_queue,
+            workflows=[
+                DraftPullRequestWorkflow,
+                ImplementationWorkflow,
+                BranchSyncWorkflow,
+                PullRequestWorkflow,
+                PlanReviewWorkflow,
+            ],
+            workflow_runner=SandboxedWorkflowRunner(
+                restrictions=SandboxRestrictions.default.with_passthrough_modules("beartype")
+            ),
+            activities=activities,
+        ):
+            result = await env.client.execute_workflow(
+                DraftPullRequestWorkflow.run,
+                DraftPullRequestInput(
+                    task_id="T-1",
+                    execution_id="exec-1",
+                    repo="agentic-demo-service",
+                    base="main",
+                    base_sha="a" * 40,
+                    task="Implement the change",
+                    issue_key="T-1",
+                    file_impact=["feature.py"],
+                    stored_issue={"summary": "Implement the change"},
+                ),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+
+    assert result.status == PR_PROMOTED
+    assert verified, "merge gate verify was not reached"
+    records = {r["kind"]: r for r in verified[-1]}
+    assert set(records) == {"plan", "code"}
+    assert records["code"]["event"]["commit"] == "c" * 40
 
 
 def test_sequence_stride_exceeds_the_worst_case_intra_execution_offset():

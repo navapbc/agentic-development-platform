@@ -88,6 +88,59 @@ def test_block_on_failover_is_a_zero_usage_block():
     assert raw.provenance[0].tier == "review-model"
 
 
+def test_acceptance_finder_instructions_drive_per_criterion_coverage():
+    from services.review.kernel import _finder_instructions
+
+    text = _finder_instructions(
+        ReviewStage.ACCEPTANCE_VERIFICATION, "completion", "criteria", "body-under-review"
+    )
+    assert "body-under-review" in text
+    assert "each acceptance criterion" in text
+    assert "blocking finding for every criterion" in text
+    assert "only when every acceptance criterion is fully satisfied" in text
+
+
+def test_non_acceptance_finder_instructions_surface_defects():
+    from services.review.kernel import _finder_instructions
+
+    for stage in (
+        ReviewStage.PLAN_REVIEW,
+        ReviewStage.CODE_REVIEW,
+        ReviewStage.SECURITY_REVIEW,
+    ):
+        text = _finder_instructions(stage, "change", "correctness", "body")
+        assert "Surface every grounded defect" in text
+        assert "acceptance criterion" not in text
+
+
+def test_acceptance_decision_blocks_on_validity_not_code_impact():
+    from services.review.kernel import (
+        ACCEPTANCE_BLOCK_THRESHOLD,
+        CODE_BLOCK_THRESHOLD,
+        _decision_params,
+    )
+
+    code_impact = lambda _attrs: 0.4  # noqa: E731
+    impact_fn, threshold_for = _decision_params(ReviewStage.ACCEPTANCE_VERIFICATION, code_impact)
+    assert impact_fn({"anything": True}) == 1.0
+    assert threshold_for([]) == (ACCEPTANCE_BLOCK_THRESHOLD, True)
+    assert ACCEPTANCE_BLOCK_THRESHOLD < CODE_BLOCK_THRESHOLD
+
+
+def test_non_acceptance_decision_keeps_code_impact_and_threshold():
+    from services.review.kernel import CODE_BLOCK_THRESHOLD, _decision_params
+
+    code_impact = lambda _attrs: 0.4  # noqa: E731
+    for stage in (
+        ReviewStage.PLAN_REVIEW,
+        ReviewStage.CODE_REVIEW,
+        ReviewStage.SECURITY_REVIEW,
+    ):
+        impact_fn, threshold_for = _decision_params(stage, code_impact)
+        assert impact_fn is code_impact
+        assert threshold_for([]) == (CODE_BLOCK_THRESHOLD, True)
+
+
 def _patch_gate_source(monkeypatch, cfg) -> None:
     import rebar.llm.gate_source as gate_source
     import services.review.llm as review_llm

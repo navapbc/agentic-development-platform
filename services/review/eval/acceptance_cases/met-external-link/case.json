@@ -1,0 +1,6 @@
+{
+  "case_id": "met-external-link",
+  "acceptance_criteria": "The OAuth launch button opens an external destination in a new tab and must indicate this to assistive technology, with both a visible external icon and screen-reader-only text.",
+  "change_summary": "Added a visible external icon and screen-reader-only text announcing that the OAuth button opens an external site in a new tab.",
+  "outcome": "met"
+}

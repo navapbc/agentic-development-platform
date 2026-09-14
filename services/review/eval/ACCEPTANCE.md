@@ -2,19 +2,21 @@
 
 This directory holds the labeled set, the scoring harness, and the recorded scorecards for validating the acceptance verification gate. The acceptance gate judges whether an implemented change meets a ticket's acceptance criteria. This validation measures whether the gate's verdicts agree with a known-correct outcome over a fixed set.
 
-This validation is distinct from the deterministic review-gate quality harness in the same package. `harness.py` scores a keyword-marker reviewer for the hermetic CI eval gate. `acceptance_harness.py` runs the acceptance gate through the production kernel path and scores it against met and unmet labels, so it exercises the actual reviewer rather than a proxy.
+This validation is distinct from the deterministic review-gate quality harness in the same package. `harness.py` scores a keyword-marker reviewer for the hermetic CI eval gate. `acceptance_harness.py` runs the acceptance gate through the production kernel path over a real change and scores it against met and unmet labels, so it exercises the actual reviewer.
 
-## Labeled set
+## Grounded labeled set
 
-`acceptance_set.jsonl` is a JSONL file. An optional first `meta` record carries notes and a baseline tag. Every other record is a `case` with these fields.
+The set lives under `acceptance_cases/`, one directory per case. Each case grounds the review in a real change so the gate reviews an actual diff, the way production reviews an implemented change at its commit. A case directory contains:
 
-- `case_id` is a stable identifier for the case.
-- `acceptance_criteria` is what the ticket required.
-- `completion_evidence` is what a run reported as its completion.
-- `outcome` is the ground truth, either `met` or `unmet`.
-- `notes` is optional free text.
+- `case.json` with `case_id`, `acceptance_criteria` (what the ticket required), `change_summary` (the completion a run would report), `outcome` (`met` or `unmet`), and an optional `notes`.
+- `base/` a file tree at the starting state.
+- `head/` the file tree after the change.
 
-The set must contain at least one `met` and one `unmet` case so the scorecard can measure both false accepts and false blocks. The current cases are authored seed data pending expansion from real run outputs during the batch validation.
+The harness materializes `base/` and `head/` into a temporary git repository, committing the base tree then the head tree, so the head commit carries the change as a real base-to-head diff. It builds the acceptance review input grounded at that commit and runs the gate. The set must contain at least one `met` and one `unmet` case, and each case must have a non-empty diff. The temporary repositories are removed after each run, so the committed inputs are the only persistent state.
+
+## Adding cases from an implemented change
+
+`snapshot_case` in `acceptance_schema.py` captures a repository's base-to-head diff into a new case directory. Given a repository, a base ref, a head ref, and the case labels, it writes each changed file's base and head content and a `case.json`, then validates the result loads. Use it to turn a workflow run's implemented change into a labeled case for the set.
 
 ## Scoring and the adequacy bar
 
@@ -28,4 +30,8 @@ The adequacy bar is fixed in `acceptance_harness.py` before any run and is read 
 
 ## Running
 
-The live scored run requires the configured review path and consumes model calls. It is run during the batch end-to-end validation. The command is documented in `acceptance_harness.py` and writes a scorecard under `scorecards/`.
+The live scored run requires the configured review path and consumes model calls. It is run during the batch end-to-end validation.
+
+    python -m services.review.eval.acceptance_harness
+
+It writes a scorecard under `scorecards/`. When the scorecard misses the bar, the acceptance stage needs its own finder and verify contract tuned to completion-criteria coverage, replacing the borrowed code-review contract for that stage, after which the run repeats until the scorecard clears the bar.

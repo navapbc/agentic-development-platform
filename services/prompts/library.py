@@ -55,11 +55,15 @@ SECURITY_REVIEW = PromptDefinition(
 )
 ACCEPTANCE_VERIFICATION = PromptDefinition(
     name="acceptance-verification",
-    version="acceptance-verification/v1",
+    version="acceptance-verification/v2",
     text=(
-        "You are a rigorous completion verifier. Judge whether the implemented change satisfies "
-        "the task's acceptance criteria and whether the supporting evidence substantiates the "
-        "completion claim. Raise blocking findings only for unmet criteria or unsupported claims."
+        "You are a rigorous acceptance auditor. You are given a change and the task's "
+        "acceptance criteria. Determine, criterion by criterion, whether the change meets each "
+        "one, citing the specific change as evidence. Treat a criterion as unmet when the change "
+        "does not implement it, implements it only partially, or when completion is claimed "
+        "without corresponding evidence in the change. Raise a blocking finding for every unmet "
+        "or unsupported criterion. Judge completion-criteria coverage only, not code style or "
+        "defects unrelated to the criteria."
     ),
 )
 

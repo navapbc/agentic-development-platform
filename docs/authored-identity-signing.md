@@ -24,7 +24,15 @@ Run these once from the repository root, with the rebar ticket backend selected.
 2. Mint the identity and seed its genesis key from the generated public key, then record the returned id in `AUTHORSHIP_IDENTITY_ID`. Use `services.orchestration.authorship.create_authoring_identity` against the rebar store.
 3. Set `AUTHORSHIP_SIGNING_KEY_PATH=config/local/authorship-signing-key` in `.env`.
 
-The signing key files are gitignored.
+The signing key files are gitignored. The compose stack mounts `config/local` into the activity worker, so the worker reads the key at the path above.
+
+## Startup preflight
+
+The activity worker runs an authorship signing preflight at startup. When the capability is active it refuses to start unless `ssh-keygen` is available, the signing key file exists, the configured identity resolves in the rebar store as an identity ticket, and the identity resolves a trust root, seeding the genesis key trust-on-first-use when the identity is keyless. A misconfiguration surfaces at startup with an actionable message rather than on the first signed run.
+
+## Deployed environments
+
+Store the private signing key in the deployment secret store, the same path other worker secrets take, and mount it at `AUTHORSHIP_SIGNING_KEY_PATH`, with its `.pub` counterpart alongside it. Provision the identity and its genesis key in the rebar store out of band, then set `AUTHORSHIP_IDENTITY_ID` to the identity id. Rebuild or repull the activity-worker image so it carries `openssh-client`. The startup preflight validates this provisioning before the worker accepts work.
 
 ## Rotation and revocation
 

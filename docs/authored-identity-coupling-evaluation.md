@@ -18,7 +18,14 @@ The v0.1.0 rebar backend keeps the ticket store on a dedicated git orphan branch
 
 The v0.1.0 rebar backend keeps the store isolated on an orphan branch that is never pushed to a shared host. The identity tickets, the keyrings, and the authorship events live only in that isolated branch, so signing an authorship claim on the rebar backend does not expose identity or key material on a shared host.
 
-## Decision
+## Verification model
+
+The platform verifies authorship with the current-keys model. `verify_authorship_record` decodes the DSSE envelope and calls `rebar.attest.authorship.verify_event_authorship`, which binds the event uuid and the event content hash to the statement subject and then delegates signature verification to `verify_authorship`. `verify_authorship` resolves the trust root from the author identity's currently-valid keys.
+
+The commit-era model in `verify_authorship_at_commit` is not used for platform authorship, and this is deliberate. The commit-era model resolves each keyring position and the event commit against the tracker git history with `git merge-base --is-ancestor`. It assumes the event commit is a commit in the same tracker repository that holds the keyring. Platform authorship events bind a commit in the target code repository being changed, not a commit in the rebar tracker repository. That commit is absent from the tracker history, so the ancestry check would resolve to nothing and the commit-era verifier would fail closed on every platform authorship event.
+
+The commit remains cryptographically bound under the current-keys model. `build_authorship_event` records the commit in the event, `authorship_content_hash` covers the whole event, and `verify_event_authorship` rejects any statement whose subject digest does not match that content hash. A signature that names one commit cannot be replayed against another without failing the subject-hash gate. Key rotation and revocation are honored because the trust root is rebuilt from the identity's current keys at each verification.
+
 
 Proceed on the rebar backend. Authorship stays git-anchored, the S3 option syncs rather than detaches it, and the isolated orphan branch keeps the material off any shared host, so authored-identity signing is feasible on the rebar backend using the rebar authorship substrate directly.
 

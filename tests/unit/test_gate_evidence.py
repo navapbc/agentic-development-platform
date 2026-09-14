@@ -112,7 +112,7 @@ async def test_record_manifest_pins_the_gate_set(monkeypatch):
     assert manifest.prompt_versions == {
         "code-review": "code-review/v1",
         "security-review": "security-review/v1",
-        "acceptance": "acceptance-verification/v1",
+        "acceptance": "acceptance-verification/v2",
     }
     assert manifest.gate_config_hash.startswith("sha256:")
     assert set(manifest.gate_versions) == {
