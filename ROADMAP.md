@@ -4,7 +4,7 @@ This roadmap groups the remaining platform work into versions. The authoritative
 
 Every v0.2.0 feature has a dedicated implementation plan. Later versions link to their entry in the roadmap plan until their plans are written.
 
-Total remaining scope is roughly 119 to 139 hours across 19 features.
+Total remaining scope is roughly 94 to 103 hours across 15 features.
 
 ## v0.1.0 Pluggable ticket and source-control backends
 
@@ -19,7 +19,7 @@ Goal. A deployment can track work in a non-Jira tracker and target a non-GitHub 
 
 ## v0.2.0 rebar review integration
 
-Status. In progress. The native Bedrock review path is delivered as ADEVX-99, signed review verdicts across every review stage as ADEVX-100, and authored-identity signing as ADEVX-101. Acceptance-gate live validation is complete, with a dedicated acceptance contract whose grounded scored run clears the adequacy bar.
+Status. Shipped. Delivered as commits ADEVX-99, ADEVX-100, ADEVX-101, and ADEVX-103.
 Goal. The rebar review gates run on the native Bedrock path with per-leg failover and signed verdicts, and the review path's remaining rebar-dependent gaps are closed. Authored-identity signing depends on the object store introduced in v0.1.0.
 
 | Feature | Effort | Detail |

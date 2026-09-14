@@ -2,7 +2,7 @@
 
 All notable changes to this platform are recorded here. The format follows Keep a Changelog, and the platform aims to follow semantic versioning once releases are tagged.
 
-## 0.2.0 (unreleased)
+## 0.2.0 (2026-09-14)
 
 rebar review integration. The review gates run on the native Bedrock path with per-leg failover, every review verdict is signed with an asymmetric signature verified against a public trust root, and each authoring agent signs its plan and code change under its own rebar identity for a merge gate to verify.
 
