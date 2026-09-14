@@ -167,3 +167,57 @@ def test_analyze_failure_guardrail_aborts_unknown_without_model():
 
     assert plan.status == UNREPAIRABLE
     assert plan.instruction == ""
+
+
+_PRETTIER_LOG = (
+    "> portal@1.0.0 format-check\n"
+    "> prettier --check .\n"
+    "\n"
+    "npm warn deprecated rimraf@3.0.2: no longer supported\n"
+    "Checking formatting...\n"
+    "[warn] src/pages/applications/phone-number.tsx\n"
+    "[warn] Code style issues found in the above file. Run Prettier with --write to fix.\n"
+    "Error: exit status 1\n"
+)
+
+
+def test_prettier_failure_classifies_as_lint():
+    assert classify_failure(failure_summary(_PRETTIER_LOG)) == LINT
+
+
+def test_prettier_summary_keeps_the_offending_filename_for_the_repair_agent():
+    summary = failure_summary(_PRETTIER_LOG)
+
+    assert "src/pages/applications/phone-number.tsx" in summary
+
+
+def test_prettier_summary_drops_npm_deprecation_noise():
+    assert "npm warn deprecated" not in failure_summary(_PRETTIER_LOG)
+
+
+def test_eslint_failure_classifies_as_lint():
+    summary = failure_summary(
+        "/workspace/portal/src/x.tsx\n"
+        "  64:7  error  Unexpected token  react/jsx-no-undef\n"
+        "\u2716 1 problem (1 error, 0 warnings)\n"
+    )
+
+    assert classify_failure(summary) == LINT
+
+
+def test_typescript_compile_error_classifies_as_build():
+    summary = failure_summary(
+        "src/x.tsx(64,7): error TS2322: Type 'string' is not assignable.\nError: exit status 1\n"
+    )
+
+    assert classify_failure(summary) == BUILD
+
+
+def test_jest_failure_still_classifies_as_a_test_failure():
+    summary = failure_summary(
+        "FAIL tests/pages/applications/phone-number.test.ts\n"
+        "Tests:       1 failed, 0 passed, 1 total\n"
+        "Error: exit status 1\n"
+    )
+
+    assert classify_failure(summary) == TEST_FAILURE

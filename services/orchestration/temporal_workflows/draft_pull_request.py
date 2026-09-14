@@ -1174,7 +1174,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
 
         plan: AnalyzeCIFailureResult = await workflow.execute_activity(
             analyze_ci_failure,
-            AnalyzeCIFailureRequest(failure_summary=self._checks_output),
+            AnalyzeCIFailureRequest(failure_summary=self._checks_output, repo=params.repo),
             start_to_close_timeout=short,
             retry_policy=retry,
         )

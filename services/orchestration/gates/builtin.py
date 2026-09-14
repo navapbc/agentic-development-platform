@@ -154,6 +154,7 @@ def engine_review_backend(config: Any, profile: str = "") -> Any:
             KubectlPodOps(),
             namespace=settings.gate_engine_namespace,
             builder_image=settings.gate_engine_builder_image,
+            privileged=settings.gate_engine_privileged,
         )
         litellm_base_url = settings.sandbox_litellm_base_url
     return AiReviewScanner(

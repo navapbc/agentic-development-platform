@@ -68,6 +68,7 @@ async def run_checks(req: RunChecksRequest) -> RunChecksResult:
             KubectlPodOps(),
             namespace=settings.gate_engine_namespace,
             builder_image=settings.gate_engine_builder_image,
+            privileged=settings.gate_engine_privileged,
         )
         result = await runner.run_checks(
             ChecksSpec(

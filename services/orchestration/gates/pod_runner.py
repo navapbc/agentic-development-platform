@@ -58,7 +58,14 @@ def pod_name_for(name: str, execution_id: str) -> str:
     return f"gate-engine-{slug or 'run'}"[:63].rstrip("-")
 
 
-def build_pod_manifest(pod: str, namespace: str, builder_image: str) -> dict:
+def build_pod_manifest(
+    pod: str, namespace: str, builder_image: str, privileged: bool = False
+) -> dict:
+    # Unpacking an image layer remounts the container root MS_PRIVATE|MS_REC, which some clusters
+    # (k3s, Colima) deny to an unprivileged pod even with CAP_SYS_ADMIN and seccomp unconfined.
+    security_context: dict[str, Any] = {"runAsUser": 0}
+    if privileged:
+        security_context["privileged"] = True
     return {
         "apiVersion": "v1",
         "kind": "Pod",
@@ -82,7 +89,7 @@ def build_pod_manifest(pod: str, namespace: str, builder_image: str) -> dict:
                         {"name": "STORAGE_DRIVER", "value": "vfs"},
                         {"name": "BUILDAH_ISOLATION", "value": "chroot"},
                     ],
-                    "securityContext": {"runAsUser": 0},
+                    "securityContext": security_context,
                     "resources": {
                         "requests": {"cpu": "500m", "memory": "1Gi"},
                         "limits": {"cpu": "2", "memory": "4Gi"},
@@ -164,6 +171,10 @@ class PodOps(Protocol):
 
     async def copy_in(self, pod: str, namespace: str, source_dir: str, dest_dir: str) -> None: ...
 
+    async def copy_out(
+        self, pod: str, namespace: str, source_dir: str, dest_dir: str, manifest_path: str
+    ) -> None: ...
+
     async def exec_capture(self, pod: str, namespace: str, script: str) -> tuple[int, str, str]: ...
 
     async def delete(self, pod: str, namespace: str) -> None: ...
@@ -176,14 +187,18 @@ class PodEngineRunner:
         *,
         namespace: str = DEFAULT_NAMESPACE,
         builder_image: str = DEFAULT_BUILDER_IMAGE,
+        privileged: bool = False,
     ) -> None:
         self._ops = ops
         self._namespace = namespace
         self._builder_image = builder_image
+        self._privileged = privileged
 
     async def run_engine(self, spec: PodEngineSpec) -> dict[str, Any]:
         pod = pod_name_for(spec.name, spec.execution_id)
-        manifest = build_pod_manifest(pod, self._namespace, self._builder_image)
+        manifest = build_pod_manifest(
+            pod, self._namespace, self._builder_image, self._privileged
+        )
         await self._ops.create(manifest)
         try:
             await self._ops.wait_ready(pod, self._namespace)
@@ -277,6 +292,38 @@ class KubectlPodOps:
         tar.wait()
         if exec_proc.returncode:
             raise PodEngineError((stderr or b"").decode().strip() or "copy_in failed")
+
+    async def copy_out(
+        self, pod: str, namespace: str, source_dir: str, dest_dir: str, manifest_path: str
+    ) -> None:
+        import asyncio
+
+        await asyncio.to_thread(
+            self._copy_out_sync, pod, namespace, source_dir, dest_dir, manifest_path
+        )
+
+    def _copy_out_sync(
+        self, pod: str, namespace: str, source_dir: str, dest_dir: str, manifest_path: str
+    ) -> None:
+        import subprocess
+
+        script = (
+            f"tar cf - -C {shlex.quote(source_dir)} -T {shlex.quote(manifest_path)} 2>/dev/null"
+        )
+        exec_proc = subprocess.Popen(
+            [self._kubectl, "exec", "-i", "-n", namespace, pod, "--", "sh", "-c", script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        untar = subprocess.Popen(
+            ["tar", "xmf", "-", "--no-same-owner", "-C", dest_dir], stdin=exec_proc.stdout
+        )
+        if exec_proc.stdout is not None:
+            exec_proc.stdout.close()
+        untar.wait()
+        _, stderr = exec_proc.communicate()
+        if untar.returncode:
+            raise PodEngineError((stderr or b"").decode().strip() or "copy_out failed")
 
     async def exec_capture(
         self, pod: str, namespace: str, script: str

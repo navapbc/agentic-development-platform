@@ -2,11 +2,17 @@
 # (lint, unit tests, SAST) in an isolated ephemeral pod, decoupled from any CI system.
 # Each entry names an environment and the command that runs the checks. The command does
 # its own dependency setup. A repo with no entry skips the checks gate with a warning.
+#
+# An optional fix_command lets a repo declare how to repair a failing check with its own
+# tooling. It runs in the same image before the coding agent is asked to repair by hand,
+# and its edits are kept only when re-running command then passes. A repo that declares
+# none goes straight to the agent.
 config_version: 1
 
 checks:
   # example-repo:
   #   image: python:3.12-slim
   #   command: "pip install -r requirements-dev.txt && ruff check . && pytest -q && bandit -r app -ll"
+  #   fix_command: "pip install -r requirements-dev.txt && ruff check --fix ."
   #   working_dir: /workspace
   #   timeout_minutes: 15

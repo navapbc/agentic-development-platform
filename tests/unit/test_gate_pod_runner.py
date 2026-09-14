@@ -7,6 +7,7 @@ from services.orchestration.gates.pod_runner import (
     PodEngineSpec,
     _run_script,
     _tail,
+    build_pod_manifest,
     pod_name_for,
 )
 
@@ -177,3 +178,33 @@ def test_pod_name_is_sanitised_and_bounded():
     assert name.startswith("gate-engine-")
     assert len(name) <= 63
     assert name == name.lower()
+
+
+def _security_context(manifest):
+    return manifest["spec"]["containers"][0]["securityContext"]
+
+
+def test_pod_manifest_is_unprivileged_by_default():
+    manifest = build_pod_manifest("pod-1", "agent-sandbox", "builder:1")
+    assert _security_context(manifest) == {"runAsUser": 0}
+
+
+def test_pod_manifest_grants_privilege_when_requested():
+    manifest = build_pod_manifest("pod-1", "agent-sandbox", "builder:1", True)
+    assert _security_context(manifest) == {"runAsUser": 0, "privileged": True}
+
+
+async def test_runner_propagates_privilege_to_the_manifest():
+    ops = _FakePodOps()
+    runner = PodEngineRunner(ops, privileged=True)
+    await runner.run_engine(
+        PodEngineSpec(
+            name="gate",
+            execution_id="exec-1",
+            checkout_dir="/tmp/checkout",
+            entrypoint="run.sh",
+            base_ref="main",
+            image="img",
+        )
+    )
+    assert _security_context(ops.created[0])["privileged"] is True
