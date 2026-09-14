@@ -2,6 +2,24 @@
 
 All notable changes to this platform are recorded here. The format follows Keep a Changelog, and the platform aims to follow semantic versioning once releases are tagged.
 
+## 0.2.0 (unreleased)
+
+rebar review integration. The review gates run on the native Bedrock path with per-leg failover, and every review verdict is signed with an asymmetric signature verified against a public trust root.
+
+### Added
+
+- Native Bedrock review path. The rebar review gates run reviews natively on Amazon Bedrock through a dedicated review worker, resolving each tier to a Claude primary with a Nova failover, routing through rebar's runner so prompt caching stays enabled, pricing review cost cache-aware so cached tokens are not billed at the input rate, and exporting native generations to Langfuse with the execution id and stage stamped onto each span.
+- Signed review verdicts across every review stage. Plan review, code review, security review, and acceptance verification sign the canonical verdict payload with an SSHSIG signature carried in a DSSE envelope, and the gate verifies each signature against a public trust root before it accepts the verdict. A verifier holds only public keys, so it cannot forge a verdict. The evidence record carries the signing scheme, the signer key identifier, and the envelope, and enough detail to re-verify the verdict offline.
+- A versioned trust-root bundle of public signer keys with per-key identifiers and validity windows, revocation of a compromised key, and an overlapping rotation window that admits a new key before the old key retires.
+- A review-worker signing preflight that fails the worker at startup when signing is enabled without a usable key, a loadable trust root, and `ssh-keygen`, so a misconfiguration surfaces at startup rather than on the first review.
+- A trust-root change audit. The review worker records a `review_trust_root_change` event to the audit store at startup when the loaded bundle differs from the last recorded one, naming the actor, the change summary, and the affected key identifiers.
+- `REVIEW_SIGNING_ENABLED`, `REVIEW_SIGNING_KEY_PATH`, and `REVIEW_TRUST_ROOT_PATH` settings, with signing on by default, and `openssh-client` in the runtime image so `ssh-keygen` is available.
+
+### Changed
+
+- Review verdict signing is on by default and fails closed. When signing is enabled but the key or trust root is not configured, a review stage raises rather than downgrading to the symmetric HMAC path. Setting `REVIEW_SIGNING_ENABLED` to false selects the HMAC path for local development.
+- Database migrations apply only through the `db-migrate` container. `inv db-migrate` and `inv db-reset` run that container, which mounts the working-tree migrations so the applied scripts match the checkout, and a guard in the migration environment refuses `alembic upgrade`, `downgrade`, and `stamp` on the host so a host run cannot advance the database past the revisions the container carries.
+
 ## 0.1.0 (2026-09-11)
 
 First versioned release of the platform. This version makes the ticket tracker and the source-control target pluggable behind two orthogonal contracts, bounds concurrent runs with a platform admission cap, and re-grounds a run that discovers a cross-ticket dependency during planning on both the rebar and Jira backends. A deployment that configures neither backend behaves exactly as before.

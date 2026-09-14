@@ -57,10 +57,16 @@ These rules apply to every piece of writing, prose, documentation, chat, on-scre
 
 - I am a technical infrastructure engineer. Prefer engineering terms, CLI commands, and configuration details over plain-language explanations.
 
+## Database migrations
+
+- Never run `alembic upgrade`, `downgrade`, or `stamp` on the host. Apply migrations only through the `db-migrate` container using `inv db-migrate`, or `inv db-reset` to rebuild the schema then migrate. The host apply path is refused by a guard in `database/migrations/env.py`.
+- The guard covers the alembic command line. It does not block driving migrations through the alembic Python API, so never call `alembic.command.upgrade` or `downgrade` from a host script either.
+- Authoring a migration with `alembic revision --autogenerate` is fine on the host, since it changes files rather than the database revision.
+
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **agentic-dev-platform** (12076 symbols, 22593 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **agentic-development-platform** (14273 symbols, 26871 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
@@ -83,10 +89,10 @@ This project is indexed by GitNexus as **agentic-dev-platform** (12076 symbols, 
 
 | Resource | Use for |
 |----------|---------|
-| `gitnexus://repo/agentic-dev-platform/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/agentic-dev-platform/clusters` | All functional areas |
-| `gitnexus://repo/agentic-dev-platform/processes` | All execution flows |
-| `gitnexus://repo/agentic-dev-platform/process/{name}` | Step-by-step execution trace |
+| `gitnexus://repo/agentic-development-platform/context` | Codebase overview, check index freshness |
+| `gitnexus://repo/agentic-development-platform/clusters` | All functional areas |
+| `gitnexus://repo/agentic-development-platform/processes` | All execution flows |
+| `gitnexus://repo/agentic-development-platform/process/{name}` | Step-by-step execution trace |
 
 ## CLI
 

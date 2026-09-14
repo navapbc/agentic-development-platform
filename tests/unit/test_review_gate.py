@@ -239,3 +239,112 @@ def test_run_multipass_sums_usage_across_finder_and_verifiers(monkeypatch):
     assert raw.usage.cache_write_tokens == 1 * stub.calls
     assert raw.usage.llm_calls == stub.calls
 
+
+def _keygen(tmp_path):
+    import subprocess
+
+    key_path = tmp_path / "signer"
+    subprocess.run(
+        ["ssh-keygen", "-t", "ed25519", "-f", str(key_path), "-N", "", "-C", "", "-q"],
+        check=True,
+    )
+    public_line = (tmp_path / "signer.pub").read_text(encoding="utf-8").strip()
+    return str(key_path), public_line
+
+
+def _signing_settings(tmp_path):
+    import yaml
+    from scripts.config import Settings
+
+    key_path, public_line = _keygen(tmp_path)
+    trust_path = tmp_path / "trust-root.yaml"
+    trust_path.write_text(
+        yaml.safe_dump(
+            {
+                "version": 1,
+                "principal": "review-signer@nava",
+                "keys": [{"id": "k1", "public_key": public_line}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return Settings(
+        review_signing_enabled=True,
+        review_signing_key_path=key_path,
+        review_trust_root_path=str(trust_path),
+    )
+
+
+def test_select_attestor_defaults_to_hmac_without_signing():
+    from scripts.config import Settings
+    from services.review.attestation import HmacAttestor
+    from services.review.gate import select_attestor
+
+    attestor = select_attestor(ReviewStage.CODE_REVIEW, Settings(review_signing_enabled=False))
+    assert isinstance(attestor, HmacAttestor)
+
+
+def test_select_attestor_fails_closed_when_signing_enabled_but_unconfigured():
+    import pytest
+    from scripts.config import Settings
+    from services.review.gate import ReviewSigningNotConfigured, select_attestor
+
+    settings = Settings(
+        review_signing_enabled=True,
+        review_signing_key_path="",
+        review_trust_root_path="",
+    )
+    for stage in ReviewStage:
+        with pytest.raises(ReviewSigningNotConfigured):
+            select_attestor(stage, settings)
+
+
+def test_select_attestor_signs_every_stage(tmp_path):
+    from services.review.attestation import SshsigAttestor
+    from services.review.gate import select_attestor
+
+    settings = _signing_settings(tmp_path)
+    for stage in ReviewStage:
+        assert isinstance(select_attestor(stage, settings), SshsigAttestor)
+
+
+def test_select_attestor_uses_hmac_when_signing_disabled(tmp_path):
+    from scripts.config import Settings
+    from services.review.attestation import HmacAttestor
+    from services.review.gate import select_attestor
+
+    settings = Settings(review_signing_enabled=False)
+    for stage in ReviewStage:
+        assert isinstance(select_attestor(stage, settings), HmacAttestor)
+
+
+async def test_gate_records_the_envelope_field_in_evidence():
+    sink = _RecordingSink()
+    gate = ReviewGate(FakeReviewKernel(_clean_raw()), sink, HmacAttestor("s3cret"))
+
+    await gate.review(_input(), execution_id="exec-env")
+
+    assert "envelope" in sink.records[0].metadata
+    assert sink.records[0].metadata["envelope"] == ""
+
+
+async def test_signed_gate_verifies_and_records_scheme(tmp_path):
+    from services.review.gate import select_attestor
+
+    settings = _signing_settings(tmp_path)
+    attestor = select_attestor(ReviewStage.CODE_REVIEW, settings)
+    sink = _RecordingSink()
+    gate = ReviewGate(FakeReviewKernel(_clean_raw()), sink, attestor)
+
+    result = await gate.review(_input(ReviewStage.CODE_REVIEW), execution_id="exec-signed")
+
+    assert result.attestation.algorithm == "sshsig"
+    assert result.attestation.key_id == "review-signer@nava"
+    record = sink.records[0]
+    assert record.metadata["algorithm"] == "sshsig"
+    assert record.metadata["key_id"] == "review-signer@nava"
+    assert record.metadata["envelope"]
+    payload = verdict_payload(_input(ReviewStage.CODE_REVIEW), _clean_raw())
+    assert attestor.verify(result.attestation, payload) is True
+
+

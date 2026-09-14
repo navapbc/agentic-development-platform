@@ -18,6 +18,10 @@ config/*/gate_engine.yaml
 !config/*/gate_engine.yaml.example
 config/*/tickets.yaml
 !config/*/tickets.yaml.example
+config/*/review-trust-root.yaml
+!config/*/review-trust-root.yaml.example
+config/*/review-signing-key
+config/*/review-signing-key.pub
 
 # AWS / credentials
 .aws/

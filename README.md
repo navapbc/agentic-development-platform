@@ -46,14 +46,15 @@ Run these once from the repository root.
 1. Copy the environment file with `cp .env.example .env`, then fill in the placeholders. See [Configuration](#configuration). Never commit `.env`.
 2. Copy the integration source configs with `cp config/local/github.yaml.example config/local/github.yaml`, `cp config/local/jira.yaml.example config/local/jira.yaml`, and `cp config/local/integrations.yaml.example config/local/integrations.yaml`, then edit the copies. See [Integration credentials](#integration-credentials). Never commit the `config/local/*.yaml` operator files. If you set `TICKET_BACKEND=rebar`, also copy `config/local/tickets.yaml.example` to `config/local/tickets.yaml`. See [Ticket and source-control backends](#ticket-and-source-control-backends).
 3. Copy the gate selection config with `cp config/local/gates.yaml.example config/local/gates.yaml`. It is required for any run that evaluates gates. Copying `config/local/gate_engine.yaml.example` to `config/local/gate_engine.yaml` is optional and adds an external gate engine. See [Configurable gates](#configurable-gates).
-4. Create and activate a virtual environment with `python -m venv .venv && source .venv/bin/activate`.
-5. Install the package with its development extras using `pip install -e ".[dev,reasoning]"`. Add `sandbox` for the OpenHands agent, and see [CONTRIBUTING.md](CONTRIBUTING.md) for the editable `rebar` install needed on the review path.
-6. Choose a Bedrock connectivity provider in `.env` and open the path with `inv tunnel-start`. See [Bedrock connectivity](#bedrock-connectivity).
-7. Validate the Bedrock path and local reachability with `inv connectivity-check`.
-8. Start the stack with `inv local-up`.
-9. Apply database migrations with `inv db-migrate`.
-10. Confirm everything is healthy with `inv smoke-test`.
-11. Load allowlisted seed data with `inv seed` when you need demo fixtures.
+4. Provision review-verdict signing, which is on by default. Generate a key and trust root and set the signing variables in `.env` by following the local setup in [docs/review-verdict-signing.md](docs/review-verdict-signing.md). Without this the review worker fails closed at startup. To skip signing, set `REVIEW_SIGNING_ENABLED=false`.
+5. Create and activate a virtual environment with `python -m venv .venv && source .venv/bin/activate`.
+6. Install the package with its development extras using `pip install -e ".[dev,reasoning]"`. Add `sandbox` for the OpenHands agent, and see [CONTRIBUTING.md](CONTRIBUTING.md) for the editable `rebar` install needed on the review path.
+7. Choose a Bedrock connectivity provider in `.env` and open the path with `inv tunnel-start`. See [Bedrock connectivity](#bedrock-connectivity).
+8. Validate the Bedrock path and local reachability with `inv connectivity-check`.
+9. Start the stack with `inv local-up`.
+10. Apply database migrations with `inv db-migrate`.
+11. Confirm everything is healthy with `inv smoke-test`.
+12. Load allowlisted seed data with `inv seed` when you need demo fixtures.
 
 ## Vendored binaries
 
@@ -73,7 +74,8 @@ Two binaries live under `vendor/bin` and are provisioned outside the Python inst
 | Temporal | `TEMPORAL_HOST`, `TEMPORAL_NAMESPACE`, `TEMPORAL_TASK_QUEUE` | Defaults work locally |
 | Bedrock | `AWS_PROFILE`, `AWS_REGION`, `BEDROCK_CONNECTIVITY_PROVIDER`, `BEDROCK_ENDPOINT_URL`, provider keys | Set your profile and provider. See [Bedrock connectivity](#bedrock-connectivity) |
 | LiteLLM | `LITELLM_BASE_URL`, `LITELLM_MASTER_KEY` | Set a local master key |
-| Review (rebar) | `REBAR_LLM_*`, `REVIEW_ATTESTATION_SECRET` | Point at LiteLLM, set an attestation secret |
+| Review (rebar) | `REBAR_LLM_*`, `REVIEW_ATTESTATION_SECRET` | Point at LiteLLM, set an attestation secret for the HMAC fallback |
+| Review signing | `REVIEW_SIGNING_ENABLED`, `REVIEW_SIGNING_KEY_PATH`, `REVIEW_TRUST_ROOT_PATH` | On by default. Provision a signing key and trust root, or set enabled to false. See [docs/review-verdict-signing.md](docs/review-verdict-signing.md) |
 | Backends | `TICKET_BACKEND`, `SOURCE_CONTROL_BACKEND`, `SOURCE_CONTROL_LOCAL_*` | Select the ticket and source-control backends. Defaults are Jira and GitHub. See [Ticket and source-control backends](#ticket-and-source-control-backends) |
 | Admission | `MAX_CONCURRENT_RUNS`, `EXECUTION_ORPHAN_GRACE_SECONDS` | Cap on runs in flight and the grace window before a dead run's slot is reclaimed. Defaults work locally |
 | Dependency discovery | `DEPENDENCY_DETECTION_ENABLED`, `DEPENDENCY_REPLAN_ATTEMPTS` | Enable cross-ticket dependency discovery and set the re-plan attempt cap. Defaults to off. See [Cross-ticket dependency discovery](#cross-ticket-dependency-discovery) |
@@ -242,6 +244,10 @@ The AWS infrastructure is split into reusable Terraform modules under `infra/ter
 | `otel-collector` | 4317, 4318 | Telemetry pipeline |
 
 Migrations only touch the platform's own `agent_platform` schema. Temporal and Langfuse manage their own schemas. Langfuse v4 runs as `langfuse-web` and `langfuse-worker` backed by ClickHouse, Redis, and the shared MinIO object store, reusing the `langfuse` Postgres database.
+
+Migrations are applied only through the `db-migrate` container, which `inv db-migrate` and `inv db-reset` invoke. The container mounts the working-tree migrations, so the applied scripts always match the checkout without an image rebuild. Running `alembic upgrade`, `downgrade`, or `stamp` directly on the host is refused, because a host run can advance the database past the revisions the container carries and leave the two out of sync. The guard covers the alembic command line. Authoring commands such as `alembic revision --autogenerate` still run on the host.
+
+A deployed environment has no working-tree mount, so its `db-migrate` image carries the migrations baked in at build time. Rebuild or repull the `db-migrate` image whenever `database/migrations` changes, so the deployed container applies the current scripts.
 
 ## Inbound webhooks and CI
 

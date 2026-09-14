@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     rebar_llm_temperature: float = 0.0
     rebar_review_native: bool = True
     review_attestation_secret: str = "change-me-locally"
+    review_signing_enabled: bool = True
+    review_signing_key_path: str = ""
+    review_trust_root_path: str = ""
     repair_analysis_use_llm: bool = True
 
     slack_webhook_url: str = ""

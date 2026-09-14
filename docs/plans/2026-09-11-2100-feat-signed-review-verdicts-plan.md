@@ -13,7 +13,7 @@ execution: code
 
 ## Goal Capsule
 
-Objective. Plan and code review verdicts carry a rebar attest signature over the SSHSIG scheme wrapped in a DSSE envelope, the review gate verifies that signature against a public trust root before it accepts a verdict, and the gate fails closed when the signature is absent or invalid.
+Objective. Every review verdict carries a rebar attest signature over the SSHSIG scheme wrapped in a DSSE envelope, the review gate verifies that signature against a public trust root before it accepts a verdict, and the gate fails closed when the signature is absent or invalid.
 
 Means. Replace the platform `HmacAttestor` behind the existing `Attestor` protocol with an attestor that signs the canonical verdict payload through `rebar.attest.sshsig` inside a `rebar.attest.dsse.Envelope`, and verifies it against a configured trust root of allowed signer keys. The gate keeps its sign-then-verify shape and raises `ReviewAttestationError` on any failure, so the review activity blocks rather than admits an unattested verdict.
 
@@ -27,25 +27,25 @@ Product Contract preservation. Sourced from the roadmap feature "Signed review v
 
 ### Summary
 
-The review gate today signs each verdict with a symmetric HMAC over the canonical payload, using one shared secret that both signs and verifies. A holder of the secret can forge a verdict, and the evidence record carries no proof of which key signed beyond a truncated fingerprint. This plan moves plan and code review verdicts onto asymmetric SSHSIG signatures produced through rebar's attest substrate and carried in DSSE envelopes. The gate verifies each signature against a public trust root of allowed signer keys before it accepts the verdict, and fails closed when the signature is missing, malformed, signed by a key outside the trust root, or does not match the payload. The verifier holds only public keys, so it cannot forge a verdict. The symmetric HMAC path remains as the default for local development without a configured signing key.
+The review gate today signs each verdict with a symmetric HMAC over the canonical payload, using one shared secret that both signs and verifies. A holder of the secret can forge a verdict, and the evidence record carries no proof of which key signed beyond a truncated fingerprint. This plan moves every review verdict onto asymmetric SSHSIG signatures produced through rebar's attest substrate and carried in DSSE envelopes. The gate verifies each signature against a public trust root of allowed signer keys before it accepts the verdict, and fails closed when the signature is missing, malformed, signed by a key outside the trust root, or does not match the payload. The verifier holds only public keys, so it cannot forge a verdict. The symmetric HMAC path remains available for local development when `REVIEW_SIGNING_ENABLED` is set to false.
 
 ### Problem Frame
 
-`services/review/gate.py` builds an `HmacAttestor(get_settings().review_attestation_secret)` and signs `verdict_payload(review, raw)` with HMAC-SHA256, then verifies with the same secret and persists the signature and key fingerprint into the evidence record. This gives integrity under a shared secret but no authenticity a third party can check, because verification needs the same secret that signs. rebar 0.12.0 ships an attest substrate the platform does not yet use for review verdicts. `rebar.attest.sshsig` signs a pre-authentication-encoded byte string with an ssh private key under a namespace, `rebar.attest.dsse` wraps the payload and signature in an envelope with a canonical encoding, and `rebar.attest.registry` carries the scheme and a verdict type. This feature adopts that substrate for the two review families the roadmap names, plan review and code review.
+`services/review/gate.py` builds an `HmacAttestor(get_settings().review_attestation_secret)` and signs `verdict_payload(review, raw)` with HMAC-SHA256, then verifies with the same secret and persists the signature and key fingerprint into the evidence record. This gives integrity under a shared secret but no authenticity a third party can check, because verification needs the same secret that signs. rebar 0.12.0 ships an attest substrate the platform does not yet use for review verdicts. `rebar.attest.sshsig` signs a pre-authentication-encoded byte string with an ssh private key under a namespace, `rebar.attest.dsse` wraps the payload and signature in an envelope with a canonical encoding, and `rebar.attest.registry` carries the scheme and a verdict type. This feature adopts that substrate for every review stage.
 
 ### Requirements
 
-- R1. Plan review and code review verdicts are signed with the rebar SSHSIG scheme over the canonical verdict payload, wrapped in a DSSE envelope, replacing the HMAC signature for those families when signing is configured.
+- R1. Every review verdict is signed with the rebar SSHSIG scheme over the canonical verdict payload, wrapped in a DSSE envelope, replacing the HMAC signature for every review stage when signing is configured.
 - R2. A public trust root of allowed signer keys is supplied by configuration and loaded at gate construction, and the gate verifies every signature against it before accepting a verdict.
 - R3. The gate fails closed with `ReviewAttestationError` when a verdict signature is absent, malformed, does not match the payload, or is produced by a key outside the trust root.
 - R4. The `Attestor` protocol and the `ReviewGate` sign-then-verify flow keep their shape, so the change is a substitution behind the protocol rather than a rewrite of the gate.
 - R5. The evidence record carries the signing scheme name, the signer key identifier, the envelope, and enough detail to re-verify the verdict offline against the trust root.
 - R6. The trust root is a versioned bundle carrying key identifiers, supports revocation of a compromised key and a rotation rollout that admits a new key before the old key retires, and every trust-root change writes an audit record naming the actor, the change, and the affected key identifiers.
-- R7. With no signing key configured, the gate keeps the HMAC path so local development is unchanged, and the selection between signed and HMAC paths is explicit in configuration rather than silent.
+- R7. Signing is on by default. When signing is enabled but the key or trust root is not configured, a signed stage fails closed rather than downgrading to HMAC. Setting `REVIEW_SIGNING_ENABLED` to false selects the HMAC path for local development, and the selection is explicit in configuration rather than silent.
 
 ### Scope Boundaries
 
-- Only the plan review and code review families are in scope for the signed path. The acceptance verification and security review stages continue on their current attestor until a later feature moves them, and the substitution seam does not preclude them.
+- All four review stages sign when signing is configured, namely plan review, code review, security review, and acceptance verification.
 - This plan does not build a key-management service or a certificate authority. It consumes a trust-root bundle and a signing key path supplied by configuration.
 - Signing the manifest of verified completion steps through `rebar.sign_manifest` is a separate concern from signing a review verdict and is out of scope here.
 - Authored-identity signing, where each authoring agent signs its own plan and code change, is a separate roadmap feature with its own plan and is not delivered here.
@@ -111,7 +111,7 @@ Verification. `tests/unit/test_trust_root.py` (new), `inv test`.
 
 ### U3. Gate selector and evidence fields
 
-Goal. Select the signed attestor in `ReviewGate` from configuration for the plan and code families, keep the HMAC default, and record the scheme, signer key identifier, and envelope in the evidence record.
+Goal. Select the signed attestor in `ReviewGate` from configuration for every review stage, fail closed when signing is enabled without a key or trust root, and record the scheme, signer key identifier, and envelope in the evidence record.
 Requirements. R1, R3, R4, R5, R7.
 Files. `services/review/gate.py` (`__init__` selects the attestor, `review` records the new evidence fields), `scripts/config.py` (`review_signing_key_path`, `review_trust_root_path`, and the `review_signing_enabled` selection flag).
 Approach. In `ReviewGate.__init__`, when a signing key and trust root are configured, build the `SshsigAttestor` with the loaded trust root, otherwise build the `HmacAttestor` as today. Keep the sign-then-verify block, so a signature that does not verify raises `ReviewAttestationError` and blocks. Extend the evidence metadata with the scheme name, the signer key identifier, and the serialized envelope alongside the existing fields.
@@ -147,9 +147,9 @@ Verification. `tests/unit/test_review_activities.py`, the signed-path scenario, 
 
 ## Definition of Done
 
-- Global. R1 through R7 are met. `inv ci` and `inv test` are green. With no signing key configured, the review path behaves exactly as before. Abandoned or experimental code is removed from the diff.
-- U1. Plan and code verdicts sign and verify through the SSHSIG-over-DSSE attestor behind the `Attestor` protocol.
+- Global. R1 through R7 are met. `inv ci` and `inv test` are green. Signing is on by default, and with `REVIEW_SIGNING_ENABLED` set to false the review path uses the HMAC attestor. Abandoned or experimental code is removed from the diff.
+- U1. Every review verdict signs and verifies through the SSHSIG-over-DSSE attestor behind the `Attestor` protocol.
 - U2. The trust root loads with per-key identifiers and validity windows, rejects a revoked key, and admits a rotation window.
-- U3. The gate selects the signed attestor from configuration, keeps the HMAC default, records the scheme, key identifier, and envelope, and raises on a verification failure.
+- U3. The gate selects the signed attestor from configuration for every stage, fails closed when signing is enabled without a key or trust root, records the scheme, key identifier, and envelope, and raises on a verification failure.
 - U4. Every trust-root change writes an audit record, and the bundle, key path, and selection flag are documented.
 - U5. A tampered, absent, untrusted, or revoked signature blocks the verdict, and a valid signature is accepted and re-verifies offline.

@@ -62,6 +62,7 @@ services:
     restart: "no"
     environment:
       ALEMBIC_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-platform}:${POSTGRES_PASSWORD:-change-me-locally}@postgres:5432/agent_platform
+      DB_MIGRATE_IN_CONTAINER: "1"
     depends_on:
       postgres:
         condition: service_healthy

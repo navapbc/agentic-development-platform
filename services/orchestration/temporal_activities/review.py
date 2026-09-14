@@ -83,12 +83,13 @@ def review_prompt_versions(gate_names: Iterable[str]) -> dict[str, str]:
 
 
 
-def build_review_gate():
+def build_review_gate(stage: ReviewStage | None = None):
     from services.review.evidence import PostgresEvidenceSink
-    from services.review.gate import ReviewGate
+    from services.review.gate import ReviewGate, select_attestor
     from services.review.kernel import RebarReviewKernel
 
-    return ReviewGate(RebarReviewKernel(), PostgresEvidenceSink())
+    attestor = select_attestor(stage) if stage is not None else None
+    return ReviewGate(RebarReviewKernel(), PostgresEvidenceSink(), attestor)
 
 
 def _subject_ref(subject: str) -> str:
@@ -136,7 +137,7 @@ async def _run_gate(stage: ReviewStage, spec: _PromptSpec, req: ReviewRequest) -
     from services.review.types import ReviewInput
 
     loaded = load_prompt(spec.name)
-    gate = build_review_gate()
+    gate = build_review_gate(stage)
     repo_root = _resolve_repo_root(req) if stage in _REPO_GROUNDED_STAGES else None
     review_input = ReviewInput(
         stage=stage,

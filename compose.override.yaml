@@ -42,6 +42,16 @@ services:
     environment:
       LOG_LEVEL: DEBUG
 
+  db-migrate:
+    volumes:
+      - ./services:/app/services
+      - ./adapters:/app/adapters
+      - ./schemas:/app/schemas
+      - ./database:/app/database
+      - ./scripts:/app/scripts
+      - ./observability:/app/observability
+      - ./alembic.ini:/app/alembic.ini
+
   activity-worker:
     command: ["sh", "/entrypoint.sh"]
     volumes:

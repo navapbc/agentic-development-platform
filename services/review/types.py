@@ -76,6 +76,7 @@ class Attestation:
     signature: str
     key_id: str
     issued_at: str
+    envelope: str = ""
 
 
 @dataclass

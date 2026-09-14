@@ -87,14 +87,17 @@ def logs(c, service=""):
 
 @task
 def db_migrate(c):
-    """Apply migrations with alembic upgrade head."""
-    c.run("alembic upgrade head", pty=True)
+    """Apply migrations by running the db-migrate container."""
+    c.run(f"{COMPOSE} {_compose_files()} run --rm db-migrate", pty=True)
 
 
 @task
 def db_reset(c):
     """Drop and recreate the ``agent_platform`` schema, then re-migrate."""
-    c.run("python -m scripts.db_reset", pty=True)
+    c.run(
+        f"{COMPOSE} {_compose_files()} run --rm --entrypoint python db-migrate -m scripts.db_reset",
+        pty=True,
+    )
     db_migrate(c)
 
 

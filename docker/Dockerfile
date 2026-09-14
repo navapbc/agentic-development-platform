@@ -7,7 +7,7 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git curl ca-certificates \
+    && apt-get install -y --no-install-recommends git curl ca-certificates openssh-client \
     && rm -rf /var/lib/apt/lists/*
 
 RUN ARCH="$(dpkg --print-architecture)" \

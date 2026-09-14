@@ -261,6 +261,17 @@ async def main() -> None:
     else:
         task_queue = settings.temporal_task_queue
 
+    if role in (WORKER_ROLE_REVIEW, WORKER_ROLE_ALL):
+        from services.orchestration.review_signing import (
+            audit_review_trust_root,
+            review_signing_preflight,
+        )
+
+        review_signing_preflight(settings)
+        change = await audit_review_trust_root(settings)
+        if change is not None:
+            log.info("recorded review trust-root change: %s", change)
+
     workers = [build_worker(client, task_queue, role)]
     queues = [task_queue]
     if role == WORKER_ROLE_ALL:

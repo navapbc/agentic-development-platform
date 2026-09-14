@@ -1,0 +1,16 @@
+# Review-verdict trust root. Copy to review-trust-root.yaml and set the signer
+# public keys. The review gate verifies plan and code review verdict signatures
+# against the keys active at review time. Only public keys belong here.
+#
+# Each key binds to the principal below and carries a stable identifier. A key is
+# active when it is not revoked and the current time is within its validity window
+# (both bounds optional). Overlapping windows give a rotation rollout that admits a
+# new key before the old key retires. A revoked key is never trusted.
+version: 1
+principal: review-signer@nava
+keys:
+  - id: review-key-2026-01
+    public_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEXAMPLEONLYreplaceThisWithARealPublicKey review-signer"
+    not_before: "2026-01-01T00:00:00Z"
+    not_after: "2026-12-31T23:59:59Z"
+    revoked: false
