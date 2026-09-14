@@ -16,6 +16,7 @@ rebar review integration. The review gates run on the native Bedrock path with p
 - Authored-identity signing on the rebar backend. Each authoring agent signs the plan it produces and the code change it commits under its own rebar identity, and a merge gate verifies both signatures against the identity trust root and fails closed on an absent, tampered, or out-of-trust-root signature. The identity keyring supports trust-on-first-use genesis, signed key rotation with an overlapping window, revocation, and a keyring-change audit record. A Jira deployment has no rebar authorship substrate and does not participate.
 - `REVIEW_SIGNING_ENABLED`, `REVIEW_SIGNING_KEY_PATH`, and `REVIEW_TRUST_ROOT_PATH` settings, with signing on by default, and `openssh-client` in the runtime image so `ssh-keygen` is available.
 - `AUTHORSHIP_SIGNING_ENABLED`, `AUTHORSHIP_IDENTITY_ID`, and `AUTHORSHIP_SIGNING_KEY_PATH` settings for authored-identity signing.
+- An acceptance-gate validation harness and a labeled acceptance set. The set pairs each ticket's acceptance criteria and completion evidence with a met or unmet outcome, and the harness runs the acceptance gate over the set and scores each verdict as an agreement, a false accept, or a false block against a fixed adequacy bar. The live scored run over the configured review path produces a recorded scorecard.
 
 ### Changed
 
