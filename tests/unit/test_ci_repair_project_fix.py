@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+import pytest
 from services.orchestration.checks.runner import (
     ChecksFixResult,
     ChecksSpec,
@@ -104,7 +105,9 @@ def test_apply_staged_files_ignores_files_the_fix_command_created(tmp_path):
     workspace.mkdir()
     (staging / "portal/generated.lock").write_text("new", encoding="utf-8")
 
-    applied = _apply_staged_files(str(staging), str(workspace), ("portal/generated.lock",), ())
+    applied = _apply_staged_files(
+        str(staging), str(workspace), ("portal/generated.lock",), ("portal/generated.lock",)
+    )
 
     assert applied == 0
     assert not (Path(workspace) / "portal/generated.lock").exists()
@@ -124,10 +127,28 @@ def test_apply_staged_files_refuses_entries_that_escape_the_staging_root(tmp_pat
     workspace.mkdir()
     (tmp_path / "outside.txt").write_text("secret", encoding="utf-8")
 
-    applied = _apply_staged_files(str(staging), str(workspace), ("../outside.txt",), ())
+    applied = _apply_staged_files(
+        str(staging), str(workspace), ("../outside.txt",), ("../outside.txt",)
+    )
 
     assert applied == 0
     assert (tmp_path / "outside.txt").read_text(encoding="utf-8") == "secret"
+
+
+def test_apply_staged_files_copies_nothing_when_the_failure_named_no_path(tmp_path):
+    """An empty scope is fail-closed, so a broad fix command cannot rewrite the tree."""
+    staging, workspace = tmp_path / "staging", tmp_path / "workspace"
+    for root in (staging, workspace):
+        (root / "portal/src").mkdir(parents=True)
+    (staging / "portal/src/a.tsx").write_text("reformatted", encoding="utf-8")
+    (workspace / "portal/src/a.tsx").write_text("original", encoding="utf-8")
+
+    applied = _apply_staged_files(
+        str(staging), str(workspace), ("portal/src/a.tsx",), ()
+    )
+
+    assert applied == 0
+    assert (workspace / "portal/src/a.tsx").read_text(encoding="utf-8") == "original"
 
 
 def test_autofix_degrades_to_agent_repair_when_the_pod_transport_fails(monkeypatch):
@@ -160,3 +181,70 @@ def test_concurrent_executions_of_one_repo_get_distinct_pod_names():
     repo = "department-of-example/benefits-eligibility-portal"
 
     assert checks_pod_name(repo, "execution-one") != checks_pod_name(repo, "execution-two")
+
+
+_RAISE = object()
+
+
+@pytest.mark.parametrize(
+    "fix_command,exit_code,changed,summary,applied,expected",
+    [
+        ("", 0, (), "portal/a.tsx broken", 0, "no-fix-command"),
+        ("npm run fix", _RAISE, (), "portal/a.tsx broken", 0, "pod-failed"),
+        ("npm run fix", 1, (), "portal/a.tsx broken", 0, "fix-exited-non-zero"),
+        ("npm run fix", 0, (), "portal/a.tsx broken", 0, "fix-changed-nothing"),
+        ("npm run fix", 0, ("portal/a.tsx",), "code style issues found", 0, "empty-scope"),
+        ("npm run fix", 0, ("portal/a.tsx",), "portal/a.tsx broken", 0, "nothing-applied"),
+        ("npm run fix", 0, ("portal/a.tsx",), "portal/a.tsx broken", 1, "applied"),
+    ],
+)
+def test_project_autofix_names_every_outcome(
+    monkeypatch, fix_command, exit_code, changed, summary, applied, expected
+):
+    """Each row of the discriminator table resolves to exactly one outcome name."""
+    from services.orchestration.checks import config as checks_config
+    from services.orchestration.checks import runner as checks_runner
+    from services.orchestration.gates import pod_runner
+    from services.orchestration.temporal_activities import checks as checks_activity
+    from services.orchestration.temporal_activities import repair as repair_module
+
+    class _Config:
+        command = "npm run lint"
+        image = "node:24"
+        build = ""
+        working_dir = "portal"
+
+    _Config.fix_command = fix_command
+
+    class _Runner:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def run_fix(self, spec, staging):
+            if exit_code is _RAISE:
+                raise RuntimeError("kubectl not found")
+            return ChecksFixResult(
+                verified=exit_code == 0 and bool(changed),
+                exit_code=exit_code,
+                output="",
+                changed_files=changed,
+            )
+
+    recorded: list[str] = []
+    monkeypatch.setattr(checks_config, "checks_for_repo", lambda *a, **k: _Config())
+    monkeypatch.setattr(checks_runner, "ChecksRunner", _Runner)
+    monkeypatch.setattr(pod_runner, "KubectlPodOps", lambda *a, **k: object())
+    monkeypatch.setattr(checks_activity, "_clean_checkout", lambda *a, **k: None)
+    monkeypatch.setattr(repair_module, "_apply_staged_files", lambda *a, **k: applied)
+    monkeypatch.setattr(
+        repair_module, "_record_fix_outcome", lambda name, **f: recorded.append(name)
+    )
+
+    request = ApplyCIRepairRequest(
+        task_id="t", execution_id="e", repo="org/app", base="main", commit="c",
+        instruction="fix", failure_summary=summary,
+    )
+    result = asyncio.run(repair_module._project_autofix(request, "/workspace"))
+
+    assert recorded == [expected]
+    assert result is (expected == "applied")

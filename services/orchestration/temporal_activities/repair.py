@@ -104,6 +104,17 @@ async def apply_ci_repair(req: ApplyCIRepairRequest) -> ApplyCIRepairResult:
     )
 
 
+def _record_fix_outcome(outcome: str, **fields: object) -> None:
+    """Name which path the project fix took, so a degrade to agent repair is visible.
+
+    The incident this path was built for was invisible precisely because a silent fallback looked
+    identical to a fix that ran, so every exit from `_project_autofix` names itself here.
+    """
+    activity.logger.info(
+        "project autofix outcome=%s", outcome, extra={"fix_outcome": outcome, **fields}
+    )
+
+
 async def _project_autofix(req: ApplyCIRepairRequest, workspace_path: str) -> bool:
     """Run the repo's declared fix command in its own image and keep only verified, in-scope edits.
 
@@ -126,6 +137,7 @@ async def _project_autofix(req: ApplyCIRepairRequest, workspace_path: str) -> bo
     settings = get_settings()
     config = checks_for_repo(req.repo, settings)
     if config is None or not config.fix_command:
+        _record_fix_outcome("no-fix-command")
         return False
 
     checkout = tempfile.mkdtemp(prefix="fix-")
@@ -151,12 +163,24 @@ async def _project_autofix(req: ApplyCIRepairRequest, workspace_path: str) -> bo
             ),
             staging,
         )
-        if not result.verified:
+        if result.exit_code != 0:
+            _record_fix_outcome("fix-exited-non-zero", exit_code=result.exit_code)
+            return False
+        if not result.changed_files:
+            _record_fix_outcome("fix-changed-nothing")
             return False
         scope = failing_files(req.failure_summary)
+        if not scope:
+            _record_fix_outcome("empty-scope", changed=len(result.changed_files))
+            return False
         applied = _apply_staged_files(staging, workspace_path, result.changed_files, scope)
-        return applied > 0
+        if applied == 0:
+            _record_fix_outcome("nothing-applied", changed=len(result.changed_files))
+            return False
+        _record_fix_outcome("applied", applied=applied)
+        return True
     except Exception:
+        _record_fix_outcome("pod-failed")
         activity.logger.warning(
             "project autofix failed, falling back to agent repair", exc_info=True
         )
@@ -171,6 +195,11 @@ def _apply_staged_files(
 ) -> int:
     """Copy verified fixes back, only for files the failure named and that already existed.
 
+    An empty scope copies nothing. The per-file test in `in_repair_scope` answers whether a file
+    is named by the scope, so an empty scope constrains nothing and would match every file. The
+    fail-closed decision is therefore made here, before the loop, where it cannot be defeated by
+    that default.
+
     Restricting to pre-existing files keeps dependency trees and tool caches the fix command
     created inside the pod out of the repository. Paths are resolved and confined to their roots
     because the manifest is produced inside the pod, where the project's fix command runs.
@@ -178,6 +207,9 @@ def _apply_staged_files(
     import shutil
 
     from services.orchestration.langgraph.ci_repair import in_repair_scope
+
+    if not scope:
+        return 0
 
     staging_root = Path(staging).resolve()
     workspace_root = Path(workspace_path).resolve()

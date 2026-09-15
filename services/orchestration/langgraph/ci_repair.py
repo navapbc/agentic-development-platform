@@ -182,6 +182,11 @@ def failing_files(summary: str) -> tuple[str, ...]:
 def in_repair_scope(changed_path: str, scope: tuple[str, ...]) -> bool:
     """A changed file is in scope when it matches a path the failure named.
 
+    An empty scope names no file, so it constrains nothing and every path matches. Callers decide
+    what an unconstrained scope means. `_apply_staged_files` treats it as fail-closed and copies
+    nothing, because applying every file a project fix command touched is the whole-tree rewrite
+    this scoping exists to prevent.
+
     A scope entry may be the shorter path, because a check reports files relative to its own
     working directory while the workspace sees them relative to the repository root. The reverse
     never holds, so a changed path that merely ends with a scope entry's parent is not a match.
