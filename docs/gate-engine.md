@@ -163,6 +163,20 @@ A scan that cannot run is not a clean scan. The mediator re-raises `ScannerUnava
 
 Losing the pod itself raises `PodEngineError` from the transport. Losing the scanner image does not, because the pull runs inside the pod and returns an exit code like any other command. The in-pod script reserves exit code 121 for that case, which neither scanner can produce, and the runner maps it to the same unavailability. Both log a warning naming the scanner and the reason, because a retried scan leaves no gate result to read.
 
+### Only the change can fail the gate
+
+The scanners read the whole checkout, so on an established repository the pre-existing findings would set every scanner verdict to `block` and no pull request would ever be promoted. `scan_scope` decides which of those findings may fail the gate.
+
+```bash
+SCAN_SCOPE=changed
+```
+
+`changed`, the default, lets a finding set a scanner verdict only when it sits in a file the change touched. The changed set is `git diff --name-only <base_ref>..<ref>` in the checkout. `repository` restores the earlier behaviour, where any finding anywhere fails the gate, which is what you want for a scheduled audit rather than a pull request.
+
+Scoping applies to the verdict alone. Every finding the tools report is still written to the evidence record, so the pre-existing backlog stays auditable rather than being discarded.
+
+Attribution is fail-safe, and each fallback logs a warning naming its cause, because silently reverting to repository scope would restore the blocking this setting removes with no signal that attribution had broken. A finding keeps its power to block when `base_ref` is empty, when the `git` call fails or cannot start, when the finding carries no location, and when its location names something that is not a file in the checkout. That last case covers trivy, which targets an ecosystem rather than a file for some findings, and which would otherwise be excluded for matching no changed path.
+
 ## Integrating a different engine
 
 Because the boundary is the invocation and JSON contract, another review or classifier workflow integrates by configuration alone. Set `mode` and its source fields at the other engine, and set `review_entrypoint` and `classifier_entrypoint` to its harness paths. The engine reads the `--against` ref and the gateway env, and writes the review or classifier JSON. No adapter change is needed, and `ai-common-workflows` stands as the worked example rather than a hard dependency.

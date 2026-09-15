@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 from adapters.interfaces.security_scanner import (
@@ -298,6 +299,70 @@ async def test_scan_change_writes_one_evidence_record_per_scanner(monkeypatch):
     verdicts = {record.metadata["gate"]: record.metadata["verdict"] for record in persisted}
     assert verdicts == {"semgrep": "block", "trivy": "pass"}
     assert result.scanner_verdicts == {"semgrep": "block", "trivy": "pass"}
+
+
+async def _run_scan_change(monkeypatch, tmp_path, scope: str):
+    from services.orchestration.temporal_activities import security as security_activity
+
+    (tmp_path / "untouched.py").write_text("legacy = 1\n")
+    (tmp_path / "changed.py").write_text("new = 2\n")
+
+    async def fake_git(args, cwd):
+        assert args == ["git", "diff", "--name-only", "base1..head1"]
+        assert cwd == str(tmp_path)
+        return 0, "changed.py\n", ""
+
+    monkeypatch.setattr(
+        "services.orchestration.gates.scan_scope._run_git", fake_git
+    )
+    findings = [ScanFinding("f1", "semgrep", STATIC, HIGH, "old debt", location="untouched.py:1")]
+    mediator = SecurityScanMediator(
+        backends=(MockSecurityScanner("semgrep", findings),),
+        allowed_repos=frozenset({"agentic-demo-service"}),
+        threshold=HIGH,
+    )
+    monkeypatch.setattr(security_activity, "_build_security_mediator", lambda: mediator)
+    persisted: list[EvidenceRecord] = []
+
+    class _FakeSink:
+        async def persist(self, record):
+            persisted.append(record)
+            return record.artifact_id
+
+    monkeypatch.setattr("services.review.evidence.PostgresEvidenceSink", _FakeSink)
+    monkeypatch.setattr("scripts.config.get_settings", lambda: SimpleNamespace(scan_scope=scope))
+    req = security_activity.ScanChangeRequest(
+        task_id="T-1",
+        execution_id="exec-1",
+        repo="agentic-demo-service",
+        ref="head1",
+        repo_root=str(tmp_path),
+        base_ref="base1",
+    )
+    return await security_activity.scan_change(req), persisted
+
+
+async def test_scan_change_does_not_block_on_a_finding_the_change_did_not_touch(
+    monkeypatch, tmp_path
+):
+    result, persisted = await _run_scan_change(monkeypatch, tmp_path, "changed")
+
+    assert result.scanner_verdicts == {"semgrep": "pass"}
+    assert len(result.findings) == 1
+    assert persisted[0].metadata["finding_count"] == 1
+
+
+async def test_repository_scope_restores_blocking_on_an_untouched_file(monkeypatch, tmp_path):
+    result, _ = await _run_scan_change(monkeypatch, tmp_path, "repository")
+
+    assert result.scanner_verdicts == {"semgrep": "block"}
+
+
+async def test_an_unrecognised_scan_scope_is_rejected(monkeypatch, tmp_path):
+    from services.integration.credentials import ConfigError
+
+    with pytest.raises(ConfigError, match="scan_scope"):
+        await _run_scan_change(monkeypatch, tmp_path, "everything")
 
 
 async def test_mediator_fails_closed_when_a_backend_errors():

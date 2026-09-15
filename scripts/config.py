@@ -146,6 +146,7 @@ class Settings(BaseSettings):
     semgrep_binary: str = "semgrep"
     trivy_binary: str = "trivy"
     scanner_execution: str = "subprocess"
+    scan_scope: str = "changed"
     semgrep_image: str = (
         "docker.io/semgrep/semgrep:1.177.0"
         "@sha256:acaac22ffc7b7cc5926de0751b223bce0b2491c33d18422fa72f632c78d81198"

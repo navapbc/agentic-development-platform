@@ -72,6 +72,27 @@ def _scanner_content_hash(report: ScanReport, scanner: str, findings: list) -> s
     return f"sha256:{hashlib.sha256(payload.encode('utf-8')).hexdigest()}"
 
 
+async def _verdict_findings(req: ScanChangeRequest, report: ScanReport) -> list:
+    """The findings allowed to fail the gate. Every finding stays in the evidence record."""
+    from scripts.config import get_settings
+
+    from services.integration.credentials import ConfigError
+    from services.orchestration.gates.scan_scope import (
+        CHANGED_SCOPE,
+        SCAN_SCOPES,
+        blocking_findings,
+        changed_paths,
+    )
+
+    scope = get_settings().scan_scope
+    if scope not in SCAN_SCOPES:
+        raise ConfigError(f"scan_scope must be one of {sorted(SCAN_SCOPES)}, got {scope!r}")
+    if scope != CHANGED_SCOPE:
+        return list(report.findings)
+    changed = await changed_paths(req.repo_root, req.base_ref, req.ref)
+    return blocking_findings(report.findings, changed, req.repo_root)
+
+
 @activity.defn
 async def scan_change(req: ScanChangeRequest) -> ScanChangeResult:
     from adapters.interfaces.security_scanner import is_blocking
@@ -93,7 +114,7 @@ async def scan_change(req: ScanChangeRequest) -> ScanChangeResult:
     severity_counts = dict(Counter(f.severity for f in report.findings))
 
     scanner_verdicts = {name: "pass" for name in report.scanners}
-    for finding in report.findings:
+    for finding in await _verdict_findings(req, report):
         if finding.scanner in scanner_verdicts and is_blocking(
             finding.severity, threshold=report.threshold
         ):
