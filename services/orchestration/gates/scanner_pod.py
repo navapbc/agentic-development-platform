@@ -50,7 +50,16 @@ def remap_paths(args: Sequence[str], cwd: str) -> list[str]:
     """
     if not cwd:
         return list(args)
-    return [_WORKSPACE_MOUNT if arg == cwd else arg for arg in args]
+    return [_remap_path(arg, cwd.rstrip("/")) for arg in args]
+
+
+def _remap_path(arg: str, root: str) -> str:
+    if arg.rstrip("/") == root:
+        return _WORKSPACE_MOUNT
+    prefix = f"{root}/"
+    if arg.startswith(prefix):
+        return f"{_WORKSPACE_MOUNT}/{arg[len(prefix) :]}"
+    return arg
 
 
 def restore_paths(output: str, cwd: str) -> str:

@@ -70,6 +70,23 @@ def test_scanner_arguments_point_at_the_workspace_mount_not_the_worker_path():
     assert args == ["semgrep", "scan", "--json", "/workspace"]
 
 
+@pytest.mark.parametrize(
+    ("arg", "expected"),
+    [
+        ("/home/appuser/checkout/", "/workspace"),
+        ("/home/appuser/checkout/services/api.py", "/workspace/services/api.py"),
+        ("/home/appuser/checkout-other", "/home/appuser/checkout-other"),
+        ("--config=auto", "--config=auto"),
+    ],
+)
+def test_scanner_arguments_below_the_checkout_are_remapped_too(arg, expected):
+    assert remap_paths(["semgrep", arg], "/home/appuser/checkout") == ["semgrep", expected]
+
+
+def test_restore_paths_leaves_a_json_array_document_unchanged():
+    assert restore_paths('["/workspace/a.py"]', "/checkout") == '["/workspace/a.py"]'
+
+
 def test_scan_script_isolates_the_tool_document_from_build_output():
     script = scan_script("semgrep/semgrep:1.177.0", ["semgrep", "scan", "--json", "/workspace"])
 

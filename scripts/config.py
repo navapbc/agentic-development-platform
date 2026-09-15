@@ -146,8 +146,14 @@ class Settings(BaseSettings):
     semgrep_binary: str = "semgrep"
     trivy_binary: str = "trivy"
     scanner_execution: str = "subprocess"
-    semgrep_image: str = "docker.io/semgrep/semgrep:1.177.0"
-    trivy_image: str = "docker.io/aquasec/trivy:0.74.0"
+    semgrep_image: str = (
+        "docker.io/semgrep/semgrep:1.177.0"
+        "@sha256:acaac22ffc7b7cc5926de0751b223bce0b2491c33d18422fa72f632c78d81198"
+    )
+    trivy_image: str = (
+        "docker.io/aquasec/trivy:0.74.0"
+        "@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969"
+    )
     security_blocking_threshold: str = "high"
 
     openhands_agent_server_image: str = "ghcr.io/openhands/agent-server:latest-python"

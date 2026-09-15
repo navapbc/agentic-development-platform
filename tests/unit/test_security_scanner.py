@@ -132,6 +132,25 @@ async def test_trivy_backend_normalizes_dependency_findings():
     assert findings[0].location == "requirements.txt:requests@2.0.0"
 
 
+async def test_scanner_invocations_stay_on_the_documented_exit_code_contract():
+    calls: list[tuple[list[str], str]] = []
+
+    async def record(args, cwd):
+        calls.append((list(args), cwd))
+        return CommandResult(returncode=0, stdout="{}", stderr="")
+
+    await RealSemgrepScanner(runner=record).scan(_target())
+    await RealTrivyScanner(runner=record).scan(_target())
+
+    semgrep_args, semgrep_cwd = calls[0]
+    trivy_args, trivy_cwd = calls[1]
+    assert semgrep_args == ["semgrep", "scan", "--json", "--quiet", "/tmp/ws/agent-T-1"]
+    assert trivy_args == ["trivy", "fs", "--format", "json", "--quiet", "/tmp/ws/agent-T-1"]
+    assert semgrep_cwd == trivy_cwd == "/tmp/ws/agent-T-1"
+    assert not any(a.startswith("--error") for a in semgrep_args)
+    assert not any(a.startswith("--exit-code") for a in trivy_args)
+
+
 async def test_backend_raises_on_unexpected_exit_code():
     scanner = RealTrivyScanner(runner=_runner("", returncode=2))
     with pytest.raises(ScannerError):
