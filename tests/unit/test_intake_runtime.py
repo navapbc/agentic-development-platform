@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from subprocess import CalledProcessError
 from typing import Any
 
 import pytest
 from services.orchestration import intake_runtime
+from services.orchestration.intake_base import UnresolvableBaseBranch
 from services.orchestration.intake_reconciler import IntakeStart
 from services.orchestration.intake_runtime import TemporalStarter
 from tests.support import hermetic_settings
@@ -87,3 +89,154 @@ async def test_start_awaits_pr_close_for_local_backend(
 
     (_, arg, _) = client.started[0]
     assert arg.await_pr_close is True
+
+
+def _intake_start(**overrides: Any) -> IntakeStart:
+    fields: dict[str, Any] = {
+        "task_id": "ADEV-1",
+        "execution_id": "exec-1",
+        "repo": "agentic-demo-service",
+        "issue_key": "ADEV-1",
+        "summary": "Add a widget",
+        "jira_project": "ADEV",
+        "stored_issue": {},
+    }
+    fields.update(overrides)
+    return IntakeStart(**fields)
+
+
+@pytest.mark.asyncio
+async def test_start_uses_the_declared_base_branch(monkeypatch: pytest.MonkeyPatch) -> None:
+    looked_up: list[str] = []
+
+    def _remote_head(remote: str, branch: str) -> str:
+        looked_up.append(branch)
+        return "feature-sha" if branch == "feature-x" else "main-sha"
+
+    monkeypatch.setattr(intake_runtime, "remote_head", _remote_head)
+    monkeypatch.setattr(
+        "services.integration.github.factory.build_git_host", lambda settings: _Host()
+    )
+    client = _Client()
+    starter = TemporalStarter(client, hermetic_settings(), _Gh())
+
+    await starter.start(_intake_start(base="feature-x"))
+
+    (_, arg, _) = client.started[0]
+    assert arg.base == "feature-x"
+    assert looked_up == ["feature-x"]
+
+
+@pytest.mark.asyncio
+async def test_declared_base_sha_is_resolved_from_that_branch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        intake_runtime,
+        "remote_head",
+        lambda remote, branch: "feature-sha" if branch == "feature-x" else "main-sha",
+    )
+    monkeypatch.setattr(
+        "services.integration.github.factory.build_git_host", lambda settings: _Host()
+    )
+    client = _Client()
+    starter = TemporalStarter(client, hermetic_settings(), _Gh())
+
+    await starter.start(_intake_start(base="feature-x"))
+
+    (_, arg, _) = client.started[0]
+    assert arg.base_sha == "feature-sha"
+
+
+@pytest.mark.asyncio
+async def test_start_falls_back_to_the_default_base_branch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(intake_runtime, "remote_head", lambda remote, branch: "main-sha")
+    monkeypatch.setattr(
+        "services.integration.github.factory.build_git_host", lambda settings: _Host()
+    )
+    client = _Client()
+    settings = hermetic_settings()
+    starter = TemporalStarter(client, settings, _Gh())
+
+    await starter.start(_intake_start())
+
+    (_, arg, _) = client.started[0]
+    assert arg.base == settings.github_default_base_branch
+    assert arg.base_sha == "main-sha"
+
+
+@pytest.mark.asyncio
+async def test_unresolvable_declared_base_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(intake_runtime, "remote_head", lambda remote, branch: "")
+    monkeypatch.setattr(
+        "services.integration.github.factory.build_git_host", lambda settings: _Host()
+    )
+    client = _Client()
+    starter = TemporalStarter(client, hermetic_settings(), _Gh())
+
+    with pytest.raises(UnresolvableBaseBranch) as caught:
+        await starter.start(_intake_start(base="gone"))
+
+    assert caught.value.branch == "gone"
+    assert "gone" in str(caught.value)
+    assert client.started == []
+
+
+@pytest.mark.asyncio
+async def test_remote_lookup_failure_propagates(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _boom(remote: str, branch: str) -> str:
+        raise CalledProcessError(128, ["git", "ls-remote"])
+
+    monkeypatch.setattr(intake_runtime, "remote_head", _boom)
+    monkeypatch.setattr(
+        "services.integration.github.factory.build_git_host", lambda settings: _Host()
+    )
+    starter = TemporalStarter(_Client(), hermetic_settings(), _Gh())
+
+    with pytest.raises(CalledProcessError):
+        await starter.start(_intake_start(base="feature-x"))
+
+
+@pytest.mark.asyncio
+async def test_resolve_base_returns_the_remote_head(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(intake_runtime, "remote_head", lambda remote, branch: f"sha-{branch}")
+    monkeypatch.setattr(
+        "services.integration.github.factory.build_git_host", lambda settings: _Host()
+    )
+    starter = TemporalStarter(_Client(), hermetic_settings(), _Gh())
+
+    assert await starter.resolve_base(repo="agentic-demo-service", branch="feature-x") == (
+        "sha-feature-x"
+    )
+
+
+@pytest.mark.asyncio
+async def test_resolve_base_returns_empty_for_a_missing_branch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(intake_runtime, "remote_head", lambda remote, branch: "")
+    monkeypatch.setattr(
+        "services.integration.github.factory.build_git_host", lambda settings: _Host()
+    )
+    starter = TemporalStarter(_Client(), hermetic_settings(), _Gh())
+
+    assert await starter.resolve_base(repo="agentic-demo-service", branch="gone") == ""
+
+
+@pytest.mark.asyncio
+async def test_start_does_not_raise_when_the_default_base_is_unresolved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(intake_runtime, "remote_head", lambda remote, branch: "")
+    monkeypatch.setattr(
+        "services.integration.github.factory.build_git_host", lambda settings: _Host()
+    )
+    client = _Client()
+    starter = TemporalStarter(client, hermetic_settings(), _Gh())
+
+    await starter.start(_intake_start())
+
+    (_, arg, _) = client.started[0]
+    assert arg.base_sha == ""

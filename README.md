@@ -124,6 +124,18 @@ repositories:
     owner: platform
 ```
 
+### Pull request base branch
+
+Every execution opens its pull request against `github_default_base_branch`, which defaults to `main`. A ticket overrides that for itself with a `base:<branch>` label, so a change that only makes sense on top of an unmerged pull request can target that pull request's branch instead. Rebar tags and Jira labels both feed this, so the convention is the same on either backend.
+
+```
+base:joeoakhart/PFMLPB-33758
+```
+
+The setting applies to every ticket that carries no `base:` label, so existing tickets are unaffected. Repeating one value is a duplicate and resolves to it.
+
+A declaration that cannot be honoured holds the ticket and raises the same unroutable alert as a ticket that cannot be routed to a repository. That covers two cases, a declared branch that does not exist on the remote, and two `base:` labels naming different branches. Neither falls back to the default branch, because an execution rooted at the wrong branch would produce a pull request whose diff is not the one the ticket asked for.
+
 ### Jira source configuration
 
 `config/local/jira.yaml` maps each project to the site, account, token, and board used to reach it. Copy the committed template with `cp config/local/jira.yaml.example config/local/jira.yaml` and edit the copy. The file is git-ignored, so your edits never conflict with a repository update.

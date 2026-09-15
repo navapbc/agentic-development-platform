@@ -9,6 +9,7 @@ from services.coordination.idempotency import InMemorySideEffectLedger
 from services.integration.jira import CLOUD
 from services.integration.jira.credentials import ComponentRepos
 from services.integration.jira.snapshot import TaskSnapshot, snapshot_id_for
+from services.orchestration.intake_base import UnresolvableBaseBranch
 from services.orchestration.intake_reconciler import IntakeStart, reconcile_intake
 from tests.support import hermetic_settings
 
@@ -92,6 +93,7 @@ def _issue(
     summary: str = "Add retry",
     description: str = "",
     components: tuple[str, ...] = (),
+    labels: tuple[str, ...] = (),
 ) -> dict:
     return {
         "key": key,
@@ -102,7 +104,7 @@ def _issue(
             "issuetype": {"name": "Story"},
             "status": {"name": "To Do"},
             "priority": {"name": "High"},
-            "labels": [],
+            "labels": list(labels),
             "components": [{"name": name} for name in components],
         },
     }
@@ -142,7 +144,17 @@ class _ActiveGuard:
         return self.active.get((issue_key, repo))
 
 
-def _run(read_source, starter, alerter, ledger, store, resolver, seeder=None, active_guard=None):
+def _run(
+    read_source,
+    starter,
+    alerter,
+    ledger,
+    store,
+    resolver,
+    seeder=None,
+    active_guard=None,
+    base_resolver=None,
+):
     return reconcile_intake(
         read_source=read_source,
         starter=starter,
@@ -153,6 +165,7 @@ def _run(read_source, starter, alerter, ledger, store, resolver, seeder=None, ac
         jira_resolver=resolver,
         snapshot_store=store,
         active_guard=active_guard,
+        base_resolver=base_resolver,
     )
 
 
@@ -389,3 +402,191 @@ async def test_no_counter_means_unbounded():
     report = await _run(read, starter, alerter, ledger, store, resolver)
     assert len(starter.starts) == 2
     assert report.deferred == []
+
+
+
+
+class _UnresolvableBaseStarter(_Starter):
+    def __init__(self, missing: str) -> None:
+        super().__init__()
+        self._missing = missing
+
+    async def start(self, start: IntakeStart) -> str:
+        if start.base == self._missing:
+            raise UnresolvableBaseBranch(start.base, start.repo)
+        return await super().start(start)
+
+
+async def test_declared_base_label_reaches_the_starter():
+    read = _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV", labels=("base:feature-x",))]})
+    starter, alerter, ledger, store, resolver = _defaults()
+
+    await _run(read, starter, alerter, ledger, store, resolver)
+
+    assert [s.base for s in starter.starts] == ["feature-x"]
+
+
+async def test_no_base_label_leaves_the_base_unset():
+    read = _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV")]})
+    starter, alerter, ledger, store, resolver = _defaults()
+
+    await _run(read, starter, alerter, ledger, store, resolver)
+
+    assert [s.base for s in starter.starts] == [""]
+
+
+async def test_conflicting_base_labels_start_no_workflow():
+    read = _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV", labels=("base:x", "base:y"))]})
+    starter, alerter, ledger, store, resolver = _defaults()
+
+    report = await _run(read, starter, alerter, ledger, store, resolver)
+
+    assert starter.starts == []
+    assert report.started == []
+
+
+async def test_conflicting_base_labels_record_a_hold_naming_both():
+    read = _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV", labels=("base:x", "base:y"))]})
+    starter, alerter, ledger, store, resolver = _defaults()
+
+    report = await _run(read, starter, alerter, ledger, store, resolver)
+
+    assert [h.issue_key for h in report.held] == ["ADEV-1"]
+    reason = report.held[0].reason
+    assert "x" in reason and "y" in reason
+    assert [a[0] for a in alerter.alerts] == ["ADEV-1"]
+
+
+async def test_unresolvable_declared_base_starts_no_workflow():
+    read = _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV", labels=("base:gone",))]})
+    _, alerter, ledger, store, resolver = _defaults()
+    starter = _UnresolvableBaseStarter("gone")
+
+    report = await _run(read, starter, alerter, ledger, store, resolver)
+
+    assert starter.starts == []
+    assert report.started == []
+
+
+async def test_unresolvable_declared_base_records_a_hold_naming_the_branch():
+    read = _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV", labels=("base:gone",))]})
+    _, alerter, ledger, store, resolver = _defaults()
+    starter = _UnresolvableBaseStarter("gone")
+
+    report = await _run(read, starter, alerter, ledger, store, resolver)
+
+    assert [h.issue_key for h in report.held] == ["ADEV-1"]
+    assert "gone" in report.held[0].reason
+
+
+async def test_a_held_ticket_does_not_stop_the_pass():
+    read = _ReadSource(
+        {
+            "ADEV": [
+                _issue("ADEV-1", "ADEV", labels=("base:gone",)),
+                _issue("ADEV-2", "ADEV"),
+            ]
+        }
+    )
+    _, alerter, ledger, store, resolver = _defaults()
+    starter = _UnresolvableBaseStarter("gone")
+
+    report = await _run(read, starter, alerter, ledger, store, resolver)
+
+    assert [s.issue_key for s in starter.starts] == ["ADEV-2"]
+    assert [h.issue_key for h in report.held] == ["ADEV-1"]
+
+
+class _BaseResolver:
+    def __init__(self, known: dict[str, str]) -> None:
+        self.known = known
+        self.calls: list[tuple[str, str]] = []
+
+    async def resolve_base(self, *, repo: str, branch: str) -> str:
+        self.calls.append((repo, branch))
+        return self.known.get(branch, "")
+
+
+async def test_unresolvable_declared_base_seeds_no_execution():
+    read = _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV", labels=("base:gone",))]})
+    starter, alerter, ledger, store, resolver = _defaults()
+    seeder = _Seeder()
+    base_resolver = _BaseResolver({})
+
+    report = await _run(
+        read, starter, alerter, ledger, store, resolver, seeder=seeder, base_resolver=base_resolver
+    )
+
+    assert seeder.seeded == []
+    assert store.by_execution == {}
+    assert starter.starts == []
+    assert [h.issue_key for h in report.held] == ["ADEV-1"]
+
+
+async def test_unresolvable_declared_base_holds_once_per_pass_without_growth():
+    read = _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV", labels=("base:gone",))]})
+    starter, alerter, ledger, store, resolver = _defaults()
+    seeder = _Seeder()
+    base_resolver = _BaseResolver({})
+
+    for _ in range(3):
+        await _run(
+            read,
+            starter,
+            alerter,
+            ledger,
+            store,
+            resolver,
+            seeder=seeder,
+            base_resolver=base_resolver,
+        )
+
+    assert seeder.seeded == []
+    assert starter.starts == []
+
+
+async def test_resolvable_declared_base_starts_the_workflow():
+    read = _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV", labels=("base:feature-x",))]})
+    starter, alerter, ledger, store, resolver = _defaults()
+    seeder = _Seeder()
+    base_resolver = _BaseResolver({"feature-x": "feature-sha"})
+
+    report = await _run(
+        read, starter, alerter, ledger, store, resolver, seeder=seeder, base_resolver=base_resolver
+    )
+
+    assert base_resolver.calls == [("repo-a", "feature-x")]
+    assert [s.base for s in starter.starts] == ["feature-x"]
+    assert len(seeder.seeded) == 1
+    assert report.held == []
+
+
+async def test_undeclared_base_skips_the_resolver():
+    read = _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV")]})
+    starter, alerter, ledger, store, resolver = _defaults()
+    base_resolver = _BaseResolver({})
+
+    report = await _run(
+        read, starter, alerter, ledger, store, resolver, base_resolver=base_resolver
+    )
+
+    assert base_resolver.calls == []
+    assert [s.base for s in starter.starts] == [""]
+    assert report.held == []
+
+
+async def test_declared_base_without_a_resolver_still_holds_every_pass():
+    # Growth of seeder.seeded is not asserted here because this path re-seeds by design gap,
+    # tracked as 855e-f65d-ee67-4ec7.
+    read = _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV", labels=("base:gone",))]})
+    _, alerter, ledger, store, resolver = _defaults()
+    starter = _UnresolvableBaseStarter("gone")
+    seeder = _Seeder()
+
+    held = []
+    for _ in range(3):
+        report = await _run(read, starter, alerter, ledger, store, resolver, seeder=seeder)
+        held.append([h.issue_key for h in report.held])
+
+    assert held == [["ADEV-1"], ["ADEV-1"], ["ADEV-1"]]
+    assert starter.starts == []

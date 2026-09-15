@@ -10,6 +10,7 @@ from scripts.config import Settings
 
 from services.integration.jira.credentials import acceptance_field
 from services.orchestration.execution_reconciler import ActiveExecution
+from services.orchestration.intake_base import UnresolvableBaseBranch
 from services.orchestration.intake_reconciler import IntakeContext, IntakeStart
 
 _log = structlog.get_logger(__name__)
@@ -31,6 +32,11 @@ class TemporalStarter:
         self._settings = settings
         self._gh = gh_resolver
 
+    async def resolve_base(self, *, repo: str, branch: str) -> str:
+        from services.integration.github.factory import build_git_host
+
+        return remote_head(build_git_host(self._settings).source_location(repo), branch)
+
     async def start(self, start: IntakeStart) -> str:
         from services.integration.github.factory import (
             LOCAL,
@@ -46,8 +52,11 @@ class TemporalStarter:
             DraftPullRequestWorkflow,
         )
 
-        base = self._settings.github_default_base_branch
-        base_sha = remote_head(build_git_host(self._settings).source_location(start.repo), base)
+        base = start.base or self._settings.github_default_base_branch
+        source_location = build_git_host(self._settings).source_location(start.repo)
+        base_sha = remote_head(source_location, base)
+        if start.base and not base_sha:
+            raise UnresolvableBaseBranch(base, start.repo)
         run_test_triage = triage_engine(load_gate_engine_configs(self._settings)) is not None
         await_pr_close = resolve_source_control_backend_name(self._settings) == LOCAL
         workflow_id = f"draft-pr-{start.issue_key}-{start.execution_id}"
@@ -225,8 +234,9 @@ def build_intake_context(settings: Settings, *, client: Any, gh_resolver: Any) -
     from services.integration.source_control import source_control_repos
 
     execution_store = PostgresExecutionSeeder()
+    starter = TemporalStarter(client, settings)
     return IntakeContext(
-        starter=TemporalStarter(client, settings),
+        starter=starter,
         alerter=NotificationsAlerter(settings),
         ledger=PostgresSideEffectLedger(),
         execution_seeder=execution_store,
@@ -235,4 +245,5 @@ def build_intake_context(settings: Settings, *, client: Any, gh_resolver: Any) -
         field_id=acceptance_field(settings),
         settings=settings,
         active_guard=execution_store,
+        base_resolver=starter,
     )

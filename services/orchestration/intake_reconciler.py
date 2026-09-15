@@ -27,6 +27,11 @@ from services.integration.jira.snapshot import (
 )
 from services.integration.source_control import source_control_repos
 from services.integration.tickets.rebar_backend import rebar_stored_payload
+from services.orchestration.intake_base import (
+    UnresolvableBaseBranch,
+    declared_base,
+    unresolvable_base_reason,
+)
 
 _JIRA_SOURCES = frozenset({CLOUD, DATACENTER})
 
@@ -41,7 +46,7 @@ class IntakeStart:
     jira_project: str
     stored_issue: dict[str, Any]
     description: str = ""
-    base: str = "main"
+    base: str = ""
     snapshot_version: int = 0
 
 
@@ -104,6 +109,10 @@ class IntakeReadSource(Protocol):
 
 class IntakeWorkflowStarter(Protocol):
     async def start(self, start: IntakeStart) -> str: ...
+
+
+class IntakeBaseResolver(Protocol):
+    async def resolve_base(self, *, repo: str, branch: str) -> str: ...
 
 
 class IntakeExecutionSeeder(Protocol):
@@ -176,6 +185,7 @@ class IntakeContext:
     settings: Settings
     active_guard: IntakeActiveGuard | None = None
     admission: RunAdmission | None = None
+    base_resolver: IntakeBaseResolver | None = None
 
 
 async def reconcile_intake(
@@ -190,6 +200,7 @@ async def reconcile_intake(
     snapshot_store: TaskSnapshotStore | None = None,
     active_guard: IntakeActiveGuard | None = None,
     run_counter: IntakeRunCounter | None = None,
+    base_resolver: IntakeBaseResolver | None = None,
 ) -> IntakeReport:
     resolved = settings or get_settings()
     jira_resolver = jira_resolver or build_jira_credential_resolver(resolved)
@@ -204,6 +215,7 @@ async def reconcile_intake(
         settings=resolved,
         active_guard=active_guard,
         admission=await build_admission(resolved, run_counter),
+        base_resolver=base_resolver,
     )
     report = IntakeReport()
 
@@ -253,6 +265,18 @@ async def route_candidate(
     report: IntakeReport,
 ) -> None:
     digest = content_hash(candidate.stored_payload)
+    declaration = declared_base(candidate.stored_payload.get("labels") or [])
+    if declaration.conflict:
+        await _hold(
+            candidate.task_id,
+            project,
+            declaration.conflict,
+            digest,
+            ctx.alerter,
+            ctx.ledger,
+            report,
+        )
+        return
     resolution = resolve_targets(
         candidate.description,
         default_repo=candidate.default_repo,
@@ -271,6 +295,7 @@ async def route_candidate(
             project=project,
             repo=repo,
             digest=digest,
+            base=declaration.branch,
             ctx=ctx,
             report=report,
         )
@@ -313,6 +338,7 @@ async def _start(
     project: str,
     repo: str,
     digest: str,
+    base: str = "",
     ctx: IntakeContext,
     report: IntakeReport,
 ) -> None:
@@ -331,6 +357,23 @@ async def _start(
                 )
             )
             return
+    # Resolved before the ledger effect because a raised effect leaves its key _PENDING,
+    # so validating inside _launch would re-seed an execution and snapshot on every pass.
+    if (
+        base
+        and ctx.base_resolver is not None
+        and not await ctx.base_resolver.resolve_base(repo=repo, branch=base)
+    ):
+        await _hold(
+            issue_key,
+            project,
+            unresolvable_base_reason(base, repo),
+            digest,
+            ctx.alerter,
+            ctx.ledger,
+            report,
+        )
+        return
     if ctx.admission is not None and not ctx.admission.try_reserve():
         report.deferred.append(issue_key)
         return
@@ -371,12 +414,17 @@ async def _start(
                 description=candidate.description,
                 jira_project=project,
                 stored_issue=candidate.stored_payload,
+                base=base,
                 snapshot_version=snapshot.version,
             )
         )
         return {"workflow_id": workflow_id}
 
-    outcome = await ctx.ledger.run_once(ref, _launch)
+    try:
+        outcome = await ctx.ledger.run_once(ref, _launch)
+    except UnresolvableBaseBranch as exc:
+        await _hold(issue_key, project, str(exc), digest, ctx.alerter, ctx.ledger, report)
+        return
     result = outcome.result if isinstance(outcome.result, dict) else {}
     report.started.append(
         IntakeStartRecord(
