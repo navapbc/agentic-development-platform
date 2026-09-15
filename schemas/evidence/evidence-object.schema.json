@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentic-dev-platform/schemas/evidence/evidence-object/v1.json",
+  "title": "Evidence object",
+  "version": "1.0.0",
+  "description": "Durable evidence-object record shape, keyed to the evidence_artifacts table and the EvidenceRecord write shape.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["artifact_id", "execution_id", "content_hash", "source_component"],
+  "properties": {
+    "artifact_id": { "type": "string", "maxLength": 64 },
+    "execution_id": { "type": "string", "maxLength": 64 },
+    "content_hash": { "type": "string", "maxLength": 128 },
+    "source_component": { "type": "string", "maxLength": 64 },
+    "classification": { "type": ["string", "null"], "maxLength": 32 },
+    "retention": { "type": ["string", "null"], "maxLength": 32 },
+    "location": { "type": ["string", "null"] },
+    "metadata": { "type": ["object", "null"] },
+    "created_at": { "type": ["string", "null"], "format": "date-time" }
+  }
+}

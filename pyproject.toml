@@ -52,6 +52,7 @@ dev = [
     "pytest-asyncio>=0.23,<0.25",
     "coverage>=7.5,<8",
     "basedpyright>=1.13,<2",
+    "jsonschema>=4.20,<5",
 ]
 all = [
     "agentic-dev-platform[reasoning,review,sandbox,gateway,observability,prompts]",

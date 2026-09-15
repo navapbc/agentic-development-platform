@@ -44,6 +44,7 @@ venv/
 # Local data / evidence
 data/
 evidence/
+!/schemas/evidence/
 repository_indexes/**/index/
 *.sqlite
 *.db
