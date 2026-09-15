@@ -54,12 +54,20 @@ class ScannerError(Exception):
 
 
 async def run_subprocess(args: Sequence[str], cwd: str) -> CommandResult:
-    proc = await asyncio.create_subprocess_exec(
-        *args,
-        cwd=cwd or None,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            cwd=cwd or None,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError as exc:
+        raise ScannerError(
+            args[0] if args else "scanner",
+            127,
+            f"{args[0] if args else 'scanner'} is not installed on this worker. "
+            "Install it or set scanner_execution to 'pod' to run it from its own image.",
+        ) from exc
     out, err = await proc.communicate()
     return CommandResult(
         returncode=proc.returncode or 0,
@@ -132,7 +140,7 @@ class RealSemgrepScanner:
         return cls(binary=resolved.semgrep_binary, runner=runner)
 
     async def scan(self, target: ScanTarget) -> list[ScanFinding]:
-        args = [self._binary, "scan", "--json", "--quiet", "--error=false", target.repo_root]
+        args = [self._binary, "scan", "--json", "--quiet", target.repo_root]
         result = await self._runner(args, target.repo_root)
         if result.returncode not in self._ok_codes:
             raise ScannerError(self.name, result.returncode, result.stderr)

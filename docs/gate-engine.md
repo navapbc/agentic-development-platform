@@ -133,13 +133,29 @@ gates:
 
 ## Pod privilege
 
-Both pod paths, the external gates and the project checks, unpack an image with buildah inside the pod. Some clusters refuse that unprivileged, so `GATE_ENGINE_PRIVILEGED` sets `securityContext.privileged` on the pods the gate engine creates.
+Every pod path, the external gates, the project checks, and the built-in scanners below, unpacks an image with buildah inside the pod. Some clusters refuse that unprivileged, so `GATE_ENGINE_PRIVILEGED` sets `securityContext.privileged` on the pods the gate engine creates.
 
 ```bash
 GATE_ENGINE_PRIVILEGED=true
 ```
 
 It defaults to `false` and should stay there wherever the cluster allows it, because a privileged container gets host device access and the host kernel's full capability set, which removes most of the isolation the pod would otherwise provide. Turn it on only when image unpacking fails without it, as it does under the local k3s used for development, and prefer a cluster configured for rootless unpacking in any shared environment.
+
+## Running the built-in scanners from their own images
+
+The `semgrep` and `trivy` gates are built in, so they carry no engine config. They read `SCANNER_EXECUTION` instead, which follows the same subprocess-or-pod split the external gates use.
+
+`subprocess`, the default, invokes the scanner binary on the worker. When the binary is absent the gate reports a `ScannerError` naming the binary and pointing at pod mode, rather than surfacing a bare `FileNotFoundError`.
+
+`pod` runs the scanner from the image its maintainers publish, in an ephemeral pod, so the worker image carries no scanner binary and the platform's release stays decoupled from theirs. The checkout is copied into the pod at `/workspace`, and the location fields in the tool's findings are rewritten back to the worker's checkout path so results match a subprocess run.
+
+```bash
+SCANNER_EXECUTION=pod
+SEMGREP_IMAGE=docker.io/semgrep/semgrep:1.177.0
+TRIVY_IMAGE=docker.io/aquasec/trivy:0.74.0
+```
+
+Both image settings are pinned by tag so a scan is reproducible, and both must be fully qualified. The builder resolves short names only for official Docker Hub images, so an unqualified `semgrep/semgrep` fails the pull.
 
 ## Integrating a different engine
 

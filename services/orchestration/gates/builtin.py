@@ -100,9 +100,25 @@ def builtin_scanner_backends() -> dict[str, ScannerFactory]:
     from adapters.real.security_scanner import RealSemgrepScanner, RealTrivyScanner
 
     return {
-        "semgrep": RealSemgrepScanner.from_settings,
-        "trivy": RealTrivyScanner.from_settings,
+        "semgrep": lambda settings=None: _scanner_backend(
+            "semgrep", RealSemgrepScanner.from_settings, settings
+        ),
+        "trivy": lambda settings=None: _scanner_backend(
+            "trivy", RealTrivyScanner.from_settings, settings
+        ),
     }
+
+
+def _scanner_backend(name: str, factory: Any, settings: Any = None) -> Any:
+    """Build a scanner that shells out on the worker, or runs from the tool's own image in a pod."""
+    from scripts.config import get_settings
+
+    resolved = settings or get_settings()
+    if resolved.scanner_execution != "pod":
+        return factory(resolved)
+    from services.orchestration.gates.scanner_pod import pod_command_runner
+
+    return factory(resolved, runner=pod_command_runner(name, resolved))
 
 
 def _resolve_gate_model(config: Any, settings: Any) -> str:
@@ -188,6 +204,10 @@ def builtin_gates() -> dict[str, Callable[[], Gate]]:
         "code-review": lambda: review_gate("code-review", review_code),
         "security-review": lambda: review_gate("security-review", review_security),
         "acceptance": lambda: review_gate("acceptance", verify_acceptance),
-        "semgrep": lambda: scanner_gate("semgrep", RealSemgrepScanner.from_settings),
-        "trivy": lambda: scanner_gate("trivy", RealTrivyScanner.from_settings),
+        "semgrep": lambda: scanner_gate(
+            "semgrep", lambda: _scanner_backend("semgrep", RealSemgrepScanner.from_settings)
+        ),
+        "trivy": lambda: scanner_gate(
+            "trivy", lambda: _scanner_backend("trivy", RealTrivyScanner.from_settings)
+        ),
     }
