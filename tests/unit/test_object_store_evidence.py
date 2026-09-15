@@ -52,7 +52,7 @@ def _record(**overrides) -> EvidenceRecord:
         execution_id="exec-1",
         content_hash="sha256:deadbeef",
         source_component="gate:code-review",
-        classification="final",
+        classification="standard",
     )
     return replace(record, **overrides) if overrides else record
 
@@ -136,6 +136,43 @@ def test_resolve_retention_fills_unset_and_keeps_numeric():
     assert resolve_retention(_record(), settings).retention == "30"
     assert resolve_retention(_record(retention="5"), settings).retention == "5"
     assert resolve_retention(_record(retention=""), settings).retention == "30"
+
+
+def test_resolve_retention_applies_classification_mapping():
+    from services.review.evidence import resolve_retention
+
+    settings = _settings(evidence_retention_classification_days={"security": 3650})
+    assert resolve_retention(_record(classification="security"), settings).retention == "3650"
+    assert resolve_retention(_record(classification="standard"), settings).retention == "30"
+
+
+def test_resolve_retention_explicit_numeric_wins_over_mapping():
+    from services.review.evidence import resolve_retention
+
+    settings = _settings(evidence_retention_classification_days={"security": 3650})
+    resolved = resolve_retention(_record(classification="security", retention="7"), settings)
+    assert resolved.retention == "7"
+
+
+async def test_audit_object_uses_classification_mapping():
+    client = _FakeS3()
+    settings = _settings(evidence_retention_classification_days={"audit": 3650})
+    before = datetime.now().astimezone()
+    await persist_audit_object(
+        {"event_id": "evt-1", "kind": "gate"},
+        settings=settings,
+        writer=_writer(client),
+    )
+
+    retain_until = client.puts[0]["ObjectLockRetainUntilDate"]
+    assert (retain_until - before).days > 3000
+
+
+def test_evidence_record_rejects_unknown_classification():
+    from services.review.classification import EvidenceClassificationError
+
+    with pytest.raises(EvidenceClassificationError):
+        _record(classification="final")
 
 
 async def test_head_object_non_404_error_propagates():

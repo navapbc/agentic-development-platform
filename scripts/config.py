@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Annotated
 from urllib.parse import urlparse, urlunparse
 
 from pydantic import ValidationInfo, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -53,6 +54,7 @@ class Settings(BaseSettings):
     evidence_object_store_secret_key: str = ""
     evidence_object_lock_mode: str = "COMPLIANCE"
     evidence_retention_days: int = 2555
+    evidence_retention_classification_days: Annotated[dict[str, int], NoDecode] = {}
 
     slack_webhook_url: str = ""
     alert_email_from: str = ""
@@ -88,6 +90,28 @@ class Settings(BaseSettings):
         if info.field_name is not None and (value is None or value == ""):
             return cls.model_fields[info.field_name].default
         return value
+
+    @field_validator("evidence_retention_classification_days", mode="before")
+    @classmethod
+    def _parse_classification_retention(cls, value: object) -> object:
+        if isinstance(value, dict) or not value:
+            return value or {}
+        from services.review.classification import validate_classification
+
+        parsed: dict[str, int] = {}
+        for item in str(value).replace("\n", ",").split(","):
+            entry = item.strip()
+            if not entry:
+                continue
+            key, sep, days = entry.partition(":")
+            key, days = key.strip(), days.strip()
+            if not sep or not days.isdigit():
+                raise ValueError(
+                    f"invalid EVIDENCE_RETENTION_CLASSIFICATION_DAYS entry {entry!r}. "
+                    "expected classification:days"
+                )
+            parsed[validate_classification(key)] = int(days)
+        return parsed
 
     opa_url: str = "http://localhost:8181"
     langfuse_host: str = "http://localhost:3000"

@@ -52,7 +52,7 @@ def _evidence_record() -> dict:
         execution_id="exec-1",
         content_hash="sha256:deadbeef",
         source_component="gate:code-review",
-        classification="internal",
+        classification="standard",
         retention="2555",
         location="s3://evidence/sha256/deadbeef",
         metadata={"stage": "code-review"},

@@ -13,6 +13,8 @@ from scripts.config import Settings, get_settings
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
+from services.review.classification import CLASSIFICATION_AUDIT, validate_classification
+
 
 @dataclass(frozen=True)
 class EvidenceRecord:
@@ -25,6 +27,9 @@ class EvidenceRecord:
     location: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        validate_classification(self.classification)
+
 
 @runtime_checkable
 class EvidenceSink(Protocol):
@@ -36,15 +41,19 @@ class EvidenceObjectStoreConfigError(RuntimeError):
 
 
 def resolve_retention(record: EvidenceRecord, settings: Settings) -> EvidenceRecord:
-    """Return the record with its retention set, in days, from the record or the config.
+    """Return the record with its retention set, in days.
 
-    A record that carries its own numeric retention keeps it. Otherwise the configured
-    ``evidence_retention_days`` is applied, so every stored record carries a retention.
+    Precedence is the record's own numeric retention, then the classification mapping,
+    then the baseline ``evidence_retention_days``, so every stored record carries a
+    retention and a per-classification window overrides the baseline.
     """
     current = (record.retention or "").strip()
     if current.isdigit():
         return record
-    return replace(record, retention=str(settings.evidence_retention_days))
+    days = settings.evidence_retention_classification_days.get(
+        record.classification, settings.evidence_retention_days
+    )
+    return replace(record, retention=str(days))
 
 
 class PostgresEvidenceSink:
@@ -219,8 +228,11 @@ async def persist_audit_object(
     key = f"audit/{event_id}"
     body = json.dumps(event, sort_keys=True, default=str).encode("utf-8")
     store = writer or ObjectStoreWriter(resolved)
+    retention_days = resolved.evidence_retention_classification_days.get(
+        CLASSIFICATION_AUDIT, resolved.evidence_retention_days
+    )
     return await asyncio.to_thread(
-        store.put_locked, key, body, retention_days=resolved.evidence_retention_days
+        store.put_locked, key, body, retention_days=retention_days
     )
 
 

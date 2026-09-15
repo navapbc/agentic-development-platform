@@ -76,6 +76,7 @@ def _scanner_content_hash(report: ScanReport, scanner: str, findings: list) -> s
 async def scan_change(req: ScanChangeRequest) -> ScanChangeResult:
     from adapters.interfaces.security_scanner import is_blocking
 
+    from services.review.classification import CLASSIFICATION_SECURITY
     from services.review.evidence import EvidenceRecord, build_evidence_sink
 
     mediator = _build_security_mediator()
@@ -111,7 +112,7 @@ async def scan_change(req: ScanChangeRequest) -> ScanChangeResult:
                 execution_id=req.execution_id,
                 content_hash=scanner_hash,
                 source_component=f"gate:{scanner}",
-                classification="final",
+                classification=CLASSIFICATION_SECURITY,
                 location=None,
                 metadata={
                     "gate": scanner,

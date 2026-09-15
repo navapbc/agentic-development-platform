@@ -108,6 +108,7 @@ def _gate_content_hash(execution_id: str, result: GateResult) -> str:
 
 
 async def _persist_gate_evidence(context: GateContext, result: GateResult) -> None:
+    from services.review.classification import CLASSIFICATION_STANDARD
     from services.review.evidence import EvidenceRecord, build_evidence_sink
 
     content_hash = result.attestation_hash or _gate_content_hash(context.execution_id, result)
@@ -116,7 +117,7 @@ async def _persist_gate_evidence(context: GateContext, result: GateResult) -> No
         execution_id=context.execution_id,
         content_hash=content_hash,
         source_component=f"gate:{result.name}",
-        classification="final",
+        classification=CLASSIFICATION_STANDARD,
         metadata={
             "gate": result.name,
             "kind": result.kind,

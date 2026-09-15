@@ -76,3 +76,27 @@ def test_code_defaults_carry_no_project_specific_jumphost(monkeypatch):
     s = hermetic_settings()
     assert s.jumphost_name == ""
     assert s.jumphost_env == ""
+
+
+def test_classification_retention_parses_pairs():
+    s = Settings(evidence_retention_classification_days="security:3650, audit:3650")
+    assert s.evidence_retention_classification_days == {"security": 3650, "audit": 3650}
+
+
+def test_classification_retention_empty_is_blank_mapping():
+    s = Settings(evidence_retention_classification_days="")
+    assert s.evidence_retention_classification_days == {}
+
+
+def test_classification_retention_rejects_unknown_key():
+    import pytest
+
+    with pytest.raises(ValueError):
+        Settings(evidence_retention_classification_days="bogus:10")
+
+
+def test_classification_retention_rejects_non_numeric_days():
+    import pytest
+
+    with pytest.raises(ValueError):
+        Settings(evidence_retention_classification_days="security:soon")

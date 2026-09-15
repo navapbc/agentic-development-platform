@@ -75,7 +75,7 @@ async def test_locked_evidence_object_resists_delete_and_overwrite():
         execution_id="exec-1",
         content_hash=f"sha256:{uuid.uuid4().hex}",
         source_component="gate:code-review",
-        classification="final",
+        classification="standard",
     )
     await sink.persist(record)
 
