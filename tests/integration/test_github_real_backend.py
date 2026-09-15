@@ -145,6 +145,39 @@ async def test_commit_and_push_is_idempotent_via_the_execution_trailer(bare_remo
     assert retry.commit_sha == first.commit_sha
 
 
+async def test_a_commit_clones_only_the_ref_it_needs(bare_remote: str, monkeypatch) -> None:
+    """A full clone of an established repository has overrun the activity timeout."""
+    from adapters.real import git_host as git_host_module
+
+    host = _host(bare_remote)
+    clones: list[list[str]] = []
+    original = git_host_module.RealGitHost._git
+
+    async def recording(self, *args: str, cwd: str | None = None) -> str:
+        if args and args[0] == "clone":
+            clones.append(list(args))
+        return await original(self, *args, cwd=cwd)
+
+    monkeypatch.setattr(git_host_module.RealGitHost, "_git", recording)
+
+    await host.commit_and_push(
+        CommitRequest(
+            repo=REPO,
+            branch=agent_branch_name(TASK_ID),
+            base="main",
+            message="apply change",
+            files={"src/app.py": "print('hi')\n"},
+            task_id=TASK_ID,
+            execution_id=EXECUTION_ID,
+        )
+    )
+
+    assert len(clones) == 1
+    assert "--single-branch" in clones[0]
+    assert "--filter=blob:none" in clones[0]
+    assert clones[0][clones[0].index("--branch") + 1] == "main"
+
+
 async def test_open_draft_pr_creates_then_updates_the_same_pr(bare_remote: str) -> None:
     host = _host(bare_remote)
     branch = agent_branch_name(TASK_ID)

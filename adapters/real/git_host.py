@@ -118,18 +118,31 @@ class RealGitHost:
         return BranchRef(repo=repo, name=name, head_sha=head, created=True)
 
     async def commit_and_push(self, request: CommitRequest) -> CommitResult:
+        """Commit the requested files onto the branch and push them.
+
+        The clone is narrowed to the one ref this commit needs. A full clone of an established
+        repository runs to gigabytes, which has overrun the activity timeout under load, and the
+        history it downloads is never read. `--filter=blob:none` keeps that saving without
+        breaking the trailer search below, which walks commit messages and reads no blob.
+        """
         remote = self._remote_url(request.repo)
         trailer = f"execution_id: {request.execution_id}"
+        branch_exists = bool(await self._ls_remote(remote, request.branch))
+        clone_ref = request.branch if branch_exists else request.base
         with tempfile.TemporaryDirectory() as work:
-            await self._git("clone", remote, work)
+            await self._git(
+                "clone",
+                "--filter=blob:none",
+                "--single-branch",
+                "--branch",
+                clone_ref,
+                remote,
+                work,
+            )
             await self._git("config", "user.name", request.author_name, cwd=work)
             await self._git("config", "user.email", request.author_email, cwd=work)
-            if await self._ls_remote(remote, request.branch):
-                await self._git("checkout", request.branch, cwd=work)
-            else:
-                await self._git(
-                    "checkout", "-b", request.branch, f"origin/{request.base}", cwd=work
-                )
+            if not branch_exists:
+                await self._git("checkout", "-b", request.branch, cwd=work)
             existing = await self._git(
                 "log", f"--grep={trailer}", "-n", "1", "--format=%H", cwd=work
             )

@@ -203,6 +203,10 @@ _REPAIR_STRIDE = 2
 _APPROVAL_OFFSET = 1
 _PROMOTE_OFFSET = 2
 
+# A commit clones the target repository. On an established repository that transfer has overrun
+# a five-minute budget under load, and the sequence gate discards every retry that follows.
+_COMMIT_TIMEOUT = timedelta(minutes=15)
+
 _CODE_REVIEW = "code-review"
 _SECURITY_REVIEW = "security-review"
 _ACCEPTANCE = "acceptance"
@@ -698,7 +702,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         workflow_id: str,
     ) -> DraftPullRequestOutput:
         retry = RetryPolicy(maximum_attempts=3)
-        commit_timeout = timedelta(minutes=5)
+        commit_timeout = _COMMIT_TIMEOUT
         sequence_base = impl.claim_version * _SEQUENCE_STRIDE
 
         if self._sync is None:
@@ -1142,7 +1146,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
     ) -> ApplyCIRepairResult | None:
         retry = RetryPolicy(maximum_attempts=3)
         short = timedelta(seconds=30)
-        commit_timeout = timedelta(minutes=5)
+        commit_timeout = _COMMIT_TIMEOUT
         commit_sha = self._commit.commit_sha if self._commit else params.base_sha
 
         await workflow.execute_activity(
