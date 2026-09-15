@@ -80,7 +80,15 @@ async def changed_paths(
             err.strip(),
         )
         return None
-    return frozenset(entry for entry in out.split("\0") if entry)
+    paths = frozenset(entry for entry in out.split("\0") if entry)
+    if not paths:
+        logger.warning(
+            "security scan scope falling back to the repository: %s reported no paths, "
+            "so the range cannot be told apart from a mis-scoped one",
+            " ".join(args),
+        )
+        return None
+    return paths
 
 
 def relative_location_path(location: str, repo_root: str) -> str:

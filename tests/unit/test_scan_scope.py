@@ -168,3 +168,13 @@ def test_attribution_keeps_every_finding_available_as_evidence(tmp_path):
 
     assert [f.finding_id for f in scoped] == ["b"]
     assert [f.finding_id for f in findings] == ["a", "b"]
+
+
+async def test_a_diff_reporting_no_paths_falls_back_to_the_repository_and_blocks(caplog):
+    with caplog.at_level(logging.WARNING):
+        changed = await changed_paths("/ws", "base1", "head1", runner=_runner(""))
+
+    assert changed is None
+    assert "reported no paths" in caplog.text
+    finding = _finding("anywhere.py:1")
+    assert blocking_findings([finding], changed, "/ws") == [finding]
