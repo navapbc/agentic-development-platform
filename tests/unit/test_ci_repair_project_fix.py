@@ -248,3 +248,134 @@ def test_project_autofix_names_every_outcome(
 
     assert recorded == [expected]
     assert result is (expected == "applied")
+
+
+class _RecordingPodOps:
+    """A pod transport that records the lifecycle and returns a scripted fix result."""
+
+    def __init__(self, exit_code: int = 0, stdout: str = "") -> None:
+        self.created: list[dict] = []
+        self.copied_in: list[tuple[str, str]] = []
+        self.copied_out: list[tuple[str, str, str]] = []
+        self.deleted: list[str] = []
+        self._exit_code = exit_code
+        self._stdout = stdout
+
+    async def create(self, manifest):
+        self.created.append(manifest)
+
+    async def wait_ready(self, pod, namespace):
+        return None
+
+    async def copy_in(self, pod, namespace, source, dest):
+        self.copied_in.append((source, dest))
+
+    async def copy_out(self, pod, namespace, source, dest, manifest_path):
+        self.copied_out.append((source, dest, manifest_path))
+
+    async def exec_capture(self, pod, namespace, script):
+        return self._exit_code, self._stdout, ""
+
+    async def delete(self, pod, namespace):
+        self.deleted.append(pod)
+
+
+def _fix_output(*files: str) -> str:
+    listing = "\n".join(f"./{name}" for name in files)
+    return f"GATEFIX_FILES_BEGIN\n{listing}\nGATEFIX_FILES_END\nGATEFIX_VERIFY_RC=0"
+
+
+def test_a_verified_fix_copies_the_changed_files_out_of_the_pod():
+    """The happy path must stage the edits, or a verified fix reaches the workspace empty."""
+    from services.orchestration.checks.runner import ChecksRunner
+
+    ops = _RecordingPodOps(exit_code=0, stdout=_fix_output("portal/a.ts", "portal/b.ts"))
+    runner = ChecksRunner(ops)
+
+    result = asyncio.run(runner.run_fix(_spec(), "/staging"))
+
+    assert result.verified is True
+    assert result.changed_files == ("portal/a.ts", "portal/b.ts")
+    assert ops.copied_in == [("/checkout", "/workspace")]
+    assert ops.copied_out == [("/workspace", "/staging", "/workspace/.gatefix.list")]
+    assert ops.deleted, "the fix pod must be torn down"
+
+
+def test_a_fix_that_changes_nothing_is_unverified_and_copies_nothing_out():
+    from services.orchestration.checks.runner import ChecksRunner
+
+    ops = _RecordingPodOps(exit_code=0, stdout=_fix_output())
+    runner = ChecksRunner(ops)
+
+    result = asyncio.run(runner.run_fix(_spec(), "/staging"))
+
+    assert result.verified is False
+    assert ops.copied_out == [], "nothing changed, so there is nothing to stage"
+
+
+def test_a_fix_whose_verify_fails_stages_nothing_even_though_files_changed():
+    """An unverified edit must not reach the workspace, or the repair lands a broken tree."""
+    from services.orchestration.checks.runner import ChecksRunner
+
+    ops = _RecordingPodOps(
+        exit_code=2,
+        stdout="GATEFIX_FILES_BEGIN\n./portal/a.ts\nGATEFIX_FILES_END\nGATEFIX_VERIFY_RC=2",
+    )
+    runner = ChecksRunner(ops)
+
+    result = asyncio.run(runner.run_fix(_spec(), "/staging"))
+
+    assert result.verified is False
+    assert result.changed_files == ("portal/a.ts",)
+    assert ops.copied_out == [], "the verify failed, so the edits stay in the pod"
+    assert ops.deleted, "the fix pod must be torn down"
+
+
+def test_the_fix_script_announces_a_failing_fix_command_so_it_survives_into_the_summary():
+    """The script exits on the verify status, so a failing fix command is otherwise silent."""
+    script = _fix_inner_script(_spec())
+
+    assert "fix_rc=$?" in script
+    assert 'echo "fix command exited $fix_rc"' in script
+    assert script.index("fix_rc=$?") < script.index("npm run lint")
+
+
+def test_a_failing_fix_command_notice_is_kept_in_the_parsed_output():
+    files, output = parse_fix_output(
+        "fix command exited 127\n"
+        "GATEFIX_FILES_BEGIN\nGATEFIX_FILES_END\nGATEFIX_VERIFY_RC=1"
+    )
+
+    assert files == ()
+    assert "fix command exited 127" in output
+
+
+def test_a_malformed_checks_config_degrades_the_hint_instead_of_failing_analysis(monkeypatch):
+    """Analysis never needed the checks config before, so a bad one must not break it."""
+    import scripts.config
+    from services.integration.credentials import ConfigError
+    from services.orchestration.temporal_activities.repair import (
+        AnalyzeCIFailureRequest,
+        analyze_ci_failure,
+    )
+
+    class _Settings:
+        repair_analysis_use_llm = False
+
+    def explode(repo, settings):
+        raise ConfigError("checks entry 'org/app' needs a command")
+
+    monkeypatch.setattr(scripts.config, "get_settings", lambda: _Settings())
+    monkeypatch.setattr("services.orchestration.checks.config.checks_for_repo", explode)
+
+    result = asyncio.run(
+        analyze_ci_failure(
+            AnalyzeCIFailureRequest(
+                failure_summary="app.py:1:1: E501 line too long, ruff would reformat",
+                repo="org/app",
+            )
+        )
+    )
+
+    assert result.actionable is True
+    assert "fix command" not in result.instruction

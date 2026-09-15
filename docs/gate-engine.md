@@ -131,6 +131,16 @@ gates:
       profile: cms-ars
 ```
 
+## Pod privilege
+
+Both pod paths, the external gates and the project checks, unpack an image with buildah inside the pod. Some clusters refuse that unprivileged, so `GATE_ENGINE_PRIVILEGED` sets `securityContext.privileged` on the pods the gate engine creates.
+
+```bash
+GATE_ENGINE_PRIVILEGED=true
+```
+
+It defaults to `false` and should stay there wherever the cluster allows it, because a privileged container gets host device access and the host kernel's full capability set, which removes most of the isolation the pod would otherwise provide. Turn it on only when image unpacking fails without it, as it does under the local k3s used for development, and prefer a cluster configured for rootless unpacking in any shared environment.
+
 ## Integrating a different engine
 
 Because the boundary is the invocation and JSON contract, another review or classifier workflow integrates by configuration alone. Set `mode` and its source fields at the other engine, and set `review_entrypoint` and `classifier_entrypoint` to its harness paths. The engine reads the `--against` ref and the gateway env, and writes the review or classifier JSON. No adapter change is needed, and `ai-common-workflows` stands as the worked example rather than a hard dependency.

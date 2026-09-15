@@ -249,3 +249,33 @@ def test_prose_and_urls_do_not_widen_the_repair_scope():
     found = failing_files("see https://example.com/x.html, e.g. portal/src/app.tsx is broken")
 
     assert found == ("portal/src/app.tsx",)
+
+
+_LINT_SUMMARY = "app.py:1:1: E501 line too long, ruff would reformat"
+
+
+def test_a_declared_fix_command_is_named_in_the_lint_instruction():
+    """The instruction is the only channel the repair agent reads, so the hint must reach it."""
+    plan = plan_repair(_LINT_SUMMARY, fix_command="npm run lint:fix")
+
+    assert plan.category == LINT
+    assert "run `npm run lint:fix`" in plan.instruction
+
+
+def test_the_lint_instruction_reads_cleanly_when_no_fix_command_is_declared():
+    """A project without a fix command must not be told to run an empty one."""
+    plan = plan_repair(_LINT_SUMMARY)
+
+    assert plan.category == LINT
+    assert "fix command" not in plan.instruction
+    assert "{fix_hint}" not in plan.instruction
+    assert "report. \n" not in plan.instruction
+
+
+def test_a_declared_fix_command_does_not_leak_into_other_categories():
+    plan = plan_repair(
+        '  File "app.py", line 3\n    def (\nSyntaxError: invalid syntax',
+        fix_command="npm run lint:fix",
+    )
+
+    assert "npm run lint:fix" not in plan.instruction

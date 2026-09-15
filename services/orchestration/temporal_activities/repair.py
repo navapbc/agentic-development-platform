@@ -48,11 +48,17 @@ async def analyze_ci_failure(req: AnalyzeCIFailureRequest) -> AnalyzeCIFailureRe
 
     from scripts.config import get_settings
 
+    from services.integration.credentials import ConfigError
     from services.orchestration.checks.config import checks_for_repo
     from services.orchestration.langgraph.ci_repair import ACTIONABLE, analyze_failure
 
     settings = get_settings()
-    config = checks_for_repo(req.repo, settings) if req.repo else None
+    try:
+        config = checks_for_repo(req.repo, settings) if req.repo else None
+    except ConfigError:
+        # The fix command only sharpens the repair instruction, so a malformed checks.yaml must
+        # degrade the hint rather than fail an analysis that never needed the config before.
+        config = None
     plan = await asyncio.to_thread(
         analyze_failure,
         req.failure_summary,

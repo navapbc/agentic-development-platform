@@ -112,6 +112,7 @@ _MANIFEST = f"{_WORKSPACE_MOUNT}/.gatefix.list"
 _FILES_BEGIN = "GATEFIX_FILES_BEGIN"
 _FILES_END = "GATEFIX_FILES_END"
 _VERIFY_RC = "GATEFIX_VERIFY_RC="
+_FIX_FAILED = "fix command exited "
 
 
 def _fix_inner_script(spec: ChecksSpec) -> str:
@@ -120,6 +121,10 @@ def _fix_inner_script(spec: ChecksSpec) -> str:
     Runs inside the project's own image so the fix uses the project's toolchain, not the
     platform's. The marker and manifest live under the bind-mounted workspace so the pod can tar
     the changed files back out, and are pruned from the listing so they never escape the pod.
+
+    The script's exit status is the verify command's, because a fix is only applied when the
+    project's own checks pass afterwards. A fix command that fails on its own would otherwise
+    leave no trace, so it announces its status into the output the summary keeps.
     """
     wd = shlex.quote(spec.working_dir)
     return "\n".join(
@@ -127,6 +132,8 @@ def _fix_inner_script(spec: ChecksSpec) -> str:
             f"cd {wd} || exit 1",
             f"touch {_MARKER}",
             spec.fix_command,
+            "fix_rc=$?",
+            f'[ "$fix_rc" -eq 0 ] || echo "{_FIX_FAILED}$fix_rc"',
             f"cd {_WORKSPACE_MOUNT} || exit 1",
             (
                 "find . \\( -name node_modules -o -name .git -o -name .venv "
