@@ -15,7 +15,7 @@ The bucket enables S3 Object Lock with a default retention, so an evidence objec
 
 ## Retention model
 
-The application writes each evidence object under a per-object Object Lock retention. The bucket default retention here is the floor a deployment enforces even if an object is written without an explicit retention. Set `retention_days` to the compliance baseline the deployment requires. The evidence-retention-configuration feature sets the per-object retention the application applies. Retention is expressed in days end to end.
+The application writes each evidence object under a per-object Object Lock retention. The bucket default retention here is the floor a deployment enforces even if an object is written without an explicit retention. Set `retention_days` to the compliance baseline the deployment requires, matching the application's `EVIDENCE_RETENTION_DAYS`. The application applies `EVIDENCE_RETENTION_DAYS` to every record and to the per-object lock window. Retention is expressed in days end to end.
 
 ## Audit objects
 

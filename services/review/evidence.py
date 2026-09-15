@@ -35,6 +35,18 @@ class EvidenceObjectStoreConfigError(RuntimeError):
     """The evidence object store is enabled but not usable."""
 
 
+def resolve_retention(record: EvidenceRecord, settings: Settings) -> EvidenceRecord:
+    """Return the record with its retention set, in days, from the record or the config.
+
+    A record that carries its own numeric retention keeps it. Otherwise the configured
+    ``evidence_retention_days`` is applied, so every stored record carries a retention.
+    """
+    current = (record.retention or "").strip()
+    if current.isdigit():
+        return record
+    return replace(record, retention=str(settings.evidence_retention_days))
+
+
 class PostgresEvidenceSink:
     def __init__(self, engine: AsyncEngine | None = None) -> None:
         self._engine = engine
@@ -47,6 +59,7 @@ class PostgresEvidenceSink:
         return self._engine
 
     async def persist(self, record: EvidenceRecord) -> str:
+        record = resolve_retention(record, get_settings())
         stmt = (
             insert(evidence_artifacts)
             .values(
@@ -164,9 +177,10 @@ class ObjectStoreEvidenceSink:
         configured = (record.retention or "").strip()
         if configured.isdigit():
             return int(configured)
-        return self._settings.evidence_object_lock_days
+        return self._settings.evidence_retention_days
 
     async def persist(self, record: EvidenceRecord) -> str:
+        record = resolve_retention(record, self._settings)
         key = f"evidence/{record.content_hash}"
         body = json.dumps(_serialize(record), sort_keys=True).encode("utf-8")
         location = await asyncio.to_thread(
@@ -206,7 +220,7 @@ async def persist_audit_object(
     body = json.dumps(event, sort_keys=True, default=str).encode("utf-8")
     store = writer or ObjectStoreWriter(resolved)
     return await asyncio.to_thread(
-        store.put_locked, key, body, retention_days=resolved.evidence_object_lock_days
+        store.put_locked, key, body, retention_days=resolved.evidence_retention_days
     )
 
 

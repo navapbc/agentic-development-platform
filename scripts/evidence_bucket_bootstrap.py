@@ -52,13 +52,13 @@ def main() -> int:
             "Rule": {
                 "DefaultRetention": {
                     "Mode": settings.evidence_object_lock_mode,
-                    "Days": settings.evidence_object_lock_days,
+                    "Days": settings.evidence_retention_days,
                 }
             },
         },
     )
     print(
-        f"[evidence-bucket] default retention {settings.evidence_object_lock_days} days "
+        f"[evidence-bucket] default retention {settings.evidence_retention_days} days "
         f"in {settings.evidence_object_lock_mode} mode"
     )
     return 0

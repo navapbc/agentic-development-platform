@@ -62,7 +62,7 @@ def _settings(**overrides):
         evidence_object_store_enabled=True,
         evidence_object_store_bucket="evidence",
         evidence_object_lock_mode="COMPLIANCE",
-        evidence_object_lock_days=30,
+        evidence_retention_days=30,
         **overrides,
     )
 
@@ -113,6 +113,29 @@ async def test_record_retention_days_override_the_configured_window():
 
     retain_until = client.puts[0]["ObjectLockRetainUntilDate"]
     assert (retain_until - before).days < 2
+
+
+async def test_configured_retention_is_applied_to_a_record_without_one():
+    index, client = _CapturingIndex(), _FakeS3()
+    await _sink(index, client).persist(_record())
+
+    assert index.records[-1].retention == "30"
+
+
+async def test_a_records_own_retention_is_respected():
+    index, client = _CapturingIndex(), _FakeS3()
+    await _sink(index, client).persist(_record(retention="5"))
+
+    assert index.records[-1].retention == "5"
+
+
+def test_resolve_retention_fills_unset_and_keeps_numeric():
+    from services.review.evidence import resolve_retention
+
+    settings = _settings()
+    assert resolve_retention(_record(), settings).retention == "30"
+    assert resolve_retention(_record(retention="5"), settings).retention == "5"
+    assert resolve_retention(_record(retention=""), settings).retention == "30"
 
 
 async def test_head_object_non_404_error_propagates():

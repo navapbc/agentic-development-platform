@@ -54,7 +54,7 @@ def _settings(bucket: str):
         evidence_object_store_access_key=_ACCESS_KEY,
         evidence_object_store_secret_key=_SECRET_KEY,
         evidence_object_lock_mode="COMPLIANCE",
-        evidence_object_lock_days=1,
+        evidence_retention_days=1,
     )
 
 

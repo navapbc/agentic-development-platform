@@ -52,7 +52,7 @@ class Settings(BaseSettings):
     evidence_object_store_access_key: str = ""
     evidence_object_store_secret_key: str = ""
     evidence_object_lock_mode: str = "COMPLIANCE"
-    evidence_object_lock_days: int = 2555
+    evidence_retention_days: int = 2555
 
     slack_webhook_url: str = ""
     alert_email_from: str = ""

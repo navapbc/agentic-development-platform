@@ -16,6 +16,7 @@ AWS transition and FedRAMP Medium readiness. The platform documents its local-to
 - A FedRAMP Medium hardening design that ties each component to its control families under the AWS control-inheritance model.
 - A FedRAMP control inheritance and shared-responsibility matrix that records the inherited, platform-implemented, and deploying-organization controls per family.
 - FIPS service endpoint selection across every AWS SDK path through the `AWS_USE_FIPS_ENDPOINT` setting, wired into the worker and LiteLLM container environments, so the native review Bedrock client, the LiteLLM gateway, the evidence object store, and the rebar ticket sync resolve FIPS endpoints in a deployed environment.
+- A governed evidence and audit retention period through `EVIDENCE_RETENTION_DAYS`, defaulting to 2555 days, written onto every stored record and applied as the S3 Object Lock window, and consumed by the evidence object store, the audit object writer, and the bucket bootstrap.
 
 ### Changed
 
