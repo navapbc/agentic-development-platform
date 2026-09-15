@@ -171,11 +171,13 @@ The scanners read the whole checkout, so on an established repository the pre-ex
 SCAN_SCOPE=changed
 ```
 
-`changed`, the default, lets a finding set a scanner verdict only when it sits in a file the change touched. The changed set is `git diff --name-only <base_ref>..<ref>` in the checkout. `repository` restores the earlier behaviour, where any finding anywhere fails the gate, which is what you want for a scheduled audit rather than a pull request.
+`changed`, the default, lets a finding set a scanner verdict only when it sits in a file the change touched. The changed set is `git diff --name-only -z <base_ref>...<ref>` in the checkout, so the comparison is against the merge base and a file that moved on the base branch after the change branched off is not counted as this change's work. `repository` restores the earlier behaviour, where any finding anywhere fails the gate, which is what you want for a scheduled audit rather than a pull request.
 
-Scoping applies to the verdict alone. Every finding the tools report is still written to the evidence record, so the pre-existing backlog stays auditable rather than being discarded.
+Scoping applies to the verdict and to `blocking_count`, which is the count of findings that could fail the gate and so agrees with the verdicts. Every finding the tools report is still written to the evidence record, and `severity_counts` still covers all of them, so the pre-existing backlog stays auditable rather than being discarded.
 
 Attribution is fail-safe, and each fallback logs a warning naming its cause, because silently reverting to repository scope would restore the blocking this setting removes with no signal that attribution had broken. A finding keeps its power to block when `base_ref` is empty, when the `git` call fails or cannot start, when the finding carries no location, and when its location names something that is not a file in the checkout. That last case covers trivy, which targets an ecosystem rather than a file for some findings, and which would otherwise be excluded for matching no changed path.
+
+The default changes existing behaviour. Before this setting, `scan_change` let any finding anywhere fail the gate, and that is now what `repository` means rather than what you get by default. The only caller is the draft pull request workflow, which is the case the narrower default is for. Set `SCAN_SCOPE=repository` on any deployment that calls `scan_change` for a repository-wide audit rather than for a single change, because such a caller will otherwise see verdicts turn to `pass` once its backlog stops being attributable.
 
 ## Integrating a different engine
 

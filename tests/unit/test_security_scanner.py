@@ -308,9 +308,9 @@ async def _run_scan_change(monkeypatch, tmp_path, scope: str):
     (tmp_path / "changed.py").write_text("new = 2\n")
 
     async def fake_git(args, cwd):
-        assert args == ["git", "diff", "--name-only", "base1..head1"]
+        assert args == ["git", "diff", "--name-only", "-z", "base1...head1"]
         assert cwd == str(tmp_path)
-        return 0, "changed.py\n", ""
+        return 0, "changed.py\0", ""
 
     monkeypatch.setattr(
         "services.orchestration.gates.scan_scope._run_git", fake_git
@@ -348,6 +348,7 @@ async def test_scan_change_does_not_block_on_a_finding_the_change_did_not_touch(
     result, persisted = await _run_scan_change(monkeypatch, tmp_path, "changed")
 
     assert result.scanner_verdicts == {"semgrep": "pass"}
+    assert result.blocking_count == 0
     assert len(result.findings) == 1
     assert persisted[0].metadata["finding_count"] == 1
 
@@ -356,6 +357,7 @@ async def test_repository_scope_restores_blocking_on_an_untouched_file(monkeypat
     result, _ = await _run_scan_change(monkeypatch, tmp_path, "repository")
 
     assert result.scanner_verdicts == {"semgrep": "block"}
+    assert result.blocking_count == 1
 
 
 async def test_an_unrecognised_scan_scope_is_rejected(monkeypatch, tmp_path):

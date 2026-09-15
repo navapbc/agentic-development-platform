@@ -95,7 +95,7 @@ async def _verdict_findings(req: ScanChangeRequest, report: ScanReport) -> list:
 
 @activity.defn
 async def scan_change(req: ScanChangeRequest) -> ScanChangeResult:
-    from adapters.interfaces.security_scanner import is_blocking
+    from adapters.interfaces.security_scanner import blocking_count, is_blocking
 
     from services.review.classification import CLASSIFICATION_SECURITY
     from services.review.evidence import EvidenceRecord, build_evidence_sink
@@ -114,11 +114,13 @@ async def scan_change(req: ScanChangeRequest) -> ScanChangeResult:
     severity_counts = dict(Counter(f.severity for f in report.findings))
 
     scanner_verdicts = {name: "pass" for name in report.scanners}
-    for finding in await _verdict_findings(req, report):
+    verdict_findings = await _verdict_findings(req, report)
+    for finding in verdict_findings:
         if finding.scanner in scanner_verdicts and is_blocking(
             finding.severity, threshold=report.threshold
         ):
             scanner_verdicts[finding.scanner] = "block"
+    attributed_blocking = blocking_count(verdict_findings, threshold=report.threshold)
 
     sink = build_evidence_sink()
     evidence_ids: dict[str, str] = {}
@@ -151,7 +153,7 @@ async def scan_change(req: ScanChangeRequest) -> ScanChangeResult:
     return ScanChangeResult(
         scanners=list(report.scanners),
         findings=[ScanFindingRecord(**asdict(f)) for f in report.findings],
-        blocking_count=report.blocking_count,
+        blocking_count=attributed_blocking,
         threshold=report.threshold,
         content_hash=content_hash,
         evidence_id=next(iter(evidence_ids.values()), ""),

@@ -32,17 +32,38 @@ def _runner(stdout: str, code: int = 0, stderr: str = ""):
     return run
 
 
-async def test_the_changed_set_comes_from_a_diff_between_the_two_refs():
+async def test_the_changed_set_comes_from_a_merge_base_diff_of_the_two_refs():
     seen: list[tuple[list[str], str]] = []
 
     async def run(args, cwd):
         seen.append((list(args), cwd))
-        return 0, "portal/src/a.tsx\nportal/src/b.tsx\n", ""
+        return 0, "portal/src/a.tsx\0portal/src/b.tsx\0", ""
 
     changed = await changed_paths("/ws", "base1", "head1", runner=run)
 
     assert changed == frozenset({"portal/src/a.tsx", "portal/src/b.tsx"})
-    assert seen == [(["git", "diff", "--name-only", "base1..head1"], "/ws")]
+    assert seen == [(["git", "diff", "--name-only", "-z", "base1...head1"], "/ws")]
+
+
+async def test_a_path_outside_ascii_is_not_c_quoted_so_it_matches_its_finding(tmp_path):
+    name = "portal/src/caf\u00e9.tsx"
+
+    async def run(args, cwd):
+        assert "-z" in args
+        return 0, f"{name}\0", ""
+
+    changed = await changed_paths(str(tmp_path), "base1", "head1", runner=run)
+
+    assert changed == frozenset({name})
+    assert is_attributable(_finding(f"{name}:4"), changed, str(tmp_path)) is True
+
+
+async def test_an_empty_ref_falls_back_to_the_repository_and_blocks(caplog):
+    with caplog.at_level(logging.WARNING):
+        changed = await changed_paths("/ws", "base1", "")
+
+    assert changed is None
+    assert "does not describe a range" in caplog.text
 
 
 async def test_a_finding_in_an_unchanged_file_cannot_set_the_verdict(tmp_path):

@@ -43,7 +43,16 @@ async def _run_git(args: Sequence[str], cwd: str) -> tuple[int, str, str]:
 async def changed_paths(
     repo_root: str, base_ref: str, ref: str, *, runner: GitRunner | None = None
 ) -> frozenset[str] | None:
-    """Repository-relative paths the change touched, or None when that cannot be established."""
+    """Repository-relative paths the change touched, or None when that cannot be established.
+
+    The range is three-dot, so the comparison is against the merge base. A two-dot range would
+    also report files that moved on the base branch after the change branched off, and attribute
+    their pre-existing findings to this change.
+
+    `-z` is what makes the paths comparable to a finding's location. Without it `git` applies
+    `core.quotePath` and C-quotes any path outside ASCII, which would never match the location
+    the scanner reported for the same file.
+    """
     if not base_ref or not ref:
         logger.warning(
             "security scan scope falling back to the repository: "
@@ -53,7 +62,7 @@ async def changed_paths(
         )
         return None
     run = runner or _run_git
-    args = ["git", "diff", "--name-only", f"{base_ref}..{ref}"]
+    args = ["git", "diff", "--name-only", "-z", f"{base_ref}...{ref}"]
     try:
         code, out, err = await run(args, repo_root)
     except OSError as exc:
@@ -71,7 +80,7 @@ async def changed_paths(
             err.strip(),
         )
         return None
-    return frozenset(line.strip() for line in out.splitlines() if line.strip())
+    return frozenset(entry for entry in out.split("\0") if entry)
 
 
 def relative_location_path(location: str, repo_root: str) -> str:
@@ -109,6 +118,12 @@ def is_attributable(finding, changed: frozenset[str], repo_root: str) -> bool:
             path,
         )
         return True
+    logger.info(
+        "security finding %s sits in %r, which this change did not touch, "
+        "so it is recorded as evidence without failing the gate",
+        finding.finding_id,
+        path,
+    )
     return False
 
 
