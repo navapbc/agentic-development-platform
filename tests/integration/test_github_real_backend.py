@@ -145,11 +145,9 @@ async def test_commit_and_push_is_idempotent_via_the_execution_trailer(bare_remo
     assert retry.commit_sha == first.commit_sha
 
 
-async def test_a_commit_clones_only_the_ref_it_needs(bare_remote: str, monkeypatch) -> None:
-    """A full clone of an established repository has overrun the activity timeout."""
+def _record_clones(monkeypatch) -> list[list[str]]:
     from adapters.real import git_host as git_host_module
 
-    host = _host(bare_remote)
     clones: list[list[str]] = []
     original = git_host_module.RealGitHost._git
 
@@ -159,23 +157,49 @@ async def test_a_commit_clones_only_the_ref_it_needs(bare_remote: str, monkeypat
         return await original(self, *args, cwd=cwd)
 
     monkeypatch.setattr(git_host_module.RealGitHost, "_git", recording)
+    return clones
 
-    await host.commit_and_push(
-        CommitRequest(
-            repo=REPO,
-            branch=agent_branch_name(TASK_ID),
-            base="main",
-            message="apply change",
-            files={"src/app.py": "print('hi')\n"},
-            task_id=TASK_ID,
-            execution_id=EXECUTION_ID,
-        )
+
+def _commit_request(execution_id: str) -> CommitRequest:
+    return CommitRequest(
+        repo=REPO,
+        branch=agent_branch_name(TASK_ID),
+        base="main",
+        message="apply change",
+        files={"src/app.py": "print('hi')\n"},
+        task_id=TASK_ID,
+        execution_id=execution_id,
     )
+
+
+async def test_a_commit_clones_only_the_ref_it_needs(bare_remote: str, monkeypatch) -> None:
+    """A full clone of an established repository has overrun the activity timeout."""
+    host = _host(bare_remote)
+    clones = _record_clones(monkeypatch)
+
+    await host.commit_and_push(_commit_request(EXECUTION_ID))
 
     assert len(clones) == 1
     assert "--single-branch" in clones[0]
     assert "--filter=blob:none" in clones[0]
     assert clones[0][clones[0].index("--branch") + 1] == "main"
+
+
+async def test_a_commit_onto_an_existing_branch_clones_that_branch(
+    bare_remote: str, monkeypatch
+) -> None:
+    host = _host(bare_remote)
+    branch = agent_branch_name(TASK_ID)
+    await host.ensure_branch(REPO, branch, "main")
+
+    clones = _record_clones(monkeypatch)
+    result = await host.commit_and_push(_commit_request("exec-2"))
+
+    assert result.pushed is True
+    assert len(clones) == 1
+    assert "--single-branch" in clones[0]
+    assert "--filter=blob:none" in clones[0]
+    assert clones[0][clones[0].index("--branch") + 1] == branch
 
 
 async def test_open_draft_pr_creates_then_updates_the_same_pr(bare_remote: str) -> None:
