@@ -13,6 +13,7 @@ from adapters.real.security_scanner import (
 )
 from services.orchestration.gates.pod_runner import PodEngineError
 from services.orchestration.gates.scanner_pod import (
+    IMAGE_PULL_EXIT,
     PodCommandRunner,
     remap_paths,
     restore_paths,
@@ -245,3 +246,35 @@ async def test_a_created_pod_is_deleted_even_when_the_scan_fails():
         await runner(["semgrep", "scan", "/checkout"], "/checkout")
 
     assert ops.deleted, "the pod must be torn down when the scan fails"
+
+
+def test_scan_script_exits_a_reserved_code_when_the_scanner_image_cannot_be_pulled():
+    """A failed pull must be distinguishable from the scanner's own exit codes."""
+    script = scan_script("semgrep/semgrep:1.177.0", ["semgrep", "scan", "--json", "/workspace"])
+
+    assert f"|| exit {IMAGE_PULL_EXIT}" in script
+    assert script.index("|| exit") < script.index("buildah run")
+    assert IMAGE_PULL_EXIT not in range(0, 9), "semgrep exits 0-8 and trivy 0-2"
+
+
+async def test_a_scanner_image_that_cannot_be_pulled_is_unavailability_not_a_finding():
+    """The pull runs inside the pod, so it returns an exit code rather than a PodEngineError."""
+    ops = FakePodOps(exit_code=IMAGE_PULL_EXIT, stdout="")
+    runner = PodCommandRunner("docker.io/semgrep/semgrep:1.2.3", scanner="semgrep", ops=ops)
+
+    with pytest.raises(ScannerUnavailableError) as raised:
+        await runner(["semgrep", "scan", "/checkout"], "/checkout")
+
+    assert "docker.io/semgrep/semgrep:1.2.3" in str(raised.value)
+    assert ops.deleted, "the pod must be torn down when the pull fails"
+
+
+@pytest.mark.parametrize("exit_code", [0, 1, 2])
+async def test_the_scanner_reporting_through_its_own_exit_code_is_not_unavailability(exit_code):
+    """Only the reserved code means infrastructure. The tool's own codes reach the adapter."""
+    ops = FakePodOps(exit_code=exit_code, stdout="{}")
+    runner = PodCommandRunner("docker.io/semgrep/semgrep:1.2.3", scanner="semgrep", ops=ops)
+
+    result = await runner(["semgrep", "scan", "/checkout"], "/checkout")
+
+    assert result.returncode == exit_code

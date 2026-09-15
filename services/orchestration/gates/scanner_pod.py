@@ -10,8 +10,10 @@ existing adapters keep parsing the tool's own JSON.
 from __future__ import annotations
 
 import json
+import logging
 import shlex
 from collections.abc import Sequence
+from typing import NoReturn
 from uuid import uuid4
 
 from adapters.interfaces.security_scanner import ScannerUnavailableError
@@ -29,6 +31,10 @@ from services.orchestration.gates.pod_runner import (
 
 _WORKSPACE_MOUNT = "/workspace"
 _OUTPUT_PATH = "/tmp/.scanner-out.json"
+
+# Reserved by scan_script for a failed scanner-image pull. Semgrep exits 0-8 and trivy 0-2, so
+# neither tool can produce this code and be mistaken for infrastructure failing.
+IMAGE_PULL_EXIT = 121
 
 
 def scanner_pod_name(scanner: str, execution_id: str) -> str:
@@ -101,12 +107,14 @@ def scan_script(image: str, args: Sequence[str]) -> str:
     The tool writes to a file that is echoed as the last step, so buildah's own progress output
     cannot corrupt the document the adapter parses. The pod's shell owns the redirect, so the
     file sits outside the workspace mount and the scanner does not report on its own output.
+
+    Pulling the scanner image happens here rather than on the pod's own spec, so it fails as a
+    script exit code rather than as a pod event. It exits `IMAGE_PULL_EXIT` so the caller can
+    tell a registry that could not be reached from the scanner reporting a vulnerability.
     """
     command = " ".join(shlex.quote(arg) for arg in args)
     return (
-        "set -e\n"
-        f"ctr=$(buildah from {shlex.quote(image)})\n"
-        "set +e\n"
+        f"ctr=$(buildah from {shlex.quote(image)}) || exit {IMAGE_PULL_EXIT}\n"
         f"buildah run --net host -v {_WORKSPACE_MOUNT}:{_WORKSPACE_MOUNT} "
         f'"$ctr" -- {command} > {_OUTPUT_PATH}\n'
         "rc=$?\n"
@@ -140,10 +148,14 @@ class PodCommandRunner:
     async def __call__(self, args: Sequence[str], cwd: str) -> CommandResult:
         """Run the scanner in a pod, classifying transport failures as unavailability.
 
-        A pod that cannot be created, pulled, or reached is infrastructure failing, not the
-        scanner reporting a vulnerability. `SecurityMediator.scan` turns any other exception into
-        a finding, so without this the gate fails closed on a transient image pull instead of
-        retrying, exactly as `gate_engine.py` avoids on its own pod path.
+        A pod that cannot be created or reached, and a scanner image that cannot be pulled, are
+        infrastructure failing rather than the scanner reporting a vulnerability.
+        `SecurityMediator.scan` turns every other exception into a finding, so without this the
+        gate fails closed on a transient registry outage instead of retrying.
+
+        The two failures arrive by different routes. The pod is raised from the builder image, so
+        losing it surfaces as `PodEngineError`. The scanner image is pulled by the script running
+        inside that pod, so losing it surfaces as `IMAGE_PULL_EXIT` from `exec_capture`.
         """
         pod = scanner_pod_name(self._scanner, self._execution_id or uuid4().hex[:8])
         manifest = build_pod_manifest(
@@ -158,13 +170,25 @@ class PodCommandRunner:
                 code, stdout, stderr = await self._ops.exec_capture(
                     pod, self._namespace, scan_script(self._image, remap_paths(args, cwd))
                 )
+                if code == IMAGE_PULL_EXIT:
+                    self._unavailable(f"could not pull {self._image}: {stderr.strip()[:400]}")
                 return CommandResult(
                     returncode=code, stdout=restore_paths(stdout, cwd), stderr=stderr
                 )
             finally:
                 await self._ops.delete(pod, self._namespace)
         except PodEngineError as exc:
-            raise ScannerUnavailableError(str(exc)) from exc
+            self._unavailable(str(exc))
+
+    def _unavailable(self, reason: str) -> NoReturn:
+        """Report the scanner as unavailable, leaving a trace of why the gate will be retried.
+
+        The retry is silent to an operator otherwise, because the mediator re-runs the scan
+        rather than recording the failure as a gate result.
+        """
+        message = f"{self._scanner} unavailable: {reason}"
+        logging.getLogger("gates").warning(message)
+        raise ScannerUnavailableError(message)
 
 
 def pod_command_runner(scanner: str, settings, execution_id: str = "") -> PodCommandRunner:
