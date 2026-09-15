@@ -76,14 +76,3 @@ def test_code_defaults_carry_no_project_specific_jumphost(monkeypatch):
     s = hermetic_settings()
     assert s.jumphost_name == ""
     assert s.jumphost_env == ""
-
-
-def test_bedrock_client_kwargs_omits_endpoint_when_unset():
-    kwargs = Settings(bedrock_endpoint_url="").bedrock_client_kwargs()
-    assert kwargs == {"region_name": "us-east-1"}
-
-
-def test_bedrock_client_kwargs_injects_endpoint_when_set():
-    url = "https://bedrock-runtime.us-east-1.amazonaws.com"
-    kwargs = Settings(bedrock_endpoint_url=url).bedrock_client_kwargs()
-    assert kwargs == {"region_name": "us-east-1", "endpoint_url": url}

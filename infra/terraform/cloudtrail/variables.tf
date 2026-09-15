@@ -16,6 +16,12 @@ variable "region" {
   default     = "us-east-1"
 }
 
+variable "is_multi_region_trail" {
+  description = "Capture control-plane activity in every region. Defaults to true for FedRAMP audit coverage."
+  type        = bool
+  default     = true
+}
+
 variable "name_prefix" {
   description = "Name prefix for created resources."
   type        = string

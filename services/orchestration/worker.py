@@ -249,6 +249,9 @@ async def main() -> None:
     instrument_llm_tracing()
     install_litellm_header_propagation(settings.rebar_llm_base_url)
     _warm_acli_auth(settings)
+    from scripts.aws_clients import configure_aws_fips
+
+    configure_aws_fips(settings)
     log.info(
         "connecting to Temporal at %s (ns=%s)",
         settings.temporal_host,

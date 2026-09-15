@@ -14,10 +14,13 @@ AWS transition and FedRAMP Medium readiness. The platform documents its local-to
 - An `evidence-store` Terraform module that provisions the bucket with Object Lock, KMS or AES256 encryption, a TLS-only and writer-allowlist policy, a public-access block, versioning, and access logging.
 - An `inv evidence-bucket-bootstrap` task that creates the local Object-Lock bucket for a MinIO opt-in, and `EVIDENCE_OBJECT_STORE_*` settings.
 - A FedRAMP Medium hardening design that ties each component to its control families under the AWS control-inheritance model.
+- A FedRAMP control inheritance and shared-responsibility matrix that records the inherited, platform-implemented, and deploying-organization controls per family.
+- FIPS service endpoint selection across every AWS SDK path through the `AWS_USE_FIPS_ENDPOINT` setting, wired into the worker and LiteLLM container environments, so the native review Bedrock client, the LiteLLM gateway, the evidence object store, and the rebar ticket sync resolve FIPS endpoints in a deployed environment.
 
 ### Changed
 
 - Evidence persistence routes through the object store when it is enabled, and boto3 ships in the worker image through a new `storage` optional dependency.
+- The CloudTrail module records a multi-region trail by default for FedRAMP audit coverage, through a new `is_multi_region_trail` variable.
 
 ## 0.2.0 (2026-09-14)
 

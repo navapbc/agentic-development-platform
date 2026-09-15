@@ -18,6 +18,10 @@ def main() -> int:
         print("[evidence-bucket] set EVIDENCE_OBJECT_STORE_BUCKET first")
         return 1
 
+    from scripts.aws_clients import configure_aws_fips
+
+    configure_aws_fips(settings)
+
     import boto3
     from botocore.exceptions import ClientError
 

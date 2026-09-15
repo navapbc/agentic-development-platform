@@ -211,6 +211,8 @@ Detection is off by default, so a deployment that does not set the flag behaves 
 
 `BEDROCK_ENDPOINT_URL` is the injected endpoint used by boto3 and the Bedrock model client. An empty value uses the default regional resolver. A project with no interface endpoint can apply the `infra/terraform/vpc-endpoints` module to provision one, or apply the `infra/terraform/examples/private-bedrock` composition to stand up the whole private path at once.
 
+Set `AWS_USE_FIPS_ENDPOINT=true` in a deployed environment to select FIPS-validated service endpoints on every AWS SDK path, the native review Bedrock client, the LiteLLM gateway, the evidence object store, and the rebar ticket sync. The variable is wired into the worker and LiteLLM containers and read by botocore, so it covers all of them at once. Leave it false locally, because the tunnel and MinIO use custom endpoints that have no FIPS variant.
+
 ### Reaching the private endpoint
 
 The `vpc-endpoints` module provisions a `bedrock-runtime` interface endpoint that admits 443 only from the in-VPC subnet CIDRs you pass, with private DNS on. That means `bedrock-runtime.<region>.amazonaws.com` resolves to the endpoint's private IPs for any caller inside the VPC and is unreachable from outside it.

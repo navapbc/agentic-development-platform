@@ -62,6 +62,7 @@ class Settings(BaseSettings):
 
     aws_profile: str = "agentic-platform"
     aws_region: str = "us-east-1"
+    aws_use_fips_endpoint: bool = False
     bedrock_runtime_endpoint: str = "com.amazonaws.us-east-1.bedrock-runtime"
     bedrock_proxy_url: str = ""
     bedrock_runtime_host: str = "bedrock-runtime.us-east-1.amazonaws.com"
@@ -176,13 +177,6 @@ class Settings(BaseSettings):
             root = self.repo_intelligence_repo_root
             registry[Path(root).name] = (root, self.repo_intelligence_commit or None)
         return registry
-
-    def bedrock_client_kwargs(self) -> dict[str, str]:
-        """Boto3/BedrockConverseModel kwargs: region, plus endpoint_url when configured."""
-        kwargs = {"region_name": self.aws_region}
-        if self.bedrock_endpoint_url:
-            kwargs["endpoint_url"] = self.bedrock_endpoint_url
-        return kwargs
 
 
 @lru_cache
