@@ -2,9 +2,9 @@
 
 This roadmap groups the remaining platform work into versions. The authoritative, code-verified feature list and per-feature detail live in the [remaining-work roadmap plan](docs/plans/2026-09-02-1801-feat-remaining-work-roadmap-plan.md). Each version below names its theme, its goal, and its features with an effort estimate in hours of uninterrupted work. Effort ranges carry the confidence the source plan recorded.
 
-Every v0.2.0 feature has a dedicated implementation plan. Later versions link to their entry in the roadmap plan until their plans are written.
+Every v0.2.0 and v0.3.0 feature has a dedicated implementation plan. Later versions link to their entry in the roadmap plan until their plans are written.
 
-Total remaining scope is roughly 94 to 103 hours across 15 features.
+Total remaining scope is roughly 82 to 97 hours across 15 features.
 
 ## v0.1.0 Pluggable ticket and source-control backends
 
@@ -35,21 +35,21 @@ Sequencing. Native Bedrock review path first, since it settles the review path a
 
 ## v0.3.0 AWS transition and FedRAMP readiness
 
-Status. Planned.
+Status. Planned. The per-feature effort was re-verified against the current codebase. The private-endpoint jump-host image, the Fargate module, and the connectivity provider shipped in v0.1.0, so that feature is reduced to residual image and role hardening.
 Goal. The platform has documented local-to-AWS mappings, committed audit and evidence contracts, an S3-backed WORM evidence and audit store, a FedRAMP Medium hardening design, and the connectivity a deployed environment needs. The WORM store shares the object store stood up in v0.1.0.
 
 | Feature | Effort | Detail |
 |---|---|---|
-| Local-to-AWS mapping document | 3h | [roadmap](docs/plans/2026-09-02-1801-feat-remaining-work-roadmap-plan.md) |
-| Audit and evidence schema contracts | 4h | [roadmap](docs/plans/2026-09-02-1801-feat-remaining-work-roadmap-plan.md) |
-| S3-backed WORM evidence and audit store | 10h | [roadmap](docs/plans/2026-09-02-1801-feat-remaining-work-roadmap-plan.md) |
-| FedRAMP Medium hardening design | 8h | [roadmap](docs/plans/2026-09-02-1801-feat-remaining-work-roadmap-plan.md) |
-| Evidence retention configuration | 2h | [roadmap](docs/plans/2026-09-02-1801-feat-remaining-work-roadmap-plan.md) |
-| Private-endpoint jump-host container image | 6h | [roadmap](docs/plans/2026-09-02-1801-feat-remaining-work-roadmap-plan.md) |
-| Full evidence artifact coverage | 6h | [roadmap](docs/plans/2026-09-02-1801-feat-remaining-work-roadmap-plan.md) |
-| Remaining connectivity and sandbox confirmations | 4-9h (low) | [roadmap](docs/plans/2026-09-02-1801-feat-remaining-work-roadmap-plan.md) |
+| Local-to-AWS mapping document | 2-3h | [plan](docs/plans/2026-09-14-1855-feat-local-to-aws-mapping-plan.md) |
+| Audit and evidence schema contracts | 3-4h | [plan](docs/plans/2026-09-14-1856-feat-audit-evidence-schema-contracts-plan.md) |
+| S3-backed WORM evidence and audit store | 8-10h | [plan](docs/plans/2026-09-14-1857-feat-s3-worm-evidence-audit-store-plan.md) |
+| FedRAMP Medium hardening design | 6-8h | [plan](docs/plans/2026-09-14-1858-feat-fedramp-medium-hardening-design-plan.md) |
+| Evidence retention configuration | 2h | [plan](docs/plans/2026-09-14-1859-feat-evidence-retention-configuration-plan.md) |
+| Private-endpoint jump-host residual hardening | 3h | [plan](docs/plans/2026-09-14-1900-feat-jumphost-residual-hardening-plan.md) |
+| Full evidence artifact coverage | 4-6h | [plan](docs/plans/2026-09-14-1901-feat-full-evidence-artifact-coverage-plan.md) |
+| Remaining connectivity and sandbox confirmations | 3-6h (low) | [plan](docs/plans/2026-09-14-1902-feat-connectivity-sandbox-confirmations-plan.md) |
 
-Version effort. 43-48h.
+Version effort. 31-42h.
 
 ## v0.4.0 Production serving and demo readiness
 
