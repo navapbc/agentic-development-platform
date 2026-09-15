@@ -14,6 +14,7 @@ import shlex
 from collections.abc import Sequence
 from uuid import uuid4
 
+from adapters.interfaces.security_scanner import ScannerUnavailableError
 from adapters.real.security_scanner import CommandResult
 
 from services.orchestration.gates.pod_runner import (
@@ -21,6 +22,7 @@ from services.orchestration.gates.pod_runner import (
     DEFAULT_BUILDER_IMAGE,
     DEFAULT_NAMESPACE,
     KubectlPodOps,
+    PodEngineError,
     PodOps,
     build_pod_manifest,
 )
@@ -136,23 +138,33 @@ class PodCommandRunner:
         self._privileged = privileged
 
     async def __call__(self, args: Sequence[str], cwd: str) -> CommandResult:
+        """Run the scanner in a pod, classifying transport failures as unavailability.
+
+        A pod that cannot be created, pulled, or reached is infrastructure failing, not the
+        scanner reporting a vulnerability. `SecurityMediator.scan` turns any other exception into
+        a finding, so without this the gate fails closed on a transient image pull instead of
+        retrying, exactly as `gate_engine.py` avoids on its own pod path.
+        """
         pod = scanner_pod_name(self._scanner, self._execution_id or uuid4().hex[:8])
         manifest = build_pod_manifest(
             pod, self._namespace, self._builder_image, self._privileged
         )
-        await self._ops.create(manifest)
         try:
-            await self._ops.wait_ready(pod, self._namespace)
-            if cwd:
-                await self._ops.copy_in(pod, self._namespace, cwd, _WORKSPACE_MOUNT)
-            code, stdout, stderr = await self._ops.exec_capture(
-                pod, self._namespace, scan_script(self._image, remap_paths(args, cwd))
-            )
-            return CommandResult(
-                returncode=code, stdout=restore_paths(stdout, cwd), stderr=stderr
-            )
-        finally:
-            await self._ops.delete(pod, self._namespace)
+            await self._ops.create(manifest)
+            try:
+                await self._ops.wait_ready(pod, self._namespace)
+                if cwd:
+                    await self._ops.copy_in(pod, self._namespace, cwd, _WORKSPACE_MOUNT)
+                code, stdout, stderr = await self._ops.exec_capture(
+                    pod, self._namespace, scan_script(self._image, remap_paths(args, cwd))
+                )
+                return CommandResult(
+                    returncode=code, stdout=restore_paths(stdout, cwd), stderr=stderr
+                )
+            finally:
+                await self._ops.delete(pod, self._namespace)
+        except PodEngineError as exc:
+            raise ScannerUnavailableError(str(exc)) from exc
 
 
 def pod_command_runner(scanner: str, settings, execution_id: str = "") -> PodCommandRunner:

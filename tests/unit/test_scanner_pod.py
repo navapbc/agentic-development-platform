@@ -5,12 +5,13 @@ from __future__ import annotations
 import json
 
 import pytest
-from adapters.interfaces.security_scanner import ScanTarget
+from adapters.interfaces.security_scanner import ScannerUnavailableError, ScanTarget
 from adapters.real.security_scanner import (
     RealSemgrepScanner,
     ScannerError,
     run_subprocess,
 )
+from services.orchestration.gates.pod_runner import PodEngineError
 from services.orchestration.gates.scanner_pod import (
     PodCommandRunner,
     remap_paths,
@@ -201,3 +202,46 @@ def test_restore_paths_rewrites_scanned_and_error_locations():
     assert restored["paths"]["scanned"] == ["/checkout/a.py"]
     assert restored["paths"]["skipped"][0]["path"] == "/checkout/c.py"
     assert restored["errors"][0]["message"] == "at /workspace/b.py"
+
+
+class _FailingPodOps(FakePodOps):
+    """A pod transport that fails at one named lifecycle step."""
+
+    def __init__(self, failing_step: str) -> None:
+        super().__init__()
+        self._failing_step = failing_step
+
+    async def create(self, manifest):
+        if self._failing_step == "create":
+            raise PodEngineError("failed to pull image docker.io/semgrep/semgrep")
+        await super().create(manifest)
+
+    async def wait_ready(self, pod, namespace):
+        if self._failing_step == "wait_ready":
+            raise PodEngineError("pod never became ready")
+        return None
+
+    async def exec_capture(self, pod, namespace, script):
+        if self._failing_step == "exec_capture":
+            raise PodEngineError("kubectl exec lost the connection")
+        return await super().exec_capture(pod, namespace, script)
+
+
+@pytest.mark.parametrize("failing_step", ["create", "wait_ready", "exec_capture"])
+async def test_pod_transport_failure_is_unavailability_not_a_finding(failing_step):
+    """The mediator retries unavailability but turns any other exception into a finding."""
+    ops = _FailingPodOps(failing_step)
+    runner = PodCommandRunner("docker.io/semgrep/semgrep:1.2.3", scanner="semgrep", ops=ops)
+
+    with pytest.raises(ScannerUnavailableError):
+        await runner(["semgrep", "scan", "/checkout"], "/checkout")
+
+
+async def test_a_created_pod_is_deleted_even_when_the_scan_fails():
+    ops = _FailingPodOps("exec_capture")
+    runner = PodCommandRunner("docker.io/semgrep/semgrep:1.2.3", scanner="semgrep", ops=ops)
+
+    with pytest.raises(ScannerUnavailableError):
+        await runner(["semgrep", "scan", "/checkout"], "/checkout")
+
+    assert ops.deleted, "the pod must be torn down when the scan fails"
