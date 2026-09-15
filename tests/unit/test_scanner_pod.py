@@ -254,7 +254,7 @@ def test_scan_script_exits_a_reserved_code_when_the_scanner_image_cannot_be_pull
 
     assert f"|| exit {IMAGE_PULL_EXIT}" in script
     assert script.index("|| exit") < script.index("buildah run")
-    assert IMAGE_PULL_EXIT not in range(0, 9), "semgrep exits 0-8 and trivy 0-2"
+    assert IMAGE_PULL_EXIT not in range(0, 14), "semgrep defines 0-13 and trivy emits 0-2"
 
 
 async def test_a_scanner_image_that_cannot_be_pulled_is_unavailability_not_a_finding():

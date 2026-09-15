@@ -157,6 +157,12 @@ TRIVY_IMAGE=docker.io/aquasec/trivy:0.74.0
 
 Both image settings are pinned by tag so a scan is reproducible, and both must be fully qualified. The builder resolves short names only for official Docker Hub images, so an unqualified `semgrep/semgrep` fails the pull.
 
+### Infrastructure failure is retried, not recorded as a finding
+
+A scan that cannot run is not a clean scan. The mediator re-raises `ScannerUnavailableError` so the activity retries, and turns every other exception into a finding, which fails the gate closed. Pod mode therefore classifies both of its infrastructure failures as unavailability.
+
+Losing the pod itself raises `PodEngineError` from the transport. Losing the scanner image does not, because the pull runs inside the pod and returns an exit code like any other command. The in-pod script reserves exit code 121 for that case, which neither scanner can produce, and the runner maps it to the same unavailability. Both log a warning naming the scanner and the reason, because a retried scan leaves no gate result to read.
+
 ## Integrating a different engine
 
 Because the boundary is the invocation and JSON contract, another review or classifier workflow integrates by configuration alone. Set `mode` and its source fields at the other engine, and set `review_entrypoint` and `classifier_entrypoint` to its harness paths. The engine reads the `--against` ref and the gateway env, and writes the review or classifier JSON. No adapter change is needed, and `ai-common-workflows` stands as the worked example rather than a hard dependency.

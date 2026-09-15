@@ -20,26 +20,26 @@ from adapters.interfaces.security_scanner import ScannerUnavailableError
 from adapters.real.security_scanner import CommandResult
 
 from services.orchestration.gates.pod_runner import (
-    _NAME_SANITISE,
     DEFAULT_BUILDER_IMAGE,
     DEFAULT_NAMESPACE,
     KubectlPodOps,
     PodEngineError,
     PodOps,
     build_pod_manifest,
+    pod_name_for,
 )
 
 _WORKSPACE_MOUNT = "/workspace"
 _OUTPUT_PATH = "/tmp/.scanner-out.json"
 
-# Reserved by scan_script for a failed scanner-image pull. Semgrep exits 0-8 and trivy 0-2, so
-# neither tool can produce this code and be mistaken for infrastructure failing.
+# Reserved by scan_script for a failed scanner-image pull. semgrep/error.py defines codes 0-13
+# and trivy emits 0-2 unless --exit-code is passed, which the adapters do not pass, so neither
+# tool can produce this code and be mistaken for infrastructure failing.
 IMAGE_PULL_EXIT = 121
 
 
 def scanner_pod_name(scanner: str, execution_id: str) -> str:
-    slug = _NAME_SANITISE.sub("-", f"{scanner}-{execution_id}".lower()).strip("-")
-    return f"scanner-{slug or 'run'}"[:63].rstrip("-")
+    return pod_name_for(scanner, execution_id, prefix="scanner")
 
 
 def remap_paths(args: Sequence[str], cwd: str) -> list[str]:
@@ -150,7 +150,7 @@ class PodCommandRunner:
 
         A pod that cannot be created or reached, and a scanner image that cannot be pulled, are
         infrastructure failing rather than the scanner reporting a vulnerability.
-        `SecurityMediator.scan` turns every other exception into a finding, so without this the
+        `SecurityScanMediator.scan` turns every other exception into a finding, so without this the
         gate fails closed on a transient registry outage instead of retrying.
 
         The two failures arrive by different routes. The pod is raised from the builder image, so

@@ -53,9 +53,9 @@ class PodEngineSpec:
     env: Mapping[str, str] = field(default_factory=dict)
 
 
-def pod_name_for(name: str, execution_id: str) -> str:
+def pod_name_for(name: str, execution_id: str, prefix: str = "gate-engine") -> str:
     slug = _NAME_SANITISE.sub("-", f"{name}-{execution_id}".lower()).strip("-")
-    return f"gate-engine-{slug or 'run'}"[:63].rstrip("-")
+    return f"{prefix}-{slug or 'run'}"[:63].rstrip("-")
 
 
 def build_pod_manifest(
