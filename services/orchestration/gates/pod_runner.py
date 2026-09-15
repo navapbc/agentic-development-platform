@@ -308,7 +308,8 @@ class KubectlPodOps:
         import subprocess
 
         script = (
-            f"tar cf - -C {shlex.quote(source_dir)} -T {shlex.quote(manifest_path)} 2>/dev/null"
+            f"tar cf - --ignore-failed-read -C {shlex.quote(source_dir)} "
+            f"-T {shlex.quote(manifest_path)}"
         )
         exec_proc = subprocess.Popen(
             [self._kubectl, "exec", "-i", "-n", namespace, pod, "--", "sh", "-c", script],
@@ -322,7 +323,7 @@ class KubectlPodOps:
             exec_proc.stdout.close()
         untar.wait()
         _, stderr = exec_proc.communicate()
-        if untar.returncode:
+        if untar.returncode or exec_proc.returncode:
             raise PodEngineError((stderr or b"").decode().strip() or "copy_out failed")
 
     async def exec_capture(

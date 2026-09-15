@@ -108,7 +108,9 @@ async def _project_autofix(req: ApplyCIRepairRequest, workspace_path: str) -> bo
     """Run the repo's declared fix command in its own image and keep only verified, in-scope edits.
 
     Returns whether the fix resolved the failure. A fixer that edits files without making the
-    project's checks pass is discarded, so the LLM repair still runs.
+    project's checks pass is discarded, so the LLM repair still runs. Every failure degrades to
+    the agent repair rather than propagating, because this path is an optimisation and the
+    activity runs with maximum_attempts=1.
     """
     import shutil
     import tempfile
@@ -154,6 +156,11 @@ async def _project_autofix(req: ApplyCIRepairRequest, workspace_path: str) -> bo
         scope = failing_files(req.failure_summary)
         applied = _apply_staged_files(staging, workspace_path, result.changed_files, scope)
         return applied > 0
+    except Exception:
+        activity.logger.warning(
+            "project autofix failed, falling back to agent repair", exc_info=True
+        )
+        return False
     finally:
         shutil.rmtree(checkout, ignore_errors=True)
         shutil.rmtree(staging, ignore_errors=True)
@@ -165,20 +172,33 @@ def _apply_staged_files(
     """Copy verified fixes back, only for files the failure named and that already existed.
 
     Restricting to pre-existing files keeps dependency trees and tool caches the fix command
-    created inside the pod out of the repository.
+    created inside the pod out of the repository. Paths are resolved and confined to their roots
+    because the manifest is produced inside the pod, where the project's fix command runs.
     """
     import shutil
 
     from services.orchestration.langgraph.ci_repair import in_repair_scope
 
+    staging_root = Path(staging).resolve()
+    workspace_root = Path(workspace_path).resolve()
     applied = 0
     for entry in changed:
         if not in_repair_scope(entry, scope):
             continue
-        source = Path(staging) / entry
-        target = Path(workspace_path) / entry
+        source = _confined(staging_root, entry)
+        target = _confined(workspace_root, entry)
+        if source is None or target is None:
+            continue
         if not source.is_file() or not target.is_file():
             continue
         shutil.copyfile(source, target)
         applied += 1
     return applied
+
+
+def _confined(root: Path, entry: str) -> Path | None:
+    """Resolve entry under root, rejecting anything that escapes it through .. or a symlink."""
+    candidate = (root / entry).resolve()
+    if candidate == root or root not in candidate.parents:
+        return None
+    return candidate

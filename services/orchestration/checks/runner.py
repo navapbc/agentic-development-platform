@@ -66,10 +66,18 @@ class ChecksFixResult:
 
 
 def checks_pod_name(repo: str, execution_id: str) -> str:
+    """Name a checks pod so concurrent runs, and a repo's fix and check pods, never collide.
+
+    The discriminator is a digest appended after truncation because a long repo slug would
+    otherwise consume the whole 63-character limit and leave the execution id out of the name.
+    """
+    import hashlib
     import re
 
-    slug = re.sub(r"[^a-z0-9-]+", "-", f"{repo}-{execution_id}".lower()).strip("-")
-    return f"project-checks-{slug or 'run'}"[:63].rstrip("-")
+    digest = hashlib.sha256(f"{repo}-{execution_id}".encode()).hexdigest()[:10]
+    slug = re.sub(r"[^a-z0-9-]+", "-", repo.lower()).strip("-")
+    prefix = f"project-checks-{slug or 'run'}"[:52].rstrip("-")
+    return f"{prefix}-{digest}"
 
 
 def _checks_script(spec: ChecksSpec) -> str:
@@ -121,7 +129,9 @@ def _fix_inner_script(spec: ChecksSpec) -> str:
             spec.fix_command,
             f"cd {_WORKSPACE_MOUNT} || exit 1",
             (
-                "find . -name node_modules -prune -o -name .git -prune -o "
+                "find . \\( -name node_modules -o -name .git -o -name .venv "
+                "-o -name __pycache__ -o -name .pytest_cache -o -name .ruff_cache "
+                "-o -name .mypy_cache \\) -prune -o "
                 f"-type f -newer {_MARKER} -print 2>/dev/null "
                 f"| grep -v '/\\.gatefix\\.' | grep -v '^\\./\\.gatefix\\.' > {_MANIFEST}"
             ),
@@ -177,7 +187,7 @@ def parse_fix_output(text: str) -> tuple[tuple[str, ...], str]:
             collecting = False
             continue
         if collecting:
-            entry = line.strip().lstrip("./")
+            entry = line.strip().removeprefix("./")
             if entry:
                 files.append(entry)
             continue

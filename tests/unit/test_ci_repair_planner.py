@@ -221,3 +221,31 @@ def test_jest_failure_still_classifies_as_a_test_failure():
     )
 
     assert classify_failure(summary) == TEST_FAILURE
+
+
+def test_failing_files_keeps_dotfiles_and_dot_directories():
+    from services.orchestration.langgraph.ci_repair import failing_files, in_repair_scope
+
+    found = failing_files("[warn] .eslintrc.js\n[warn] .github/workflows/ci.yml")
+
+    assert found == (".eslintrc.js", ".github/workflows/ci.yml")
+    assert in_repair_scope("portal/.eslintrc.js", found)
+
+
+def test_scope_rejects_a_changed_path_shorter_than_the_entry_it_resembles():
+    from services.orchestration.langgraph.ci_repair import in_repair_scope
+
+    scope = ("portal/src/app.tsx",)
+
+    assert in_repair_scope("portal/src/app.tsx", scope)
+    assert in_repair_scope("other/portal/src/app.tsx", scope)
+    assert not in_repair_scope("src/app.tsx", scope)
+    assert not in_repair_scope("app.tsx", scope)
+
+
+def test_prose_and_urls_do_not_widen_the_repair_scope():
+    from services.orchestration.langgraph.ci_repair import failing_files
+
+    found = failing_files("see https://example.com/x.html, e.g. portal/src/app.tsx is broken")
+
+    assert found == ("portal/src/app.tsx",)

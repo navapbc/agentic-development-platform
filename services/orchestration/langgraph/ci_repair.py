@@ -157,19 +157,22 @@ def _plan(state: _RepairState) -> _RepairState:
 
 
 _PATH_PATTERN = re.compile(r"[\w./\\@-]+\.[A-Za-z][A-Za-z0-9]{0,5}")
-_PATH_NOISE = ("node_modules/", ".git/")
+_PATH_NOISE = ("node_modules/", ".git/", "//")
+_PROSE_NOISE = ("e.g", "i.e", "etc")
 
 
 def failing_files(summary: str) -> tuple[str, ...]:
     """Extract the source paths a check named, used to bound what a repair may touch."""
     found: list[str] = []
     for raw in _PATH_PATTERN.findall(summary or ""):
-        candidate = raw.strip().strip("'\"`,;:()[]").lstrip("./")
+        candidate = raw.strip().strip("'\"`,;:()[]").removeprefix("./")
         if "/" not in candidate and "." not in candidate:
             continue
         if not candidate or any(noise in candidate for noise in _PATH_NOISE):
             continue
         if candidate.startswith("-") or candidate.endswith("."):
+            continue
+        if candidate.lower() in _PROSE_NOISE:
             continue
         if candidate not in found:
             found.append(candidate)
@@ -179,18 +182,16 @@ def failing_files(summary: str) -> tuple[str, ...]:
 def in_repair_scope(changed_path: str, scope: tuple[str, ...]) -> bool:
     """A changed file is in scope when it matches a path the failure named.
 
-    Paths are compared by suffix because a check reports them relative to its own working
-    directory while the workspace sees them relative to the repository root.
+    A scope entry may be the shorter path, because a check reports files relative to its own
+    working directory while the workspace sees them relative to the repository root. The reverse
+    never holds, so a changed path that merely ends with a scope entry's parent is not a match.
     """
     if not scope:
         return True
-    normalised = changed_path.lstrip("./")
-    for entry in scope:
-        if normalised == entry or normalised.endswith("/" + entry) or entry.endswith(
-            "/" + normalised
-        ):
-            return True
-    return False
+    normalised = changed_path.removeprefix("./")
+    return any(
+        normalised == entry or normalised.endswith("/" + entry) for entry in scope
+    )
 
 
 def _abort(state: _RepairState) -> _RepairState:
