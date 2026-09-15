@@ -153,6 +153,48 @@ def rebar_poll(c, new=False, field_changes=False, status_changes=False, report_o
     c.run(f"python -m scripts.rebar_poll {' '.join(flags)}".strip(), pty=True)
 
 
+def _rebar_gate_env() -> dict[str, str]:
+    """Name the tier config for rebar's LLM gates.
+
+    A gate reads its config from an attested snapshot materialised with `git checkout-index`,
+    which contains only tracked files. The root `rebar.toml` is untracked by mandate, so rebar's
+    own discovery finds no `[llm]` table there and falls back to its built-in direct-Anthropic
+    class defaults, which cannot authenticate. `compose.yaml` names the same file for the review
+    worker.
+
+    The path is derived from this file rather than the working directory, because `invoke`
+    locates `tasks.py` by walking up from the caller and then runs the command in the caller's
+    directory.
+    """
+    root = os.path.dirname(os.path.abspath(__file__))
+    return {"REBAR_LLM_CONFIG_FILE": os.path.join(root, "config", "local", "rebar-review.toml")}
+
+
+@task(
+    help={
+        "ticket": "The rebar ticket id to review.",
+        "gate-ref": "Git ref the gate grounds against, for a ticket stacked on an open branch.",
+    }
+)
+def rebar_review_plan(c, ticket, gate_ref=""):
+    """Run rebar's plan-review gate against the platform tier config."""
+    env = _rebar_gate_env()
+    if gate_ref:
+        env["REBAR_GATE_REF"] = gate_ref
+    c.run(f"rebar review-plan {ticket}", pty=True, env=env)
+
+
+@task(
+    help={
+        "base": "Git ref the change branched from.",
+        "head": "Git ref holding the change.",
+    }
+)
+def rebar_review_code(c, base, head):
+    """Run rebar's code-review gate against the platform tier config."""
+    c.run(f"rebar review-code --base {base} --head {head}", pty=True, env=_rebar_gate_env())
+
+
 def _host_source_control_env() -> dict[str, str]:
     """Rewrite the container mount roots used by the workers to their host directories.
 
@@ -639,6 +681,8 @@ for _t in (
     seed,
     import_rebar_tickets,
     rebar_poll,
+    rebar_review_plan,
+    rebar_review_code,
     operator_done,
     smoke_test,
     prompts_seed,

@@ -211,6 +211,14 @@ Two tickets admitted together can turn out to depend on each other even when nei
 
 Detection is off by default, so a deployment that does not set the flag behaves exactly as before. Each run's predicted touch set is held in the platform database, so overlap detection is backend-neutral. Recording a dependency, reading a ticket's blockers, and reading its dependents are ticket-graph operations each backend supplies natively. The rebar backend uses its native links and is always graph-active. A Jira deployment uses issue links and is graph-active only for a project that configures `dependency_link_type` with the name of an existing Jira link type, for example `Blocks`, so the blocking issue blocks the dependent issue. A project that leaves it unset publishes its touch set but records nothing and pauses on nothing. Projects that share a repository must use the same link type.
 
+### Rebar review gate models
+
+`config/local/rebar-review.toml` maps rebar's three model classes onto the same Bedrock tiers as `config/local/litellm-config.yaml`, with every primary and every fallback on Bedrock. `compose.yaml` names it for the review worker through `REBAR_LLM_CONFIG_FILE`, and `inv rebar-review-plan` and `inv rebar-review-code` name it for host runs.
+
+Naming the file is required rather than a convenience. A gate reads its config from an attested snapshot materialised with `git checkout-index`, which holds only tracked files, so an untracked project `rebar.toml` is invisible to it. rebar then falls back to its built-in model-class defaults, which point at direct Anthropic and cannot authenticate against this deployment. That failure surfaces as an authentication error for a provider the project never configured, and the gate returns `INDETERMINATE` rather than a verdict.
+
+Running `rebar review-plan` or `rebar review-code` directly, without the `inv` wrapper, hits exactly that. Use the tasks.
+
 ## Bedrock connectivity
 
 `inv tunnel-start` and `inv connectivity-check` dispatch to the provider named by `BEDROCK_CONNECTIVITY_PROVIDER`. Every provider satisfies the same reachability contract, so the platform code runs unchanged when you swap providers. Every path terminates at a private endpoint, so inference stays inside the compliance boundary. There is no public-endpoint provider.
@@ -302,6 +310,8 @@ Run `inv --list` for the full set. The common tasks are below.
 | `inv reap [--apply]` | Reap expired orphan artifacts, dry-run by default |
 | `inv intake [--schedule]` | Reconcile ticket intake into runs, single pass by default. Add `--local` to run on the host instead of the worker container |
 | `inv import-rebar-tickets --xlsx PATH [--reset] [--status S] [--limit N]` | Seed the rebar ticket store from a Jira xlsx export |
+| `inv rebar-review-plan --ticket ID [--gate-ref REF]` | Run rebar's plan-review gate against the platform tier config |
+| `inv rebar-review-code --base REF --head REF` | Run rebar's code-review gate against the platform tier config |
 | `inv operator-done --workflow-id ID --repo REPO --branch BRANCH [--closed-unmerged]` | Complete a local source-control run by verifying artifacts and signaling the workflow |
 | `inv publish-jumphost-image [--tag TAG]` | Build and push the jumphost base image to the account ECR repository |
 | `inv approve-pr --workflow-id ID [--reject] [--pr-closed] [--merged]` | Release an approval or PR-close pause on a running workflow |

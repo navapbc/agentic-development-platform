@@ -21,6 +21,8 @@ EXPECTED_TASKS = {
     "seed",
     "import-rebar-tickets",
     "rebar-poll",
+    "rebar-review-plan",
+    "rebar-review-code",
     "operator-done",
     "smoke-test",
     "prompts-seed",

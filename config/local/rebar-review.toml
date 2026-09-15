@@ -11,3 +11,10 @@ provider = "bedrock"
 [[llm.model_classes.frontier.fallback]]
 model = "us.amazon.nova-pro-v1:0"
 provider = "bedrock"
+
+[llm.model_classes.trivial]
+model = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+provider = "bedrock"
+[[llm.model_classes.trivial.fallback]]
+model = "us.amazon.nova-lite-v1:0"
+provider = "bedrock"
