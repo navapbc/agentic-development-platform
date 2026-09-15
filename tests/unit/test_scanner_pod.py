@@ -278,3 +278,122 @@ async def test_the_scanner_reporting_through_its_own_exit_code_is_not_unavailabi
     result = await runner(["semgrep", "scan", "/checkout"], "/checkout")
 
     assert result.returncode == exit_code
+
+
+class _Settings:
+    """The subset of settings the scanner backend selection reads."""
+
+    def __init__(self, mode: str) -> None:
+        self.scanner_execution = mode
+        self.semgrep_image = "docker.io/semgrep/semgrep:1.177.0"
+        self.trivy_image = "docker.io/aquasec/trivy:0.74.0"
+        self.gate_engine_namespace = "gates"
+        self.gate_engine_builder_image = "quay.io/buildah/stable:v1.38.0"
+        self.gate_engine_privileged = True
+        self.semgrep_binary = "semgrep"
+        self.trivy_binary = "trivy"
+
+
+@pytest.mark.parametrize("scanner", ["semgrep", "trivy"])
+def test_subprocess_is_the_default_backend_and_carries_no_pod_runner(scanner):
+    from adapters.real.security_scanner import RealSemgrepScanner, RealTrivyScanner
+    from services.orchestration.gates.builtin import _scanner_backend
+
+    factory = {"semgrep": RealSemgrepScanner, "trivy": RealTrivyScanner}[scanner]
+    built = _scanner_backend(scanner, factory.from_settings, _Settings("subprocess"))
+
+    assert not isinstance(built._runner, PodCommandRunner)
+
+
+@pytest.mark.parametrize(
+    ("scanner", "image"),
+    [("semgrep", "docker.io/semgrep/semgrep:1.177.0"), ("trivy", "docker.io/aquasec/trivy:0.74.0")],
+)
+def test_pod_mode_wires_the_scanner_to_its_own_pinned_image(scanner, image):
+    """This is the whole switch, so a mis-wire would silently keep shelling out on the worker."""
+    from adapters.real.security_scanner import RealSemgrepScanner, RealTrivyScanner
+    from services.orchestration.gates.builtin import _scanner_backend
+
+    factory = {"semgrep": RealSemgrepScanner, "trivy": RealTrivyScanner}[scanner]
+    built = _scanner_backend(scanner, factory.from_settings, _Settings("pod"))
+
+    assert isinstance(built._runner, PodCommandRunner)
+    assert built._runner._image == image
+    assert built._runner._scanner == scanner
+    assert built._runner._privileged is True
+
+
+def test_an_unrecognised_scanner_execution_mode_is_rejected_rather_than_silently_subprocess():
+    from services.integration.credentials import ConfigError
+    from services.orchestration.gates.builtin import _scanner_backend
+
+    with pytest.raises(ConfigError) as raised:
+        _scanner_backend("semgrep", lambda *a, **k: None, _Settings("POD"))
+
+    assert "scanner_execution" in str(raised.value)
+
+
+def test_a_trivy_report_comes_back_against_the_worker_path_not_the_mount():
+    """Trivy locates findings under Results/Target, which no semgrep-shaped test exercises."""
+    document = json.dumps(
+        {
+            "Results": [
+                {"Target": "/workspace/package-lock.json", "Vulnerabilities": []},
+                {"Target": "/workspace", "Vulnerabilities": []},
+            ]
+        }
+    )
+
+    restored = json.loads(restore_paths(document, "/checkout"))
+
+    assert [r["Target"] for r in restored["Results"]] == [
+        "/checkout/package-lock.json",
+        "/checkout",
+    ]
+
+
+async def test_a_trivy_scan_through_the_pod_parses_into_findings():
+    from adapters.interfaces.security_scanner import ScanTarget
+    from adapters.real.security_scanner import RealTrivyScanner
+
+    document = json.dumps(
+        {
+            "Results": [
+                {
+                    "Target": "/workspace/package-lock.json",
+                    "Vulnerabilities": [
+                        {
+                            "VulnerabilityID": "CVE-2024-0001",
+                            "Severity": "HIGH",
+                            "Title": "a vulnerable dependency",
+                            "PkgName": "left-pad",
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+    ops = FakePodOps(exit_code=0, stdout=document)
+    runner = PodCommandRunner("docker.io/aquasec/trivy:0.74.0", scanner="trivy", ops=ops)
+    scanner = RealTrivyScanner(runner=runner)
+
+    findings = await scanner.scan(
+        ScanTarget(repo="org/app", ref="HEAD", repo_root="/checkout")
+    )
+
+    assert [f.severity for f in findings] == ["high"]
+    assert findings[0].location.startswith("/checkout/package-lock.json")
+    assert "/workspace" not in findings[0].location
+    assert "trivy fs" in ops.script
+
+
+async def test_a_scanner_that_exits_clean_without_a_document_is_unavailable_not_a_clean_scan():
+    """An empty document would otherwise parse to zero findings and pass the gate."""
+    ops = FakePodOps(exit_code=0, stdout="   \n")
+    runner = PodCommandRunner("docker.io/semgrep/semgrep:1.2.3", scanner="semgrep", ops=ops)
+
+    with pytest.raises(ScannerUnavailableError) as raised:
+        await runner(["semgrep", "scan", "/checkout"], "/checkout")
+
+    assert "no output" in str(raised.value)
+    assert ops.deleted, "the pod must be torn down"

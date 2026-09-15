@@ -19,6 +19,7 @@ from services.orchestration.gates.contract import (
 
 ReviewFn = Callable[[Any], Awaitable[Any]]
 ScannerFactory = Callable[[], Any]
+_SCANNER_EXECUTION_MODES = frozenset({"subprocess", "pod"})
 
 
 def review_gate(name: str, review_fn: ReviewFn) -> Gate:
@@ -113,8 +114,15 @@ def _scanner_backend(name: str, factory: Any, settings: Any = None) -> Any:
     """Build a scanner that shells out on the worker, or runs from the tool's own image in a pod."""
     from scripts.config import get_settings
 
+    from services.integration.credentials import ConfigError
+
     resolved = settings or get_settings()
-    if resolved.scanner_execution != "pod":
+    mode = resolved.scanner_execution
+    if mode not in _SCANNER_EXECUTION_MODES:
+        raise ConfigError(
+            f"scanner_execution must be one of {sorted(_SCANNER_EXECUTION_MODES)}, got {mode!r}"
+        )
+    if mode != "pod":
         return factory(resolved)
     from services.orchestration.gates.scanner_pod import pod_command_runner
 

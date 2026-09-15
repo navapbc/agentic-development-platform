@@ -172,6 +172,12 @@ class PodCommandRunner:
                 )
                 if code == IMAGE_PULL_EXIT:
                     self._unavailable(f"could not pull {self._image}: {stderr.strip()[:400]}")
+                if not stdout.strip() and code == 0:
+                    # Both scanners emit a JSON document whenever they run, so a clean exit with
+                    # nothing on stdout means the tool never reported. The adapter would parse
+                    # that as an empty document and pass it off as a clean scan. A non-zero code
+                    # is the scanner's own failure signal and stays with the adapter.
+                    self._unavailable(f"{self._image} produced no output: {stderr.strip()[:400]}")
                 return CommandResult(
                     returncode=code, stdout=restore_paths(stdout, cwd), stderr=stderr
                 )

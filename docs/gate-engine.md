@@ -155,7 +155,7 @@ SEMGREP_IMAGE=docker.io/semgrep/semgrep:1.177.0
 TRIVY_IMAGE=docker.io/aquasec/trivy:0.74.0
 ```
 
-Both image settings are pinned by tag so a scan is reproducible, and both must be fully qualified. The builder resolves short names only for official Docker Hub images, so an unqualified `semgrep/semgrep` fails the pull.
+Both image settings must be fully qualified, because the builder resolves short names only for official Docker Hub images, so an unqualified `semgrep/semgrep` fails the pull. A tag is enough to select a version, but a tag is mutable and its maintainer can repush it. Pin by digest, `docker.io/aquasec/trivy@sha256:...`, wherever a scan has to be reproducible or the registry is outside your trust boundary. Nothing verifies image provenance beyond the reference you supply.
 
 ### Infrastructure failure is retried, not recorded as a finding
 

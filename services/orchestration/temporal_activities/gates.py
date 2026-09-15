@@ -156,6 +156,8 @@ def _backend_error_result(name: str, kind: str, exc: Exception) -> GateResult:
 
 @activity.defn
 async def evaluate_gate(req: EvaluateGateRequest) -> GateResult:
+    from adapters.interfaces.security_scanner import ScannerUnavailableError
+
     from services.orchestration.gates.config import load_gates_config
     from services.orchestration.gates.registry import registry_for_config
 
@@ -170,6 +172,11 @@ async def evaluate_gate(req: EvaluateGateRequest) -> GateResult:
     ):
         try:
             result = await gate.evaluate(req.context)
+        except ScannerUnavailableError:
+            # A scanner that could not run has reported nothing, so failing closed here would
+            # turn a registry or pod outage into a blocked promotion. Re-raising lets the
+            # activity retry, matching how SecurityScanMediator treats the same signal.
+            raise
         except Exception as exc:  # noqa: BLE001 - a backend failure fails closed, never crashes
             result = _backend_error_result(req.gate, gate.kind, exc)
         await _persist_gate_evidence(req.context, result)
