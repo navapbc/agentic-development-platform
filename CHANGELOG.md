@@ -2,6 +2,23 @@
 
 All notable changes to this platform are recorded here. The format follows Keep a Changelog, and the platform aims to follow semantic versioning once releases are tagged.
 
+## 0.3.0 (unreleased)
+
+AWS transition and FedRAMP Medium readiness. The platform documents its local-to-AWS mapping and its FedRAMP Medium control posture under the AWS shared-responsibility model, commits the audit and evidence contracts, and persists evidence and audit records to a write-once-read-many object store.
+
+### Added
+
+- A local-to-AWS mapping document that maps each local component to its AWS target and the Terraform module that provisions it.
+- Committed JSON-schema contracts for the audit-event and the evidence-object shapes, with a conformance test that validates the producer write shapes against them.
+- An S3-backed write-once-read-many evidence and audit object store. When `EVIDENCE_OBJECT_STORE_ENABLED` is set, each evidence object and each audit event persists to an S3-compatible store under Object Lock, content-addressed and idempotent, and the Postgres row records the object location. The activity and review workers run a startup preflight that fails fast when the store is enabled without a reachable, Object-Lock-enabled bucket.
+- An `evidence-store` Terraform module that provisions the bucket with Object Lock, KMS or AES256 encryption, a TLS-only and writer-allowlist policy, a public-access block, versioning, and access logging.
+- An `inv evidence-bucket-bootstrap` task that creates the local Object-Lock bucket for a MinIO opt-in, and `EVIDENCE_OBJECT_STORE_*` settings.
+- A FedRAMP Medium hardening design that ties each component to its control families under the AWS control-inheritance model.
+
+### Changed
+
+- Evidence persistence routes through the object store when it is enabled, and boto3 ships in the worker image through a new `storage` optional dependency.
+
 ## 0.2.0 (2026-09-14)
 
 rebar review integration. The review gates run on the native Bedrock path with per-leg failover, every review verdict is signed with an asymmetric signature verified against a public trust root, and each authoring agent signs its plan and code change under its own rebar identity for a merge gate to verify.

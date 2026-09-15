@@ -4,7 +4,7 @@ This roadmap groups the remaining platform work into versions. The authoritative
 
 Every v0.2.0 and v0.3.0 feature has a dedicated implementation plan. Later versions link to their entry in the roadmap plan until their plans are written.
 
-Total remaining scope is roughly 82 to 97 hours across 15 features.
+Total remaining scope is roughly 150 to 201 hours across 24 features.
 
 ## v0.1.0 Pluggable ticket and source-control backends
 
@@ -35,8 +35,8 @@ Sequencing. Native Bedrock review path first, since it settles the review path a
 
 ## v0.3.0 AWS transition and FedRAMP readiness
 
-Status. Planned. The per-feature effort was re-verified against the current codebase. The private-endpoint jump-host image, the Fargate module, and the connectivity provider shipped in v0.1.0, so that feature is reduced to residual image and role hardening.
-Goal. The platform has documented local-to-AWS mappings, committed audit and evidence contracts, an S3-backed WORM evidence and audit store, a FedRAMP Medium hardening design, and the connectivity a deployed environment needs. The WORM store shares the object store stood up in v0.1.0.
+Status. In progress. v0.3.0 is the FedRAMP Medium readiness release and does not ship until the platform-owned technical controls are met. The hosting account holds a FedRAMP Medium authorization, so the platform inherits the controls AWS owns and implements the configuration and provisioning controls on top. The scope was expanded from a design-only release to provision the production infrastructure the platform-owned controls require. The local-to-AWS mapping, the schema contracts, the WORM evidence and audit store, and the hardening design are delivered.
+Goal. The platform is technically FedRAMP Medium ready. It has documented local-to-AWS mappings, a control inheritance and shared-responsibility matrix, committed audit and evidence contracts, an S3-backed WORM evidence and audit store, and terraform that provisions the data tier, secret store, container-platform services, Temporal control plane, observability, and the rebar ticket bucket with encryption, least privilege, backups, and private networking, plus a hardened AWS security baseline. Organizational and operational control families remain the deploying organization's responsibility, recorded in the inheritance matrix.
 
 | Feature | Effort | Detail |
 |---|---|---|
@@ -44,12 +44,21 @@ Goal. The platform has documented local-to-AWS mappings, committed audit and evi
 | Audit and evidence schema contracts | 3-4h | [plan](docs/plans/2026-09-14-1856-feat-audit-evidence-schema-contracts-plan.md) |
 | S3-backed WORM evidence and audit store | 8-10h | [plan](docs/plans/2026-09-14-1857-feat-s3-worm-evidence-audit-store-plan.md) |
 | FedRAMP Medium hardening design | 6-8h | [plan](docs/plans/2026-09-14-1858-feat-fedramp-medium-hardening-design-plan.md) |
+| FedRAMP control inheritance and shared-responsibility matrix | 4-6h | [plan](docs/plans/2026-09-14-2145-feat-fedramp-control-inheritance-matrix-plan.md) |
 | Evidence retention configuration | 2h | [plan](docs/plans/2026-09-14-1859-feat-evidence-retention-configuration-plan.md) |
+| Evidence retention classification mapping | 3-4h | [plan](docs/plans/2026-09-14-2147-feat-evidence-retention-classification-mapping-plan.md) |
+| AWS security baseline hardening | 4-6h | [plan](docs/plans/2026-09-14-2146-feat-aws-security-baseline-hardening-plan.md) |
+| Data and cache tier terraform | 10-16h | [plan](docs/plans/2026-09-14-2148-feat-data-cache-tier-terraform-plan.md) |
+| Secret store terraform | 6-10h | [plan](docs/plans/2026-09-14-2149-feat-secret-store-terraform-plan.md) |
+| Rebar ticket store bucket terraform | 3-4h | [plan](docs/plans/2026-09-14-2150-feat-rebar-ticket-store-bucket-terraform-plan.md) |
+| Container-platform services terraform | 20-30h | [plan](docs/plans/2026-09-14-2151-feat-container-platform-services-terraform-plan.md) |
+| Temporal control plane terraform | 10-16h | [plan](docs/plans/2026-09-14-2152-feat-temporal-control-plane-terraform-plan.md) |
+| Observability terraform | 8-12h | [plan](docs/plans/2026-09-14-2153-feat-observability-terraform-plan.md) |
 | Private-endpoint jump-host residual hardening | 3h | [plan](docs/plans/2026-09-14-1900-feat-jumphost-residual-hardening-plan.md) |
 | Full evidence artifact coverage | 4-6h | [plan](docs/plans/2026-09-14-1901-feat-full-evidence-artifact-coverage-plan.md) |
 | Remaining connectivity and sandbox confirmations | 3-6h (low) | [plan](docs/plans/2026-09-14-1902-feat-connectivity-sandbox-confirmations-plan.md) |
 
-Version effort. 31-42h.
+Version effort. 99-146h.
 
 ## v0.4.0 Production serving and demo readiness
 

@@ -12,26 +12,26 @@ Workloads sign Bedrock inference with a role that carries the `bedrock:InvokeMod
 
 ## Component mapping
 
-| Local component | AWS target | Provisioning module |
+| Local component | AWS target | Provisioning |
 |---|---|---|
-| `postgres` | Amazon RDS for PostgreSQL | Not provisioned yet |
-| `temporal`, `temporal-ui` | Temporal control plane on the container platform, or Temporal Cloud | Not provisioned yet |
-| `db-migrate` | One-shot migration task on the container platform | Not provisioned yet |
-| `workflow-worker`, `activity-worker`, `review-worker` | Worker services on the container platform | Images via [ecr](../infra/terraform/ecr). Service infrastructure not provisioned yet |
-| `schedule-bootstrap` | One-shot bootstrap task on the container platform | Not provisioned yet |
-| `coordination-service` | Service on the container platform | Not provisioned yet |
-| `langgraph-service` | Service on the container platform | Not provisioned yet |
-| `litellm` | Model-proxy service on the container platform, reaching Bedrock through the private endpoint | Bedrock access via [bedrock-iam](../infra/terraform/bedrock-iam) and [vpc-endpoints](../infra/terraform/vpc-endpoints). Service infrastructure not provisioned yet |
-| `opa` | Policy service on the container platform | Not provisioned yet |
-| `minio` | Amazon S3 for the evidence and audit object store and the rebar ticket store | Evidence bucket via [evidence-store](../infra/terraform/evidence-store) and trail bucket via [cloudtrail](../infra/terraform/cloudtrail). Rebar ticket bucket not provisioned yet |
-| `redis` | Amazon ElastiCache for Redis | Not provisioned yet |
-| `clickhouse` | Analytics store backing Langfuse | Not provisioned yet |
-| `langfuse-worker`, `langfuse-web` | Langfuse on the container platform, or Langfuse Cloud | Not provisioned yet |
-| `otel-collector` | OpenTelemetry collector on the container platform | Not provisioned yet |
-| `prometheus` | Amazon Managed Service for Prometheus | Not provisioned yet |
-| `tempo` | Trace store backing the observability stack | Not provisioned yet |
-| `grafana` | Amazon Managed Grafana | Not provisioned yet |
-| `repo-intelligence`, `repo-index-worker` | Repository-intelligence services on the container platform | Images via [ecr](../infra/terraform/ecr). Service infrastructure not provisioned yet |
+| `postgres` | Amazon RDS for PostgreSQL | Planned, see the [roadmap](../ROADMAP.md) |
+| `temporal`, `temporal-ui` | Temporal control plane on the container platform, or Temporal Cloud | Planned, see the [roadmap](../ROADMAP.md) |
+| `db-migrate` | One-shot migration task on the container platform | Planned, see the [roadmap](../ROADMAP.md) |
+| `workflow-worker`, `activity-worker`, `review-worker` | Worker services on the container platform | Images via [ecr](../infra/terraform/ecr). Services planned, see the [roadmap](../ROADMAP.md) |
+| `schedule-bootstrap` | One-shot bootstrap task on the container platform | Planned, see the [roadmap](../ROADMAP.md) |
+| `coordination-service` | Service on the container platform | Planned, see the [roadmap](../ROADMAP.md) |
+| `langgraph-service` | Service on the container platform | Planned, see the [roadmap](../ROADMAP.md) |
+| `litellm` | Model-proxy service on the container platform, reaching Bedrock through the private endpoint | Bedrock access via [bedrock-iam](../infra/terraform/bedrock-iam) and [vpc-endpoints](../infra/terraform/vpc-endpoints). Service planned, see the [roadmap](../ROADMAP.md) |
+| `opa` | Policy service on the container platform | Planned, see the [roadmap](../ROADMAP.md) |
+| `minio` | Amazon S3 for the evidence and audit object store and the rebar ticket store | Evidence bucket via [evidence-store](../infra/terraform/evidence-store) and trail bucket via [cloudtrail](../infra/terraform/cloudtrail). Rebar ticket bucket planned, see the [roadmap](../ROADMAP.md) |
+| `redis` | Amazon ElastiCache for Redis | Planned, see the [roadmap](../ROADMAP.md) |
+| `clickhouse` | Analytics store backing Langfuse | Planned, see the [roadmap](../ROADMAP.md) |
+| `langfuse-worker`, `langfuse-web` | Langfuse on the container platform, or Langfuse Cloud | Planned, see the [roadmap](../ROADMAP.md) |
+| `otel-collector` | OpenTelemetry collector on the container platform | Planned, see the [roadmap](../ROADMAP.md) |
+| `prometheus` | Amazon Managed Service for Prometheus | Planned, see the [roadmap](../ROADMAP.md) |
+| `tempo` | Trace store backing the observability stack | Planned, see the [roadmap](../ROADMAP.md) |
+| `grafana` | Amazon Managed Grafana | Planned, see the [roadmap](../ROADMAP.md) |
+| `repo-intelligence`, `repo-index-worker` | Repository-intelligence services on the container platform | Images via [ecr](../infra/terraform/ecr). Services planned, see the [roadmap](../ROADMAP.md) |
 
 ## Cross-cutting infrastructure
 
@@ -47,15 +47,4 @@ These modules provision the shared AWS infrastructure the components above consu
 
 ## Secret material
 
-Local secrets live in `.env` and the `config/local/*.yaml` operator files. In a deployed environment they map to AWS Secrets Manager or SSM Parameter Store, mounted or fetched by the workload. The review signing key at `REVIEW_SIGNING_KEY_PATH`, the authorship signing key at `AUTHORSHIP_SIGNING_KEY_PATH`, the LiteLLM master key, the rebar model API key, and the GitHub and Jira webhook secrets are the secret values a deployment provisions this way. The trust-root bundle at `REVIEW_TRUST_ROOT_PATH` holds only public keys and ships as a non-secret configuration artifact. No module provisions the secret store yet.
-
-## Gaps
-
-The following AWS targets have no Terraform module yet. They are named here so the remaining provisioning work is visible.
-
-- The data tier: RDS for PostgreSQL, ElastiCache for Redis, and the Langfuse analytics store.
-- The container-platform services for the workers, the coordination service, the LangGraph service, LiteLLM, OPA, the repository-intelligence services, and Langfuse.
-- The Temporal control plane.
-- The evidence and audit S3 bucket is provisioned by the [evidence-store](../infra/terraform/evidence-store) module. The rebar ticket S3 bucket is not provisioned yet.
-- The observability targets: Amazon Managed Service for Prometheus, Amazon Managed Grafana, and the trace store.
-- The secret store for the signing keys, API keys, and webhook secrets.
+Local secrets live in `.env` and the `config/local/*.yaml` operator files. In a deployed environment they map to AWS Secrets Manager or SSM Parameter Store, mounted or fetched by the workload. The review signing key at `REVIEW_SIGNING_KEY_PATH`, the authorship signing key at `AUTHORSHIP_SIGNING_KEY_PATH`, the LiteLLM master key, the rebar model API key, and the GitHub and Jira webhook secrets are the secret values a deployment provisions this way. The trust-root bundle at `REVIEW_TRUST_ROOT_PATH` holds only public keys and ships as a non-secret configuration artifact. The secret store provisioning is planned, see the [roadmap](../ROADMAP.md).
