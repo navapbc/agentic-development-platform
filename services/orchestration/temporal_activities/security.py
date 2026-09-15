@@ -89,7 +89,7 @@ async def _verdict_findings(req: ScanChangeRequest, report: ScanReport) -> list:
         raise ConfigError(f"scan_scope must be one of {sorted(SCAN_SCOPES)}, got {scope!r}")
     if scope != CHANGED_SCOPE:
         return list(report.findings)
-    changed = await changed_paths(req.repo_root, req.base_ref, req.ref)
+    changed = await changed_paths(req.repo_root, req.base_ref)
     return blocking_findings(report.findings, changed, req.repo_root)
 
 

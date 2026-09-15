@@ -40,29 +40,8 @@ async def _run_git(args: Sequence[str], cwd: str) -> tuple[int, str, str]:
     return proc.returncode or 0, out.decode("utf-8", "replace"), err.decode("utf-8", "replace")
 
 
-async def changed_paths(
-    repo_root: str, base_ref: str, ref: str, *, runner: GitRunner | None = None
-) -> frozenset[str] | None:
-    """Repository-relative paths the change touched, or None when that cannot be established.
-
-    The range is three-dot, so the comparison is against the merge base. A two-dot range would
-    also report files that moved on the base branch after the change branched off, and attribute
-    their pre-existing findings to this change.
-
-    `-z` is what makes the paths comparable to a finding's location. Without it `git` applies
-    `core.quotePath` and C-quotes any path outside ASCII, which would never match the location
-    the scanner reported for the same file.
-    """
-    if not base_ref or not ref:
-        logger.warning(
-            "security scan scope falling back to the repository: "
-            "base_ref=%r ref=%r does not describe a range",
-            base_ref,
-            ref,
-        )
-        return None
-    run = runner or _run_git
-    args = ["git", "diff", "--name-only", "-z", f"{base_ref}...{ref}"]
+async def _git_stdout(args: Sequence[str], repo_root: str, run: GitRunner) -> str | None:
+    """Standard output of a git call, or None when it could not be run or failed."""
     try:
         code, out, err = await run(args, repo_root)
     except OSError as exc:
@@ -80,12 +59,67 @@ async def changed_paths(
             err.strip(),
         )
         return None
-    paths = frozenset(entry for entry in out.split("\0") if entry)
+    return out
+
+
+async def _git_paths(
+    args: Sequence[str], repo_root: str, run: GitRunner
+) -> frozenset[str] | None:
+    out = await _git_stdout(args, repo_root, run)
+    if out is None:
+        return None
+    return frozenset(entry for entry in out.split("\0") if entry)
+
+
+async def changed_paths(
+    repo_root: str, base_ref: str, *, runner: GitRunner | None = None
+) -> frozenset[str] | None:
+    """Repository-relative paths the change touched, or None when that cannot be established.
+
+    The comparison is against the working tree rather than a commit, because the scanners read
+    the checkout at `repo_root`, and the change reaches the scan as uncommitted edits there. The
+    commit the push produced is built in a throwaway clone, so naming it here resolves no object
+    in this checkout and the range fails outright.
+
+    The left side is the merge base with `base_ref`, so a file that moved on the base branch after
+    the change branched off does not carry its pre-existing findings into this change.
+
+    Untracked files are unioned in. The scanners read them, so leaving them out would let a file
+    the change added escape the gate.
+
+    `-z` is what makes the paths comparable to a finding's location. Without it `git` applies
+    `core.quotePath` and C-quotes any path outside ASCII, which would never match the location
+    the scanner reported for the same file.
+    """
+    if not base_ref:
+        logger.warning(
+            "security scan scope falling back to the repository: "
+            "base_ref=%r does not describe a range",
+            base_ref,
+        )
+        return None
+    run = runner or _run_git
+
+    merge_base_out = await _git_stdout(["git", "merge-base", base_ref, "HEAD"], repo_root, run)
+    if merge_base_out is None:
+        return None
+    merge_base = merge_base_out.strip() or base_ref
+
+    tracked = await _git_paths(["git", "diff", "--name-only", "-z", merge_base], repo_root, run)
+    if tracked is None:
+        return None
+    untracked = await _git_paths(
+        ["git", "ls-files", "--others", "--exclude-standard", "-z"], repo_root, run
+    )
+    if untracked is None:
+        return None
+
+    paths = tracked | untracked
     if not paths:
         logger.warning(
-            "security scan scope falling back to the repository: %s reported no paths, "
-            "so the range cannot be told apart from a mis-scoped one",
-            " ".join(args),
+            "security scan scope falling back to the repository: the diff against %s reported "
+            "no paths, so the range cannot be told apart from a mis-scoped one",
+            merge_base,
         )
         return None
     return paths

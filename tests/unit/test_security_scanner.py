@@ -308,9 +308,15 @@ async def _run_scan_change(monkeypatch, tmp_path, scope: str):
     (tmp_path / "changed.py").write_text("new = 2\n")
 
     async def fake_git(args, cwd):
-        assert args == ["git", "diff", "--name-only", "-z", "base1...head1"]
         assert cwd == str(tmp_path)
-        return 0, "changed.py\0", ""
+        if args[1] == "merge-base":
+            assert args == ["git", "merge-base", "base1", "HEAD"]
+            return 0, "mb1\n", ""
+        if args[1] == "diff":
+            assert args == ["git", "diff", "--name-only", "-z", "mb1"]
+            return 0, "changed.py\0", ""
+        assert args == ["git", "ls-files", "--others", "--exclude-standard", "-z"]
+        return 0, "", ""
 
     monkeypatch.setattr(
         "services.orchestration.gates.scan_scope._run_git", fake_git

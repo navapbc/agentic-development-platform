@@ -32,38 +32,91 @@ def _runner(stdout: str, code: int = 0, stderr: str = ""):
     return run
 
 
-async def test_the_changed_set_comes_from_a_merge_base_diff_of_the_two_refs():
-    seen: list[tuple[list[str], str]] = []
+def _git_stub(*, merge_base: str = "mb1\n", tracked: str = "", untracked: str = ""):
+    """A runner that answers each of the three git calls changed_paths makes."""
+    seen: list[list[str]] = []
 
     async def run(args, cwd):
-        seen.append((list(args), cwd))
-        return 0, "portal/src/a.tsx\0portal/src/b.tsx\0", ""
+        seen.append(list(args))
+        if args[1] == "merge-base":
+            return 0, merge_base, ""
+        if args[1] == "diff":
+            return 0, tracked, ""
+        return 0, untracked, ""
 
-    changed = await changed_paths("/ws", "base1", "head1", runner=run)
+    run.seen = seen
+    return run
+
+
+async def test_the_changed_set_is_the_working_tree_against_the_merge_base():
+    run = _git_stub(merge_base="mb1\n", tracked="portal/src/a.tsx\0portal/src/b.tsx\0")
+
+    changed = await changed_paths("/ws", "base1", runner=run)
 
     assert changed == frozenset({"portal/src/a.tsx", "portal/src/b.tsx"})
-    assert seen == [(["git", "diff", "--name-only", "-z", "base1...head1"], "/ws")]
+    assert run.seen == [
+        ["git", "merge-base", "base1", "HEAD"],
+        ["git", "diff", "--name-only", "-z", "mb1"],
+        ["git", "ls-files", "--others", "--exclude-standard", "-z"],
+    ]
+
+
+async def test_the_change_set_is_not_read_from_the_pushed_commit():
+    """The push builds its commit in a throwaway clone, so it resolves no object here."""
+    run = _git_stub(tracked="portal/src/a.tsx\0")
+
+    await changed_paths("/ws", "base1", runner=run)
+
+    assert not any("..." in arg for args in run.seen for arg in args)
+
+
+async def test_a_file_the_change_added_is_attributed_to_it(tmp_path):
+    (tmp_path / "added.py").write_text("x = 1\n")
+    run = _git_stub(tracked="", untracked="added.py\0")
+
+    changed = await changed_paths(str(tmp_path), "base1", runner=run)
+
+    assert changed == frozenset({"added.py"})
+    assert is_attributable(_finding("added.py:1"), changed, str(tmp_path)) is True
+
+
+async def test_an_unresolvable_merge_base_falls_back_to_the_repository_and_blocks(caplog):
+    async def run(args, cwd):
+        if args[1] == "merge-base":
+            return 128, "", "Not a valid object name"
+        return 0, "", ""
+
+    with caplog.at_level(logging.WARNING):
+        changed = await changed_paths("/ws", "base1", runner=run)
+
+    assert changed is None
+    assert "Not a valid object name" in caplog.text
+
+
+async def test_an_untracked_listing_that_fails_falls_back_to_the_repository_and_blocks(caplog):
+    async def run(args, cwd):
+        if args[1] == "ls-files":
+            return 128, "", "index is locked"
+        if args[1] == "merge-base":
+            return 0, "mb1\n", ""
+        return 0, "portal/src/a.tsx\0", ""
+
+    with caplog.at_level(logging.WARNING):
+        changed = await changed_paths("/ws", "base1", runner=run)
+
+    assert changed is None
+    assert "index is locked" in caplog.text
 
 
 async def test_a_path_outside_ascii_is_not_c_quoted_so_it_matches_its_finding(tmp_path):
     name = "portal/src/caf\u00e9.tsx"
+    run = _git_stub(tracked=f"{name}\0")
 
-    async def run(args, cwd):
-        assert "-z" in args
-        return 0, f"{name}\0", ""
-
-    changed = await changed_paths(str(tmp_path), "base1", "head1", runner=run)
+    changed = await changed_paths(str(tmp_path), "base1", runner=run)
 
     assert changed == frozenset({name})
     assert is_attributable(_finding(f"{name}:4"), changed, str(tmp_path)) is True
-
-
-async def test_an_empty_ref_falls_back_to_the_repository_and_blocks(caplog):
-    with caplog.at_level(logging.WARNING):
-        changed = await changed_paths("/ws", "base1", "")
-
-    assert changed is None
-    assert "does not describe a range" in caplog.text
+    assert all("-z" in args for args in run.seen if args[1] != "merge-base")
 
 
 async def test_a_finding_in_an_unchanged_file_cannot_set_the_verdict(tmp_path):
@@ -102,7 +155,7 @@ def test_the_path_is_the_segment_before_the_first_colon(location, expected):
 
 async def test_an_empty_base_ref_falls_back_to_the_repository_and_blocks(caplog):
     with caplog.at_level(logging.WARNING):
-        changed = await changed_paths("/ws", "", "head1")
+        changed = await changed_paths("/ws", "")
 
     assert changed is None
     assert "falling back to the repository" in caplog.text
@@ -113,7 +166,7 @@ async def test_an_empty_base_ref_falls_back_to_the_repository_and_blocks(caplog)
 async def test_a_failing_git_call_falls_back_to_the_repository_and_blocks(caplog):
     with caplog.at_level(logging.WARNING):
         changed = await changed_paths(
-            "/ws", "base1", "head1", runner=_runner("", code=128, stderr="bad revision")
+            "/ws", "base1", runner=_runner("", code=128, stderr="bad revision")
         )
 
     assert changed is None
@@ -126,7 +179,7 @@ async def test_git_failing_to_start_falls_back_to_the_repository_and_blocks(capl
         raise OSError("no git on this worker")
 
     with caplog.at_level(logging.WARNING):
-        changed = await changed_paths("/ws", "base1", "head1", runner=run)
+        changed = await changed_paths("/ws", "base1", runner=run)
 
     assert changed is None
     assert "no git on this worker" in caplog.text
@@ -172,7 +225,7 @@ def test_attribution_keeps_every_finding_available_as_evidence(tmp_path):
 
 async def test_a_diff_reporting_no_paths_falls_back_to_the_repository_and_blocks(caplog):
     with caplog.at_level(logging.WARNING):
-        changed = await changed_paths("/ws", "base1", "head1", runner=_runner(""))
+        changed = await changed_paths("/ws", "base1", runner=_runner(""))
 
     assert changed is None
     assert "reported no paths" in caplog.text
