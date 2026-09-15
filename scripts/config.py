@@ -45,6 +45,15 @@ class Settings(BaseSettings):
     authorship_signing_key_path: str = ""
     repair_analysis_use_llm: bool = True
 
+    evidence_object_store_enabled: bool = False
+    evidence_object_store_endpoint_url: str = ""
+    evidence_object_store_bucket: str = ""
+    evidence_object_store_region: str = ""
+    evidence_object_store_access_key: str = ""
+    evidence_object_store_secret_key: str = ""
+    evidence_object_lock_mode: str = "COMPLIANCE"
+    evidence_object_lock_days: int = 2555
+
     slack_webhook_url: str = ""
     alert_email_from: str = ""
     alert_email_to: str = ""

@@ -281,6 +281,11 @@ async def main() -> None:
 
         authorship_signing_preflight(settings)
 
+    if role in (WORKER_ROLE_ACTIVITY, WORKER_ROLE_REVIEW, WORKER_ROLE_ALL):
+        from services.review.evidence import evidence_object_store_preflight
+
+        evidence_object_store_preflight(settings)
+
     workers = [build_worker(client, task_queue, role)]
     queues = [task_queue]
     if role == WORKER_ROLE_ALL:

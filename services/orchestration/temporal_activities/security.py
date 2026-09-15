@@ -76,7 +76,7 @@ def _scanner_content_hash(report: ScanReport, scanner: str, findings: list) -> s
 async def scan_change(req: ScanChangeRequest) -> ScanChangeResult:
     from adapters.interfaces.security_scanner import is_blocking
 
-    from services.review.evidence import EvidenceRecord, PostgresEvidenceSink
+    from services.review.evidence import EvidenceRecord, build_evidence_sink
 
     mediator = _build_security_mediator()
     report = await mediator.scan(
@@ -98,7 +98,7 @@ async def scan_change(req: ScanChangeRequest) -> ScanChangeResult:
         ):
             scanner_verdicts[finding.scanner] = "block"
 
-    sink = PostgresEvidenceSink()
+    sink = build_evidence_sink()
     evidence_ids: dict[str, str] = {}
     for scanner in report.scanners:
         scoped = [f for f in report.findings if f.scanner == scanner]

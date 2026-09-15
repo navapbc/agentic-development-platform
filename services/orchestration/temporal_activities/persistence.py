@@ -101,7 +101,28 @@ async def record_audit_event(event: AuditEvent) -> str:
     engine = _get_engine()
     async with engine.begin() as conn:
         await conn.execute(stmt)
+    from services.review.evidence import persist_audit_object
+
+    await persist_audit_object(_audit_event_body(event))
     return event.event_id
+
+
+def _audit_event_body(event: AuditEvent) -> dict[str, Any]:
+    return {
+        "event_id": event.event_id,
+        "task_id": event.task_id,
+        "execution_id": event.execution_id,
+        "event_type": event.event_type,
+        "stage": event.stage,
+        "prev_state": event.prev_state,
+        "new_state": event.new_state,
+        "model_id": event.model_id,
+        "reason": event.reason,
+        "workflow_id": event.workflow_id,
+        "decision": event.decision,
+        "prompt_version": event.prompt_version,
+        "artifact_hashes": event.artifact_hashes or {},
+    }
 
 
 @dataclass

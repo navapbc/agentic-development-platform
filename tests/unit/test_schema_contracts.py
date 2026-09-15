@@ -53,7 +53,7 @@ def _evidence_record() -> dict:
         content_hash="sha256:deadbeef",
         source_component="gate:code-review",
         classification="internal",
-        retention="P7Y",
+        retention="2555",
         location="s3://evidence/sha256/deadbeef",
         metadata={"stage": "code-review"},
     )

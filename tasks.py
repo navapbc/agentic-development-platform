@@ -218,6 +218,12 @@ def prompts_seed(c):
     c.run("python -m scripts.seed_prompts", pty=True)
 
 
+@task
+def evidence_bucket_bootstrap(c):
+    """Create the evidence object-lock bucket for local development."""
+    c.run("python -m scripts.evidence_bucket_bootstrap", pty=True)
+
+
 @task(help={"offline": "Use the deterministic offline fixture instead of the rebar kernel."})
 def review_eval(c, offline=False, out=""):
     """Score the rebar review kernel against the keyword baseline on the gold set."""

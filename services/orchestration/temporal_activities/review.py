@@ -84,12 +84,12 @@ def review_prompt_versions(gate_names: Iterable[str]) -> dict[str, str]:
 
 
 def build_review_gate(stage: ReviewStage | None = None):
-    from services.review.evidence import PostgresEvidenceSink
+    from services.review.evidence import build_evidence_sink
     from services.review.gate import ReviewGate, select_attestor
     from services.review.kernel import RebarReviewKernel
 
     attestor = select_attestor(stage) if stage is not None else None
-    return ReviewGate(RebarReviewKernel(), PostgresEvidenceSink(), attestor)
+    return ReviewGate(RebarReviewKernel(), build_evidence_sink(), attestor)
 
 
 def _subject_ref(subject: str) -> str:

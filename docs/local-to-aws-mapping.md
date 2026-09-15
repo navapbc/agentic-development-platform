@@ -23,7 +23,7 @@ Workloads sign Bedrock inference with a role that carries the `bedrock:InvokeMod
 | `langgraph-service` | Service on the container platform | Not provisioned yet |
 | `litellm` | Model-proxy service on the container platform, reaching Bedrock through the private endpoint | Bedrock access via [bedrock-iam](../infra/terraform/bedrock-iam) and [vpc-endpoints](../infra/terraform/vpc-endpoints). Service infrastructure not provisioned yet |
 | `opa` | Policy service on the container platform | Not provisioned yet |
-| `minio` | Amazon S3 for the evidence and audit object store and the rebar ticket store | Trail bucket via [cloudtrail](../infra/terraform/cloudtrail). Evidence and rebar buckets not provisioned yet |
+| `minio` | Amazon S3 for the evidence and audit object store and the rebar ticket store | Evidence bucket via [evidence-store](../infra/terraform/evidence-store) and trail bucket via [cloudtrail](../infra/terraform/cloudtrail). Rebar ticket bucket not provisioned yet |
 | `redis` | Amazon ElastiCache for Redis | Not provisioned yet |
 | `clickhouse` | Analytics store backing Langfuse | Not provisioned yet |
 | `langfuse-worker`, `langfuse-web` | Langfuse on the container platform, or Langfuse Cloud | Not provisioned yet |
@@ -56,6 +56,6 @@ The following AWS targets have no Terraform module yet. They are named here so t
 - The data tier: RDS for PostgreSQL, ElastiCache for Redis, and the Langfuse analytics store.
 - The container-platform services for the workers, the coordination service, the LangGraph service, LiteLLM, OPA, the repository-intelligence services, and Langfuse.
 - The Temporal control plane.
-- The evidence and audit S3 bucket and the rebar ticket S3 bucket, which the S3-backed WORM evidence and audit store feature provisions.
+- The evidence and audit S3 bucket is provisioned by the [evidence-store](../infra/terraform/evidence-store) module. The rebar ticket S3 bucket is not provisioned yet.
 - The observability targets: Amazon Managed Service for Prometheus, Amazon Managed Grafana, and the trace store.
 - The secret store for the signing keys, API keys, and webhook secrets.

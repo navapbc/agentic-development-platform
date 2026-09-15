@@ -108,7 +108,7 @@ def _gate_content_hash(execution_id: str, result: GateResult) -> str:
 
 
 async def _persist_gate_evidence(context: GateContext, result: GateResult) -> None:
-    from services.review.evidence import EvidenceRecord, PostgresEvidenceSink
+    from services.review.evidence import EvidenceRecord, build_evidence_sink
 
     content_hash = result.attestation_hash or _gate_content_hash(context.execution_id, result)
     record = EvidenceRecord(
@@ -125,7 +125,7 @@ async def _persist_gate_evidence(context: GateContext, result: GateResult) -> No
             "attestation_hash": result.attestation_hash,
         },
     )
-    await PostgresEvidenceSink().persist(record)
+    await build_evidence_sink().persist(record)
 
 
 def _backend_error_result(name: str, kind: str, exc: Exception) -> GateResult:

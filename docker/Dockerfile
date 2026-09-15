@@ -24,7 +24,7 @@ COPY observability ./observability
 COPY openhands ./openhands
 
 RUN pip install --upgrade pip \
-    && pip install -e ".[reasoning,sandbox,review,observability,prompts]" "pydantic-ai-slim[openai]>=1,<2" "ruff>=0.5,<0.13"
+    && pip install -e ".[reasoning,sandbox,review,observability,prompts,storage]" "pydantic-ai-slim[openai]>=1,<2" "ruff>=0.5,<0.13"
 
 ARG TARGETOS
 ARG TARGETARCH

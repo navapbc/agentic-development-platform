@@ -13,7 +13,7 @@
     "content_hash": { "type": "string", "maxLength": 128 },
     "source_component": { "type": "string", "maxLength": 64 },
     "classification": { "type": ["string", "null"], "maxLength": 32 },
-    "retention": { "type": ["string", "null"], "maxLength": 32 },
+    "retention": { "type": ["string", "null"], "maxLength": 32, "description": "Retention period in days." },
     "location": { "type": ["string", "null"] },
     "metadata": { "type": ["object", "null"] },
     "created_at": { "type": ["string", "null"], "format": "date-time" }
