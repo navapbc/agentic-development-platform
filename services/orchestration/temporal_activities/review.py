@@ -30,6 +30,7 @@ class ReviewRequest:
     repo: str = ""
     repo_root: str | None = None
     ref: str | None = None
+    acceptance_criteria: str = ""
 
 
 @dataclass
@@ -96,11 +97,19 @@ def _subject_ref(subject: str) -> str:
     return f"sha256:{hashlib.sha256(subject.encode('utf-8')).hexdigest()}"
 
 
-def _instructions(spec: _PromptSpec, req: ReviewRequest) -> str:
+def _instructions(stage: ReviewStage, spec: _PromptSpec, req: ReviewRequest) -> str:
+    """Assemble the reviewer instructions for a stage.
+
+    The acceptance finder is told its criteria are stated in the subject, so the
+    criteria are appended for that stage. Every other stage judges the change itself
+    and keeps the subject it already had.
+    """
     parts = []
     if req.context_summary:
         parts.append(f"Repository context:\n{req.context_summary}")
     parts.append(f"{spec.subject_label}:\n{req.subject}")
+    if stage is ReviewStage.ACCEPTANCE_VERIFICATION and req.acceptance_criteria.strip():
+        parts.append(f"Acceptance criteria:\n{req.acceptance_criteria.strip()}")
     return "\n\n".join(parts)
 
 
@@ -146,7 +155,7 @@ async def _run_gate(stage: ReviewStage, spec: _PromptSpec, req: ReviewRequest) -
         prompt_name=spec.name,
         prompt_version=loaded.version,
         system_prompt=loaded.text,
-        instructions=_instructions(spec, req),
+        instructions=_instructions(stage, spec, req),
         repo_root=repo_root,
         ref=req.ref,
         source="local",

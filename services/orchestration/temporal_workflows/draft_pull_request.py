@@ -361,6 +361,17 @@ def _scanner_unavailable_result(plan: GatePlan) -> ScanChangeResult:
     )
 
 
+def _acceptance_criteria(params: DraftPullRequestInput) -> str:
+    """Resolve the acceptance criteria the completion gate judges against.
+
+    Backends that expose a dedicated criteria field supply it on the stored issue.
+    The rebar backend has no such field and carries the criteria inside the ticket
+    description, so the description is the fallback.
+    """
+    stated = str(params.stored_issue.get("acceptance_criteria") or "").strip()
+    return stated or params.task_description.strip()
+
+
 def _change_subject(impl: ImplementationOutput, commit_sha: str) -> str:
     files = "\n".join(impl.changed_files) if impl.changed_files else "(no file list)"
     subject = f"Change on branch {impl.branch} at {commit_sha}.\nChanged files:\n{files}"
@@ -1365,6 +1376,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             ref=commit_sha,
             repo_root=impl.workspace_path or "",
             subject=subject,
+            acceptance_criteria=_acceptance_criteria(params),
         )
 
         async def execute(spec: Any, gate_context: GateContext) -> Any:

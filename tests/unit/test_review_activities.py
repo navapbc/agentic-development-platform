@@ -196,3 +196,45 @@ async def test_plan_review_stays_single_turn(monkeypatch):
     )
     _, kernel, _ = await _invoke(monkeypatch, review_plan, _clean("review-model"))
     assert kernel.seen[0].repo_root is None
+
+
+_CRITERIA = "## Acceptance Criteria\n* The size prop is removed\n* The snapshot is updated"
+
+
+def test_acceptance_instructions_carry_the_criteria_the_stage_is_told_to_evaluate():
+    """The acceptance finder is told the criteria are in its subject, so they must be there."""
+    spec = review._ACCEPTANCE
+    req = ReviewRequest(
+        task_id="6948",
+        execution_id="intake-1",
+        subject="Change on branch agent/6948 at abc123.",
+        acceptance_criteria=_CRITERIA,
+    )
+
+    text = review._instructions(ReviewStage.ACCEPTANCE_VERIFICATION, spec, req)
+
+    assert "The size prop is removed" in text
+    assert "The snapshot is updated" in text
+
+
+def test_non_acceptance_instructions_are_unchanged_by_the_criteria():
+    spec = review._CODE
+    req = ReviewRequest(
+        task_id="6948",
+        execution_id="intake-1",
+        subject="Change on branch agent/6948 at abc123.",
+        acceptance_criteria=_CRITERIA,
+    )
+
+    text = review._instructions(ReviewStage.CODE_REVIEW, spec, req)
+
+    assert "The size prop is removed" not in text
+
+
+def test_acceptance_instructions_omit_the_section_when_no_criteria_are_known():
+    spec = review._ACCEPTANCE
+    req = ReviewRequest(task_id="6948", execution_id="intake-1", subject="Change on branch.")
+
+    text = review._instructions(ReviewStage.ACCEPTANCE_VERIFICATION, spec, req)
+
+    assert "Acceptance criteria" not in text

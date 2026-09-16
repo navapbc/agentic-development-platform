@@ -36,6 +36,7 @@ def review_gate(name: str, review_fn: ReviewFn) -> Gate:
                 repo=context.repo,
                 repo_root=context.repo_root or None,
                 ref=context.ref or None,
+                acceptance_criteria=context.acceptance_criteria,
             )
         )
         findings = [GateFinding(severity=BLOCK, title=title) for title in outcome.findings]

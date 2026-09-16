@@ -2478,3 +2478,42 @@ async def test_authorship_verification_failure_blocks_promotion():
                 )
 
     assert len(promotions) == 0
+
+
+def _input(**kwargs) -> DraftPullRequestInput:
+    base = {
+        "task_id": "6948",
+        "execution_id": "intake-1",
+        "repo": "archive-massgov-pfml",
+        "base": "main",
+        "base_sha": "abc123",
+        "task": "Remove the size prop",
+    }
+    return DraftPullRequestInput(**{**base, **kwargs})
+
+
+def test_acceptance_criteria_prefer_the_dedicated_stored_issue_field():
+    from services.orchestration.temporal_workflows.draft_pull_request import _acceptance_criteria
+
+    params = _input(
+        stored_issue={"acceptance_criteria": "The size prop is removed"},
+        task_description="A long description that should not be used",
+    )
+
+    assert _acceptance_criteria(params) == "The size prop is removed"
+
+
+def test_acceptance_criteria_fall_back_to_the_description_when_the_field_is_empty():
+    """The rebar backend has no criteria field and states them inside the description."""
+    from services.orchestration.temporal_workflows.draft_pull_request import _acceptance_criteria
+
+    description = "## Acceptance Criteria\n* The size prop is removed\n* The snapshot is updated"
+    params = _input(stored_issue={"acceptance_criteria": ""}, task_description=description)
+
+    assert _acceptance_criteria(params) == description
+
+
+def test_acceptance_criteria_are_blank_when_the_ticket_states_none():
+    from services.orchestration.temporal_workflows.draft_pull_request import _acceptance_criteria
+
+    assert _acceptance_criteria(_input()) == ""
