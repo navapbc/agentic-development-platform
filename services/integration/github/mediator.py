@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Any
 
 from adapters.interfaces.git_host import (
@@ -188,6 +188,8 @@ class GitHubMediator:
         reserved = await self.ledger.reserve(ref)
         if reserved.replayed:
             return reserved.result
+        if reserved.reentrant:
+            action = replace(action, reentrant=True)
         decision = await self.gate.admit(action)
         if decision.outcome != ADMITTED:
             raise StaleActionError(decision)

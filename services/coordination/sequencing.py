@@ -24,6 +24,16 @@ class SequencedAction:
     sequence: int
     idempotency_key: str = ""
     operation: str = ""
+    reentrant: bool = False
+
+
+def _admissible(action: SequencedAction, current: int) -> bool:
+    """A retry of the same execution already holds ``current``, so re-admitting it
+    cannot let a superseded execution overwrite a newer one. Anything strictly
+    behind ``current`` has been superseded and stays discarded."""
+    if action.sequence > current:
+        return True
+    return action.reentrant and action.sequence == current
 
 
 @dataclass(frozen=True)
@@ -86,7 +96,7 @@ class PostgresSequenceGate:
                 )
             ).first()
             current = row.current_sequence if row is not None else 0
-            if action.sequence > current:
+            if _admissible(action, current):
                 await conn.execute(
                     insert(sequence_gate)
                     .values(task_id=action.task_id, current_sequence=action.sequence)
@@ -120,7 +130,7 @@ class InMemorySequenceGate:
 
     async def admit(self, action: SequencedAction) -> SequenceDecision:
         current = self._current.get(action.task_id, 0)
-        if action.sequence > current:
+        if _admissible(action, current):
             self._current[action.task_id] = action.sequence
             return SequenceDecision(
                 ADMITTED, action.task_id, action.sequence, action.sequence, None

@@ -162,3 +162,24 @@ async def test_record_promotion_approval_is_idempotent(mediator: GitHubMediator)
         REPO, TASK_ID, EXECUTION_ID, created.number, approved=True, approver="rm", sequence=3
     )
     assert retry == first
+
+
+async def test_retry_after_a_failed_effect_is_admitted(mediator: GitHubMediator) -> None:
+    attempts: list[int] = []
+    backend_ensure = mediator.backend.ensure_branch
+
+    async def failing_once(*args, **kwargs):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise RuntimeError("transient clone failure")
+        return await backend_ensure(*args, **kwargs)
+
+    mediator.backend.ensure_branch = failing_once
+
+    with pytest.raises(RuntimeError):
+        await mediator.ensure_agent_branch(REPO, TASK_ID, EXECUTION_ID, "main", sequence=5)
+
+    branch = await mediator.ensure_agent_branch(REPO, TASK_ID, EXECUTION_ID, "main", sequence=5)
+
+    assert branch.name == agent_branch_name(TASK_ID)
+    assert len(attempts) == 2

@@ -34,6 +34,7 @@ class SideEffectOutcome:
     key: str
     replayed: bool
     result: Any
+    reentrant: bool = False
 
 
 def side_effect_key(ref: SideEffectRef) -> str:
@@ -92,7 +93,7 @@ class PostgresSideEffectLedger:
                 )
                 .on_conflict_do_nothing(index_elements=[side_effects.c.side_effect_key])
             )
-        return SideEffectOutcome(key, replayed=False, result=None)
+        return SideEffectOutcome(key, replayed=False, result=None, reentrant=existing is not None)
 
     async def record(self, ref: SideEffectRef, result: Any) -> SideEffectOutcome:
         key = side_effect_key(ref)
@@ -116,16 +117,20 @@ class PostgresSideEffectLedger:
 class InMemorySideEffectLedger:
     def __init__(self) -> None:
         self._records: dict[str, Any] = {}
+        self._pending: set[str] = set()
 
     async def reserve(self, ref: SideEffectRef) -> SideEffectOutcome:
         key = side_effect_key(ref)
         if key in self._records:
             return SideEffectOutcome(key, replayed=True, result=self._records[key])
-        return SideEffectOutcome(key, replayed=False, result=None)
+        reentrant = key in self._pending
+        self._pending.add(key)
+        return SideEffectOutcome(key, replayed=False, result=None, reentrant=reentrant)
 
     async def record(self, ref: SideEffectRef, result: Any) -> SideEffectOutcome:
         key = side_effect_key(ref)
         self._records[key] = result
+        self._pending.discard(key)
         return SideEffectOutcome(key, replayed=False, result=result)
 
     async def run_once(self, ref: SideEffectRef, effect: Effect) -> SideEffectOutcome:

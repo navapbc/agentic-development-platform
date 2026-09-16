@@ -84,3 +84,27 @@ async def test_supports_async_effect_for_evidence_writes():
     assert first.result == {"artifact_id": "a1"}
     assert second.replayed is True
     assert writes == ["content-hash-1"]
+
+
+async def test_reserving_a_still_pending_ref_again_reports_reentry():
+    ledger = InMemorySideEffectLedger()
+    ref = SideEffectRef("AGENTDEV-1", "e1", "github.commit", "demo:agent/AGENTDEV-1")
+
+    first = await ledger.reserve(ref)
+    second = await ledger.reserve(ref)
+
+    assert (first.replayed, first.reentrant) == (False, False)
+    assert (second.replayed, second.reentrant) == (False, True)
+
+
+async def test_reserving_after_completion_replays_rather_than_reentering():
+    ledger = InMemorySideEffectLedger()
+    ref = SideEffectRef("AGENTDEV-1", "e1", "github.commit", "demo:agent/AGENTDEV-1")
+
+    await ledger.reserve(ref)
+    await ledger.record(ref, {"sha": "abc"})
+    outcome = await ledger.reserve(ref)
+
+    assert outcome.replayed is True
+    assert outcome.reentrant is False
+    assert outcome.result == {"sha": "abc"}
