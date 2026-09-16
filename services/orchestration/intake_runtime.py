@@ -9,6 +9,7 @@ import structlog
 from scripts.config import Settings
 
 from services.integration.jira.credentials import acceptance_field
+from services.orchestration.change_narrative import compose_commit_message
 from services.orchestration.execution_reconciler import ActiveExecution
 from services.orchestration.intake_base import UnresolvableBaseBranch
 from services.orchestration.intake_reconciler import IntakeContext, IntakeStart
@@ -72,6 +73,11 @@ class TemporalStarter:
                 issue_key=start.issue_key,
                 focus=start.summary,
                 task_description=start.description,
+                commit_message=compose_commit_message(
+                    issue_key=start.issue_key,
+                    summary=start.summary,
+                    description=start.description,
+                ),
                 stored_issue=start.stored_issue,
                 build_id=self._settings.agent_build_id,
                 parked_status=self._settings.jira_parked_status,

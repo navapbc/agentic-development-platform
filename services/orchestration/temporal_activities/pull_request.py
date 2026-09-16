@@ -161,6 +161,7 @@ class CommitPushResult:
     commit_sha: str
     pushed: bool
     replayed: bool
+    pr_template: str = ""
 
 
 @dataclass
@@ -278,6 +279,7 @@ async def find_open_pr(req: FindOpenPrRequest) -> FindOpenPrResult:
 @activity.defn
 async def commit_and_push(req: CommitPushRequest) -> CommitPushResult:
     from services.coordination.orphans import PostgresOrphanRegistry
+    from services.orchestration.change_narrative import read_pull_request_template
     from services.orchestration.materialization import WorkspaceMaterializer
 
     materializer = WorkspaceMaterializer.from_settings(PostgresOrphanRegistry())
@@ -296,6 +298,7 @@ async def commit_and_push(req: CommitPushRequest) -> CommitPushResult:
         commit_sha=result.commit_sha,
         pushed=result.pushed,
         replayed=result.replayed,
+        pr_template=read_pull_request_template(workspace.path),
     )
 
 

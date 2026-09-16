@@ -187,6 +187,7 @@ def _make_activities(
     promotions: list[PromotePrRequest] | None = None,
     recheck_requires_pause: bool = False,
     recheck_category: str = "",
+    pr_template: str = "",
     manifest_requests: list[RecordManifestRequest] | None = None,
     triage_enabled: bool = False,
     triage_action_value: str = "patch",
@@ -283,7 +284,13 @@ def _make_activities(
         sha = "c" * 40
         if commit_shas:
             sha = commit_shas[min(len(commits) - 1, len(commit_shas) - 1)]
-        return CommitPushResult(branch="agent/T-1", commit_sha=sha, pushed=True, replayed=False)
+        return CommitPushResult(
+            branch="agent/T-1",
+            commit_sha=sha,
+            pushed=True,
+            replayed=False,
+            pr_template=pr_template,
+        )
 
     @activity.defn(name="create_draft_pr")
     async def fake_create_pr(req: OpenPrRequest) -> OpenPrResult:
@@ -1986,6 +1993,7 @@ async def test_agent_summary_reaches_pr_and_review_subject():
 
     assert result.status == PR_PROMOTED
     assert "done" in pr_opens[0].body
+    assert "Automated plan and code review passed." in pr_opens[0].body
     assert any(
         "Implementation summary:" in request.subject and "done" in request.subject
         for request in review_requests
@@ -2517,3 +2525,41 @@ def test_acceptance_criteria_are_blank_when_the_ticket_states_none():
     from services.orchestration.temporal_workflows.draft_pull_request import _acceptance_criteria
 
     assert _acceptance_criteria(_input()) == ""
+
+
+async def test_repository_pull_request_template_shapes_the_pr_body():
+    commits: list[CommitPushRequest] = []
+    pr_opens: list[OpenPrRequest] = []
+    linkbacks: list[LinkbackRequest] = []
+    template = (
+        "## Ticket\n\nhttps://tracker.example/browse/{TICKET ID}\n\n"
+        "## Changes\n\n(What was added, updated, or removed in this PR.)\n\n"
+        "## Testing\n\n(Provide evidence that the code works as expected.)\n\n"
+        "- [ ] Deploy a preview\n"
+    )
+    activities = _make_activities(
+        None,
+        1,
+        commits,
+        pr_opens,
+        linkbacks,
+        ci_result=SUCCESS,
+        pr_template=template,
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            result = await env.client.execute_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+
+    assert result.status == PR_PROMOTED
+    body = pr_opens[0].body
+    assert body.count("## ") == 3
+    assert "(What was added, updated, or removed in this PR.)" not in body
+    assert "- [ ] Deploy a preview" in body
+    assert "https://tracker.example/browse/T-1" in body

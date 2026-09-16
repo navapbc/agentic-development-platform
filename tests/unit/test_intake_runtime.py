@@ -240,3 +240,22 @@ async def test_start_does_not_raise_when_the_default_base_is_unresolved(
 
     (_, arg, _) = client.started[0]
     assert arg.base_sha == ""
+
+
+@pytest.mark.asyncio
+async def test_start_derives_the_commit_message_from_the_ticket(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(intake_runtime, "remote_head", lambda remote, branch: "main-sha")
+    monkeypatch.setattr(
+        "services.integration.github.factory.build_git_host", lambda settings: _Host()
+    )
+    client = _Client()
+    starter = TemporalStarter(client, hermetic_settings(), _Gh())
+
+    await starter.start(
+        _intake_start(summary="Add a widget", description="The widget is needed for onboarding.")
+    )
+
+    (_, arg, _) = client.started[0]
+    assert arg.commit_message == "ADEV-1: Add a widget\n\nThe widget is needed for onboarding."

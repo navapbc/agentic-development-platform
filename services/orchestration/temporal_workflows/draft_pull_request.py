@@ -13,6 +13,11 @@ from temporalio.exceptions import ActivityError
 with workflow.unsafe.imports_passed_through():
     from adapters.interfaces.git_host import PublishResult
 
+    from services.orchestration.change_narrative import (
+        PullRequestNarrative,
+        compose_pull_request_body,
+        compose_testing_evidence,
+    )
     from services.orchestration.gates.contract import PAUSE_FOR_HUMAN, GateContext
     from services.orchestration.gates.runner import run_gate_stage
     from services.orchestration.temporal_activities.authorship import (
@@ -772,6 +777,12 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             branch=commit.branch,
         )
 
+    @staticmethod
+    def _testing_evidence(params: DraftPullRequestInput) -> str:
+        return compose_testing_evidence(
+            reviewed=params.run_reviews, policy_evaluated=params.run_policy
+        )
+
     async def _open_pull_request(
         self,
         params: DraftPullRequestInput,
@@ -784,11 +795,16 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         commit = self._commit
         commit_branch = commit.branch if commit else outcome.branch
 
-        body = params.body or (
-            f"Automated change for {params.issue_key} (execution {params.execution_id})."
+        body = params.body or compose_pull_request_body(
+            commit.pr_template if commit else "",
+            PullRequestNarrative(
+                issue_key=params.issue_key,
+                execution_id=params.execution_id,
+                summary=impl.summary or params.task,
+                description=params.task_description,
+                testing=self._testing_evidence(params),
+            ),
         )
-        if impl.summary:
-            body = f"{body}\n\n{impl.summary}"
         if self._pr is None:
             self._pr = await workflow.execute_child_workflow(
                 PullRequestWorkflow.run,
