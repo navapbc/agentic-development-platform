@@ -321,9 +321,9 @@ class RebarReviewKernel:
         Native review runs through rebar's normal runner path, not the model-override
         hook: the runner builds a real Bedrock model object (carrying a
         ``BedrockModelProfile``), which is what enables Anthropic prompt caching, and
-        it reads the Claude-to-Nova fallback chain from the model-class config so the
-        failover is native. The model-override hook forces caching off, so it is not
-        used here.
+        it reads the model-class config so any configured failover is native. This
+        deployment declares no fallback leg, so the runner retries Claude. The
+        model-override hook forces caching off, so it is not used here.
         """
         from rebar.llm.runner import get_runner
 

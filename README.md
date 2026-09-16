@@ -213,7 +213,7 @@ Detection is off by default, so a deployment that does not set the flag behaves 
 
 ### Rebar review gate models
 
-`config/local/rebar-review.toml` maps rebar's three model classes onto the same Bedrock tiers as `config/local/litellm-config.yaml`, with every primary and every fallback on Bedrock. `compose.yaml` names it for the review worker through `REBAR_LLM_CONFIG_FILE`, and `inv rebar-review-plan` and `inv rebar-review-code` name it for host runs.
+`config/local/rebar-review.toml` maps rebar's three model classes onto the same Bedrock Claude tiers as `config/local/litellm-config.yaml`. No class declares a fallback leg, so a tier that cannot reach Claude fails once rebar exhausts its retry budget rather than answering from a different model family. The file widens that budget past rebar's default because there is no leg to fall to. `compose.yaml` names it for the review worker through `REBAR_LLM_CONFIG_FILE`, and `inv rebar-review-plan` and `inv rebar-review-code` name it for host runs.
 
 Naming the file is required rather than a convenience. A gate reads its config from an attested snapshot materialised with `git checkout-index`, which holds only tracked files, so an untracked project `rebar.toml` is invisible to it. rebar then falls back to its built-in model-class defaults, which point at direct Anthropic and cannot authenticate against this deployment. That failure surfaces as an authentication error for a provider the project never configured, and the gate returns `INDETERMINATE` rather than a verdict.
 

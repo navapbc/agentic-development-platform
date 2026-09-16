@@ -60,3 +60,35 @@ def test_the_gate_config_path_is_absolute_and_independent_of_the_working_directo
     assert before == after
     assert os.path.isabs(after)
     assert os.path.isfile(after)
+
+
+def test_every_gateway_deployment_is_a_bedrock_claude_model():
+    config = yaml.safe_load(LITELLM.read_text(encoding="utf-8"))
+    for entry in config["model_list"]:
+        model = entry["litellm_params"]["model"]
+        assert model.startswith("bedrock/us.anthropic.claude"), (
+            f"{entry['model_name']} serves {model}"
+        )
+
+
+def test_no_gateway_group_carries_a_second_deployment():
+    """A second deployment in a group is retried instantly, which defeats the backoff."""
+    config = yaml.safe_load(LITELLM.read_text(encoding="utf-8"))
+    names = [entry["model_name"] for entry in config["model_list"]]
+    assert len(names) == len(set(names)), "a model_name appears twice"
+
+
+def test_the_gateway_declares_no_cross_group_fallbacks():
+    config = yaml.safe_load(LITELLM.read_text(encoding="utf-8"))
+    assert "fallbacks" not in config["router_settings"]
+
+
+def test_the_gateway_retries_transient_failures_and_rejects_permanent_ones():
+    config = yaml.safe_load(LITELLM.read_text(encoding="utf-8"))
+    policy = config["router_settings"]["retry_policy"]
+
+    assert policy["TimeoutErrorRetries"] > 0
+    assert policy["RateLimitErrorRetries"] > 0
+    assert policy["InternalServerErrorRetries"] > 0
+    assert policy["BadRequestErrorRetries"] == 0
+    assert policy["AuthenticationErrorRetries"] == 0

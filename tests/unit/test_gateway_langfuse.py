@@ -66,11 +66,10 @@ def test_litellm_config_enables_the_langfuse_callback() -> None:
 
 
 class _FakeResponse:
-    def __init__(self, data: dict) -> None:
+    def __init__(self, data: dict, status_code: int = 200) -> None:
         self._data = data
-
-    def raise_for_status(self) -> None:
-        return None
+        self.status_code = status_code
+        self.text = ""
 
     def json(self) -> dict:
         return self._data
