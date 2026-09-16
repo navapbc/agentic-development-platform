@@ -57,17 +57,17 @@ def test_repo_intelligence_registry_falls_back_to_single_root():
 
 
 def test_region_and_profile_defaults_are_fedramp_aligned():
-    s = Settings()
+    s = hermetic_settings()
     assert s.aws_region == "us-east-1"
     assert s.aws_profile == "agentic-platform"
 
 
 def test_bedrock_endpoint_is_standard_regional_host():
-    assert Settings().bedrock_runtime_endpoint == "com.amazonaws.us-east-1.bedrock-runtime"
+    assert hermetic_settings().bedrock_runtime_endpoint == "com.amazonaws.us-east-1.bedrock-runtime"
 
 
 def test_default_connectivity_provider_is_jumphost():
-    assert Settings().bedrock_connectivity_provider == "jumphost"
+    assert hermetic_settings().bedrock_connectivity_provider == "jumphost"
 
 
 def test_code_defaults_carry_no_project_specific_jumphost(monkeypatch):
