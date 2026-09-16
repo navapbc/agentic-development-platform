@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from scripts.config import Settings
+from scripts.config import Settings, to_host_hostport, to_host_url
 from services.integration.github.credentials import allowed_repos
 from services.integration.jira.credentials import acceptance_field, allowed_projects
 from tests.support import hermetic_settings
@@ -100,3 +100,29 @@ def test_classification_retention_rejects_non_numeric_days():
 
     with pytest.raises(ValueError):
         Settings(evidence_retention_classification_days="security:soon")
+
+
+def test_host_rewrite_maps_compose_service_names_to_localhost(monkeypatch):
+    monkeypatch.delenv("PLATFORM_IN_CONTAINER", raising=False)
+
+    assert (
+        to_host_url("postgresql+psycopg://platform:pw@postgres:5432/agent_platform")
+        == "postgresql+psycopg://platform:pw@localhost:5432/agent_platform"
+    )
+    assert to_host_hostport("temporal:7233") == "localhost:7233"
+
+
+def test_host_rewrite_leaves_unknown_hosts_alone(monkeypatch):
+    monkeypatch.delenv("PLATFORM_IN_CONTAINER", raising=False)
+
+    assert to_host_url("https://api.github.com/x") == "https://api.github.com/x"
+    assert to_host_hostport("temporal.example.com:7233") == "temporal.example.com:7233"
+
+
+def test_host_rewrite_is_inert_inside_the_platform_image(monkeypatch):
+    """Compose service names resolve inside the image, where localhost is the container."""
+    monkeypatch.setenv("PLATFORM_IN_CONTAINER", "1")
+
+    dsn = "postgresql+psycopg://platform:pw@postgres:5432/agent_platform"
+    assert to_host_url(dsn) == dsn
+    assert to_host_hostport("temporal:7233") == "temporal:7233"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any, Protocol
 
 from database.models.schema import executions, sequence_gate, side_effects
@@ -14,7 +15,19 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 _INTAKE_START = "intake_start"
 _TERMINAL_STATES = ("COMPLETED", "FAILED", "CANCELLED")
 
-WorkflowActive = Callable[[str], Awaitable[bool]]
+class WorkflowLiveness(StrEnum):
+    """Result of a liveness probe, which can also fail to reach Temporal at all.
+
+    UNKNOWN keeps a probe failure distinguishable from a confirmed running workflow so
+    callers refuse the retry without reporting the workflow as live.
+    """
+
+    RUNNING = "running"
+    ENDED = "ended"
+    UNKNOWN = "unknown"
+
+
+WorkflowLivenessProbe = Callable[[str], Awaitable[WorkflowLiveness]]
 
 
 @dataclass(frozen=True)
@@ -23,16 +36,23 @@ class IntakeRetryResult:
     released: int
     superseded: int
     blocked_by: tuple[str, ...]
+    undetermined: tuple[str, ...] = ()
 
     @property
     def retriggered(self) -> bool:
-        return not self.blocked_by and self.released > 0
+        return not self.blocked_by and not self.undetermined and self.released > 0
 
     @property
     def message(self) -> str:
         if self.blocked_by:
             running = ", ".join(self.blocked_by)
             return f"{self.issue_key} still has a running workflow ({running}), not retriggered"
+        if self.undetermined:
+            unreachable = ", ".join(self.undetermined)
+            return (
+                f"{self.issue_key} could not determine whether {unreachable} is still "
+                "running, not retriggered"
+            )
         if self.released == 0:
             return f"{self.issue_key} had no intake record to clear, nothing to retrigger"
         return (
@@ -55,12 +75,25 @@ async def retry_intake(
     issue_key: str,
     *,
     store: IntakeRetryStore,
-    workflow_active: WorkflowActive,
+    liveness: WorkflowLivenessProbe,
     repo: str | None = None,
 ) -> IntakeRetryResult:
-    blocked = [wid for wid in await store.workflow_ids(issue_key) if await workflow_active(wid)]
-    if blocked:
-        return IntakeRetryResult(issue_key, released=0, superseded=0, blocked_by=tuple(blocked))
+    running: list[str] = []
+    undetermined: list[str] = []
+    for workflow_id in await store.workflow_ids(issue_key):
+        state = await liveness(workflow_id)
+        if state is WorkflowLiveness.RUNNING:
+            running.append(workflow_id)
+        elif state is WorkflowLiveness.UNKNOWN:
+            undetermined.append(workflow_id)
+    if running or undetermined:
+        return IntakeRetryResult(
+            issue_key,
+            released=0,
+            superseded=0,
+            blocked_by=tuple(running),
+            undetermined=tuple(undetermined),
+        )
     released = await store.clear_intake_dedup(issue_key, repo)
     superseded = await store.mark_non_terminal_failed(issue_key) if released else 0
     if released:
@@ -113,8 +146,8 @@ class PostgresIntakeRetryStore:
             ).rowcount or 0
 
 
-def temporal_workflow_active(settings: Settings) -> WorkflowActive:
-    async def _active(workflow_id: str) -> bool:
+def temporal_workflow_liveness(settings: Settings) -> WorkflowLivenessProbe:
+    async def _probe(workflow_id: str) -> WorkflowLiveness:
         from temporalio.client import Client, WorkflowExecutionStatus
         from temporalio.service import RPCError, RPCStatusCode
 
@@ -124,12 +157,16 @@ def temporal_workflow_active(settings: Settings) -> WorkflowActive:
             )
             description = await client.get_workflow_handle(workflow_id).describe()
         except RPCError as exc:
-            return exc.status != RPCStatusCode.NOT_FOUND
+            if exc.status == RPCStatusCode.NOT_FOUND:
+                return WorkflowLiveness.ENDED
+            return WorkflowLiveness.UNKNOWN
         except Exception:  # noqa: BLE001
-            return True
-        return description.status == WorkflowExecutionStatus.RUNNING
+            return WorkflowLiveness.UNKNOWN
+        if description.status == WorkflowExecutionStatus.RUNNING:
+            return WorkflowLiveness.RUNNING
+        return WorkflowLiveness.ENDED
 
-    return _active
+    return _probe
 
 
 async def run_intake_retry(
@@ -143,7 +180,7 @@ async def run_intake_retry(
         return await retry_intake(
             issue_key,
             store=PostgresIntakeRetryStore(engine),
-            workflow_active=temporal_workflow_active(resolved),
+            liveness=temporal_workflow_liveness(resolved),
             repo=repo,
         )
     finally:

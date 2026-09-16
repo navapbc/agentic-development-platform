@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated
@@ -232,13 +233,25 @@ _COMPOSE_SERVICE_HOSTS = frozenset(
 )
 
 
+def _in_platform_image() -> bool:
+    """Report whether this process runs inside the platform image.
+
+    docker/Dockerfile sets PLATFORM_IN_CONTAINER, so the marker is present for every
+    container built from it and absent on the host.
+    """
+    return os.environ.get("PLATFORM_IN_CONTAINER") == "1"
+
+
 def to_host_url(url: str) -> str:
     """Rewrite a Compose-internal service URL to its host-published localhost equivalent.
 
     Host-run tooling shares .env with in-network services, which address each other by
     Compose service name. Those names do not resolve on the host, where the same ports
-    are published on localhost.
+    are published on localhost. Inside the platform image the service names do resolve
+    and localhost is the container itself, so the rewrite is inert there.
     """
+    if _in_platform_image():
+        return url
     parsed = urlparse(url)
     if parsed.hostname in _COMPOSE_SERVICE_HOSTS:
         userinfo = ""
@@ -254,6 +267,8 @@ def to_host_url(url: str) -> str:
 
 def to_host_hostport(value: str) -> str:
     """Rewrite a Compose-internal ``host:port`` (e.g. Temporal) to its localhost form."""
+    if _in_platform_image():
+        return value
     host, sep, port = value.partition(":")
     if host in _COMPOSE_SERVICE_HOSTS:
         return f"localhost{sep}{port}"
