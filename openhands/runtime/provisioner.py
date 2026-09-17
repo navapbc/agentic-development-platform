@@ -236,12 +236,21 @@ class KubernetesSandboxProvisioner:
         await asyncio.to_thread(self._copy_in_sync, handle, source_dir, dest_dir)
 
     def _copy_in_sync(self, handle: SandboxHandle, source_dir: str, dest_dir: str) -> None:
+        # The base tag has to name the tree as copied in, not the checkout's HEAD. A reused
+        # repair workspace arrives dirty with an earlier attempt's edits, and tagging HEAD would
+        # put those edits inside the extracted patch, which then fails to apply back onto the
+        # workspace that already contains them.
+        # Signing and hooks are disabled because the copied-in .git carries the project's own
+        # configuration, and neither a signing key nor a hook toolchain exists in the sandbox.
         extract = (
             f"mkdir -p {dest_dir} && "
             f"tar xmf - --no-overwrite-dir --no-same-owner -C {dest_dir} && "
             f"cd {dest_dir} && "
             f'git config user.email "openhands@all-hands.dev" && '
             f'git config user.name "openhands" && '
+            f"git add -A && "
+            f"git -c commit.gpgsign=false commit --no-verify -q --allow-empty "
+            f'-m "openhands base" && '
             f"git tag -f {_BASE_TAG} HEAD"
         )
         tar = subprocess.Popen(
