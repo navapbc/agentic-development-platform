@@ -29,12 +29,22 @@ _FAILURE_MARKERS = (
     "[warn]",
 )
 
+# eslint's stylish output names the file on a bare path line above its violations, and that line
+# carries no marker of its own, so it is kept by adjacency to the violation it heads.
+_FILE_HEADING = re.compile(r"^\S+\.[A-Za-z][A-Za-z0-9]{0,5}$")
+
 
 def failure_summary(log_text: str, *, max_lines: int = 20) -> str:
     """Pick the failure-relevant lines from a check log, keeping the last max_lines."""
-    picked = [
-        line for line in log_text.splitlines() if any(m in line.lower() for m in _FAILURE_MARKERS)
-    ]
+    lines = log_text.splitlines()
+    picked: list[str] = []
+    for index, line in enumerate(lines):
+        if not any(m in line.lower() for m in _FAILURE_MARKERS):
+            continue
+        heading = lines[index - 1] if index else ""
+        if _FILE_HEADING.match(heading) and (not picked or picked[-1] != heading):
+            picked.append(heading)
+        picked.append(line)
     return "\n".join(picked[-max_lines:])
 
 

@@ -195,6 +195,38 @@ def test_prettier_summary_drops_npm_deprecation_noise():
     assert "npm warn deprecated" not in failure_summary(_PRETTIER_LOG)
 
 
+_ESLINT_LOG = (
+    "> portal@1.0.0 lint:ci\n"
+    "> eslint --cache --ext .js,.ts,.tsx --max-warnings 0 ./\n"
+    "\n"
+    "npm warn deprecated rimraf@3.0.2: no longer supported\n"
+    "/workspace/portal/tests/components/Footer.test.tsx\n"
+    "  38:23  error  Avoid using container methods. Prefer using the methods from "
+    'Testing Library, such as "getByRole()"  testing-library/no-container\n'
+    "\n"
+    "\u2716 1 problem (1 error, 0 warnings)\n"
+    "Error: exit status 1\n"
+)
+
+
+def test_eslint_summary_keeps_the_offending_filename_for_the_repair_agent():
+    summary = failure_summary(_ESLINT_LOG)
+
+    assert "/workspace/portal/tests/components/Footer.test.tsx" in summary
+
+
+def test_eslint_summary_names_a_file_the_repair_can_scope_to():
+    from services.orchestration.langgraph.ci_repair import failing_files
+
+    assert failing_files(failure_summary(_ESLINT_LOG)) == (
+        "/workspace/portal/tests/components/Footer.test.tsx",
+    )
+
+
+def test_eslint_summary_drops_npm_deprecation_noise():
+    assert "npm warn deprecated" not in failure_summary(_ESLINT_LOG)
+
+
 def test_eslint_failure_classifies_as_lint():
     summary = failure_summary(
         "/workspace/portal/src/x.tsx\n"
