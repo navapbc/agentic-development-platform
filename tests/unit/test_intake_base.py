@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from services.orchestration.intake_base import declared_base
+from services.orchestration.intake_base import declared_base, declared_issue_key
 
 
 def test_single_declaration_is_read() -> None:
@@ -66,3 +66,31 @@ def test_slashed_branch_is_preserved() -> None:
 
 def test_surrounding_whitespace_is_trimmed() -> None:
     assert declared_base(["base: feature-x "]).branch == "feature-x"
+
+
+def test_tracker_key_is_read_and_upper_cased() -> None:
+    assert declared_issue_key(["jira-pfmlpb-33739"]) == "PFMLPB-33739"
+
+
+def test_tracker_key_ignores_unrelated_labels() -> None:
+    assert declared_issue_key(["adp", "adp-pilot", "a11y-audit-2026"]) == ""
+
+
+def test_tracker_key_is_empty_without_labels() -> None:
+    assert declared_issue_key([]) == ""
+
+
+def test_first_tracker_key_wins_when_several_are_declared() -> None:
+    assert declared_issue_key(["jira-pfmlpb-1", "jira-pfmlpb-2"]) == "PFMLPB-1"
+
+
+def test_tracker_key_rejects_a_non_numeric_issue_number() -> None:
+    assert declared_issue_key(["jira-pfmlpb-backlog"]) == ""
+
+
+def test_tracker_key_rejects_a_bare_prefix() -> None:
+    assert declared_issue_key(["jira-"]) == ""
+
+
+def test_tracker_key_trims_surrounding_whitespace() -> None:
+    assert declared_issue_key([" jira-pfmlpb-33739 "]) == "PFMLPB-33739"

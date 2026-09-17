@@ -4,6 +4,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 BASE_LABEL_PREFIX = "base:"
+TRACKER_LABEL_PREFIX = "jira-"
 
 
 def unresolvable_base_reason(branch: str, repo: str) -> str:
@@ -47,3 +48,20 @@ def declared_base(labels: Iterable[str]) -> BaseDeclaration:
         listed = ", ".join(sorted(branches))
         return BaseDeclaration(conflict=f"conflicting base branch labels: {listed}")
     return BaseDeclaration(branch=branches[0] if branches else "")
+
+
+def declared_issue_key(labels: Iterable[str]) -> str:
+    """Read the tracker issue key a ticket declares through its labels.
+
+    The ticket store's own identifier means nothing to the tracker, so a pull request that quotes
+    it links nowhere. A `jira-<project>-<number>` label carries the key the tracker does know, and
+    it stays separate from the store identifier the ledger and the linkback are keyed on.
+    """
+    for label in labels:
+        text = str(label).strip()
+        if not text.lower().startswith(TRACKER_LABEL_PREFIX):
+            continue
+        project, _, number = text[len(TRACKER_LABEL_PREFIX) :].rpartition("-")
+        if project and number.isdigit():
+            return f"{project.upper()}-{number}"
+    return ""

@@ -11,7 +11,7 @@ from scripts.config import Settings
 from services.integration.jira.credentials import acceptance_field
 from services.orchestration.change_narrative import compose_commit_message
 from services.orchestration.execution_reconciler import ActiveExecution
-from services.orchestration.intake_base import UnresolvableBaseBranch
+from services.orchestration.intake_base import UnresolvableBaseBranch, declared_issue_key
 from services.orchestration.intake_reconciler import IntakeContext, IntakeStart
 
 _log = structlog.get_logger(__name__)
@@ -74,7 +74,8 @@ class TemporalStarter:
                 focus=start.summary,
                 task_description=start.description,
                 commit_message=compose_commit_message(
-                    issue_key=start.issue_key,
+                    issue_key=declared_issue_key(start.stored_issue.get("labels") or ())
+                    or start.issue_key,
                     summary=start.summary,
                     description=start.description,
                 ),

@@ -2563,3 +2563,40 @@ async def test_repository_pull_request_template_shapes_the_pr_body():
     assert "(What was added, updated, or removed in this PR.)" not in body
     assert "- [ ] Deploy a preview" in body
     assert "https://tracker.example/browse/T-1" in body
+
+
+@pytest.mark.asyncio
+async def test_a_declared_tracker_key_names_the_pull_request():
+    from dataclasses import replace
+
+    commits: list[CommitPushRequest] = []
+    pr_opens: list[OpenPrRequest] = []
+    linkbacks: list[LinkbackRequest] = []
+    activities = _make_activities(
+        None,
+        1,
+        commits,
+        pr_opens,
+        linkbacks,
+        ci_result=SUCCESS,
+        pr_template="## Ticket\n\nhttps://tracker.example/browse/{TICKET ID}\n",
+    )
+    params = replace(
+        _ci_input(),
+        stored_issue={"summary": "Implement the change", "labels": ["adp", "jira-pfmlpb-33739"]},
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            result = await env.client.execute_workflow(
+                DraftPullRequestWorkflow.run,
+                params,
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+
+    assert result.status == PR_PROMOTED
+    assert pr_opens[0].title == "PFMLPB-33739: Implement the change"
+    assert "https://tracker.example/browse/PFMLPB-33739" in pr_opens[0].body
+    assert linkbacks[0].issue_key == "T-1"

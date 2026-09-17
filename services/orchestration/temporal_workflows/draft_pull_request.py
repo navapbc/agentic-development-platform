@@ -20,6 +20,7 @@ with workflow.unsafe.imports_passed_through():
     )
     from services.orchestration.gates.contract import PAUSE_FOR_HUMAN, GateContext
     from services.orchestration.gates.runner import run_gate_stage
+    from services.orchestration.intake_base import declared_issue_key
     from services.orchestration.temporal_activities.authorship import (
         SignAuthorshipRequest,
         VerifyAuthorshipRequest,
@@ -474,7 +475,13 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         short = timedelta(seconds=30)
         workflow_id = workflow.info().workflow_id
 
-        title = params.title or f"[{params.task_id}] {params.task}"
+        tracker_key = declared_issue_key(params.stored_issue.get("labels") or ())
+        default_title = (
+            f"{tracker_key}: {params.task}"
+            if tracker_key
+            else f"[{params.task_id}] {params.task}"
+        )
+        title = params.title or default_title
 
         await workflow.execute_activity(
             record_manifest,
@@ -798,7 +805,8 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         body = params.body or compose_pull_request_body(
             commit.pr_template if commit else "",
             PullRequestNarrative(
-                issue_key=params.issue_key,
+                issue_key=declared_issue_key(params.stored_issue.get("labels") or ())
+                or params.issue_key,
                 execution_id=params.execution_id,
                 summary=impl.summary or params.task,
                 description=params.task_description,

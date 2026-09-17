@@ -259,3 +259,27 @@ async def test_start_derives_the_commit_message_from_the_ticket(
 
     (_, arg, _) = client.started[0]
     assert arg.commit_message == "ADEV-1: Add a widget\n\nThe widget is needed for onboarding."
+
+
+@pytest.mark.asyncio
+async def test_start_prefers_a_declared_tracker_key_in_the_commit_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(intake_runtime, "remote_head", lambda remote, branch: "main-sha")
+    monkeypatch.setattr(
+        "services.integration.github.factory.build_git_host", lambda settings: _Host()
+    )
+    client = _Client()
+    starter = TemporalStarter(client, hermetic_settings(), _Gh())
+
+    await starter.start(
+        _intake_start(
+            summary="Add a widget",
+            description="The widget is needed for onboarding.",
+            stored_issue={"labels": ["adp", "jira-pfmlpb-33739"]},
+        )
+    )
+
+    (_, arg, _) = client.started[0]
+    assert arg.commit_message.startswith("PFMLPB-33739: Add a widget")
+    assert arg.issue_key == "ADEV-1"
