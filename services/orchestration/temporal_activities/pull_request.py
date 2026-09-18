@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import structlog
 from temporalio import activity
@@ -153,6 +153,7 @@ class CommitPushRequest:
     commit: str
     message: str
     sequence: int = 2
+    file_impact: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -162,6 +163,7 @@ class CommitPushResult:
     pushed: bool
     replayed: bool
     pr_template: str = ""
+    excluded_paths: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -290,7 +292,7 @@ async def commit_and_push(req: CommitPushRequest) -> CommitPushResult:
         base=req.base,
         commit_sha=req.commit,
     )
-    staged = await materializer.stage(workspace)
+    staged = await materializer.stage(workspace, allowed_paths=req.file_impact)
     commit_request = await materializer.build_commit_request(
         workspace, message=req.message, staged=staged
     )
@@ -302,6 +304,7 @@ async def commit_and_push(req: CommitPushRequest) -> CommitPushResult:
         pushed=result.pushed,
         replayed=result.replayed,
         pr_template=read_pull_request_template(workspace.path),
+        excluded_paths=list(staged.excluded),
     )
 
 

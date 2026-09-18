@@ -10,7 +10,11 @@ from services.integration.jira import CLOUD
 from services.integration.jira.credentials import ComponentRepos
 from services.integration.jira.snapshot import TaskSnapshot, snapshot_id_for
 from services.orchestration.intake_base import UnresolvableBaseBranch
-from services.orchestration.intake_reconciler import IntakeStart, reconcile_intake
+from services.orchestration.intake_reconciler import (
+    IntakeStart,
+    candidate_from_rebar,
+    reconcile_intake,
+)
 from tests.support import hermetic_settings
 
 _ALLOW = frozenset({"repo-a", "repo-b", "repo-c"})
@@ -590,3 +594,34 @@ async def test_declared_base_without_a_resolver_still_holds_every_pass():
 
     assert held == [["ADEV-1"], ["ADEV-1"], ["ADEV-1"]]
     assert starter.starts == []
+
+
+def test_rebar_candidate_carries_the_declared_file_impact() -> None:
+    ticket = {
+        "ticket_id": "aaaa-bbbb",
+        "title": "Remove the size prop",
+        "description": "body",
+        "status": "open",
+        "file_impact": [
+            {"path": "portal/src/page.tsx", "reason": "drop the prop"},
+            {"path": "portal/tests/page.test.ts", "reason": "refresh the assertion"},
+        ],
+    }
+
+    candidate = candidate_from_rebar(ticket, project="PFML", default_repo="repo-a")
+
+    assert candidate.file_impact == ("portal/src/page.tsx", "portal/tests/page.test.ts")
+
+
+def test_rebar_candidate_file_impact_is_empty_when_undeclared() -> None:
+    ticket = {
+        "ticket_id": "aaaa-bbbb",
+        "title": "Remove the size prop",
+        "description": "body",
+        "status": "open",
+        "file_impact": [],
+    }
+
+    candidate = candidate_from_rebar(ticket, project="PFML", default_repo="repo-a")
+
+    assert candidate.file_impact == ()

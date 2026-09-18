@@ -2662,3 +2662,34 @@ async def test_a_declared_tracker_key_names_the_pull_request():
     assert pr_opens[0].title == "PFMLPB-33739: Implement the change"
     assert "https://tracker.example/browse/PFMLPB-33739" in pr_opens[0].body
     assert linkbacks[0].issue_key == "T-1"
+
+
+async def test_every_commit_carries_the_declared_file_impact():
+    """Staging honours the declaration only if both commit stages actually pass it through."""
+    commits: list[CommitPushRequest] = []
+    pr_opens: list[OpenPrRequest] = []
+    linkbacks: list[LinkbackRequest] = []
+    repairs: list[ApplyCIRepairRequest] = []
+    activities = _make_activities(
+        None,
+        1,
+        commits,
+        pr_opens,
+        linkbacks,
+        ci_triggers=[],
+        ci_results=[FAILURE, SUCCESS],
+        repairs=repairs,
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            await env.client.execute_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+
+    assert len(commits) == 2
+    assert [c.file_impact for c in commits] == [["feature.py"], ["feature.py"]]

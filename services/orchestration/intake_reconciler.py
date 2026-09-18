@@ -48,6 +48,7 @@ class IntakeStart:
     description: str = ""
     base: str = ""
     snapshot_version: int = 0
+    file_impact: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -64,6 +65,7 @@ class IntakeCandidate:
     source_backend: str
     stored_payload: dict[str, Any]
     raw: dict[str, Any] = field(default_factory=dict)
+    file_impact: tuple[str, ...] = ()
 
 
 def candidate_from_jira(raw: dict[str, Any], *, cred: Any, field_id: str) -> IntakeCandidate:
@@ -79,6 +81,16 @@ def candidate_from_jira(raw: dict[str, Any], *, cred: Any, field_id: str) -> Int
         source_backend=cred.auth_mode,
         stored_payload=normalized.to_dict(),
         raw=raw,
+    )
+
+
+def declared_paths(ticket: dict[str, Any]) -> tuple[str, ...]:
+    """Paths a rebar ticket declares it will change, empty when its scope is undeclared."""
+    entries = ticket.get("file_impact") or []
+    return tuple(
+        str(entry["path"])
+        for entry in entries
+        if isinstance(entry, dict) and entry.get("path")
     )
 
 
@@ -100,6 +112,7 @@ def candidate_from_rebar(
         source_backend="rebar",
         stored_payload=payload,
         raw=dict(ticket),
+        file_impact=declared_paths(ticket),
     )
 
 
@@ -416,6 +429,7 @@ async def _start(
                 stored_issue=candidate.stored_payload,
                 base=base,
                 snapshot_version=snapshot.version,
+                file_impact=candidate.file_impact,
             )
         )
         return {"workflow_id": workflow_id}

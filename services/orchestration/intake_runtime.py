@@ -93,6 +93,7 @@ class TemporalStarter:
                 snapshot_version=start.snapshot_version,
                 run_test_triage=run_test_triage,
                 await_pr_close=await_pr_close,
+                file_impact=list(start.file_impact),
             ),
             id=workflow_id,
             task_queue=self._settings.temporal_task_queue,

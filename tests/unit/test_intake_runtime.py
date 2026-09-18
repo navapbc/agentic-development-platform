@@ -283,3 +283,56 @@ async def test_start_prefers_a_declared_tracker_key_in_the_commit_message(
     (_, arg, _) = client.started[0]
     assert arg.commit_message.startswith("PFMLPB-33739: Add a widget")
     assert arg.issue_key == "ADEV-1"
+
+
+@pytest.mark.asyncio
+async def test_start_carries_the_declared_file_impact(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(intake_runtime, "remote_head", lambda remote, branch: "abc123")
+    monkeypatch.setattr(
+        "services.integration.github.factory.build_git_host", lambda settings: _Host()
+    )
+    client = _Client()
+    starter = TemporalStarter(client, hermetic_settings(), _Gh())
+
+    await starter.start(
+        IntakeStart(
+            task_id="ADEV-1",
+            execution_id="exec-1",
+            repo="agentic-demo-service",
+            issue_key="ADEV-1",
+            summary="Add a widget",
+            jira_project="ADEV",
+            stored_issue={},
+            file_impact=("portal/src/widget.tsx",),
+        )
+    )
+
+    (_, arg, _) = client.started[0]
+    assert arg.file_impact == ["portal/src/widget.tsx"]
+
+
+@pytest.mark.asyncio
+async def test_start_leaves_file_impact_empty_when_undeclared(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(intake_runtime, "remote_head", lambda remote, branch: "abc123")
+    monkeypatch.setattr(
+        "services.integration.github.factory.build_git_host", lambda settings: _Host()
+    )
+    client = _Client()
+    starter = TemporalStarter(client, hermetic_settings(), _Gh())
+
+    await starter.start(
+        IntakeStart(
+            task_id="ADEV-1",
+            execution_id="exec-1",
+            repo="agentic-demo-service",
+            issue_key="ADEV-1",
+            summary="Add a widget",
+            jira_project="ADEV",
+            stored_issue={},
+        )
+    )
+
+    (_, arg, _) = client.started[0]
+    assert arg.file_impact == []

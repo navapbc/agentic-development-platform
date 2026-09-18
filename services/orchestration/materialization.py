@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import re
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -18,10 +18,15 @@ from services.integration.github.mediator import RepoNotAllowedError
 _SLUG = re.compile(r"[^A-Za-z0-9._-]+")
 
 
+def _within(path: str, allowed: Sequence[str]) -> bool:
+    return any(path == entry or path.startswith(entry.rstrip("/") + "/") for entry in allowed)
+
+
 @dataclass(frozen=True)
 class StagedChange:
     tree: str
     changed: bool
+    excluded: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -195,12 +200,31 @@ class WorkspaceMaterializer:
                 paths.append(entry[3:])
         return sorted(paths)
 
-    async def stage(self, workspace: MaterializedWorkspace) -> StagedChange:
+    async def stage(
+        self, workspace: MaterializedWorkspace, *, allowed_paths: Sequence[str] = ()
+    ) -> StagedChange:
+        """Stage the workspace, limited to `allowed_paths` when the ticket declared any.
+
+        Build tooling rewrites tracked files the ticket never asked for, so an unrestricted
+        `git add -A` publishes whatever the workspace happens to hold. Declared paths are
+        intersected with the changed set before reaching git, because `git add -A -- <path>`
+        aborts on a pathspec that matches nothing. The index is reset to HEAD first, since the
+        implementation activity stages this same workspace before the commit activity runs.
+        """
         path = str(workspace.path)
-        await _git("add", "-A", cwd=path)
+        if not allowed_paths:
+            await _git("add", "-A", cwd=path)
+            excluded: tuple[str, ...] = ()
+        else:
+            changed = await self.changed_paths(workspace)
+            admitted = [p for p in changed if _within(p, allowed_paths)]
+            excluded = tuple(p for p in changed if p not in set(admitted))
+            await _git("read-tree", "HEAD", cwd=path)
+            if admitted:
+                await _git("add", "-A", "--", *admitted, cwd=path)
         tree = await _git("write-tree", cwd=path)
         head_tree = await _git("rev-parse", "HEAD^{tree}", cwd=path)
-        return StagedChange(tree=tree, changed=tree != head_tree)
+        return StagedChange(tree=tree, changed=tree != head_tree, excluded=excluded)
 
     async def build_commit_request(
         self,
@@ -208,8 +232,11 @@ class WorkspaceMaterializer:
         *,
         message: str,
         staged: StagedChange | None = None,
+        allowed_paths: Sequence[str] = (),
     ) -> CommitRequest:
-        resolved = staged if staged is not None else await self.stage(workspace)
+        resolved = staged
+        if resolved is None:
+            resolved = await self.stage(workspace, allowed_paths=allowed_paths)
         return CommitRequest(
             repo=workspace.repo,
             branch=workspace.branch,

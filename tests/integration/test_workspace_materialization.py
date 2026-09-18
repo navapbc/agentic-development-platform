@@ -354,3 +354,113 @@ async def test_built_commit_request_pushes_idempotently_through_the_backend(
 
     assert first.pushed is True
     assert second.replayed is True
+
+
+async def test_staging_allowed_paths_keeps_an_undeclared_edit_out_of_the_tree(
+    remote, tmp_path
+) -> None:
+    """A build tool rewriting a tracked file put it in a PR the ticket never authorized."""
+    _, manifest_sha = remote
+    materializer = _materializer(remote, tmp_path)
+    workspace = await materializer.materialize(
+        repo=REPO,
+        task_id=TASK_ID,
+        execution_id=EXECUTION_ID,
+        base="main",
+        commit_sha=manifest_sha,
+    )
+    (Path(workspace.path) / "feature.py").write_text("print('hi')\n", encoding="utf-8")
+    (Path(workspace.path) / "README.md").write_text("regenerated\n", encoding="utf-8")
+
+    staged = await materializer.stage(workspace, allowed_paths=("feature.py",))
+
+    assert staged.changed is True
+    assert _blob(workspace.path, staged.tree, "feature.py") == "print('hi')\n"
+    assert _blob(workspace.path, staged.tree, "README.md") == "hello\n"
+    assert staged.excluded == ("README.md",)
+
+
+async def test_staging_an_undeclared_ticket_commits_every_changed_path(remote, tmp_path) -> None:
+    _, manifest_sha = remote
+    materializer = _materializer(remote, tmp_path)
+    workspace = await materializer.materialize(
+        repo=REPO,
+        task_id=TASK_ID,
+        execution_id=EXECUTION_ID,
+        base="main",
+        commit_sha=manifest_sha,
+    )
+    (Path(workspace.path) / "feature.py").write_text("print('hi')\n", encoding="utf-8")
+    (Path(workspace.path) / "README.md").write_text("regenerated\n", encoding="utf-8")
+
+    staged = await materializer.stage(workspace)
+
+    assert _blob(workspace.path, staged.tree, "feature.py") == "print('hi')\n"
+    assert _blob(workspace.path, staged.tree, "README.md") == "regenerated\n"
+    assert staged.excluded == ()
+
+
+async def test_staging_allowed_paths_covers_a_declared_directory(remote, tmp_path) -> None:
+    _, manifest_sha = remote
+    materializer = _materializer(remote, tmp_path)
+    workspace = await materializer.materialize(
+        repo=REPO,
+        task_id=TASK_ID,
+        execution_id=EXECUTION_ID,
+        base="main",
+        commit_sha=manifest_sha,
+    )
+    nested = Path(workspace.path) / "portal" / "src"
+    nested.mkdir(parents=True)
+    (nested / "page.tsx").write_text("export default null;\n", encoding="utf-8")
+    (Path(workspace.path) / "README.md").write_text("regenerated\n", encoding="utf-8")
+
+    staged = await materializer.stage(workspace, allowed_paths=("portal",))
+
+    assert _blob(workspace.path, staged.tree, "portal/src/page.tsx") == "export default null;\n"
+    assert _blob(workspace.path, staged.tree, "README.md") == "hello\n"
+
+
+async def test_staging_a_declared_path_the_agent_never_created_is_not_fatal(
+    remote, tmp_path
+) -> None:
+    """`git add -A -- missing` aborts, so the declared set is intersected before it reaches git."""
+    _, manifest_sha = remote
+    materializer = _materializer(remote, tmp_path)
+    workspace = await materializer.materialize(
+        repo=REPO,
+        task_id=TASK_ID,
+        execution_id=EXECUTION_ID,
+        base="main",
+        commit_sha=manifest_sha,
+    )
+    (Path(workspace.path) / "README.md").write_text("regenerated\n", encoding="utf-8")
+
+    staged = await materializer.stage(workspace, allowed_paths=("never/created.py",))
+
+    assert staged.changed is False
+    assert staged.excluded == ("README.md",)
+
+
+async def test_allowed_paths_drop_a_path_an_earlier_stage_already_indexed(
+    remote, tmp_path
+) -> None:
+    """The implementation activity stages the same workspace before the commit activity does."""
+    _, manifest_sha = remote
+    materializer = _materializer(remote, tmp_path)
+    workspace = await materializer.materialize(
+        repo=REPO,
+        task_id=TASK_ID,
+        execution_id=EXECUTION_ID,
+        base="main",
+        commit_sha=manifest_sha,
+    )
+    (Path(workspace.path) / "feature.py").write_text("print('hi')\n", encoding="utf-8")
+    (Path(workspace.path) / "README.md").write_text("regenerated\n", encoding="utf-8")
+    await materializer.stage(workspace)
+
+    staged = await materializer.stage(workspace, allowed_paths=("feature.py",))
+
+    assert _blob(workspace.path, staged.tree, "feature.py") == "print('hi')\n"
+    assert _blob(workspace.path, staged.tree, "README.md") == "hello\n"
+    assert staged.excluded == ("README.md",)
