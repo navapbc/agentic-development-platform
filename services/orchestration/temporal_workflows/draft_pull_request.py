@@ -203,7 +203,7 @@ PR_CLOSED_UNMERGED = "pr_closed_unmerged"
 
 _SEQUENCE_STRIDE = 100
 _COMMIT_OFFSET = 2
-_OPEN_PR_OFFSET = 3
+_REPAIR_BASE_OFFSET = 3
 _CI_TRIGGER_OFFSET = 4
 _REPAIR_STRIDE = 2
 _APPROVAL_OFFSET = 1
@@ -790,6 +790,23 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             reviewed=params.run_reviews, policy_evaluated=params.run_policy
         )
 
+    def _post_repair_sequence_base(
+        self, params: DraftPullRequestInput, impl: ImplementationOutput
+    ) -> int:
+        """The first sequence that clears every repair commit this run could have made.
+
+        The gate admits a sequence only when it exceeds the one before it, so each stage has
+        to outrank the stages that already ran. Repair commits occupy
+        ``_REPAIR_BASE_OFFSET + _REPAIR_STRIDE * attempt`` and all of them land before the pull
+        request opens, so opening the PR and promoting it both start from here.
+        """
+        attempts = max(params.max_repair_attempts, self._max_attempt_used)
+        return (
+            impl.claim_version * _SEQUENCE_STRIDE
+            + _CI_TRIGGER_OFFSET
+            + _REPAIR_STRIDE * attempts
+        )
+
     async def _open_pull_request(
         self,
         params: DraftPullRequestInput,
@@ -798,7 +815,6 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         workflow_id: str,
         title: str,
     ) -> DraftPullRequestOutput:
-        sequence_base = impl.claim_version * _SEQUENCE_STRIDE
         commit = self._commit
         commit_branch = commit.branch if commit else outcome.branch
 
@@ -826,7 +842,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                     body=body,
                     issue_key=params.issue_key,
                     base_sha=params.base_sha,
-                    sequence=sequence_base + _OPEN_PR_OFFSET,
+                    sequence=self._post_repair_sequence_base(params, impl),
                 ),
                 id=f"{workflow_id}-pr",
             )
@@ -1252,7 +1268,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             return repair
 
         sequence = (
-            impl.claim_version * _SEQUENCE_STRIDE + _OPEN_PR_OFFSET + _REPAIR_STRIDE * attempt
+            impl.claim_version * _SEQUENCE_STRIDE + _REPAIR_BASE_OFFSET + _REPAIR_STRIDE * attempt
         )
         self._commit = await workflow.execute_activity(
             commit_and_push,
@@ -2047,10 +2063,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         retry = RetryPolicy(maximum_attempts=3)
         short = timedelta(seconds=30)
         commit_sha = self._commit.commit_sha if self._commit else params.base_sha
-        sequence_base = impl.claim_version * _SEQUENCE_STRIDE
-        promotion_base = _CI_TRIGGER_OFFSET + _REPAIR_STRIDE * max(
-            params.max_repair_attempts, self._max_attempt_used
-        )
+        promotion_base = self._post_repair_sequence_base(params, impl)
 
         async def persist(state: str) -> None:
             await workflow.execute_activity(
@@ -2152,7 +2165,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                     number=outcome.pr_number,
                     approved=approved,
                     approver=approver,
-                    sequence=sequence_base + promotion_base + _APPROVAL_OFFSET,
+                    sequence=promotion_base + _APPROVAL_OFFSET,
                     issue_key=params.issue_key,
                     project=_project_from_issue(params.issue_key),
                 ),
@@ -2261,7 +2274,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 task_id=params.task_id,
                 execution_id=params.execution_id,
                 number=outcome.pr_number,
-                sequence=sequence_base + promotion_base + _PROMOTE_OFFSET,
+                sequence=promotion_base + _PROMOTE_OFFSET,
             ),
             start_to_close_timeout=short,
             retry_policy=retry,

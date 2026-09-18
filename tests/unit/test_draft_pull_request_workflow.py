@@ -7,6 +7,11 @@ import uuid
 
 import pytest
 from openhands.runtime.caps import COMPLETED
+from services.coordination.sequencing import (
+    ADMITTED,
+    InMemorySequenceGate,
+    SequencedAction,
+)
 from services.orchestration.branch_sync import FAST_FORWARD
 from services.orchestration.gates.contract import (
     GateContext,
@@ -623,7 +628,7 @@ async def test_orchestrator_opens_draft_pr_through_the_full_chain():
     assert len(commits) == 1
     assert commits[0].sequence == 102
     assert len(pr_opens) == 1
-    assert pr_opens[0].sequence == 103
+    assert pr_opens[0].sequence == 114
     assert len(linkbacks) == 1
 
 
@@ -632,7 +637,7 @@ async def test_reclaimed_execution_uses_higher_gate_sequences():
 
     assert result.status == PR_PROMOTED
     assert commits[0].sequence == 202
-    assert pr_opens[0].sequence == 203
+    assert pr_opens[0].sequence == 214
 
 
 async def test_orchestrator_reuses_existing_pr_without_committing():
@@ -2441,6 +2446,63 @@ def test_sequence_stride_exceeds_the_worst_case_intra_execution_offset():
     max_repair_attempts = DraftPullRequestInput.max_repair_attempts
     worst_case_offset = _CI_TRIGGER_OFFSET + _REPAIR_STRIDE * max_repair_attempts + _PROMOTE_OFFSET
     assert worst_case_offset < _SEQUENCE_STRIDE
+
+
+async def test_every_sequenced_action_clears_the_gate_when_ci_needed_a_repair():
+    """The gate admits only strictly increasing sequences, so the numbers the workflow
+    hands out have to rise in the order the stages actually run. A repair commits before
+    the pull request opens, so its sequence has to stay below the one that opens the PR."""
+    commits: list[CommitPushRequest] = []
+    pr_opens: list[OpenPrRequest] = []
+    approvals: list[RecordApprovalRequest] = []
+    promotions: list[PromotePrRequest] = []
+    repairs: list[ApplyCIRepairRequest] = []
+    activities = _make_activities(
+        None,
+        1,
+        commits,
+        pr_opens,
+        [],
+        ci_triggers=[],
+        ci_results=[FAILURE, SUCCESS],
+        repairs=repairs,
+        approvals=approvals,
+        promotions=promotions,
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            result = await env.client.execute_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+
+    assert result.status == PR_PROMOTED
+    assert len(repairs) == 1
+    assert len(commits) == 2
+    assert len(pr_opens) == 1
+
+    issued = [
+        ("github.commit", commits[0].sequence),
+        ("github.commit", commits[1].sequence),
+        ("github.open_pr", pr_opens[0].sequence),
+        *[("github.promotion_approval", a.sequence) for a in approvals],
+        *[("github.mark_ready", p.sequence) for p in promotions],
+    ]
+
+    gate = InMemorySequenceGate()
+    discarded = []
+    for operation, sequence in issued:
+        decision = await gate.admit(
+            SequencedAction("T-1", "exec-1", sequence, operation=operation)
+        )
+        if decision.outcome != ADMITTED:
+            discarded.append((operation, sequence, decision.current_sequence))
+
+    assert discarded == []
 
 
 async def test_authorship_verification_failure_blocks_promotion():
