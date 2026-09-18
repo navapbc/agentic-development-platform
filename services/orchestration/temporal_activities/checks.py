@@ -37,8 +37,9 @@ class RunChecksResult:
 
 def _clean_checkout(workspace_path: str, dest: str) -> None:
     """Copy the implementation working tree (base plus the change) into dest, isolated from the
-    agent, without the .git directory, virtualenvs, or tool caches. The uncommitted working tree is
-    the change under review, so the checks run against exactly what the pull request will carry.
+    agent, without the .git directory, virtualenvs, or tool caches. Publication commits this same
+    working tree and verifies the tree it published, so what runs here is what the pull request
+    carries. See docs/change-publication.md.
     """
     shutil.copytree(workspace_path, dest, dirs_exist_ok=True, ignore=_IGNORED)
 

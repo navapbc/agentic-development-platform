@@ -5,32 +5,14 @@ from __future__ import annotations
 from pathlib import Path
 
 from openhands.runtime.conversation import COMPLETED, FINISHED, ImplementationOutcome
-from services.orchestration.materialization import MaterializedWorkspace
+from services.orchestration.materialization import MaterializedWorkspace, StagedChange
 from services.orchestration.temporal_activities import implementation as impl
 from services.orchestration.temporal_activities.implementation import (
     ImplementationRequest,
-    _hash_changes,
     run_implementation_stage,
 )
 
-
-def test_hash_changes_is_order_independent():
-    a = _hash_changes({"b.py": "two", "a.py": "one"})
-    b = _hash_changes({"a.py": "one", "b.py": "two"})
-    assert a == b
-    assert a.startswith("sha256:")
-
-
-def test_hash_changes_is_content_sensitive():
-    base = _hash_changes({"a.py": "one"})
-    changed_content = _hash_changes({"a.py": "two"})
-    changed_path = _hash_changes({"b.py": "one"})
-    assert base != changed_content
-    assert base != changed_path
-
-
-def test_hash_changes_empty_is_stable():
-    assert _hash_changes({}) == _hash_changes({})
+_STAGED_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
 
 class _FakeMaterializer:
@@ -51,8 +33,11 @@ class _FakeMaterializer:
             workspace_orphan_id="w",
         )
 
-    async def collect_changes(self, workspace):
-        return {"feature.py": "print('x')"}
+    async def stage(self, workspace):
+        return StagedChange(tree=_STAGED_TREE, changed=True)
+
+    async def changed_paths(self, workspace):
+        return ["feature.py"]
 
 
 class _FakeRuntime:
@@ -104,6 +89,7 @@ async def test_stage_binds_the_materialized_sub_path_into_the_runtime(tmp_path, 
     assert result.tokens == 100
     assert result.llm_calls == 3
     assert result.changed_files == ["feature.py"]
+    assert result.diff_hash == _STAGED_TREE
 
 
 async def test_stage_appends_the_plan_to_the_coder_context(tmp_path, monkeypatch):

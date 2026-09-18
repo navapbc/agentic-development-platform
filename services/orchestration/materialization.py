@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import re
 import subprocess
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -16,6 +16,12 @@ from services.coordination.orphans import BRANCH, STAGING, OrphanArtifact, Orpha
 from services.integration.github.mediator import RepoNotAllowedError
 
 _SLUG = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+@dataclass(frozen=True)
+class StagedChange:
+    tree: str
+    changed: bool
 
 
 @dataclass(frozen=True)
@@ -174,35 +180,43 @@ class WorkspaceMaterializer:
             await _git("reset", "--hard", commit_sha, cwd=str(path))
             await _git("clean", "-fd", cwd=str(path))
 
-    async def collect_changes(self, workspace: MaterializedWorkspace) -> dict[str, str]:
-        path = Path(workspace.path)
-        out = await _git("status", "--porcelain=v1", "--no-renames", cwd=str(path))
-        files: dict[str, str] = {}
-        for line in out.splitlines():
-            if not line.strip():
-                continue
-            code, rel = line[:2], line[3:].strip()
-            if "D" in code:
-                continue
-            candidate = path / rel
-            if candidate.is_file():
-                files[rel] = candidate.read_text(encoding="utf-8")
-        return files
+    async def changed_paths(self, workspace: MaterializedWorkspace) -> list[str]:
+        """Repository-relative paths the workspace has changed, deletions included.
+
+        `-z` is what makes a path outside ASCII usable, because `core.quotePath` would otherwise
+        C-quote it into something no caller can open.
+        """
+        out = await _git(
+            "status", "--porcelain=v1", "-z", "--no-renames", cwd=str(workspace.path)
+        )
+        paths: list[str] = []
+        for entry in out.split("\0"):
+            if len(entry) > 3:
+                paths.append(entry[3:])
+        return sorted(paths)
+
+    async def stage(self, workspace: MaterializedWorkspace) -> StagedChange:
+        path = str(workspace.path)
+        await _git("add", "-A", cwd=path)
+        tree = await _git("write-tree", cwd=path)
+        head_tree = await _git("rev-parse", "HEAD^{tree}", cwd=path)
+        return StagedChange(tree=tree, changed=tree != head_tree)
 
     async def build_commit_request(
         self,
         workspace: MaterializedWorkspace,
         *,
         message: str,
-        files: Mapping[str, str] | None = None,
+        staged: StagedChange | None = None,
     ) -> CommitRequest:
-        resolved = dict(files) if files is not None else await self.collect_changes(workspace)
+        resolved = staged if staged is not None else await self.stage(workspace)
         return CommitRequest(
             repo=workspace.repo,
             branch=workspace.branch,
             base=workspace.base,
             message=message,
-            files=resolved,
+            workspace=str(workspace.path),
+            tree=resolved.tree,
             task_id=workspace.task_id,
             execution_id=workspace.execution_id,
         )

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import subprocess
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -19,6 +19,7 @@ from adapters.interfaces.git_host import (
     PRFeedback,
     PublishResult,
     PullRequest,
+    author_env,
 )
 from scripts.config import Settings, get_settings
 
@@ -67,7 +68,11 @@ class LocalGitHost:
         return self._artifacts_root / repo
 
     async def _run(
-        self, *args: str, cwd: str | Path, allowed: tuple[int, ...] = (0,)
+        self,
+        *args: str,
+        cwd: str | Path,
+        allowed: tuple[int, ...] = (0,),
+        env: dict[str, str] | None = None,
     ) -> _GitResult:
         def run() -> subprocess.CompletedProcess[str]:
             return subprocess.run(
@@ -75,6 +80,7 @@ class LocalGitHost:
                 cwd=str(cwd),
                 capture_output=True,
                 text=True,
+                env={**os.environ, **env} if env else None,
             )
 
         proc = await asyncio.to_thread(run)
@@ -83,8 +89,10 @@ class LocalGitHost:
             raise RuntimeError(f"git {' '.join(args)} failed (rc {proc.returncode}): {detail}")
         return _GitResult(proc.returncode, proc.stdout.strip(), proc.stderr.strip())
 
-    async def _git(self, *args: str, cwd: str | Path) -> str:
-        return (await self._run(*args, cwd=cwd)).stdout
+    async def _git(
+        self, *args: str, cwd: str | Path, env: dict[str, str] | None = None
+    ) -> str:
+        return (await self._run(*args, cwd=cwd, env=env)).stdout
 
     async def _branch_exists(self, repo_path: Path, name: str) -> str:
         result = await self._run(
@@ -121,38 +129,41 @@ class LocalGitHost:
 
     async def commit_and_push(self, request: CommitRequest) -> CommitResult:
         repo_path = self._repo_path(request.repo)
-        trailer = f"execution_id: {request.execution_id}"
+        work = request.workspace
         if not await self._branch_exists(repo_path, request.branch):
             await self._git("branch", request.branch, request.base, cwd=repo_path)
-        replayed = await self._run(
-            "log", request.branch, f"--grep={trailer}", "-n", "1", "--format=%H", cwd=repo_path
-        )
-        if replayed.stdout:
+        head = await self._git("rev-parse", request.branch, cwd=repo_path)
+        await self._git("fetch", "--quiet", str(repo_path), request.branch, cwd=work)
+        if await self._git("rev-parse", f"{head}^{{tree}}", cwd=work) == request.tree:
             return CommitResult(
                 repo=request.repo,
                 branch=request.branch,
-                commit_sha=replayed.stdout,
+                commit_sha=head,
                 pushed=False,
                 replayed=True,
+                published_tree=request.tree,
             )
-        with tempfile.TemporaryDirectory() as work:
-            await self._git("worktree", "add", "--force", work, request.branch, cwd=repo_path)
-            try:
-                await self._git("config", "user.name", request.author_name, cwd=work)
-                await self._git("config", "user.email", request.author_email, cwd=work)
-                for path, text in request.files.items():
-                    target = Path(work) / path
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    target.write_text(text, encoding="utf-8")
-                await self._git("add", "-A", cwd=work)
-                await self._git("commit", "-m", f"{request.message}\n\n{trailer}", cwd=work)
-                sha = await self._git("rev-parse", "HEAD", cwd=work)
-            finally:
-                await self._run(
-                    "worktree", "remove", "--force", work, cwd=repo_path, allowed=(0, 1)
-                )
+        sha = await self._git(
+            "commit-tree",
+            request.tree,
+            "-p",
+            head,
+            "-m",
+            request.message,
+            cwd=work,
+            env=author_env(request),
+        )
+        await self._git("push", str(repo_path), f"{sha}:refs/heads/{request.branch}", cwd=work)
+        await self._git("reset", "--soft", sha, cwd=work)
         return CommitResult(
-            repo=request.repo, branch=request.branch, commit_sha=sha, pushed=False, replayed=False
+            repo=request.repo,
+            branch=request.branch,
+            commit_sha=sha,
+            pushed=False,
+            replayed=False,
+            published_tree=await self._git(
+                "rev-parse", f"{request.branch}^{{tree}}", cwd=repo_path
+            ),
         )
 
     async def open_draft_pr(

@@ -290,7 +290,10 @@ async def commit_and_push(req: CommitPushRequest) -> CommitPushResult:
         base=req.base,
         commit_sha=req.commit,
     )
-    commit_request = await materializer.build_commit_request(workspace, message=req.message)
+    staged = await materializer.stage(workspace)
+    commit_request = await materializer.build_commit_request(
+        workspace, message=req.message, staged=staged
+    )
     mediator = _build_mediator()
     result = await mediator.commit_and_push(commit_request, sequence=req.sequence)
     return CommitPushResult(

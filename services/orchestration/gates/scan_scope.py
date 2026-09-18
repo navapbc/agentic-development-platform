@@ -77,9 +77,8 @@ async def changed_paths(
     """Repository-relative paths the change touched, or None when that cannot be established.
 
     The comparison is against the working tree rather than a commit, because the scanners read
-    the checkout at `repo_root`, and the change reaches the scan as uncommitted edits there. The
-    commit the push produced is built in a throwaway clone, so naming it here resolves no object
-    in this checkout and the range fails outright.
+    the checkout at `repo_root`, and the change reaches the scan as uncommitted edits there when
+    the gate runs ahead of publication.
 
     The left side is the merge base with `base_ref`, so a file that moved on the base branch after
     the change branched off does not carry its pre-existing findings into this change.

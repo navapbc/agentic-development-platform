@@ -88,9 +88,9 @@ async def apply_ci_repair(req: ApplyCIRepairRequest) -> ApplyCIRepairResult:
         commit_sha=req.commit,
     )
     if await _project_autofix(req, workspace.path):
-        changes = await materializer.collect_changes(workspace)
-        if changes:
-            return ApplyCIRepairResult(applied=True, changed_files=sorted(changes))
+        changed = await materializer.changed_paths(workspace)
+        if changed:
+            return ApplyCIRepairResult(applied=True, changed_files=changed)
     runtime = _build_runtime()
     outcome = await runtime.run_implementation(
         execution_id=req.execution_id,
@@ -99,10 +99,10 @@ async def apply_ci_repair(req: ApplyCIRepairRequest) -> ApplyCIRepairResult:
         workspace_source=str(Path(workspace.path).resolve()),
         task_id=req.task_id,
     )
-    changes = await materializer.collect_changes(workspace)
+    changed = await materializer.changed_paths(workspace)
     return ApplyCIRepairResult(
-        applied=bool(changes),
-        changed_files=sorted(changes),
+        applied=bool(changed),
+        changed_files=changed,
         cost=outcome.cost,
         tokens=outcome.tokens,
         cache_read_tokens=outcome.cache_read_tokens,

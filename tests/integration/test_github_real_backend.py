@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import pathlib
 import subprocess
 
 import httpx
@@ -123,83 +124,139 @@ async def test_ensure_branch_creates_then_is_a_noop(bare_remote: str) -> None:
     assert again.head_sha == created.head_sha
 
 
-async def test_commit_and_push_is_idempotent_via_the_execution_trailer(bare_remote: str) -> None:
-    host = _host(bare_remote)
-    request = CommitRequest(
-        repo=REPO,
-        branch=agent_branch_name(TASK_ID),
-        base="main",
-        message="apply change",
-        files={"src/app.py": "print('hi')\n"},
-        task_id=TASK_ID,
-        execution_id=EXECUTION_ID,
+def _capture(cwd: str, *args: str) -> str:
+    proc = subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
+    return proc.stdout.strip()
+
+
+def _workspace(tmp_path, bare_remote: str, name: str, ref: str = "main") -> str:
+    work = tmp_path / "workspaces" / name
+    work.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["git", "clone", "-q", "--branch", ref, bare_remote, str(work)],
+        check=True,
+        capture_output=True,
     )
-
-    first = await host.commit_and_push(request)
-    assert first.pushed is True
-    assert first.replayed is False
-
-    retry = await host.commit_and_push(request)
-    assert retry.replayed is True
-    assert retry.pushed is False
-    assert retry.commit_sha == first.commit_sha
+    return str(work)
 
 
-def _record_clones(monkeypatch) -> list[list[str]]:
-    from adapters.real import git_host as git_host_module
-
-    clones: list[list[str]] = []
-    original = git_host_module.RealGitHost._git
-
-    async def recording(self, *args: str, cwd: str | None = None) -> str:
-        if args and args[0] == "clone":
-            clones.append(list(args))
-        return await original(self, *args, cwd=cwd)
-
-    monkeypatch.setattr(git_host_module.RealGitHost, "_git", recording)
-    return clones
-
-
-def _commit_request(execution_id: str) -> CommitRequest:
+def _stage(workspace: str, execution_id: str = EXECUTION_ID) -> CommitRequest:
+    _git(["add", "-A"], workspace)
     return CommitRequest(
         repo=REPO,
         branch=agent_branch_name(TASK_ID),
         base="main",
         message="apply change",
-        files={"src/app.py": "print('hi')\n"},
+        workspace=workspace,
+        tree=_capture(workspace, "write-tree"),
         task_id=TASK_ID,
         execution_id=execution_id,
     )
 
 
-async def test_a_commit_clones_only_the_ref_it_needs(bare_remote: str, monkeypatch) -> None:
-    """A full clone of an established repository has overrun the activity timeout."""
-    host = _host(bare_remote)
-    clones = _record_clones(monkeypatch)
-
-    await host.commit_and_push(_commit_request(EXECUTION_ID))
-
-    assert len(clones) == 1
-    assert "--single-branch" in clones[0]
-    assert "--filter=blob:none" in clones[0]
-    assert clones[0][clones[0].index("--branch") + 1] == "main"
+def _write(workspace: str, path: str, text: str) -> None:
+    target = pathlib.Path(workspace) / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(text, encoding="utf-8")
 
 
-async def test_a_commit_onto_an_existing_branch_clones_that_branch(
-    bare_remote: str, monkeypatch
+async def test_a_commit_publishes_the_tree_the_workspace_staged(
+    bare_remote: str, tmp_path
 ) -> None:
     host = _host(bare_remote)
-    branch = agent_branch_name(TASK_ID)
-    await host.ensure_branch(REPO, branch, "main")
+    work = _workspace(tmp_path, bare_remote, "one")
+    _write(work, "src/app.py", "print('hi')\n")
+    request = _stage(work)
 
-    clones = _record_clones(monkeypatch)
-    result = await host.commit_and_push(_commit_request("exec-2"))
+    result = await host.commit_and_push(request)
 
     assert result.pushed is True
-    assert len(clones) == 1
-    assert "--single-branch" in clones[0]
-    assert "--filter=blob:none" in clones[0]
-    assert clones[0][clones[0].index("--branch") + 1] == branch
+    assert result.replayed is False
+    assert result.published_tree == request.tree
+    assert _capture(work, "ls-remote", bare_remote, request.branch).split()[0] == result.commit_sha
+
+
+async def test_a_retry_of_the_same_tree_replays_instead_of_pushing(
+    bare_remote: str, tmp_path
+) -> None:
+    host = _host(bare_remote)
+    work = _workspace(tmp_path, bare_remote, "one")
+    _write(work, "src/app.py", "print('hi')\n")
+    request = _stage(work)
+
+    first = await host.commit_and_push(request)
+    retry = await host.commit_and_push(request)
+
+    assert retry.replayed is True
+    assert retry.pushed is False
+    assert retry.commit_sha == first.commit_sha
+
+
+async def test_a_second_change_in_one_execution_publishes_a_second_commit(
+    bare_remote: str, tmp_path
+) -> None:
+    """The repair loop publishes several commits under one execution id."""
+    host = _host(bare_remote)
+    work = _workspace(tmp_path, bare_remote, "one")
+    _write(work, "src/app.py", "print('hi')\n")
+    first = await host.commit_and_push(_stage(work))
+
+    _write(work, "src/app.py", "print('repaired')\n")
+    second = await host.commit_and_push(_stage(work))
+
+    assert second.pushed is True
+    assert second.commit_sha != first.commit_sha
+    assert _capture(work, "show", f"{second.commit_sha}:src/app.py") == "print('repaired')"
+
+
+async def test_a_deletion_reaches_the_published_tree(bare_remote: str, tmp_path) -> None:
+    host = _host(bare_remote)
+    work = _workspace(tmp_path, bare_remote, "one")
+    (pathlib.Path(work) / "README.md").unlink()
+
+    result = await host.commit_and_push(_stage(work))
+
+    assert result.published_tree == _capture(work, "rev-parse", f"{result.commit_sha}^{{tree}}")
+    listing = _capture(work, "ls-tree", "--name-only", result.commit_sha)
+    assert "README.md" not in listing.split()
+
+
+async def test_bytes_that_are_not_utf8_reach_the_published_tree(
+    bare_remote: str, tmp_path
+) -> None:
+    host = _host(bare_remote)
+    work = _workspace(tmp_path, bare_remote, "one")
+    payload = b"\x89PNG\r\n\x1a\n\xff\xfe"
+    (pathlib.Path(work) / "logo.png").write_bytes(payload)
+
+    result = await host.commit_and_push(_stage(work))
+
+    blob = subprocess.run(
+        ["git", "cat-file", "blob", f"{result.commit_sha}:logo.png"],
+        cwd=work,
+        check=True,
+        capture_output=True,
+    )
+    assert blob.stdout == payload
+
+
+async def test_a_workspace_that_does_not_descend_from_the_branch_still_publishes(
+    bare_remote: str, tmp_path
+) -> None:
+    """A rerun materializes at the base while the branch survives from the previous run."""
+    host = _host(bare_remote)
+    earlier = _workspace(tmp_path, bare_remote, "earlier")
+    _write(earlier, "src/app.py", "print('first run')\n")
+    previous = await host.commit_and_push(_stage(earlier, "exec-1"))
+
+    rerun = _workspace(tmp_path, bare_remote, "rerun")
+    _write(rerun, "src/app.py", "print('second run')\n")
+    request = _stage(rerun, "exec-2")
+    result = await host.commit_and_push(request)
+
+    assert result.pushed is True
+    assert result.published_tree == request.tree
+    assert _capture(rerun, "rev-parse", f"{result.commit_sha}^") == previous.commit_sha
 
 
 async def test_open_draft_pr_creates_then_updates_the_same_pr(bare_remote: str) -> None:
@@ -236,21 +293,18 @@ async def test_mark_pr_ready_flips_draft_and_is_idempotent(bare_remote: str) -> 
     not os.getenv("GITHUB_LIVE_SMOKE"),
     reason="requires VPN and a GHES token; set GITHUB_LIVE_SMOKE to run",
 )
-async def test_live_smoke_against_an_allowlisted_demo_repo() -> None:
+async def test_live_smoke_against_an_allowlisted_demo_repo(tmp_path) -> None:
     host = RealGitHost.from_settings()
     name = agent_branch_name(TASK_ID)
     branch = await host.ensure_branch(REPO, name, "main")
     assert branch.name == name
-    request = CommitRequest(
-        repo=REPO,
-        branch=name,
-        base="main",
-        message="agent-platform live smoke",
-        files={"AGENT_SMOKE.md": "live smoke\n"},
-        task_id=TASK_ID,
-        execution_id=EXECUTION_ID,
-    )
+    work = _workspace(tmp_path, host.source_location(REPO), "smoke")
+    _write(work, "AGENT_SMOKE.md", "smoke\n")
+    request = _stage(work)
+
     commit = await host.commit_and_push(request)
+
     assert commit.commit_sha
+    assert commit.published_tree == request.tree
     pull = await host.open_draft_pr(REPO, name, "main", "Live smoke", "live smoke")
     assert pull.number
