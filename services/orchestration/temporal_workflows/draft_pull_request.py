@@ -884,10 +884,6 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             repair = await self._repair(params, impl, result, workflow_id, attempt)
             if repair is None:
                 break
-            self._repair_cost += repair.cost
-            self._repair_tokens += repair.tokens
-            self._repair_cache_read_tokens += repair.cache_read_tokens
-            self._repair_llm_calls += repair.llm_calls
             budget_reason = self._budget_breach(params, impl)
             if repair.applied:
                 repairs = attempt
@@ -1251,6 +1247,10 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             start_to_close_timeout=timedelta(seconds=params.activity_timeout_seconds),
             retry_policy=RetryPolicy(maximum_attempts=1),
         )
+        self._repair_cost += repair.cost
+        self._repair_tokens += repair.tokens
+        self._repair_cache_read_tokens += repair.cache_read_tokens
+        self._repair_llm_calls += repair.llm_calls
         await workflow.execute_activity(
             record_usage_metrics,
             UsageMetrics(
@@ -1258,9 +1258,10 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 task_id=params.task_id,
                 stage="REPAIRING",
                 workflow_id=workflow_id,
-                total_tokens=repair.tokens,
-                llm_calls=repair.llm_calls,
-                cost_usd=repair.cost,
+                total_tokens=self._repair_tokens,
+                cache_read_tokens=self._repair_cache_read_tokens,
+                llm_calls=self._repair_llm_calls,
+                cost_usd=self._repair_cost,
             ),
             start_to_close_timeout=short,
             retry_policy=retry,

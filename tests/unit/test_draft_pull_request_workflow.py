@@ -171,6 +171,7 @@ def _make_activities(
     checks_ran: bool = True,
     repairs: list[ApplyCIRepairRequest] | None = None,
     repair_actionable: bool = True,
+    repair_cache_read_tokens: int = 0,
     alerts: list[AlertHumanInterventionRequest] | None = None,
     usage: list[UsageMetrics] | None = None,
     review_requests: list[GateContext] | None = None,
@@ -378,7 +379,12 @@ def _make_activities(
         if repairs is not None:
             repairs.append(req)
         return ApplyCIRepairResult(
-            applied=True, changed_files=["feature.py"], cost=0.1, tokens=5, llm_calls=1
+            applied=True,
+            changed_files=["feature.py"],
+            cost=0.1,
+            tokens=5,
+            cache_read_tokens=repair_cache_read_tokens,
+            llm_calls=1,
         )
 
     @activity.defn(name="alert_human_intervention")
@@ -1417,10 +1423,60 @@ async def test_ci_repair_stops_on_cumulative_budget():
     assert len(repairs) == 3
     repair_usage = [record for record in usage if record.stage == "REPAIRING"]
     assert len(repair_usage) == 3
-    assert all(record.cost_usd == 0.1 for record in repair_usage)
+    assert [round(record.cost_usd, 2) for record in repair_usage] == [0.1, 0.2, 0.3]
     assert len(alerts) == 1
     assert alerts[0].reason == "cost_budget_exceeded"
     assert alerts[0].stage == "repair"
+
+
+async def test_repair_usage_records_carry_the_running_total():
+    """Every REPAIRING write lands on one (execution_id, stage) row that the store overwrites.
+
+    Per-attempt values therefore leave only the final attempt on record, and the stored row
+    disagrees with the budget accounting that parks the run. The running total is written so the
+    surviving row equals what `_budget_breach` measured.
+    """
+    commits: list[CommitPushRequest] = []
+    pr_opens: list[OpenPrRequest] = []
+    linkbacks: list[LinkbackRequest] = []
+    ci_triggers: list = []
+    repairs: list[ApplyCIRepairRequest] = []
+    alerts: list[AlertHumanInterventionRequest] = []
+    usage: list[UsageMetrics] = []
+    activities = _make_activities(
+        None,
+        1,
+        commits,
+        pr_opens,
+        linkbacks,
+        ci_triggers=ci_triggers,
+        ci_result=FAILURE,
+        repairs=repairs,
+        alerts=alerts,
+        usage=usage,
+        repair_cache_read_tokens=3,
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(max_repair_attempts=10, max_cost_usd=0.35),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+            state = await _await_human_park(handle)
+            assert state["stage"] == "repair"
+            await handle.signal("submit_repair_decision", args=[False, "release-manager"])
+            await handle.result()
+
+    repair_usage = [record for record in usage if record.stage == "REPAIRING"]
+    assert len(repair_usage) == 3
+    assert [record.llm_calls for record in repair_usage] == [1, 2, 3]
+    assert [record.total_tokens for record in repair_usage] == [5, 10, 15]
+    assert [record.cache_read_tokens for record in repair_usage] == [3, 6, 9]
+    assert [round(record.cost_usd, 2) for record in repair_usage] == [0.1, 0.2, 0.3]
 
 
 async def test_ci_repair_retry_decision_reruns_and_passes():
