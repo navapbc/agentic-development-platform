@@ -1,0 +1,1 @@
+{"author":"Joe Oakhart","author_email":"joeoakhart@navapbc.com","data":{"body":"{\"exception_type\": \"DDGSException\", \"message\": \"No results found.\", \"model\": \"bedrock:us.anthropic.claude-opus-4-5-20251101-v1:0\"}"},"env_id":"8c3ef925-fbdc-4d88-8d59-f391cf59568c","event_type":"COMMENT","timestamp":1789943560940059001,"uuid":"a03c4e77-fe61-48a0-a908-aff1eed34a1b"}
