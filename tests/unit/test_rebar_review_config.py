@@ -12,10 +12,45 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REBAR_REVIEW = REPO_ROOT / "config" / "local" / "rebar-review.toml"
 LITELLM = REPO_ROOT / "config" / "local" / "litellm-config.yaml"
+PYPROJECT = REPO_ROOT / "pyproject.toml"
 
 
 def _model_classes() -> dict:
     return tomllib.loads(REBAR_REVIEW.read_text(encoding="utf-8"))["llm"]["model_classes"]
+
+
+def _tracked_rebar_table() -> dict:
+    return tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))["tool"]["rebar"]
+
+
+def test_the_tracked_project_config_carries_the_gate_tables():
+    """rebar discovers pyproject; it never discovers config/local/rebar-review.toml."""
+    table = _tracked_rebar_table()
+
+    assert table["llm"]["model_classes"] == _model_classes()
+    assert table["verify"] == {
+        "require_plan_review_for_close": True,
+        "require_plan_review_for_claim": True,
+        "require_completion_verification_for_close": True,
+    }
+
+
+def test_rebar_discovers_the_tracked_config_without_a_local_rebar_toml(tmp_path):
+    """A gate pins its read-root to an attested snapshot, which holds no untracked files.
+
+    A gitignored rebar.toml is absent there, and it also shadows pyproject.toml in the
+    discovery walk while it exists, so the tables have to resolve from tracked content alone.
+    """
+    from rebar import config as rebar_config
+
+    (tmp_path / "pyproject.toml").write_text(PYPROJECT.read_text(encoding="utf-8"))
+    (tmp_path / ".git").mkdir()
+
+    llm = rebar_config.read_reserved_section("llm", str(tmp_path))
+    verify = rebar_config.read_reserved_section("verify", str(tmp_path))
+
+    assert llm["model_classes"] == _model_classes()
+    assert verify["require_completion_verification_for_close"] is True
 
 
 def _legs(entry: dict) -> list[dict]:
