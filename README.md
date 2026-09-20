@@ -213,11 +213,13 @@ Detection is off by default, so a deployment that does not set the flag behaves 
 
 ### Rebar review gate models
 
-`config/local/rebar-review.toml` maps rebar's three model classes onto the same Bedrock Claude tiers as `config/local/litellm-config.yaml`. No class declares a fallback leg, so a tier that cannot reach Claude fails once rebar exhausts its retry budget rather than answering from a different model family. The file widens that budget past rebar's default because there is no leg to fall to. `compose.yaml` names it for the review worker through `REBAR_LLM_CONFIG_FILE`, and `inv rebar-review-plan` and `inv rebar-review-code` name it for host runs.
+`pyproject.toml` carries the `[tool.rebar.llm]` table that maps rebar's three model classes onto the same Bedrock Claude tiers as `config/local/litellm-config.yaml`. No class declares a fallback leg, so a tier that cannot reach Claude fails once rebar exhausts its retry budget rather than answering from a different model family. The table widens that budget past rebar's default because there is no leg to fall to. `[tool.rebar.verify]` sits alongside it and carries the close and claim gate flags.
 
-Naming the file is required rather than a convenience. A gate reads its config from an attested snapshot materialised with `git checkout-index`, which holds only tracked files, so an untracked project `rebar.toml` is invisible to it. rebar then falls back to its built-in model-class defaults, which point at direct Anthropic and cannot authenticate against this deployment. That failure surfaces as an authentication error for a provider the project never configured, and the gate returns `INDETERMINATE` rather than a verdict.
+Both tables live in `pyproject.toml` because that is a tracked file rebar discovers on its own. A gate reads its config from an attested snapshot materialised with `git checkout-index`, which holds only tracked files, so an untracked project `rebar.toml` is invisible to it and rebar falls back to its built-in model-class defaults. Those point at direct Anthropic and cannot authenticate against this deployment, which surfaces as an authentication error for a provider the project never configured and leaves the gate returning `INDETERMINATE` rather than a verdict. A local `rebar.toml` also takes precedence over `pyproject.toml` in rebar's discovery walk, so one present in a working tree shadows these tables entirely. Do not create one.
 
-Running `rebar review-plan` or `rebar review-code` directly, without the `inv` wrapper, hits exactly that. Use the tasks.
+`config/local/rebar-review.toml` holds the same model classes for the two callers that name a config file by path rather than relying on discovery. `compose.yaml` names it for the review worker through `REBAR_LLM_CONFIG_FILE`, and `inv rebar-review-plan` and `inv rebar-review-code` name it for host runs. It layers over the discovered table with identical values, so the merge changes nothing. `tests/unit/test_rebar_review_config.py` asserts the two declarations stay equal.
+
+Naming the file is now a convenience rather than a requirement, so `rebar review-plan`, `rebar review-code` and `rebar transition ... closed` all resolve the Bedrock classes when run directly.
 
 ## Bedrock connectivity
 
