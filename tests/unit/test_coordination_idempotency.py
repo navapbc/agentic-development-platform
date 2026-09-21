@@ -24,6 +24,7 @@ class _SideEffectRow:
     target: str
     status: str
     result: Any = None
+    updated_at: int = 0
 
 
 class _FakeResult:
@@ -96,6 +97,9 @@ class _FakeConnection:
             and row.execution_id == params["execution_id_1"]
             and row.operation == params["operation_1"]
         ]
+        if "ORDER BY" in sql:
+            assert "updated_at DESC" in sql
+            rows.sort(key=lambda row: row.updated_at, reverse=True)
         return [_row_result(row) for row in rows]
 
 
@@ -268,6 +272,42 @@ async def test_pending_legacy_intake_start_row_for_another_repo_is_not_reentrant
 
     assert outcome.replayed is False
     assert outcome.reentrant is False
+
+
+async def test_the_most_recently_updated_legacy_intake_start_row_wins():
+    stale = SideEffectRef("ADEV-1", "", "intake_start", "digest-1:repo-a")
+    fresh = SideEffectRef("ADEV-1", "", "intake_start", "digest-2:repo-a")
+    current = SideEffectRef("ADEV-1", "", "intake_start", "ADEV-1:repo-a")
+    engine = _FakeEngine(
+        [
+            _SideEffectRow(
+                side_effect_key=side_effect_key(stale),
+                task_id=stale.task_id,
+                execution_id=stale.execution_id,
+                operation=stale.operation,
+                target=stale.target,
+                status="pending",
+                updated_at=1,
+            ),
+            _SideEffectRow(
+                side_effect_key=side_effect_key(fresh),
+                task_id=fresh.task_id,
+                execution_id=fresh.execution_id,
+                operation=fresh.operation,
+                target=fresh.target,
+                status="completed",
+                result={"workflow_id": "wf-fresh"},
+                updated_at=2,
+            ),
+        ]
+    )
+    ledger = PostgresSideEffectLedger(engine)
+
+    outcome = await ledger.reserve(current)
+
+    assert outcome.replayed is True
+    assert outcome.key == side_effect_key(fresh)
+    assert outcome.result == {"workflow_id": "wf-fresh"}
 
 
 async def test_legacy_completed_intake_start_replays_with_the_legacy_key():
