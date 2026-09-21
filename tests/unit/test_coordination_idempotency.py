@@ -356,3 +356,27 @@ async def test_reserving_after_completion_replays_rather_than_reentering():
     assert outcome.replayed is True
     assert outcome.reentrant is False
     assert outcome.result == {"sha": "abc"}
+
+
+async def test_pending_legacy_intake_start_makes_the_current_key_reentrant():
+    ledger = InMemorySideEffectLedger()
+    legacy = SideEffectRef("ADEV-1", "", "intake_start", "digest-1:repo-a")
+    current = SideEffectRef("ADEV-1", "", "intake_start", "ADEV-1:repo-a")
+
+    await ledger.reserve(legacy)
+    outcome = await ledger.reserve(current)
+
+    assert outcome.replayed is False
+    assert outcome.reentrant is True
+
+
+async def test_pending_intake_start_for_a_different_repo_is_not_reentrant():
+    ledger = InMemorySideEffectLedger()
+    legacy = SideEffectRef("ADEV-1", "", "intake_start", "digest-1:repo-b")
+    current = SideEffectRef("ADEV-1", "", "intake_start", "ADEV-1:repo-a")
+
+    await ledger.reserve(legacy)
+    outcome = await ledger.reserve(current)
+
+    assert outcome.replayed is False
+    assert outcome.reentrant is False
