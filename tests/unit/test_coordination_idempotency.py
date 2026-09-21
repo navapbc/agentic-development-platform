@@ -223,6 +223,53 @@ async def test_legacy_pending_intake_start_is_completed_under_the_current_key():
     assert engine.rows[side_effect_key(current)].result == {"workflow_id": "wf-current"}
 
 
+async def test_pending_legacy_intake_start_row_makes_the_current_key_reentrant():
+    legacy = SideEffectRef("ADEV-1", "", "intake_start", "digest-1:repo-a")
+    current = SideEffectRef("ADEV-1", "", "intake_start", "ADEV-1:repo-a")
+    engine = _FakeEngine(
+        [
+            _SideEffectRow(
+                side_effect_key=side_effect_key(legacy),
+                task_id=legacy.task_id,
+                execution_id=legacy.execution_id,
+                operation=legacy.operation,
+                target=legacy.target,
+                status="pending",
+            )
+        ]
+    )
+    ledger = PostgresSideEffectLedger(engine)
+
+    outcome = await ledger.reserve(current)
+
+    assert outcome.replayed is False
+    assert outcome.reentrant is True
+    assert outcome.key == side_effect_key(current)
+
+
+async def test_pending_legacy_intake_start_row_for_another_repo_is_not_reentrant():
+    legacy = SideEffectRef("ADEV-1", "", "intake_start", "digest-1:repo-b")
+    current = SideEffectRef("ADEV-1", "", "intake_start", "ADEV-1:repo-a")
+    engine = _FakeEngine(
+        [
+            _SideEffectRow(
+                side_effect_key=side_effect_key(legacy),
+                task_id=legacy.task_id,
+                execution_id=legacy.execution_id,
+                operation=legacy.operation,
+                target=legacy.target,
+                status="pending",
+            )
+        ]
+    )
+    ledger = PostgresSideEffectLedger(engine)
+
+    outcome = await ledger.reserve(current)
+
+    assert outcome.replayed is False
+    assert outcome.reentrant is False
+
+
 async def test_legacy_completed_intake_start_replays_with_the_legacy_key():
     legacy = SideEffectRef("ADEV-1", "", "intake_start", "digest-1:repo-a")
     current = SideEffectRef("ADEV-1", "", "intake_start", "ADEV-1:repo-a")
