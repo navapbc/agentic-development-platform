@@ -182,6 +182,7 @@ class PostgresExecutionSeeder:
                 executions.c.task_id,
                 executions.c.workflow_id,
                 executions.c.updated_at,
+                executions.c.state,
             )
             .where(executions.c.state.not_in(("COMPLETED", "FAILED", "CANCELLED")))
         )
@@ -193,6 +194,7 @@ class PostgresExecutionSeeder:
                 task_id=row.task_id,
                 workflow_id=row.workflow_id or "",
                 updated_at=row.updated_at,
+                state=row.state or "",
             )
             for row in rows
         ]

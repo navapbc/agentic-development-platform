@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from services.orchestration.execution_reconciler import (
     ActiveExecution,
+    orphan_reason,
     reconcile_orphaned_executions,
     workflow_id_for,
 )
@@ -45,12 +46,14 @@ def _exec(
     task_id: str = "T-1",
     workflow_id: str = "",
     age_seconds: int = 600,
+    state: str = "IMPLEMENTING",
 ):
     return ActiveExecution(
         execution_id=execution_id,
         task_id=task_id,
         workflow_id=workflow_id,
         updated_at=_NOW - timedelta(seconds=age_seconds),
+        state=state,
     )
 
 
@@ -74,7 +77,9 @@ async def test_orphan_with_no_live_workflow_is_reclaimed():
     )
 
     assert report == type(report)(scanned=1, orphaned=1)
-    assert store.marked == [("intake-dead", "workflow draft-pr-dead not live")]
+    assert store.marked == [
+        ("intake-dead", "workflow draft-pr-dead not live (state=IMPLEMENTING)")
+    ]
 
 
 @pytest.mark.asyncio
@@ -127,4 +132,41 @@ async def test_lost_race_to_terminal_is_not_counted():
     )
 
     assert report.scanned == 1
+    assert report.orphaned == 0
+
+
+def test_orphan_reason_carries_state():
+    execution = _exec("intake-abc", state="PR_CREATED")
+    assert orphan_reason(execution, "wf-1") == "workflow wf-1 not live (state=PR_CREATED)"
+
+
+def test_orphan_reason_marks_unknown_state():
+    execution = _exec("intake-abc", state="")
+    assert orphan_reason(execution, "wf-1") == "workflow wf-1 not live (state=unknown)"
+
+
+@pytest.mark.asyncio
+async def test_reconciler_reclaims_dead_working_state():
+    store = FakeStore([_exec("intake-dead", workflow_id="wf-dead", state="IMPLEMENTING")])
+    liveness = FakeLiveness(set())
+
+    report = await reconcile_orphaned_executions(
+        store=store, liveness=liveness, now=_NOW, grace=_GRACE
+    )
+
+    assert store.marked == [("intake-dead", "workflow wf-dead not live (state=IMPLEMENTING)")]
+    assert report.orphaned == 1
+
+
+@pytest.mark.asyncio
+async def test_reconciler_still_honours_grace_for_any_state():
+    store = FakeStore([_exec("intake-fresh", state="PR_CREATED", age_seconds=10)])
+    liveness = FakeLiveness(set())
+
+    report = await reconcile_orphaned_executions(
+        store=store, liveness=liveness, now=_NOW, grace=_GRACE
+    )
+
+    assert store.marked == []
+    assert liveness.checked == []
     assert report.orphaned == 0
