@@ -885,12 +885,13 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             if repair is None:
                 break
             budget_reason = self._budget_breach(params, impl)
-            if repair.applied:
-                repairs = attempt
-                flaky_reran = False
-            if budget_reason or not repair.applied:
+            if not repair.applied:
                 break
+            repairs = attempt
+            flaky_reran = False
             result = await self._run_ci(params, impl, result, workflow_id, attempt=repairs)
+            if budget_reason:
+                break
 
         self._max_attempt_used = max(self._max_attempt_used, repairs)
         if budget_reason:
@@ -906,6 +907,8 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                     reason=budget_reason,
                 )
             )
+            if result.status == CI_PASSED:
+                return replace(result, repair_attempts=repairs)
             return replace(result, repair_attempts=repairs, terminal_reason=budget_reason)
         if result.status == CI_FAILED:
             await self._audit(
