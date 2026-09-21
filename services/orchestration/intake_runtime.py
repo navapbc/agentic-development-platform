@@ -52,6 +52,7 @@ class TemporalStarter:
             DraftPullRequestInput,
             DraftPullRequestWorkflow,
         )
+        from services.orchestration.usage_rollup import BudgetCaps
 
         base = start.base or self._settings.github_default_base_branch
         source_location = build_git_host(self._settings).source_location(start.repo)
@@ -60,6 +61,7 @@ class TemporalStarter:
             raise UnresolvableBaseBranch(base, start.repo)
         run_test_triage = triage_engine(load_gate_engine_configs(self._settings)) is not None
         await_pr_close = resolve_source_control_backend_name(self._settings) == LOCAL
+        caps = BudgetCaps.from_settings(self._settings)
         workflow_id = f"draft-pr-{start.issue_key}-{start.execution_id}"
         await self._client.start_workflow(
             DraftPullRequestWorkflow.run,
@@ -94,6 +96,9 @@ class TemporalStarter:
                 run_test_triage=run_test_triage,
                 await_pr_close=await_pr_close,
                 file_impact=list(start.file_impact),
+                max_cost_usd=caps.max_cost_usd,
+                max_llm_calls=caps.max_llm_calls,
+                max_tokens=caps.max_tokens,
             ),
             id=workflow_id,
             task_queue=self._settings.temporal_task_queue,

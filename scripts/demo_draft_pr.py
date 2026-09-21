@@ -267,8 +267,10 @@ async def _run_via_temporal(
         DraftPullRequestInput,
         DraftPullRequestWorkflow,
     )
+    from services.orchestration.usage_rollup import BudgetCaps
     from temporalio.client import Client
 
+    caps = BudgetCaps.from_settings(settings)
     stored_issue = normalize_issue(
         raw_issue, acceptance_field=acceptance_field(settings)
     ).to_dict()
@@ -314,6 +316,9 @@ async def _run_via_temporal(
             await_pr_close=await_pr_close,
             jira_project=project_of(task_id),
             plan_approved=full_pipeline,
+            max_cost_usd=caps.max_cost_usd,
+            max_llm_calls=caps.max_llm_calls,
+            max_tokens=caps.max_tokens,
         ),
         id=workflow_id,
         task_queue=settings.temporal_task_queue,
