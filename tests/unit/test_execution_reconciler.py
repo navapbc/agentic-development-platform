@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from services.orchestration.execution_reconciler import (
     ActiveExecution,
+    orphan_reason,
     reconcile_orphaned_executions,
     workflow_id_for,
 )
@@ -76,7 +77,9 @@ async def test_orphan_with_no_live_workflow_is_reclaimed():
     )
 
     assert report == type(report)(scanned=1, orphaned=1)
-    assert store.marked == [("intake-dead", "workflow draft-pr-dead not live")]
+    assert store.marked == [
+        ("intake-dead", "workflow draft-pr-dead not live (state=IMPLEMENTING)")
+    ]
 
 
 @pytest.mark.asyncio
@@ -132,43 +135,14 @@ async def test_lost_race_to_terminal_is_not_counted():
     assert report.orphaned == 0
 
 
-def test_active_execution_carries_state():
-    execution = ActiveExecution(
-        execution_id="intake-abc",
-        task_id="T-1",
-        workflow_id="wf-1",
-        updated_at=_NOW,
-        state="PR_CREATED",
-    )
-    assert execution.state == "PR_CREATED"
+def test_orphan_reason_carries_state():
+    execution = _exec("intake-abc", state="PR_CREATED")
+    assert orphan_reason(execution, "wf-1") == "workflow wf-1 not live (state=PR_CREATED)"
 
 
-@pytest.mark.asyncio
-async def test_reconciler_skips_pr_created():
-    store = FakeStore([_exec("intake-pr", state="PR_CREATED")])
-    liveness = FakeLiveness(set())
-
-    report = await reconcile_orphaned_executions(
-        store=store, liveness=liveness, now=_NOW, grace=_GRACE
-    )
-
-    assert store.marked == []
-    assert liveness.checked == []
-    assert report.scanned == 1
-    assert report.orphaned == 0
-
-
-@pytest.mark.asyncio
-async def test_reconciler_skips_awaiting_pr_close():
-    store = FakeStore([_exec("intake-await", state="AWAITING_PR_CLOSE")])
-    liveness = FakeLiveness(set())
-
-    report = await reconcile_orphaned_executions(
-        store=store, liveness=liveness, now=_NOW, grace=_GRACE
-    )
-
-    assert store.marked == []
-    assert report.orphaned == 0
+def test_orphan_reason_marks_unknown_state():
+    execution = _exec("intake-abc", state="")
+    assert orphan_reason(execution, "wf-1") == "workflow wf-1 not live (state=unknown)"
 
 
 @pytest.mark.asyncio
@@ -180,5 +154,19 @@ async def test_reconciler_reclaims_dead_working_state():
         store=store, liveness=liveness, now=_NOW, grace=_GRACE
     )
 
-    assert [execution_id for execution_id, _ in store.marked] == ["intake-dead"]
+    assert store.marked == [("intake-dead", "workflow wf-dead not live (state=IMPLEMENTING)")]
     assert report.orphaned == 1
+
+
+@pytest.mark.asyncio
+async def test_reconciler_still_honours_grace_for_any_state():
+    store = FakeStore([_exec("intake-fresh", state="PR_CREATED", age_seconds=10)])
+    liveness = FakeLiveness(set())
+
+    report = await reconcile_orphaned_executions(
+        store=store, liveness=liveness, now=_NOW, grace=_GRACE
+    )
+
+    assert store.marked == []
+    assert liveness.checked == []
+    assert report.orphaned == 0
