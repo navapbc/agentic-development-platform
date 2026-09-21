@@ -46,6 +46,7 @@ async def test_demo_run_carries_the_configured_caps(monkeypatch: pytest.MonkeyPa
         return None
 
     monkeypatch.setattr(demo_draft_pr, "_track_stages", _no_tracking)
+    monkeypatch.setattr(demo_draft_pr, "acceptance_field", lambda settings: "")
     settings = hermetic_settings(
         implementation_max_llm_calls=640,
         implementation_max_tokens=7_500_000,
