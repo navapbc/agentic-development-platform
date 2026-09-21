@@ -129,7 +129,7 @@ repositories:
 Every execution opens its pull request against `github_default_base_branch`, which defaults to `main`. A ticket overrides that for itself with a `base:<branch>` label, so a change that only makes sense on top of an unmerged pull request can target that pull request's branch instead. Rebar tags and Jira labels both feed this, so the convention is the same on either backend.
 
 ```
-base:joeoakhart/PFMLPB-33758
+base:alice/PLAT-482
 ```
 
 The setting applies to every ticket that carries no `base:` label, so existing tickets are unaffected. Repeating one value is a duplicate and resolves to it.

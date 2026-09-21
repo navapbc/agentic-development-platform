@@ -61,7 +61,7 @@ def test_branch_containing_a_colon_is_preserved() -> None:
 
 
 def test_slashed_branch_is_preserved() -> None:
-    assert declared_base(["base:joeoakhart/PFMLPB-33758"]).branch == "joeoakhart/PFMLPB-33758"
+    assert declared_base(["base:alice/PLAT-482"]).branch == "alice/PLAT-482"
 
 
 def test_surrounding_whitespace_is_trimmed() -> None:

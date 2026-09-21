@@ -7,7 +7,7 @@
     "oracles": {
       "structure": "phpactor@2026.07.22.0"
     },
-    "path": "/work/services/repository_intelligence/eval/gold/agentic-demo-php@c9b6707.jsonl",
+    "path": "services/repository_intelligence/eval/gold/agentic-demo-php@c9b6707.jsonl",
     "records": 7
   },
   "harness_version": "harness/1",
@@ -151,7 +151,7 @@
   "repo": "agentic-demo-php",
   "runs_per_provider": 3,
   "toolchain": {
-    "cbm_binary": "/home/appuser/Documents/Projects/Nava/codebase-memory-mcp/build/c/codebase-memory-mcp",
+    "cbm_binary": "vendor/bin/codebase-memory-mcp",
     "cbm_binary_bytes": null,
     "platform": "Linux-6.12.54-linuxkit-aarch64-with-glibc2.36",
     "python": "3.11.2"
