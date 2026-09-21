@@ -6,6 +6,7 @@ import asyncio
 import uuid
 
 from services.orchestration.suspension import SuspendReason
+from services.orchestration.temporal_activities.persistence import ExecutionState
 from services.orchestration.temporal_workflows.draft_pull_request import (
     CANCELLED,
     COMPLETED,
@@ -14,6 +15,7 @@ from services.orchestration.temporal_workflows.draft_pull_request import (
     DraftPullRequestInput,
     DraftPullRequestWorkflow,
 )
+from temporalio import activity
 from temporalio.testing import WorkflowEnvironment
 from tests.unit.test_draft_pull_request_workflow import (
     _await_approval_park,
@@ -83,6 +85,43 @@ async def test_pr_close_wait_completes_when_merged():
     assert result.pr_merged is True
     assert result.pr_close_status == COMPLETED
     assert result.promoted is True
+
+
+async def test_await_pr_close_path_persists_awaiting_pr_close():
+    states: list[str] = []
+
+    @activity.defn(name="persist_execution_state")
+    async def fake_persist(payload: ExecutionState) -> str:
+        states.append(payload.state)
+        return payload.execution_id
+
+    activities = _make_activities(None, 1, [], [], [], ci_result=SUCCESS)
+    activities = [
+        activity_fn
+        for activity_fn in activities
+        if activity_fn.__temporal_activity_definition.name != "persist_execution_state"
+    ]
+    activities.insert(0, fake_persist)
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _pr_close_input(),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+            await _await_approval_park(handle)
+            await handle.signal("submit_pr_approval", args=[True, "release-manager"])
+            state = await _await_pr_close_park(handle)
+            await handle.signal("submit_pr_closed", True)
+            result = await handle.result()
+
+    assert state["reason"] == SuspendReason.AWAITING_PR_CLOSE.value
+    assert result.pr_close_status == COMPLETED
+    assert "AWAITING_PR_CLOSE" in states
+    assert states[-1] == COMPLETED
 
 
 async def test_pr_close_wait_cancels_when_closed_unmerged():

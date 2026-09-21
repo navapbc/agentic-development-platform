@@ -638,6 +638,59 @@ async def test_orchestrator_opens_draft_pr_through_the_full_chain():
     assert len(linkbacks) == 1
 
 
+async def test_no_wait_promotion_persists_completed_terminal_state():
+    states: list[str] = []
+
+    @activity.defn(name="persist_execution_state")
+    async def fake_persist(payload: ExecutionState) -> str:
+        states.append(payload.state)
+        return payload.execution_id
+
+    activities = [
+        activity_fn
+        for activity_fn in _make_activities(None, 1, [], [], [])
+        if activity_fn.__temporal_activity_definition.name != "persist_execution_state"
+    ]
+    activities.insert(0, fake_persist)
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with Worker(
+            env.client,
+            task_queue=task_queue,
+            workflows=[
+                DraftPullRequestWorkflow,
+                ImplementationWorkflow,
+                BranchSyncWorkflow,
+                PullRequestWorkflow,
+                PlanReviewWorkflow,
+            ],
+            workflow_runner=SandboxedWorkflowRunner(
+                restrictions=SandboxRestrictions.default.with_passthrough_modules("beartype")
+            ),
+            activities=activities,
+        ):
+            result = await env.client.execute_workflow(
+                DraftPullRequestWorkflow.run,
+                DraftPullRequestInput(
+                    task_id="T-1",
+                    execution_id="exec-1",
+                    repo="agentic-demo-service",
+                    base="main",
+                    base_sha="a" * 40,
+                    task="Implement the change",
+                    issue_key="T-1",
+                    file_impact=["feature.py"],
+                    stored_issue={"summary": "Implement the change"},
+                ),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+
+    assert result.status == PR_PROMOTED
+    assert states[-2:] == ["PR_CREATED", "COMPLETED"]
+
+
 async def test_reclaimed_execution_uses_higher_gate_sequences():
     result, commits, pr_opens, _ = await _run(claim_version=2)
 
