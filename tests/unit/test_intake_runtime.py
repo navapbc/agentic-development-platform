@@ -8,6 +8,7 @@ from services.orchestration import intake_runtime
 from services.orchestration.intake_base import UnresolvableBaseBranch
 from services.orchestration.intake_reconciler import IntakeStart
 from services.orchestration.intake_runtime import TemporalStarter
+from services.orchestration.usage_rollup import BudgetCaps
 from tests.support import hermetic_settings
 
 
@@ -336,3 +337,75 @@ async def test_start_leaves_file_impact_empty_when_undeclared(
 
     (_, arg, _) = client.started[0]
     assert arg.file_impact == []
+
+
+async def _started_input(
+    monkeypatch: pytest.MonkeyPatch, settings: Any
+) -> Any:
+    monkeypatch.setattr(intake_runtime, "remote_head", lambda remote, branch: "abc123")
+    monkeypatch.setattr(
+        "services.integration.github.factory.build_git_host", lambda settings: _Host()
+    )
+    client = _Client()
+    starter = TemporalStarter(client, settings, _Gh())
+    await starter.start(
+        IntakeStart(
+            task_id="ADEV-1",
+            execution_id="exec-1",
+            repo="agentic-demo-service",
+            issue_key="ADEV-1",
+            summary="Add a widget",
+            jira_project="ADEV",
+            stored_issue={},
+        )
+    )
+    (_, arg, _) = client.started[0]
+    return arg
+
+
+@pytest.mark.asyncio
+async def test_intake_carries_the_configured_llm_call_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    arg = await _started_input(
+        monkeypatch, hermetic_settings(implementation_max_llm_calls=640)
+    )
+
+    assert arg.max_llm_calls == 640
+
+
+@pytest.mark.asyncio
+async def test_intake_carries_the_configured_token_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    arg = await _started_input(
+        monkeypatch, hermetic_settings(implementation_max_tokens=7_500_000)
+    )
+
+    assert arg.max_tokens == 7_500_000
+
+
+@pytest.mark.asyncio
+async def test_intake_carries_the_configured_cost_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    arg = await _started_input(
+        monkeypatch, hermetic_settings(implementation_max_cost_usd=42.5)
+    )
+
+    assert arg.max_cost_usd == 42.5
+
+
+@pytest.mark.asyncio
+async def test_intake_falls_back_to_the_default_caps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    caps = BudgetCaps()
+
+    arg = await _started_input(monkeypatch, hermetic_settings())
+
+    assert (arg.max_llm_calls, arg.max_tokens, arg.max_cost_usd) == (
+        caps.max_llm_calls,
+        caps.max_tokens,
+        caps.max_cost_usd,
+    )
