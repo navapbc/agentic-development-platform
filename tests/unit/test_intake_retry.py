@@ -276,7 +276,6 @@ async def test_clearing_intake_dedup_without_a_repo_clears_every_intake_row():
         [
             _intake_row("k-a", "ADEV-1", "repo-a"),
             _intake_row("k-b", "ADEV-1", "repo-b"),
-            _intake_row("k-other", "ADEV-2", "repo-a"),
         ]
     )
     store = PostgresIntakeRetryStore(engine)
@@ -284,6 +283,21 @@ async def test_clearing_intake_dedup_without_a_repo_clears_every_intake_row():
     cleared = await store.clear_intake_dedup("ADEV-1", None)
 
     assert cleared == 2
+    assert set(engine.rows) == set()
+
+
+async def test_clearing_intake_dedup_without_a_repo_spares_other_tickets():
+    engine = _FakeLedgerEngine(
+        [
+            _intake_row("k-a", "ADEV-1", "repo-a"),
+            _intake_row("k-other", "ADEV-2", "repo-a"),
+        ]
+    )
+    store = PostgresIntakeRetryStore(engine)
+
+    cleared = await store.clear_intake_dedup("ADEV-1", None)
+
+    assert cleared == 1
     assert set(engine.rows) == {"k-other"}
 
 
