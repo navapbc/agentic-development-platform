@@ -10,7 +10,30 @@ from invoke import Collection, Exit, task
 COMPOSE = "docker compose"
 
 
+def _env_file_value(name: str, path: str = ".env") -> str:
+    if not os.path.exists(path):
+        return ""
+    with open(path, encoding="utf-8") as handle:
+        for line in handle:
+            stripped = line.strip()
+            if stripped.startswith("#") or "=" not in stripped:
+                continue
+            key, _, value = stripped.partition("=")
+            if key.strip() == name:
+                return value.strip().strip("\"'")
+    return ""
+
+
 def _compose_files() -> str:
+    """Build the -f argument list, deferring to COMPOSE_FILE when the operator sets it.
+
+    Explicit -f flags override COMPOSE_FILE, so emitting them unconditionally would make
+    every task target a different projection of the stack than the one Compose itself
+    resolves. Compose reads COMPOSE_FILE from the environment and from the project .env,
+    so both are checked here.
+    """
+    if os.environ.get("COMPOSE_FILE") or _env_file_value("COMPOSE_FILE"):
+        return ""
     files = ["-f", "compose.yaml"]
     if os.path.exists("compose.override.yaml"):
         files += ["-f", "compose.override.yaml"]
