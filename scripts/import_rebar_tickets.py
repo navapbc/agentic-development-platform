@@ -62,11 +62,19 @@ _PRIORITY_MAP = {
 _DEFAULT_PRIORITY = 2
 
 
+@dataclass(frozen=True)
+class FailedTransition:
+    ticket: str
+    target: str
+    error: str
+
+
 @dataclass
 class ImportReport:
     created: list[str] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
     transitioned: int = 0
+    failed_transitions: list[FailedTransition] = field(default_factory=list)
 
 
 def _git(root: Path, *args: str) -> None:
@@ -235,8 +243,12 @@ def import_xlsx(
                     repo_root=str(repo_root),
                 )
                 report.transitioned += 1
-            except rebar.RebarError:
-                pass
+            except rebar.RebarError as exc:
+                report.failed_transitions.append(
+                    FailedTransition(
+                        ticket=issue_key or ticket_id, target=target, error=str(exc)
+                    )
+                )
 
     return report
 
@@ -296,6 +308,17 @@ def main(argv: list[str] | None = None) -> int:
         f"[import-rebar-tickets] imported {len(report.created)}, "
         f"skipped {len(report.skipped)}, transitioned {report.transitioned}"
     )
+    for failure in report.failed_transitions:
+        print(
+            f"[import-rebar-tickets] transition to {failure.target} failed for "
+            f"{failure.ticket} ({failure.error})"
+        )
+    if report.failed_transitions:
+        print(
+            f"[import-rebar-tickets] {len(report.failed_transitions)} ticket(s) "
+            "kept the wrong status, listed above"
+        )
+        return 1
     return 0
 
 
