@@ -45,12 +45,14 @@ def _exec(
     task_id: str = "T-1",
     workflow_id: str = "",
     age_seconds: int = 600,
+    state: str = "IMPLEMENTING",
 ):
     return ActiveExecution(
         execution_id=execution_id,
         task_id=task_id,
         workflow_id=workflow_id,
         updated_at=_NOW - timedelta(seconds=age_seconds),
+        state=state,
     )
 
 
@@ -128,3 +130,55 @@ async def test_lost_race_to_terminal_is_not_counted():
 
     assert report.scanned == 1
     assert report.orphaned == 0
+
+
+def test_active_execution_carries_state():
+    execution = ActiveExecution(
+        execution_id="intake-abc",
+        task_id="T-1",
+        workflow_id="wf-1",
+        updated_at=_NOW,
+        state="PR_CREATED",
+    )
+    assert execution.state == "PR_CREATED"
+
+
+@pytest.mark.asyncio
+async def test_reconciler_skips_pr_created():
+    store = FakeStore([_exec("intake-pr", state="PR_CREATED")])
+    liveness = FakeLiveness(set())
+
+    report = await reconcile_orphaned_executions(
+        store=store, liveness=liveness, now=_NOW, grace=_GRACE
+    )
+
+    assert store.marked == []
+    assert liveness.checked == []
+    assert report.scanned == 1
+    assert report.orphaned == 0
+
+
+@pytest.mark.asyncio
+async def test_reconciler_skips_awaiting_pr_close():
+    store = FakeStore([_exec("intake-await", state="AWAITING_PR_CLOSE")])
+    liveness = FakeLiveness(set())
+
+    report = await reconcile_orphaned_executions(
+        store=store, liveness=liveness, now=_NOW, grace=_GRACE
+    )
+
+    assert store.marked == []
+    assert report.orphaned == 0
+
+
+@pytest.mark.asyncio
+async def test_reconciler_reclaims_dead_working_state():
+    store = FakeStore([_exec("intake-dead", workflow_id="wf-dead", state="IMPLEMENTING")])
+    liveness = FakeLiveness(set())
+
+    report = await reconcile_orphaned_executions(
+        store=store, liveness=liveness, now=_NOW, grace=_GRACE
+    )
+
+    assert [execution_id for execution_id, _ in store.marked] == ["intake-dead"]
+    assert report.orphaned == 1

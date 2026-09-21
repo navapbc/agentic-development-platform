@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Protocol
 
+_AWAITING_EXTERNAL_EVENT = frozenset({"PR_CREATED", "AWAITING_PR_CLOSE"})
+
 
 @dataclass(frozen=True)
 class ActiveExecution:
@@ -19,6 +21,7 @@ class ActiveExecution:
     task_id: str
     workflow_id: str
     updated_at: datetime
+    state: str = ""
 
 
 class ActiveExecutionStore(Protocol):
@@ -44,6 +47,17 @@ def workflow_id_for(execution: ActiveExecution) -> str:
     return f"draft-pr-{execution.task_id}-{execution.execution_id}"
 
 
+def awaits_external_event(execution: ActiveExecution) -> bool:
+    """Whether the execution is parked on an outside event rather than orphaned.
+
+    A run that reaches these states has already finished its workflow, so absent
+    liveness is the expected condition and not evidence of an orphan. Cancelling
+    one also hides it from the pull request webhook, which resolves the execution
+    to signal by selecting non-terminal rows for the task.
+    """
+    return execution.state in _AWAITING_EXTERNAL_EVENT
+
+
 async def reconcile_orphaned_executions(
     *,
     store: ActiveExecutionStore,
@@ -54,6 +68,8 @@ async def reconcile_orphaned_executions(
     active = await store.list_active_executions()
     orphaned = 0
     for execution in active:
+        if awaits_external_event(execution):
+            continue
         if now - execution.updated_at < grace:
             continue
         wf_id = workflow_id_for(execution)
