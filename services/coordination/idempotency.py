@@ -144,19 +144,18 @@ class PostgresSideEffectLedger:
                 return SideEffectOutcome(
                     existing.side_effect_key, replayed=True, result=existing.result
                 )
-            if existing is None or existing.status != _COMPLETED:
-                await conn.execute(
-                    insert(side_effects)
-                    .values(
-                        side_effect_key=key,
-                        task_id=ref.task_id,
-                        execution_id=ref.execution_id,
-                        operation=ref.operation,
-                        target=ref.target,
-                        status=_PENDING,
-                    )
-                    .on_conflict_do_nothing(index_elements=[side_effects.c.side_effect_key])
+            await conn.execute(
+                insert(side_effects)
+                .values(
+                    side_effect_key=key,
+                    task_id=ref.task_id,
+                    execution_id=ref.execution_id,
+                    operation=ref.operation,
+                    target=ref.target,
+                    status=_PENDING,
                 )
+                .on_conflict_do_nothing(index_elements=[side_effects.c.side_effect_key])
+            )
         return SideEffectOutcome(key, replayed=False, result=None, reentrant=existing is not None)
 
     async def record(self, ref: SideEffectRef, result: Any) -> SideEffectOutcome:
