@@ -43,7 +43,7 @@ def side_effect_key(ref: SideEffectRef) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
-def _intake_start_target_repo(operation: str, target: str) -> str:
+def intake_start_target_repo(operation: str, target: str) -> str:
     if operation != _INTAKE_START:
         return ""
     _, separator, repo = target.rpartition(":")
@@ -53,7 +53,7 @@ def _intake_start_target_repo(operation: str, target: str) -> str:
 
 
 def _intake_start_repo(ref: SideEffectRef) -> str:
-    return _intake_start_target_repo(ref.operation, ref.target)
+    return intake_start_target_repo(ref.operation, ref.target)
 
 
 def _same_intake_start_scope(left: SideEffectRef, right: SideEffectRef) -> bool:
@@ -136,7 +136,7 @@ class PostgresSideEffectLedger:
                     (
                         row
                         for row in legacy_rows
-                        if _intake_start_target_repo(ref.operation, str(row.target)) == repo
+                        if intake_start_target_repo(ref.operation, str(row.target)) == repo
                     ),
                     None,
                 )
