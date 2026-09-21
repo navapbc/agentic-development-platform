@@ -12,6 +12,8 @@ from scripts.config import Settings, get_settings, to_host_hostport, to_host_url
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
+from services.coordination.idempotency import intake_start_target_repo
+
 _INTAKE_START = "intake_start"
 _TERMINAL_STATES = ("COMPLETED", "FAILED", "CANCELLED")
 
@@ -121,10 +123,26 @@ class PostgresIntakeRetryStore:
         clause = (side_effects.c.task_id == issue_key) & (
             side_effects.c.operation == _INTAKE_START
         )
-        if repo is not None:
-            clause = clause & side_effects.c.target.like(f"%:{repo}")
         async with self._engine.begin() as conn:
-            return (await conn.execute(delete(side_effects).where(clause))).rowcount or 0
+            if repo is None:
+                return (await conn.execute(delete(side_effects).where(clause))).rowcount or 0
+            candidates = (
+                await conn.execute(
+                    select(side_effects.c.side_effect_key, side_effects.c.target).where(clause)
+                )
+            ).all()
+            keys = [
+                row.side_effect_key
+                for row in candidates
+                if intake_start_target_repo(_INTAKE_START, str(row.target)) == repo
+            ]
+            if not keys:
+                return 0
+            return (
+                await conn.execute(
+                    delete(side_effects).where(side_effects.c.side_effect_key.in_(keys))
+                )
+            ).rowcount or 0
 
     async def mark_non_terminal_failed(self, issue_key: str) -> int:
         async with self._engine.begin() as conn:
