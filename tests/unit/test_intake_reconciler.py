@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import pytest
-from services.coordination.idempotency import InMemorySideEffectLedger
+from services.coordination.idempotency import InMemorySideEffectLedger, SideEffectRef
 from services.integration.jira import CLOUD
 from services.integration.jira.credentials import ComponentRepos
 from services.integration.jira.snapshot import TaskSnapshot, snapshot_id_for
@@ -148,6 +148,16 @@ class _ActiveGuard:
         return self.active.get((issue_key, repo))
 
 
+class _RecordingLedger(InMemorySideEffectLedger):
+    def __init__(self) -> None:
+        super().__init__()
+        self.refs: list[SideEffectRef] = []
+
+    async def reserve(self, ref: SideEffectRef):
+        self.refs.append(ref)
+        return await super().reserve(ref)
+
+
 def _run(
     read_source,
     starter,
@@ -251,13 +261,79 @@ async def test_unchanged_repoll_starts_nothing():
     assert report.started[0].duplicate
 
 
-async def test_material_change_starts_new_execution():
+async def test_intake_start_dedup_key_uses_ticket_identity_and_repo():
+    starter, alerter, ledger, store, resolver = (
+        _Starter(),
+        _Alerter(),
+        _RecordingLedger(),
+        _RecordingStore(),
+        _Resolver({p: _Cred(default_repo="repo-a") for p in _PROJECTS}),
+    )
+    await _run(
+        _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV", summary="v1")]}),
+        starter,
+        alerter,
+        ledger,
+        store,
+        resolver,
+    )
+    await _run(
+        _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV", summary="v2")]}),
+        starter,
+        alerter,
+        ledger,
+        store,
+        resolver,
+    )
+
+    assert [ref.target for ref in ledger.refs if ref.operation == "intake_start"] == [
+        "ADEV-1:repo-a",
+        "ADEV-1:repo-a",
+    ]
+
+
+async def test_ticket_writeback_change_after_terminal_execution_is_deduplicated():
     starter, alerter, ledger, store, resolver = _defaults()
-    await _run(_ReadSource({"ADEV": [_issue("ADEV-1", "ADEV", summary="v1")]}),
-         starter, alerter, ledger, store, resolver)
-    await _run(_ReadSource({"ADEV": [_issue("ADEV-1", "ADEV", summary="v2")]}),
-         starter, alerter, ledger, store, resolver)
+    await _run(
+        _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV", summary="v1")]}),
+        starter,
+        alerter,
+        ledger,
+        store,
+        resolver,
+    )
+    report = await _run(
+        _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV", summary="v2")]}),
+        starter,
+        alerter,
+        ledger,
+        store,
+        resolver,
+    )
+    assert len(starter.starts) == 1
+    assert report.started[0].duplicate
+
+
+async def test_cleared_intake_dedup_allows_operator_requested_rerun():
+    starter, alerter, ledger, store, resolver = _defaults()
+    await _run(
+        _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV", summary="v1")]}),
+        starter,
+        alerter,
+        ledger,
+        store,
+        resolver,
+    )
+    report = await _run(
+        _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV", summary="v2")]}),
+        starter,
+        alerter,
+        InMemorySideEffectLedger(),
+        store,
+        resolver,
+    )
     assert len(starter.starts) == 2
+    assert not report.started[0].duplicate
 
 
 async def test_unlisted_repo_holds_and_alerts_once():
@@ -337,7 +413,7 @@ async def test_material_change_is_suppressed_while_execution_is_active():
     assert len(starter.starts) == 1
 
 
-async def test_material_change_starts_again_after_execution_terminates():
+async def test_ticket_writeback_change_stays_deduplicated_after_execution_terminates():
     starter, alerter, ledger, store, resolver = _defaults()
     guard = _ActiveGuard()
     await _run(
@@ -348,7 +424,7 @@ async def test_material_change_starts_again_after_execution_terminates():
         _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV", summary="v2")]}),
         starter, alerter, ledger, store, resolver, active_guard=guard,
     )
-    assert len(starter.starts) == 2
+    assert len(starter.starts) == 1
 
 
 
