@@ -30,6 +30,7 @@ class ApplyCIRepairRequest:
     commit: str
     instruction: str
     failure_summary: str = ""
+    changed_paths: tuple[str, ...] = ()
 
 
 @dataclass
@@ -166,6 +167,7 @@ async def _project_autofix(req: ApplyCIRepairRequest, workspace_path: str) -> bo
                 image=config.image,
                 build=config.build,
                 working_dir=config.working_dir,
+                changed_paths=tuple(req.changed_paths),
             ),
             staging,
         )

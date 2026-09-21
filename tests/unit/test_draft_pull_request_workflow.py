@@ -2749,3 +2749,49 @@ async def test_every_commit_carries_the_declared_file_impact():
 
     assert len(commits) == 2
     assert [c.file_impact for c in commits] == [["feature.py"], ["feature.py"]]
+
+
+async def test_checks_changed_paths_carry_the_ticket_file_impact():
+    ci_triggers: list = []
+    activities = _make_activities(None, 1, [], [], [], ci_triggers=ci_triggers)
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            await env.client.execute_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+
+    assert ci_triggers, "the checks activity must run"
+    assert tuple(ci_triggers[0].changed_paths) == ("feature.py",)
+
+
+async def test_repair_changed_paths_carry_the_ticket_file_impact():
+    ci_triggers: list = []
+    repairs: list[ApplyCIRepairRequest] = []
+    activities = _make_activities(
+        None,
+        1,
+        [],
+        [],
+        [],
+        ci_triggers=ci_triggers,
+        ci_results=[FAILURE, SUCCESS],
+        repairs=repairs,
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            await env.client.execute_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+
+    assert repairs, "the repair activity must run"
+    assert tuple(repairs[0].changed_paths) == ("feature.py",)

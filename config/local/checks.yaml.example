@@ -7,12 +7,19 @@
 # tooling. It runs in the same image before the coding agent is asked to repair by hand,
 # and its edits are kept only when re-running command then passes. A repo that declares
 # none goes straight to the agent.
+#
+# Both command and fix_command receive CHANGED_PATHS, holding the paths the change touched,
+# newline-separated, relative to the repository root. Scope the checks with it so an unrelated
+# failure elsewhere in the repo cannot fail the run. It is unset when the platform cannot
+# determine the paths, so branch on it and fall back to the full suite. Convert it to an
+# argument vector with tr and xargs -0 rather than bare word splitting, so a path containing
+# a space survives.
 config_version: 1
 
 checks:
   # example-repo:
   #   image: python:3.12-slim
-  #   command: "pip install -r requirements-dev.txt && ruff check . && pytest -q && bandit -r app -ll"
+  #   command: "pip install -r requirements-dev.txt && ruff check . && if [ -n \"$CHANGED_PATHS\" ]; then printf '%s' \"$CHANGED_PATHS\" | tr '\\n' '\\0' | xargs -0 pytest -q; else pytest -q; fi"
   #   fix_command: "pip install -r requirements-dev.txt && ruff check --fix ."
   #   working_dir: /workspace
   #   timeout_minutes: 15
