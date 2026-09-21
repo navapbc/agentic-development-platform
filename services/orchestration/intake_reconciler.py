@@ -394,7 +394,7 @@ async def _start(
         task_id=issue_key,
         execution_id="",
         operation="intake_start",
-        target=f"{digest}:{repo}",
+        target=f"{issue_key}:{repo}",
     )
 
     async def _launch() -> dict[str, str]:

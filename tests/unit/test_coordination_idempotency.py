@@ -2,11 +2,121 @@
 
 from __future__ import annotations
 
+import re
+from dataclasses import dataclass
+from types import SimpleNamespace
+from typing import Any
+
 from services.coordination.idempotency import (
     InMemorySideEffectLedger,
+    PostgresSideEffectLedger,
     SideEffectRef,
     side_effect_key,
 )
+from sqlalchemy.dialects import postgresql
+
+
+@dataclass
+class _SideEffectRow:
+    side_effect_key: str
+    task_id: str
+    execution_id: str
+    operation: str
+    target: str
+    status: str
+    result: Any = None
+
+
+class _FakeResult:
+    def __init__(self, rows: list[Any], *, rowcount: int = 0) -> None:
+        self._rows = rows
+        self.rowcount = rowcount
+
+    def first(self):
+        return self._rows[0] if self._rows else None
+
+    def all(self):
+        return self._rows
+
+
+class _FakeEngine:
+    def __init__(self, rows: list[_SideEffectRow]) -> None:
+        self.rows = {row.side_effect_key: row for row in rows}
+
+    def begin(self):
+        return _FakeConnection(self)
+
+
+class _FakeConnection:
+    def __init__(self, engine: _FakeEngine) -> None:
+        self._engine = engine
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        return None
+
+    async def execute(self, statement):
+        compiled = statement.compile(dialect=postgresql.dialect())
+        sql = str(compiled)
+        params = compiled.params
+        if statement.is_select:
+            return _FakeResult(self._select(sql, params))
+        if statement.is_insert:
+            key = str(params["side_effect_key"])
+            self._engine.rows.setdefault(
+                key,
+                _SideEffectRow(
+                    side_effect_key=key,
+                    task_id=str(params["task_id"]),
+                    execution_id=str(params["execution_id"]),
+                    operation=str(params["operation"]),
+                    target=str(params["target"]),
+                    status=str(params["status"]),
+                ),
+            )
+            return _FakeResult([], rowcount=1)
+        if statement.is_update:
+            row = self._engine.rows.get(str(params["side_effect_key_1"]))
+            if row is None:
+                return _FakeResult([], rowcount=0)
+            row.status = str(params["status"])
+            row.result = params["result"]
+            return _FakeResult([], rowcount=1)
+        raise AssertionError(f"unexpected statement: {statement}")
+
+    def _select(self, sql: str, params: dict[str, Any]) -> list[Any]:
+        if "side_effect_key = " in sql:
+            row = self._engine.rows.get(str(params["side_effect_key_1"]))
+            return [_row_result(row)] if row is not None else []
+        rows = [
+            row
+            for row in self._engine.rows.values()
+            if row.task_id == params["task_id_1"]
+            and row.execution_id == params["execution_id_1"]
+            and row.operation == params["operation_1"]
+        ]
+        pattern = params.get("target_1")
+        if pattern is not None:
+            rows = [row for row in rows if _sql_like_matches(str(pattern), row.target)]
+        return [_row_result(row) for row in rows]
+
+
+def _row_result(row: _SideEffectRow):
+    return SimpleNamespace(
+        side_effect_key=row.side_effect_key,
+        status=row.status,
+        result=row.result,
+        target=row.target,
+    )
+
+
+def _sql_like_matches(pattern: str, value: str) -> bool:
+    regex = "".join(
+        ".*" if char == "%" else "." if char == "_" else re.escape(char) for char in pattern
+    )
+    return re.fullmatch(regex, value) is not None
 
 
 def test_key_is_deterministic_and_field_sensitive():
@@ -67,6 +177,91 @@ async def test_distinct_refs_each_execute():
     assert a.replayed is False
     assert b.replayed is False
     assert calls == ["pr_link", "summary"]
+
+
+async def test_legacy_digest_based_intake_start_replays_for_the_same_ticket_repo():
+    ledger = InMemorySideEffectLedger()
+    legacy = SideEffectRef("ADEV-1", "", "intake_start", "digest-1:repo-a")
+    current = SideEffectRef("ADEV-1", "", "intake_start", "ADEV-1:repo-a")
+    calls: list[str] = []
+
+    async def start_legacy():
+        calls.append("legacy")
+        return {"workflow_id": "wf-legacy"}
+
+    async def start_current():
+        calls.append("current")
+        return {"workflow_id": "wf-current"}
+
+    first = await ledger.run_once(legacy, start_legacy)
+    second = await ledger.run_once(current, start_current)
+
+    assert first.replayed is False
+    assert second.replayed is True
+    assert calls == ["legacy"]
+    assert second.result == {"workflow_id": "wf-legacy"}
+
+
+async def test_legacy_pending_intake_start_is_completed_under_the_current_key():
+    legacy = SideEffectRef("ADEV-1", "", "intake_start", "digest-1:repo-a")
+    current = SideEffectRef("ADEV-1", "", "intake_start", "ADEV-1:repo-a")
+    engine = _FakeEngine(
+        [
+            _SideEffectRow(
+                side_effect_key=side_effect_key(legacy),
+                task_id=legacy.task_id,
+                execution_id=legacy.execution_id,
+                operation=legacy.operation,
+                target=legacy.target,
+                status="pending",
+            )
+        ]
+    )
+    ledger = PostgresSideEffectLedger(engine)
+    calls: list[str] = []
+
+    async def start_current():
+        calls.append("current")
+        return {"workflow_id": "wf-current"}
+
+    first = await ledger.run_once(current, start_current)
+    second = await ledger.run_once(current, start_current)
+
+    assert first.replayed is False
+    assert second.replayed is True
+    assert calls == ["current"]
+    assert engine.rows[side_effect_key(current)].status == "completed"
+    assert engine.rows[side_effect_key(current)].result == {"workflow_id": "wf-current"}
+
+
+async def test_legacy_intake_repo_match_treats_underscores_literally():
+    legacy = SideEffectRef("ADEV-1", "", "intake_start", "digest-1:repoXa")
+    current = SideEffectRef("ADEV-1", "", "intake_start", "ADEV-1:repo_a")
+    engine = _FakeEngine(
+        [
+            _SideEffectRow(
+                side_effect_key=side_effect_key(legacy),
+                task_id=legacy.task_id,
+                execution_id=legacy.execution_id,
+                operation=legacy.operation,
+                target=legacy.target,
+                status="completed",
+                result={"workflow_id": "wf-legacy"},
+            )
+        ]
+    )
+    ledger = PostgresSideEffectLedger(engine)
+    calls: list[str] = []
+
+    async def start_current():
+        calls.append("current")
+        return {"workflow_id": "wf-current"}
+
+    outcome = await ledger.run_once(current, start_current)
+
+    assert outcome.replayed is False
+    assert calls == ["current"]
+    assert engine.rows[side_effect_key(current)].result == {"workflow_id": "wf-current"}
 
 
 async def test_supports_async_effect_for_evidence_writes():
