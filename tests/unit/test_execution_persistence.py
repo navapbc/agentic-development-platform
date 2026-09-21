@@ -70,6 +70,20 @@ class _FakeEngine:
         return self._connection
 
 
+class _FakeScalarResult:
+    def __init__(self, value):
+        self._value = value
+
+    def scalar_one(self):
+        return self._value
+
+
+class _FakeCountConnection(_FakeConnection):
+    async def execute(self, statement):
+        self.statements.append(statement)
+        return _FakeScalarResult(0)
+
+
 def _seeder_with_rows(rows):
     seeder = PostgresExecutionSeeder()
     connection = _FakeConnection(rows)
@@ -109,3 +123,21 @@ async def test_active_query_tolerates_null_state():
 
     assert active[0].state == ""
     assert active[0].workflow_id == ""
+
+
+@pytest.mark.asyncio
+async def test_active_count_excludes_completed_executions():
+    seeder = PostgresExecutionSeeder()
+    connection = _FakeCountConnection([])
+    seeder._get_engine = lambda: _FakeEngine(connection)  # type: ignore[method-assign]
+
+    active_count = await seeder.count_active_runs()
+
+    sql = str(
+        connection.statements[0].compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+    assert active_count == 0
+    assert "state NOT IN ('COMPLETED', 'FAILED', 'CANCELLED')" in sql

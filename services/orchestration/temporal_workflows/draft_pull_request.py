@@ -2320,6 +2320,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             pr_url=ready.url or outcome.pr_url,
         )
         if not params.await_pr_close:
+            await persist(COMPLETED)
             return promoted
         return await self._await_pr_close(params, promoted, workflow_id)
 
