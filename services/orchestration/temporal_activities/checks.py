@@ -25,6 +25,7 @@ class RunChecksRequest:
     execution_id: str
     workspace_path: str
     commit_sha: str
+    changed_paths: tuple[str, ...] = ()
 
 
 @dataclass
@@ -80,6 +81,7 @@ async def run_checks(req: RunChecksRequest) -> RunChecksResult:
                 image=config.image,
                 build=config.build,
                 working_dir=config.working_dir,
+                changed_paths=tuple(req.changed_paths),
             )
         )
         if result.exit_code == 0:

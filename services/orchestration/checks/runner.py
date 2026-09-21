@@ -31,6 +31,7 @@ _HOST_GATEWAY_ALIAS = "host.docker.internal"
 _OWNERSHIP_FLAGS = (
     "-e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=*"
 )
+_PATH_SEPARATOR = "\n"
 
 
 class ChecksError(PodEngineError):
@@ -47,6 +48,7 @@ class ChecksSpec:
     build: str = ""
     working_dir: str = "/workspace"
     fix_command: str = ""
+    changed_paths: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -80,6 +82,19 @@ def checks_pod_name(repo: str, execution_id: str) -> str:
     return f"{prefix}-{digest}"
 
 
+def _changed_paths_statement(spec: ChecksSpec) -> str:
+    """Hand the declared command the paths the agent changed, so it can scope its own checks.
+
+    The paths are newline-separated inside one shell-quoted value, so a path containing a space
+    survives. A command that needs an argument vector converts them with ``tr '\\n' '\\0' |
+    xargs -0`` rather than relying on word splitting. An empty set exports nothing, which lets a
+    command distinguish "nothing changed" from "scoping unavailable" and fall back to its full run.
+    """
+    if not spec.changed_paths:
+        return ""
+    return f"export CHANGED_PATHS={shlex.quote(_PATH_SEPARATOR.join(spec.changed_paths))}"
+
+
 def _checks_script(spec: ChecksSpec) -> str:
     b64 = base64.b64encode(spec.command.encode()).decode()
     if spec.build:
@@ -91,6 +106,9 @@ def _checks_script(spec: ChecksSpec) -> str:
     else:
         acquire = f"img={shlex.quote(spec.image)}"
     inner = f"cd {shlex.quote(spec.working_dir)} && echo {b64} | base64 -d | sh"
+    changed = _changed_paths_statement(spec)
+    if changed:
+        inner = f"{changed}\n{inner}"
     return (
         "set -e\n"
         f"{acquire}\n"
@@ -127,31 +145,33 @@ def _fix_inner_script(spec: ChecksSpec) -> str:
     leave no trace, so it announces its status into the output the summary keeps.
     """
     wd = shlex.quote(spec.working_dir)
-    return "\n".join(
-        [
-            f"cd {wd} || exit 1",
-            f"touch {_MARKER}",
-            spec.fix_command,
-            "fix_rc=$?",
-            f'[ "$fix_rc" -eq 0 ] || echo "{_FIX_FAILED}$fix_rc"',
-            f"cd {_WORKSPACE_MOUNT} || exit 1",
-            (
-                "find . \\( -name node_modules -o -name .git -o -name .venv "
-                "-o -name __pycache__ -o -name .pytest_cache -o -name .ruff_cache "
-                "-o -name .mypy_cache \\) -prune -o "
-                f"-type f -newer {_MARKER} -print 2>/dev/null "
-                f"| grep -v '/\\.gatefix\\.' | grep -v '^\\./\\.gatefix\\.' > {_MANIFEST}"
-            ),
-            f"echo {_FILES_BEGIN}",
-            f"cat {_MANIFEST}",
-            f"echo {_FILES_END}",
-            f"cd {wd} || exit 1",
-            spec.command,
-            "verify_rc=$?",
-            f'echo "{_VERIFY_RC}$verify_rc"',
-            "exit $verify_rc",
-        ]
-    )
+    changed = _changed_paths_statement(spec)
+    lines = [
+        f"cd {wd} || exit 1",
+        f"touch {_MARKER}",
+        spec.fix_command,
+        "fix_rc=$?",
+        f'[ "$fix_rc" -eq 0 ] || echo "{_FIX_FAILED}$fix_rc"',
+        f"cd {_WORKSPACE_MOUNT} || exit 1",
+        (
+            "find . \\( -name node_modules -o -name .git -o -name .venv "
+            "-o -name __pycache__ -o -name .pytest_cache -o -name .ruff_cache "
+            "-o -name .mypy_cache \\) -prune -o "
+            f"-type f -newer {_MARKER} -print 2>/dev/null "
+            f"| grep -v '/\\.gatefix\\.' | grep -v '^\\./\\.gatefix\\.' > {_MANIFEST}"
+        ),
+        f"echo {_FILES_BEGIN}",
+        f"cat {_MANIFEST}",
+        f"echo {_FILES_END}",
+        f"cd {wd} || exit 1",
+        spec.command,
+        "verify_rc=$?",
+        f'echo "{_VERIFY_RC}$verify_rc"',
+        "exit $verify_rc",
+    ]
+    if changed:
+        lines.insert(0, changed)
+    return "\n".join(lines)
 
 
 def _fix_script(spec: ChecksSpec) -> str:
