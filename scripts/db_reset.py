@@ -2,17 +2,14 @@
 
 from __future__ import annotations
 
-import os
-
 from database.models import SCHEMA
 from sqlalchemy import create_engine, text
 
+from scripts.config import alembic_database_url
+
 
 def _sync_url() -> str:
-    return os.environ.get(
-        "ALEMBIC_DATABASE_URL",
-        "postgresql+psycopg://platform:change-me-locally@localhost:5432/agent_platform",
-    )
+    return alembic_database_url()
 
 
 def main() -> int:

@@ -19,7 +19,7 @@ services:
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./database/init/00-create-multiple-databases.sh:/docker-entrypoint-initdb.d/00-create-multiple-databases.sh:ro
-    ports: ["5432:5432"]
+    ports: ["${POSTGRES_HOST_PORT:-5432}:5432"]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-platform} -d agent_platform"]
       interval: 10s
@@ -40,7 +40,7 @@ services:
       POSTGRES_PWD: ${POSTGRES_PASSWORD:-change-me-locally}
       DBNAME: temporal
       VISIBILITY_DBNAME: temporal_visibility
-    ports: ["7233:7233"]
+    ports: ["${TEMPORAL_HOST_PORT:-7233}:7233"]
     healthcheck:
       test: ["CMD", "tctl", "--address", "temporal:7233", "cluster", "health"]
       interval: 15s
@@ -170,7 +170,7 @@ services:
     depends_on:
       litellm:
         condition: service_started
-    ports: ["8100:8100"]
+    ports: ["${LANGGRAPH_HOST_PORT:-8100}:8100"]
 
   litellm:
     image: ghcr.io/berriai/litellm:v1.97.0@sha256:468c25f35f3e5ec4e414974f00deab93337b1b4d9953cabcfd3722e59415f834
@@ -187,7 +187,7 @@ services:
       - ./config/local/litellm-config.yaml:/app/config/litellm-config.yaml:ro
       - ./config/local/litellm_redaction.py:/app/litellm_redaction.py:ro
       - ${HOME}/.aws:/root/.aws:ro
-    ports: ["4000:4000"]
+    ports: ["${LITELLM_HOST_PORT:-4000}:4000"]
     restart: unless-stopped
 
   opa:
@@ -200,7 +200,7 @@ services:
       - "/policies"
     volumes:
       - ./config/policies:/policies:ro
-    ports: ["8181:8181"]
+    ports: ["${OPA_HOST_PORT:-8181}:8181"]
     restart: unless-stopped
 
   clickhouse:
@@ -298,7 +298,7 @@ services:
   langfuse-web:
     <<: *langfuse-service
     image: docker.langfuse.com/langfuse/langfuse:4@sha256:c2350a95d710f726f6466ffd47675eb704d0ff77fa1df1b9e6751ada6134ef75
-    ports: ["3000:3000"]
+    ports: ["${LANGFUSE_WEB_HOST_PORT:-3000}:3000"]
     environment:
       <<: *langfuse-env
       LANGFUSE_INIT_ORG_ID: ${LANGFUSE_INIT_ORG_ID:-local}
@@ -317,9 +317,9 @@ services:
     volumes:
       - ./observability/otel/otel-collector-config.yaml:/etc/otel/config.yaml:ro
     ports:
-      - "4317:4317"
-      - "4318:4318"
-      - "8889:8889"
+      - "${OTEL_GRPC_HOST_PORT:-4317}:4317"
+      - "${OTEL_HTTP_HOST_PORT:-4318}:4318"
+      - "${OTEL_METRICS_HOST_PORT:-8889}:8889"
     depends_on:
       - tempo
     restart: unless-stopped

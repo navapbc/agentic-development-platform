@@ -119,6 +119,16 @@ class Settings(BaseSettings):
     langfuse_project_id: str = "agentic-dev-platform"
     otel_exporter_otlp_endpoint: str = "http://localhost:4317"
 
+    postgres_host_port: int = 5432
+    temporal_host_port: int = 7233
+    langgraph_host_port: int = 8100
+    litellm_host_port: int = 4000
+    opa_host_port: int = 8181
+    langfuse_web_host_port: int = 3000
+    otel_grpc_host_port: int = 4317
+    otel_http_host_port: int = 4318
+    otel_metrics_host_port: int = 8889
+
     repo_intelligence_url: str = "http://localhost:8120"
     repo_intelligence_repo_root: str = ""
     repo_intelligence_commit: str = ""
@@ -142,7 +152,6 @@ class Settings(BaseSettings):
     github_default_base_branch: str = "main"
     github_webhook_secret: str = ""
     jira_webhook_secret: str = ""
-
 
     semgrep_binary: str = "semgrep"
     trivy_binary: str = "trivy"
@@ -220,17 +229,21 @@ def get_settings() -> Settings:
     return Settings()
 
 
-_COMPOSE_SERVICE_HOSTS = frozenset(
-    {
-        "litellm",
-        "opa",
-        "langfuse-web",
-        "postgres",
-        "temporal",
-        "langgraph-service",
-        "otel-collector",
-    }
-)
+_COMPOSE_PUBLISHED_PORTS: dict[str, dict[int, str]] = {
+    "litellm": {4000: "litellm_host_port"},
+    "opa": {8181: "opa_host_port"},
+    "langfuse-web": {3000: "langfuse_web_host_port"},
+    "postgres": {5432: "postgres_host_port"},
+    "temporal": {7233: "temporal_host_port"},
+    "langgraph-service": {8100: "langgraph_host_port"},
+    "otel-collector": {
+        4317: "otel_grpc_host_port",
+        4318: "otel_http_host_port",
+        8889: "otel_metrics_host_port",
+    },
+}
+
+_COMPOSE_SERVICE_HOSTS = frozenset(_COMPOSE_PUBLISHED_PORTS)
 
 
 def _in_platform_image() -> bool:
@@ -242,7 +255,21 @@ def _in_platform_image() -> bool:
     return os.environ.get("PLATFORM_IN_CONTAINER") == "1"
 
 
-def to_host_url(url: str) -> str:
+def _published_port(service: str, port: int | None, settings: Settings | None) -> int | None:
+    """Map a service's in-network port to the host port Compose publishes it on.
+
+    compose.yaml publishes each port through the same ``*_HOST_PORT`` variable that backs
+    the matching setting, so an operator who remaps a port in .env moves both sides at once.
+    """
+    if port is None:
+        return None
+    field = _COMPOSE_PUBLISHED_PORTS.get(service, {}).get(port)
+    if field is None:
+        return port
+    return int(getattr(settings or get_settings(), field))
+
+
+def to_host_url(url: str, settings: Settings | None = None) -> str:
     """Rewrite a Compose-internal service URL to its host-published localhost equivalent.
 
     Host-run tooling shares .env with in-network services, which address each other by
@@ -260,16 +287,34 @@ def to_host_url(url: str) -> str:
             if parsed.password:
                 userinfo += f":{parsed.password}"
             userinfo += "@"
-        port = f":{parsed.port}" if parsed.port else ""
+        published = _published_port(parsed.hostname, parsed.port, settings)
+        port = f":{published}" if published else ""
         return urlunparse(parsed._replace(netloc=f"{userinfo}localhost{port}"))
     return url
 
 
-def to_host_hostport(value: str) -> str:
+def alembic_database_url() -> str:
+    """Resolve the synchronous migration URL, rewritten for the host when run there.
+
+    The default names the Compose service rather than localhost so a remapped published
+    port is picked up by the same rewrite that every other host-run tool uses.
+    """
+    return to_host_url(
+        os.environ.get(
+            "ALEMBIC_DATABASE_URL",
+            "postgresql+psycopg://platform:change-me-locally@postgres:5432/agent_platform",
+        )
+    )
+
+
+def to_host_hostport(value: str, settings: Settings | None = None) -> str:
     """Rewrite a Compose-internal ``host:port`` (e.g. Temporal) to its localhost form."""
     if _in_platform_image():
         return value
     host, sep, port = value.partition(":")
     if host in _COMPOSE_SERVICE_HOSTS:
-        return f"localhost{sep}{port}"
+        if not sep:
+            return "localhost"
+        published = _published_port(host, int(port) if port.isdigit() else None, settings)
+        return f"localhost:{published if published else port}"
     return value
