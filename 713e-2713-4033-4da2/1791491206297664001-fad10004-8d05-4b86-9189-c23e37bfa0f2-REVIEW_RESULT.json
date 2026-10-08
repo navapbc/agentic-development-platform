@@ -1,0 +1,1 @@
+{"author":"Joe Oakhart","author_email":"joeoakhart@navapbc.com","data":{"error":{"cause":"the LLM provider call failed: No results found.","evidence_ref":null},"gate":"plan_review","schema":"gate_error_v1","verdict":"ERROR"},"env_id":"8c3ef925-fbdc-4d88-8d59-f391cf59568c","event_type":"REVIEW_RESULT","timestamp":1791491206297664001,"uuid":"fad10004-8d05-4b86-9189-c23e37bfa0f2"}
