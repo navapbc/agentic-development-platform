@@ -308,3 +308,90 @@ async def test_live_smoke_against_an_allowlisted_demo_repo(tmp_path) -> None:
     assert commit.published_tree == request.tree
     pull = await host.open_draft_pr(REPO, name, "main", "Live smoke", "live smoke")
     assert pull.number
+
+
+def _advance_base(tmp_path, bare_remote: str, path: str, text: str) -> str:
+    work = _workspace(tmp_path, bare_remote, "base-advance")
+    _write(work, path, text)
+    identity = ["-c", "user.email=human@example.invalid", "-c", "user.name=human"]
+    _git(["add", "-A"], work)
+    _git([*identity, "commit", "-q", "-m", "advance base"], work)
+    _git(["push", "-q", "origin", "main"], work)
+    return _capture(work, "rev-parse", "HEAD")
+
+
+def _parents(cwd: str, commit: str) -> list[str]:
+    return _capture(cwd, "rev-list", "--parents", "-n", "1", commit).split()[1:]
+
+
+def _is_ancestor(cwd: str, ancestor: str, descendant: str) -> bool:
+    proc = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", ancestor, descendant],
+        cwd=cwd,
+        capture_output=True,
+    )
+    return proc.returncode == 0
+
+
+async def _publish_then_move_the_base(host: RealGitHost, bare_remote: str, tmp_path):
+    earlier = _workspace(tmp_path, bare_remote, "earlier")
+    _write(earlier, "src/app.py", "print('first run')\n")
+    previous = await host.commit_and_push(_stage(earlier, "exec-1"))
+    moved_base = _advance_base(tmp_path, bare_remote, "docs/notes.md", "landed on main\n")
+    rerun = _workspace(tmp_path, bare_remote, "rerun")
+    _write(rerun, "src/app.py", "print('second run')\n")
+    return previous, moved_base, rerun
+
+
+async def test_publish_after_the_base_moved_keeps_the_merge_base_diff_to_the_change(
+    bare_remote: str, tmp_path
+) -> None:
+    host = _host(bare_remote)
+    _, moved_base, rerun = await _publish_then_move_the_base(host, bare_remote, tmp_path)
+
+    result = await host.commit_and_push(_stage(rerun, "exec-2"))
+
+    assert _is_ancestor(rerun, moved_base, result.commit_sha)
+    changed = _capture(rerun, "diff", "--name-only", f"{moved_base}...{result.commit_sha}")
+    assert changed.split() == ["src/app.py"]
+
+
+async def test_publish_after_the_base_moved_fast_forwards_the_branch(
+    bare_remote: str, tmp_path
+) -> None:
+    host = _host(bare_remote)
+    previous, moved_base, rerun = await _publish_then_move_the_base(host, bare_remote, tmp_path)
+    request = _stage(rerun, "exec-2")
+
+    result = await host.commit_and_push(request)
+
+    assert result.pushed is True
+    assert result.published_tree == request.tree
+    assert _parents(rerun, result.commit_sha) == [previous.commit_sha, moved_base]
+    assert _is_ancestor(rerun, previous.commit_sha, result.commit_sha)
+
+
+async def test_repair_publish_within_an_execution_keeps_a_single_parent(
+    bare_remote: str, tmp_path
+) -> None:
+    host = _host(bare_remote)
+    _, _, rerun = await _publish_then_move_the_base(host, bare_remote, tmp_path)
+    first = await host.commit_and_push(_stage(rerun, "exec-2"))
+
+    _write(rerun, "src/app.py", "print('repaired')\n")
+    repaired = await host.commit_and_push(_stage(rerun, "exec-2"))
+
+    assert _parents(rerun, repaired.commit_sha) == [first.commit_sha]
+
+
+async def test_rerun_on_an_unchanged_base_keeps_a_single_parent(bare_remote: str, tmp_path) -> None:
+    host = _host(bare_remote)
+    earlier = _workspace(tmp_path, bare_remote, "earlier")
+    _write(earlier, "src/app.py", "print('first run')\n")
+    previous = await host.commit_and_push(_stage(earlier, "exec-1"))
+    rerun = _workspace(tmp_path, bare_remote, "rerun")
+    _write(rerun, "src/app.py", "print('second run')\n")
+
+    result = await host.commit_and_push(_stage(rerun, "exec-2"))
+
+    assert _parents(rerun, result.commit_sha) == [previous.commit_sha]

@@ -143,11 +143,14 @@ class LocalGitHost:
                 replayed=True,
                 published_tree=request.tree,
             )
+        workspace_head = await self._git("rev-parse", "HEAD", cwd=work)
+        parents = ["-p", head]
+        if await self._git("merge-base", workspace_head, head, cwd=work) != workspace_head:
+            parents += ["-p", workspace_head]
         sha = await self._git(
             "commit-tree",
             request.tree,
-            "-p",
-            head,
+            *parents,
             "-m",
             request.message,
             cwd=work,
