@@ -9,10 +9,12 @@ from services.coordination.idempotency import InMemorySideEffectLedger, SideEffe
 from services.integration.jira import CLOUD
 from services.integration.jira.credentials import ComponentRepos
 from services.integration.jira.snapshot import TaskSnapshot, snapshot_id_for
+from services.orchestration.checks.config import required_checks_repos
 from services.orchestration.intake_base import UnresolvableBaseBranch
 from services.orchestration.intake_reconciler import (
     IntakeStart,
     candidate_from_rebar,
+    checks_not_configured_reason,
     reconcile_intake,
 )
 from tests.support import hermetic_settings
@@ -168,6 +170,7 @@ def _run(
     seeder=None,
     active_guard=None,
     base_resolver=None,
+    checks_repos=None,
 ):
     return reconcile_intake(
         read_source=read_source,
@@ -180,6 +183,7 @@ def _run(
         snapshot_store=store,
         active_guard=active_guard,
         base_resolver=base_resolver,
+        checks_repos=checks_repos,
     )
 
 
@@ -705,3 +709,49 @@ def test_rebar_candidate_file_impact_is_empty_when_undeclared() -> None:
     candidate = candidate_from_rebar(ticket, project="PROJ", default_repo="repo-a")
 
     assert candidate.file_impact == ()
+
+
+async def test_holds_a_repository_without_checks_when_ci_is_required():
+    read = _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV")]})
+    starter, alerter, ledger, store, resolver = _defaults()
+
+    report = await _run(read, starter, alerter, ledger, store, resolver, checks_repos=frozenset())
+
+    assert starter.starts == []
+    assert [h.reason for h in report.held] == [checks_not_configured_reason(["repo-a"])]
+    assert alerter.alerts == [("ADEV-1", "ADEV", checks_not_configured_reason(["repo-a"]))]
+    assert report.deferred == ["ADEV-1"]
+
+
+async def test_starts_a_repository_without_checks_when_ci_is_not_required():
+    read = _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV")]})
+    starter, alerter, ledger, store, resolver = _defaults()
+    local = hermetic_settings(source_control_backend="local")
+
+    report = await _run(
+        read, starter, alerter, ledger, store, resolver, checks_repos=required_checks_repos(local)
+    )
+
+    assert [(s.issue_key, s.repo) for s in starter.starts] == [("ADEV-1", "repo-a")]
+    assert report.held == []
+
+
+async def test_starts_a_repository_with_checks_when_ci_is_required():
+    read = _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV")]})
+    starter, alerter, ledger, store, resolver = _defaults()
+
+    report = await _run(
+        read, starter, alerter, ledger, store, resolver, checks_repos=frozenset({"repo-a"})
+    )
+
+    assert [(s.issue_key, s.repo) for s in starter.starts] == [("ADEV-1", "repo-a")]
+    assert report.held == []
+
+
+def test_required_checks_repos_lists_configured_repositories_under_github(monkeypatch):
+    monkeypatch.setattr(
+        "services.orchestration.checks.config.load_checks_configs",
+        lambda settings=None, *, environment=None: {"repo-a": object()},
+    )
+
+    assert required_checks_repos(hermetic_settings()) == frozenset({"repo-a"})
