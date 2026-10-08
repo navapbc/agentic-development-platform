@@ -247,6 +247,7 @@ class TemporalWorkflowLiveness:
 def build_intake_context(settings: Settings, *, client: Any, gh_resolver: Any) -> IntakeContext:
     from services.coordination.idempotency import PostgresSideEffectLedger
     from services.integration.source_control import source_control_repos
+    from services.orchestration.checks.config import required_checks_repos
 
     execution_store = PostgresExecutionSeeder()
     starter = TemporalStarter(client, settings)
@@ -261,4 +262,5 @@ def build_intake_context(settings: Settings, *, client: Any, gh_resolver: Any) -
         settings=settings,
         active_guard=execution_store,
         base_resolver=starter,
+        checks_repos=required_checks_repos(settings),
     )

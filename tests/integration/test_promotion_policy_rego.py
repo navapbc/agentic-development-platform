@@ -208,3 +208,10 @@ def test_a_fail_closed_gate_denies_even_beside_a_pause_gate():
     assert "gate_failed:code-review" in decision["reasons"]
     assert "gate_failed:security-review" in decision["human_review"]
     assert decision["next_action"] == "block_and_report"
+
+
+def test_skipped_ci_reports_ci_skipped():
+    decision = _decision(_compliant(ci_status="skipped"))
+    assert decision["allow"] is False
+    assert "ci_skipped" in decision["reasons"]
+    assert "ci_not_successful" not in decision["reasons"]
