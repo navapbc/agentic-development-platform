@@ -1,4 +1,9 @@
-"""Temporal activity that gathers repository context for the planning stage."""
+"""Temporal activities for the planning stage.
+
+``gather_repo_context`` assembles the repository context package the planner reads, and
+``record_plan_evidence`` routes an accepted plan through the content-addressed evidence
+sink so the plan body is retrievable by artifact id.
+"""
 
 from __future__ import annotations
 
@@ -47,3 +52,33 @@ async def gather_repo_context(req: ContextRequest) -> ContextResult:
             for key, value in context_accuracy_attributes(package).items():
                 span.set_attribute(key, value)
         return ContextResult(summary=render_context_summary(package), package=package)
+
+
+@dataclass
+class PlanEvidenceRequest:
+    execution_id: str
+    task_id: str
+    plan: str
+    verdict: str = ""
+
+
+@dataclass
+class PlanEvidenceResult:
+    artifact_id: str
+
+
+@activity.defn
+async def record_plan_evidence(req: PlanEvidenceRequest) -> PlanEvidenceResult:
+    from services.review.evidence import PLAN_COMPONENT, persist_artifact_evidence
+
+    artifact_id = await persist_artifact_evidence(
+        execution_id=req.execution_id,
+        source_component=PLAN_COMPONENT,
+        body={"execution_id": req.execution_id, "plan": req.plan},
+        metadata={
+            "task_id": req.task_id,
+            "verdict": req.verdict,
+            "plan_characters": len(req.plan),
+        },
+    )
+    return PlanEvidenceResult(artifact_id=artifact_id)

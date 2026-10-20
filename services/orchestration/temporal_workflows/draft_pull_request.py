@@ -82,7 +82,9 @@ with workflow.unsafe.imports_passed_through():
     from services.orchestration.temporal_activities.planning import (
         ContextRequest,
         ContextResult,
+        PlanEvidenceRequest,
         gather_repo_context,
+        record_plan_evidence,
     )
     from services.orchestration.temporal_activities.policy import (
         EvaluatePromotionRequest,
@@ -393,6 +395,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         self._sync: BranchSyncOutput | None = None
         self._commit: CommitPushResult | None = None
         self._pr: PullRequestOutput | None = None
+        self._pr_body: str = ""
         self._pr_approval: _PrApproval | None = None
         self._pr_closed: _PrClosed | None = None
         self._repair_decision: _RepairDecision | None = None
@@ -826,6 +829,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 testing=self._testing_evidence(params),
             ),
         )
+        self._pr_body = body
         if self._pr is None:
             self._pr = await workflow.execute_child_workflow(
                 PullRequestWorkflow.run,
@@ -1617,6 +1621,17 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                         plan_verdict=plan_out.verdict,
                     ),
                 )
+        await workflow.execute_activity(
+            record_plan_evidence,
+            PlanEvidenceRequest(
+                execution_id=params.execution_id,
+                task_id=params.task_id,
+                plan=plan_out.plan,
+                verdict=plan_out.verdict,
+            ),
+            start_to_close_timeout=short,
+            retry_policy=retry,
+        )
         return _PlanResult(
             rejected=False,
             plan_text=plan_out.plan,
@@ -2272,6 +2287,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 execution_id=params.execution_id,
                 number=outcome.pr_number,
                 sequence=promotion_base + _PROMOTE_OFFSET,
+                summary=self._pr_body,
             ),
             start_to_close_timeout=short,
             retry_policy=retry,
