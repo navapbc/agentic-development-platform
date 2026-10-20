@@ -1,4 +1,8 @@
-"""Reader coverage for every artifact type the platform routes through the evidence sink."""
+"""Reader coverage for every artifact type the platform routes through the evidence sink.
+
+Each case drives the producer, persists the record it built through a sink that stands in
+for the table, and resolves it by id through the reader.
+"""
 
 from __future__ import annotations
 
@@ -12,9 +16,19 @@ from services.review.evidence import (
     PLAN_COMPONENT,
     PROMPT_REFERENCE_COMPONENT,
     PULL_REQUEST_SUMMARY_COMPONENT,
+    EvidenceRecord,
 )
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncEngine
+from tests.unit._evidence_producers import PRODUCERS
+
+COMPONENTS = {
+    "plan": PLAN_COMPONENT,
+    "pull-request-summary": PULL_REQUEST_SUMMARY_COMPONENT,
+    "approval": APPROVAL_COMPONENT,
+    "prompt-reference": PROMPT_REFERENCE_COMPONENT,
+    "build-and-test": BUILD_AND_TEST_COMPONENT,
+}
 
 
 class _FakeMappings:
@@ -34,6 +48,8 @@ class _FakeResult:
 
 
 class _FakeConnection:
+    """Stands in for the evidence table, matching on the artifact id the statement binds."""
+
     def __init__(self, rows: dict[str, dict[str, Any]]) -> None:
         self._rows = rows
 
@@ -61,45 +77,52 @@ class _FakeEngine:
         return self._connection
 
 
-def _row(artifact_id: str, source_component: str, metadata: dict[str, Any]) -> dict[str, Any]:
+def _stored_row(record: EvidenceRecord) -> dict[str, Any]:
+    """Mirror the columns PostgresEvidenceSink writes for one record."""
     return {
-        "artifact_id": artifact_id,
-        "execution_id": "exec-1",
-        "content_hash": f"sha256:{artifact_id}",
-        "source_component": source_component,
-        "classification": "standard",
-        "retention": "365",
-        "location": None,
-        "metadata": metadata,
+        "artifact_id": record.artifact_id,
+        "execution_id": record.execution_id,
+        "content_hash": record.content_hash,
+        "source_component": record.source_component,
+        "classification": record.classification,
+        "retention": record.retention,
+        "location": record.location,
+        "metadata": record.metadata or None,
     }
 
 
-_ARTIFACTS = {
-    "plan": _row("art-plan", PLAN_COMPONENT, {"task_id": "T-1", "verdict": "pass"}),
-    "summary": _row("art-summary", PULL_REQUEST_SUMMARY_COMPONENT, {"number": 7}),
-    "approval": _row("art-approval", APPROVAL_COMPONENT, {"approved": True}),
-    "prompt": _row("art-prompt", PROMPT_REFERENCE_COMPONENT, {"prompt_version": "v2"}),
-    "checks": _row("art-checks", BUILD_AND_TEST_COMPONENT, {"passed": True}),
-}
-
-
-def _reader() -> PostgresEvidenceReader:
-    rows = {row["artifact_id"]: row for row in _ARTIFACTS.values()}
+def _reader(records: list[EvidenceRecord]) -> PostgresEvidenceReader:
+    rows = {record.artifact_id: _stored_row(record) for record in records}
     engine = cast(AsyncEngine, _FakeEngine(_FakeConnection(rows)))
     return PostgresEvidenceReader(engine)
 
 
-@pytest.mark.parametrize("kind", sorted(_ARTIFACTS))
-async def test_each_routed_artifact_resolves_by_id(kind: str):
-    expected = _ARTIFACTS[kind]
+@pytest.mark.parametrize("kind", sorted(PRODUCERS))
+async def test_each_routed_artifact_resolves_by_id(kind: str, monkeypatch):
+    record = await PRODUCERS[kind](monkeypatch)
 
-    artifact = await _reader().get_artifact(expected["artifact_id"])
+    artifact = await _reader([record]).get_artifact(record.artifact_id)
 
     assert artifact is not None
-    assert artifact["source_component"] == expected["source_component"]
-    assert artifact["content_hash"] == expected["content_hash"]
-    assert artifact["metadata"] == expected["metadata"]
+    assert artifact["source_component"] == COMPONENTS[kind]
+    assert artifact["content_hash"] == record.content_hash
+    assert artifact["execution_id"] == record.execution_id
+    assert artifact["classification"] == record.classification
+    assert artifact["metadata"] == record.metadata
 
 
-async def test_an_unknown_artifact_id_resolves_to_none():
-    assert await _reader().get_artifact("art-missing") is None
+async def test_the_reader_resolves_one_artifact_out_of_every_routed_type(monkeypatch):
+    records = [await producer(monkeypatch) for producer in PRODUCERS.values()]
+    reader = _reader(records)
+
+    resolved = [await reader.get_artifact(record.artifact_id) for record in records]
+
+    assert [artifact["source_component"] for artifact in resolved] == [  # pyright: ignore[reportOptionalSubscript]
+        COMPONENTS[kind] for kind in PRODUCERS
+    ]
+
+
+async def test_an_unknown_artifact_id_resolves_to_none(monkeypatch):
+    record = await PRODUCERS["plan"](monkeypatch)
+
+    assert await _reader([record]).get_artifact("art-missing") is None
