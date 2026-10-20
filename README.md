@@ -20,6 +20,7 @@ Install these on the host before you start.
 | --- | --- | --- |
 | Docker Desktop with Compose v2 | Runs the whole stack | The `docker compose` command must work |
 | Python 3.12 or newer | Task runner, migrations, local scripts | The container images use 3.12 |
+| uv | Python dependency manager | |
 | git | Clone this repo and its siblings | |
 | An AWS profile with Bedrock access | Inference | An IAM principal with `bedrock:InvokeModel` and credentials under `~/.aws`. Set the profile and region in `.env` |
 
@@ -47,22 +48,21 @@ Run these once from the repository root.
 2. Copy the integration source configs with `cp config/local/github.yaml.example config/local/github.yaml`, `cp config/local/jira.yaml.example config/local/jira.yaml`, and `cp config/local/integrations.yaml.example config/local/integrations.yaml`, then edit the copies. See [Integration credentials](#integration-credentials). Never commit the `config/local/*.yaml` operator files. If you set `TICKET_BACKEND=rebar`, also copy `config/local/tickets.yaml.example` to `config/local/tickets.yaml`. See [Ticket and source-control backends](#ticket-and-source-control-backends).
 3. Copy the gate selection config with `cp config/local/gates.yaml.example config/local/gates.yaml`. It is required for any run that evaluates gates. Copying `config/local/gate_engine.yaml.example` to `config/local/gate_engine.yaml` is optional and adds an external gate engine. See [Configurable gates](#configurable-gates).
 4. Provision review-verdict signing, which is on by default. Generate a key and trust root and set the signing variables in `.env` by following the local setup in [docs/review-verdict-signing.md](docs/review-verdict-signing.md). Without this the review worker fails closed at startup. To skip signing, set `REVIEW_SIGNING_ENABLED=false`.
-5. Create and activate a virtual environment with `python -m venv .venv && source .venv/bin/activate`.
-6. Install the package with its development extras using `pip install -e ".[dev,reasoning]"`. Add `sandbox` for the OpenHands agent, and see [CONTRIBUTING.md](CONTRIBUTING.md) for the editable `rebar` install needed on the review path.
-7. Choose a Bedrock connectivity provider in `.env` and open the path with `inv tunnel-start`. See [Bedrock connectivity](#bedrock-connectivity).
-8. Validate the Bedrock path and local reachability with `inv connectivity-check`.
-9. Start the stack with `inv local-up`.
-10. Apply database migrations with `inv db-migrate`.
-11. Confirm everything is healthy with `inv smoke-test`.
-12. Load allowlisted seed data with `inv seed` when you need demo fixtures.
+5. Install the package with its development extras using `uv sync --all-groups --all-extras`.
+6. Choose a Bedrock connectivity provider in `.env` and open the path with `uv run inv tunnel-start`. See [Bedrock connectivity](#bedrock-connectivity).
+7. Validate the Bedrock path and local reachability with `uv run inv connectivity-check`.
+8. Start the stack with `uv run inv local-up`.
+9. Apply database migrations with `uv run inv db-migrate`.
+10. Confirm everything is healthy with `uv run inv smoke-test`.
+11. Load allowlisted seed data with `uv run inv seed` when you need demo fixtures.
 
 ## Vendored binaries
 
 Two binaries live under `vendor/bin` and are provisioned outside the Python install.
 
-`acli` is the Atlassian CLI used for Jira Cloud writes. The worker image build runs `scripts/fetch_acli.py` during `inv local-up`, which downloads and checksum-verifies the binary into the image at `/app/vendor/bin/acli`. The download is driven by `ACLI_VERSION`, `ACLI_DOWNLOAD_URL`, and `ACLI_SHA256` in `.env`, where `ACLI_SHA256` is required and verifies the artifact whatever its source. To place the same binary on the host for host-side runs, use `inv fetch-acli`, which writes `vendor/bin/acli`.
+`acli` is the Atlassian CLI used for Jira Cloud writes. The worker image build runs `scripts/fetch_acli.py` during `inv local-up`, which downloads and checksum-verifies the binary into the image at `/app/vendor/bin/acli`. The download is driven by `ACLI_VERSION`, `ACLI_DOWNLOAD_URL`, and `ACLI_SHA256` in `.env`, where `ACLI_SHA256` is required and verifies the artifact whatever its source. To place the same binary on the host for host-side runs, use `uv run inv fetch-acli`, which writes `vendor/bin/acli`.
 
-`codebase-memory-mcp` is an optional Repository Intelligence provider that supplies file-level reference and caller candidates. It has no release binary and is built from its upstream MIT-licensed source at `https://github.com/DeusData/codebase-memory-mcp`. Run `inv cbm-build`, which clones the upstream repository at the pinned tag and builds the binary into `vendor/bin/codebase-memory-mcp`. Pass `--source <path>` to build from an existing local checkout for a closed environment, or `--ref <tag>` to build a different upstream version. The Repository Intelligence services mount that path read-only and drive the binary as a per-call subprocess, so CBM engages automatically once the binary is present. When the binary is absent the provider is skipped and the stack runs on its other providers.
+`codebase-memory-mcp` is an optional Repository Intelligence provider that supplies file-level reference and caller candidates. It has no release binary and is built from its upstream MIT-licensed source at `https://github.com/DeusData/codebase-memory-mcp`. Run `uv run inv cbm-build`, which clones the upstream repository at the pinned tag and builds the binary into `vendor/bin/codebase-memory-mcp`. Pass `--source <path>` to build from an existing local checkout for a closed environment, or `--ref <tag>` to build a different upstream version. The Repository Intelligence services mount that path read-only and drive the binary as a per-call subprocess, so CBM engages automatically once the binary is present. When the binary is absent the provider is skipped and the stack runs on its other providers.
 
 ## Configuration
 
@@ -179,19 +179,19 @@ The platform reads work from a ticket backend and delivers changes to a source-c
 
 #### Rebar ticket backend
 
-Set `TICKET_BACKEND=rebar` to track work in a git-backed rebar ticket store instead of Jira. Copy the committed template with `cp config/local/tickets.yaml.example config/local/tickets.yaml` and edit the copy. The file is git-ignored and is required whenever the rebar backend is selected. `inv config-check` reports whether it is current.
+Set `TICKET_BACKEND=rebar` to track work in a git-backed rebar ticket store instead of Jira. Copy the committed template with `cp config/local/tickets.yaml.example config/local/tickets.yaml` and edit the copy. The file is git-ignored and is required whenever the rebar backend is selected. `uv run inv config-check` reports whether it is current.
 
 `backend.repo_root` points at the rebar store working tree. `backend.project` labels the ticket source, and `backend.default_repo` names the repository a ticket targets when it names none. `backend.status_flow` maps the platform's lifecycle stages `work_started`, `ready_for_review`, and `terminal` onto the store's own statuses, drawn from rebar's vocabulary of `idea`, `open`, `in_progress`, `closed`, `blocked`, `cancelled`, and `deleted`. The `poll` section runs change detection under an authenticated reader identity restricted to approved roles and redacts any field outside `allowed_fields`. The `store`, `roles`, `provenance`, and `isolation` sections keep the ticket store's object-store location and credentials separate from the evidence and audit stores, and the loader fails closed on any overlap. See [docs/tickets-store-credentials.md](docs/tickets-store-credentials.md) for the credential fields and [docs/rebar-ticket-api.md](docs/rebar-ticket-api.md) for the store API the backend calls.
 
-Seed the store from an operator-provided Excel export with `inv import-rebar-tickets --xlsx <path>`, which imports through rebar's own capability. Add `--reset` to wipe and re-initialize the store first, `--status` to import only selected statuses, and `--limit` to cap the count.
+Seed the store from an operator-provided Excel export with `uv run inv import-rebar-tickets --xlsx <path>`, which imports through rebar's own capability. Add `--reset` to wipe and re-initialize the store first, `--status` to import only selected statuses, and `--limit` to cap the count.
 
 #### Local source-control backend
 
 Set `SOURCE_CONTROL_BACKEND=local` to deliver changes to a git folder on disk instead of GitHub. `SOURCE_CONTROL_LOCAL_ROOT` is the parent directory that holds the target repositories, and `SOURCE_CONTROL_LOCAL_REPOS` is an optional comma-separated allowlist where an empty value discovers every git repository under the root. The local backend commits the change to an `agent/<task_id>` branch in the repository, performs no push, and opens no pull request. It writes a `SUMMARY.md` and a `change.patch` per run under `SOURCE_CONTROL_LOCAL_ARTIFACTS_ROOT`, along with a done ledger, and an empty artifacts root defaults to `<root>/.agent-publish`.
 
-A local-backend run has no merge webhook, so an operator completes it. When the run reaches the promoted branch it parks at `AWAITING_PR_CLOSE`. Run `inv operator-done --workflow-id ID --repo REPO --branch agent/<task_id>` to verify the published artifacts and signal completion, which advances the ticket to its terminal status. Add `--closed-unmerged` to complete as closed-unmerged rather than merged. `SOURCE_CONTROL_LOCAL_OPERATORS` is the comma-separated allowlist of operators authorized to run the command, matched against the operating system account, and the workflow id prints when the pipeline starts.
+A local-backend run has no merge webhook, so an operator completes it. When the run reaches the promoted branch it parks at `AWAITING_PR_CLOSE`. Run `uv run inv operator-done --workflow-id ID --repo REPO --branch agent/<task_id>` to verify the published artifacts and signal completion, which advances the ticket to its terminal status. Add `--closed-unmerged` to complete as closed-unmerged rather than merged. `SOURCE_CONTROL_LOCAL_OPERATORS` is the comma-separated allowlist of operators authorized to run the command, matched against the operating system account, and the workflow id prints when the pipeline starts.
 
-`inv operator-done` runs on the host while the workers run in containers, so it rewrites the container mount roots in `SOURCE_CONTROL_LOCAL_ROOT` and `SOURCE_CONTROL_LOCAL_ARTIFACTS_ROOT` to the host directories that back the compose mounts before it verifies artifacts. The `/repos` mount resolves to the parent directory of the platform checkout and the `/workspaces` mount resolves to `.agent-workspaces` inside it, matching `compose.override.yaml`. A value already set to a host path is left unchanged.
+`uv run inv operator-done` runs on the host while the workers run in containers, so it rewrites the container mount roots in `SOURCE_CONTROL_LOCAL_ROOT` and `SOURCE_CONTROL_LOCAL_ARTIFACTS_ROOT` to the host directories that back the compose mounts before it verifies artifacts. The `/repos` mount resolves to the parent directory of the platform checkout and the `/workspaces` mount resolves to `.agent-workspaces` inside it, matching `compose.override.yaml`. A value already set to a host path is left unchanged.
 
 ### Cross-ticket dependency discovery
 
@@ -201,7 +201,7 @@ Detection is off by default, so a deployment that does not set the flag behaves 
 
 ## Bedrock connectivity
 
-`inv tunnel-start` and `inv connectivity-check` dispatch to the provider named by `BEDROCK_CONNECTIVITY_PROVIDER`. Every provider satisfies the same reachability contract, so the platform code runs unchanged when you swap providers. Every path terminates at a private endpoint, so inference stays inside the compliance boundary. There is no public-endpoint provider.
+`uv run inv tunnel-start` and `uv run inv connectivity-check` dispatch to the provider named by `BEDROCK_CONNECTIVITY_PROVIDER`. Every provider satisfies the same reachability contract, so the platform code runs unchanged when you swap providers. Every path terminates at a private endpoint, so inference stays inside the compliance boundary. There is no public-endpoint provider.
 
 | Provider | Path | Required config |
 | --- | --- | --- |
@@ -216,16 +216,16 @@ Detection is off by default, so a deployment that does not set the flag behaves 
 The `vpc-endpoints` module provisions a `bedrock-runtime` interface endpoint that admits 443 only from the in-VPC subnet CIDRs you pass, with private DNS on. That means `bedrock-runtime.<region>.amazonaws.com` resolves to the endpoint's private IPs for any caller inside the VPC and is unreachable from outside it.
 
 - From in-VPC compute (an EKS pod or an EC2 host in an allowed subnet): set `BEDROCK_CONNECTIVITY_PROVIDER=direct` and leave `BEDROCK_ENDPOINT_URL` empty. Private DNS routes the call over the endpoint. Attach the `bedrock-iam` module's `bedrock:InvokeModel` policy to the workload role.
-- From a developer laptop: the private endpoint is not reachable directly, so forward through an in-VPC hop. Set `BEDROCK_CONNECTIVITY_PROVIDER=jumphost` for an SSM port-forward through a host in an allowed subnet, or `ssh-bastion` for an SSH local forward through a bastion, then run `inv tunnel-start` followed by `inv connectivity-check`. The hop resolves and originates the request inside the VPC.
-- `inv connectivity-check` runs a TLS handshake to `bedrock-runtime` over the selected provider and reports the result, so use it to confirm any path.
+- From a developer laptop: the private endpoint is not reachable directly, so forward through an in-VPC hop. Set `BEDROCK_CONNECTIVITY_PROVIDER=jumphost` for an SSM port-forward through a host in an allowed subnet, or `ssh-bastion` for an SSH local forward through a bastion, then run `uv run inv tunnel-start` followed by `uv run inv connectivity-check`. The hop resolves and originates the request inside the VPC.
+- `uv run inv connectivity-check` runs a TLS handshake to `bedrock-runtime` over the selected provider and reports the result, so use it to confirm any path.
 
 ### Provisioning modules
 
-The AWS infrastructure is split into reusable Terraform modules under `infra/terraform`. `vpc-endpoints` owns the shared interface and gateway endpoints, `ecr` owns the jumphost image registry, `cloudtrail` owns the audit trail, `bedrock-iam` owns the `bedrock:InvokeModel` policy, and `bedrock-jumphost-fargate` provisions an ephemeral ECS Exec hop to the private endpoint. Each is toggleable so an account reuses infrastructure it already has. The `infra/terraform/examples/private-bedrock` composition root wires them into one apply and works from zero or against an existing VPC through tfvars. After the apply, build and push the jumphost image with `inv publish-jumphost-image --tag v1` and attach the emitted `bedrock:InvokeModel` policy to the workload role. See [infra/terraform/examples/private-bedrock/README.md](infra/terraform/examples/private-bedrock/README.md).
+The AWS infrastructure is split into reusable Terraform modules under `infra/terraform`. `vpc-endpoints` owns the shared interface and gateway endpoints, `ecr` owns the jumphost image registry, `cloudtrail` owns the audit trail, `bedrock-iam` owns the `bedrock:InvokeModel` policy, and `bedrock-jumphost-fargate` provisions an ephemeral ECS Exec hop to the private endpoint. Each is toggleable so an account reuses infrastructure it already has. The `infra/terraform/examples/private-bedrock` composition root wires them into one apply and works from zero or against an existing VPC through tfvars. After the apply, build and push the jumphost image with `uv run inv publish-jumphost-image --tag v1` and attach the emitted `bedrock:InvokeModel` policy to the workload role. See [infra/terraform/examples/private-bedrock/README.md](infra/terraform/examples/private-bedrock/README.md).
 
 ## Services and ports
 
-`inv local-up` starts the services below with the `repo-intelligence` profile. The four backing databases `agent_platform`, `temporal`, `temporal_visibility`, and `langfuse` are created in the one Postgres container.
+`uv run inv local-up` starts the services below with the `repo-intelligence` profile. The four backing databases `agent_platform`, `temporal`, `temporal_visibility`, and `langfuse` are created in the one Postgres container.
 
 | Service | Host port | Role |
 | --- | --- | --- |
@@ -248,23 +248,23 @@ The AWS infrastructure is split into reusable Terraform modules under `infra/ter
 
 Migrations only touch the platform's own `agent_platform` schema. Temporal and Langfuse manage their own schemas. Langfuse v4 runs as `langfuse-web` and `langfuse-worker` backed by ClickHouse, Redis, and the shared MinIO object store, reusing the `langfuse` Postgres database.
 
-Migrations are applied only through the `db-migrate` container, which `inv db-migrate` and `inv db-reset` invoke. The container mounts the working-tree migrations, so the applied scripts always match the checkout without an image rebuild. Running `alembic upgrade`, `downgrade`, or `stamp` directly on the host is refused, because a host run can advance the database past the revisions the container carries and leave the two out of sync. The guard covers the alembic command line. Authoring commands such as `alembic revision --autogenerate` still run on the host.
+Migrations are applied only through the `db-migrate` container, which `uv run inv db-migrate` and `uv run inv db-reset` invoke. The container mounts the working-tree migrations, so the applied scripts always match the checkout without an image rebuild. Running `alembic upgrade`, `downgrade`, or `stamp` directly on the host is refused, because a host run can advance the database past the revisions the container carries and leave the two out of sync. The guard covers the alembic command line. Authoring commands such as `alembic revision --autogenerate` still run on the host.
 
 A deployed environment has no working-tree mount, so its `db-migrate` image carries the migrations baked in at build time. Rebuild or repull the `db-migrate` image whenever `database/migrations` changes, so the deployed container applies the current scripts.
 
 ## Inbound webhooks and CI
 
-The inbound front door receives Jira, pull-request, and CI deliveries. It runs on the local Kubernetes cluster alongside the MCP gateway. Deploy both with `inv k8s-deploy`, which builds the image when passed `--build` and rolls out the `inbound-webhook` and `mcp-gateway` deployments. The front door listens on `localhost:8140` and serves `/webhook/jira`, `/webhook/pr`, and `/webhook/ci`. Forward GitHub pull-request events to it during a demo with `inv webhook-setup`, and remove the forwards with `inv webhook-teardown`.
+The inbound front door receives Jira, pull-request, and CI deliveries. It runs on the local Kubernetes cluster alongside the MCP gateway. Deploy both with `uv run inv k8s-deploy`, which builds the image when passed `--build` and rolls out the `inbound-webhook` and `mcp-gateway` deployments. The front door listens on `localhost:8140` and serves `/webhook/jira`, `/webhook/pr`, and `/webhook/ci`. Forward GitHub pull-request events to it during a demo with `uv run inv webhook-setup`, and remove the forwards with `uv run inv webhook-teardown`.
 
-Local CI runs under the Compose `ci` profile, which `inv local-up` does not start. Bring up Jenkins with `docker compose --profile ci up -d jenkins`, reachable at `localhost:8080`. The job checks out the target branch, runs the repository Jenkinsfile, and notifies `/webhook/ci` on completion. A parked CI wait resumes on that notification to the same result the poll would produce, and the poller stays the fallback.
+Local CI runs under the Compose `ci` profile, which `uv run inv local-up` does not start. Bring up Jenkins with `docker compose --profile ci up -d jenkins`, reachable at `localhost:8080`. The job checks out the target branch, runs the repository Jenkinsfile, and notifies `/webhook/ci` on completion. A parked CI wait resumes on that notification to the same result the poll would produce, and the poller stays the fallback.
 
 ## Verifying the stack
 
-`inv smoke-test` checks the database and the `agent_platform` schema, the LiteLLM, OPA, and Langfuse health endpoints, and a Bedrock inference round trip through LiteLLM. `inv durability-proof` shows a workflow surviving a worker restart. `inv workflow-status` lists recent Temporal executions.
+`uv run inv smoke-test` checks the database and the `agent_platform` schema, the LiteLLM, OPA, and Langfuse health endpoints, and a Bedrock inference round trip through LiteLLM. `uv run inv durability-proof` shows a workflow surviving a worker restart. `uv run inv workflow-status` lists recent Temporal executions.
 
 ## Everyday commands
 
-Run `inv --list` for the full set. The common tasks are below.
+Run `uv run inv --list` for the full set. The common tasks are below.
 
 | Task | Purpose |
 | --- | --- |
@@ -289,37 +289,37 @@ See [Recovering a stuck intake](#recovering-a-stuck-intake) for the retry, repai
 
 ## Recovering a stuck intake
 
-The Jira intake reconciler turns a labeled ticket into a draft-PR execution on each pass, and the rebar reconciler does the same for a ready ticket in the store. `inv intake` runs one pass and `inv intake --schedule` installs the recurring Temporal schedule. When an execution fails, or a ticket needs another attempt, the commands below drive it without signalling Temporal by hand.
+The Jira intake reconciler turns a labeled ticket into a draft-PR execution on each pass, and the rebar reconciler does the same for a ready ticket in the store. `uv run inv intake` runs one pass and `uv run inv intake --schedule` installs the recurring Temporal schedule. When an execution fails, or a ticket needs another attempt, the commands below drive it without signalling Temporal by hand.
 
-`inv intake --retry ISSUE [--repo REPO]` clears the intake dedup for a failed issue, marks its stale executions failed, and resets its sequence gate, so the next poll relaunches the ticket from a clean state. Add `--repo` to scope the retry to one repository when the ticket fanned out to several. It refuses while a workflow for the ticket is still running.
+`uv run inv intake --retry ISSUE [--repo REPO]` clears the intake dedup for a failed issue, marks its stale executions failed, and resets its sequence gate, so the next poll relaunches the ticket from a clean state. Add `--repo` to scope the retry to one repository when the ticket fanned out to several. It refuses while a workflow for the ticket is still running.
 
 When automated CI repair exhausts its attempts, the draft-PR workflow parks at the `AWAITING_HUMAN` state and posts a comment on the ticket. Read the failing Security, Test, or Lint stage in Jenkins to see what to change, then resolve the pause with one of the following.
 
-`inv repair ISSUE --retry` re-runs CI and the automated repair loop on the current branch head. Use it after you push a fix to the branch, or when the failure was transient. It does not re-read the ticket or re-run the coding agent.
+`uv run inv repair ISSUE --retry` re-runs CI and the automated repair loop on the current branch head. Use it after you push a fix to the branch, or when the failure was transient. It does not re-read the ticket or re-run the coding agent.
 
-`inv repair ISSUE --abandon` ends the parked execution as human-abandoned. It leaves the draft PR open and re-runs nothing.
+`uv run inv repair ISSUE --abandon` ends the parked execution as human-abandoned. It leaves the draft PR open and re-runs nothing.
 
-`inv restart ISSUE [--repo REPO]` abandons the parked execution and re-triggers intake in one step, so a corrected ticket relaunches a fresh execution with a new coding-agent implementation. It waits for the abandoned workflow to finalize before it clears the intake state. This is the usual command after you edit a ticket that failed.
+`uv run inv restart ISSUE [--repo REPO]` abandons the parked execution and re-triggers intake in one step, so a corrected ticket relaunches a fresh execution with a new coding-agent implementation. It waits for the abandoned workflow to finalize before it clears the intake state. This is the usual command after you edit a ticket that failed.
 
 Every decision records the operator identity in the audit trail. The identity is read from the operating system account that runs the command, not a flag, so it cannot be recorded under another name.
 
-When the review and approval gates are enabled, a workflow instead pauses at `AWAITING_PR_APPROVAL` and `AWAITING_PR_CLOSE`. Release those with `inv approve-pr --workflow-id ID`, add `--reject` to reject the pull request, and pass `--pr-closed` with `--merged` to stand in for the GitHub PR-closed webhook. The workflow id prints when the pipeline starts. On the local source-control backend a run parks at `AWAITING_PR_CLOSE` on every run rather than only under the approval gate, because there is no merge webhook, and `inv operator-done` is what releases it. See [Local source-control backend](#local-source-control-backend).
+When the review and approval gates are enabled, a workflow instead pauses at `AWAITING_PR_APPROVAL` and `AWAITING_PR_CLOSE`. Release those with `uv run inv approve-pr --workflow-id ID`, add `--reject` to reject the pull request, and pass `--pr-closed` with `--merged` to stand in for the GitHub PR-closed webhook. The workflow id prints when the pipeline starts. On the local source-control backend a run parks at `AWAITING_PR_CLOSE` on every run rather than only under the approval gate, because there is no merge webhook, and `uv run inv operator-done` is what releases it. See [Local source-control backend](#local-source-control-backend).
 
 ## Configurable gates
 
 The review and scan stages run a set of gates chosen from config, not a fixed sequence. `config/<env>/gates.yaml` names a shipped bundle with `profile` (`government` or `private`) and overrides individual gates by name. Each gate entry sets `enabled`, `required`, an `after` list, an `on_block` response, and a `params` map, and `fail_fast` is set per stage. A bundle names the working default, and an explicit entry overrides one gate without restating the rest. The promotion policy is data-driven over the resulting gate verdicts, so enabling or disabling a gate changes the run without a policy edit. The policy's repository and project allowlists and its continuous-integration requirement follow the configured ticket and source-control backends, so a local source-control run that runs no continuous integration is not denied for a GitHub or Jira-specific check.
 
-`gates.yaml` is required for any run that evaluates gates. Copy it from `gates.yaml.example` during setup. A run with reviews or policy enabled fails with a config-missing error until the file exists, and `inv config-check` reports it as not created. `gate_engine.yaml` is optional. With no `gate_engine.yaml`, no engine gate registers and the built-in rebar `security-review` gate stays the reviewer. Both operator files are git-ignored, and the repository ships only their `.example` templates.
+`gates.yaml` is required for any run that evaluates gates. Copy it from `gates.yaml.example` during setup. A run with reviews or policy enabled fails with a config-missing error until the file exists, and `uv run inv config-check` reports it as not created. `gate_engine.yaml` is optional. With no `gate_engine.yaml`, no engine gate registers and the built-in rebar `security-review` gate stays the reviewer. Both operator files are git-ignored, and the repository ships only their `.example` templates.
 
 The gate set is extended entirely through config, with one uniform mechanism for every external tool. A tool is never installed into the platform, it is named in config and run as a subprocess against a config-selected source.
 
 - External gates. One or more external tools drive their own gates and the advisory test classifier through an invocation and output contract, configured as a list in `config/<env>/gate_engine.yaml`. Each entry selects a source (`local`, `tag`, or `zip`) and an `output_format` of `sarif` or `review-json`, so a SARIF-emitting scanner such as Semgrep, Snyk, or SonarQube and an AI-CLI reviewer such as `ai-common-workflows` are added the same way, with no packaging and no code change. See [docs/gate-engine.md](docs/gate-engine.md). The path is inert until configured, so the built-in rebar `security-review` gate is the default reviewer.
 
-A gate entry set to `on_block: pause_for_human` parks the run at `AWAITING_HUMAN` on a blocking verdict rather than failing closed, and a promotion condition the policy classifies as human review parks the same way. The reserved `plan` gate is a config-only human checkpoint on the reviewed plan, off in both bundles. Resolve any parked human gate with `inv gate --issue KEY --gate NAME --approve` or `--reject`. Approve continues the run, reject cancels it, and the operator identity is read from the operating system account.
+A gate entry set to `on_block: pause_for_human` parks the run at `AWAITING_HUMAN` on a blocking verdict rather than failing closed, and a promotion condition the policy classifies as human review parks the same way. The reserved `plan` gate is a config-only human checkpoint on the reviewed plan, off in both bundles. Resolve any parked human gate with `uv run inv gate --issue KEY --gate NAME --approve` or `--reject`. Approve continues the run, reject cancels it, and the operator identity is read from the operating system account.
 
 ## Demos
 
-The demo tasks walk the platform in four acts. Each is an `inv` task with its own flags, listed under `inv --list`.
+The demo tasks walk the platform in four acts. Each is an `inv` task with its own flags, listed under `uv run inv --list`.
 
 | Task | Act |
 | --- | --- |

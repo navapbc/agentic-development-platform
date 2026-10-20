@@ -1,15 +1,24 @@
 name: agentic-dev-platform
 
 x-python-service: &python-service
+  image: agentic-development-platform-py:latest
   build:
     context: .
     dockerfile: docker/Dockerfile
   env_file: [.env]
   restart: unless-stopped
 
+repo-intelligence-service: &repo-intelligence-service
+  image: agentic-development-platform-repo-intelligence:latest
+  build:
+    context: .
+    dockerfile: docker/repo-intelligence.Dockerfile
+  env_file: [.env]
+  restart: unless-stopped
+
 services:
   postgres:
-    image: postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
+    image: public.ecr.aws/docker/library/postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-platform}
@@ -27,7 +36,7 @@ services:
       retries: 10
 
   temporal:
-    image: temporalio/auto-setup:1.29.7@sha256:f14912b699cf73015ad5c4fc18d522d4b014db90e794039214dfb7c022c2644f
+    image: docker.io/temporalio/auto-setup:1.29.7@sha256:f14912b699cf73015ad5c4fc18d522d4b014db90e794039214dfb7c022c2644f
     restart: unless-stopped
     depends_on:
       postgres:
@@ -48,7 +57,7 @@ services:
       retries: 15
 
   temporal-ui:
-    image: temporalio/ui:2.53.3@sha256:eef301146e60fad34b47adaecfae4149016e34b2d44ba94fca5fd8e5441f182a
+    image: docker.io/temporalio/ui:2.53.3@sha256:eef301146e60fad34b47adaecfae4149016e34b2d44ba94fca5fd8e5441f182a
     depends_on: [temporal]
     environment:
       TEMPORAL_ADDRESS: temporal:7233
@@ -187,7 +196,7 @@ services:
     restart: unless-stopped
 
   opa:
-    image: openpolicyagent/opa:1.20.1@sha256:39daf255ae7f25d81103f03a0c18308a50b7b5bb67907bed6166f70e24a970ff
+    image: docker.io/openpolicyagent/opa:1.20.1@sha256:39daf255ae7f25d81103f03a0c18308a50b7b5bb67907bed6166f70e24a970ff
     command:
       - "run"
       - "--server"
@@ -200,7 +209,7 @@ services:
     restart: unless-stopped
 
   clickhouse:
-    image: clickhouse/clickhouse-server:25.12@sha256:8a790dd3468db22b1d4e7b18a176f378ff5ff6053b9c48dd4ea1fa71a24c5ba6
+    image: docker.io/clickhouse/clickhouse-server:25.12@sha256:8a790dd3468db22b1d4e7b18a176f378ff5ff6053b9c48dd4ea1fa71a24c5ba6
     user: "101:101"
     environment:
       CLICKHOUSE_DB: default
@@ -218,7 +227,7 @@ services:
     restart: unless-stopped
 
   redis:
-    image: redis:7.4-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
+    image: public.ecr.aws/docker/library/redis:7.4-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
     command: ["redis-server", "--requirepass", "${REDIS_AUTH:-change-me-locally}", "--maxmemory-policy", "noeviction"]
     volumes:
       - langfuse-redis-data:/data
@@ -309,6 +318,7 @@ services:
 
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.160.0@sha256:799dc6cf12c96192af37b5bdba804da8c10b3bc563b43cb90c3f3c58d9572ad6
+    profiles: ["monitoring"]
     command: ["--config=/etc/otel/config.yaml"]
     volumes:
       - ./observability/otel/otel-collector-config.yaml:/etc/otel/config.yaml:ro
@@ -321,7 +331,8 @@ services:
     restart: unless-stopped
 
   prometheus:
-    image: prom/prometheus:v3.14.0@sha256:5ce7540c3c00ef4ab0c9d2c995c6a5b9c421f44b4a115d97a2c7af3b1c21cbb0
+    image: ghcr.io/prometheus/prometheus:v3.14.0@sha256:5ce7540c3c00ef4ab0c9d2c995c6a5b9c421f44b4a115d97a2c7af3b1c21cbb0
+    profiles: ["monitoring"]
     command: ["--config.file=/etc/prometheus/prometheus.yaml"]
     volumes:
       - ./observability/prometheus/prometheus.yaml:/etc/prometheus/prometheus.yaml:ro
@@ -334,6 +345,7 @@ services:
 
   tempo:
     image: grafana/tempo:2.10.8@sha256:f0561deb1c68ec44d6e6e7e4487f30106c4e5e768642077695b37958b105812a
+    profiles: ["monitoring"]
     command: ["-config.file=/etc/tempo/tempo.yaml", "-config.expand-env=true"]
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minio}
@@ -350,6 +362,7 @@ services:
 
   grafana:
     image: grafana/grafana:11.3.0@sha256:a0f881232a6fb71a0554a47d0fe2203b6888fe77f4cefb7ea62bed7eb54e13c3
+    profiles: ["monitoring"]
     environment:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
@@ -364,25 +377,17 @@ services:
     restart: unless-stopped
 
   repo-intelligence:
-    build:
-      context: .
-      dockerfile: docker/repo-intelligence.Dockerfile
-    env_file: [.env]
+    <<: *repo-intelligence-service
     ports: ["8120:8120"]
     volumes:
       - repo-index-data:/app/repository_indexes
       - ./config/local:/app/config/local:ro
-    restart: unless-stopped
 
   repo-index-worker:
-    build:
-      context: .
-      dockerfile: docker/repo-intelligence.Dockerfile
+    <<: *repo-intelligence-service
     command: ["python", "-m", "services.repository_intelligence.indexing.worker"]
-    env_file: [.env]
     volumes:
       - repo-index-data:/app/repository_indexes
-    restart: unless-stopped
 
 volumes:
   postgres-data:
