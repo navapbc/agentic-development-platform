@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import timedelta
@@ -60,6 +61,38 @@ def _raise_for_status(resp: httpx.Response) -> None:
     raise ApplicationError(detail, type="LiteLLMRejected", non_retryable=True)
 
 
+async def _persist_prompt_evidence(
+    req: ModelRequest, *, prompt_version: str | None, model_id: str | None
+) -> None:
+    """Record a reference to the prompt a model call used, not the prompt text itself."""
+    if not req.execution_id:
+        return
+    from services.review.evidence import PROMPT_REFERENCE_COMPONENT, persist_artifact_evidence
+
+    prompt_digest = hashlib.sha256(req.prompt.encode("utf-8")).hexdigest()
+    await persist_artifact_evidence(
+        execution_id=req.execution_id,
+        source_component=PROMPT_REFERENCE_COMPONENT,
+        body={
+            "execution_id": req.execution_id,
+            "logical_model": req.logical_model,
+            "stage": req.stage or "",
+            "system_prompt_name": req.system_prompt_name or "",
+            "prompt_version": prompt_version or "",
+            "prompt_sha256": prompt_digest,
+        },
+        metadata={
+            "task_id": req.task_id or "",
+            "stage": req.stage or "",
+            "logical_model": req.logical_model,
+            "model_id": model_id or "",
+            "system_prompt_name": req.system_prompt_name or "",
+            "prompt_version": prompt_version or "",
+            "prompt_sha256": prompt_digest,
+        },
+    )
+
+
 @activity.defn
 async def invoke_model(req: ModelRequest) -> ModelResponse:
     settings = get_settings()
@@ -107,6 +140,7 @@ async def invoke_model(req: ModelRequest) -> ModelResponse:
             input_tokens=usage.get("prompt_tokens"),
             output_tokens=usage.get("completion_tokens"),
         )
+    await _persist_prompt_evidence(req, prompt_version=prompt_version, model_id=model_id)
     return ModelResponse(
         logical_model=req.logical_model,
         content=content,
