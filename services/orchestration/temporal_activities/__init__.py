@@ -38,7 +38,10 @@ from services.orchestration.temporal_activities.persistence import (
     record_audit_event,
     record_usage_metrics,
 )
-from services.orchestration.temporal_activities.planning import gather_repo_context
+from services.orchestration.temporal_activities.planning import (
+    gather_repo_context,
+    record_plan_evidence,
+)
 from services.orchestration.temporal_activities.policy import evaluate_promotion
 from services.orchestration.temporal_activities.pull_request import (
     apply_task_status,
@@ -104,6 +107,7 @@ __all__ = [
     "record_audit_event",
     "record_dependency_link",
     "record_manifest",
+    "record_plan_evidence",
     "record_pr_approval",
     "record_suspension",
     "record_usage_metrics",

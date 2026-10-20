@@ -75,7 +75,12 @@ from services.orchestration.temporal_activities.persistence import (
     ExecutionState,
     UsageMetrics,
 )
-from services.orchestration.temporal_activities.planning import ContextRequest, ContextResult
+from services.orchestration.temporal_activities.planning import (
+    ContextRequest,
+    ContextResult,
+    PlanEvidenceRequest,
+    PlanEvidenceResult,
+)
 from services.orchestration.temporal_activities.policy import (
     EvaluatePromotionRequest,
     EvaluatePromotionResult,
@@ -181,6 +186,7 @@ def _make_activities(
     plan_verdict: str = "pass",
     impl_requests: list[ImplementationRequest] | None = None,
     context_requests: list[ContextRequest] | None = None,
+    plan_evidence: list[PlanEvidenceRequest] | None = None,
     scan_requests: list[ScanChangeRequest] | None = None,
     scan_blocking_findings: int = 0,
     scan_result_findings: list[ScanFindingRecord] | None = None,
@@ -234,6 +240,12 @@ def _make_activities(
         if context_requests is not None:
             context_requests.append(req)
         return ContextResult(summary="repo context", package={"nodes": ["feature.py"]})
+
+    @activity.defn(name="record_plan_evidence")
+    async def fake_plan_evidence(req: PlanEvidenceRequest) -> PlanEvidenceResult:
+        if plan_evidence is not None:
+            plan_evidence.append(req)
+        return PlanEvidenceResult(artifact_id="plan-artifact")
 
     @activity.defn(name="claim_work_unit")
     async def fake_claim(req: ClaimRequest) -> ClaimResult:
@@ -547,6 +559,7 @@ def _make_activities(
         fake_audit,
         fake_usage,
         fake_context,
+        fake_plan_evidence,
         fake_claim,
         fake_find_open_pr,
         fake_stage,
@@ -1897,6 +1910,7 @@ async def test_plan_human_gate_parks_then_approve_continues():
     commits: list[CommitPushRequest] = []
     pr_opens: list[OpenPrRequest] = []
     linkbacks: list[LinkbackRequest] = []
+    plan_evidence: list[PlanEvidenceRequest] = []
     activities = _make_activities(
         None,
         1,
@@ -1905,6 +1919,7 @@ async def test_plan_human_gate_parks_then_approve_continues():
         linkbacks,
         ci_result=SUCCESS,
         plan_pause=True,
+        plan_evidence=plan_evidence,
     )
 
     async with await WorkflowEnvironment.start_time_skipping() as env:
@@ -1922,12 +1937,16 @@ async def test_plan_human_gate_parks_then_approve_continues():
             result = await handle.result()
 
     assert result.status == PR_PROMOTED
+    assert len(plan_evidence) == 1
+    assert plan_evidence[0].plan
+    assert plan_evidence[0].verdict == "pass"
 
 
 async def test_plan_human_gate_reject_stops_the_run():
     commits: list[CommitPushRequest] = []
     pr_opens: list[OpenPrRequest] = []
     linkbacks: list[LinkbackRequest] = []
+    plan_evidence: list[PlanEvidenceRequest] = []
     activities = _make_activities(
         None,
         1,
@@ -1936,6 +1955,7 @@ async def test_plan_human_gate_reject_stops_the_run():
         linkbacks,
         ci_result=SUCCESS,
         plan_pause=True,
+        plan_evidence=plan_evidence,
     )
 
     async with await WorkflowEnvironment.start_time_skipping() as env:
@@ -1953,6 +1973,7 @@ async def test_plan_human_gate_reject_stops_the_run():
 
     assert result.status == PLAN_REJECTED
     assert result.plan_status == "rejected"
+    assert plan_evidence == []
 
 
 async def test_plan_human_gate_is_inert_by_default():
@@ -2419,6 +2440,7 @@ async def test_approval_parks_and_promotes_pr_on_approve():
     assert approvals[0].sequence == 115
     assert len(promotions) == 1
     assert promotions[0].sequence == 116
+    assert "## Changes" in promotions[0].summary
     assert alerts == []
 
 
