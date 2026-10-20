@@ -88,6 +88,9 @@ AWS transition and FedRAMP Medium readiness. The platform documents its local-to
 
 ### Fixed
 
+- `alembic_database_url` derives its fallback from `DATABASE_URL` in place of a literal that carried the example password, so a host-run `inv smoke-test` or `inv db-reset` authenticates with the configured credentials. The `database_url` default names the `postgres` service, which the host rewrite maps to the published port.
+- `inv workflow-status` resolves `TEMPORAL_HOST` through the host rewrite, so it reaches the published Temporal port in place of failing on the Compose service name.
+- `inv db-migrate`, `inv schedules-install`, and `inv db-reset` build their image before running. `inv local-up` builds only the services it starts, so the `tasks` profile previously reused whatever `db-migrate` image was left in the local cache.
 - The rebar change report no longer saves the cursor the rebar intake pass reads. A ticket the report listed was previously treated as already seen and never started.
 - Slack alert delivery and the `acli` download refuse any URL that is not https, including a redirect to http. The Slack sender previously accepted a `file:` URL.
 - The sandbox copy-in and patch extraction quote the project path in the pod shell command.
