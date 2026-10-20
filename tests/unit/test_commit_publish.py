@@ -1,7 +1,9 @@
 """The guard that fails a publish whose tree is not the tree the checks ran against."""
 
+from typing import cast
+
 import pytest
-from adapters.interfaces.git_host import CommitRequest, CommitResult
+from adapters.interfaces.git_host import CommitRequest, CommitResult, GitHost
 from services.coordination.idempotency import InMemorySideEffectLedger
 from services.coordination.sequencing import InMemorySequenceGate
 from services.integration.github.mediator import GitHubMediator, PublishedTreeMismatch
@@ -30,7 +32,7 @@ class _Host:
 
 def _mediator(published_tree: str) -> GitHubMediator:
     return GitHubMediator(
-        backend=_Host(published_tree),
+        backend=cast(GitHost, _Host(published_tree)),
         ledger=InMemorySideEffectLedger(),
         gate=InMemorySequenceGate(),
         allowed_repos=frozenset({REPO}),

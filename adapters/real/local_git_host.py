@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -22,6 +21,7 @@ from adapters.interfaces.git_host import (
     author_env,
 )
 from scripts.config import Settings, get_settings
+from services import process
 
 _PULLS_FILE = "pulls.json"
 _SUMMARY_FILE = "SUMMARY.md"
@@ -74,9 +74,10 @@ class LocalGitHost:
         allowed: tuple[int, ...] = (0,),
         env: dict[str, str] | None = None,
     ) -> _GitResult:
-        def run() -> subprocess.CompletedProcess[str]:
-            return subprocess.run(
+        def run() -> process.CompletedProcess[str]:
+            return process.run(
                 ["git", "-c", "safe.directory=*", *args],
+                timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS,
                 cwd=str(cwd),
                 capture_output=True,
                 text=True,
@@ -89,9 +90,7 @@ class LocalGitHost:
             raise RuntimeError(f"git {' '.join(args)} failed (rc {proc.returncode}): {detail}")
         return _GitResult(proc.returncode, proc.stdout.strip(), proc.stderr.strip())
 
-    async def _git(
-        self, *args: str, cwd: str | Path, env: dict[str, str] | None = None
-    ) -> str:
+    async def _git(self, *args: str, cwd: str | Path, env: dict[str, str] | None = None) -> str:
         return (await self._run(*args, cwd=cwd, env=env)).stdout
 
     async def _branch_exists(self, repo_path: Path, name: str) -> str:

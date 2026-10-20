@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 from services.orchestration.webhook.pr_events import PostgresWorkflowResolver, PrClosedEvent
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 
 class _FakeResult:
@@ -61,7 +63,7 @@ def _compiled(statement) -> str:
 @pytest.mark.asyncio
 async def test_resolver_ignores_terminal_execution_rows():
     connection = _FakeConnection(None)
-    resolver = PostgresWorkflowResolver(_FakeEngine(connection))
+    resolver = PostgresWorkflowResolver(cast(AsyncEngine, _FakeEngine(connection)))
 
     workflow_id = await resolver.resolve(_event())
 
@@ -73,7 +75,7 @@ async def test_resolver_ignores_terminal_execution_rows():
 @pytest.mark.asyncio
 async def test_resolver_prioritizes_awaiting_pr_close_workflow():
     connection = _FakeConnection(SimpleNamespace(workflow_id="wf-awaiting-close"))
-    resolver = PostgresWorkflowResolver(_FakeEngine(connection))
+    resolver = PostgresWorkflowResolver(cast(AsyncEngine, _FakeEngine(connection)))
 
     workflow_id = await resolver.resolve(_event())
 

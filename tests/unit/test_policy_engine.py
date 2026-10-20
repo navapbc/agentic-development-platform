@@ -121,7 +121,6 @@ async def test_bundle_version_reads_the_policy_at_start():
     assert await client.bundle_version() == "0.3.0"
 
 
-
 async def test_missing_ci_success_denies():
     decision = await _client().evaluate(_compliant(ci_status="failure"))
 

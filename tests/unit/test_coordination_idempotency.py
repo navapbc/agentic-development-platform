@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 from services.coordination.idempotency import (
     InMemorySideEffectLedger,
@@ -13,6 +13,7 @@ from services.coordination.idempotency import (
     side_effect_key,
 )
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 
 @dataclass
@@ -210,7 +211,7 @@ async def test_legacy_pending_intake_start_is_completed_under_the_current_key():
             )
         ]
     )
-    ledger = PostgresSideEffectLedger(engine)
+    ledger = PostgresSideEffectLedger(cast(AsyncEngine, engine))
     calls: list[str] = []
 
     async def start_current():
@@ -242,7 +243,7 @@ async def test_pending_legacy_intake_start_row_makes_the_current_key_reentrant()
             )
         ]
     )
-    ledger = PostgresSideEffectLedger(engine)
+    ledger = PostgresSideEffectLedger(cast(AsyncEngine, engine))
 
     outcome = await ledger.reserve(current)
 
@@ -266,7 +267,7 @@ async def test_pending_legacy_intake_start_row_for_another_repo_is_not_reentrant
             )
         ]
     )
-    ledger = PostgresSideEffectLedger(engine)
+    ledger = PostgresSideEffectLedger(cast(AsyncEngine, engine))
 
     outcome = await ledger.reserve(current)
 
@@ -301,7 +302,7 @@ async def test_the_most_recently_updated_legacy_intake_start_row_wins():
             ),
         ]
     )
-    ledger = PostgresSideEffectLedger(engine)
+    ledger = PostgresSideEffectLedger(cast(AsyncEngine, engine))
 
     outcome = await ledger.reserve(current)
 
@@ -326,7 +327,7 @@ async def test_legacy_completed_intake_start_replays_with_the_legacy_key():
             )
         ]
     )
-    ledger = PostgresSideEffectLedger(engine)
+    ledger = PostgresSideEffectLedger(cast(AsyncEngine, engine))
     calls: list[str] = []
 
     async def start_current():
@@ -359,7 +360,7 @@ async def test_legacy_completed_intake_start_for_a_different_repo_does_not_repla
             )
         ]
     )
-    ledger = PostgresSideEffectLedger(engine)
+    ledger = PostgresSideEffectLedger(cast(AsyncEngine, engine))
     calls: list[str] = []
 
     async def start_current():
@@ -390,7 +391,7 @@ async def test_legacy_intake_repo_match_treats_underscores_literally():
             )
         ]
     )
-    ledger = PostgresSideEffectLedger(engine)
+    ledger = PostgresSideEffectLedger(cast(AsyncEngine, engine))
     calls: list[str] = []
 
     async def start_current():

@@ -69,7 +69,7 @@ resource "aws_s3_bucket_public_access_block" "evidence" {
 }
 
 resource "aws_s3_bucket_logging" "evidence" {
-  count = local.enabled && var.access_log_bucket != "" ? 1 : 0
+  count = local.enabled ? 1 : 0
 
   bucket        = aws_s3_bucket.evidence[0].id
   target_bucket = var.access_log_bucket

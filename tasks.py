@@ -6,6 +6,7 @@ import os
 import sys
 
 from invoke import Collection, Exit, task
+from services import process
 
 COMPOSE = "docker compose"
 
@@ -80,8 +81,10 @@ def config_check(c):
 
 @task
 def local_up(c):
-    """Bring up the local Compose stack."""
-    c.run(f"{COMPOSE} {_compose_files()} --profile repo-intelligence up -d --build")
+    """Build the images, apply migrations, then start the stack and wait for it to be healthy."""
+    c.run(f"{COMPOSE} {_compose_files()} build")
+    db_migrate(c)
+    c.run(f"{COMPOSE} {_compose_files()} up -d --wait --wait-timeout 600")
 
 
 @task
@@ -112,6 +115,12 @@ def logs(c, service=""):
 def db_migrate(c):
     """Apply migrations by running the db-migrate container."""
     c.run(f"{COMPOSE} {_compose_files()} run --rm db-migrate", pty=True)
+
+
+@task
+def schedules_install(c):
+    """Register the Temporal reap and intake schedules by running the schedule-bootstrap task."""
+    c.run(f"{COMPOSE} {_compose_files()} run --rm schedule-bootstrap", pty=True)
 
 
 @task
@@ -159,11 +168,11 @@ def import_rebar_tickets(c, xlsx="", root="", status="", limit=0, reset=False, l
         "new": "Report new tickets.",
         "field-changes": "Report field changes.",
         "status-changes": "Report status changes.",
-        "report-only": "Do not drive intake side effects.",
+        "local": "Run on the host instead of in the activity-worker container.",
     }
 )
-def rebar_poll(c, new=False, field_changes=False, status_changes=False, report_only=False):
-    """Poll the rebar tickets branch for new tickets, field changes, and status changes."""
+def rebar_changes(c, new=False, field_changes=False, status_changes=False, local=False):
+    """Report rebar ticket changes since the last intake pass without starting work."""
     flags = []
     if new:
         flags.append("--new")
@@ -171,9 +180,7 @@ def rebar_poll(c, new=False, field_changes=False, status_changes=False, report_o
         flags.append("--field-changes")
     if status_changes:
         flags.append("--status-changes")
-    if report_only:
-        flags.append("--report-only")
-    c.run(f"python -m scripts.rebar_poll {' '.join(flags)}".strip(), pty=True)
+    _run_scripted(c, f"python -m scripts.rebar_poll {' '.join(flags)}".strip(), local=local)
 
 
 def _rebar_gate_env() -> dict[str, str]:
@@ -190,7 +197,7 @@ def _rebar_gate_env() -> dict[str, str]:
     directory.
     """
     root = os.path.dirname(os.path.abspath(__file__))
-    return {"REBAR_LLM_CONFIG_FILE": os.path.join(root, "config", "local", "rebar-review.toml")}
+    return {"REBAR_LLM_CONFIG_FILE": os.path.join(root, "config", "platform", "rebar-review.toml")}
 
 
 @task(
@@ -259,9 +266,7 @@ def _host_source_control_env() -> dict[str, str]:
         "closed-unmerged": "Complete as closed-unmerged rather than merged.",
     }
 )
-def operator_done(
-    c, workflow_id, repo, branch, completion_signal_id="", closed_unmerged=False
-):
+def operator_done(c, workflow_id, repo, branch, completion_signal_id="", closed_unmerged=False):
     """Complete a local-backend run by verifying artifacts and signaling the workflow."""
     flags = f"--workflow-id {workflow_id} --repo {repo} --branch {branch}"
     if completion_signal_id:
@@ -335,6 +340,12 @@ def ci(c):
 
 
 @task
+def sast(c):
+    """Run the SAST, secret, misconfiguration, and dependency scans against the register."""
+    c.run("python -m scripts.sast_scan", pty=True)
+
+
+@task
 def workflow_status(c):
     """Show recent Temporal workflow executions."""
     c.run("python -m scripts.workflow_status", pty=True)
@@ -402,20 +413,23 @@ def reap(c, apply=False):
 
 @task(
     help={
-        "schedule": "Install the Temporal intake schedule.",
-        "retry": "Clear the intake dedup for a failed issue so the next poll relaunches it.",
+        "source": "Ticket source, jira or rebar. Defaults to TICKET_BACKEND and must match it.",
+        "schedule": "Install the Temporal intake schedule for the source.",
+        "retry": "Clear the intake dedup for a failed ticket so the next pass relaunches it.",
         "repo": "Scope a --retry to one repository.",
         "local": "Run on the host instead of the activity-worker container.",
     }
 )
-def intake(c, schedule=False, retry="", repo="", local=False):
-    """Reconcile ticket intake into draft PR executions (single pass by default)."""
-    flags = ""
+def intake(c, source="", schedule=False, retry="", repo="", local=False):
+    """Reconcile ticket intake from Jira or rebar into draft PR executions (one pass by default)."""
+    flags = [f"--source {source}"] if source else []
     if retry:
-        flags = f"--retry {retry}" + (f" --repo {repo}" if repo else "")
+        flags.append(f"--retry {retry}")
+        if repo:
+            flags.append(f"--repo {repo}")
     elif schedule:
-        flags = "--schedule"
-    _run_scripted(c, f"python -m scripts.intake {flags}".strip(), local=local)
+        flags.append("--schedule")
+    _run_scripted(c, f"python -m scripts.intake {' '.join(flags)}".strip(), local=local)
 
 
 @task(
@@ -497,15 +511,14 @@ def demo_durable_task(
         cmd.append("--auto-restart")
     if show_context:
         cmd.append("--show-context")
-    os.execv(sys.executable, cmd)
+    process.replace_process(cmd, os.environ)
 
 
 @task(help={"target": "How high to count before finishing (default 50)."})
 def demo_durable_counter(c, target=50):
     """Demo: a durable workflow counts through a hand-run worker restart."""
-    os.execv(
-        sys.executable,
-        [sys.executable, "-m", "scripts.demo_durable_counter", "--target", str(target)],
+    process.replace_process(
+        [sys.executable, "-m", "scripts.demo_durable_counter", "--target", str(target)], os.environ
     )
 
 
@@ -596,10 +609,12 @@ _K8S_SECRET_ENV = f"{_K8S_LOCAL}/agentic-platform.secret.env"
 
 
 def _git_output(*args: str) -> str:
-    import subprocess
-
-    return subprocess.run(
-        ["git", *args], capture_output=True, text=True, check=True
+    return process.run(
+        ["git", *args],
+        timeout=process.SHORT_COMMAND_TIMEOUT_SECONDS,
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout.strip()
 
 
@@ -613,7 +628,7 @@ def _k8s_image_tag() -> str:
     dirty = _git_output("status", "--porcelain")
     if not dirty:
         return base
-    digest = hashlib.sha1((_git_output("diff", "HEAD") + "\n" + dirty).encode()).hexdigest()
+    digest = hashlib.sha256((_git_output("diff", "HEAD") + "\n" + dirty).encode()).hexdigest()
     return f"{base}_{digest[:7]}"
 
 
@@ -700,10 +715,11 @@ for _t in (
     local_destroy,
     logs,
     db_migrate,
+    schedules_install,
     db_reset,
     seed,
     import_rebar_tickets,
-    rebar_poll,
+    rebar_changes,
     rebar_review_plan,
     rebar_review_code,
     operator_done,
@@ -718,6 +734,7 @@ for _t in (
     workflow_status,
     durability_proof,
     fetch_acli,
+    sast,
     cbm_build,
     publish_jumphost_image,
     reap,

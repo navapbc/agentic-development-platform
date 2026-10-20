@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from scripts.rebar_poll import AccessDecision, PollCursor
 from services.orchestration.intake_reconciler import IntakeContext
@@ -9,6 +11,16 @@ from services.orchestration.rebar_intake import reconcile_rebar_intake
 from tests.support import hermetic_settings
 
 _ALLOWED = ("ticket_id", "status", "title")
+
+
+class _Unused:
+    """Stands in for an intake collaborator that a pass admitting no ticket never calls."""
+
+    def __getattr__(self, name: str) -> Any:
+        raise AssertionError(f"an intake collaborator was used: {name}")
+
+
+_UNUSED: Any = _Unused()
 
 
 class _Reader:
@@ -73,10 +85,10 @@ async def _reconcile(reader: _Reader, watermark: _Watermark, audit: _Audit, read
         access=_Access(),
         allowed_fields=_ALLOWED,
         ctx=IntakeContext(
-            starter=None,
-            alerter=None,
-            ledger=None,
-            execution_seeder=None,
+            starter=_UNUSED,
+            alerter=_UNUSED,
+            ledger=_UNUSED,
+            execution_seeder=_UNUSED,
             snapshot_store=None,
             github_allow=frozenset(),
             field_id="",

@@ -160,9 +160,7 @@ def _write(workspace: str, path: str, text: str) -> None:
     target.write_text(text, encoding="utf-8")
 
 
-async def test_a_commit_publishes_the_tree_the_workspace_staged(
-    bare_remote: str, tmp_path
-) -> None:
+async def test_a_commit_publishes_the_tree_the_workspace_staged(bare_remote: str, tmp_path) -> None:
     host = _host(bare_remote)
     work = _workspace(tmp_path, bare_remote, "one")
     _write(work, "src/app.py", "print('hi')\n")
@@ -221,9 +219,7 @@ async def test_a_deletion_reaches_the_published_tree(bare_remote: str, tmp_path)
     assert "README.md" not in listing.split()
 
 
-async def test_bytes_that_are_not_utf8_reach_the_published_tree(
-    bare_remote: str, tmp_path
-) -> None:
+async def test_bytes_that_are_not_utf8_reach_the_published_tree(bare_remote: str, tmp_path) -> None:
     host = _host(bare_remote)
     work = _workspace(tmp_path, bare_remote, "one")
     payload = b"\x89PNG\r\n\x1a\n\xff\xfe"

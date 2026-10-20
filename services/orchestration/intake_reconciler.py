@@ -88,9 +88,7 @@ def declared_paths(ticket: dict[str, Any]) -> tuple[str, ...]:
     """Paths a rebar ticket declares it will change, empty when its scope is undeclared."""
     entries = ticket.get("file_impact") or []
     return tuple(
-        str(entry["path"])
-        for entry in entries
-        if isinstance(entry, dict) and entry.get("path")
+        str(entry["path"]) for entry in entries if isinstance(entry, dict) and entry.get("path")
     )
 
 

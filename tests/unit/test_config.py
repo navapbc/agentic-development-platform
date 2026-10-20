@@ -78,28 +78,33 @@ def test_code_defaults_carry_no_project_specific_jumphost(monkeypatch):
     assert s.jumphost_env == ""
 
 
-def test_classification_retention_parses_pairs():
-    s = Settings(evidence_retention_classification_days="security:3650, audit:3650")
+def _classification_days(monkeypatch, value: str) -> Settings:
+    monkeypatch.setenv("EVIDENCE_RETENTION_CLASSIFICATION_DAYS", value)
+    return hermetic_settings()
+
+
+def test_classification_retention_parses_pairs(monkeypatch):
+    s = _classification_days(monkeypatch, "security:3650, audit:3650")
     assert s.evidence_retention_classification_days == {"security": 3650, "audit": 3650}
 
 
-def test_classification_retention_empty_is_blank_mapping():
-    s = Settings(evidence_retention_classification_days="")
+def test_classification_retention_empty_is_blank_mapping(monkeypatch):
+    s = _classification_days(monkeypatch, "")
     assert s.evidence_retention_classification_days == {}
 
 
-def test_classification_retention_rejects_unknown_key():
+def test_classification_retention_rejects_unknown_key(monkeypatch):
     import pytest
 
     with pytest.raises(ValueError):
-        Settings(evidence_retention_classification_days="bogus:10")
+        _classification_days(monkeypatch, "bogus:10")
 
 
-def test_classification_retention_rejects_non_numeric_days():
+def test_classification_retention_rejects_non_numeric_days(monkeypatch):
     import pytest
 
     with pytest.raises(ValueError):
-        Settings(evidence_retention_classification_days="security:soon")
+        _classification_days(monkeypatch, "security:soon")
 
 
 def test_host_rewrite_maps_compose_service_names_to_localhost(monkeypatch):

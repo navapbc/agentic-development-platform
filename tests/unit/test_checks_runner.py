@@ -1,3 +1,5 @@
+from typing import Any
+
 import pytest
 from services.integration.credentials import ConfigError
 from services.orchestration.checks.config import (
@@ -14,8 +16,6 @@ from services.orchestration.checks.runner import (
     _fix_inner_script,
     checks_pod_name,
 )
-
-pytestmark = pytest.mark.asyncio
 
 
 def test_parse_checks_config_image_mode():
@@ -112,6 +112,9 @@ class _FakeOps:
     async def copy_in(self, pod, namespace, source_dir, dest_dir):
         self.copied.append((source_dir, dest_dir))
 
+    async def copy_out(self, pod, namespace, source_dir, dest_dir, manifest_path):
+        return None
+
     async def exec_capture(self, pod, namespace, script):
         return self._exec_result
 
@@ -143,7 +146,7 @@ async def test_run_checks_tears_down_on_success():
 
 
 def _spec(**overrides) -> ChecksSpec:
-    base = {
+    base: dict[str, Any] = {
         "repo": "r",
         "execution_id": "e",
         "checkout_dir": "/w",

@@ -108,22 +108,14 @@ def _validate(
     isolation: TicketsIsolation,
 ) -> None:
     if roles.read_only == roles.write:
-        raise ConfigError(
-            "tickets store read-only polling role must differ from the write role"
-        )
+        raise ConfigError("tickets store read-only polling role must differ from the write role")
     forbidden_roles = {isolation.evidence_writer_role, isolation.audit_writer_role}
     if roles.read_only in forbidden_roles or roles.write in forbidden_roles:
-        raise ConfigError(
-            "tickets store roles must not equal the evidence or audit writer role"
-        )
+        raise ConfigError("tickets store roles must not equal the evidence or audit writer role")
     if store.bucket in {isolation.evidence_bucket, isolation.audit_bucket}:
-        raise ConfigError(
-            "tickets store must not reuse the evidence or audit bucket"
-        )
+        raise ConfigError("tickets store must not reuse the evidence or audit bucket")
     if not (provenance.require_actor and provenance.require_run_id):
-        raise ConfigError(
-            "tickets store config must require actor and run provenance on writes"
-        )
+        raise ConfigError("tickets store config must require actor and run provenance on writes")
 
 
 def load_tickets_store_config(

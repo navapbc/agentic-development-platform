@@ -15,7 +15,7 @@ from services.model_gateway.review_tiers import (
 )
 from services.review.llm import REVIEW_TIERS
 
-_CONFIG = Path(__file__).resolve().parents[2] / "config" / "local" / "rebar-review.toml"
+_CONFIG = Path(__file__).resolve().parents[2] / "config" / "platform" / "rebar-review.toml"
 
 
 def test_every_review_tier_has_a_native_mapping():

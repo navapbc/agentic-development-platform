@@ -23,7 +23,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: inbound-webhook
-          image: REGISTRY/agentic-dev-platform/inbound-webhook:latest
+          image: 123456789012.dkr.ecr.us-east-1.amazonaws.com/agentic-dev-platform/inbound-webhook:0.3.0
           command:
             - python
             - -m
@@ -61,6 +61,8 @@ spec:
             - name: integration-config
               mountPath: /app/config/local
               readOnly: true
+            - name: tmp
+              mountPath: /tmp
           resources:
             requests:
               cpu: 100m
@@ -70,6 +72,7 @@ spec:
               memory: 512Mi
           securityContext:
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
             runAsNonRoot: true
             runAsUser: 10001
             runAsGroup: 10001
@@ -94,6 +97,8 @@ spec:
         - name: integration-config
           configMap:
             name: integration-config
+        - name: tmp
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service

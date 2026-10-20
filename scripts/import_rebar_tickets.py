@@ -14,11 +14,12 @@ xlsx-to-rebar path the platform drives directly.
 from __future__ import annotations
 
 import argparse
-import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from services import process
 
 READER_IDENTITY_NAME = "agent-platform"
 READER_IDENTITY_EMAIL = "agent-platform@users.noreply.invalid"
@@ -78,7 +79,14 @@ class ImportReport:
 
 
 def _git(root: Path, *args: str) -> None:
-    subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True)
+    process.run(
+        ["git", *args],
+        timeout=process.SHORT_COMMAND_TIMEOUT_SECONDS,
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
 
 def ensure_store(repo_root: Path) -> None:
@@ -239,15 +247,16 @@ def import_xlsx(
         if target != "open":
             try:
                 rebar.transition(
-                    ticket_id, "open", target, force=True, reason="jira import",
+                    ticket_id,
+                    "open",
+                    target,
+                    force="jira import",
                     repo_root=str(repo_root),
                 )
                 report.transitioned += 1
             except rebar.RebarError as exc:
                 report.failed_transitions.append(
-                    FailedTransition(
-                        ticket=issue_key or ticket_id, target=target, error=str(exc)
-                    )
+                    FailedTransition(ticket=issue_key or ticket_id, target=target, error=str(exc))
                 )
 
     return report

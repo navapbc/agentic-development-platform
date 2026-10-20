@@ -15,8 +15,6 @@ from services.orchestration.gates.contract import (
 from services.orchestration.gates.registry import GateRegistry
 from services.orchestration.temporal_activities.gates import EvaluateGateRequest, evaluate_gate
 
-pytestmark = pytest.mark.asyncio
-
 
 def _context() -> GateContext:
     return GateContext(
@@ -125,7 +123,6 @@ async def test_record_manifest_pins_the_gate_set(monkeypatch):
     assert "gate_config_hash" in manifest.to_dict()
 
 
-
 async def test_evaluate_gate_fails_closed_on_a_backend_error(monkeypatch):
     from services.orchestration.gates.contract import BLOCK, SCANNER
 
@@ -133,8 +130,9 @@ async def test_evaluate_gate_fails_closed_on_a_backend_error(monkeypatch):
         raise RuntimeError("engine entrypoint missing")
 
     registry = GateRegistry()
-    registry.register("ai-security-review", lambda: gate_from_callable(
-        "ai-security-review", SCANNER, boom))
+    registry.register(
+        "ai-security-review", lambda: gate_from_callable("ai-security-review", SCANNER, boom)
+    )
 
     monkeypatch.setattr(gates_config, "load_gates_config", lambda *a, **k: object())
     monkeypatch.setattr(gates_registry, "registry_for_config", lambda config: registry)
@@ -148,9 +146,7 @@ async def test_evaluate_gate_fails_closed_on_a_backend_error(monkeypatch):
 
     monkeypatch.setattr("services.review.evidence.PostgresEvidenceSink", _FakeSink)
 
-    result = await evaluate_gate(
-        EvaluateGateRequest(gate="ai-security-review", context=_context())
-    )
+    result = await evaluate_gate(EvaluateGateRequest(gate="ai-security-review", context=_context()))
 
     assert result.verdict == BLOCK
     assert result.metadata.get("backend_error") is True
@@ -168,9 +164,7 @@ async def test_evaluate_gate_retries_an_unavailable_scanner_instead_of_failing_c
         raise ScannerUnavailableError("semgrep unavailable: could not pull the image")
 
     registry = GateRegistry()
-    registry.register(
-        "semgrep", lambda: gate_from_callable("semgrep", SCANNER, unavailable)
-    )
+    registry.register("semgrep", lambda: gate_from_callable("semgrep", SCANNER, unavailable))
 
     monkeypatch.setattr(gates_config, "load_gates_config", lambda *a, **k: object())
     monkeypatch.setattr(gates_registry, "registry_for_config", lambda config: registry)

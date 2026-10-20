@@ -42,7 +42,7 @@ _SEARCH_BATTERY = ("task", "store", "status", "create", "Task")
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _DEFAULT_CORPUS = str(_REPO_ROOT.parent / "agentic-demo-service")
 _DEFAULT_CBM = str(_REPO_ROOT / "vendor" / "bin" / "codebase-memory-mcp")
-_DEFAULT_CACHE = "/tmp/cbm-cache"
+_DEFAULT_CACHE = str(Path.home() / ".cache" / "agentic-dev-platform" / "cbm")
 
 
 def _portable_path(path: Path) -> str:

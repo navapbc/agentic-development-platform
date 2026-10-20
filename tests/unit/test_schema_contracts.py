@@ -103,4 +103,3 @@ def test_evidence_record_missing_required_field_fails():
     del record["content_hash"]
     with pytest.raises(ValidationError):
         Draft202012Validator(_load(_EVIDENCE_SCHEMA)).validate(record)
-

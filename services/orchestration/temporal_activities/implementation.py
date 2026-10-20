@@ -148,9 +148,7 @@ async def reset_task_coordination(req: ResetCoordinationRequest) -> ResetCoordin
     from services.coordination.sequencing import PostgresSequenceGate
 
     claim_id = claim_id_for(req.task_id, req.work_unit)
-    released = await PostgresWorkClaimStore().release(
-        claim_id, owner_workflow_id=req.workflow_id
-    )
+    released = await PostgresWorkClaimStore().release(claim_id, owner_workflow_id=req.workflow_id)
     await PostgresSequenceGate().reset(req.task_id)
     return ResetCoordinationResult(released=released, sequence_reset=True)
 

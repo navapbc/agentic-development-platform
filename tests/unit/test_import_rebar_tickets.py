@@ -166,10 +166,7 @@ def test_limit_bounds_the_import(store: Path, tmp_path: Path) -> None:
     xlsx = tmp_path / "x.xlsx"
     _write_xlsx(
         xlsx,
-        [
-            [f"t{i}", f"P-{i}", "Task", "To Do", "Medium", "d", "", "", "", ""]
-            for i in range(10)
-        ],
+        [[f"t{i}", f"P-{i}", "Task", "To Do", "Medium", "d", "", "", "", ""] for i in range(10)],
     )
     report = import_xlsx(xlsx, store, limit=3)
     assert len(report.created) == 3

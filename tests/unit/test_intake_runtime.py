@@ -339,9 +339,7 @@ async def test_start_leaves_file_impact_empty_when_undeclared(
     assert arg.file_impact == []
 
 
-async def _started_input(
-    monkeypatch: pytest.MonkeyPatch, settings: Any
-) -> Any:
+async def _started_input(monkeypatch: pytest.MonkeyPatch, settings: Any) -> Any:
     monkeypatch.setattr(intake_runtime, "remote_head", lambda remote, branch: "abc123")
     monkeypatch.setattr(
         "services.integration.github.factory.build_git_host", lambda settings: _Host()
@@ -367,9 +365,7 @@ async def _started_input(
 async def test_intake_carries_the_configured_llm_call_cap(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    arg = await _started_input(
-        monkeypatch, hermetic_settings(implementation_max_llm_calls=640)
-    )
+    arg = await _started_input(monkeypatch, hermetic_settings(implementation_max_llm_calls=640))
 
     assert arg.max_llm_calls == 640
 
@@ -378,9 +374,7 @@ async def test_intake_carries_the_configured_llm_call_cap(
 async def test_intake_carries_the_configured_token_cap(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    arg = await _started_input(
-        monkeypatch, hermetic_settings(implementation_max_tokens=7_500_000)
-    )
+    arg = await _started_input(monkeypatch, hermetic_settings(implementation_max_tokens=7_500_000))
 
     assert arg.max_tokens == 7_500_000
 
@@ -389,9 +383,7 @@ async def test_intake_carries_the_configured_token_cap(
 async def test_intake_carries_the_configured_cost_cap(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    arg = await _started_input(
-        monkeypatch, hermetic_settings(implementation_max_cost_usd=42.5)
-    )
+    arg = await _started_input(monkeypatch, hermetic_settings(implementation_max_cost_usd=42.5))
 
     assert arg.max_cost_usd == 42.5
 

@@ -86,7 +86,6 @@ async def _reconcile_jira_pass() -> IntakeReconcileReport:
     )
 
 
-
 async def _reconcile_rebar_pass() -> IntakeReconcileReport:
     from pathlib import Path
 

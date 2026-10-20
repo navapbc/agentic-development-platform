@@ -48,9 +48,7 @@ def test_plan_trust_root_audit_added_key():
 
 
 def test_plan_trust_root_audit_revoked_key():
-    event = plan_trust_root_audit(
-        _trust_root("k1", "k2"), _trust_root("k1", "k2", revoked=("k2",))
-    )
+    event = plan_trust_root_audit(_trust_root("k1", "k2"), _trust_root("k1", "k2", revoked=("k2",)))
     assert event is not None
     assert "revoked 1" in event["change"]
     assert event["key_ids"] == ["k2"]

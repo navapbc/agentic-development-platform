@@ -205,11 +205,8 @@ async def test_intake_threads_the_snapshot_version_to_the_starter():
     assert starter.starts[0].snapshot_version == 1
 
 
-
 async def test_marker_fans_out_to_each_repo():
-    read = _ReadSource(
-        {"ADEV": [_issue("ADEV-1", "ADEV", description="repos: repo-a, repo-b")]}
-    )
+    read = _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV", description="repos: repo-a, repo-b")]})
     starter, alerter, ledger, store, resolver = _defaults()
     await _run(read, starter, alerter, ledger, store, resolver)
     assert {(s.issue_key, s.repo) for s in starter.starts} == {
@@ -226,9 +223,7 @@ async def test_scan_match_selects_named_repo():
 
 
 async def test_components_fan_out_to_the_mapped_repositories():
-    read = _ReadSource(
-        {"ADEV": [_issue("ADEV-1", "ADEV", components=("Backend", "Frontend"))]}
-    )
+    read = _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV", components=("Backend", "Frontend"))]})
     components = ComponentRepos((("backend", ("repo-a",)), ("frontend", ("repo-b",))))
     resolver = _Resolver({"ADEV": _Cred("repo-c", component_repos=components)})
     starter, alerter = _Starter(), _Alerter()
@@ -337,9 +332,7 @@ async def test_cleared_intake_dedup_allows_operator_requested_rerun():
 
 
 async def test_unlisted_repo_holds_and_alerts_once():
-    read = _ReadSource(
-        {"ADEV": [_issue("ADEV-1", "ADEV", description="repos: repo-a, ghost")]}
-    )
+    read = _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV", description="repos: repo-a, ghost")]})
     starter, alerter, ledger, store, resolver = _defaults()
     await _run(read, starter, alerter, ledger, store, resolver)
     report = await _run(read, starter, alerter, ledger, store, resolver)
@@ -358,9 +351,7 @@ async def test_zero_repo_holds_and_alerts():
 
 
 async def test_two_projects_each_start_against_their_own_default():
-    read = _ReadSource(
-        {"ADEV": [_issue("ADEV-1", "ADEV")], "ADSER": [_issue("ADSER-9", "ADSER")]}
-    )
+    read = _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV")], "ADSER": [_issue("ADSER-9", "ADSER")]})
     resolver = _Resolver({"ADEV": _Cred("repo-a"), "ADSER": _Cred("repo-b")})
     starter, alerter = _Starter(), _Alerter()
     ledger, store = InMemorySideEffectLedger(), _RecordingStore()
@@ -403,12 +394,22 @@ async def test_material_change_is_suppressed_while_execution_is_active():
     guard = _ActiveGuard()
     await _run(
         _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV", summary="v1")]}),
-        starter, alerter, ledger, store, resolver, active_guard=guard,
+        starter,
+        alerter,
+        ledger,
+        store,
+        resolver,
+        active_guard=guard,
     )
     guard.active[("ADEV-1", "repo-a")] = "wf-ADEV-1-repo-a"
     await _run(
         _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV", summary="v2")]}),
-        starter, alerter, ledger, store, resolver, active_guard=guard,
+        starter,
+        alerter,
+        ledger,
+        store,
+        resolver,
+        active_guard=guard,
     )
     assert len(starter.starts) == 1
 
@@ -418,14 +419,23 @@ async def test_ticket_writeback_change_stays_deduplicated_after_execution_termin
     guard = _ActiveGuard()
     await _run(
         _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV", summary="v1")]}),
-        starter, alerter, ledger, store, resolver, active_guard=guard,
+        starter,
+        alerter,
+        ledger,
+        store,
+        resolver,
+        active_guard=guard,
     )
     await _run(
         _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV", summary="v2")]}),
-        starter, alerter, ledger, store, resolver, active_guard=guard,
+        starter,
+        alerter,
+        ledger,
+        store,
+        resolver,
+        active_guard=guard,
     )
     assert len(starter.starts) == 1
-
 
 
 class _RunCounter:
@@ -437,9 +447,7 @@ class _RunCounter:
 
 
 async def test_admission_caps_new_starts_and_defers_the_rest():
-    read = _ReadSource(
-        {"ADEV": [_issue("ADEV-1", "ADEV"), _issue("ADEV-2", "ADEV")], "ADSER": []}
-    )
+    read = _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV"), _issue("ADEV-2", "ADEV")], "ADSER": []})
     starter, alerter, ledger, store, resolver = _defaults()
     report = await reconcile_intake(
         read_source=read,
@@ -475,15 +483,11 @@ async def test_admission_defers_all_when_already_at_capacity():
 
 
 async def test_no_counter_means_unbounded():
-    read = _ReadSource(
-        {"ADEV": [_issue("ADEV-1", "ADEV"), _issue("ADEV-2", "ADEV")], "ADSER": []}
-    )
+    read = _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV"), _issue("ADEV-2", "ADEV")], "ADSER": []})
     starter, alerter, ledger, store, resolver = _defaults()
     report = await _run(read, starter, alerter, ledger, store, resolver)
     assert len(starter.starts) == 2
     assert report.deferred == []
-
-
 
 
 class _UnresolvableBaseStarter(_Starter):

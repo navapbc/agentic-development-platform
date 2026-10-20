@@ -13,13 +13,14 @@ import os
 import signal
 import socket
 import ssl
-import subprocess
 import sys
 import tempfile
 import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol, runtime_checkable
+
+from services import process
 
 from scripts.config import Settings
 
@@ -140,10 +141,10 @@ def _spawn_detached(
         return 2
     print(f"[tunnel] spawn: {' '.join(cmd)}")
     with _TUNNEL_LOGFILE.open("w") as log:
-        proc = subprocess.Popen(
+        proc = process.popen(
             cmd,
             env=env,
-            stdin=subprocess.DEVNULL,
+            stdin=process.DEVNULL,
             stdout=log,
             stderr=log,
             start_new_session=True,
@@ -287,7 +288,7 @@ class JumphostConnectivity:
                 ready_timeout=180.0,
             )
         print(f"[tunnel] exec: {' '.join(cmd)}")
-        os.execvpe(cmd[0], cmd, env)
+        process.replace_process(cmd, env)
 
     def verify(self, settings: Settings) -> tuple[bool, str]:
         return _tls_check(
@@ -321,7 +322,7 @@ class SshBastionConnectivity:
                 cmd, env, label="ssh bastion tunnel", ready=lambda: self.verify(settings)
             )
         print(f"[tunnel] exec: {' '.join(cmd)}")
-        os.execvpe(cmd[0], cmd, env)
+        process.replace_process(cmd, env)
 
     def verify(self, settings: Settings) -> tuple[bool, str]:
         return _tls_check(

@@ -4,7 +4,27 @@ All notable changes to this platform are recorded here. The format follows Keep 
 
 ## 0.3.0 (unreleased)
 
-AWS transition and FedRAMP Medium readiness. The platform documents its local-to-AWS mapping and its FedRAMP Medium control posture under the AWS shared-responsibility model, commits the audit and evidence contracts, and persists evidence and audit records to a write-once-read-many object store.
+AWS transition and FedRAMP Medium readiness. The platform documents its local-to-AWS mapping and its FedRAMP Medium control posture under the AWS shared-responsibility model, commits the audit and evidence contracts, persists evidence and audit records to a write-once-read-many object store, and provisions a tiered network, a filtered egress path, and the data tier with encryption, private placement, and backups.
+
+### Breaking changes
+
+- The `private-bedrock` composition root stores its state in the S3 backend. Before any plan or apply, run the `infra/terraform/bootstrap` root, write `backend.hcl` from its `backend_hcl` output, and run `terraform init -migrate-state -backend-config=backend.hcl` in the composition root. An apply against the empty remote state tries to recreate the stack, which duplicates the VPC and subnets and fails on names that already exist.
+- The `private-bedrock` composition root requires Terraform 1.10 or later and AWS provider 6. A working directory whose lock file pins provider 5 needs `terraform init -upgrade -backend-config=backend.hcl`.
+- With `create_network = true`, the next apply adds an internet gateway, a NAT instance, and the DNS Firewall with `dns_firewall_default_action = "BLOCK"`. A workload in the VPC that resolves a name outside the allowlist receives NXDOMAIN. Add its domains through `dns_firewall_additional_domains`, or apply with `ALERT` first and review the query log. Existing-network deployments keep no egress path and no DNS Firewall.
+- The local cache, ClickHouse, and Langfuse upgrades are one-way. On the first start, Valkey rewrites the cache snapshot in a format Redis 7.4 rejects, ClickHouse upgrades its data in place without downgrade support, and Langfuse 4.59.0 migrates its Postgres and ClickHouse schemas. A checkout without this release, including another branch, fails Langfuse on its next `up` until the cache snapshot, the ClickHouse volume, and the `langfuse` database are restored. Take the cache, ClickHouse, and `langfuse` database backup in the README section on Langfuse backing services before the first start.
+- The local cache disables its default user. A client authenticates as `REDIS_USERNAME`, which defaults to `langfuse`, with `REDIS_AUTH`, so `redis-cli -a` with only a password and any password-only client are refused. Connect with `docker compose exec redis sh -c 'valkey-cli --user "$REDIS_USERNAME" --pass "$REDIS_AUTH"'`.
+- `litellm-config.yaml`, `litellm_redaction.py`, and `rebar-review.toml` move from `config/local` to `config/platform`. Stash uncommitted edits to the old files before `git pull` and reapply them under `config/platform`. Update personal compose overlays and shell exports of `REBAR_LLM_CONFIG_FILE` that name the old paths. Gate model resolution reads `config/platform/litellm-config.yaml` in every environment and no longer reads a per-environment `config/<env>/litellm-config.yaml`.
+- `db-migrate` and `schedule-bootstrap` run under the `tasks` profile, so `docker compose up` no longer migrates the database or registers schedules. Start the stack with `inv local-up`, which builds the images, runs the migrations, and starts the services. Register the schedules once with `inv schedules-install`. A plain `docker compose up -d` leaves the workers and `coordination-service` waiting with `Run inv db-migrate` in their logs. Remove the exited containers an earlier `up` left behind with `docker compose rm -f db-migrate schedule-bootstrap`.
+- The intake schedule is named for its source, `jira-intake` or `rebar-intake`. Run `inv intake --schedule` or `inv schedules-install` after upgrading. Installing the `rebar-intake` schedule deletes a `jira-intake` schedule left from the shared name. `inv intake` accepts `--source jira` or `--source rebar`, which defaults to `TICKET_BACKEND` and is refused when it names the other source.
+- `inv rebar-poll` is now `inv rebar-changes`. It runs in the activity-worker container, reports changes without moving the intake cursor, and no longer accepts `--report-only`.
+- `compose.local.yaml` is removed. The `registry` service is in `compose.yaml` under the `registry` profile. Start it with `docker compose --profile registry up -d registry`.
+- Every Terraform module that creates an S3 bucket requires `access_log_bucket`, and S3 server access logging is always on. This covers `tf-state`, `evidence-store`, `langfuse-blob-store`, `cloudtrail`, and `bedrock-jumphost-fargate`. Apply the `bootstrap` root again so it creates the access-log bucket, then set `access_log_bucket` in each composition root's tfvars to the value of `terraform output -raw access_log_bucket`. A plan without it fails variable validation.
+- The `ecr` module encrypts the repository with a customer-managed KMS key and no longer accepts `image_tag_mutability` or `scan_on_push`, which are fixed to `IMMUTABLE` and `true`. A changed encryption key replaces an existing repository, and `force_delete` lets that apply delete the repository with its images. Push the jumphost image again with `inv publish-jumphost-image` after the apply.
+- The platform services bind to `BIND_HOST`, which defaults to `127.0.0.1`. The platform and repository-intelligence images set `BIND_HOST=0.0.0.0`, so containers behave as before. A service started on the host listens on loopback unless `BIND_HOST` is set.
+- The Kubernetes base manifests name their images `123456789012.dkr.ecr.us-east-1.amazonaws.com/agentic-dev-platform/<service>:0.3.0` in place of `REGISTRY/agentic-dev-platform/<service>:latest`, and run with a read-only root filesystem and an `emptyDir` at `/tmp`. A kustomize overlay that rewrites the old image name must match the new name.
+- The worker images no longer install `acli` unless `INSTALL_ACLI=true` is set in `.env`. A Jira Cloud ticket source needs it, so set `INSTALL_ACLI=true` and run `inv local-up` to rebuild. Without it the Jira Cloud path fails with an error that names `INSTALL_ACLI`. Rebar and Jira Data Center do not use acli.
+- Python dependencies install from a committed `uv.lock` through uv 0.13.3 or newer. Replace `pip install -e ".[dev,...]"` with `uv sync --locked --all-extras`, which also removes packages the lock does not list from `.venv`. Change a dependency with `uv lock` or `uv lock --upgrade-package <name>` and commit the lock. CI and both image builds refuse a stale lock. Resolution ignores any release newer than seven days through `exclude-newer = "7 days"`, except openhands-sdk and openhands-tools, which track the pinned agent-server release.
+- The platform image installs its packages into `/opt/venv` from the new `worker` extra, which holds the extras it installed before plus `pydantic-ai-slim[openai]` and `ruff`. A derived image that adds a Python library the platform imports must install it into `/opt/venv`, for example with `uv pip install --python /opt/venv/bin/python <package>`. A command-line tool installed with the system `pip`, such as the scanner example in `docs/gate-engine.md`, still lands on `PATH`.
 
 ### Added
 
@@ -18,11 +38,63 @@ AWS transition and FedRAMP Medium readiness. The platform documents its local-to
 - FIPS service endpoint selection across every AWS SDK path through the `AWS_USE_FIPS_ENDPOINT` setting, wired into the worker and LiteLLM container environments, so the native review Bedrock client, the LiteLLM gateway, the evidence object store, and the rebar ticket sync resolve FIPS endpoints in a deployed environment.
 - A governed evidence and audit retention period through `EVIDENCE_RETENTION_DAYS`, defaulting to 2555 days, written onto every stored record and applied as the S3 Object Lock window, and consumed by the evidence object store, the audit object writer, and the bucket bootstrap.
 - An evidence classification taxonomy of `standard`, `security`, and `audit` that each producer assigns and that is validated when a record is constructed, with `EVIDENCE_RETENTION_CLASSIFICATION_DAYS` overriding the baseline retention per classification. Retention resolves to the record's own numeric retention, then the classification override, then `EVIDENCE_RETENTION_DAYS`.
+- A remote Terraform state backend. A `tf-state` module provisions a versioned, encrypted, TLS-only state bucket, an `infra/terraform/bootstrap` root creates it once per account, and the `private-bedrock` composition root stores its state there with S3 native locking.
+- A tiered network in the `private-bedrock` composition root that follows the CMS Technical Reference Architecture zones, with public, application, management, and data subnets. The data tier spans two Availability Zones, has no default route, and sits behind a network ACL that admits only PostgreSQL, Valkey, and NFS from the application and management tiers.
+- An `egress` Terraform module whose `egress_mode` selects no egress, a hardened Amazon Linux 2023 NAT instance, or a NAT Gateway for the application and management tiers.
+- A `dns-firewall` Terraform module that limits the VPC to an allowlist of AWS, GitHub, Atlassian, and Slack domains through Route 53 Resolver DNS Firewall, fails closed, and logs every query.
+- An `aurora-postgresql` Terraform module for Aurora PostgreSQL 16.15 with Serverless v2 capacity that pauses when idle, an RDS-managed rotating master secret, IAM database authentication, enforced TLS, pgaudit DDL logging, 30-day backups, and deletion protection.
+- An `elasticache` Terraform module for ElastiCache for Valkey 9.1 with TLS required, encryption at rest, an RBAC user for Langfuse, and the user credential in Secrets Manager in the format the rotation function reads.
+- A `clickhouse-storage` Terraform module for the encrypted EFS file system, access point, and backups behind the ClickHouse task, and a `langfuse-blob-store` module for the Langfuse event and media bucket.
+- A `config/platform` directory for tracked configuration the platform owns and every environment shares, and a `load_platform_config` reader for it.
+- A startup schema check in the workers and `coordination-service` that waits while the database is behind the migrations their image carries and exits when the database holds a revision the image does not carry.
+- An `inv schedules-install` task that registers the reap schedule and the intake schedule for the configured ticket source.
+- A `--source` option on `inv intake` that names the ticket source, `jira` or `rebar`.
+- An `access-logs` Terraform module for the bucket that receives S3 server access logs from every platform bucket, created by the `bootstrap` root. `access_log_bucket` names the bucket, and `create_access_log_bucket = false` points the roots at an existing bucket.
+- An `inv sast` task and a `sast` CI job that run Semgrep, Bandit, Trivy, gitleaks over the tree and the commit history, and pip-audit, all from pinned versions. The job fails on any finding that `security/sast-accepted.yaml` does not accept with a justification and on any register entry that no longer matches a finding. Reports are written to `.sast/` and uploaded as a CI artifact.
+- A `services.process` module through which the platform starts every external command. It runs argument lists without a shell, resolves each executable to an absolute path, and requires an explicit timeout on every bounded call.
+- Health checks on every long-running compose service. HTTP services are probed on loopback through `python -m services.healthcheck http`, the Temporal workers and `repo-index-worker` refresh a heartbeat file that `python -m services.healthcheck heartbeat` checks, and third-party services use their own health endpoints.
+- Thin `opa`, `otel-collector`, and `tempo` images that add a static Go loopback probe from `docker/healthprobe` and declare a `HEALTHCHECK`, because the upstream images carry no shell or HTTP client. The collector enables its `health_check` extension on loopback.
 
 ### Changed
 
 - Evidence persistence routes through the object store when it is enabled, and boto3 ships in the worker image through a new `storage` optional dependency.
 - The CloudTrail module records a multi-region trail by default for FedRAMP audit coverage, through a new `is_multi_region_trail` variable.
+- The local cache runs Valkey 9.1.2 in place of Redis 7.4, with the default user disabled and an RBAC user for Langfuse. Valkey loads an existing Redis snapshot through `--rdb-version-check relaxed`.
+- Langfuse moves to 4.59.0 and ClickHouse to 26.9.19.9, both pinned by exact tag and digest. ClickHouse 25.12 no longer receives security fixes, and Langfuse 4.15.0 cannot write traces to ClickHouse 26.8 or later.
+- The LiteLLM gateway configuration, its redaction callback, and the rebar review model classes move from `config/local` to `config/platform`.
+- `inv local-up` builds the images and runs the migrations before starting the stack, and no longer passes the unused `repo-intelligence` profile.
+- The `private-bedrock` composition root requires Terraform 1.10 or later and AWS provider 6, runs the jumphost in the management tier, and admits the management tier to the VPC endpoints.
+- The package version is 0.3.0.
+- Dependencies move to releases without known advisories, including langgraph 1.2 with langchain-core 1.6, nava-rebar 0.13.1, openhands-sdk and openhands-tools 1.56, mcp 1.30, opentelemetry-sdk 1.45, pydantic-ai-slim 1.107.7, and pytest 9. The unused `langchain-openai` dependency is removed. `pip-audit` reports no known vulnerabilities in the resolved set.
+- OTLP log export uses the `LoggingHandler` from `opentelemetry-instrumentation-logging` in place of the deprecated handler in `opentelemetry-sdk`.
+- `REBAR_LLM_MODEL_PROVIDER` defaults to `openai-chat`, which rebar 0.13 routes through `REBAR_LLM_BASE_URL` to the LiteLLM gateway. The `openai` value still works and emits the pydantic-ai notice that it will select the Responses API in pydantic-ai 2.0. Set `REBAR_LLM_MODEL_PROVIDER=openai-chat` in `.env`.
+- rebar ticket transitions pass their audit reason through `force`, which rebar 0.13 records in the transition audit comment.
+- External commands carry a timeout of 60, 900, or 3600 seconds by kind. A command that exceeds it is killed and raises `TimeoutExpired` where it previously ran without a limit.
+- Git commands that take a remote URL pass it after a `--` terminator, so a URL cannot be read as a git option.
+- The OpenHands sandbox image defaults to `ghcr.io/openhands/agent-server:1.56.0-python` pinned by digest in place of the floating `latest-python` tag. Sandbox pods run with a read-only root filesystem, `emptyDir` volumes at `/tmp` and `/home/sandbox`, and `HOME=/home/sandbox`.
+- The jumphost image builds from Alpine 3.24.2 pinned by digest and runs as UID 65534. ECS Exec runs its agent as root whatever the container user is, so the port forward is unchanged.
+- The CloudTrail trail encrypts its log files with a customer-managed KMS key. The jumphost CloudWatch log group uses the jumphost KMS key, and the jumphost cluster has Container Insights enabled.
+- The VPC endpoint security group has no egress rule. Interface endpoints answer only inbound connections, and security groups are stateful.
+- The CI actions are pinned to commit SHAs, and the workflow token is limited to `contents: read`.
+- `inv local-up` starts the stack with `docker compose up --wait` and fails when a service does not report healthy within ten minutes.
+- `acli` installs from the versioned 1.3.39 Debian package in Atlassian's apt pool, verified against a SHA-256 committed in `scripts/fetch_acli.py`. Another version or a mirror URL on Linux needs `ACLI_SHA256`.
+- The worker image installs kubectl 1.37.1 and verifies it against a pinned SHA-256 per architecture, in place of an unverified kubectl 1.34.1.
+- The buildah image the gate, check, and scanner pods run is pinned to `quay.io/buildah/stable:v1.43.5` by digest in place of the re-pushed `v1.43.2` tag.
+- The repository-intelligence image verifies scip 0.9.0, scip-java 0.13.1, and terraform-ls 0.39.0 against SHA-256 digests committed in its Dockerfile, in place of checksum files downloaded beside each artifact.
+- `inv sast` runs pip-audit over the dependency set `uv.lock` pins, with its hashes, in place of the installed environment.
+- The CI jobs install uv 0.13.3 through `astral-sh/setup-uv` pinned to a commit SHA, and both images copy uv from its image pinned by digest.
+- `repo-index-worker` stays running and refreshes its heartbeat when no repositories are configured, in place of exiting and restarting.
+- `langfuse-web` binds on every interface inside its container through `HOSTNAME=0.0.0.0`, so its loopback health check reaches it.
+
+### Fixed
+
+- The rebar change report no longer saves the cursor the rebar intake pass reads. A ticket the report listed was previously treated as already seen and never started.
+- Slack alert delivery and the `acli` download refuse any URL that is not https, including a redirect to http. The Slack sender previously accepted a `file:` URL.
+- The sandbox copy-in and patch extraction quote the project path in the pod shell command.
+- The scanner pod writes the tool report to a `mktemp` file in place of a fixed `/tmp` path.
+- The Postgres init script passes each database name to psql as a variable and quotes it with `format('%I')` in place of interpolating it into SQL, and splits the list without changing `IFS`.
+- Migrations, `db-reset`, the smoke test, and the schema check issue their SQL through SQLAlchemy constructs or literal statements in place of formatted strings. The rendered migration SQL is byte-identical.
+- Exceptions that observability code swallows to protect a request are logged at debug level.
 
 ## 0.2.0 (2026-09-14)
 

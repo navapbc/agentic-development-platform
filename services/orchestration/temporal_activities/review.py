@@ -59,9 +59,7 @@ class _PromptSpec:
 
 _PLAN = _PromptSpec(name="plan-review", subject_label="Change plan under review")
 _CODE = _PromptSpec(name="code-review", subject_label="Code diff under review")
-_SECURITY = _PromptSpec(
-    name="security-review", subject_label="Code diff under security review"
-)
+_SECURITY = _PromptSpec(name="security-review", subject_label="Code diff under security review")
 _ACCEPTANCE = _PromptSpec(
     name="acceptance-verification",
     subject_label="Completion evidence under acceptance verification",
@@ -81,7 +79,6 @@ def review_prompt_versions(gate_names: Iterable[str]) -> dict[str, str]:
         for name in gate_names
         if name in _PROMPT_VERSIONS_BY_GATE
     }
-
 
 
 def build_review_gate(stage: ReviewStage | None = None):

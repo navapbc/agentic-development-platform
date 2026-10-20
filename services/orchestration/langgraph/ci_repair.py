@@ -160,9 +160,7 @@ def _plan(state: _RepairState) -> _RepairState:
     return {
         **state,
         "status": ACTIONABLE,
-        "instruction": template.format(
-            summary=state["summary"].strip(), fix_hint=fix_hint
-        ),
+        "instruction": template.format(summary=state["summary"].strip(), fix_hint=fix_hint),
     }
 
 
@@ -204,9 +202,7 @@ def in_repair_scope(changed_path: str, scope: tuple[str, ...]) -> bool:
     if not scope:
         return True
     normalised = changed_path.removeprefix("./")
-    return any(
-        normalised == entry or normalised.endswith("/" + entry) for entry in scope
-    )
+    return any(normalised == entry or normalised.endswith("/" + entry) for entry in scope)
 
 
 def _abort(state: _RepairState) -> _RepairState:

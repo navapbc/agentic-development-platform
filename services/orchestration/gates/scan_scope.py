@@ -12,11 +12,12 @@ rather than silently restoring repository-wide blocking.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 from collections.abc import Iterable, Sequence
 from typing import Protocol
+
+from services import process
 
 logger = logging.getLogger(__name__)
 
@@ -30,14 +31,14 @@ class GitRunner(Protocol):
 
 
 async def _run_git(args: Sequence[str], cwd: str) -> tuple[int, str, str]:
-    proc = await asyncio.create_subprocess_exec(
-        *args,
-        cwd=cwd or None,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+    result = await process.run_async(
+        args, timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS, cwd=cwd or None
     )
-    out, err = await proc.communicate()
-    return proc.returncode or 0, out.decode("utf-8", "replace"), err.decode("utf-8", "replace")
+    return (
+        result.returncode,
+        result.stdout.decode("utf-8", "replace"),
+        result.stderr.decode("utf-8", "replace"),
+    )
 
 
 async def _git_stdout(args: Sequence[str], repo_root: str, run: GitRunner) -> str | None:
@@ -62,9 +63,7 @@ async def _git_stdout(args: Sequence[str], repo_root: str, run: GitRunner) -> st
     return out
 
 
-async def _git_paths(
-    args: Sequence[str], repo_root: str, run: GitRunner
-) -> frozenset[str] | None:
+async def _git_paths(args: Sequence[str], repo_root: str, run: GitRunner) -> frozenset[str] | None:
     out = await _git_stdout(args, repo_root, run)
     if out is None:
         return None

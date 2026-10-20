@@ -88,9 +88,7 @@ def parse_poll_config(raw: Mapping[str, Any]) -> PollConfig:
     identity_roles_raw = poll.get("identity_roles") or {}
     if not isinstance(identity_roles_raw, Mapping):
         raise ConfigError("tickets poll.identity_roles must be a mapping")
-    identity_roles = tuple(
-        (str(name), str(role)) for name, role in identity_roles_raw.items()
-    )
+    identity_roles = tuple((str(name), str(role)) for name, role in identity_roles_raw.items())
     return PollConfig(
         reader_roles=_str_tuple(poll.get("reader_roles"), "poll.reader_roles"),
         allowed_fields=_str_tuple(poll.get("allowed_fields"), "poll.allowed_fields"),

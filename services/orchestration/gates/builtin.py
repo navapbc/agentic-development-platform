@@ -130,7 +130,7 @@ def _scanner_backend(name: str, factory: Any, settings: Any = None) -> Any:
     return factory(resolved, runner=pod_command_runner(name, resolved))
 
 
-def _resolve_gate_model(config: Any, settings: Any) -> str:
+def _resolve_gate_model(config: Any) -> str:
     """Resolve the gate's requested model to a client-recognized id that the gateway can route.
 
     Reads the available canonical-id model groups from the gateway config and maps the gate's
@@ -140,7 +140,7 @@ def _resolve_gate_model(config: Any, settings: Any) -> str:
     """
     import logging
 
-    from services.integration.credentials import ConfigError, load_env_config
+    from services.integration.credentials import ConfigError, load_platform_config
     from services.orchestration.gates.model_resolver import (
         available_gate_model_groups,
         resolve_from_available,
@@ -150,7 +150,7 @@ def _resolve_gate_model(config: Any, settings: Any) -> str:
     if not requested or not getattr(config, "needs_model", False):
         return requested
     try:
-        litellm_config = load_env_config("litellm-config", environment=settings.environment)
+        litellm_config = load_platform_config("litellm-config")
     except ConfigError:
         return requested
     groups = available_gate_model_groups(litellm_config)
@@ -190,7 +190,7 @@ def engine_review_backend(config: Any, profile: str = "") -> Any:
         litellm_api_key=settings.litellm_master_key,
         pod_runner=pod_runner,
         tls_verify=settings.gate_registry_tls_verify,
-        review_model=_resolve_gate_model(config, settings),
+        review_model=_resolve_gate_model(config),
     )
 
 

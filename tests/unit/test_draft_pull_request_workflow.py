@@ -351,9 +351,7 @@ def _make_activities(
     async def fake_run_checks(req: RunChecksRequest) -> RunChecksResult:
         idx = checks_count["n"]
         checks_count["n"] += 1
-        outcome = (
-            ci_results[min(idx, len(ci_results) - 1)] if ci_results is not None else ci_result
-        )
+        outcome = ci_results[min(idx, len(ci_results) - 1)] if ci_results is not None else ci_result
         if ci_triggers is not None:
             ci_triggers.append(req)
         passed = outcome == SUCCESS
@@ -1253,6 +1251,7 @@ async def test_code_authorship_binds_the_post_repair_commit():
     records = {r["kind"]: r for r in verified[-1]}
     assert set(records) == {"plan", "code"}
     assert records["code"]["event"]["commit"] == "d" * 40
+
 
 async def test_triage_patch_verdict_runs_the_repair():
     ci_triggers: list = []
@@ -2605,9 +2604,7 @@ async def test_every_sequenced_action_clears_the_gate_when_ci_needed_a_repair():
     gate = InMemorySequenceGate()
     discarded = []
     for operation, sequence in issued:
-        decision = await gate.admit(
-            SequencedAction("T-1", "exec-1", sequence, operation=operation)
-        )
+        decision = await gate.admit(SequencedAction("T-1", "exec-1", sequence, operation=operation))
         if decision.outcome != ADMITTED:
             discarded.append((operation, sequence, decision.current_sequence))
 

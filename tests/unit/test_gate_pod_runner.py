@@ -11,8 +11,6 @@ from services.orchestration.gates.pod_runner import (
     pod_name_for,
 )
 
-pytestmark = pytest.mark.asyncio
-
 
 class _FakePodOps:
     def __init__(self, *, exec_result=(0, "{}", ""), fail_ready=False):
@@ -34,6 +32,9 @@ class _FakePodOps:
 
     async def copy_in(self, pod, namespace, source_dir, dest_dir):
         self.copied.append((source_dir, dest_dir))
+
+    async def copy_out(self, pod, namespace, source_dir, dest_dir, manifest_path):
+        return None
 
     async def exec_capture(self, pod, namespace, script):
         self.execed.append(script)
@@ -148,9 +149,7 @@ def test_run_script_disables_tls_verify_for_an_insecure_registry_pull():
 
 
 def test_run_script_keeps_tls_verify_on_by_default_in_image_mode():
-    script = _run_script(
-        _spec(source_path="", image="host.docker.internal:5001/gate-tool:519dd2f")
-    )
+    script = _run_script(_spec(source_path="", image="host.docker.internal:5001/gate-tool:519dd2f"))
     assert "--tls-verify=false" not in script
     assert "buildah from $hostflag" in script
 
@@ -227,6 +226,8 @@ def _patch_copy_out(monkeypatch, *, exec_rc=0, tar_rc=0, stderr=b""):
     """Stand in for the kubectl-exec-into-tar pipe so the wiring can be asserted without a pod."""
     import subprocess
 
+    from services import process
+
     calls: list[list[str]] = []
 
     def fake_popen(argv, **kwargs):
@@ -234,6 +235,8 @@ def _patch_copy_out(monkeypatch, *, exec_rc=0, tar_rc=0, stderr=b""):
         if argv[0] == "tar":
             return _FakeProc(tar_rc)
         return _FakeProc(exec_rc, stderr)
+
+    monkeypatch.setattr(process, "resolve_executable", lambda name, path=None: name)
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
     return calls

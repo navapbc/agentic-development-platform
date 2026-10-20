@@ -318,9 +318,7 @@ async def _run_scan_change(monkeypatch, tmp_path, scope: str):
         assert args == ["git", "ls-files", "--others", "--exclude-standard", "-z"]
         return 0, "", ""
 
-    monkeypatch.setattr(
-        "services.orchestration.gates.scan_scope._run_git", fake_git
-    )
+    monkeypatch.setattr("services.orchestration.gates.scan_scope._run_git", fake_git)
     findings = [ScanFinding("f1", "semgrep", STATIC, HIGH, "old debt", location="untouched.py:1")]
     mediator = SecurityScanMediator(
         backends=(MockSecurityScanner("semgrep", findings),),

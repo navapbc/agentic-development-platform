@@ -77,9 +77,7 @@ async def test_orphan_with_no_live_workflow_is_reclaimed():
     )
 
     assert report == type(report)(scanned=1, orphaned=1)
-    assert store.marked == [
-        ("intake-dead", "workflow draft-pr-dead not live (state=IMPLEMENTING)")
-    ]
+    assert store.marked == [("intake-dead", "workflow draft-pr-dead not live (state=IMPLEMENTING)")]
 
 
 @pytest.mark.asyncio

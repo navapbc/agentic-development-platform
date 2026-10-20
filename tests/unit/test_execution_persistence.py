@@ -70,8 +70,9 @@ class _FakeEngine:
         return self._connection
 
 
-class _FakeScalarResult:
+class _FakeScalarResult(_FakeResult):
     def __init__(self, value):
+        super().__init__([])
         self._value = value
 
     def scalar_one(self):

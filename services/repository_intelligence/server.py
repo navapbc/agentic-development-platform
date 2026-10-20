@@ -21,7 +21,6 @@ from services.repository_intelligence.normalization.serialization import context
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("repository-intelligence")
 
-HOST = "0.0.0.0"  # noqa: S104
 PORT = 8120
 
 _registry: RepositoryIntelligenceRegistry | None = None
@@ -123,8 +122,9 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    log.info("repository-intelligence listening on %s:%d", HOST, PORT)
-    ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
+    host = get_settings().bind_host
+    log.info("repository-intelligence listening on %s:%d", host, PORT)
+    ThreadingHTTPServer((host, PORT), Handler).serve_forever()
 
 
 if __name__ == "__main__":

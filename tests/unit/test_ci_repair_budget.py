@@ -57,7 +57,7 @@ def _params() -> DraftPullRequestInput:
         execution_id="exec-1",
         repo="agentic-demo-service",
         base="main",
-        base_sha="a"*40,
+        base_sha="a" * 40,
         task="Add a widget",
         max_llm_calls=3,
         max_repair_attempts=5,

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import re
-import subprocess
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,6 +11,7 @@ from pathlib import Path
 from adapters.interfaces.git_host import CommitRequest, agent_branch_name
 from scripts.config import Settings, get_settings
 
+from services import process
 from services.coordination.orphans import BRANCH, STAGING, OrphanArtifact, OrphanRegistry
 from services.integration.github.mediator import RepoNotAllowedError
 
@@ -47,17 +47,16 @@ def _slug(value: str) -> str:
 
 
 def _run_git(args: list[str], cwd: str | None) -> str:
-    proc = subprocess.run(
+    proc = process.run(
         ["git", "-c", "safe.directory=*", *args],
+        timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS,
         cwd=cwd,
         capture_output=True,
         text=True,
     )
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout).strip()
-        raise RuntimeError(
-            f"git {' '.join(args)} failed (exit {proc.returncode}): {detail}"
-        )
+        raise RuntimeError(f"git {' '.join(args)} failed (exit {proc.returncode}): {detail}")
     return proc.stdout.rstrip()
 
 
@@ -66,8 +65,12 @@ async def _git(*args: str, cwd: str | None = None) -> str:
 
 
 def _run_git_ok(args: list[str], cwd: str | None) -> bool:
-    proc = subprocess.run(
-        ["git", "-c", "safe.directory=*", *args], cwd=cwd, capture_output=True, text=True
+    proc = process.run(
+        ["git", "-c", "safe.directory=*", *args],
+        timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
     )
     return proc.returncode == 0
 
@@ -170,7 +173,7 @@ class WorkspaceMaterializer:
                 await _git("fetch", "--quiet", "origin", branch, cwd=str(path))
         else:
             path.parent.mkdir(parents=True, exist_ok=True)
-            await _git("clone", "--quiet", self.remote_url_for(repo), str(path))
+            await _git("clone", "--quiet", "--", self.remote_url_for(repo), str(path))
         await _git(
             "-c",
             "advice.detachedHead=false",
@@ -191,9 +194,7 @@ class WorkspaceMaterializer:
         `-z` is what makes a path outside ASCII usable, because `core.quotePath` would otherwise
         C-quote it into something no caller can open.
         """
-        out = await _git(
-            "status", "--porcelain=v1", "-z", "--no-renames", cwd=str(workspace.path)
-        )
+        out = await _git("status", "--porcelain=v1", "-z", "--no-renames", cwd=str(workspace.path))
         paths: list[str] = []
         for entry in out.split("\0"):
             if len(entry) > 3:

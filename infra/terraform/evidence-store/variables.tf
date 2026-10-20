@@ -39,9 +39,13 @@ variable "writer_principal_list" {
 }
 
 variable "access_log_bucket" {
-  description = "Target bucket for S3 server access logs. Empty disables access logging."
+  description = "Target bucket for S3 server access logs, such as the bucket the access-logs module creates."
   type        = string
-  default     = ""
+
+  validation {
+    condition     = length(trim(var.access_log_bucket, " ")) > 0
+    error_message = "access_log_bucket must name the bucket that receives S3 server access logs."
+  }
 }
 
 variable "tags" {

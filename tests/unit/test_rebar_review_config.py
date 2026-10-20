@@ -10,8 +10,8 @@ import tasks as tasks_module
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-REBAR_REVIEW = REPO_ROOT / "config" / "local" / "rebar-review.toml"
-LITELLM = REPO_ROOT / "config" / "local" / "litellm-config.yaml"
+REBAR_REVIEW = REPO_ROOT / "config" / "platform" / "rebar-review.toml"
+LITELLM = REPO_ROOT / "config" / "platform" / "litellm-config.yaml"
 PYPROJECT = REPO_ROOT / "pyproject.toml"
 
 
@@ -24,7 +24,7 @@ def _tracked_rebar_table() -> dict:
 
 
 def test_the_tracked_project_config_carries_the_gate_tables():
-    """rebar discovers pyproject; it never discovers config/local/rebar-review.toml."""
+    """rebar discovers pyproject; it never discovers config/platform/rebar-review.toml."""
     table = _tracked_rebar_table()
 
     assert table["llm"]["model_classes"] == _model_classes()

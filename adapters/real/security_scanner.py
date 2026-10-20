@@ -7,7 +7,6 @@ workflow; callers depend only on the SecurityScanner contract.
 
 from __future__ import annotations
 
-import asyncio
 import json
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
@@ -25,6 +24,7 @@ from adapters.interfaces.security_scanner import (
     ScanTarget,
 )
 from scripts.config import Settings, get_settings
+from services import process
 
 
 @dataclass(frozen=True)
@@ -55,11 +55,8 @@ class ScannerError(Exception):
 
 async def run_subprocess(args: Sequence[str], cwd: str) -> CommandResult:
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *args,
-            cwd=cwd or None,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        result = await process.run_async(
+            args, timeout=process.LONG_COMMAND_TIMEOUT_SECONDS, cwd=cwd or None
         )
     except FileNotFoundError as exc:
         raise ScannerError(
@@ -68,11 +65,10 @@ async def run_subprocess(args: Sequence[str], cwd: str) -> CommandResult:
             f"{args[0] if args else 'scanner'} is not installed on this worker. "
             "Install it or set scanner_execution to 'pod' to run it from its own image.",
         ) from exc
-    out, err = await proc.communicate()
     return CommandResult(
-        returncode=proc.returncode or 0,
-        stdout=out.decode("utf-8", "replace"),
-        stderr=err.decode("utf-8", "replace"),
+        returncode=result.returncode,
+        stdout=result.stdout.decode("utf-8", "replace"),
+        stderr=result.stderr.decode("utf-8", "replace"),
     )
 
 

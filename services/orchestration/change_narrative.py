@@ -135,9 +135,7 @@ def _categorise(heading: str) -> str:
     return ""
 
 
-def _content(
-    category: str, narrative: PullRequestNarrative, *, ticket_resolved: bool
-) -> list[str]:
+def _content(category: str, narrative: PullRequestNarrative, *, ticket_resolved: bool) -> list[str]:
     if category == _TICKET:
         return [] if ticket_resolved else [narrative.issue_key]
     if category == _CHANGES:

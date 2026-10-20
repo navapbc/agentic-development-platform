@@ -32,20 +32,26 @@ def _runner(stdout: str, code: int = 0, stderr: str = ""):
     return run
 
 
-def _git_stub(*, merge_base: str = "mb1\n", tracked: str = "", untracked: str = ""):
+class _GitStub:
     """A runner that answers each of the three git calls changed_paths makes."""
-    seen: list[list[str]] = []
 
-    async def run(args, cwd):
-        seen.append(list(args))
+    def __init__(self, merge_base: str, tracked: str, untracked: str) -> None:
+        self._merge_base = merge_base
+        self._tracked = tracked
+        self._untracked = untracked
+        self.seen: list[list[str]] = []
+
+    async def __call__(self, args, cwd):
+        self.seen.append(list(args))
         if args[1] == "merge-base":
-            return 0, merge_base, ""
+            return 0, self._merge_base, ""
         if args[1] == "diff":
-            return 0, tracked, ""
-        return 0, untracked, ""
+            return 0, self._tracked, ""
+        return 0, self._untracked, ""
 
-    run.seen = seen
-    return run
+
+def _git_stub(*, merge_base: str = "mb1\n", tracked: str = "", untracked: str = "") -> _GitStub:
+    return _GitStub(merge_base, tracked, untracked)
 
 
 async def test_the_changed_set_is_the_working_tree_against_the_merge_base():
@@ -77,6 +83,7 @@ async def test_a_file_the_change_added_is_attributed_to_it(tmp_path):
     changed = await changed_paths(str(tmp_path), "base1", runner=run)
 
     assert changed == frozenset({"added.py"})
+    assert changed is not None
     assert is_attributable(_finding("added.py:1"), changed, str(tmp_path)) is True
 
 
@@ -115,6 +122,7 @@ async def test_a_path_outside_ascii_is_not_c_quoted_so_it_matches_its_finding(tm
     changed = await changed_paths(str(tmp_path), "base1", runner=run)
 
     assert changed == frozenset({name})
+    assert changed is not None
     assert is_attributable(_finding(f"{name}:4"), changed, str(tmp_path)) is True
     assert all("-z" in args for args in run.seen if args[1] != "merge-base")
 

@@ -136,9 +136,7 @@ async def test_verify_acceptance_blocking(monkeypatch):
 
 
 def test_resolve_repo_root_prefers_explicit_existing_root(tmp_path):
-    req = ReviewRequest(
-        task_id="T", execution_id="E", subject="s", repo_root=str(tmp_path)
-    )
+    req = ReviewRequest(task_id="T", execution_id="E", subject="s", repo_root=str(tmp_path))
     assert review._resolve_repo_root(req) == str(tmp_path)
 
 
@@ -148,9 +146,7 @@ def test_resolve_repo_root_maps_repo_to_ris_path(tmp_path, monkeypatch):
             return {"demo": (str(tmp_path), None)}
 
     monkeypatch.setattr(review, "get_settings", lambda: _Settings(), raising=False)
-    monkeypatch.setattr(
-        "scripts.config.get_settings", lambda: _Settings(), raising=False
-    )
+    monkeypatch.setattr("scripts.config.get_settings", lambda: _Settings(), raising=False)
     req = ReviewRequest(task_id="T", execution_id="E", subject="s", repo="demo")
     assert review._resolve_repo_root(req) == str(tmp_path)
 
@@ -160,9 +156,7 @@ def test_resolve_repo_root_returns_none_for_missing_path(monkeypatch):
         def repo_intelligence_registry(self):
             return {"demo": ("/nonexistent/path/xyz", None)}
 
-    monkeypatch.setattr(
-        "scripts.config.get_settings", lambda: _Settings(), raising=False
-    )
+    monkeypatch.setattr("scripts.config.get_settings", lambda: _Settings(), raising=False)
     req = ReviewRequest(task_id="T", execution_id="E", subject="s", repo="demo")
     assert review._resolve_repo_root(req) is None
 

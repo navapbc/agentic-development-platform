@@ -90,9 +90,7 @@ async def test_restart_waits_for_the_abandoned_workflow_to_settle():
         checks["n"] += 1
         if checks["n"] >= 3:
             settling.discard(workflow_id)
-        return (
-            WorkflowLiveness.RUNNING if workflow_id in settling else WorkflowLiveness.ENDED
-        )
+        return WorkflowLiveness.RUNNING if workflow_id in settling else WorkflowLiveness.ENDED
 
     result = await restart_task(
         "ADSER-24",

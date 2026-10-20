@@ -28,13 +28,16 @@ class Settings(BaseSettings):
     worker_versioning_enabled: bool = False
     workflow_execution_timeout_seconds: float = 3600.0
     draft_pr_execution_timeout_seconds: float = 86400.0
+    bind_host: str = "127.0.0.1"
+    health_heartbeat_file: str = ""
+    health_heartbeat_interval_seconds: float = 15.0
 
     litellm_base_url: str = "http://localhost:4000"
     litellm_master_key: str = "change-me-locally"
 
     rebar_llm_base_url: str = "http://localhost:4000"
     rebar_llm_api_key: str = "change-me-locally"
-    rebar_llm_model_provider: str = "openai"
+    rebar_llm_model_provider: str = "openai-chat"
     rebar_llm_max_tokens: int = 8192
     rebar_llm_temperature: float = 0.0
     rebar_review_native: bool = True
@@ -167,7 +170,10 @@ class Settings(BaseSettings):
     )
     security_blocking_threshold: str = "high"
 
-    openhands_agent_server_image: str = "ghcr.io/openhands/agent-server:latest-python"
+    openhands_agent_server_image: str = (
+        "ghcr.io/openhands/agent-server:1.56.0-python"
+        "@sha256:718bf6d719f34184810ecaebe607f1aafaf526e109654815e61ddd6238728023"
+    )
     openhands_runtime_class: str = ""
     openhands_sandbox_namespace: str = "agent-sandbox"
     openhands_server_port: int = 8000
@@ -185,7 +191,10 @@ class Settings(BaseSettings):
     sandbox_litellm_base_url: str = "http://host.docker.internal:4000"
     gate_engine_execution: str = "subprocess"
     gate_engine_namespace: str = "agent-sandbox"
-    gate_engine_builder_image: str = "quay.io/buildah/stable:v1.43.2"
+    gate_engine_builder_image: str = (
+        "quay.io/buildah/stable:v1.43.5"
+        "@sha256:7c2b605262748ace2c5c57c5550942d0adad57aec82ede3070927722306c0ffb"
+    )
     gate_engine_privileged: bool = False
     gate_registry_tls_verify: bool = True
 
@@ -193,7 +202,7 @@ class Settings(BaseSettings):
     reap_schedule_interval_minutes: int = 60
     reap_schedule_dry_run: bool = False
 
-    intake_schedule_id: str = "jira-intake"
+    intake_schedule_id: str = ""
     intake_schedule_interval_seconds: int = 60
     intake_run_reviews: bool = False
     intake_run_policy: bool = False

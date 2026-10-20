@@ -1,6 +1,6 @@
 [project]
 name = "agentic-dev-platform"
-version = "0.1.0"
+version = "0.3.0"
 description = "Local agentic SDLC platform POC (Jira -> plan -> code -> test -> scan -> PR) with HITL, audit, and observability."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -23,25 +23,25 @@ dependencies = [
 
 [project.optional-dependencies]
 reasoning = [
-    "langgraph>=0.2,<0.4",
-    "langchain-openai>=0.1,<0.4",
+    "langgraph>=1.2,<2",
 ]
 review = [
-    "nava-rebar[agents,jira-datacenter]==0.12.0",
+    "nava-rebar[agents,jira-datacenter]==0.13.1",
     "openpyxl>=3.1,<4",
 ]
 sandbox = [
     "kubernetes>=29,<32",
-    "openhands-sdk>=1.39,<2",
-    "openhands-tools>=1.39,<2",
+    "openhands-sdk>=1.56,<2",
+    "openhands-tools>=1.56,<2",
 ]
 gateway = [
-    "mcp>=1.8,<2",
+    "mcp>=1.30,<2",
 ]
 observability = [
-    "opentelemetry-sdk>=1.39,<2",
-    "opentelemetry-exporter-otlp-proto-grpc>=1.39,<2",
-    "opentelemetry-exporter-otlp-proto-http>=1.39,<2",
+    "opentelemetry-sdk>=1.45,<2",
+    "opentelemetry-instrumentation-logging>=0.66b1,<1",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.45,<2",
+    "opentelemetry-exporter-otlp-proto-http>=1.45,<2",
 ]
 prompts = [
     "langfuse>=3,<5",
@@ -51,16 +51,28 @@ storage = [
 ]
 dev = [
     "ruff>=0.5,<0.13",
-    "pytest>=8.2,<9",
-    "pytest-asyncio>=0.23,<0.25",
+    "pytest>=9.0.3,<10",
+    "pytest-asyncio>=1.4,<2",
     "coverage>=7.5,<8",
     "basedpyright>=1.13,<2",
     "jsonschema>=4.20,<5",
+    "bandit[toml]>=1.9.4,<2",
+    "pip-audit>=2.9,<3",
 ]
 all = [
     "agentic-dev-platform[reasoning,review,sandbox,gateway,observability,prompts,storage]",
-    "pydantic-ai-slim[openai,bedrock]>=1,<2",
+    "pydantic-ai-slim[openai,bedrock]>=1.107.7,<2",
 ]
+worker = [
+    "agentic-dev-platform[reasoning,sandbox,review,observability,prompts,storage]",
+    "pydantic-ai-slim[openai]>=1.107.7,<2",
+    "ruff>=0.5,<0.13",
+]
+
+[tool.uv]
+required-version = ">=0.13.3"
+exclude-newer = "7 days"
+exclude-newer-package = { "openhands-sdk" = false, "openhands-tools" = false }
 
 [build-system]
 requires = ["hatchling"]
@@ -102,7 +114,7 @@ require_completion_verification_for_close = true
 
 # A running gate pins its read-root to an attested git snapshot, which holds no untracked
 # files, so this table must stay tracked here rather than in a local rebar.toml. Values
-# mirror config/local/rebar-review.toml, which the review worker and the inv wrappers name
+# mirror config/platform/rebar-review.toml, which the review worker and the inv wrappers name
 # explicitly. test_rebar_review_config keeps the two in step.
 [tool.rebar.llm]
 llm_retry_max_attempts = 6

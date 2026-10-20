@@ -44,7 +44,7 @@ class ContextStampingSpanProcessor(SpanProcessor):
                     span.set_attribute(key, str(value))
             self._stamp_langfuse_join(span, items)
         except Exception:  # noqa: BLE001 - instrumentation must not raise
-            pass
+            log.debug("span baggage stamping failed", exc_info=True)
 
     @staticmethod
     def _stamp_langfuse_join(span: Span, items: Mapping[str, Any]) -> None:
@@ -202,7 +202,7 @@ def force_flush(timeout_millis: int = 5000) -> None:
         if _provider is not None:
             _provider.force_flush(timeout_millis)
     except Exception:  # noqa: BLE001
-        pass
+        log.debug("span flush failed", exc_info=True)
 
 
 def get_tracer() -> Tracer:
@@ -258,7 +258,7 @@ def stage_span(
             if attributes:
                 _apply_attributes(span, attributes)
         except Exception:  # noqa: BLE001
-            pass
+            log.debug("span attribute stamping failed", exc_info=True)
         yield span
 
 

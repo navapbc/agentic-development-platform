@@ -197,8 +197,6 @@ def _registry_with_engines(settings: Settings, environment: str) -> GateRegistry
     )
 
     registry = builtin_registry()
-    for engine in enabled_engines(
-        load_gate_engine_configs(settings, environment=environment)
-    ):
+    for engine in enabled_engines(load_gate_engine_configs(settings, environment=environment)):
         registry.register(engine.name, lambda engine=engine: engine_gate(engine))
     return registry

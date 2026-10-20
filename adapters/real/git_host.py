@@ -6,7 +6,6 @@ import asyncio
 import base64
 import os
 import re
-import subprocess
 import tempfile
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
@@ -27,6 +26,7 @@ from adapters.interfaces.git_host import (
     reuse_from_pull_request,
 )
 from scripts.config import Settings, get_settings
+from services import process
 
 if TYPE_CHECKING:
     from services.integration.github.credentials import (
@@ -85,9 +85,10 @@ class RealGitHost:
     async def _git(
         self, *args: str, cwd: str | None = None, env: dict[str, str] | None = None
     ) -> str:
-        def run() -> subprocess.CompletedProcess[str]:
-            return subprocess.run(
+        def run() -> process.CompletedProcess[str]:
+            return process.run(
                 ["git", *args],
+                timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS,
                 cwd=cwd,
                 capture_output=True,
                 text=True,
@@ -102,7 +103,7 @@ class RealGitHost:
         return proc.stdout.strip()
 
     async def _ls_remote(self, remote: str, ref: str) -> str:
-        out = await self._git("ls-remote", "--heads", remote, ref)
+        out = await self._git("ls-remote", "--heads", "--", remote, ref)
         if not out:
             return ""
         return out.split()[0]
@@ -116,7 +117,7 @@ class RealGitHost:
         if not base_sha:
             raise KeyError(f"base branch missing: {repo}:{base}")
         with tempfile.TemporaryDirectory() as work:
-            await self._git("clone", "--branch", base, "--single-branch", remote, work)
+            await self._git("clone", "--branch", base, "--single-branch", "--", remote, work)
             await self._git("push", "origin", f"HEAD:refs/heads/{name}", cwd=work)
             head = await self._git("rev-parse", "HEAD", cwd=work)
         return BranchRef(repo=repo, name=name, head_sha=head, created=True)

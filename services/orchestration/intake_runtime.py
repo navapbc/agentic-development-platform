@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import subprocess
 from typing import Any
 
 import structlog
 from scripts.config import Settings
 
+from services import process
 from services.integration.jira.credentials import acceptance_field
 from services.orchestration.change_narrative import compose_commit_message
 from services.orchestration.execution_reconciler import ActiveExecution
@@ -18,8 +18,9 @@ _log = structlog.get_logger(__name__)
 
 
 def remote_head(remote: str, branch: str) -> str:
-    proc = subprocess.run(
-        ["git", "ls-remote", remote, f"refs/heads/{branch}"],
+    proc = process.run(
+        ["git", "ls-remote", "--", remote, f"refs/heads/{branch}"],
+        timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS,
         check=True,
         capture_output=True,
         text=True,
@@ -171,8 +172,10 @@ class PostgresExecutionSeeder:
         from database.models.schema import executions
         from sqlalchemy import func, select
 
-        stmt = select(func.count()).select_from(executions).where(
-            executions.c.state.not_in(("COMPLETED", "FAILED", "CANCELLED"))
+        stmt = (
+            select(func.count())
+            .select_from(executions)
+            .where(executions.c.state.not_in(("COMPLETED", "FAILED", "CANCELLED")))
         )
         async with self._get_engine().connect() as conn:
             return int((await conn.execute(stmt)).scalar_one())
@@ -181,16 +184,13 @@ class PostgresExecutionSeeder:
         from database.models.schema import executions
         from sqlalchemy import select
 
-        stmt = (
-            select(
-                executions.c.execution_id,
-                executions.c.task_id,
-                executions.c.workflow_id,
-                executions.c.updated_at,
-                executions.c.state,
-            )
-            .where(executions.c.state.not_in(("COMPLETED", "FAILED", "CANCELLED")))
-        )
+        stmt = select(
+            executions.c.execution_id,
+            executions.c.task_id,
+            executions.c.workflow_id,
+            executions.c.updated_at,
+            executions.c.state,
+        ).where(executions.c.state.not_in(("COMPLETED", "FAILED", "CANCELLED")))
         async with self._get_engine().connect() as conn:
             rows = (await conn.execute(stmt)).all()
         return [

@@ -6,13 +6,13 @@ import argparse
 import asyncio
 import contextlib
 import os
-import subprocess
 import uuid
 from datetime import timedelta
 from typing import Any
 
 from adapters.interfaces.git_host import agent_branch_name
 from adapters.real.git_host import RealGitHost
+from services import process
 from services.coordination import (
     InMemorySequenceGate,
     InMemorySideEffectLedger,
@@ -65,8 +65,9 @@ def _demo_status_flow(settings: Settings, issue_key: str) -> StatusFlow:
 
 
 def _remote_head(remote: str, branch: str) -> str:
-    proc = subprocess.run(
-        ["git", "ls-remote", remote, f"refs/heads/{branch}"],
+    proc = process.run(
+        ["git", "ls-remote", "--", remote, f"refs/heads/{branch}"],
+        timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS,
         check=True,
         capture_output=True,
         text=True,
@@ -271,9 +272,7 @@ async def _run_via_temporal(
     from temporalio.client import Client
 
     caps = BudgetCaps.from_settings(settings)
-    stored_issue = normalize_issue(
-        raw_issue, acceptance_field=acceptance_field(settings)
-    ).to_dict()
+    stored_issue = normalize_issue(raw_issue, acceptance_field=acceptance_field(settings)).to_dict()
     execution_id = f"exec-{uuid.uuid4().hex[:8]}"
     workflow_id = f"draft-pr-{task_id}-{execution_id}"
     address = to_host_hostport(settings.temporal_host)

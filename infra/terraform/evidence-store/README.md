@@ -11,7 +11,7 @@ The bucket enables S3 Object Lock with a default retention, so an evidence objec
 - Server-side encryption, SSE-S3 AES256 by default or SSE-KMS when `kms_key_arn` is set, with a bucket key to reduce KMS cost.
 - A public access block that denies all public access.
 - A bucket policy that denies non-TLS access and restricts writes to the account root and the `writer_principal_list`.
-- S3 server access logging to `access_log_bucket` when set.
+- S3 server access logging to the required `access_log_bucket`, normally the bucket the [access-logs](../access-logs) module creates.
 
 ## Retention model
 

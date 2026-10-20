@@ -3,17 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import http.client
 import re
+import shlex
 import socket
-import subprocess
-import urllib.error
-import urllib.request
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
+from services import process
+
 _NAME_SANITISE = re.compile(r"[^a-z0-9-]+")
 _SANDBOX_UID = 10001
+_SANDBOX_HOME = "/home/sandbox"
 _BASE_TAG = "__openhands_base"
 
 
@@ -72,11 +74,23 @@ def build_pod_manifest(spec: SandboxSpec) -> dict:
         "agentic-dev-platform/execution-id": spec.execution_id,
         **dict(spec.labels),
     }
-    env = [{"name": "LLM_BASE_URL", "value": spec.litellm_base_url}]
+    env = [
+        {"name": "LLM_BASE_URL", "value": spec.litellm_base_url},
+        {"name": "HOME", "value": _SANDBOX_HOME},
+    ]
     env += [{"name": key, "value": value} for key, value in spec.env.items()]
+    volumes = [
+        {"name": "agent-tmp", "emptyDir": {}},
+        {"name": "agent-home", "emptyDir": {}},
+    ]
+    mounts = [
+        {"name": "agent-tmp", "mountPath": "/tmp"},
+        {"name": "agent-home", "mountPath": _SANDBOX_HOME},
+    ]
     container = {
         "name": "agent-server",
         "image": spec.image,
+        "workingDir": _SANDBOX_HOME,
         "ports": [{"containerPort": spec.server_port}],
         "env": env,
         "resources": {
@@ -85,6 +99,7 @@ def build_pod_manifest(spec: SandboxSpec) -> dict:
         },
         "securityContext": {
             "allowPrivilegeEscalation": False,
+            "readOnlyRootFilesystem": True,
             "runAsNonRoot": True,
             "runAsUser": _SANDBOX_UID,
             "runAsGroup": _SANDBOX_UID,
@@ -111,15 +126,17 @@ def build_pod_manifest(spec: SandboxSpec) -> dict:
         "automountServiceAccountToken": False,
         "securityContext": {"seccompProfile": {"type": "RuntimeDefault"}},
         "containers": [container],
+        "volumes": volumes,
     }
     if spec.runtime_class:
         spec_body["runtimeClassName"] = spec.runtime_class
     if spec.workspace is not None:
         volume, mount = _workspace_volume(spec.workspace)
         container["workingDir"] = spec.workspace.mount_path
-        container["volumeMounts"] = [mount]
+        mounts.append(mount)
         env.append({"name": "WORKSPACE_BASE", "value": spec.workspace.mount_path})
-        spec_body["volumes"] = [volume]
+        volumes.append(volume)
+    container["volumeMounts"] = mounts
     return {
         "apiVersion": "v1",
         "kind": "Pod",
@@ -242,10 +259,11 @@ class KubernetesSandboxProvisioner:
         # workspace that already contains them.
         # Signing and hooks are disabled because the copied-in .git carries the project's own
         # configuration, and neither a signing key nor a hook toolchain exists in the sandbox.
+        quoted_dest = shlex.quote(dest_dir)
         extract = (
-            f"mkdir -p {dest_dir} && "
-            f"tar xmf - --no-overwrite-dir --no-same-owner -C {dest_dir} && "
-            f"cd {dest_dir} && "
+            f"mkdir -p {quoted_dest} && "
+            f"tar xmf - --no-overwrite-dir --no-same-owner -C {quoted_dest} && "
+            f"cd {quoted_dest} && "
             f'git config user.email "openhands@all-hands.dev" && '
             f'git config user.name "openhands" && '
             f"git add -A && "
@@ -253,10 +271,8 @@ class KubernetesSandboxProvisioner:
             f'-m "openhands base" && '
             f"git tag -f {_BASE_TAG} HEAD"
         )
-        tar = subprocess.Popen(
-            ["tar", "-C", source_dir, "-cf", "-", "."], stdout=subprocess.PIPE
-        )
-        exec_proc = subprocess.Popen(
+        tar = process.popen(["tar", "-C", source_dir, "-cf", "-", "."], stdout=process.PIPE)
+        exec_proc = process.popen(
             [
                 self._kubectl,
                 "exec",
@@ -270,7 +286,7 @@ class KubernetesSandboxProvisioner:
                 extract,
             ],
             stdin=tar.stdout,
-            stderr=subprocess.PIPE,
+            stderr=process.PIPE,
         )
         if tar.stdout is not None:
             tar.stdout.close()
@@ -283,7 +299,7 @@ class KubernetesSandboxProvisioner:
         return await asyncio.to_thread(self._extract_patch_sync, handle, project_dir)
 
     def _extract_patch_sync(self, handle: SandboxHandle, project_dir: str) -> str:
-        result = subprocess.run(
+        result = process.run(
             [
                 self._kubectl,
                 "exec",
@@ -293,9 +309,10 @@ class KubernetesSandboxProvisioner:
                 "--",
                 "sh",
                 "-c",
-                f"cd {project_dir} && git add -A && "
+                f"cd {shlex.quote(project_dir)} && git add -A && "
                 f"(git diff --cached {_BASE_TAG} 2>/dev/null || git diff --cached)",
             ],
+            timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS,
             capture_output=True,
             text=True,
         )
@@ -305,9 +322,7 @@ class KubernetesSandboxProvisioner:
 
 
 class FakeSandboxProvisioner:
-    def __init__(
-        self, *, base_url: str = "http://fake-sandbox:8000", patch: str = ""
-    ) -> None:
+    def __init__(self, *, base_url: str = "http://fake-sandbox:8000", patch: str = "") -> None:
         self._base_url = base_url
         self._patch = patch
         self.provisioned: list[SandboxHandle] = []
@@ -344,13 +359,15 @@ def _free_port() -> int:
 
 
 def _http_ready(port: int, path: str = "/health") -> bool:
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=1)
     try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=1):
-            return True
-    except urllib.error.HTTPError:
+        connection.request("GET", path)
+        connection.getresponse()
         return True
-    except (urllib.error.URLError, OSError):
+    except (http.client.HTTPException, OSError):
         return False
+    finally:
+        connection.close()
 
 
 class PortForwardSandboxProvisioner:
@@ -372,13 +389,13 @@ class PortForwardSandboxProvisioner:
         self._inner = inner or KubernetesSandboxProvisioner(in_cluster=False)
         self._kubectl = kubectl
         self._ready_timeout = ready_timeout_seconds
-        self._forwards: dict[str, subprocess.Popen] = {}
+        self._forwards: dict[str, process.Popen] = {}
 
     async def provision(self, spec: SandboxSpec) -> SandboxHandle:
         handle = await self._inner.provision(spec)
         local_port = _free_port()
         proc = await asyncio.to_thread(
-            subprocess.Popen,
+            process.Popen,
             [
                 self._kubectl,
                 "port-forward",
@@ -387,8 +404,8 @@ class PortForwardSandboxProvisioner:
                 f"pod/{handle.name}",
                 f"{local_port}:{spec.server_port}",
             ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=process.DEVNULL,
+            stderr=process.DEVNULL,
         )
         self._forwards[handle.name] = proc
         await self._wait_forward(local_port, proc)
@@ -398,7 +415,7 @@ class PortForwardSandboxProvisioner:
             base_url=f"http://127.0.0.1:{local_port}",
         )
 
-    async def _wait_forward(self, port: int, proc: subprocess.Popen) -> None:
+    async def _wait_forward(self, port: int, proc: process.Popen) -> None:
         deadline = asyncio.get_running_loop().time() + self._ready_timeout
         while True:
             if proc.poll() is not None:
@@ -415,7 +432,7 @@ class PortForwardSandboxProvisioner:
             proc.terminate()
             try:
                 await asyncio.to_thread(proc.wait, 5)
-            except subprocess.TimeoutExpired:
+            except process.TimeoutExpired:
                 proc.kill()
         await self._inner.teardown(handle)
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from services.orchestration.intake_retry import (
@@ -14,6 +14,8 @@ from services.orchestration.intake_retry import (
     temporal_workflow_liveness,
 )
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.ext.asyncio import AsyncEngine
+from tests.support import hermetic_settings
 
 
 class _FakeStore:
@@ -109,9 +111,7 @@ async def test_retry_with_no_intake_record_reports_nothing_to_do():
 async def test_retry_passes_repo_scope_to_the_store():
     store = _FakeStore(workflow_ids=[], dedup=1)
 
-    await retry_intake(
-        "ADSER-22", store=store, liveness=_active(), repo="agentic-demo-service"
-    )
+    await retry_intake("ADSER-22", store=store, liveness=_active(), repo="agentic-demo-service")
 
     assert store.cleared_repo == "agentic-demo-service"
 
@@ -137,11 +137,7 @@ async def test_a_confirmed_running_workflow_outranks_an_undetermined_one():
     store = _FakeStore(workflow_ids=["wf-live", "wf-unreachable"], dedup=1)
 
     async def _mixed(workflow_id: str) -> WorkflowLiveness:
-        return (
-            WorkflowLiveness.RUNNING
-            if workflow_id == "wf-live"
-            else WorkflowLiveness.UNKNOWN
-        )
+        return WorkflowLiveness.RUNNING if workflow_id == "wf-live" else WorkflowLiveness.UNKNOWN
 
     result = await retry_intake("ADSER-24", store=store, liveness=_mixed)
 
@@ -158,7 +154,7 @@ async def test_temporal_probe_reports_unknown_when_the_connection_fails(monkeypa
         raise OSError("connect call failed")
 
     monkeypatch.setattr(Client, "connect", _boom)
-    settings = SimpleNamespace(temporal_host="temporal:7233", temporal_namespace="default")
+    settings = hermetic_settings(temporal_host="temporal:7233", temporal_namespace="default")
 
     probe = temporal_workflow_liveness(settings)
 
@@ -168,9 +164,7 @@ async def test_temporal_probe_reports_unknown_when_the_connection_fails(monkeypa
 def _like_pattern(pattern: str) -> re.Pattern[str]:
     """SQL LIKE semantics, where % spans any run of characters and _ spans exactly one."""
     return re.compile(
-        "".join(
-            {"%": ".*", "_": "."}.get(character, re.escape(character)) for character in pattern
-        )
+        "".join({"%": ".*", "_": "."}.get(character, re.escape(character)) for character in pattern)
     )
 
 
@@ -263,7 +257,7 @@ async def test_clearing_intake_dedup_treats_underscores_in_the_repo_literally():
             _intake_row("k-bystander", "ADEV-1", "myXrepo"),
         ]
     )
-    store = PostgresIntakeRetryStore(engine)
+    store = PostgresIntakeRetryStore(cast(AsyncEngine, engine))
 
     cleared = await store.clear_intake_dedup("ADEV-1", "my_repo")
 
@@ -278,7 +272,7 @@ async def test_clearing_intake_dedup_without_a_repo_clears_every_intake_row():
             _intake_row("k-b", "ADEV-1", "repo-b"),
         ]
     )
-    store = PostgresIntakeRetryStore(engine)
+    store = PostgresIntakeRetryStore(cast(AsyncEngine, engine))
 
     cleared = await store.clear_intake_dedup("ADEV-1", None)
 
@@ -293,7 +287,7 @@ async def test_clearing_intake_dedup_without_a_repo_spares_other_tickets():
             _intake_row("k-other", "ADEV-2", "repo-a"),
         ]
     )
-    store = PostgresIntakeRetryStore(engine)
+    store = PostgresIntakeRetryStore(cast(AsyncEngine, engine))
 
     cleared = await store.clear_intake_dedup("ADEV-1", None)
 
@@ -303,7 +297,7 @@ async def test_clearing_intake_dedup_without_a_repo_spares_other_tickets():
 
 async def test_clearing_intake_dedup_for_an_unmatched_repo_deletes_nothing():
     engine = _FakeLedgerEngine([_intake_row("k-a", "ADEV-1", "repo-a")])
-    store = PostgresIntakeRetryStore(engine)
+    store = PostgresIntakeRetryStore(cast(AsyncEngine, engine))
 
     cleared = await store.clear_intake_dedup("ADEV-1", "repo-b")
 

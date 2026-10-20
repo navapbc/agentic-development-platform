@@ -20,6 +20,7 @@ Install these on the host before you start.
 | --- | --- | --- |
 | Docker Desktop with Compose v2 | Runs the whole stack | The `docker compose` command must work |
 | Python 3.12 or newer | Task runner, migrations, local scripts | The container images use 3.12 |
+| uv 0.13.3 or newer | Installs the locked Python dependencies | Install it from [docs.astral.sh/uv](https://docs.astral.sh/uv/). `pyproject.toml` refuses an older uv |
 | git | Clone this repo and its siblings | |
 | An AWS profile with Bedrock access | Inference | An IAM principal with `bedrock:InvokeModel` and credentials under `~/.aws`. Set the profile and region in `.env` |
 
@@ -37,7 +38,7 @@ Two host tools are optional and only needed for specific paths.
 | Optional tool | Needed for |
 | --- | --- |
 | kubeconfig under `~/.kube/config` | The OpenHands sandbox agent, used by live-agent demo runs |
-| Vendored `acli` binary | Jira Cloud writes. The worker image build provisions it. See [Vendored binaries](#vendored-binaries) |
+| Vendored `acli` binary | Jira Cloud writes. The worker image build installs it when `INSTALL_ACLI=true`. See [Vendored binaries](#vendored-binaries) |
 
 ## First-time setup
 
@@ -47,12 +48,12 @@ Run these once from the repository root.
 2. Copy the integration source configs with `cp config/local/github.yaml.example config/local/github.yaml`, `cp config/local/jira.yaml.example config/local/jira.yaml`, and `cp config/local/integrations.yaml.example config/local/integrations.yaml`, then edit the copies. See [Integration credentials](#integration-credentials). Never commit the `config/local/*.yaml` operator files. If you set `TICKET_BACKEND=rebar`, also copy `config/local/tickets.yaml.example` to `config/local/tickets.yaml`. See [Ticket and source-control backends](#ticket-and-source-control-backends).
 3. Copy the gate selection config with `cp config/local/gates.yaml.example config/local/gates.yaml`. It is required for any run that evaluates gates. Copying `config/local/gate_engine.yaml.example` to `config/local/gate_engine.yaml` is optional and adds an external gate engine. See [Configurable gates](#configurable-gates).
 4. Provision review-verdict signing, which is on by default. Generate a key and trust root and set the signing variables in `.env` by following the local setup in [docs/review-verdict-signing.md](docs/review-verdict-signing.md). Without this the review worker fails closed at startup. To skip signing, set `REVIEW_SIGNING_ENABLED=false`.
-5. Create and activate a virtual environment with `python -m venv .venv && source .venv/bin/activate`.
-6. Install the package with its development extras using `pip install -e ".[dev,reasoning]"`. Add `sandbox` for the OpenHands agent, and see [CONTRIBUTING.md](CONTRIBUTING.md) for the editable `rebar` install needed on the review path.
+5. Install the locked dependencies into `.venv` with `uv sync --locked --all-extras`, then activate it with `source .venv/bin/activate`. `uv.lock` pins every package with its hashes, and `--locked` refuses a lock that no longer matches `pyproject.toml`. See [CONTRIBUTING.md](CONTRIBUTING.md) for changing a dependency.
+6. Confirm the toolchain with `inv ci`, which runs the lint, the hermetic tests, and the evaluation gate.
 7. Choose a Bedrock connectivity provider in `.env` and open the path with `inv tunnel-start`. See [Bedrock connectivity](#bedrock-connectivity).
 8. Validate the Bedrock path and local reachability with `inv connectivity-check`.
-9. Start the stack with `inv local-up`.
-10. Apply database migrations with `inv db-migrate`.
+9. Build the images, apply database migrations, and start the stack with `inv local-up`.
+10. Register the Temporal reap and intake schedules with `inv schedules-install`. They persist in Temporal's database, so run it again only after the volumes are wiped or a schedule setting changes.
 11. Confirm everything is healthy with `inv smoke-test`.
 12. Load allowlisted seed data with `inv seed` when you need demo fixtures.
 
@@ -60,7 +61,7 @@ Run these once from the repository root.
 
 Two binaries live under `vendor/bin` and are provisioned outside the Python install.
 
-`acli` is the Atlassian CLI used for Jira Cloud writes. The worker image build runs `scripts/fetch_acli.py` during `inv local-up`, which downloads and checksum-verifies the binary into the image at `/app/vendor/bin/acli`. The download is driven by `ACLI_VERSION`, `ACLI_DOWNLOAD_URL`, and `ACLI_SHA256` in `.env`, where `ACLI_SHA256` is required and verifies the artifact whatever its source. To place the same binary on the host for host-side runs, use `inv fetch-acli`, which writes `vendor/bin/acli`.
+`acli` is the Atlassian CLI used for Jira Cloud writes, so only a Jira Cloud ticket source needs it. The worker images install it when `INSTALL_ACLI=true` is set in `.env`, and `inv local-up` then runs `scripts/fetch_acli.py` during the build. On Linux the script downloads the versioned Debian package from Atlassian's apt pool, verifies it against the SHA-256 committed in the script, and extracts the binary to `/app/vendor/bin/acli`. The pinned release is 1.3.39. Another `ACLI_VERSION`, or an `ACLI_DOWNLOAD_URL` mirror, needs `ACLI_SHA256`, and the build refuses a Linux download without a digest. Without acli, the Jira Cloud path fails with a message that names `INSTALL_ACLI`. To place the binary on the host for host-side runs, use `inv fetch-acli`, which writes `vendor/bin/acli`. Atlassian publishes the macOS binary only as `latest`, so a macOS fetch is verified only when `ACLI_SHA256` is set.
 
 `codebase-memory-mcp` is an optional Repository Intelligence provider that supplies file-level reference and caller candidates. It has no release binary and is built from its upstream MIT-licensed source at `https://github.com/DeusData/codebase-memory-mcp`. Run `inv cbm-build`, which clones the upstream repository at the pinned tag and builds the binary into `vendor/bin/codebase-memory-mcp`. Pass `--source <path>` to build from an existing local checkout for a closed environment, or `--ref <tag>` to build a different upstream version. The Repository Intelligence services mount that path read-only and drive the binary as a per-call subprocess, so CBM engages automatically once the binary is present. When the binary is absent the provider is skipped and the stack runs on its other providers.
 
@@ -81,10 +82,12 @@ Two binaries live under `vendor/bin` and are provisioned outside the Python inst
 | Admission | `MAX_CONCURRENT_RUNS`, `EXECUTION_ORPHAN_GRACE_SECONDS` | Cap on runs in flight and the grace window before a dead run's slot is reclaimed. Defaults work locally |
 | Dependency discovery | `DEPENDENCY_DETECTION_ENABLED`, `DEPENDENCY_REPLAN_ATTEMPTS` | Enable cross-ticket dependency discovery and set the re-plan attempt cap. Defaults to off. See [Cross-ticket dependency discovery](#cross-ticket-dependency-discovery) |
 | Integration tokens | `GITHUB_TOKEN`, `JIRA_API_TOKEN`, `JIRA_PAT` | The secrets named by `token_ref` in `github.yaml` and `jira.yaml`. See [Integration credentials](#integration-credentials) |
-| Jira tooling | `JIRA_ACLI_PATH`, `ACLI_VERSION`, `ACLI_DOWNLOAD_URL`, `ACLI_SHA256` | Path and provisioning for the vendored acli binary |
+| Jira tooling | `JIRA_ACLI_PATH`, `INSTALL_ACLI`, `ACLI_VERSION`, `ACLI_DOWNLOAD_URL`, `ACLI_SHA256` | Path and provisioning for the vendored acli binary |
 | Policy and observability | `OPA_URL`, `LANGFUSE_*`, `OTEL_EXPORTER_OTLP_ENDPOINT` | Defaults work locally |
 
 The non-secret integration settings, including the repository and project allowlists, live in the `config/local` YAML files rather than `.env`. See [Integration credentials](#integration-credentials). The gate selection and the optional AI-CLI engine live in `config/local/gates.yaml` and `config/local/gate_engine.yaml`. See [Configurable gates](#configurable-gates).
+
+The tracked files under `config/platform` hold configuration the platform owns and every environment shares, so they carry no `.example` template and are not edited per operator. `litellm-config.yaml` and `litellm_redaction.py` configure the LiteLLM gateway, and `rebar-review.toml` holds the rebar review model classes. The per-environment directories such as `config/local` hold only operator-edited files, which are git-ignored and shipped as `.example` templates.
 
 ### Integration credentials
 
@@ -197,6 +200,8 @@ Set `TICKET_BACKEND=rebar` to track work in a git-backed rebar ticket store inst
 
 Seed the store from an operator-provided Excel export with `inv import-rebar-tickets --xlsx <path>`, which imports through rebar's own capability. Add `--reset` to wipe and re-initialize the store first, `--status` to import only selected statuses, and `--limit` to cap the count.
 
+The `rebar-intake` schedule starts a draft-PR execution for each ready ticket in the store. Install it with `inv intake --schedule` or `inv schedules-install`, or run one pass with `inv intake`. `inv rebar-changes` reports new tickets, field changes, and status changes since the last intake pass. It reads the intake cursor without saving it, so a report never hides a ticket from the next intake pass.
+
 #### Local source-control backend
 
 Set `SOURCE_CONTROL_BACKEND=local` to deliver changes to a git folder on disk instead of GitHub. `SOURCE_CONTROL_LOCAL_ROOT` is the parent directory that holds the target repositories, and `SOURCE_CONTROL_LOCAL_REPOS` is an optional comma-separated allowlist where an empty value discovers every git repository under the root. The local backend commits the change to an `agent/<task_id>` branch in the repository, performs no push, and opens no pull request. It writes a `SUMMARY.md` and a `change.patch` per run under `SOURCE_CONTROL_LOCAL_ARTIFACTS_ROOT`, along with a done ledger, and an empty artifacts root defaults to `<root>/.agent-publish`.
@@ -213,11 +218,11 @@ Detection is off by default, so a deployment that does not set the flag behaves 
 
 ### Rebar review gate models
 
-`pyproject.toml` carries the `[tool.rebar.llm]` table that maps rebar's three model classes onto the same Bedrock Claude tiers as `config/local/litellm-config.yaml`. No class declares a fallback leg, so a tier that cannot reach Claude fails once rebar exhausts its retry budget rather than answering from a different model family. The table widens that budget past rebar's default because there is no leg to fall to. `[tool.rebar.verify]` sits alongside it and carries the close and claim gate flags.
+`pyproject.toml` carries the `[tool.rebar.llm]` table that maps rebar's three model classes onto the same Bedrock Claude tiers as `config/platform/litellm-config.yaml`. No class declares a fallback leg, so a tier that cannot reach Claude fails once rebar exhausts its retry budget rather than answering from a different model family. The table widens that budget past rebar's default because there is no leg to fall to. `[tool.rebar.verify]` sits alongside it and carries the close and claim gate flags.
 
 Both tables live in `pyproject.toml` because that is a tracked file rebar discovers on its own. A gate reads its config from an attested snapshot materialised with `git checkout-index`, which holds only tracked files, so an untracked project `rebar.toml` is invisible to it and rebar falls back to its built-in model-class defaults. Those point at direct Anthropic and cannot authenticate against this deployment, which surfaces as an authentication error for a provider the project never configured and leaves the gate returning `INDETERMINATE` rather than a verdict. A local `rebar.toml` also takes precedence over `pyproject.toml` in rebar's discovery walk, so one present in a working tree shadows these tables entirely. Do not create one.
 
-`config/local/rebar-review.toml` holds the same model classes for the two callers that name a config file by path rather than relying on discovery. `compose.yaml` names it for the review worker through `REBAR_LLM_CONFIG_FILE`, and `inv rebar-review-plan` and `inv rebar-review-code` name it for host runs. It layers over the discovered table with identical values, so the merge changes nothing. `tests/unit/test_rebar_review_config.py` asserts the two declarations stay equal.
+`config/platform/rebar-review.toml` holds the same model classes for the two callers that name a config file by path rather than relying on discovery. `compose.yaml` names it for the review worker through `REBAR_LLM_CONFIG_FILE`, and `inv rebar-review-plan` and `inv rebar-review-code` name it for host runs. It layers over the discovered table with identical values, so the merge changes nothing. `tests/unit/test_rebar_review_config.py` asserts the two declarations stay equal.
 
 Naming the file is now a convenience rather than a requirement, so `rebar review-plan`, `rebar review-code` and `rebar transition ... closed` all resolve the Bedrock classes when run directly.
 
@@ -245,7 +250,7 @@ The `vpc-endpoints` module provisions a `bedrock-runtime` interface endpoint tha
 
 ### Provisioning modules
 
-The AWS infrastructure is split into reusable Terraform modules under `infra/terraform`. `vpc-endpoints` owns the shared interface and gateway endpoints, `ecr` owns the jumphost image registry, `cloudtrail` owns the audit trail, `bedrock-iam` owns the `bedrock:InvokeModel` policy, `bedrock-jumphost-fargate` provisions an ephemeral ECS Exec hop to the private endpoint, and `evidence-store` provisions the S3 bucket for the evidence and audit object store under Object Lock. Each is toggleable so an account reuses infrastructure it already has. The `infra/terraform/examples/private-bedrock` composition root wires them into one apply and works from zero or against an existing VPC through tfvars. After the apply, build and push the jumphost image with `inv publish-jumphost-image --tag v1` and attach the emitted `bedrock:InvokeModel` policy to the workload role. See [infra/terraform/examples/private-bedrock/README.md](infra/terraform/examples/private-bedrock/README.md).
+The AWS infrastructure is split into reusable Terraform modules under `infra/terraform`. `vpc-endpoints` owns the shared interface and gateway endpoints, `ecr` owns the jumphost image registry, `cloudtrail` owns the audit trail, `bedrock-iam` owns the `bedrock:InvokeModel` policy, `bedrock-jumphost-fargate` provisions an ephemeral ECS Exec hop to the private endpoint, and `evidence-store` provisions the S3 bucket for the evidence and audit object store under Object Lock. `egress` provides the outbound path through a NAT instance or a NAT Gateway, and `dns-firewall` limits the VPC to an allowlist of domains. The data tier is `aurora-postgresql` for the platform database, `elasticache` for the Valkey cache, `clickhouse-storage` for the ClickHouse file system, and `langfuse-blob-store` for the Langfuse upload bucket. `tf-state` provisions the encrypted, versioned state bucket, and `access-logs` provisions the bucket that receives S3 server access logs from every other bucket. The `infra/terraform/bootstrap` root creates both once per account, and each composition root takes the access-log bucket name as its required `access_log_bucket`. Each is toggleable so an account reuses infrastructure it already has. The `infra/terraform/examples/private-bedrock` composition root wires them into one apply over a tiered network with public, application, management, and data subnets, keeps its state in the S3 backend, and works from zero or against an existing VPC through tfvars. After the apply, build and push the jumphost image with `inv publish-jumphost-image --tag v1` and attach the emitted `bedrock:InvokeModel` policy to the workload role. See [infra/terraform/examples/private-bedrock/README.md](infra/terraform/examples/private-bedrock/README.md).
 
 ### Evidence and audit object store
 
@@ -257,7 +262,7 @@ Each record carries an evidence classification that selects its retention window
 
 ## Services and ports
 
-`inv local-up` starts the services below with the `repo-intelligence` profile. The four backing databases `agent_platform`, `temporal`, `temporal_visibility`, and `langfuse` are created in the one Postgres container.
+`inv local-up` builds the images, runs the `db-migrate` task, starts the services below, and waits up to ten minutes for every service to report healthy. It fails and names the service when one does not. Each long-running service declares a health check. The HTTP services answer `/health` or their own readiness endpoint, the Temporal workers and `repo-index-worker` refresh a heartbeat file that `python -m services.healthcheck heartbeat` checks for freshness, and `opa`, `otel-collector`, and `tempo` build from thin images that add a static loopback probe because their upstream images carry no shell or HTTP client. Run `docker compose ps` to see each service's health. The four backing databases `agent_platform`, `temporal`, `temporal_visibility`, and `langfuse` are created in the one Postgres container.
 
 | Service | Host port | Role |
 | --- | --- | --- |
@@ -274,13 +279,62 @@ Each record carries an evidence classification that selects its retention window
 | `langfuse-web` | 3000 | LLM tracing and prompt UI |
 | `langfuse-worker` | none | Langfuse ingestion and background jobs |
 | `clickhouse` | none | Langfuse analytics store |
-| `redis` | none | Langfuse ingestion queue |
+| `redis` | none | Valkey cache and Langfuse ingestion queue |
 | `minio` | 9090, 9091 | Shared S3-compatible object store |
 | `otel-collector` | 4317, 4318 | Telemetry pipeline |
 
-Migrations only touch the platform's own `agent_platform` schema. Temporal and Langfuse manage their own schemas. Langfuse v4 runs as `langfuse-web` and `langfuse-worker` backed by ClickHouse, Redis, and the shared MinIO object store, reusing the `langfuse` Postgres database.
+The one-shot services run under the `tasks` profile, so `up` never creates them. The `inv` tasks run them with `docker compose run --rm`, and Docker removes each container when its command exits.
 
-Migrations are applied only through the `db-migrate` container, which `inv db-migrate` and `inv db-reset` invoke. The container mounts the working-tree migrations, so the applied scripts always match the checkout without an image rebuild. Running `alembic upgrade`, `downgrade`, or `stamp` directly on the host is refused, because a host run can advance the database past the revisions the container carries and leave the two out of sync. The guard covers the alembic command line. Authoring commands such as `alembic revision --autogenerate` still run on the host.
+| Service | Run with | Role |
+| --- | --- | --- |
+| `db-migrate` | `inv db-migrate`, `inv db-reset`, `inv local-up` | Applies the migrations |
+| `schedule-bootstrap` | `inv schedules-install` | Registers the reap schedule and the intake schedule for the configured ticket source |
+
+The workers and `coordination-service` check the schema revision at startup. While the database is behind the migrations their image carries, they wait and log `Run inv db-migrate` every 30 seconds. When the database holds a revision their image does not carry, as after a newer checkout migrated it, they exit.
+
+The `registry` service runs under the `registry` profile. It is the local stand-in for ECR that gate pods pull the engine image from in image mode. Start it with `docker compose --profile registry up -d registry`.
+
+Migrations only touch the platform's own `agent_platform` schema. Temporal and Langfuse manage their own schemas. Langfuse v4 runs as `langfuse-web` and `langfuse-worker` backed by ClickHouse, Valkey, and the shared MinIO object store, reusing the `langfuse` Postgres database.
+
+### Langfuse backing services
+
+`compose.yaml` pins Langfuse 4.59.0, ClickHouse 26.9.19.9, and Valkey 9.1.2 by digest. The three versions move together. ClickHouse supports a stable release line for about three months, so each ClickHouse bump needs a Langfuse release that writes to it. Langfuse 4.15.0 fails every trace insert on ClickHouse 26.8 and 26.9, and Langfuse 4.59.0 is verified against 26.9. Valkey 9.1 is the ElastiCache engine the AWS data tier runs.
+
+The cache service keeps the name `redis` and the volume `langfuse-redis-data`, so Langfuse's `REDIS_HOST` and the queued jobs carry over. Valkey runs with the default user disabled and one RBAC user, `REDIS_USERNAME`, which defaults to `langfuse`, with the password in `REDIS_AUTH` and the access string `on ~* +@all` that Langfuse requires. `maxmemory-policy noeviction` keeps queued jobs from being evicted. The local cache does not use TLS. In AWS, ElastiCache requires TLS, and Langfuse sets `REDIS_TLS_ENABLED=true`. The RBAC user, the access string, and the eviction policy are the same in both.
+
+Moving an existing checkout to these versions takes a backup, a pull, a one-time cleanup, and an `inv local-up`. The first start rewrites the cache snapshot in the Valkey format, which Redis cannot read, upgrades the ClickHouse data in place, and applies the Langfuse Postgres and ClickHouse migrations. None of these steps can be reversed by changing the image tags back, so take the backup first. Stopping the cache writes its snapshot to disk before the copy:
+
+```
+mkdir -p "$HOME/langfuse-backup" && docker compose stop langfuse-web langfuse-worker redis clickhouse && docker run --rm -v agentic-dev-platform_langfuse-redis-data:/cache:ro -v agentic-dev-platform_langfuse-clickhouse-data:/clickhouse:ro -v "$HOME/langfuse-backup":/dst alpine:3.24 sh -c 'cp -p /cache/dump.rdb /dst/cache-dump.rdb && tar -czf /dst/clickhouse-data.tgz -C /clickhouse .' && docker compose exec -T postgres sh -c 'pg_dump -U "$POSTGRES_USER" -Fc langfuse' > "$HOME/langfuse-backup/langfuse.dump"
+```
+
+Then pull, remove the exited one-shot containers an earlier `up` left behind, and start the stack:
+
+```
+git pull && docker compose rm -f db-migrate schedule-bootstrap && inv local-up
+```
+
+No `.env` change is needed, because `REDIS_USERNAME` defaults in `compose.yaml` and `REDIS_AUTH` already exists. Valkey loads the Redis snapshot through `--rdb-version-check relaxed`, which stays in place through v0.3.x and is removed in v0.4.0.
+
+Restoring means checking out the previous version, restoring the cache snapshot, recreating the ClickHouse volume from the archive, and restoring the `langfuse` database, then starting the stack. Run these from the previous checkout:
+
+```
+docker compose stop langfuse-web langfuse-worker redis clickhouse && docker run --rm -v agentic-dev-platform_langfuse-redis-data:/data -v "$HOME/langfuse-backup":/src:ro alpine:3.24 cp -p /src/cache-dump.rdb /data/dump.rdb
+```
+
+```
+docker compose rm -f clickhouse && docker volume rm agentic-dev-platform_langfuse-clickhouse-data && docker volume create agentic-dev-platform_langfuse-clickhouse-data && docker run --rm -v agentic-dev-platform_langfuse-clickhouse-data:/dst -v "$HOME/langfuse-backup":/src:ro alpine:3.24 sh -c 'tar -xzf /src/clickhouse-data.tgz -C /dst && chown -R 101:101 /dst'
+```
+
+```
+docker compose up -d --wait postgres && docker compose exec -T postgres sh -c 'pg_restore -U "$POSTGRES_USER" --clean --if-exists -d langfuse' < "$HOME/langfuse-backup/langfuse.dump" && docker compose up -d
+```
+
+Without a cache backup, delete `dump.rdb` from the `langfuse-redis-data` volume instead. Redis then starts empty and Langfuse loses only the ingestion jobs queued at that moment.
+
+The local cache refuses password-only clients. Connect with `docker compose exec redis sh -c 'valkey-cli --no-auth-warning --user "$REDIS_USERNAME" --pass "$REDIS_AUTH"'`, which reads both values from the container environment.
+
+Migrations are applied only through the `db-migrate` task, which `inv db-migrate`, `inv db-reset`, and `inv local-up` run. The container mounts the working-tree migrations, so the applied scripts always match the checkout without an image rebuild. Running `alembic upgrade`, `downgrade`, or `stamp` directly on the host is refused, because a host run can advance the database past the revisions the container carries and leave the two out of sync. The guard covers the alembic command line. Authoring commands such as `alembic revision --autogenerate` still run on the host.
 
 A deployed environment has no working-tree mount, so its `db-migrate` image carries the migrations baked in at build time. Rebuild or repull the `db-migrate` image whenever `database/migrations` changes, so the deployed container applies the current scripts.
 
@@ -289,6 +343,12 @@ A deployed environment has no working-tree mount, so its `db-migrate` image carr
 The inbound front door receives Jira, pull-request, and CI deliveries. It runs on the local Kubernetes cluster alongside the MCP gateway. Deploy both with `inv k8s-deploy`, which builds the image when passed `--build` and rolls out the `inbound-webhook` and `mcp-gateway` deployments. The front door listens on `localhost:8140` and serves `/webhook/jira`, `/webhook/pr`, and `/webhook/ci`. Forward GitHub pull-request events to it during a demo with `inv webhook-setup`, and remove the forwards with `inv webhook-teardown`.
 
 Local CI runs under the Compose `ci` profile, which `inv local-up` does not start. Bring up Jenkins with `docker compose --profile ci up -d jenkins`, reachable at `localhost:8080`. The job checks out the target branch, runs the repository Jenkinsfile, and notifies `/webhook/ci` on completion. A parked CI wait resumes on that notification to the same result the poll would produce, and the poller stays the fallback.
+
+## Security scanning
+
+`inv sast` stages the files git tracks or would track, so ignored files such as `.env` stay out of every report, and scans them with Semgrep, Bandit, Trivy, and gitleaks. gitleaks also scans the commit history, and pip-audit checks every package version and hash that `uv.lock` pins, which is the set CI and both images install. The scan needs Docker and uv. Bandit scans the shipped code and leaves out `tests/`. Semgrep, Trivy, and gitleaks run from the digest-pinned images the platform gates use. Reports land in `.sast/`, and the CI `sast` job uploads them as an artifact.
+
+The scan fails on any finding that [security/sast-accepted.yaml](security/sast-accepted.yaml) does not accept, and on any accepted entry that no longer matches a finding. Fix a finding in the code first. Add a register entry only when no code change can clear it, and record why in its `justification`. An entry matches on the tool, the rule, the path, and the normalized source line, so it survives a line move but not an edit to the flagged line. A secret finding matches on a digest of the line, or on the commit fingerprint for a history finding, so the register never holds the matched value.
 
 ## Verifying the stack
 
@@ -300,17 +360,21 @@ Run `inv --list` for the full set. The common tasks are below.
 
 | Task | Purpose |
 | --- | --- |
-| `inv local-up`, `inv local-down` | Start or stop the stack, volumes preserved |
+| `inv local-up`, `inv local-down` | Build, migrate, and start the stack, or stop it with volumes preserved |
 | `inv logs [--service NAME]` | Follow logs for the stack or one service |
 | `inv db-migrate`, `inv db-reset` | Apply migrations, or rebuild the schema then migrate |
+| `inv schedules-install` | Register the reap schedule and the intake schedule for the configured ticket source |
 | `inv seed` | Load allowlisted seed data |
 | `inv smoke-test`, `inv connectivity-check` | Health and Bedrock path checks |
 | `inv test` | Run the pytest suite |
+| `inv ci` | Run lint, the hermetic test tiers, and the evaluation gate as CI does |
+| `inv sast` | Run the SAST, secret, misconfiguration, and dependency scans against the accepted-findings register. Needs Docker |
 | `inv tunnel-start`, `inv tunnel-stop`, `inv tunnel-status` | Manage the Bedrock connectivity tunnel |
 | `inv fetch-acli` | Vendor the Atlassian `acli` binary |
 | `inv cbm-build [--source PATH] [--ref TAG]` | Build and vendor the `codebase-memory-mcp` binary, cloning upstream by default |
 | `inv reap [--apply]` | Reap expired orphan artifacts, dry-run by default |
-| `inv intake [--schedule]` | Reconcile ticket intake into runs, single pass by default. Add `--local` to run on the host instead of the worker container |
+| `inv intake [--source jira\|rebar] [--schedule]` | Reconcile ticket intake into runs, single pass by default. `--source` defaults to `TICKET_BACKEND` and must match it. Add `--local` to run on the host instead of the worker container |
+| `inv rebar-changes [--new] [--field-changes] [--status-changes]` | Report rebar ticket changes since the last intake pass without starting work or moving the intake cursor |
 | `inv import-rebar-tickets --xlsx PATH [--reset] [--status S] [--limit N]` | Seed the rebar ticket store from a Jira xlsx export |
 | `inv rebar-review-plan --ticket ID [--gate-ref REF]` | Run rebar's plan-review gate against the platform tier config |
 | `inv rebar-review-code --base REF --head REF` | Run rebar's code-review gate against the platform tier config |
@@ -323,9 +387,9 @@ See [Recovering a stuck intake](#recovering-a-stuck-intake) for the retry, repai
 
 ## Recovering a stuck intake
 
-The Jira intake reconciler turns a labeled ticket into a draft-PR execution on each pass, and the rebar reconciler does the same for a ready ticket in the store. `inv intake` runs one pass and `inv intake --schedule` installs the recurring Temporal schedule. When an execution fails, or a ticket needs another attempt, the commands below drive it without signalling Temporal by hand.
+The Jira intake reconciler turns a labeled ticket into a draft-PR execution on each pass, and the rebar reconciler does the same for a ready ticket in the store. `inv intake` runs one pass from the source `TICKET_BACKEND` names, and `inv intake --schedule` installs its recurring Temporal schedule, `jira-intake` or `rebar-intake`. Installing one removes the other source's schedule, so only one intake schedule runs. `INTAKE_SCHEDULE_ID` overrides the schedule name. When an execution fails, or a ticket needs another attempt, the commands below drive it without signalling Temporal by hand.
 
-`inv intake --retry ISSUE [--repo REPO]` clears the intake dedup for a failed issue, marks its stale executions failed, and resets its sequence gate, so the next poll relaunches the ticket from a clean state. Add `--repo` to scope the retry to one repository when the ticket fanned out to several. It refuses while a workflow for the ticket is still running.
+`inv intake --retry TICKET [--repo REPO]` clears the intake dedup for a failed ticket, marks its stale executions failed, and resets its sequence gate, so the next poll relaunches the ticket from a clean state. Add `--repo` to scope the retry to one repository when the ticket fanned out to several. It refuses while a workflow for the ticket is still running.
 
 When automated CI repair exhausts its attempts, the draft-PR workflow parks at the `AWAITING_HUMAN` state and posts a comment on the ticket. Read the failing Security, Test, or Lint stage in Jenkins to see what to change, then resolve the pause with one of the following.
 

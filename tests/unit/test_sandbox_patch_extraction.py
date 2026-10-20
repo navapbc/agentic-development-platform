@@ -10,6 +10,7 @@ from openhands.runtime.provisioner import (
     KubernetesSandboxProvisioner,
     SandboxHandle,
 )
+from services import process
 
 
 def _handle() -> SandboxHandle:
@@ -33,6 +34,8 @@ def test_copy_in_configures_identity_and_tags_the_base(monkeypatch):
 
         def wait(self):
             return 0
+
+    monkeypatch.setattr(process, "resolve_executable", lambda name, path=None: name)
 
     monkeypatch.setattr(subprocess, "Popen", _FakePopen)
     provisioner = KubernetesSandboxProvisioner(in_cluster=False)
@@ -63,6 +66,8 @@ def test_copy_in_commits_the_copied_tree_before_tagging_the_base(monkeypatch):
         def wait(self):
             return 0
 
+    monkeypatch.setattr(process, "resolve_executable", lambda name, path=None: name)
+
     monkeypatch.setattr(subprocess, "Popen", _FakePopen)
     provisioner = KubernetesSandboxProvisioner(in_cluster=False)
 
@@ -92,6 +97,8 @@ def test_copy_in_tolerates_a_workspace_that_was_copied_in_clean(monkeypatch):
 
         def wait(self):
             return 0
+
+    monkeypatch.setattr(process, "resolve_executable", lambda name, path=None: name)
 
     monkeypatch.setattr(subprocess, "Popen", _FakePopen)
     provisioner = KubernetesSandboxProvisioner(in_cluster=False)
@@ -135,6 +142,8 @@ def test_copy_in_tags_the_base_despite_project_signing_config_and_hooks(tmp_path
         def wait(self):
             return 0
 
+    monkeypatch.setattr(process, "resolve_executable", lambda name, path=None: name)
+
     monkeypatch.setattr(subprocess, "Popen", _CapturePopen)
     KubernetesSandboxProvisioner(in_cluster=False)._copy_in_sync(
         _handle(), str(source), "/workspace/project"
@@ -163,6 +172,8 @@ def test_extract_patch_diffs_against_the_base_tag_with_a_fallback(monkeypatch):
     def _fake_run(args, **kwargs):
         captured["extract_cmd"] = args[-1]
         return subprocess.CompletedProcess(args, 0, stdout="diff", stderr="")
+
+    monkeypatch.setattr(process, "resolve_executable", lambda name, path=None: name)
 
     monkeypatch.setattr(subprocess, "run", _fake_run)
     provisioner = KubernetesSandboxProvisioner(in_cluster=False)

@@ -89,8 +89,6 @@ def _decision_params(stage: ReviewStage, impact_fn: Any) -> tuple[Any, Any]:
     return impact_fn, (lambda _criteria: (CODE_BLOCK_THRESHOLD, True))
 
 
-
-
 @runtime_checkable
 class ReviewKernel(Protocol):
     def run(self, review: ReviewInput) -> RawReview: ...
@@ -117,9 +115,7 @@ def _register_and_impact(finder_schema: str) -> Any:
     return impact_code
 
 
-def _raw_from_decided(
-    decided: list[dict[str, Any]], tier: str, model_id: str | None
-) -> RawReview:
+def _raw_from_decided(decided: list[dict[str, Any]], tier: str, model_id: str | None) -> RawReview:
     """Map the kernel's pass-3 decisions onto a RawReview.
 
     ``block`` decisions are the only blocking findings. ``advisory`` and

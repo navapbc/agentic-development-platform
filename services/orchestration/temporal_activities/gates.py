@@ -184,7 +184,6 @@ async def evaluate_gate(req: EvaluateGateRequest) -> GateResult:
     return result
 
 
-
 @activity.defn
 async def load_gate_plan() -> GatePlan:
     from services.orchestration.gates.config import (
@@ -222,4 +221,3 @@ async def load_gate_plan() -> GatePlan:
         fail_fast_scanner=config.is_fail_fast("scanner"),
         plan_pause=plan_pause,
     )
-

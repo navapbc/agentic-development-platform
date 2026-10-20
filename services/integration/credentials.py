@@ -97,6 +97,20 @@ def load_env_config(name: str, *, environment: str, root: Path | None = None) ->
     return parsed
 
 
+def load_platform_config(name: str, *, root: Path | None = None) -> dict[str, Any]:
+    """Load config/platform/<name>.yaml, the tracked configuration shared by every environment."""
+    base = root if root is not None else _REPO_ROOT
+    path = base / "config" / "platform" / f"{name}.yaml"
+    if not path.exists():
+        raise ConfigError(f"platform config file missing: {path}")
+    parsed = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if parsed is None:
+        return {}
+    if not isinstance(parsed, dict):
+        raise ConfigError(f"config file is not a mapping: {path}")
+    return parsed
+
+
 def _read_config_file(
     name: str, *, environment: str, root: Path | None, suffix: str
 ) -> dict[str, Any] | None:

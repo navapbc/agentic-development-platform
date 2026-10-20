@@ -1,9 +1,13 @@
 # Existing-network example. Reuse a VPC and private subnets that already exist,
 # and skip any core infrastructure the account already provides. Apply with:
+#   terraform init -backend-config=backend.hcl
 #   AWS_PROFILE=agentic-platform terraform apply -var-file=existing-network.tfvars
 
 region      = "us-east-1"
 name_prefix = "agentic-platform"
+
+# The bootstrap root prints this as its access_log_bucket output.
+access_log_bucket = "agentic-platform-access-logs-123456789012"
 
 create_network         = false
 vpc_id                 = "vpc-REPLACE_ME"
@@ -11,6 +15,17 @@ subnet_ids             = ["subnet-REPLACE_ME"]
 endpoint_allowed_cidrs = ["10.0.0.0/16"]
 # route_table_ids is optional. Empty auto-discovers the route tables for subnet_ids.
 # route_table_ids = ["rtb-REPLACE_ME"]
+
+# Management and data tiers. Empty management_subnet_ids runs management
+# workloads in subnet_ids. data_subnet_ids must span two Availability Zones and
+# is required only when a data tier service is enabled.
+management_subnet_ids  = []
+management_cidr_blocks = []
+data_subnet_ids        = []
+
+# The organization supplies egress and DNS filtering for an existing network.
+egress_mode         = "none"
+create_dns_firewall = false
 
 # Flip these to false for endpoints or a registry the account already has.
 # When false, also set the matching existing_* values below.

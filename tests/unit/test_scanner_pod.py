@@ -14,14 +14,13 @@ from adapters.real.security_scanner import (
 from services.orchestration.gates.pod_runner import PodEngineError
 from services.orchestration.gates.scanner_pod import (
     IMAGE_PULL_EXIT,
+    SCRATCH_FILE_EXIT,
     PodCommandRunner,
     remap_paths,
     restore_paths,
     scan_script,
     scanner_pod_name,
 )
-
-pytestmark = pytest.mark.asyncio
 
 
 class FakePodOps:
@@ -39,10 +38,10 @@ class FakePodOps:
     async def wait_ready(self, pod, namespace):
         return None
 
-    async def copy_in(self, pod, namespace, source, dest):
-        self.copied_in.append((source, dest))
+    async def copy_in(self, pod, namespace, source_dir, dest_dir):
+        self.copied_in.append((source_dir, dest_dir))
 
-    async def copy_out(self, pod, namespace, source, dest, manifest_path):
+    async def copy_out(self, pod, namespace, source_dir, dest_dir, manifest_path):
         return None
 
     async def exec_capture(self, pod, namespace, script):
@@ -91,8 +90,8 @@ def test_scan_script_isolates_the_tool_document_from_build_output():
     script = scan_script("semgrep/semgrep:1.177.0", ["semgrep", "scan", "--json", "/workspace"])
 
     assert "buildah from semgrep/semgrep:1.177.0" in script
-    assert "> /tmp/.scanner-out.json" in script
-    assert script.index("cat /tmp/.scanner-out.json") > script.index("buildah run")
+    assert '> "$out"' in script
+    assert script.index('cat "$out"') > script.index("buildah run")
     assert script.rstrip().endswith("exit $rc")
 
 
@@ -147,8 +146,16 @@ async def test_pod_runner_feeds_the_adapter_so_findings_parse_unchanged():
 
 
 async def test_pod_runner_reports_findings_against_the_worker_path_not_the_mount():
-    payload = {"results": [{"path": "/workspace/app/main.py", "start": {"line": 3},
-                            "check_id": "rule", "extra": {"severity": "ERROR", "message": "m"}}]}
+    payload = {
+        "results": [
+            {
+                "path": "/workspace/app/main.py",
+                "start": {"line": 3},
+                "check_id": "rule",
+                "extra": {"severity": "ERROR", "message": "m"},
+            }
+        ]
+    }
     ops = FakePodOps(stdout=json.dumps(payload))
     scanner = RealSemgrepScanner(
         runner=PodCommandRunner("docker.io/semgrep/semgrep:1.177.0", scanner="semgrep", ops=ops)
@@ -200,8 +207,9 @@ def test_restore_paths_returns_non_json_output_unchanged():
 def test_scanner_output_file_sits_outside_the_scanned_workspace():
     script = scan_script("docker.io/semgrep/semgrep:1.177.0", ["semgrep", "scan", "/workspace"])
 
-    assert "/workspace/.scanner-out.json" not in script
-    assert "/tmp/.scanner-out.json" in script
+    assert script.startswith(f"out=$(mktemp) || exit {SCRATCH_FILE_EXIT}\n")
+    assert '"$out"' in script
+    assert "/workspace/" not in script.replace("/workspace:/workspace", "")
 
 
 def test_restore_paths_rewrites_scanned_and_error_locations():
@@ -284,6 +292,17 @@ async def test_a_scanner_image_that_cannot_be_pulled_is_unavailability_not_a_fin
 
     assert "docker.io/semgrep/semgrep:1.2.3" in str(raised.value)
     assert ops.deleted, "the pod must be torn down when the pull fails"
+
+
+async def test_a_scratch_file_that_cannot_be_created_is_unavailability_not_a_finding():
+    ops = FakePodOps(exit_code=SCRATCH_FILE_EXIT, stdout="")
+    runner = PodCommandRunner("docker.io/semgrep/semgrep:1.2.3", scanner="semgrep", ops=ops)
+
+    with pytest.raises(ScannerUnavailableError, match="scratch file"):
+        await runner(["semgrep", "scan", "/checkout"], "/checkout")
+
+    assert SCRATCH_FILE_EXIT not in range(0, 14), "semgrep defines 0-13 and trivy emits 0-2"
+    assert ops.deleted
 
 
 @pytest.mark.parametrize("exit_code", [0, 1, 2])
@@ -394,9 +413,7 @@ async def test_a_trivy_scan_through_the_pod_parses_into_findings():
     runner = PodCommandRunner("docker.io/aquasec/trivy:0.74.0", scanner="trivy", ops=ops)
     scanner = RealTrivyScanner(runner=runner)
 
-    findings = await scanner.scan(
-        ScanTarget(repo="org/app", ref="HEAD", repo_root="/checkout")
-    )
+    findings = await scanner.scan(ScanTarget(repo="org/app", ref="HEAD", repo_root="/checkout"))
 
     assert [f.severity for f in findings] == ["high"]
     assert findings[0].location.startswith("/checkout/package-lock.json")

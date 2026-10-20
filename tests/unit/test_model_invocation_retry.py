@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import httpx
 import pytest
 from services.orchestration.temporal_activities.bedrock import (
     _RETRYABLE_STATUS,
@@ -11,20 +12,18 @@ from services.orchestration.temporal_activities.bedrock import (
 from temporalio.exceptions import ApplicationError
 
 
-class _Response:
-    def __init__(self, status_code: int, text: str = "") -> None:
-        self.status_code = status_code
-        self.text = text
+def _response(status_code: int, text: str = "") -> httpx.Response:
+    return httpx.Response(status_code, text=text)
 
 
 def test_a_successful_response_raises_nothing():
-    assert _raise_for_status(_Response(200)) is None
+    assert _raise_for_status(_response(200)) is None
 
 
 @pytest.mark.parametrize("status", sorted(_RETRYABLE_STATUS))
 def test_a_transient_status_raises_a_retryable_error(status: int):
     with pytest.raises(ApplicationError) as caught:
-        _raise_for_status(_Response(status, "throttled"))
+        _raise_for_status(_response(status, "throttled"))
 
     assert caught.value.non_retryable is False
     assert str(status) in str(caught.value)
@@ -33,14 +32,14 @@ def test_a_transient_status_raises_a_retryable_error(status: int):
 @pytest.mark.parametrize("status", [400, 401, 403, 404, 422])
 def test_a_rejected_request_raises_a_non_retryable_error(status: int):
     with pytest.raises(ApplicationError) as caught:
-        _raise_for_status(_Response(status, "bad request"))
+        _raise_for_status(_response(status, "bad request"))
 
     assert caught.value.non_retryable is True
 
 
 def test_the_error_detail_is_truncated():
     with pytest.raises(ApplicationError) as caught:
-        _raise_for_status(_Response(500, "x" * 5000))
+        _raise_for_status(_response(500, "x" * 5000))
 
     assert len(str(caught.value)) < 600
 

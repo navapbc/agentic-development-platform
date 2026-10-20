@@ -30,12 +30,13 @@ from services.orchestration.gates.pod_runner import (
 )
 
 _WORKSPACE_MOUNT = "/workspace"
-_OUTPUT_PATH = "/tmp/.scanner-out.json"
 
-# Reserved by scan_script for a failed scanner-image pull. semgrep/error.py defines codes 0-13
-# and trivy emits 0-2 unless --exit-code is passed, which the adapters do not pass, so neither
-# tool can produce this code and be mistaken for infrastructure failing.
+# Reserved by scan_script for a failed scanner-image pull and a failed scratch-file creation.
+# semgrep/error.py defines codes 0-13 and trivy emits 0-2 unless --exit-code is passed, which the
+# adapters do not pass, so neither tool can produce these codes and be mistaken for
+# infrastructure failing.
 IMAGE_PULL_EXIT = 121
+SCRATCH_FILE_EXIT = 122
 
 
 def scanner_pod_name(scanner: str, execution_id: str) -> str:
@@ -116,6 +117,7 @@ def scan_script(image: str, args: Sequence[str]) -> str:
     The tool writes to a file that is echoed as the last step, so buildah's own progress output
     cannot corrupt the document the adapter parses. The pod's shell owns the redirect, so the
     file sits outside the workspace mount and the scanner does not report on its own output.
+    `mktemp` gives that file an unpredictable name with owner-only permissions.
 
     Pulling the scanner image happens here rather than on the pod's own spec, so it fails as a
     script exit code rather than as a pod event. It exits `IMAGE_PULL_EXIT` so the caller can
@@ -123,11 +125,13 @@ def scan_script(image: str, args: Sequence[str]) -> str:
     """
     command = " ".join(shlex.quote(arg) for arg in args)
     return (
+        f"out=$(mktemp) || exit {SCRATCH_FILE_EXIT}\n"
         f"ctr=$(buildah from {shlex.quote(image)}) || exit {IMAGE_PULL_EXIT}\n"
         f"buildah run --net host -v {_WORKSPACE_MOUNT}:{_WORKSPACE_MOUNT} "
-        f'"$ctr" -- {command} > {_OUTPUT_PATH}\n'
+        f'"$ctr" -- {command} > "$out"\n'
         "rc=$?\n"
-        f"cat {_OUTPUT_PATH} 2>/dev/null\n"
+        'cat "$out" 2>/dev/null\n'
+        'rm -f "$out"\n'
         "exit $rc\n"
     )
 
@@ -167,9 +171,7 @@ class PodCommandRunner:
         inside that pod, so losing it surfaces as `IMAGE_PULL_EXIT` from `exec_capture`.
         """
         pod = scanner_pod_name(self._scanner, self._execution_id or uuid4().hex[:8])
-        manifest = build_pod_manifest(
-            pod, self._namespace, self._builder_image, self._privileged
-        )
+        manifest = build_pod_manifest(pod, self._namespace, self._builder_image, self._privileged)
         try:
             await self._ops.create(manifest)
             try:
@@ -181,6 +183,8 @@ class PodCommandRunner:
                 )
                 if code == IMAGE_PULL_EXIT:
                     self._unavailable(f"could not pull {self._image}: {stderr.strip()[:400]}")
+                if code == SCRATCH_FILE_EXIT:
+                    self._unavailable(f"could not create a scratch file: {stderr.strip()[:400]}")
                 if not stdout.strip() and code == 0:
                     # Both scanners emit a JSON document whenever they run, so a clean exit with
                     # nothing on stdout means the tool never reported. The adapter would parse

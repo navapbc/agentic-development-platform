@@ -72,8 +72,9 @@ def exporter() -> InMemorySpanExporter:
 
 
 def test_execution_trace_connects_every_stage(exporter: InMemorySpanExporter) -> None:
-    with bind_execution(execution_id=EXECUTION_ID, task_id=TASK_ID), stage_span(
-        "execution", stage="execution"
+    with (
+        bind_execution(execution_id=EXECUTION_ID, task_id=TASK_ID),
+        stage_span("execution", stage="execution"),
     ):
         for name, stage, gate in _STAGES:
             with stage_span(name, stage=stage, gate=gate):
@@ -92,7 +93,11 @@ def test_execution_trace_connects_every_stage(exporter: InMemorySpanExporter) ->
         assert child.attributes[attrs.TASK_ID] == TASK_ID
         assert child.attributes[attrs.STAGE] == stage
 
-    recorded_stages = {spans[name].attributes[attrs.STAGE] for name, _s, _g in _STAGES}
+    recorded_stages: set[str] = set()
+    for name, _stage, _gate in _STAGES:
+        attributes = spans[name].attributes
+        assert attributes is not None
+        recorded_stages.add(str(attributes[attrs.STAGE]))
     assert recorded_stages == {"plan", "implementation", "review", "ci", "repair", "policy", "pr"}
 
 
@@ -227,8 +232,9 @@ def test_live_trace_and_prompt_roundtrip() -> None:
     reset_for_testing()
     try:
         assert configure_tracing("p7-exit-live") is True
-        with bind_execution(execution_id=EXECUTION_ID, task_id=TASK_ID), stage_span(
-            "execution", stage="execution"
+        with (
+            bind_execution(execution_id=EXECUTION_ID, task_id=TASK_ID),
+            stage_span("execution", stage="execution"),
         ):
             for name, stage, gate in _STAGES:
                 with stage_span(name, stage=stage, gate=gate):

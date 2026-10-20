@@ -172,9 +172,7 @@ async def test_reuse_resets_a_dirty_workspace_to_the_target_commit(remote, tmp_p
 
 async def _push_impl_commit(remote_path: str, tmp_path, branch: str, base_sha: str) -> str:
     impl = tmp_path / "impl"
-    subprocess.run(
-        ["git", "clone", "-q", remote_path, str(impl)], check=True, capture_output=True
-    )
+    subprocess.run(["git", "clone", "-q", remote_path, str(impl)], check=True, capture_output=True)
     identity = ["-c", "user.email=impl@example.invalid", "-c", "user.name=impl"]
     _git(["checkout", "-q", "-B", branch, base_sha], str(impl))
     (impl / "app.py").write_text("import os\n\nVALUE = 1\n", encoding="utf-8")
@@ -258,9 +256,7 @@ async def test_refuses_a_non_allowlisted_repository(remote, tmp_path) -> None:
         )
 
 
-async def test_a_commit_request_carries_the_workspace_and_its_staged_tree(
-    remote, tmp_path
-) -> None:
+async def test_a_commit_request_carries_the_workspace_and_its_staged_tree(remote, tmp_path) -> None:
     _, manifest_sha = remote
     materializer = _materializer(remote, tmp_path)
     workspace = await materializer.materialize(
@@ -442,9 +438,7 @@ async def test_staging_a_declared_path_the_agent_never_created_is_not_fatal(
     assert staged.excluded == ("README.md",)
 
 
-async def test_allowed_paths_drop_a_path_an_earlier_stage_already_indexed(
-    remote, tmp_path
-) -> None:
+async def test_allowed_paths_drop_a_path_an_earlier_stage_already_indexed(remote, tmp_path) -> None:
     """The implementation activity stages the same workspace before the commit activity does."""
     _, manifest_sha = remote
     materializer = _materializer(remote, tmp_path)

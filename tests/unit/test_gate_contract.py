@@ -22,8 +22,6 @@ from services.orchestration.gates.registry import (
 )
 from services.orchestration.temporal_activities.review import ReviewOutcome
 
-pytestmark = pytest.mark.asyncio
-
 
 def _context(**overrides) -> GateContext:
     base = {

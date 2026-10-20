@@ -38,6 +38,9 @@ FedRAMP Medium expects authenticator and secret material to be centrally managed
 - R3. Read access to each entry is granted only to the consuming workload role.
 - R4. Rotation is enabled for the entries whose type supports it, and the entries without rotation support are documented.
 - R5. The module is toggleable so an account that manages secrets elsewhere provisions nothing.
+- R6. A role bootstrap task, run from the management tier with the RDS-managed master secret, creates one database role and database per service (the platform application, its migrator, Temporal, and Langfuse), runs `CREATE EXTENSION pgaudit`, and grants each role only its own database, so no service uses the master credential. The platform service roles also get `SELECT` on `agent_platform.alembic_version`, which the startup schema check reads, and only the migrator role holds DDL rights.
+- R7. Each per-service database credential is a Secrets Manager secret with rotation enabled.
+- R8. The Secrets Manager rotation function for ElastiCache users is attached to the `elasticache` module's user secret, which already holds `username`, `password`, and `user_arn`.
 
 ### Scope Boundaries
 
@@ -86,3 +89,13 @@ Files. `infra/terraform/examples/private-bedrock/` and its README.
 Approach. Add an optional secret-store module block gated by its toggle, passing the workload role, and surface the secret ARNs as outputs for the compute layer.
 Test scenarios. `terraform validate` passes with the secret store enabled and disabled. The secret ARNs surface as outputs when enabled.
 Verification. `terraform validate`, composition review.
+
+### U3. Per-service database roles and credential rotation
+
+Goal. Remove the master credential from service use and rotate every data-tier credential.
+Requirements. R6, R7, R8.
+Files. The secret store module, a role bootstrap task definition, and the README.
+Approach. Run the role bootstrap from the management tier with the master secret. Create a rotating secret per role. Attach the ElastiCache rotation function to the cache user secret.
+Test scenarios. Each service connects as its own role and cannot reach another service's database. A forced rotation of each secret succeeds and the consumer reconnects.
+Verification. `terraform validate`, `terraform plan`, and a rotation exercise in a sandbox account.
+

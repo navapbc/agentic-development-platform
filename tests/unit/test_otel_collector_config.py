@@ -8,10 +8,7 @@ import yaml
 from observability import attributes as attrs
 
 _CONFIG = (
-    Path(__file__).resolve().parents[2]
-    / "observability"
-    / "otel"
-    / "otel-collector-config.yaml"
+    Path(__file__).resolve().parents[2] / "observability" / "otel" / "otel-collector-config.yaml"
 )
 
 _REQUIRED_REDACTIONS = {

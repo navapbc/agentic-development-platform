@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import Any
 
 import pytest
 from services.orchestration.checks.runner import (
@@ -20,7 +21,7 @@ from services.orchestration.temporal_activities.repair import (
 
 
 def _spec(**overrides) -> ChecksSpec:
-    base = {
+    base: dict[str, Any] = {
         "repo": "org/app",
         "execution_id": "exec-1",
         "checkout_dir": "/checkout",
@@ -70,11 +71,9 @@ def test_parse_fix_output_separates_the_manifest_from_the_log():
 async def test_run_fix_reports_unverified_when_no_fix_command_is_declared():
     from services.orchestration.checks.runner import ChecksRunner
 
-    result = await ChecksRunner(object()).run_fix(_spec(fix_command=""), "/staging")
+    result = await ChecksRunner(_RecordingPodOps()).run_fix(_spec(fix_command=""), "/staging")
 
-    assert result == ChecksFixResult(
-        verified=False, exit_code=1, output="no fix_command declared"
-    )
+    assert result == ChecksFixResult(verified=False, exit_code=1, output="no fix_command declared")
 
 
 def test_apply_staged_files_copies_only_files_the_failure_named(tmp_path):
@@ -143,9 +142,7 @@ def test_apply_staged_files_copies_nothing_when_the_failure_named_no_path(tmp_pa
     (staging / "portal/src/a.tsx").write_text("reformatted", encoding="utf-8")
     (workspace / "portal/src/a.tsx").write_text("original", encoding="utf-8")
 
-    applied = _apply_staged_files(
-        str(staging), str(workspace), ("portal/src/a.tsx",), ()
-    )
+    applied = _apply_staged_files(str(staging), str(workspace), ("portal/src/a.tsx",), ())
 
     assert applied == 0
     assert (workspace / "portal/src/a.tsx").read_text(encoding="utf-8") == "original"
@@ -159,8 +156,13 @@ def test_autofix_degrades_to_agent_repair_when_the_pod_transport_fails(monkeypat
 
     monkeypatch.setattr(repair_module, "_build_materializer", explode, raising=False)
     request = ApplyCIRepairRequest(
-        task_id="t", execution_id="e", repo="o/r", base="main", commit="c",
-        instruction="fix", failure_summary="portal/src/a.tsx broken",
+        task_id="t",
+        execution_id="e",
+        repo="o/r",
+        base="main",
+        commit="c",
+        instruction="fix",
+        failure_summary="portal/src/a.tsx broken",
     )
 
     assert asyncio.run(repair_module._project_autofix(request, "/nonexistent")) is False
@@ -213,6 +215,7 @@ def test_project_autofix_names_every_outcome(
         image = "node:24"
         build = ""
         working_dir = "portal"
+        fix_command: str = ""
 
     _Config.fix_command = fix_command
 
@@ -241,8 +244,13 @@ def test_project_autofix_names_every_outcome(
     )
 
     request = ApplyCIRepairRequest(
-        task_id="t", execution_id="e", repo="org/app", base="main", commit="c",
-        instruction="fix", failure_summary=summary,
+        task_id="t",
+        execution_id="e",
+        repo="org/app",
+        base="main",
+        commit="c",
+        instruction="fix",
+        failure_summary=summary,
     )
     result = asyncio.run(repair_module._project_autofix(request, "/workspace"))
 
@@ -267,11 +275,11 @@ class _RecordingPodOps:
     async def wait_ready(self, pod, namespace):
         return None
 
-    async def copy_in(self, pod, namespace, source, dest):
-        self.copied_in.append((source, dest))
+    async def copy_in(self, pod, namespace, source_dir, dest_dir):
+        self.copied_in.append((source_dir, dest_dir))
 
-    async def copy_out(self, pod, namespace, source, dest, manifest_path):
-        self.copied_out.append((source, dest, manifest_path))
+    async def copy_out(self, pod, namespace, source_dir, dest_dir, manifest_path):
+        self.copied_out.append((source_dir, dest_dir, manifest_path))
 
     async def exec_capture(self, pod, namespace, script):
         return self._exit_code, self._stdout, ""
@@ -342,8 +350,7 @@ def test_the_fix_script_announces_a_failing_fix_command_so_it_survives_into_the_
 
 def test_a_failing_fix_command_notice_is_kept_in_the_parsed_output():
     files, output = parse_fix_output(
-        "fix command exited 127\n"
-        "GATEFIX_FILES_BEGIN\nGATEFIX_FILES_END\nGATEFIX_VERIFY_RC=1"
+        "fix command exited 127\nGATEFIX_FILES_BEGIN\nGATEFIX_FILES_END\nGATEFIX_VERIFY_RC=1"
     )
 
     assert files == ()

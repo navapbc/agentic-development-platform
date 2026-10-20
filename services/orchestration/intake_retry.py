@@ -17,6 +17,7 @@ from services.coordination.idempotency import intake_start_target_repo
 _INTAKE_START = "intake_start"
 _TERMINAL_STATES = ("COMPLETED", "FAILED", "CANCELLED")
 
+
 class WorkflowLiveness(StrEnum):
     """Result of a liveness probe, which can also fail to reach Temporal at all.
 
@@ -120,9 +121,7 @@ class PostgresIntakeRetryStore:
         return [row.workflow_id for row in rows]
 
     async def clear_intake_dedup(self, issue_key: str, repo: str | None) -> int:
-        clause = (side_effects.c.task_id == issue_key) & (
-            side_effects.c.operation == _INTAKE_START
-        )
+        clause = (side_effects.c.task_id == issue_key) & (side_effects.c.operation == _INTAKE_START)
         async with self._engine.begin() as conn:
             if repo is None:
                 return (await conn.execute(delete(side_effects).where(clause))).rowcount or 0

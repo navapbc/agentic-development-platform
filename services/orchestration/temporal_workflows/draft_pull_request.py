@@ -477,9 +477,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
 
         tracker_key = declared_issue_key(params.stored_issue.get("labels") or ())
         default_title = (
-            f"{tracker_key}: {params.task}"
-            if tracker_key
-            else f"[{params.task_id}] {params.task}"
+            f"{tracker_key}: {params.task}" if tracker_key else f"[{params.task_id}] {params.task}"
         )
         title = params.title or default_title
 
@@ -803,9 +801,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         """
         attempts = max(params.max_repair_attempts, self._max_attempt_used)
         return (
-            impl.claim_version * _SEQUENCE_STRIDE
-            + _CI_TRIGGER_OFFSET
-            + _REPAIR_STRIDE * attempts
+            impl.claim_version * _SEQUENCE_STRIDE + _CI_TRIGGER_OFFSET + _REPAIR_STRIDE * attempts
         )
 
     async def _open_pull_request(
@@ -969,8 +965,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         await self._audit(
             AuditEvent(
                 event_id=(
-                    f"{params.execution_id}:HUMAN_INTERVENTION_ALERTED"
-                    f":{stage}:{self._alert_seq}"
+                    f"{params.execution_id}:HUMAN_INTERVENTION_ALERTED:{stage}:{self._alert_seq}"
                 ),
                 task_id=params.task_id,
                 execution_id=params.execution_id,
@@ -1541,9 +1536,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             review_summaries=summaries,
         )
 
-    async def _produce_plan(
-        self, params: DraftPullRequestInput, workflow_id: str
-    ) -> _PlanResult:
+    async def _produce_plan(self, params: DraftPullRequestInput, workflow_id: str) -> _PlanResult:
         retry = RetryPolicy(maximum_attempts=3)
         short = timedelta(seconds=30)
         gathered: ContextResult = await workflow.execute_activity(
@@ -1631,9 +1624,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             context_package=context_package,
         )
 
-    async def _recapture_base(
-        self, params: DraftPullRequestInput, workflow_id: str
-    ) -> str:
+    async def _recapture_base(self, params: DraftPullRequestInput, workflow_id: str) -> str:
         retry = RetryPolicy(maximum_attempts=3)
         short = timedelta(seconds=30)
         result: CaptureBaseHeadResult = await workflow.execute_activity(
@@ -1981,9 +1972,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                         on_block=node.on_block,
                     )
                 )
-        required_gates = [
-            node.name for node in [*plan.review, *plan.scanner] if node.required
-        ]
+        required_gates = [node.name for node in [*plan.review, *plan.scanner] if node.required]
 
         ci_status = "success" if outcome.ci_status == "passed" else (outcome.ci_status or "unknown")
         decision: EvaluatePromotionResult = await workflow.execute_activity(

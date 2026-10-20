@@ -1,0 +1,245 @@
+- tool: bandit
+  rule: B108
+  path: openhands/runtime/provisioner.py
+  match: '{"name": "agent-tmp", "mountPath": "/tmp"},'
+  justification: The string is the mount path of an emptyDir volume inside the sandbox pod, which gives the agent a private writable /tmp under a read-only root filesystem. No host temporary file is created.
+- tool: bandit
+  rule: B106
+  path: services/integration/github/credentials.py
+  match: default=_Identity(host="default", owner=owner, token_ref="__token__"),
+  justification: __token__ is the key under which the in-memory EnvSecretResolver stores the token passed to build_single_identity_resolver. It is a lookup name, not a credential.
+- tool: bandit
+  rule: B106
+  path: services/integration/jira/credentials.py
+  match: token_ref="__token__",
+  justification: __token__ is the key under which the in-memory EnvSecretResolver stores the token passed to build_single_project_resolver. It is a lookup name, not a credential.
+- tool: bandit
+  rule: B105
+  path: services/orchestration/gates/contract.py
+  match: PASS = "pass"
+  justification: PASS is the gate outcome constant that every gate and the gate runner compare against. Bandit matches the word pass in the value, which is an outcome name, not a credential.
+- tool: bandit
+  rule: B105
+  path: services/orchestration/temporal_workflows/implementation.py
+  match: TOKEN_BUDGET_EXCEEDED = "token_budget_exceeded"
+  justification: TOKEN_BUDGET_EXCEEDED is the stop reason recorded when a run exhausts its model token budget. It names a usage limit, not a credential.
+- tool: bandit
+  rule: B105
+  path: services/orchestration/usage_rollup.py
+  match: TOKEN_BUDGET_EXCEEDED = "token_budget_exceeded"
+  justification: TOKEN_BUDGET_EXCEEDED is the stop reason recorded when a run exhausts its model token budget. It names a usage limit, not a credential.
+- tool: bandit
+  rule: B404
+  path: services/process.py
+  match: import subprocess
+  justification: services/process.py is the one module that imports subprocess. Every other module starts processes through it, so this import is the single reviewed process-execution boundary.
+- tool: bandit
+  rule: B603
+  path: services/process.py
+  match: return subprocess.Popen(argv, executable=executable, shell=False, **checked)
+  justification: Bandit reports every subprocess call that does not use a shell. The call takes an argument list, refuses shell and executable overrides, resolves the executable to an absolute path, and takes an explicit timeout. tests/unit/test_process.py covers each of those properties.
+- tool: bandit
+  rule: B603
+  path: services/process.py
+  match: return subprocess.run(argv, executable=executable, shell=False, timeout=timeout, **checked)
+  justification: Bandit reports every subprocess call that does not use a shell. The call takes an argument list, refuses shell and executable overrides, resolves the executable to an absolute path, and takes an explicit timeout. tests/unit/test_process.py covers each of those properties.
+- tool: bandit
+  rule: B606
+  path: services/process.py
+  match: os.execve(resolve_executable(argv[0], path=env.get("PATH")), argv, dict(env))
+  justification: replace_process hands an interactive tunnel or demo the current process through os.execve. It takes an argument list, resolves the executable to an absolute path, and passes an explicit environment. No shell is involved.
+- tool: bandit
+  rule: B105
+  path: services/review/types.py
+  match: PASS = "pass"
+  justification: Verdict.PASS is the review verdict value. The string pass is persisted in review records and signed review verdicts, so it cannot change.
+- tool: trivy
+  rule: DS-0026
+  path: docker/Dockerfile
+  match: ''
+  justification: The platform image runs many roles, including the Temporal workers, the coordination, LangGraph, webhook, and MCP services, the scheduler, and one-shot migrations. Most roles serve no health endpoint, so one image-level HEALTHCHECK cannot be correct for all of them. Health is declared per service where the orchestrator runs it, as the probes in deploy/kubernetes show.
+- tool: trivy
+  rule: DS-0026
+  path: docker/cbm-build.Dockerfile
+  match: ''
+  justification: The image is a build stage that exports one binary to a scratch layer for docker build --output. It never runs as a container, so it has no health to check.
+- tool: trivy
+  rule: DS-0026
+  path: docker/jumphost-base/Dockerfile
+  match: ''
+  justification: The jumphost runs as an ECS Fargate task, and ECS ignores a Dockerfile HEALTHCHECK. The task exits on its own TTL, and ECS reports its state from the task lifecycle.
+- tool: trivy
+  rule: DS-0026
+  path: docker/repo-intelligence.Dockerfile
+  match: ''
+  justification: The repository-intelligence image runs both the HTTP server and the indexing worker, which serves no endpoint, so one image-level HEALTHCHECK cannot be correct for both roles. Health is declared per service where the orchestrator runs it.
+- tool: trivy
+  rule: KSV-0125
+  path: openhands/images/agent-server-pod.yaml
+  match: '- name: agent-server'
+  justification: The agent-server image is the upstream OpenHands release that matches openhands-sdk 1.56.0, pinned by digest. Trivy's default trusted-registry list has no ghcr.io entry. A deployment that mirrors the image into its own registry sets OPENHANDS_AGENT_SERVER_IMAGE to the mirrored digest.
+- tool: gitleaks-history
+  rule: generic-api-key
+  path: tests/unit/test_litellm_redaction.py
+  match: 0364f6205b3e434b7823d016ee9e5ab7a474748c:tests/unit/test_litellm_redaction.py:generic-api-key:42
+  justification: A synthetic token-shaped fixture in a redaction test, committed before the fixtures were built at runtime. Commits are immutable, so the finding stays in history. The value was never a credential for any service.
+- tool: gitleaks-history
+  rule: generic-api-key
+  path: tests/unit/test_litellm_redaction.py
+  match: 2b54b5cae8378b19d5292dc5a8fa692793d96945:tests/unit/test_litellm_redaction.py:generic-api-key:42
+  justification: A synthetic token-shaped fixture in a redaction test, committed before the fixtures were built at runtime. Commits are immutable, so the finding stays in history. The value was never a credential for any service.
+- tool: gitleaks-history
+  rule: generic-api-key
+  path: tests/unit/test_litellm_redaction.py
+  match: 416c2fce1d7ad36b9ffad78759a5abd2ae181908:tests/unit/test_litellm_redaction.py:generic-api-key:42
+  justification: A synthetic token-shaped fixture in a redaction test, committed before the fixtures were built at runtime. Commits are immutable, so the finding stays in history. The value was never a credential for any service.
+- tool: gitleaks-history
+  rule: generic-api-key
+  path: tests/unit/test_litellm_redaction.py
+  match: 4b38ee6186a2aa2a8887fb10f660b9abc4b3dc1c:tests/unit/test_litellm_redaction.py:generic-api-key:42
+  justification: A synthetic token-shaped fixture in a redaction test, committed before the fixtures were built at runtime. Commits are immutable, so the finding stays in history. The value was never a credential for any service.
+- tool: gitleaks-history
+  rule: generic-api-key
+  path: tests/unit/test_litellm_redaction.py
+  match: 7e2771b230e694617abe4eb8b7a9679bf2a7e4cd:tests/unit/test_litellm_redaction.py:generic-api-key:42
+  justification: A synthetic token-shaped fixture in a redaction test, committed before the fixtures were built at runtime. Commits are immutable, so the finding stays in history. The value was never a credential for any service.
+- tool: gitleaks-history
+  rule: generic-api-key
+  path: tests/unit/test_litellm_redaction.py
+  match: 93bbdecfe7ee1ea530999a4e4cb00760efd7db0c:tests/unit/test_litellm_redaction.py:generic-api-key:42
+  justification: A synthetic token-shaped fixture in a redaction test, committed before the fixtures were built at runtime. Commits are immutable, so the finding stays in history. The value was never a credential for any service.
+- tool: gitleaks-history
+  rule: generic-api-key
+  path: tests/unit/test_litellm_redaction.py
+  match: aef920504b9fab9c6f84aebbd83854bfc1d2137f:tests/unit/test_litellm_redaction.py:generic-api-key:42
+  justification: A synthetic token-shaped fixture in a redaction test, committed before the fixtures were built at runtime. Commits are immutable, so the finding stays in history. The value was never a credential for any service.
+- tool: gitleaks-history
+  rule: generic-api-key
+  path: tests/unit/test_litellm_redaction.py
+  match: b153bc2cd731011f73fba81b36d391fde49ed147:tests/unit/test_litellm_redaction.py:generic-api-key:42
+  justification: A synthetic token-shaped fixture in a redaction test, committed before the fixtures were built at runtime. Commits are immutable, so the finding stays in history. The value was never a credential for any service.
+- tool: gitleaks-history
+  rule: generic-api-key
+  path: tests/unit/test_litellm_redaction.py
+  match: f5be9dc9aec4648300d75d18f7466ca31d80a2cb:tests/unit/test_litellm_redaction.py:generic-api-key:42
+  justification: A synthetic token-shaped fixture in a redaction test, committed before the fixtures were built at runtime. Commits are immutable, so the finding stays in history. The value was never a credential for any service.
+- tool: gitleaks-history
+  rule: generic-api-key
+  path: tests/unit/test_litellm_redaction.py
+  match: fd62d5c8f2d3c929aa63a50be34b544068602e65:tests/unit/test_litellm_redaction.py:generic-api-key:42
+  justification: A synthetic token-shaped fixture in a redaction test, committed before the fixtures were built at runtime. Commits are immutable, so the finding stays in history. The value was never a credential for any service.
+- tool: gitleaks-history
+  rule: github-pat
+  path: tests/unit/test_litellm_redaction.py
+  match: 0364f6205b3e434b7823d016ee9e5ab7a474748c:tests/unit/test_litellm_redaction.py:github-pat:19
+  justification: A synthetic token-shaped fixture in a redaction test, committed before the fixtures were built at runtime. Commits are immutable, so the finding stays in history. The value was never a credential for any service.
+- tool: gitleaks-history
+  rule: github-pat
+  path: tests/unit/test_litellm_redaction.py
+  match: 0364f6205b3e434b7823d016ee9e5ab7a474748c:tests/unit/test_litellm_redaction.py:github-pat:24
+  justification: A synthetic token-shaped fixture in a redaction test, committed before the fixtures were built at runtime. Commits are immutable, so the finding stays in history. The value was never a credential for any service.
+- tool: gitleaks-history
+  rule: github-pat
+  path: tests/unit/test_litellm_redaction.py
+  match: 2b54b5cae8378b19d5292dc5a8fa692793d96945:tests/unit/test_litellm_redaction.py:github-pat:19
+  justification: A synthetic token-shaped fixture in a redaction test, committed before the fixtures were built at runtime. Commits are immutable, so the finding stays in history. The value was never a credential for any service.
+- tool: gitleaks-history
+  rule: github-pat
+  path: tests/unit/test_litellm_redaction.py
+  match: 2b54b5cae8378b19d5292dc5a8fa692793d96945:tests/unit/test_litellm_redaction.py:github-pat:24
+  justification: A synthetic token-shaped fixture in a redaction test, committed before the fixtures were built at runtime. Commits are immutable, so the finding stays in history. The value was never a credential for any service.
+- tool: gitleaks-history
+  rule: github-pat
+  path: tests/unit/test_litellm_redaction.py
+  match: 416c2fce1d7ad36b9ffad78759a5abd2ae181908:tests/unit/test_litellm_redaction.py:github-pat:19
+  justification: A synthetic token-shaped fixture in a redaction test, committed before the fixtures were built at runtime. Commits are immutable, so the finding stays in history. The value was never a credential for any service.
+- tool: gitleaks-history
+  rule: github-pat
+  path: tests/unit/test_litellm_redaction.py
+  match: 416c2fce1d7ad36b9ffad78759a5abd2ae181908:tests/unit/test_litellm_redaction.py:github-pat:24
+  justification: A synthetic token-shaped fixture in a redaction test, committed before the fixtures were built at runtime. Commits are immutable, so the finding stays in history. The value was never a credential for any service.
+- tool: gitleaks-history
+  rule: github-pat
+  path: tests/unit/test_litellm_redaction.py
+  match: 4b38ee6186a2aa2a8887fb10f660b9abc4b3dc1c:tests/unit/test_litellm_redaction.py:github-pat:19
+  justification: A synthetic token-shaped fixture in a redaction test, committed before the fixtures were built at runtime. Commits are immutable, so the finding stays in history. The value was never a credential for any service.
+- tool: gitleaks-history
+  rule: github-pat
+  path: tests/unit/test_litellm_redaction.py
+  match: 4b38ee6186a2aa2a8887fb10f660b9abc4b3dc1c:tests/unit/test_litellm_redaction.py:github-pat:24
+  justification: A synthetic token-shaped fixture in a redaction test, committed before the fixtures were built at runtime. Commits are immutable, so the finding stays in history. The value was never a credential for any service.
+- tool: gitleaks-history
+  rule: github-pat
+  path: tests/unit/test_litellm_redaction.py
+  match: 7e2771b230e694617abe4eb8b7a9679bf2a7e4cd:tests/unit/test_litellm_redaction.py:github-pat:19
+  justification: A synthetic token-shaped fixture in a redaction test, committed before the fixtures were built at runtime. Commits are immutable, so the finding stays in history. The value was never a credential for any service.
+- tool: gitleaks-history
+  rule: github-pat
+  path: tests/unit/test_litellm_redaction.py
+  match: 7e2771b230e694617abe4eb8b7a9679bf2a7e4cd:tests/unit/test_litellm_redaction.py:github-pat:24
+  justification: A synthetic token-shaped fixture in a redaction test, committed before the fixtures were built at runtime. Commits are immutable, so the finding stays in history. The value was never a credential for any service.
+- tool: gitleaks-history
+  rule: github-pat
+  path: tests/unit/test_litellm_redaction.py
+  match: 93bbdecfe7ee1ea530999a4e4cb00760efd7db0c:tests/unit/test_litellm_redaction.py:github-pat:19
+  justification: A synthetic token-shaped fixture in a redaction test, committed before the fixtures were built at runtime. Commits are immutable, so the finding stays in history. The value was never a credential for any service.
+- tool: gitleaks-history
+  rule: github-pat
+  path: tests/unit/test_litellm_redaction.py
+  match: 93bbdecfe7ee1ea530999a4e4cb00760efd7db0c:tests/unit/test_litellm_redaction.py:github-pat:24
+  justification: A synthetic token-shaped fixture in a redaction test, committed before the fixtures were built at runtime. Commits are immutable, so the finding stays in history. The value was never a credential for any service.
+- tool: gitleaks-history
+  rule: github-pat
+  path: tests/unit/test_litellm_redaction.py
+  match: aef920504b9fab9c6f84aebbd83854bfc1d2137f:tests/unit/test_litellm_redaction.py:github-pat:19
+  justification: A synthetic token-shaped fixture in a redaction test, committed before the fixtures were built at runtime. Commits are immutable, so the finding stays in history. The value was never a credential for any service.
+- tool: gitleaks-history
+  rule: github-pat
+  path: tests/unit/test_litellm_redaction.py
+  match: aef920504b9fab9c6f84aebbd83854bfc1d2137f:tests/unit/test_litellm_redaction.py:github-pat:24
+  justification: A synthetic token-shaped fixture in a redaction test, committed before the fixtures were built at runtime. Commits are immutable, so the finding stays in history. The value was never a credential for any service.
+- tool: gitleaks-history
+  rule: github-pat
+  path: tests/unit/test_litellm_redaction.py
+  match: b153bc2cd731011f73fba81b36d391fde49ed147:tests/unit/test_litellm_redaction.py:github-pat:19
+  justification: A synthetic token-shaped fixture in a redaction test, committed before the fixtures were built at runtime. Commits are immutable, so the finding stays in history. The value was never a credential for any service.
+- tool: gitleaks-history
+  rule: github-pat
+  path: tests/unit/test_litellm_redaction.py
+  match: b153bc2cd731011f73fba81b36d391fde49ed147:tests/unit/test_litellm_redaction.py:github-pat:24
+  justification: A synthetic token-shaped fixture in a redaction test, committed before the fixtures were built at runtime. Commits are immutable, so the finding stays in history. The value was never a credential for any service.
+- tool: gitleaks-history
+  rule: github-pat
+  path: tests/unit/test_litellm_redaction.py
+  match: f5be9dc9aec4648300d75d18f7466ca31d80a2cb:tests/unit/test_litellm_redaction.py:github-pat:19
+  justification: A synthetic token-shaped fixture in a redaction test, committed before the fixtures were built at runtime. Commits are immutable, so the finding stays in history. The value was never a credential for any service.
+- tool: gitleaks-history
+  rule: github-pat
+  path: tests/unit/test_litellm_redaction.py
+  match: f5be9dc9aec4648300d75d18f7466ca31d80a2cb:tests/unit/test_litellm_redaction.py:github-pat:24
+  justification: A synthetic token-shaped fixture in a redaction test, committed before the fixtures were built at runtime. Commits are immutable, so the finding stays in history. The value was never a credential for any service.
+- tool: gitleaks-history
+  rule: github-pat
+  path: tests/unit/test_litellm_redaction.py
+  match: fd62d5c8f2d3c929aa63a50be34b544068602e65:tests/unit/test_litellm_redaction.py:github-pat:19
+  justification: A synthetic token-shaped fixture in a redaction test, committed before the fixtures were built at runtime. Commits are immutable, so the finding stays in history. The value was never a credential for any service.
+- tool: gitleaks-history
+  rule: github-pat
+  path: tests/unit/test_litellm_redaction.py
+  match: fd62d5c8f2d3c929aa63a50be34b544068602e65:tests/unit/test_litellm_redaction.py:github-pat:24
+  justification: A synthetic token-shaped fixture in a redaction test, committed before the fixtures were built at runtime. Commits are immutable, so the finding stays in history. The value was never a credential for any service.
+- tool: gitleaks-history
+  rule: generic-api-key
+  path: tests/unit/test_metrics_and_logs.py
+  match: 3fcf369cd920565dc165584cd0decbaa4966008e:tests/unit/test_metrics_and_logs.py:generic-api-key:117
+  justification: A synthetic token-shaped fixture in a redaction test, committed before the fixtures were built at runtime. Commits are immutable, so the finding stays in history. The value was never a credential for any service.
+- tool: gitleaks-history
+  rule: generic-api-key
+  path: tests/unit/test_metrics_and_logs.py
+  match: 93bbdecfe7ee1ea530999a4e4cb00760efd7db0c:tests/unit/test_metrics_and_logs.py:generic-api-key:117
+  justification: A synthetic token-shaped fixture in a redaction test, committed before the fixtures were built at runtime. Commits are immutable, so the finding stays in history. The value was never a credential for any service.
+- tool: gitleaks-history
+  rule: generic-api-key
+  path: tests/unit/test_metrics_and_logs.py
+  match: efc68cfc6962c41f99919d58cd95911a04396579:tests/unit/test_metrics_and_logs.py:generic-api-key:117
+  justification: A synthetic token-shaped fixture in a redaction test, committed before the fixtures were built at runtime. Commits are immutable, so the finding stays in history. The value was never a credential for any service.

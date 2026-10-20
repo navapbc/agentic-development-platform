@@ -30,7 +30,6 @@ config/*/authorship-signing-key.pub
 # Project compose overlays (the platform's own compose files stay tracked)
 compose.*.yaml
 !compose.override.yaml
-!compose.local.yaml
 
 # AWS / credentials
 .aws/
@@ -67,6 +66,7 @@ vendor/bin/*
 .terraform.lock.hcl
 *.tfvars
 !*.tfvars.example
+backend.hcl
 *.tfplan
 crash.log
 crash.*.log
@@ -84,3 +84,5 @@ crash.*.log
 # Generated local k8s secret env (derived from .env at deploy time)
 deploy/kubernetes/local/*.secret.env
 .context/compound-engineering/
+
+.sast/
