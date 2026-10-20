@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
-from scripts.config import get_settings
+from scripts.config import get_settings, to_host_hostport
 
 
 async def _list() -> int:
@@ -15,7 +15,9 @@ async def _list() -> int:
         print("temporalio not installed; run `pip install -e .`")
         return 1
 
-    client = await Client.connect(settings.temporal_host, namespace=settings.temporal_namespace)
+    client = await Client.connect(
+        to_host_hostport(settings.temporal_host), namespace=settings.temporal_namespace
+    )
     print(
         f"[workflow-status] namespace={settings.temporal_namespace} "
         f"queue={settings.temporal_task_queue}"

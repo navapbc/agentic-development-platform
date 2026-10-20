@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
     database_url: str = (
-        "postgresql+asyncpg://platform:change-me-locally@localhost:5432/agent_platform"
+        "postgresql+asyncpg://platform:change-me-locally@postgres:5432/agent_platform"
     )
 
     temporal_host: str = "localhost:7233"
@@ -254,6 +254,8 @@ _COMPOSE_PUBLISHED_PORTS: dict[str, dict[int, str]] = {
 
 _COMPOSE_SERVICE_HOSTS = frozenset(_COMPOSE_PUBLISHED_PORTS)
 
+_SYNC_DRIVERS = {"postgresql+asyncpg": "postgresql+psycopg", "postgresql": "postgresql+psycopg"}
+
 
 def _in_platform_image() -> bool:
     """Report whether this process runs inside the platform image.
@@ -302,18 +304,24 @@ def to_host_url(url: str, settings: Settings | None = None) -> str:
     return url
 
 
+def _sync_driver(url: str) -> str:
+    """Swap the async driver for the sync one Alembic needs, leaving the rest intact."""
+    scheme, separator, remainder = url.partition("://")
+    if not separator:
+        return url
+    return f"{_SYNC_DRIVERS.get(scheme, scheme)}://{remainder}"
+
+
 def alembic_database_url() -> str:
     """Resolve the synchronous migration URL, rewritten for the host when run there.
 
-    The default names the Compose service rather than localhost so a remapped published
-    port is picked up by the same rewrite that every other host-run tool uses.
+    The fallback derives from the configured DATABASE_URL rather than a literal, so an
+    operator who sets a password keeps one source of truth. Both forms name the Compose
+    service rather than localhost, so a remapped published port is picked up by the same
+    rewrite that every other host-run tool uses.
     """
-    return to_host_url(
-        os.environ.get(
-            "ALEMBIC_DATABASE_URL",
-            "postgresql+psycopg://platform:change-me-locally@postgres:5432/agent_platform",
-        )
-    )
+    configured = os.environ.get("ALEMBIC_DATABASE_URL")
+    return to_host_url(configured or _sync_driver(get_settings().database_url))
 
 
 def to_host_hostport(value: str, settings: Settings | None = None) -> str:
