@@ -92,6 +92,7 @@ AWS transition and FedRAMP Medium readiness. The platform documents its local-to
 
 ### Fixed
 
+- The platform containers resolve their AWS profile from `PLATFORM_AWS_PROFILE` when it is set. Compose reads a shell export ahead of `.env`, so a host profile that signs through `credential_process` or another helper binary previously reached the LiteLLM container and the review worker, which do not carry that binary. LiteLLM returned `litellm.APIConnectionError` naming the missing helper and every Bedrock call failed. Set `PLATFORM_AWS_PROFILE` to a profile the mounted `~/.aws` resolves on its own. Leaving it empty passes `AWS_PROFILE` through unchanged.
 - The rebar change report no longer saves the cursor the rebar intake pass reads. A ticket the report listed was previously treated as already seen and never started.
 - Slack alert delivery and the `acli` download refuse any URL that is not https, including a redirect to http. The Slack sender previously accepted a `file:` URL.
 - The sandbox copy-in and patch extraction quote the project path in the pod shell command.
