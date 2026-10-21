@@ -72,7 +72,7 @@ worker = [
 [tool.uv]
 required-version = ">=0.13.3"
 exclude-newer = "7 days"
-exclude-newer-package = { "openhands-sdk" = false, "openhands-tools" = false }
+exclude-newer-package = { "openhands-sdk" = false, "openhands-tools" = false, "certifi" = "2026-10-21T00:00:00Z", "pillow" = "2026-10-17T00:00:00Z" }
 
 [build-system]
 requires = ["hatchling"]

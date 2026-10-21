@@ -88,6 +88,8 @@ AWS transition and FedRAMP Medium readiness. The platform documents its local-to
 
 ### Fixed
 
+- `certifi` moves to 2026.10.19 and `pillow` to 13.0.0, clearing nine advisories that `inv sast` reported against the locked dependency set, including `PYSEC-2026-4320` in the trust store certifi ships. Both fixed releases fall inside the seven-day `exclude-newer` window, so each carries a dated `exclude-newer-package` entry that admits it. A dated entry overrides the rolling window for that package indefinitely, so `tests/unit/test_dependency_resolution_pins.py` fails once the window catches up and names the entry to delete.
+- `security/sast-accepted.yaml` drops 29 `gitleaks-history` entries pinned to commits that history rewrites made unreachable. The gate fails on a register entry that matches no finding, so those entries failed every run regardless of the change under test.
 - The rebar change report no longer saves the cursor the rebar intake pass reads. A ticket the report listed was previously treated as already seen and never started.
 - Slack alert delivery and the `acli` download refuse any URL that is not https, including a redirect to http. The Slack sender previously accepted a `file:` URL.
 - The sandbox copy-in and patch extraction quote the project path in the pod shell command.
