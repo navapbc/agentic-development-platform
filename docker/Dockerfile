@@ -1,5 +1,7 @@
 FROM python:3.12-slim-trixie@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a
 
+LABEL org.opencontainers.image.licenses="Apache-2.0"
+
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1
@@ -14,7 +16,7 @@ RUN ARCH="$(dpkg --print-architecture)" \
     && curl -fsSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/v1.34.1/bin/linux/${ARCH}/kubectl" \
     && chmod +x /usr/local/bin/kubectl
 
-COPY pyproject.toml README.md alembic.ini ./
+COPY pyproject.toml README.md LICENSE NOTICE alembic.ini ./
 COPY services ./services
 COPY adapters ./adapters
 COPY schemas ./schemas

@@ -4,7 +4,9 @@ version = "0.1.0"
 description = "Local agentic SDLC platform POC (Jira -> plan -> code -> test -> scan -> PR) with HITL, audit, and observability."
 readme = "README.md"
 requires-python = ">=3.12"
-license = { text = "Apache-2.0" }
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "Nava PBC" }]
 
 dependencies = [
     "invoke>=2.2,<3",
@@ -59,7 +61,7 @@ all = [
 ]
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
