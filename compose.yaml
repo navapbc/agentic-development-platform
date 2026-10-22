@@ -157,7 +157,7 @@ services:
       COORDINATION_URL: http://coordination-service:8130
       JIRA_ACLI_PATH: /app/vendor/bin/acli
       EXECUTION_WORKSPACE_ROOT: /home/appuser/agent-workspaces
-      AWS_PROFILE: ${AWS_PROFILE}
+      AWS_PROFILE: ${PLATFORM_AWS_PROFILE:-${AWS_PROFILE}}
       AWS_REGION: ${AWS_REGION}
       AWS_USE_FIPS_ENDPOINT: ${AWS_USE_FIPS_ENDPOINT:-false}
       REBAR_LLM_CONFIG_FILE: /app/config/platform/rebar-review.toml
@@ -226,7 +226,7 @@ services:
       retries: 3
     environment:
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
-      AWS_PROFILE: ${AWS_PROFILE}
+      AWS_PROFILE: ${PLATFORM_AWS_PROFILE:-${AWS_PROFILE}}
       AWS_REGION: ${AWS_REGION}
       AWS_USE_FIPS_ENDPOINT: ${AWS_USE_FIPS_ENDPOINT:-false}
       LANGFUSE_HOST: ${LANGFUSE_HOST:-http://langfuse-web:3000}
