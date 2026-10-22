@@ -3,8 +3,8 @@
 Every file scanner reads the same staged copy of the tree, which holds the tracked files and the
 untracked files that git does not ignore. A local run and a CI run therefore scan the same file
 set, and ignored files such as a developer's `.env` never reach a report. The gitleaks history
-scan reads the commit history of the repository itself, and pip-audit reads the dependency
-set that `uv.lock` pins.
+scan reads the commits reachable from HEAD, and pip-audit reads the dependency set that
+`uv.lock` pins.
 
 The gate fails on any finding that `security/sast-accepted.yaml` does not accept, and on any
 register entry that no longer matches a finding, so the register cannot outlive the code it
@@ -19,11 +19,16 @@ import json
 import shutil
 import sys
 import tempfile
-from collections.abc import Iterable, Sequence
+import tomllib
+from collections.abc import Callable, Iterable, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
+import httpx
 import yaml
 from services import process
 
@@ -32,6 +37,8 @@ from scripts.config import Settings
 ROOT = Path(__file__).resolve().parents[1]
 REGISTER = ROOT / "security" / "sast-accepted.yaml"
 DEFAULT_OUTPUT = ROOT / ".sast"
+LOCK = ROOT / "uv.lock"
+FRESH_RELEASE_WINDOW = timedelta(days=7)
 
 SEMGREP_IMAGE: str = Settings.model_fields["semgrep_image"].default
 TRIVY_IMAGE: str = Settings.model_fields["trivy_image"].default
@@ -314,6 +321,128 @@ def _json(result: process.CompletedProcess, tool: str, accepted_codes: Iterable[
     return json.loads(result.stdout or "null")
 
 
+def _git(root: Path, *args: str) -> str:
+    return process.run(
+        ["git", *args],
+        timeout=process.SHORT_COMMAND_TIMEOUT_SECONDS,
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+
+def head_commit(root: Path = ROOT) -> str:
+    """Return the checked-out commit, whose ancestry is the history a merge would publish.
+
+    Scanning every ref would also read local-only refs, such as agent checkpoints and stashes,
+    that a CI checkout does not have, so local and CI runs would report different findings.
+    """
+    return _git(root, "rev-parse", "HEAD")
+
+
+def history_mounts(root: Path = ROOT) -> list[str]:
+    """Mount the tree and git's object store at their host paths.
+
+    A linked worktree's `.git` is a file naming the main repository's git directory by its host
+    path, so that directory must resolve inside the container too.
+    """
+    mounts = [f"{root}:{root}:ro"]
+    common = Path(_git(root, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+    if not common.is_relative_to(root):
+        mounts.append(f"{common}:{common}:ro")
+    return mounts
+
+
+@dataclass(frozen=True)
+class FreshRelease:
+    name: str
+    version: str
+    uploaded: str
+    age_days: float
+    attestation: str
+
+
+def _parse_time(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def fresh_releases(lock: dict[str, Any], now: datetime) -> list[tuple[str, str, str, str]]:
+    """Return the locked registry releases first uploaded within the window.
+
+    Each entry is the name, version, earliest upload time, and the file to query for an
+    attestation. The upload times come from `uv.lock`, so the ages are computed from the lock
+    under review.
+    """
+    fresh = []
+    for package in lock.get("package", []):
+        if not package.get("source", {}).get("registry"):
+            continue
+        artifacts = [*package.get("wheels", [])]
+        if "sdist" in package:
+            artifacts.append(package["sdist"])
+        stamped = [a for a in artifacts if a.get("upload-time") and a.get("url")]
+        if not stamped:
+            continue
+        first = min(stamped, key=lambda artifact: _parse_time(artifact["upload-time"]))
+        if now - _parse_time(first["upload-time"]) < FRESH_RELEASE_WINDOW:
+            filename = first["url"].rsplit("/", 1)[-1]
+            fresh.append((package["name"], package["version"], first["upload-time"], filename))
+    return sorted(fresh)
+
+
+def pypi_attestation(client: httpx.Client, name: str, version: str, filename: str) -> str:
+    """Return the publisher of the release file's PyPI provenance, or why there is none."""
+    url = f"https://pypi.org/integrity/{quote(name)}/{quote(version)}/{quote(filename)}/provenance"
+    try:
+        response = client.get(url, headers={"Accept": "application/vnd.pypi.integrity.v1+json"})
+    except httpx.HTTPError as exc:
+        return f"unknown ({type(exc).__name__})"
+    if response.status_code == 404:
+        return "unattested"
+    if response.status_code != 200:
+        return f"unknown (HTTP {response.status_code})"
+    bundles = response.json().get("attestation_bundles") or []
+    publisher = bundles[0].get("publisher", {}) if bundles else {}
+    repository = publisher.get("repository")
+    workflow = publisher.get("workflow")
+    if not repository:
+        return "attested"
+    return f"attested by {repository} {workflow}".rstrip()
+
+
+def fresh_release_report(
+    lock_path: Path = LOCK,
+    *,
+    now: datetime | None = None,
+    attestation: Callable[[str, str, str], str] | None = None,
+) -> list[FreshRelease]:
+    """List locked releases younger than the window with their provenance, for the reviewer.
+
+    The report never fails the scan. A release leaves it once it is older than the window.
+    """
+    moment = now or datetime.now(UTC)
+    fresh = fresh_releases(tomllib.loads(lock_path.read_text(encoding="utf-8")), moment)
+    if not fresh:
+        return []
+    with httpx.Client(timeout=20.0, follow_redirects=True) as client:
+        lookup = attestation or (
+            lambda name, version, filename: pypi_attestation(client, name, version, filename)
+        )
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            statuses = list(pool.map(lambda entry: lookup(entry[0], entry[1], entry[3]), fresh))
+    return [
+        FreshRelease(
+            name=name,
+            version=version,
+            uploaded=uploaded,
+            age_days=round((moment - _parse_time(uploaded)).total_seconds() / 86400, 1),
+            attestation=status,
+        )
+        for (name, version, uploaded, _), status in zip(fresh, statuses, strict=True)
+    ]
+
+
 def export_lock(output: Path) -> Path:
     """Write every locked dependency with its hashes, the set the images and CI install."""
     destination = output / "lock-requirements.txt"
@@ -361,16 +490,16 @@ def run_scanners(stage: Path, output: Path) -> dict[str, list[Finding]]:
         "gitleaks-history": _json(
             _docker(
                 GITLEAKS_IMAGE,
-                ["git", "/repo", "--config", "/repo/.gitleaks.toml", "--redact"]
+                ["git", str(ROOT), "--config", str(ROOT / ".gitleaks.toml"), "--redact"]
                 + ["--no-banner", "--exit-code", "0", "--report-format", "json"]
-                + ["--report-path", "-"],
-                [f"{ROOT}:/repo:ro"],
+                + ["--report-path", "-", f"--log-opts=--full-history {head_commit()}"],
+                history_mounts(),
                 # The mounted repository belongs to the host user, so git inside the container
                 # refuses it as a dubious-ownership repository unless it is marked safe.
                 [
                     "GIT_CONFIG_COUNT=1",
                     "GIT_CONFIG_KEY_0=safe.directory",
-                    "GIT_CONFIG_VALUE_0=/repo",
+                    f"GIT_CONFIG_VALUE_0={ROOT}",
                 ],
             ),
             "gitleaks-history",
@@ -390,7 +519,8 @@ def run_scanners(stage: Path, output: Path) -> dict[str, list[Finding]]:
         "pip-audit": _json(
             process.run(
                 [sys.executable, "-m", "pip_audit", "--requirement", str(export_lock(output))]
-                + ["--require-hashes", "--disable-pip", "--format", "json"]
+                + ["--require-hashes", "--disable-pip", "--vulnerability-service", "osv"]
+                + ["--format", "json"]
                 + ["--progress-spinner", "off"],
                 timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS,
                 capture_output=True,
@@ -448,6 +578,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"\nRegister entries that match no finding ({len(result.stale)})")
         for entry in result.stale:
             print(f"  {entry.tool} {entry.rule} {entry.path} match: {entry.match}")
+    fresh = fresh_release_report()
+    (output / "fresh-releases.json").write_text(
+        json.dumps([asdict(release) for release in fresh], indent=1), encoding="utf-8"
+    )
+    window = FRESH_RELEASE_WINDOW.days
+    print(f"\nLocked releases younger than {window} days, for review ({len(fresh)})")
+    for release in fresh:
+        print(f"  {release.name} {release.version} {release.age_days}d {release.attestation}")
     print(f"\n[sast] reports written to {output}")
     print("[sast] PASS" if result.ok else "[sast] FAIL")
     return 0 if result.ok else 1

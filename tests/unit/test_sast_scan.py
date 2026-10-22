@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 
+import httpx
 import pytest
 from scripts import sast_scan
 from scripts.sast_scan import Accepted, Finding
@@ -184,3 +187,149 @@ def test_parse_pip_audit_reports_each_vulnerability():
 
     assert (finding.path, finding.rule, finding.match) == ("urllib3", "GHSA-1", "urllib3==2.7.0")
     assert finding.message == "fixed in 2.8.0"
+
+
+def _git(cwd: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(cwd), *args], check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def _commit(cwd: Path, message: str) -> None:
+    _git(
+        cwd,
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "user.name=t",
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        message,
+    )
+
+
+@pytest.fixture
+def repo(tmp_path: Path) -> Path:
+    root = (tmp_path / "repo").resolve()
+    root.mkdir()
+    _git(root, "init", "-q", "-b", "main")
+    _git(
+        root,
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "user.name=t",
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "a",
+    )
+    return root
+
+
+def test_head_commit_ignores_refs_outside_the_checked_out_history(repo: Path):
+    head = _git(repo, "rev-parse", "HEAD")
+    _git(
+        repo,
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "user.name=t",
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "b",
+    )
+    _git(repo, "update-ref", "refs/agents/checkpoint", "HEAD")
+    _git(repo, "reset", "-q", "--hard", head)
+
+    assert sast_scan.head_commit(repo) == head
+
+
+def test_history_mounts_add_the_shared_git_directory_for_a_linked_worktree(repo: Path):
+    assert sast_scan.history_mounts(repo) == [f"{repo}:{repo}:ro"]
+
+    linked = repo.parent / "linked"
+    _git(repo, "worktree", "add", "-q", "--detach", str(linked))
+    common = repo / ".git"
+
+    assert sast_scan.history_mounts(linked) == [f"{linked}:{linked}:ro", f"{common}:{common}:ro"]
+
+
+_NOW = datetime(2026, 10, 22, tzinfo=UTC)
+
+
+def _locked(name: str, uploaded: str, *, registry: bool = True) -> dict:
+    source = {"registry": "https://pypi.org/simple"} if registry else {"editable": "."}
+    return {
+        "name": name,
+        "version": "1.0",
+        "source": source,
+        "sdist": {"url": f"https://files.example/{name}-1.0.tar.gz", "upload-time": uploaded},
+        "wheels": [
+            {
+                "url": f"https://files.example/{name}-1.0-py3-none-any.whl",
+                "upload-time": "2026-10-21T00:00:00Z",
+            }
+        ],
+    }
+
+
+def test_fresh_releases_lists_only_registry_releases_inside_the_window():
+    lock = {
+        "package": [
+            _locked("young", "2026-10-20T00:00:00Z"),
+            _locked("old", "2026-10-01T00:00:00Z"),
+            _locked("local", "2026-10-21T00:00:00Z", registry=False),
+        ]
+    }
+
+    fresh = sast_scan.fresh_releases(lock, _NOW)
+
+    assert fresh == [("young", "1.0", "2026-10-20T00:00:00Z", "young-1.0.tar.gz")]
+
+
+def test_fresh_releases_dates_a_release_by_its_first_uploaded_file():
+    lock = {"package": [_locked("backfilled", "2026-09-01T00:00:00Z")]}
+
+    assert sast_scan.fresh_releases(lock, _NOW) == []
+
+
+def test_fresh_release_report_never_fails_and_records_attestation(tmp_path: Path):
+    lock = tmp_path / "uv.lock"
+    lock.write_text(
+        'version = 1\n\n[[package]]\nname = "young"\nversion = "1.0"\n'
+        'source = { registry = "https://pypi.org/simple" }\n'
+        'sdist = { url = "https://files.example/young-1.0.tar.gz", '
+        'upload-time = "2026-10-20T00:00:00Z" }\n',
+        encoding="utf-8",
+    )
+    calls: list[tuple[str, str, str]] = []
+
+    def attestation(name: str, version: str, filename: str) -> str:
+        calls.append((name, version, filename))
+        return "unattested"
+
+    [release] = sast_scan.fresh_release_report(lock, now=_NOW, attestation=attestation)
+
+    assert calls == [("young", "1.0", "young-1.0.tar.gz")]
+    assert (release.name, release.age_days, release.attestation) == ("young", 2.0, "unattested")
+
+
+def test_pypi_attestation_reads_the_publisher():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "unsigned" in request.url.path:
+            return httpx.Response(404)
+        bundle = {"publisher": {"repository": "org/project", "workflow": "release.yml"}}
+        return httpx.Response(200, json={"attestation_bundles": [bundle]})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        signed = sast_scan.pypi_attestation(client, "signed", "1.0", "signed-1.0.tar.gz")
+        unsigned = sast_scan.pypi_attestation(client, "unsigned", "1.0", "unsigned-1.0.tar.gz")
+
+    assert signed == "attested by org/project release.yml"
+    assert unsigned == "unattested"

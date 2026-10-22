@@ -71,8 +71,6 @@ worker = [
 
 [tool.uv]
 required-version = ">=0.13.3"
-exclude-newer = "7 days"
-exclude-newer-package = { "openhands-sdk" = false, "openhands-tools" = false }
 
 [build-system]
 requires = ["hatchling"]
