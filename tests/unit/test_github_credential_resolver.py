@@ -11,6 +11,7 @@ from services.integration.credentials import (
     EnvSecretResolver,
     SecretNotFoundError,
     load_env_config,
+    load_platform_config,
 )
 from services.integration.github.credentials import (
     GitHubCredentialResolver,
@@ -194,6 +195,23 @@ def test_load_env_config_reads_yaml(tmp_path):
 def test_load_env_config_missing_file_raises(tmp_path):
     with pytest.raises(ConfigError):
         load_env_config("github", environment="local", root=tmp_path)
+
+
+def test_load_platform_config_reads_tracked_yaml(tmp_path):
+    platform_dir = tmp_path / "config" / "platform"
+    platform_dir.mkdir(parents=True)
+    (platform_dir / "litellm-config.yaml").write_text("model_list: []\n", encoding="utf-8")
+
+    assert load_platform_config("litellm-config", root=tmp_path) == {"model_list": []}
+
+
+def test_load_platform_config_missing_file_raises(tmp_path):
+    with pytest.raises(ConfigError):
+        load_platform_config("litellm-config", root=tmp_path)
+
+
+def test_repository_platform_config_holds_the_gateway_catalog():
+    assert "model_list" in load_platform_config("litellm-config")
 
 
 def test_env_secret_resolver_reads_dotenv(tmp_path):

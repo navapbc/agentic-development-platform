@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated
@@ -27,13 +28,16 @@ class Settings(BaseSettings):
     worker_versioning_enabled: bool = False
     workflow_execution_timeout_seconds: float = 3600.0
     draft_pr_execution_timeout_seconds: float = 86400.0
+    bind_host: str = "127.0.0.1"
+    health_heartbeat_file: str = ""
+    health_heartbeat_interval_seconds: float = 15.0
 
     litellm_base_url: str = "http://localhost:4000"
     litellm_master_key: str = "change-me-locally"
 
     rebar_llm_base_url: str = "http://localhost:4000"
     rebar_llm_api_key: str = "change-me-locally"
-    rebar_llm_model_provider: str = "openai"
+    rebar_llm_model_provider: str = "openai-chat"
     rebar_llm_max_tokens: int = 8192
     rebar_llm_temperature: float = 0.0
     rebar_review_native: bool = True
@@ -118,6 +122,16 @@ class Settings(BaseSettings):
     langfuse_project_id: str = "agentic-dev-platform"
     otel_exporter_otlp_endpoint: str = "http://localhost:4317"
 
+    postgres_host_port: int = 5432
+    temporal_host_port: int = 7233
+    langgraph_host_port: int = 8100
+    litellm_host_port: int = 4000
+    opa_host_port: int = 8181
+    langfuse_web_host_port: int = 3000
+    otel_grpc_host_port: int = 4317
+    otel_http_host_port: int = 4318
+    otel_metrics_host_port: int = 8889
+
     repo_intelligence_url: str = "http://localhost:8120"
     repo_intelligence_repo_root: str = ""
     repo_intelligence_commit: str = ""
@@ -142,12 +156,24 @@ class Settings(BaseSettings):
     github_webhook_secret: str = ""
     jira_webhook_secret: str = ""
 
-
     semgrep_binary: str = "semgrep"
     trivy_binary: str = "trivy"
+    scanner_execution: str = "subprocess"
+    scan_scope: str = "changed"
+    semgrep_image: str = (
+        "docker.io/semgrep/semgrep:1.177.0"
+        "@sha256:acaac22ffc7b7cc5926de0751b223bce0b2491c33d18422fa72f632c78d81198"
+    )
+    trivy_image: str = (
+        "docker.io/aquasec/trivy:0.74.0"
+        "@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969"
+    )
     security_blocking_threshold: str = "high"
 
-    openhands_agent_server_image: str = "ghcr.io/openhands/agent-server:latest-python"
+    openhands_agent_server_image: str = (
+        "ghcr.io/openhands/agent-server:1.56.0-python"
+        "@sha256:718bf6d719f34184810ecaebe607f1aafaf526e109654815e61ddd6238728023"
+    )
     openhands_runtime_class: str = ""
     openhands_sandbox_namespace: str = "agent-sandbox"
     openhands_server_port: int = 8000
@@ -165,14 +191,18 @@ class Settings(BaseSettings):
     sandbox_litellm_base_url: str = "http://host.docker.internal:4000"
     gate_engine_execution: str = "subprocess"
     gate_engine_namespace: str = "agent-sandbox"
-    gate_engine_builder_image: str = "quay.io/buildah/stable:v1.43.2"
+    gate_engine_builder_image: str = (
+        "quay.io/buildah/stable:v1.43.5"
+        "@sha256:7c2b605262748ace2c5c57c5550942d0adad57aec82ede3070927722306c0ffb"
+    )
+    gate_engine_privileged: bool = False
     gate_registry_tls_verify: bool = True
 
     reap_schedule_id: str = "orphan-reaper"
     reap_schedule_interval_minutes: int = 60
     reap_schedule_dry_run: bool = False
 
-    intake_schedule_id: str = "jira-intake"
+    intake_schedule_id: str = ""
     intake_schedule_interval_seconds: int = 60
     intake_run_reviews: bool = False
     intake_run_policy: bool = False
@@ -208,26 +238,56 @@ def get_settings() -> Settings:
     return Settings()
 
 
-_COMPOSE_SERVICE_HOSTS = frozenset(
-    {
-        "litellm",
-        "opa",
-        "langfuse-web",
-        "postgres",
-        "temporal",
-        "langgraph-service",
-        "otel-collector",
-    }
-)
+_COMPOSE_PUBLISHED_PORTS: dict[str, dict[int, str]] = {
+    "litellm": {4000: "litellm_host_port"},
+    "opa": {8181: "opa_host_port"},
+    "langfuse-web": {3000: "langfuse_web_host_port"},
+    "postgres": {5432: "postgres_host_port"},
+    "temporal": {7233: "temporal_host_port"},
+    "langgraph-service": {8100: "langgraph_host_port"},
+    "otel-collector": {
+        4317: "otel_grpc_host_port",
+        4318: "otel_http_host_port",
+        8889: "otel_metrics_host_port",
+    },
+}
+
+_COMPOSE_SERVICE_HOSTS = frozenset(_COMPOSE_PUBLISHED_PORTS)
 
 
-def to_host_url(url: str) -> str:
+def _in_platform_image() -> bool:
+    """Report whether this process runs inside the platform image.
+
+    docker/Dockerfile sets PLATFORM_IN_CONTAINER, so the marker is present for every
+    container built from it and absent on the host.
+    """
+    return os.environ.get("PLATFORM_IN_CONTAINER") == "1"
+
+
+def _published_port(service: str, port: int | None, settings: Settings | None) -> int | None:
+    """Map a service's in-network port to the host port Compose publishes it on.
+
+    compose.yaml publishes each port through the same ``*_HOST_PORT`` variable that backs
+    the matching setting, so an operator who remaps a port in .env moves both sides at once.
+    """
+    if port is None:
+        return None
+    field = _COMPOSE_PUBLISHED_PORTS.get(service, {}).get(port)
+    if field is None:
+        return port
+    return int(getattr(settings or get_settings(), field))
+
+
+def to_host_url(url: str, settings: Settings | None = None) -> str:
     """Rewrite a Compose-internal service URL to its host-published localhost equivalent.
 
     Host-run tooling shares .env with in-network services, which address each other by
     Compose service name. Those names do not resolve on the host, where the same ports
-    are published on localhost.
+    are published on localhost. Inside the platform image the service names do resolve
+    and localhost is the container itself, so the rewrite is inert there.
     """
+    if _in_platform_image():
+        return url
     parsed = urlparse(url)
     if parsed.hostname in _COMPOSE_SERVICE_HOSTS:
         userinfo = ""
@@ -236,14 +296,34 @@ def to_host_url(url: str) -> str:
             if parsed.password:
                 userinfo += f":{parsed.password}"
             userinfo += "@"
-        port = f":{parsed.port}" if parsed.port else ""
+        published = _published_port(parsed.hostname, parsed.port, settings)
+        port = f":{published}" if published else ""
         return urlunparse(parsed._replace(netloc=f"{userinfo}localhost{port}"))
     return url
 
 
-def to_host_hostport(value: str) -> str:
+def alembic_database_url() -> str:
+    """Resolve the synchronous migration URL, rewritten for the host when run there.
+
+    The default names the Compose service rather than localhost so a remapped published
+    port is picked up by the same rewrite that every other host-run tool uses.
+    """
+    return to_host_url(
+        os.environ.get(
+            "ALEMBIC_DATABASE_URL",
+            "postgresql+psycopg://platform:change-me-locally@postgres:5432/agent_platform",
+        )
+    )
+
+
+def to_host_hostport(value: str, settings: Settings | None = None) -> str:
     """Rewrite a Compose-internal ``host:port`` (e.g. Temporal) to its localhost form."""
+    if _in_platform_image():
+        return value
     host, sep, port = value.partition(":")
     if host in _COMPOSE_SERVICE_HOSTS:
-        return f"localhost{sep}{port}"
+        if not sep:
+            return "localhost"
+        published = _published_port(host, int(port) if port.isdigit() else None, settings)
+        return f"localhost:{published if published else port}"
     return value

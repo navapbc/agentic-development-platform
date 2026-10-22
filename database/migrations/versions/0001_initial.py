@@ -43,7 +43,7 @@ EXECUTION_STATES = (
 
 
 def upgrade() -> None:
-    op.execute(f'CREATE SCHEMA IF NOT EXISTS "{SCHEMA}"')
+    op.execute('CREATE SCHEMA IF NOT EXISTS "agent_platform"')
 
     # Single enum object so the executions table below emits CREATE TYPE once.
     execution_state = sa.Enum(*EXECUTION_STATES, name="execution_state", schema=SCHEMA)

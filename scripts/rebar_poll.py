@@ -11,13 +11,13 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
 import sys
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from services import process
 from services.integration.jira.snapshot import content_hash
 
 NEW = "new"
@@ -152,9 +152,7 @@ async def run_poll(
                 "role": decision.role,
             }
         )
-        return PollReport(
-            branch_commit="", authorized=False, audited=True, reason="unauthorized"
-        )
+        return PollReport(branch_commit="", authorized=False, audited=True, reason="unauthorized")
 
     branch_commit = reader.branch_head()
     cursor = watermark.load()
@@ -237,8 +235,9 @@ class GitTicketStoreReader:
         self._branch = branch
 
     def branch_head(self) -> str:
-        proc = subprocess.run(
+        proc = process.run(
             ["git", "rev-parse", self._branch],
+            timeout=process.SHORT_COMMAND_TIMEOUT_SECONDS,
             cwd=self._repo_root,
             capture_output=True,
             text=True,
@@ -322,6 +321,19 @@ class RebarIdentityAccess:
         return AccessDecision(authorized=authorized, identity=email, role=role)
 
 
+class ReadOnlyWatermark:
+    """Reads the intake cursor and discards saves, so a change report never moves intake."""
+
+    def __init__(self, inner: WatermarkStore) -> None:
+        self._inner = inner
+
+    def load(self) -> PollCursor:
+        return self._inner.load()
+
+    def save(self, cursor: PollCursor) -> None:
+        return None
+
+
 def _build_flags(args: argparse.Namespace) -> PollFlags:
     selected = any((args.new, args.field_changes, args.status_changes))
     if not selected:
@@ -341,20 +353,24 @@ def main(argv: list[str] | None = None) -> int:
         load_rebar_backend_config,
     )
 
-    parser = argparse.ArgumentParser(description="Poll the rebar tickets branch for changes.")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Report rebar ticket changes since the last intake pass. The report never starts "
+            "work and never moves the intake cursor."
+        )
+    )
     parser.add_argument("--new", action="store_true", help="Report new tickets.")
     parser.add_argument("--field-changes", action="store_true", help="Report field changes.")
     parser.add_argument("--status-changes", action="store_true", help="Report status changes.")
-    parser.add_argument(
-        "--report-only", action="store_true", help="Do not drive intake side effects."
-    )
     args = parser.parse_args(argv if argv is not None else sys.argv[1:])
 
     backend = load_rebar_backend_config()
     poll_config = load_poll_config()
     repo_root = backend.repo_root
     reader = GitTicketStoreReader(repo_root)
-    watermark = FileWatermarkStore(Path(repo_root) / ".rebar-poll-watermark.json")
+    watermark = ReadOnlyWatermark(
+        FileWatermarkStore(Path(repo_root) / ".rebar-poll-watermark.json")
+    )
     access = RebarIdentityAccess(
         repo_root,
         reader_roles=poll_config.reader_roles,
@@ -372,14 +388,14 @@ def main(argv: list[str] | None = None) -> int:
         )
     )
     if not report.authorized:
-        print("[rebar-poll] denied: unauthorized reader identity")
+        print("[rebar-changes] denied: unauthorized reader identity")
         return 1
     print(
-        f"[rebar-poll] branch {report.branch_commit[:12]} "
+        f"[rebar-changes] branch {report.branch_commit[:12]} "
         f"reported {len(report.events)} change(s)"
     )
     for event in report.events:
-        print(f"[rebar-poll] {event.kind}: {event.ticket_id} rev {event.revision[:12]}")
+        print(f"[rebar-changes] {event.kind}: {event.ticket_id} rev {event.revision[:12]}")
     return 0
 
 

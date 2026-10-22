@@ -9,20 +9,8 @@ variable "repository_name" {
   type        = string
 }
 
-variable "image_tag_mutability" {
-  description = "ECR tag mutability. IMMUTABLE pairs with bumping the image tag per revision."
-  type        = string
-  default     = "IMMUTABLE"
-}
-
-variable "scan_on_push" {
-  description = "Scan images for vulnerabilities on push."
-  type        = bool
-  default     = true
-}
-
 variable "kms_key_arn" {
-  description = "KMS key ARN for repository encryption. Empty uses AES256."
+  description = "Customer-managed KMS key ARN for repository encryption. Empty creates a key owned by this module."
   type        = string
   default     = ""
 }

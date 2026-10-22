@@ -1,0 +1,17 @@
+# Widened from rebar's default of 4 because these classes have no fallback leg, so a
+# throttled Claude call has nowhere else to go.
+[llm]
+llm_retry_max_attempts = 6
+llm_retry_max_wait_s = 60
+
+[llm.model_classes.standard]
+model = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+provider = "bedrock"
+
+[llm.model_classes.frontier]
+model = "us.anthropic.claude-opus-4-5-20251101-v1:0"
+provider = "bedrock"
+
+[llm.model_classes.trivial]
+model = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+provider = "bedrock"

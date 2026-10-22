@@ -11,6 +11,7 @@ from pathlib import Path
 
 from scripts.config import get_settings
 
+from services.healthcheck import touch
 from services.repository_intelligence.indexing import scip_builder
 from services.repository_intelligence.indexing.reindex import reindex_repo
 from services.repository_intelligence.normalization.models import RepoRef
@@ -76,11 +77,17 @@ class RepoIndexWorker:
             return self._idle.wait_for(lambda: not self._inflight, timeout=timeout)
 
     def run_forever(
-        self, *, interval: float = _DEFAULT_INTERVAL, stop: threading.Event | None = None
+        self,
+        *,
+        interval: float = _DEFAULT_INTERVAL,
+        stop: threading.Event | None = None,
+        heartbeat_file: Path | None = None,
     ) -> None:
         stop = stop or threading.Event()
         while not stop.is_set():
             self.poll_once()
+            if heartbeat_file is not None:
+                touch(heartbeat_file)
             stop.wait(interval)
 
     def close(self) -> None:
@@ -125,10 +132,14 @@ def main() -> None:
     worker = build_worker()
     if worker is None:
         log.warning("no repositories configured; repo-index-worker idle")
-        return
-    interval = get_settings().repo_index_poll_interval_seconds
+        worker = RepoIndexWorker([])
+    settings = get_settings()
+    interval = settings.repo_index_poll_interval_seconds
     log.info("repo-index-worker polling %d repos every %.0fs", len(worker.repos()), interval)
-    worker.run_forever(interval=interval)
+    heartbeat_file = (
+        Path(settings.health_heartbeat_file) if settings.health_heartbeat_file else None
+    )
+    worker.run_forever(interval=interval, heartbeat_file=heartbeat_file)
 
 
 if __name__ == "__main__":

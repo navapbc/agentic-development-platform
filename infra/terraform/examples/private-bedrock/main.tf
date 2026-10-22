@@ -11,8 +11,8 @@ locals {
   vpc_id     = var.create_network ? aws_vpc.this[0].id : var.vpc_id
   subnet_ids = var.create_network ? aws_subnet.private[*].id : var.subnet_ids
 
-  endpoint_allowed_cidrs = var.create_network ? aws_subnet.private[*].cidr_block : var.endpoint_allowed_cidrs
-  route_table_ids        = var.create_network ? [aws_route_table.private[0].id] : var.route_table_ids
+  endpoint_allowed_cidrs = distinct(concat(local.app_cidrs, local.management_cidrs))
+  route_table_ids        = var.create_network ? [aws_route_table.private[0].id, aws_route_table.management[0].id] : var.route_table_ids
 
   jumphost_image_uri = "${local.ecr_repository_url}:${var.jumphost_image_tag}"
 
@@ -27,6 +27,18 @@ resource "terraform_data" "inputs_guard" {
     precondition {
       condition     = var.create_network || (var.vpc_id != "" && length(var.subnet_ids) > 0 && length(var.endpoint_allowed_cidrs) > 0)
       error_message = "When create_network is false, set vpc_id, subnet_ids, and endpoint_allowed_cidrs."
+    }
+    precondition {
+      condition     = var.create_network || local.egress_mode == "none"
+      error_message = "When create_network is false, egress_mode must be none. An existing network supplies its own egress path."
+    }
+    precondition {
+      condition     = !var.create_network || length(var.data_subnet_cidrs) >= 2
+      error_message = "data_subnet_cidrs needs at least two CIDRs, because Aurora requires subnets in two Availability Zones."
+    }
+    precondition {
+      condition     = !local.create_public_tier || length(var.public_subnet_cidrs) > 0
+      error_message = "An egress path needs at least one public_subnet_cidrs entry."
     }
   }
 }
@@ -72,6 +84,7 @@ module "cloudtrail" {
   create_cloudtrail = var.create_cloudtrail
   trail_name        = var.cloudtrail_name
   region            = var.region
+  access_log_bucket = var.access_log_bucket
   name_prefix       = var.name_prefix
   tags              = var.tags
 }
@@ -122,13 +135,14 @@ module "bedrock_jumphost" {
   create_jumphost             = true
   region                      = var.region
   vpc_id                      = local.vpc_id
-  subnet_ids                  = local.subnet_ids
+  subnet_ids                  = local.management_subnet_ids
   endpoints_security_group_id = local.endpoints_security_group_id
   attach_endpoints_egress     = local.attach_endpoints_egress
   image_uri                   = local.jumphost_image_uri
   ecr_repository_arn          = local.ecr_repository_arn
   jumphost_name               = var.jumphost_name
   duration_in_secs            = var.jumphost_session_duration_seconds
+  access_log_bucket           = var.access_log_bucket
   name_prefix                 = var.name_prefix
   tags                        = var.tags
 }

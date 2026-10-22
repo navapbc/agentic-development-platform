@@ -23,6 +23,7 @@ module "bedrock_jumphost" {
   endpoints_security_group_id = module.vpc_endpoints.security_group_id
   image_uri                   = "${module.jumphost_ecr.repository_url}:v1"
   ecr_repository_arn          = module.jumphost_ecr.repository_arn
+  access_log_bucket           = var.access_log_bucket
 
   tags = { project = "agentic-dev-platform" }
 }
@@ -43,6 +44,8 @@ To pin a scanned image for production, set `image_uri` to a `repo@sha256` digest
 - Task security group has no ingress. Egress is 443 to the shared endpoint security group only.
 - Task role holds only the ECS Exec channel actions and `kms:Decrypt` on the exec key. The execution role holds ECR pull scoped to `ecr_repository_arn`, log write, and secret reads scoped to injected ARNs.
 - The ECS Exec data channel is KMS-encrypted and every session is logged to CloudWatch and to a hardened S3 bucket with versioning, encryption, a public-access block, a TLS-only policy, and read access restricted to an allowlist.
+- The CloudWatch log group is encrypted with the same customer-managed key, whose policy admits the CloudWatch Logs service for this log group only. The cluster has Container Insights enabled.
+- The exec-log bucket sends S3 server access logs to the required `access_log_bucket`.
 - Private reachability for the task depends on the `vpc-endpoints` module providing `ssmmessages`, `ecr.api`, `ecr.dkr`, `logs`, `kms`, and the S3 gateway. The `logs` and `kms` endpoints are required because the task ships container logs to CloudWatch and the ECS Exec channel is KMS-encrypted.
 - The `secrets` input injects Secrets Manager values by ARN when a future jumphost needs a credential. A Bedrock port-forward needs none, so the default is empty.
 

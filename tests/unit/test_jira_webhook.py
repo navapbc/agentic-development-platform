@@ -127,9 +127,7 @@ def _context(world: _World) -> IntakeContext:
 
 
 def _handler(world: _World, *, secret: str = "") -> JiraIntakeHandler:
-    return JiraIntakeHandler(
-        secret=secret, jira_resolver=world.resolver, context=_context(world)
-    )
+    return JiraIntakeHandler(secret=secret, jira_resolver=world.resolver, context=_context(world))
 
 
 async def _post(world: _World, *, body: bytes, mode: str, headers=None, secret: str = ""):
@@ -265,9 +263,7 @@ async def test_poll_then_webhook_starts_one_execution():
 
 async def test_cloud_adf_webhook_starts_and_normalizes_description():
     world = _world()
-    code, payload = await _post(
-        world, body=_fixture("jira_cloud_issue_created.json"), mode=WEBHOOK
-    )
+    code, payload = await _post(world, body=_fixture("jira_cloud_issue_created.json"), mode=WEBHOOK)
     assert code == 200
     assert payload["started"] == 1
     assert [(s.issue_key, s.repo) for s in world.starter.starts] == [
@@ -276,4 +272,3 @@ async def test_cloud_adf_webhook_starts_and_normalizes_description():
     snapshot = world.store.by_execution[world.starter.starts[0].execution_id][0]
     expected = "Add a GET /health endpoint that returns 200 with a body of ok."
     assert snapshot.payload["description"] == expected
-

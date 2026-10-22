@@ -346,5 +346,3 @@ async def test_signed_gate_verifies_and_records_scheme(tmp_path):
     assert record.metadata["envelope"]
     payload = verdict_payload(_input(ReviewStage.CODE_REVIEW), _clean_raw())
     assert attestor.verify(result.attestation, payload) is True
-
-

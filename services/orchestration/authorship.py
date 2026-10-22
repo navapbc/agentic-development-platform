@@ -119,9 +119,7 @@ def seed_genesis_key(identity_id: str, public_key: str, *, repo_root: str) -> bo
     return True
 
 
-def create_authoring_identity(
-    name: str, email: str, public_key: str, *, repo_root: str
-) -> str:
+def create_authoring_identity(name: str, email: str, public_key: str, *, repo_root: str) -> str:
     """Mint a rebar identity and seed its genesis key, returning the identity id."""
     import rebar
     from rebar.attest.authorship import resolve_trust_root
@@ -293,9 +291,7 @@ def verify_authorship_at_merge(
     present = {record.kind for record in records}
     missing = [kind for kind in AUTHORSHIP_KINDS if kind not in present]
     if missing:
-        raise AuthorshipVerificationError(
-            f"missing authorship signatures for {', '.join(missing)}"
-        )
+        raise AuthorshipVerificationError(f"missing authorship signatures for {', '.join(missing)}")
     for record in records:
         if not verify_authorship_record(record, repo_root=repo_root):
             raise AuthorshipVerificationError(

@@ -6,11 +6,35 @@ import os
 import sys
 
 from invoke import Collection, Exit, task
+from services import process
 
 COMPOSE = "docker compose"
 
 
+def _env_file_value(name: str, path: str = ".env") -> str:
+    if not os.path.exists(path):
+        return ""
+    with open(path, encoding="utf-8") as handle:
+        for line in handle:
+            stripped = line.strip()
+            if stripped.startswith("#") or "=" not in stripped:
+                continue
+            key, _, value = stripped.partition("=")
+            if key.strip() == name:
+                return value.strip().strip("\"'")
+    return ""
+
+
 def _compose_files() -> str:
+    """Build the -f argument list, deferring to COMPOSE_FILE when the operator sets it.
+
+    Explicit -f flags override COMPOSE_FILE, so emitting them unconditionally would make
+    every task target a different projection of the stack than the one Compose itself
+    resolves. Compose reads COMPOSE_FILE from the environment and from the project .env,
+    so both are checked here.
+    """
+    if os.environ.get("COMPOSE_FILE") or _env_file_value("COMPOSE_FILE"):
+        return ""
     files = ["-f", "compose.yaml"]
     if os.path.exists("compose.override.yaml"):
         files += ["-f", "compose.override.yaml"]
@@ -57,8 +81,10 @@ def config_check(c):
 
 @task
 def local_up(c):
-    """Bring up the local Compose stack."""
-    c.run(f"{COMPOSE} {_compose_files()} --profile repo-intelligence up -d --build")
+    """Build the images, apply migrations, then start the stack and wait for it to be healthy."""
+    c.run(f"{COMPOSE} {_compose_files()} build")
+    db_migrate(c)
+    c.run(f"{COMPOSE} {_compose_files()} up -d --wait --wait-timeout 600")
 
 
 @task
@@ -89,6 +115,12 @@ def logs(c, service=""):
 def db_migrate(c):
     """Apply migrations by running the db-migrate container."""
     c.run(f"{COMPOSE} {_compose_files()} run --rm db-migrate", pty=True)
+
+
+@task
+def schedules_install(c):
+    """Register the Temporal reap and intake schedules by running the schedule-bootstrap task."""
+    c.run(f"{COMPOSE} {_compose_files()} run --rm schedule-bootstrap", pty=True)
 
 
 @task
@@ -136,11 +168,11 @@ def import_rebar_tickets(c, xlsx="", root="", status="", limit=0, reset=False, l
         "new": "Report new tickets.",
         "field-changes": "Report field changes.",
         "status-changes": "Report status changes.",
-        "report-only": "Do not drive intake side effects.",
+        "local": "Run on the host instead of in the activity-worker container.",
     }
 )
-def rebar_poll(c, new=False, field_changes=False, status_changes=False, report_only=False):
-    """Poll the rebar tickets branch for new tickets, field changes, and status changes."""
+def rebar_changes(c, new=False, field_changes=False, status_changes=False, local=False):
+    """Report rebar ticket changes since the last intake pass without starting work."""
     flags = []
     if new:
         flags.append("--new")
@@ -148,9 +180,49 @@ def rebar_poll(c, new=False, field_changes=False, status_changes=False, report_o
         flags.append("--field-changes")
     if status_changes:
         flags.append("--status-changes")
-    if report_only:
-        flags.append("--report-only")
-    c.run(f"python -m scripts.rebar_poll {' '.join(flags)}".strip(), pty=True)
+    _run_scripted(c, f"python -m scripts.rebar_poll {' '.join(flags)}".strip(), local=local)
+
+
+def _rebar_gate_env() -> dict[str, str]:
+    """Name the tier config for rebar's LLM gates.
+
+    A gate reads its config from an attested snapshot materialised with `git checkout-index`,
+    which contains only tracked files. The root `rebar.toml` is untracked by mandate, so rebar's
+    own discovery finds no `[llm]` table there and falls back to its built-in direct-Anthropic
+    class defaults, which cannot authenticate. `compose.yaml` names the same file for the review
+    worker.
+
+    The path is derived from this file rather than the working directory, because `invoke`
+    locates `tasks.py` by walking up from the caller and then runs the command in the caller's
+    directory.
+    """
+    root = os.path.dirname(os.path.abspath(__file__))
+    return {"REBAR_LLM_CONFIG_FILE": os.path.join(root, "config", "platform", "rebar-review.toml")}
+
+
+@task(
+    help={
+        "ticket": "The rebar ticket id to review.",
+        "gate-ref": "Git ref the gate grounds against, for a ticket stacked on an open branch.",
+    }
+)
+def rebar_review_plan(c, ticket, gate_ref=""):
+    """Run rebar's plan-review gate against the platform tier config."""
+    env = _rebar_gate_env()
+    if gate_ref:
+        env["REBAR_GATE_REF"] = gate_ref
+    c.run(f"rebar review-plan {ticket}", pty=True, env=env)
+
+
+@task(
+    help={
+        "base": "Git ref the change branched from.",
+        "head": "Git ref holding the change.",
+    }
+)
+def rebar_review_code(c, base, head):
+    """Run rebar's code-review gate against the platform tier config."""
+    c.run(f"rebar review-code --base {base} --head {head}", pty=True, env=_rebar_gate_env())
 
 
 def _host_source_control_env() -> dict[str, str]:
@@ -194,9 +266,7 @@ def _host_source_control_env() -> dict[str, str]:
         "closed-unmerged": "Complete as closed-unmerged rather than merged.",
     }
 )
-def operator_done(
-    c, workflow_id, repo, branch, completion_signal_id="", closed_unmerged=False
-):
+def operator_done(c, workflow_id, repo, branch, completion_signal_id="", closed_unmerged=False):
     """Complete a local-backend run by verifying artifacts and signaling the workflow."""
     flags = f"--workflow-id {workflow_id} --repo {repo} --branch {branch}"
     if completion_signal_id:
@@ -270,6 +340,12 @@ def ci(c):
 
 
 @task
+def sast(c):
+    """Run the SAST, secret, misconfiguration, and dependency scans against the register."""
+    c.run("python -m scripts.sast_scan", pty=True)
+
+
+@task
 def workflow_status(c):
     """Show recent Temporal workflow executions."""
     c.run("python -m scripts.workflow_status", pty=True)
@@ -337,20 +413,23 @@ def reap(c, apply=False):
 
 @task(
     help={
-        "schedule": "Install the Temporal intake schedule.",
-        "retry": "Clear the intake dedup for a failed issue so the next poll relaunches it.",
+        "source": "Ticket source, jira or rebar. Defaults to TICKET_BACKEND and must match it.",
+        "schedule": "Install the Temporal intake schedule for the source.",
+        "retry": "Clear the intake dedup for a failed ticket so the next pass relaunches it.",
         "repo": "Scope a --retry to one repository.",
         "local": "Run on the host instead of the activity-worker container.",
     }
 )
-def intake(c, schedule=False, retry="", repo="", local=False):
-    """Reconcile ticket intake into draft PR executions (single pass by default)."""
-    flags = ""
+def intake(c, source="", schedule=False, retry="", repo="", local=False):
+    """Reconcile ticket intake from Jira or rebar into draft PR executions (one pass by default)."""
+    flags = [f"--source {source}"] if source else []
     if retry:
-        flags = f"--retry {retry}" + (f" --repo {repo}" if repo else "")
+        flags.append(f"--retry {retry}")
+        if repo:
+            flags.append(f"--repo {repo}")
     elif schedule:
-        flags = "--schedule"
-    _run_scripted(c, f"python -m scripts.intake {flags}".strip(), local=local)
+        flags.append("--schedule")
+    _run_scripted(c, f"python -m scripts.intake {' '.join(flags)}".strip(), local=local)
 
 
 @task(
@@ -432,15 +511,14 @@ def demo_durable_task(
         cmd.append("--auto-restart")
     if show_context:
         cmd.append("--show-context")
-    os.execv(sys.executable, cmd)
+    process.replace_process(cmd, os.environ)
 
 
 @task(help={"target": "How high to count before finishing (default 50)."})
 def demo_durable_counter(c, target=50):
     """Demo: a durable workflow counts through a hand-run worker restart."""
-    os.execv(
-        sys.executable,
-        [sys.executable, "-m", "scripts.demo_durable_counter", "--target", str(target)],
+    process.replace_process(
+        [sys.executable, "-m", "scripts.demo_durable_counter", "--target", str(target)], os.environ
     )
 
 
@@ -531,10 +609,12 @@ _K8S_SECRET_ENV = f"{_K8S_LOCAL}/agentic-platform.secret.env"
 
 
 def _git_output(*args: str) -> str:
-    import subprocess
-
-    return subprocess.run(
-        ["git", *args], capture_output=True, text=True, check=True
+    return process.run(
+        ["git", *args],
+        timeout=process.SHORT_COMMAND_TIMEOUT_SECONDS,
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout.strip()
 
 
@@ -548,7 +628,7 @@ def _k8s_image_tag() -> str:
     dirty = _git_output("status", "--porcelain")
     if not dirty:
         return base
-    digest = hashlib.sha1((_git_output("diff", "HEAD") + "\n" + dirty).encode()).hexdigest()
+    digest = hashlib.sha256((_git_output("diff", "HEAD") + "\n" + dirty).encode()).hexdigest()
     return f"{base}_{digest[:7]}"
 
 
@@ -635,10 +715,13 @@ for _t in (
     local_destroy,
     logs,
     db_migrate,
+    schedules_install,
     db_reset,
     seed,
     import_rebar_tickets,
-    rebar_poll,
+    rebar_changes,
+    rebar_review_plan,
+    rebar_review_code,
     operator_done,
     smoke_test,
     prompts_seed,
@@ -651,6 +734,7 @@ for _t in (
     workflow_status,
     durability_proof,
     fetch_acli,
+    sast,
     cbm_build,
     publish_jumphost_image,
     reap,

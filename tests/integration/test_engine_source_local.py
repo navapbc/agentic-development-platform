@@ -7,8 +7,6 @@ from pathlib import Path
 import pytest
 from services.orchestration.gates.engine_source import GateEngineConfig, resolve_engine_source
 
-pytestmark = pytest.mark.asyncio
-
 _SIBLING = Path(__file__).resolve().parents[2].parent / "ai-common-workflows"
 
 

@@ -1,7 +1,8 @@
 data "aws_caller_identity" "current" {}
 
 locals {
-  enabled = var.create_cloudtrail
+  enabled   = var.create_cloudtrail
+  trail_arn = "arn:aws:cloudtrail:${var.region}:${data.aws_caller_identity.current.account_id}:trail/${var.trail_name}"
 }
 
 resource "aws_s3_bucket" "trail" {
@@ -58,7 +59,7 @@ data "aws_iam_policy_document" "trail" {
     condition {
       test     = "StringEquals"
       variable = "aws:SourceArn"
-      values   = ["arn:aws:cloudtrail:${var.region}:${data.aws_caller_identity.current.account_id}:trail/${var.trail_name}"]
+      values   = [local.trail_arn]
     }
   }
 
@@ -74,7 +75,7 @@ data "aws_iam_policy_document" "trail" {
     condition {
       test     = "StringEquals"
       variable = "aws:SourceArn"
-      values   = ["arn:aws:cloudtrail:${var.region}:${data.aws_caller_identity.current.account_id}:trail/${var.trail_name}"]
+      values   = [local.trail_arn]
     }
   }
 
@@ -102,6 +103,100 @@ resource "aws_s3_bucket_policy" "trail" {
   policy = data.aws_iam_policy_document.trail[0].json
 }
 
+resource "aws_s3_bucket_logging" "trail" {
+  count = local.enabled ? 1 : 0
+
+  bucket        = aws_s3_bucket.trail[0].id
+  target_bucket = var.access_log_bucket
+  target_prefix = "${var.name_prefix}-cloudtrail/"
+}
+
+data "aws_iam_policy_document" "trail_kms" {
+  count = local.enabled ? 1 : 0
+
+  statement {
+    sid       = "EnableAccountKeyAdministration"
+    actions   = ["kms:*"]
+    resources = ["*"]
+    principals {
+      type        = "AWS"
+      identifiers = ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"]
+    }
+  }
+
+  statement {
+    sid       = "AllowCloudTrailToEncryptLogs"
+    actions   = ["kms:GenerateDataKey*"]
+    resources = ["*"]
+    principals {
+      type        = "Service"
+      identifiers = ["cloudtrail.amazonaws.com"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceArn"
+      values   = [local.trail_arn]
+    }
+    condition {
+      test     = "StringLike"
+      variable = "kms:EncryptionContext:aws:cloudtrail:arn"
+      values   = ["arn:aws:cloudtrail:*:${data.aws_caller_identity.current.account_id}:trail/*"]
+    }
+  }
+
+  statement {
+    sid       = "AllowCloudTrailToDescribeKey"
+    actions   = ["kms:DescribeKey"]
+    resources = ["*"]
+    principals {
+      type        = "Service"
+      identifiers = ["cloudtrail.amazonaws.com"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceArn"
+      values   = [local.trail_arn]
+    }
+  }
+
+  statement {
+    sid       = "AllowAccountPrincipalsToDecryptLogs"
+    actions   = ["kms:Decrypt", "kms:ReEncryptFrom"]
+    resources = ["*"]
+    principals {
+      type        = "AWS"
+      identifiers = ["*"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "kms:CallerAccount"
+      values   = [data.aws_caller_identity.current.account_id]
+    }
+    condition {
+      test     = "StringLike"
+      variable = "kms:EncryptionContext:aws:cloudtrail:arn"
+      values   = ["arn:aws:cloudtrail:*:${data.aws_caller_identity.current.account_id}:trail/*"]
+    }
+  }
+}
+
+resource "aws_kms_key" "trail" {
+  count = local.enabled ? 1 : 0
+
+  description         = "Encrypts the ${var.trail_name} CloudTrail log files."
+  policy              = data.aws_iam_policy_document.trail_kms[0].json
+  enable_key_rotation = true
+
+  tags = merge(var.tags, { Name = "${var.name_prefix}-cloudtrail-kms" })
+}
+
+resource "aws_kms_alias" "trail" {
+  count = local.enabled ? 1 : 0
+
+  name          = "alias/${var.trail_name}-cloudtrail"
+  target_key_id = aws_kms_key.trail[0].id
+}
+
 resource "aws_cloudtrail" "this" {
   count = local.enabled ? 1 : 0
 
@@ -110,6 +205,7 @@ resource "aws_cloudtrail" "this" {
   include_global_service_events = true
   is_multi_region_trail         = var.is_multi_region_trail
   enable_log_file_validation    = true
+  kms_key_id                    = aws_kms_key.trail[0].arn
 
   depends_on = [aws_s3_bucket_policy.trail]
 

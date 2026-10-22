@@ -94,10 +94,11 @@ class SandboxRuntime:
 
 
 def _apply_patch(workspace_path: str, patch: str) -> None:
-    import subprocess
+    from services import process
 
-    result = subprocess.run(
+    result = process.run(
         ["git", "apply", "--whitespace=nowarn", "-"],
+        timeout=process.SHORT_COMMAND_TIMEOUT_SECONDS,
         cwd=workspace_path,
         input=patch.encode(),
         capture_output=True,

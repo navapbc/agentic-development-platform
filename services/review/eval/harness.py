@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import subprocess
 import sys
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -13,6 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from services import process
 from services.review.eval.gold_schema import ReviewCase, read_gold_set
 from services.review.types import ReviewInput, ReviewStage, Verdict
 
@@ -222,7 +222,7 @@ def score_stage_aware(
 
 def _git_commit() -> str | None:
     try:
-        result = subprocess.run(
+        result = process.run(
             ["git", "rev-parse", "HEAD"], capture_output=True, text=True, timeout=5
         )
         return result.stdout.strip() or None

@@ -78,9 +78,7 @@ async def test_jira_detection_records_and_signals_end_to_end(monkeypatch):
     monkeypatch.setattr(
         "services.integration.tickets.build_ticket_backend_for_issue", lambda key: adapter
     )
-    monkeypatch.setattr(
-        "services.orchestration.file_impact_store.FileImpactStore", lambda: store
-    )
+    monkeypatch.setattr("services.orchestration.file_impact_store.FileImpactStore", lambda: store)
     monkeypatch.setattr(
         "services.orchestration.intake_runtime.PostgresExecutionSeeder",
         _seeder([_Exec("e2", "PROJ-2", "wf-2")]),
@@ -169,9 +167,7 @@ async def test_jira_without_link_type_records_nothing(monkeypatch):
     monkeypatch.setattr(
         "services.integration.tickets.build_ticket_backend_for_issue", lambda key: adapter
     )
-    monkeypatch.setattr(
-        "services.orchestration.file_impact_store.FileImpactStore", lambda: store
-    )
+    monkeypatch.setattr("services.orchestration.file_impact_store.FileImpactStore", lambda: store)
     monkeypatch.setattr(
         "services.orchestration.intake_runtime.PostgresExecutionSeeder",
         _seeder([_Exec("e2", "PROJ-2", "wf-2")]),

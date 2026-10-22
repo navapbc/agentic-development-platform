@@ -39,6 +39,13 @@ The compute layer runs the platform code and holds the credentials that reach Be
 - R4. Each service runs in private subnets behind a security group scoped to the ports it needs.
 - R5. Each service exports its logs to a CloudWatch log group.
 - R6. The module is toggleable so an account that runs the platform elsewhere provisions nothing.
+- R7. Services run in the application tier of the tiered network, administrative and one-shot tasks such as `db-migrate` and the database role bootstrap run in the management tier, and no service runs in the data tier.
+- R8. The ClickHouse task runs in the application tier on the `clickhouse-storage` access point with transit encryption and IAM authorization, on the ClickHouse version pinned in `compose.yaml`, and the Langfuse web and worker services run the pinned Langfuse version against it, the ElastiCache endpoint with `REDIS_TLS_ENABLED=true`, and the `langfuse-blob-store` bucket.
+- R9. Database clients connect with `sslmode=verify-full` against the RDS CA bundle, and the connection pool sizes across every service fit within the `max_connections` of the configured maximum Aurora capacity.
+- R10. An off-hours schedule through EventBridge Scheduler scales every service that holds a database connection to zero and restores it at wake, so the Aurora cluster auto-pauses. Temporal timers and schedules due during the window fire at wake under their catch-up policy.
+- R11. Inbound GitHub and Jira webhooks reach the webhook receiver through an API Gateway HTTP API with a VPC Link for evaluation, with an Application Load Balancer as the production option, in the public tier.
+- R12. Outbound calls to GitHub, Atlassian, Slack, and SMTP leave through the `egress` module path, and every service honors `HTTPS_PROXY` for networks whose organization supplies egress. The `acli` client is confirmed to honor it.
+- R13. A service restart or credential refresh follows each rotation of the database and cache credentials, so a rotated password does not break new connections.
 
 ### Scope Boundaries
 
@@ -97,3 +104,13 @@ Files. `infra/terraform/examples/private-bedrock/` and its README.
 Approach. Add an optional container-services module block gated by its toggle, passing the cluster, private subnets, registry references, data tier and cache endpoints, secret ARNs, and Temporal endpoint.
 Test scenarios. `terraform validate` passes with the compute layer enabled and disabled. The service outputs surface when enabled.
 Verification. `terraform validate`, composition review.
+
+### U4. Langfuse, ClickHouse, ingress, egress, and off-hours schedule
+
+Goal. Run the Langfuse stack on the data tier, open the webhook ingress, route the outbound calls, and add the off-hours schedule.
+Requirements. R7, R8, R9, R10, R11, R12, R13.
+Files. The compute module, the composition root, and the README.
+Approach. Define the ClickHouse, Langfuse web, and Langfuse worker task definitions against the data-tier outputs. Add the HTTP API and VPC Link for webhooks. Add the EventBridge Scheduler scale-down and scale-up rules. Set `sslmode=verify-full` in every database connection string and size the pools. Trigger a rolling restart from the rotation events.
+Test scenarios. A trace sent to Langfuse lands in ClickHouse. A webhook reaches the receiver. A scheduled scale-down lets the cluster pause, and the scale-up resumes it. A rotated credential is picked up without failed connections.
+Verification. `terraform validate`, `terraform plan`, and an end-to-end check in a sandbox account.
+

@@ -15,7 +15,10 @@ from pathlib import Path
 
 import pytest
 
-_OPA_IMAGE = "openpolicyagent/opa:1.20.1"
+_OPA_IMAGE = (
+    "openpolicyagent/opa:1.20.1"
+    "@sha256:39daf255ae7f25d81103f03a0c18308a50b7b5bb67907bed6166f70e24a970ff"
+)
 _POLICIES = Path(__file__).resolve().parents[2] / "config" / "policies"
 _RUNTIMES = ("docker", "podman", "nerdctl")
 

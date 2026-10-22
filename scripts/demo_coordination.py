@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import subprocess
 import uuid
 from datetime import UTC, datetime
 
@@ -15,6 +14,7 @@ from database.models.schema import (
     task_snapshots,
     work_claims,
 )
+from services import process
 from services.coordination import (
     ADMITTED,
     DISCARDED,
@@ -35,7 +35,7 @@ from services.integration.jira.snapshot import (
     PostgresTaskSnapshotStore,
     capture_task_snapshot,
 )
-from sqlalchemy import Select, select, text
+from sqlalchemy import Select, func, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
@@ -51,8 +51,9 @@ def _clock(value: datetime | None = None) -> str:
 
 
 def _head_sha(remote: str) -> str:
-    proc = subprocess.run(
-        ["git", "ls-remote", remote, "HEAD"],
+    proc = process.run(
+        ["git", "ls-remote", "--", remote, "HEAD"],
+        timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS,
         check=True,
         capture_output=True,
         text=True,
@@ -94,7 +95,8 @@ async def _seed_execution(engine: AsyncEngine, execution_id: str, task_id: str, 
 
 async def _count(engine: AsyncEngine, stmt: Select) -> int:
     async with engine.begin() as conn:
-        return len((await conn.execute(stmt)).all())
+        counted = await conn.execute(select(func.count()).select_from(stmt.subquery()))
+        return counted.scalar_one()
 
 
 def _action(gate_scope: str, execution_id: str, agent_id: str, sequence: int) -> SequencedAction:

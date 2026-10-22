@@ -118,9 +118,7 @@ class _FakeReader:
     def recheck_payload(self, issue_key: str, *, raw_comments: tuple = ()) -> dict:
         from services.integration.jira.normalize import normalize_issue
 
-        return normalize_issue(
-            self._raw, raw_comments=raw_comments, acceptance_field=""
-        ).to_dict()
+        return normalize_issue(self._raw, raw_comments=raw_comments, acceptance_field="").to_dict()
 
 
 def _raw_issue(summary: str = "Add retry to the client") -> dict:

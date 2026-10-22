@@ -14,8 +14,6 @@ from services.orchestration.gates.contract import (
 )
 from services.orchestration.gates.runner import gate_levels, run_gate_stage
 
-pytestmark = pytest.mark.asyncio
-
 
 def _context() -> GateContext:
     return GateContext(

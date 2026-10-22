@@ -54,7 +54,9 @@ async def reconcile_rebar_intake(
     async def handle(event: PollEvent) -> bool:
         if not is_ready(event.ticket_id):
             blocked.append(event.ticket_id)
-            return False
+            # Advancing loses nothing. The poll keys on a content hash of the whole ticket,
+            # so a later transition into an admissible status re-emits it as a status change.
+            return True
         candidate = candidate_from_rebar(
             show_ticket(event.ticket_id), project=project, default_repo=default_repo
         )

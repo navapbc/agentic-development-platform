@@ -7,6 +7,11 @@ import uuid
 
 import pytest
 from openhands.runtime.caps import COMPLETED
+from services.coordination.sequencing import (
+    ADMITTED,
+    InMemorySequenceGate,
+    SequencedAction,
+)
 from services.orchestration.branch_sync import FAST_FORWARD
 from services.orchestration.gates.contract import (
     GateContext,
@@ -166,6 +171,7 @@ def _make_activities(
     checks_ran: bool = True,
     repairs: list[ApplyCIRepairRequest] | None = None,
     repair_actionable: bool = True,
+    repair_cache_read_tokens: int = 0,
     alerts: list[AlertHumanInterventionRequest] | None = None,
     usage: list[UsageMetrics] | None = None,
     review_requests: list[GateContext] | None = None,
@@ -187,6 +193,7 @@ def _make_activities(
     promotions: list[PromotePrRequest] | None = None,
     recheck_requires_pause: bool = False,
     recheck_category: str = "",
+    pr_template: str = "",
     manifest_requests: list[RecordManifestRequest] | None = None,
     triage_enabled: bool = False,
     triage_action_value: str = "patch",
@@ -283,7 +290,13 @@ def _make_activities(
         sha = "c" * 40
         if commit_shas:
             sha = commit_shas[min(len(commits) - 1, len(commit_shas) - 1)]
-        return CommitPushResult(branch="agent/T-1", commit_sha=sha, pushed=True, replayed=False)
+        return CommitPushResult(
+            branch="agent/T-1",
+            commit_sha=sha,
+            pushed=True,
+            replayed=False,
+            pr_template=pr_template,
+        )
 
     @activity.defn(name="create_draft_pr")
     async def fake_create_pr(req: OpenPrRequest) -> OpenPrResult:
@@ -338,9 +351,7 @@ def _make_activities(
     async def fake_run_checks(req: RunChecksRequest) -> RunChecksResult:
         idx = checks_count["n"]
         checks_count["n"] += 1
-        outcome = (
-            ci_results[min(idx, len(ci_results) - 1)] if ci_results is not None else ci_result
-        )
+        outcome = ci_results[min(idx, len(ci_results) - 1)] if ci_results is not None else ci_result
         if ci_triggers is not None:
             ci_triggers.append(req)
         passed = outcome == SUCCESS
@@ -366,7 +377,12 @@ def _make_activities(
         if repairs is not None:
             repairs.append(req)
         return ApplyCIRepairResult(
-            applied=True, changed_files=["feature.py"], cost=0.1, tokens=5, llm_calls=1
+            applied=True,
+            changed_files=["feature.py"],
+            cost=0.1,
+            tokens=5,
+            cache_read_tokens=repair_cache_read_tokens,
+            llm_calls=1,
         )
 
     @activity.defn(name="alert_human_intervention")
@@ -616,8 +632,61 @@ async def test_orchestrator_opens_draft_pr_through_the_full_chain():
     assert len(commits) == 1
     assert commits[0].sequence == 102
     assert len(pr_opens) == 1
-    assert pr_opens[0].sequence == 103
+    assert pr_opens[0].sequence == 114
     assert len(linkbacks) == 1
+
+
+async def test_no_wait_promotion_persists_completed_terminal_state():
+    states: list[str] = []
+
+    @activity.defn(name="persist_execution_state")
+    async def fake_persist(payload: ExecutionState) -> str:
+        states.append(payload.state)
+        return payload.execution_id
+
+    activities = [
+        activity_fn
+        for activity_fn in _make_activities(None, 1, [], [], [])
+        if activity_fn.__temporal_activity_definition.name != "persist_execution_state"
+    ]
+    activities.insert(0, fake_persist)
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with Worker(
+            env.client,
+            task_queue=task_queue,
+            workflows=[
+                DraftPullRequestWorkflow,
+                ImplementationWorkflow,
+                BranchSyncWorkflow,
+                PullRequestWorkflow,
+                PlanReviewWorkflow,
+            ],
+            workflow_runner=SandboxedWorkflowRunner(
+                restrictions=SandboxRestrictions.default.with_passthrough_modules("beartype")
+            ),
+            activities=activities,
+        ):
+            result = await env.client.execute_workflow(
+                DraftPullRequestWorkflow.run,
+                DraftPullRequestInput(
+                    task_id="T-1",
+                    execution_id="exec-1",
+                    repo="agentic-demo-service",
+                    base="main",
+                    base_sha="a" * 40,
+                    task="Implement the change",
+                    issue_key="T-1",
+                    file_impact=["feature.py"],
+                    stored_issue={"summary": "Implement the change"},
+                ),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+
+    assert result.status == PR_PROMOTED
+    assert states[-2:] == ["PR_CREATED", "COMPLETED"]
 
 
 async def test_reclaimed_execution_uses_higher_gate_sequences():
@@ -625,7 +694,7 @@ async def test_reclaimed_execution_uses_higher_gate_sequences():
 
     assert result.status == PR_PROMOTED
     assert commits[0].sequence == 202
-    assert pr_opens[0].sequence == 203
+    assert pr_opens[0].sequence == 214
 
 
 async def test_orchestrator_reuses_existing_pr_without_committing():
@@ -1183,6 +1252,7 @@ async def test_code_authorship_binds_the_post_repair_commit():
     assert set(records) == {"plan", "code"}
     assert records["code"]["event"]["commit"] == "d" * 40
 
+
 async def test_triage_patch_verdict_runs_the_repair():
     ci_triggers: list = []
     repairs: list[ApplyCIRepairRequest] = []
@@ -1405,10 +1475,60 @@ async def test_ci_repair_stops_on_cumulative_budget():
     assert len(repairs) == 3
     repair_usage = [record for record in usage if record.stage == "REPAIRING"]
     assert len(repair_usage) == 3
-    assert all(record.cost_usd == 0.1 for record in repair_usage)
+    assert [round(record.cost_usd, 2) for record in repair_usage] == [0.1, 0.2, 0.3]
     assert len(alerts) == 1
     assert alerts[0].reason == "cost_budget_exceeded"
     assert alerts[0].stage == "repair"
+
+
+async def test_repair_usage_records_carry_the_running_total():
+    """Every REPAIRING write lands on one (execution_id, stage) row that the store overwrites.
+
+    Per-attempt values therefore leave only the final attempt on record, and the stored row
+    disagrees with the budget accounting that parks the run. The running total is written so the
+    surviving row equals what `_budget_breach` measured.
+    """
+    commits: list[CommitPushRequest] = []
+    pr_opens: list[OpenPrRequest] = []
+    linkbacks: list[LinkbackRequest] = []
+    ci_triggers: list = []
+    repairs: list[ApplyCIRepairRequest] = []
+    alerts: list[AlertHumanInterventionRequest] = []
+    usage: list[UsageMetrics] = []
+    activities = _make_activities(
+        None,
+        1,
+        commits,
+        pr_opens,
+        linkbacks,
+        ci_triggers=ci_triggers,
+        ci_result=FAILURE,
+        repairs=repairs,
+        alerts=alerts,
+        usage=usage,
+        repair_cache_read_tokens=3,
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(max_repair_attempts=10, max_cost_usd=0.35),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+            state = await _await_human_park(handle)
+            assert state["stage"] == "repair"
+            await handle.signal("submit_repair_decision", args=[False, "release-manager"])
+            await handle.result()
+
+    repair_usage = [record for record in usage if record.stage == "REPAIRING"]
+    assert len(repair_usage) == 3
+    assert [record.llm_calls for record in repair_usage] == [1, 2, 3]
+    assert [record.total_tokens for record in repair_usage] == [5, 10, 15]
+    assert [record.cache_read_tokens for record in repair_usage] == [3, 6, 9]
+    assert [round(record.cost_usd, 2) for record in repair_usage] == [0.1, 0.2, 0.3]
 
 
 async def test_ci_repair_retry_decision_reruns_and_passes():
@@ -1986,6 +2106,7 @@ async def test_agent_summary_reaches_pr_and_review_subject():
 
     assert result.status == PR_PROMOTED
     assert "done" in pr_opens[0].body
+    assert "Automated plan and code review passed." in pr_opens[0].body
     assert any(
         "Implementation summary:" in request.subject and "done" in request.subject
         for request in review_requests
@@ -2435,6 +2556,61 @@ def test_sequence_stride_exceeds_the_worst_case_intra_execution_offset():
     assert worst_case_offset < _SEQUENCE_STRIDE
 
 
+async def test_every_sequenced_action_clears_the_gate_when_ci_needed_a_repair():
+    """The gate admits only strictly increasing sequences, so the numbers the workflow
+    hands out have to rise in the order the stages actually run. A repair commits before
+    the pull request opens, so its sequence has to stay below the one that opens the PR."""
+    commits: list[CommitPushRequest] = []
+    pr_opens: list[OpenPrRequest] = []
+    approvals: list[RecordApprovalRequest] = []
+    promotions: list[PromotePrRequest] = []
+    repairs: list[ApplyCIRepairRequest] = []
+    activities = _make_activities(
+        None,
+        1,
+        commits,
+        pr_opens,
+        [],
+        ci_triggers=[],
+        ci_results=[FAILURE, SUCCESS],
+        repairs=repairs,
+        approvals=approvals,
+        promotions=promotions,
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            result = await env.client.execute_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+
+    assert result.status == PR_PROMOTED
+    assert len(repairs) == 1
+    assert len(commits) == 2
+    assert len(pr_opens) == 1
+
+    issued = [
+        ("github.commit", commits[0].sequence),
+        ("github.commit", commits[1].sequence),
+        ("github.open_pr", pr_opens[0].sequence),
+        *[("github.promotion_approval", a.sequence) for a in approvals],
+        *[("github.mark_ready", p.sequence) for p in promotions],
+    ]
+
+    gate = InMemorySequenceGate()
+    discarded = []
+    for operation, sequence in issued:
+        decision = await gate.admit(SequencedAction("T-1", "exec-1", sequence, operation=operation))
+        if decision.outcome != ADMITTED:
+            discarded.append((operation, sequence, decision.current_sequence))
+
+    assert discarded == []
+
+
 async def test_authorship_verification_failure_blocks_promotion():
     from temporalio.client import WorkflowFailureError
 
@@ -2478,3 +2654,194 @@ async def test_authorship_verification_failure_blocks_promotion():
                 )
 
     assert len(promotions) == 0
+
+
+def _input(**kwargs) -> DraftPullRequestInput:
+    base = {
+        "task_id": "6948",
+        "execution_id": "intake-1",
+        "repo": "archive-massgov-pfml",
+        "base": "main",
+        "base_sha": "abc123",
+        "task": "Remove the size prop",
+    }
+    return DraftPullRequestInput(**{**base, **kwargs})
+
+
+def test_acceptance_criteria_prefer_the_dedicated_stored_issue_field():
+    from services.orchestration.temporal_workflows.draft_pull_request import _acceptance_criteria
+
+    params = _input(
+        stored_issue={"acceptance_criteria": "The size prop is removed"},
+        task_description="A long description that should not be used",
+    )
+
+    assert _acceptance_criteria(params) == "The size prop is removed"
+
+
+def test_acceptance_criteria_fall_back_to_the_description_when_the_field_is_empty():
+    """The rebar backend has no criteria field and states them inside the description."""
+    from services.orchestration.temporal_workflows.draft_pull_request import _acceptance_criteria
+
+    description = "## Acceptance Criteria\n* The size prop is removed\n* The snapshot is updated"
+    params = _input(stored_issue={"acceptance_criteria": ""}, task_description=description)
+
+    assert _acceptance_criteria(params) == description
+
+
+def test_acceptance_criteria_are_blank_when_the_ticket_states_none():
+    from services.orchestration.temporal_workflows.draft_pull_request import _acceptance_criteria
+
+    assert _acceptance_criteria(_input()) == ""
+
+
+async def test_repository_pull_request_template_shapes_the_pr_body():
+    commits: list[CommitPushRequest] = []
+    pr_opens: list[OpenPrRequest] = []
+    linkbacks: list[LinkbackRequest] = []
+    template = (
+        "## Ticket\n\nhttps://tracker.example/browse/{TICKET ID}\n\n"
+        "## Changes\n\n(What was added, updated, or removed in this PR.)\n\n"
+        "## Testing\n\n(Provide evidence that the code works as expected.)\n\n"
+        "- [ ] Deploy a preview\n"
+    )
+    activities = _make_activities(
+        None,
+        1,
+        commits,
+        pr_opens,
+        linkbacks,
+        ci_result=SUCCESS,
+        pr_template=template,
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            result = await env.client.execute_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+
+    assert result.status == PR_PROMOTED
+    body = pr_opens[0].body
+    assert body.count("## ") == 3
+    assert "(What was added, updated, or removed in this PR.)" not in body
+    assert "- [ ] Deploy a preview" in body
+    assert "https://tracker.example/browse/T-1" in body
+
+
+@pytest.mark.asyncio
+async def test_a_declared_tracker_key_names_the_pull_request():
+    from dataclasses import replace
+
+    commits: list[CommitPushRequest] = []
+    pr_opens: list[OpenPrRequest] = []
+    linkbacks: list[LinkbackRequest] = []
+    activities = _make_activities(
+        None,
+        1,
+        commits,
+        pr_opens,
+        linkbacks,
+        ci_result=SUCCESS,
+        pr_template="## Ticket\n\nhttps://tracker.example/browse/{TICKET ID}\n",
+    )
+    params = replace(
+        _ci_input(),
+        stored_issue={"summary": "Implement the change", "labels": ["adp", "jira-pfmlpb-33739"]},
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            result = await env.client.execute_workflow(
+                DraftPullRequestWorkflow.run,
+                params,
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+
+    assert result.status == PR_PROMOTED
+    assert pr_opens[0].title == "PFMLPB-33739: Implement the change"
+    assert "https://tracker.example/browse/PFMLPB-33739" in pr_opens[0].body
+    assert linkbacks[0].issue_key == "T-1"
+
+
+async def test_every_commit_carries_the_declared_file_impact():
+    """Staging honours the declaration only if both commit stages actually pass it through."""
+    commits: list[CommitPushRequest] = []
+    pr_opens: list[OpenPrRequest] = []
+    linkbacks: list[LinkbackRequest] = []
+    repairs: list[ApplyCIRepairRequest] = []
+    activities = _make_activities(
+        None,
+        1,
+        commits,
+        pr_opens,
+        linkbacks,
+        ci_triggers=[],
+        ci_results=[FAILURE, SUCCESS],
+        repairs=repairs,
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            await env.client.execute_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+
+    assert len(commits) == 2
+    assert [c.file_impact for c in commits] == [["feature.py"], ["feature.py"]]
+
+
+async def test_checks_changed_paths_carry_the_ticket_file_impact():
+    ci_triggers: list = []
+    activities = _make_activities(None, 1, [], [], [], ci_triggers=ci_triggers)
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            await env.client.execute_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+
+    assert ci_triggers, "the checks activity must run"
+    assert tuple(ci_triggers[0].changed_paths) == ("feature.py",)
+
+
+async def test_repair_changed_paths_carry_the_ticket_file_impact():
+    ci_triggers: list = []
+    repairs: list[ApplyCIRepairRequest] = []
+    activities = _make_activities(
+        None,
+        1,
+        [],
+        [],
+        [],
+        ci_triggers=ci_triggers,
+        ci_results=[FAILURE, SUCCESS],
+        repairs=repairs,
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            await env.client.execute_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+
+    assert repairs, "the repair activity must run"
+    assert tuple(repairs[0].changed_paths) == ("feature.py",)

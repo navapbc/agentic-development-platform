@@ -8,10 +8,10 @@ resources:
   - ../inbound-webhook.yaml
 
 images:
-  - name: REGISTRY/agentic-dev-platform/mcp-gateway
+  - name: 123456789012.dkr.ecr.us-east-1.amazonaws.com/agentic-dev-platform/mcp-gateway
     newName: agentic-dev-platform-local
     newTag: local
-  - name: REGISTRY/agentic-dev-platform/inbound-webhook
+  - name: 123456789012.dkr.ecr.us-east-1.amazonaws.com/agentic-dev-platform/inbound-webhook
     newName: agentic-dev-platform-local
     newTag: local
 

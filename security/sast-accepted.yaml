@@ -1,0 +1,105 @@
+- tool: bandit
+  rule: B108
+  path: openhands/runtime/provisioner.py
+  match: '{"name": "agent-tmp", "mountPath": "/tmp"},'
+  justification: The string is the mount path of an emptyDir volume inside the sandbox pod, which gives the agent a private writable /tmp under a read-only root filesystem. No host temporary file is created.
+- tool: bandit
+  rule: B106
+  path: services/integration/github/credentials.py
+  match: default=_Identity(host="default", owner=owner, token_ref="__token__"),
+  justification: __token__ is the key under which the in-memory EnvSecretResolver stores the token passed to build_single_identity_resolver. It is a lookup name, not a credential.
+- tool: bandit
+  rule: B106
+  path: services/integration/jira/credentials.py
+  match: token_ref="__token__",
+  justification: __token__ is the key under which the in-memory EnvSecretResolver stores the token passed to build_single_project_resolver. It is a lookup name, not a credential.
+- tool: bandit
+  rule: B105
+  path: services/orchestration/gates/contract.py
+  match: PASS = "pass"
+  justification: PASS is the gate outcome constant that every gate and the gate runner compare against. Bandit matches the word pass in the value, which is an outcome name, not a credential.
+- tool: bandit
+  rule: B105
+  path: services/orchestration/temporal_workflows/implementation.py
+  match: TOKEN_BUDGET_EXCEEDED = "token_budget_exceeded"
+  justification: TOKEN_BUDGET_EXCEEDED is the stop reason recorded when a run exhausts its model token budget. It names a usage limit, not a credential.
+- tool: bandit
+  rule: B105
+  path: services/orchestration/usage_rollup.py
+  match: TOKEN_BUDGET_EXCEEDED = "token_budget_exceeded"
+  justification: TOKEN_BUDGET_EXCEEDED is the stop reason recorded when a run exhausts its model token budget. It names a usage limit, not a credential.
+- tool: bandit
+  rule: B404
+  path: services/process.py
+  match: import subprocess
+  justification: services/process.py is the one module that imports subprocess. Every other module starts processes through it, so this import is the single reviewed process-execution boundary.
+- tool: bandit
+  rule: B603
+  path: services/process.py
+  match: return subprocess.Popen(argv, executable=executable, shell=False, **checked)
+  justification: Bandit reports every subprocess call that does not use a shell. The call takes an argument list, refuses shell and executable overrides, resolves the executable to an absolute path, and takes an explicit timeout. tests/unit/test_process.py covers each of those properties.
+- tool: bandit
+  rule: B603
+  path: services/process.py
+  match: return subprocess.run(argv, executable=executable, shell=False, timeout=timeout, **checked)
+  justification: Bandit reports every subprocess call that does not use a shell. The call takes an argument list, refuses shell and executable overrides, resolves the executable to an absolute path, and takes an explicit timeout. tests/unit/test_process.py covers each of those properties.
+- tool: bandit
+  rule: B606
+  path: services/process.py
+  match: os.execve(resolve_executable(argv[0], path=env.get("PATH")), argv, dict(env))
+  justification: replace_process hands an interactive tunnel or demo the current process through os.execve. It takes an argument list, resolves the executable to an absolute path, and passes an explicit environment. No shell is involved.
+- tool: bandit
+  rule: B105
+  path: services/review/types.py
+  match: PASS = "pass"
+  justification: Verdict.PASS is the review verdict value. The string pass is persisted in review records and signed review verdicts, so it cannot change.
+- tool: semgrep
+  rule: package_managers.uv.uv-missing-dependency-cooldown.uv-missing-dependency-cooldown
+  path: pyproject.toml
+  match: '[tool.uv]'
+  justification: A uv exclude-newer cooldown blocks a security release until it ages past the window, and a per-package exemption is a fixed cutoff that must be removed by a second change, so a cooldown in the resolver cannot coexist with one-step security fixes. The scan covers the same risk instead. pip-audit queries OSV, which carries the OpenSSF malicious-package records and fails the scan on any locked release later flagged malicious, and inv sast reports every locked release younger than seven days with its PyPI provenance for the reviewer.
+- tool: trivy
+  rule: DS-0026
+  path: docker/Dockerfile
+  match: ''
+  justification: The platform image runs many roles, including the Temporal workers, the coordination, LangGraph, webhook, and MCP services, the scheduler, and one-shot migrations. Most roles serve no health endpoint, so one image-level HEALTHCHECK cannot be correct for all of them. Health is declared per service where the orchestrator runs it, as the probes in deploy/kubernetes show.
+- tool: trivy
+  rule: DS-0026
+  path: docker/cbm-build.Dockerfile
+  match: ''
+  justification: The image is a build stage that exports one binary to a scratch layer for docker build --output. It never runs as a container, so it has no health to check.
+- tool: trivy
+  rule: DS-0026
+  path: docker/jumphost-base/Dockerfile
+  match: ''
+  justification: The jumphost runs as an ECS Fargate task, and ECS ignores a Dockerfile HEALTHCHECK. The task exits on its own TTL, and ECS reports its state from the task lifecycle.
+- tool: trivy
+  rule: DS-0026
+  path: docker/repo-intelligence.Dockerfile
+  match: ''
+  justification: The repository-intelligence image runs both the HTTP server and the indexing worker, which serves no endpoint, so one image-level HEALTHCHECK cannot be correct for both roles. Health is declared per service where the orchestrator runs it.
+- tool: trivy
+  rule: KSV-0125
+  path: openhands/images/agent-server-pod.yaml
+  match: '- name: agent-server'
+  justification: The agent-server image is the upstream OpenHands release that matches openhands-sdk 1.56.0, pinned by digest. Trivy's default trusted-registry list has no ghcr.io entry. A deployment that mirrors the image into its own registry sets OPENHANDS_AGENT_SERVER_IMAGE to the mirrored digest.
+- tool: gitleaks-history
+  rule: generic-api-key
+  path: tests/unit/test_litellm_redaction.py
+  match: 0364f6205b3e434b7823d016ee9e5ab7a474748c:tests/unit/test_litellm_redaction.py:generic-api-key:42
+  justification: A synthetic token-shaped fixture in a redaction test, committed before the fixtures were built at runtime. Commits are immutable, so the finding stays in history. The value was never a credential for any service.
+- tool: gitleaks-history
+  rule: github-pat
+  path: tests/unit/test_litellm_redaction.py
+  match: 0364f6205b3e434b7823d016ee9e5ab7a474748c:tests/unit/test_litellm_redaction.py:github-pat:19
+  justification: A synthetic token-shaped fixture in a redaction test, committed before the fixtures were built at runtime. Commits are immutable, so the finding stays in history. The value was never a credential for any service.
+- tool: gitleaks-history
+  rule: github-pat
+  path: tests/unit/test_litellm_redaction.py
+  match: 0364f6205b3e434b7823d016ee9e5ab7a474748c:tests/unit/test_litellm_redaction.py:github-pat:24
+  justification: A synthetic token-shaped fixture in a redaction test, committed before the fixtures were built at runtime. Commits are immutable, so the finding stays in history. The value was never a credential for any service.
+- tool: gitleaks-history
+  rule: generic-api-key
+  path: tests/unit/test_metrics_and_logs.py
+  match: 3fcf369cd920565dc165584cd0decbaa4966008e:tests/unit/test_metrics_and_logs.py:generic-api-key:117
+  justification: A synthetic token-shaped fixture in a redaction test, committed before the fixtures were built at runtime. Commits are immutable, so the finding stays in history. The value was never a credential for any service.

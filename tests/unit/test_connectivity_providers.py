@@ -10,10 +10,11 @@ from scripts.connectivity_providers import (
     SshBastionConnectivity,
     get_provider,
 )
+from tests.support import hermetic_settings
 
 
 def test_factory_returns_jumphost_by_default():
-    assert isinstance(get_provider(Settings()), JumphostConnectivity)
+    assert isinstance(get_provider(hermetic_settings()), JumphostConnectivity)
 
 
 def test_factory_dispatches_each_known_provider():

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import structlog
 from temporalio import activity
@@ -153,6 +153,7 @@ class CommitPushRequest:
     commit: str
     message: str
     sequence: int = 2
+    file_impact: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -161,6 +162,8 @@ class CommitPushResult:
     commit_sha: str
     pushed: bool
     replayed: bool
+    pr_template: str = ""
+    excluded_paths: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -278,6 +281,7 @@ async def find_open_pr(req: FindOpenPrRequest) -> FindOpenPrResult:
 @activity.defn
 async def commit_and_push(req: CommitPushRequest) -> CommitPushResult:
     from services.coordination.orphans import PostgresOrphanRegistry
+    from services.orchestration.change_narrative import read_pull_request_template
     from services.orchestration.materialization import WorkspaceMaterializer
 
     materializer = WorkspaceMaterializer.from_settings(PostgresOrphanRegistry())
@@ -288,7 +292,10 @@ async def commit_and_push(req: CommitPushRequest) -> CommitPushResult:
         base=req.base,
         commit_sha=req.commit,
     )
-    commit_request = await materializer.build_commit_request(workspace, message=req.message)
+    staged = await materializer.stage(workspace, allowed_paths=req.file_impact)
+    commit_request = await materializer.build_commit_request(
+        workspace, message=req.message, staged=staged
+    )
     mediator = _build_mediator()
     result = await mediator.commit_and_push(commit_request, sequence=req.sequence)
     return CommitPushResult(
@@ -296,6 +303,8 @@ async def commit_and_push(req: CommitPushRequest) -> CommitPushResult:
         commit_sha=result.commit_sha,
         pushed=result.pushed,
         replayed=result.replayed,
+        pr_template=read_pull_request_template(workspace.path),
+        excluded_paths=list(staged.excluded),
     )
 
 

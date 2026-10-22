@@ -12,9 +12,10 @@ from __future__ import annotations
 
 import json
 import shutil
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+
+from services import process
 
 OUTCOME_MET = "met"
 OUTCOME_UNMET = "unmet"
@@ -113,8 +114,12 @@ def materialize_case(case: AcceptanceCase, workdir: Path) -> tuple[str, str]:
     """
 
     def git(*args: str) -> str:
-        result = subprocess.run(
-            ["git", "-C", str(workdir), *args], capture_output=True, text=True, check=True
+        result = process.run(
+            ["git", "-C", str(workdir), *args],
+            timeout=process.SHORT_COMMAND_TIMEOUT_SECONDS,
+            capture_output=True,
+            text=True,
+            check=True,
         )
         return result.stdout.strip()
 
@@ -172,8 +177,12 @@ def snapshot_case(
     repo = Path(repo_root)
 
     def git(*args: str) -> str:
-        result = subprocess.run(
-            ["git", "-C", str(repo), *args], capture_output=True, text=True, check=True
+        result = process.run(
+            ["git", "-C", str(repo), *args],
+            timeout=process.SHORT_COMMAND_TIMEOUT_SECONDS,
+            capture_output=True,
+            text=True,
+            check=True,
         )
         return result.stdout
 
@@ -188,8 +197,11 @@ def snapshot_case(
     head_dir = case_dir / _HEAD_DIR
 
     def _write(ref: str, name: str, dest: Path) -> None:
-        result = subprocess.run(
-            ["git", "-C", str(repo), "show", f"{ref}:{name}"], capture_output=True, text=True
+        result = process.run(
+            ["git", "-C", str(repo), "show", f"{ref}:{name}"],
+            timeout=process.SHORT_COMMAND_TIMEOUT_SECONDS,
+            capture_output=True,
+            text=True,
         )
         if result.returncode != 0:
             return

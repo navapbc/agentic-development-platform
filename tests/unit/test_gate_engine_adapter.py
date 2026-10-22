@@ -22,8 +22,6 @@ from services.orchestration.gates.gate_engine import (
     triage_action,
 )
 
-pytestmark = pytest.mark.asyncio
-
 
 def test_map_review_findings_maps_severity_location_and_rule():
     review = {
@@ -177,9 +175,7 @@ async def test_scan_runs_the_entrypoint_and_maps_findings(tmp_path):
             json.dumps(
                 {
                     "review_action": "REQUEST_CHANGES",
-                    "comments": [
-                        {"path": "a.py", "line": 1, "severity": "HIGH", "title": "leak"}
-                    ],
+                    "comments": [{"path": "a.py", "line": 1, "severity": "HIGH", "title": "leak"}],
                 }
             )
         )
@@ -248,7 +244,6 @@ async def test_scan_fails_closed_without_a_gateway_base_url(tmp_path):
     with pytest.raises(GateEngineError):
         await scanner.scan(ScanTarget(repo="r", ref="origin/main", repo_root=str(repo_root)))
     assert calls == []
-
 
 
 async def test_scan_fails_closed_when_the_engine_errors(tmp_path):
@@ -528,8 +523,13 @@ async def test_scan_uses_the_pod_runner_when_provided(tmp_path):
             return {
                 "review_action": "COMMENT",
                 "comments": [
-                    {"path": "a.py", "line": 2, "severity": "HIGH",
-                     "title": "sqli", "description": "bad"}
+                    {
+                        "path": "a.py",
+                        "line": 2,
+                        "severity": "HIGH",
+                        "title": "sqli",
+                        "description": "bad",
+                    }
                 ],
             }
 
@@ -537,7 +537,9 @@ async def test_scan_uses_the_pod_runner_when_provided(tmp_path):
     scanner = AiReviewScanner(
         name="ai-security-review",
         config=GateEngineConfig(
-            enabled=True, mode="local", local_path=str(source_root),
+            enabled=True,
+            mode="local",
+            local_path=str(source_root),
             review_model="security-review-model",
         ),
         profile="cms-ars",
@@ -549,8 +551,11 @@ async def test_scan_uses_the_pod_runner_when_provided(tmp_path):
 
     findings = await scanner.scan(
         ScanTarget(
-            repo="agentic-demo-service", ref="head", repo_root="/checkout",
-            base_ref="base", execution_id="exec-1",
+            repo="agentic-demo-service",
+            ref="head",
+            repo_root="/checkout",
+            base_ref="base",
+            execution_id="exec-1",
         )
     )
 
@@ -585,7 +590,9 @@ async def test_scan_threads_tls_verify_into_the_pod_spec(tmp_path):
     scanner = AiReviewScanner(
         name="ai-security-review",
         config=GateEngineConfig(
-            enabled=True, mode="local", local_path=str(source_root),
+            enabled=True,
+            mode="local",
+            local_path=str(source_root),
             review_model="security-review-model",
         ),
         profile="cms-ars",
@@ -598,8 +605,11 @@ async def test_scan_threads_tls_verify_into_the_pod_spec(tmp_path):
 
     await scanner.scan(
         ScanTarget(
-            repo="agentic-demo-service", ref="head", repo_root="/checkout",
-            base_ref="base", execution_id="exec-1",
+            repo="agentic-demo-service",
+            ref="head",
+            repo_root="/checkout",
+            base_ref="base",
+            execution_id="exec-1",
         )
     )
 
@@ -623,7 +633,9 @@ async def test_image_acts_as_runtime_override_with_local_source(tmp_path):
     scanner = AiReviewScanner(
         name="ai-security-review",
         config=GateEngineConfig(
-            enabled=True, mode="local", local_path=str(source_root),
+            enabled=True,
+            mode="local",
+            local_path=str(source_root),
             image="host.docker.internal:5001/gate-tool:519dd2f",
             review_model="security-review-model",
         ),
@@ -636,8 +648,11 @@ async def test_image_acts_as_runtime_override_with_local_source(tmp_path):
 
     await scanner.scan(
         ScanTarget(
-            repo="agentic-demo-service", ref="head", repo_root="/checkout",
-            base_ref="base", execution_id="exec-1",
+            repo="agentic-demo-service",
+            ref="head",
+            repo_root="/checkout",
+            base_ref="base",
+            execution_id="exec-1",
         )
     )
 
@@ -662,7 +677,9 @@ async def test_scan_raises_scanner_unavailable_when_pod_engine_fails(tmp_path):
     scanner = AiReviewScanner(
         name="ai-security-review",
         config=GateEngineConfig(
-            enabled=True, mode="local", local_path=str(source_root),
+            enabled=True,
+            mode="local",
+            local_path=str(source_root),
             review_model="security-review-model",
         ),
         profile="cms-ars",
@@ -675,8 +692,11 @@ async def test_scan_raises_scanner_unavailable_when_pod_engine_fails(tmp_path):
     with pytest.raises(ScannerUnavailableError):
         await scanner.scan(
             ScanTarget(
-                repo="agentic-demo-service", ref="head", repo_root="/checkout",
-                base_ref="base", execution_id="exec-1",
+                repo="agentic-demo-service",
+                ref="head",
+                repo_root="/checkout",
+                base_ref="base",
+                execution_id="exec-1",
             )
         )
 
@@ -686,13 +706,20 @@ async def test_engine_env_injects_trace_headers_only_with_execution():
 
     cfg = GateEngineConfig(enabled=True, mode="local", review_model="review-model")
     with_exec = _engine_env(
-        config=cfg, profile="cms-ars", gateway_base_url="http://gw", gateway_api_key="k",
-        execution_id="exec-9", generation_name="ai-security-review",
+        config=cfg,
+        profile="cms-ars",
+        gateway_base_url="http://gw",
+        gateway_api_key="k",
+        execution_id="exec-9",
+        generation_name="ai-security-review",
     )
     assert with_exec["ANTHROPIC_CUSTOM_HEADERS"] == (
         "langfuse_session_id: exec-9\nlangfuse_generation_name: ai-security-review"
     )
     without = _engine_env(
-        config=cfg, profile="cms-ars", gateway_base_url="http://gw", gateway_api_key="k",
+        config=cfg,
+        profile="cms-ars",
+        gateway_base_url="http://gw",
+        gateway_api_key="k",
     )
     assert "ANTHROPIC_CUSTOM_HEADERS" not in without

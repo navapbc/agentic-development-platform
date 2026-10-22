@@ -11,8 +11,8 @@ This guide covers how to set up a development environment, the standards your ch
 ## Development environment
 
 1. Follow [First-time setup](README.md#first-time-setup) in the README to create the virtual environment and the stack.
-2. Install the development extras with `pip install -e ".[dev,reasoning]"`. Add `sandbox` when you work on the OpenHands agent.
-3. The review path depends on `rebar` (distribution `nava-rebar`) as a library. Install it from PyPI with the `review` extra, `pip install -e ".[review]"`. The container build installs the same extra.
+2. Install the locked dependencies with `uv sync --locked --all-extras`. The review path depends on `rebar` (distribution `nava-rebar`) from PyPI through the `review` extra, which `--all-extras` includes. The platform image installs the `worker` extra and the repository-intelligence image the `dev` extra, both from the same lock.
+3. Change a dependency by editing `pyproject.toml` and running `uv lock`, or bump one package within its range with `uv lock --upgrade-package <name>`. Commit `uv.lock` with the change. CI, `inv sast`, and both image builds install with `--locked` and fail when the lock is stale. A security fix is one change, `uv lock --upgrade-package <name>` and the updated lock. The lock records when each release was uploaded, and `inv sast` lists every locked release younger than seven days with its PyPI provenance, so review that list in the scan output before merging a dependency change.
 
 ## Branches and commits
 

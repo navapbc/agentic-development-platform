@@ -8,6 +8,7 @@ from typing import Any
 from database.models.schema import audit_events, executions, usage_metrics
 from observability import record_stage_cost, record_stage_latency
 from scripts.config import get_settings
+from sqlalchemy import func
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from temporalio import activity
@@ -34,8 +35,14 @@ class ExecutionState:
     resolved_models: dict[str, Any] = field(default_factory=dict)
 
 
-@activity.defn
-async def persist_execution_state(payload: ExecutionState) -> str:
+def execution_state_upsert(payload: ExecutionState) -> Any:
+    """Build the execution upsert, refreshing updated_at on conflict.
+
+    The column's onupdate default fires only for UPDATE statements, not for the
+    set_ mapping of ON CONFLICT DO UPDATE, so updated_at has to be named here or
+    it stays frozen at insert time and the orphan reconciler reads every long run
+    as stale.
+    """
     stmt = insert(executions).values(
         execution_id=payload.execution_id,
         task_id=payload.task_id,
@@ -46,14 +53,20 @@ async def persist_execution_state(payload: ExecutionState) -> str:
         policy_bundle_version=payload.policy_bundle_version,
         resolved_models=payload.resolved_models or None,
     )
-    stmt = stmt.on_conflict_do_update(
+    return stmt.on_conflict_do_update(
         index_elements=[executions.c.execution_id],
         set_={
             "state": payload.state,
             "workflow_id": payload.workflow_id,
             "resolved_models": payload.resolved_models or None,
+            "updated_at": func.now(),
         },
     )
+
+
+@activity.defn
+async def persist_execution_state(payload: ExecutionState) -> str:
+    stmt = execution_state_upsert(payload)
     engine = _get_engine()
     async with engine.begin() as conn:
         await conn.execute(stmt)

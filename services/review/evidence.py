@@ -110,9 +110,7 @@ class ObjectStoreWriter:
             import boto3
 
             s = self._settings
-            kwargs: dict[str, Any] = {
-                "region_name": s.evidence_object_store_region or s.aws_region
-            }
+            kwargs: dict[str, Any] = {"region_name": s.evidence_object_store_region or s.aws_region}
             if s.evidence_object_store_endpoint_url:
                 kwargs["endpoint_url"] = s.evidence_object_store_endpoint_url
             if s.evidence_object_store_access_key and s.evidence_object_store_secret_key:
@@ -231,9 +229,7 @@ async def persist_audit_object(
     retention_days = resolved.evidence_retention_classification_days.get(
         CLASSIFICATION_AUDIT, resolved.evidence_retention_days
     )
-    return await asyncio.to_thread(
-        store.put_locked, key, body, retention_days=retention_days
-    )
+    return await asyncio.to_thread(store.put_locked, key, body, retention_days=retention_days)
 
 
 def build_evidence_sink(settings: Settings | None = None) -> EvidenceSink:
@@ -266,4 +262,3 @@ def evidence_object_store_preflight(settings: Settings | None = None) -> None:
         ) from exc
 
     ObjectStoreWriter(resolved).check_reachable_and_locked()
-

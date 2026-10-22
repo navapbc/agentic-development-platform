@@ -14,12 +14,15 @@ spec:
       type: RuntimeDefault
   containers:
     - name: agent-server
-      image: ghcr.io/openhands/agent-server:latest-python
+      image: ghcr.io/openhands/agent-server:1.56.0-python@sha256:718bf6d719f34184810ecaebe607f1aafaf526e109654815e61ddd6238728023
+      workingDir: /home/sandbox
       ports:
         - containerPort: 8000
       env:
         - name: LLM_BASE_URL
           value: http://litellm:4000
+        - name: HOME
+          value: /home/sandbox
       resources:
         requests:
           cpu: 500m
@@ -29,6 +32,7 @@ spec:
           memory: 4Gi
       securityContext:
         allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
         runAsNonRoot: true
         runAsUser: 10001
         runAsGroup: 10001
@@ -47,3 +51,13 @@ spec:
         periodSeconds: 2
         timeoutSeconds: 3
         failureThreshold: 60
+      volumeMounts:
+        - name: agent-tmp
+          mountPath: /tmp
+        - name: agent-home
+          mountPath: /home/sandbox
+  volumes:
+    - name: agent-tmp
+      emptyDir: {}
+    - name: agent-home
+      emptyDir: {}

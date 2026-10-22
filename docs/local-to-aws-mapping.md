@@ -14,7 +14,7 @@ Workloads sign Bedrock inference with a role that carries the `bedrock:InvokeMod
 
 | Local component | AWS target | Provisioning |
 |---|---|---|
-| `postgres` | Amazon RDS for PostgreSQL | Planned, see the [roadmap](../ROADMAP.md) |
+| `postgres` | Aurora PostgreSQL 16 with Serverless v2 capacity in the data tier | [aurora-postgresql](../infra/terraform/aurora-postgresql). Per-service roles planned, see the [roadmap](../ROADMAP.md) |
 | `temporal`, `temporal-ui` | Temporal control plane on the container platform, or Temporal Cloud | Planned, see the [roadmap](../ROADMAP.md) |
 | `db-migrate` | One-shot migration task on the container platform | Planned, see the [roadmap](../ROADMAP.md) |
 | `workflow-worker`, `activity-worker`, `review-worker` | Worker services on the container platform | Images via [ecr](../infra/terraform/ecr). Services planned, see the [roadmap](../ROADMAP.md) |
@@ -23,9 +23,9 @@ Workloads sign Bedrock inference with a role that carries the `bedrock:InvokeMod
 | `langgraph-service` | Service on the container platform | Planned, see the [roadmap](../ROADMAP.md) |
 | `litellm` | Model-proxy service on the container platform, reaching Bedrock through the private endpoint | Bedrock access via [bedrock-iam](../infra/terraform/bedrock-iam) and [vpc-endpoints](../infra/terraform/vpc-endpoints). Service planned, see the [roadmap](../ROADMAP.md) |
 | `opa` | Policy service on the container platform | Planned, see the [roadmap](../ROADMAP.md) |
-| `minio` | Amazon S3 for the evidence and audit object store and the rebar ticket store | Evidence bucket via [evidence-store](../infra/terraform/evidence-store) and trail bucket via [cloudtrail](../infra/terraform/cloudtrail). Rebar ticket bucket planned, see the [roadmap](../ROADMAP.md) |
-| `redis` | Amazon ElastiCache for Redis | Planned, see the [roadmap](../ROADMAP.md) |
-| `clickhouse` | Analytics store backing Langfuse | Planned, see the [roadmap](../ROADMAP.md) |
+| `minio` | Amazon S3 for the evidence and audit object store, the Langfuse uploads, and the rebar ticket store | Evidence bucket via [evidence-store](../infra/terraform/evidence-store), Langfuse bucket via [langfuse-blob-store](../infra/terraform/langfuse-blob-store), and trail bucket via [cloudtrail](../infra/terraform/cloudtrail). Rebar ticket bucket planned, see the [roadmap](../ROADMAP.md) |
+| `redis` | ElastiCache for Valkey 9.1 with TLS required and an RBAC user, in the data tier | [elasticache](../infra/terraform/elasticache) |
+| `clickhouse` | ClickHouse task on the container platform, backed by an encrypted EFS file system in the data tier | Storage via [clickhouse-storage](../infra/terraform/clickhouse-storage). Task planned, see the [roadmap](../ROADMAP.md) |
 | `langfuse-worker`, `langfuse-web` | Langfuse on the container platform, or Langfuse Cloud | Planned, see the [roadmap](../ROADMAP.md) |
 | `otel-collector` | OpenTelemetry collector on the container platform | Planned, see the [roadmap](../ROADMAP.md) |
 | `prometheus` | Amazon Managed Service for Prometheus | Planned, see the [roadmap](../ROADMAP.md) |
@@ -43,7 +43,12 @@ These modules provision the shared AWS infrastructure the components above consu
 | Container registry | ECR repository with scan-on-push, immutable tags, and a lifecycle policy | [ecr](../infra/terraform/ecr) |
 | Audit trail | CloudTrail with its own S3 bucket | [cloudtrail](../infra/terraform/cloudtrail) |
 | Bedrock inference authorization | `bedrock:InvokeModel` IAM policy | [bedrock-iam](../infra/terraform/bedrock-iam) |
-| Laptop Bedrock path for test accounts | Ephemeral ECS Fargate jump-host reached over ECS Exec | [bedrock-jumphost-fargate](../infra/terraform/bedrock-jumphost-fargate) |
+| Laptop Bedrock path for test accounts | Ephemeral ECS Fargate jump-host reached over ECS Exec, in the management tier | [bedrock-jumphost-fargate](../infra/terraform/bedrock-jumphost-fargate) |
+| Network tiers | Public, application, management, and data subnets with per-tier route tables and a data-tier network ACL | [private-bedrock](../infra/terraform/examples/private-bedrock) |
+| Outbound internet | NAT instance or NAT Gateway for the application and management tiers | [egress](../infra/terraform/egress) |
+| Outbound destination filtering | Route 53 Resolver DNS Firewall allowlist with query logging | [dns-firewall](../infra/terraform/dns-firewall) |
+| Terraform state | Versioned, encrypted S3 bucket with S3 native locking | [tf-state](../infra/terraform/tf-state) through [bootstrap](../infra/terraform/bootstrap) |
+| Bucket access logging | S3 bucket receiving server access logs from every platform bucket | [access-logs](../infra/terraform/access-logs) through [bootstrap](../infra/terraform/bootstrap) |
 
 ## Secret material
 

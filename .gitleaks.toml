@@ -1,0 +1,10 @@
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Trees that do not carry this repository's source. gitleaks matches these against absolute paths, so they are deliberately unanchored."
+paths = [
+  '''/\.agent-workspaces/''',
+  '''/\.venv/''',
+  '''/vendor/''',
+]

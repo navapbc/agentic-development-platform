@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import subprocess
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -11,6 +10,7 @@ from typing import Protocol
 
 from scripts.config import Settings, get_settings
 
+from services import process
 from services.integration.github.mediator import RepoNotAllowedError
 
 FAST_FORWARD = "fast_forward"
@@ -36,9 +36,13 @@ class SyncOutcome:
     conflicts: list[ConflictPayload] = field(default_factory=list)
 
 
-def _run_git(args: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["git", "-c", "safe.directory=*", *args], cwd=cwd, capture_output=True, text=True
+def _run_git(args: list[str], cwd: str) -> process.CompletedProcess[str]:
+    return process.run(
+        ["git", "-c", "safe.directory=*", *args],
+        timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
     )
 
 

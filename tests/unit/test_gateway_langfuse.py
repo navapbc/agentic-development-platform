@@ -20,7 +20,7 @@ from observability import (
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 _LITELLM_CONFIG = (
-    Path(__file__).resolve().parents[2] / "config" / "local" / "litellm-config.yaml"
+    Path(__file__).resolve().parents[2] / "config" / "platform" / "litellm-config.yaml"
 )
 
 
@@ -48,14 +48,10 @@ def test_reconcile_usage_matches_and_reports_diffs() -> None:
         {"prompt_tokens": 10, "completion_tokens": 5, "cost_usd": 0.01},
         {"prompt_tokens": 20, "completion_tokens": 7, "cost_usd": 0.02},
     ]
-    ok = reconcile_usage(
-        generations, prompt_tokens=30, completion_tokens=12, cost_usd=0.03
-    )
+    ok = reconcile_usage(generations, prompt_tokens=30, completion_tokens=12, cost_usd=0.03)
     assert ok.ok is True
 
-    off = reconcile_usage(
-        generations, prompt_tokens=29, completion_tokens=12, cost_usd=0.03
-    )
+    off = reconcile_usage(generations, prompt_tokens=29, completion_tokens=12, cost_usd=0.03)
     assert off.ok is False
     assert off.prompt_token_diff == 1
 
@@ -66,11 +62,10 @@ def test_litellm_config_enables_the_langfuse_callback() -> None:
 
 
 class _FakeResponse:
-    def __init__(self, data: dict) -> None:
+    def __init__(self, data: dict, status_code: int = 200) -> None:
         self._data = data
-
-    def raise_for_status(self) -> None:
-        return None
+        self.status_code = status_code
+        self.text = ""
 
     def json(self) -> dict:
         return self._data
