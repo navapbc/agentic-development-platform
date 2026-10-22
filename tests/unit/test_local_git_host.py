@@ -307,3 +307,70 @@ def test_publish_result_carries_no_approval_or_status_field() -> None:
         "created",
         "reused",
     }
+
+
+async def test_publish_after_the_base_moved_keeps_the_patch_to_the_change(
+    local_repo, tmp_path: Path
+) -> None:
+    root, artifacts = local_repo
+    repo = root / "demo"
+    host = LocalGitHost(root, artifacts_root=artifacts)
+    await host.commit_and_push(
+        _staged_request(
+            root,
+            tmp_path,
+            branch="agent/T-6",
+            task_id="T-6",
+            execution_id="E-6a",
+            files={"feature.txt": "first run\n"},
+        )
+    )
+    (repo / "notes.md").write_text("landed on main\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "advance base")
+
+    await host.commit_and_push(
+        _staged_request(
+            root,
+            tmp_path,
+            branch="agent/T-6",
+            task_id="T-6",
+            execution_id="E-6b",
+            files={"feature.txt": "second run\n"},
+        )
+    )
+    result = await host.publish("demo", "agent/T-6", "main", "Add feature", "body")
+
+    patch = Path(result.patch_path).read_text(encoding="utf-8")
+    assert "feature.txt" in patch
+    assert "notes.md" not in patch
+
+
+async def test_rerun_on_an_unchanged_base_keeps_a_single_parent(local_repo, tmp_path: Path) -> None:
+    root, artifacts = local_repo
+    repo = root / "demo"
+    host = LocalGitHost(root, artifacts_root=artifacts)
+    first = await host.commit_and_push(
+        _staged_request(
+            root,
+            tmp_path,
+            branch="agent/T-7",
+            task_id="T-7",
+            execution_id="E-7a",
+            files={"feature.txt": "first run\n"},
+        )
+    )
+
+    second = await host.commit_and_push(
+        _staged_request(
+            root,
+            tmp_path,
+            branch="agent/T-7",
+            task_id="T-7",
+            execution_id="E-7b",
+            files={"feature.txt": "second run\n"},
+        )
+    )
+
+    parents = _git(repo, "rev-list", "--parents", "-n", "1", second.commit_sha).split()[1:]
+    assert parents == [first.commit_sha]
