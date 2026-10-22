@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import pytest
-from tasks import _compose_files, _env_file_value
+from invoke.context import Context
+from tasks import _compose_files, _env_file_value, db_migrate, db_reset, schedules_install
 
 
 @pytest.fixture
@@ -71,3 +72,22 @@ def test_env_file_value_returns_empty_for_a_missing_key(project):
     (project / ".env").write_text("COMPOSE_PROJECT_NAME=platform\n", encoding="utf-8")
 
     assert _env_file_value("COMPOSE_FILE") == ""
+
+
+class _Recorder(Context):
+    def __init__(self) -> None:
+        super().__init__()
+        self.commands: list[str] = []
+
+    def run(self, command: str, **_kwargs: object) -> None:  # pyright: ignore[reportIncompatibleMethodOverride]
+        self.commands.append(command)
+
+
+@pytest.mark.parametrize("one_shot", [db_migrate, schedules_install, db_reset])
+def test_one_shot_tasks_rebuild_before_running(project, one_shot):
+    context = _Recorder()
+
+    one_shot(context)
+
+    assert context.commands
+    assert all("run --rm --build " in command for command in context.commands)

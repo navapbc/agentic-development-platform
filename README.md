@@ -71,7 +71,7 @@ Two binaries live under `vendor/bin` and are provisioned outside the Python inst
 
 | Group | Keys | What to set |
 | --- | --- | --- |
-| Postgres | `POSTGRES_*`, `DATABASE_URL`, `ALEMBIC_DATABASE_URL` | Defaults work locally. The Alembic URL targets `localhost`, the app URL targets the `postgres` service |
+| Postgres | `POSTGRES_*`, `DATABASE_URL`, `ALEMBIC_DATABASE_URL` | Defaults work locally. Both URLs target the `postgres` service, and a host-run task rewrites the address to the published port |
 | Temporal | `TEMPORAL_HOST`, `TEMPORAL_NAMESPACE`, `TEMPORAL_TASK_QUEUE` | Defaults work locally |
 | Bedrock | `AWS_PROFILE`, `AWS_REGION`, `BEDROCK_CONNECTIVITY_PROVIDER`, `BEDROCK_ENDPOINT_URL`, provider keys | Set your profile and provider. See [Bedrock connectivity](#bedrock-connectivity) |
 | LiteLLM | `LITELLM_BASE_URL`, `LITELLM_MASTER_KEY` | Set a local master key |
