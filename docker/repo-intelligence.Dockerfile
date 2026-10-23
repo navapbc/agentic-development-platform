@@ -64,23 +64,23 @@ RUN apt-get update \
  && echo "${sha}  scip-ruby" | sha256sum -c - \
  && install -m 0755 /tmp/scip-ruby /usr/local/bin/scip-ruby
 
-FROM maven:3.9.11-eclipse-temurin-21@sha256:6fdc855a6ed81d288ca7ca37ac6ff5e9308b612485c0801d70b25a858c83d237 AS java-tools
+FROM public.ecr.aws/docker/library/maven:3.9.11-eclipse-temurin-21@sha256:6fdc855a6ed81d288ca7ca37ac6ff5e9308b612485c0801d70b25a858c83d237 AS java-tools
 
-FROM node:24-trixie-slim@sha256:0711b541c1c33a8a530ac4f0d391baa9a15b3d804695b1b24a47daa5fb60e74d AS runtime
+FROM public.ecr.aws/docker/library/node:24-trixie-slim@sha256:0711b541c1c33a8a530ac4f0d391baa9a15b3d804695b1b24a47daa5fb60e74d AS runtime
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     VIRTUAL_ENV=/opt/venv \
+    UV_PROJECT_ENVIRONMENT=/opt/venv \
+    UV_LINK_MODE=copy \
     JAVA_HOME=/opt/java/openjdk \
     MAVEN_HOME=/opt/maven \
     PATH=/opt/venv/bin:/opt/java/openjdk/bin:/opt/maven/bin:/usr/local/bin:$PATH
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends python3 python3-venv git ca-certificates php-cli php-mbstring php-xml \
- && rm -rf /var/lib/apt/lists/* \
- && python3 -m venv /opt/venv \
- && /opt/venv/bin/pip install --upgrade pip
+ && apt-get install -y --no-install-recommends python3 git ca-certificates php-cli php-mbstring php-xml \
+ && rm -rf /var/lib/apt/lists/*
 
 RUN npm install -g @ast-grep/cli@0.45.0 @sourcegraph/scip-python@0.6.6 @sourcegraph/scip-typescript@0.3.14
 
@@ -92,16 +92,19 @@ COPY --from=java-tools /usr/share/maven /opt/maven
 COPY --from=scip-java /usr/local/bin/scip-java /usr/local/bin/scip-java
 COPY --from=phpactor-cli /usr/local/bin/phpactor /usr/local/bin/phpactor
 COPY --from=scip-ruby /usr/local/bin/scip-ruby /usr/local/bin/scip-ruby
+COPY --from=ghcr.io/astral-sh/uv:0.13.1@sha256:c4ca260ce2a921fb9ea59c6619d4c88c34990b4272524115ab61a70b647d2755 /uv /uvx /bin/
 
 WORKDIR /app
-COPY pyproject.toml README.md LICENSE NOTICE ./
+
+COPY pyproject.toml uv.lock README.md LICENSE NOTICE ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --locked --extra=dev
+
 COPY services ./services
 COPY adapters ./adapters
 COPY schemas ./schemas
 COPY database ./database
 COPY scripts ./scripts
-
-RUN pip install -e ".[dev]"
 
 RUN useradd --create-home --uid 10001 appuser
 RUN mkdir -p /app/repository_indexes && chown -R 10001:10001 /app/repository_indexes

@@ -11,8 +11,7 @@ This guide covers how to set up a development environment, the standards your ch
 ## Development environment
 
 1. Follow [First-time setup](README.md#first-time-setup) in the README to create the virtual environment and the stack.
-2. Install the development extras with `pip install -e ".[dev,reasoning]"`. Add `sandbox` when you work on the OpenHands agent.
-3. The review path depends on `rebar` (distribution `nava-rebar`) as a library. Install it from PyPI with the `review` extra, `pip install -e ".[review]"`. The container build installs the same extra.
+2. Install the development extras with `uv sync --all-groups --all-extras`.
 
 ## Branches and commits
 
