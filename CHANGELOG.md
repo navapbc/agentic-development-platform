@@ -96,6 +96,8 @@ AWS transition and FedRAMP Medium readiness. The platform documents its local-to
 - The Postgres init script passes each database name to psql as a variable and quotes it with `format('%I')` in place of interpolating it into SQL, and splits the list without changing `IFS`.
 - Migrations, `db-reset`, the smoke test, and the schema check issue their SQL through SQLAlchemy constructs or literal statements in place of formatted strings. The rendered migration SQL is byte-identical.
 - Exceptions that observability code swallows to protect a request are logged at debug level.
+- `langfuse-worker` binds on every interface. `HOSTNAME` moved to the shared Langfuse environment anchor that both Langfuse services inherit. The worker previously bound only its container address while its health check probed loopback, so it never reported healthy and every service that waits on it stayed blocked.
+- The LiteLLM gateway and `langgraph-service` resolve their AWS profile from `PLATFORM_AWS_PROFILE` and fall back to `AWS_PROFILE`. Compose reads the shell environment before `.env`, so an `AWS_PROFILE` exported in a developer shell previously reached both containers in place of the configured profile. A shell profile that resolves credentials through `credential_process` then failed every model call with `No such file or directory: 'aws'`, because the images carry no AWS CLI.
 
 ## 0.2.0 (2026-09-14)
 

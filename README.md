@@ -54,8 +54,9 @@ Run these once from the repository root.
 8. Validate the Bedrock path and local reachability with `inv connectivity-check`.
 9. Build the images, apply database migrations, and start the stack with `inv local-up`.
 10. Register the Temporal reap and intake schedules with `inv schedules-install`. They persist in Temporal's database, so run it again only after the volumes are wiped or a schedule setting changes.
-11. Confirm everything is healthy with `inv smoke-test`.
-12. Load allowlisted seed data with `inv seed` when you need demo fixtures.
+11. Publish the prompt library to Langfuse with `inv seed-prompts`. Without it each stage falls back to the static text in `services/prompts/library.py` and logs a prompt fetch warning on every run.
+12. Confirm everything is healthy with `inv smoke-test`.
+13. Load allowlisted seed data with `inv seed` when you need demo fixtures.
 
 ## Vendored binaries
 
