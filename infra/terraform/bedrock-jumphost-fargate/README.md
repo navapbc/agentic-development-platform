@@ -1,6 +1,6 @@
 # bedrock-jumphost-fargate
 
-Optional, toggleable Terraform module that provisions an ephemeral ECS Fargate jumphost for reaching the private `bedrock-runtime` interface endpoint from a laptop during local testing. It is modeled on the OSRE `tf-jumphost-fargate` module and trimmed to Bedrock port-forwarding only. Nothing is created unless `create_jumphost = true`.
+Optional, toggleable Terraform module that provisions an ephemeral ECS Fargate jumphost for reaching the private `bedrock-runtime` interface endpoint from a laptop during local testing. It is scoped to Bedrock port-forwarding only. Nothing is created unless `create_jumphost = true`.
 
 There is no standing host and no SSH. A per-session task runs a minimal image that sleeps for a TTL, and access is ECS Exec over an SSM data channel. The connect script starts a task, waits for it, and opens a port-forward to the Bedrock endpoint.
 
@@ -46,7 +46,7 @@ To pin a scanned image for production, set `image_uri` to a `repo@sha256` digest
 - Private reachability for the task depends on the `vpc-endpoints` module providing `ssmmessages`, `ecr.api`, `ecr.dkr`, `logs`, `kms`, and the S3 gateway. The `logs` and `kms` endpoints are required because the task ships container logs to CloudWatch and the ECS Exec channel is KMS-encrypted.
 - The `secrets` input injects Secrets Manager values by ARN when a future jumphost needs a credential. A Bedrock port-forward needs none, so the default is empty.
 
-## CMS and FedRAMP portability
+## FedRAMP portability
 
 Set `permissions_boundary_arn` and `iam_path` for a delegated-admin account, set `logs_bucket_kms_key_arn` to a customer-managed key, and point the image build at the approved base registry. None of these change the module shape.
 

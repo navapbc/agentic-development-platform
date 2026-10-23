@@ -1,6 +1,8 @@
 # Python image with uv pre-installed. See https://docs.astral.sh/uv/guides/integration/docker/#available-images
 FROM ghcr.io/astral-sh/uv:python3.13-trixie@sha256:62ff9165c89a46680b0684e29625d73585ce82739d598b19743dba6eb632e33c
 
+LABEL org.opencontainers.image.licenses="Apache-2.0"
+
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -18,7 +20,7 @@ RUN ARCH="$(dpkg --print-architecture)" \
     && curl -fsSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/v1.34.1/bin/linux/${ARCH}/kubectl" \
     && chmod +x /usr/local/bin/kubectl
 
-COPY pyproject.toml uv.lock README.md alembic.ini ./
+COPY pyproject.toml uv.lock README.md LICENSE NOTICE alembic.ini ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --all-groups --all-extras
 

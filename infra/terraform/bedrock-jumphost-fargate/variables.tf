@@ -122,13 +122,13 @@ variable "secrets" {
 }
 
 variable "permissions_boundary_arn" {
-  description = "Permissions boundary applied to both task roles. Empty in a standard account, set to the delegated-admin boundary in CMS accounts."
+  description = "Permissions boundary applied to both task roles. Empty in a standard account, set to the boundary the account's IAM delegation policy requires."
   type        = string
   default     = ""
 }
 
 variable "iam_path" {
-  description = "IAM path for the task roles. Set to /delegatedadmin/developer/ in CMS accounts."
+  description = "IAM path for the task roles. Set to the path the account's IAM delegation policy requires."
   type        = string
   default     = "/"
 }
