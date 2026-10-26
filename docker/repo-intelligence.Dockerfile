@@ -75,6 +75,7 @@ RUN apt-get update \
 FROM maven:3.9.11-eclipse-temurin-21@sha256:6fdc855a6ed81d288ca7ca37ac6ff5e9308b612485c0801d70b25a858c83d237 AS java-tools
 
 FROM node:24-trixie-slim@sha256:0711b541c1c33a8a530ac4f0d391baa9a15b3d804695b1b24a47daa5fb60e74d AS runtime
+LABEL org.opencontainers.image.licenses="Apache-2.0"
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     BIND_HOST=0.0.0.0 \
@@ -105,7 +106,7 @@ COPY --from=scip-ruby /usr/local/bin/scip-ruby /usr/local/bin/scip-ruby
 
 WORKDIR /app
 COPY --from=ghcr.io/astral-sh/uv:0.13.3@sha256:bee0a2a458fd956c5df7b8b4c5fed2257b0af34866e3da7b51db0be3acb375d1 /uv /usr/local/bin/uv
-COPY pyproject.toml uv.lock README.md ./
+COPY pyproject.toml uv.lock README.md LICENSE NOTICE ./
 COPY services ./services
 COPY adapters ./adapters
 COPY schemas ./schemas

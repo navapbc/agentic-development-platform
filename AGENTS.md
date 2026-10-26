@@ -11,7 +11,7 @@ Generic, tool-agnostic working rules. These are personal preferences for how any
   ```
   ADEVX-2
   - Add pluggable Bedrock connectivity providers
-  - Remove OSRE jump-host constants from Python defaults
+  - Remove jump-host constants from Python defaults
   ```
 
 - A ticket number identifies a unit of grouped work, like a Jira ticket, not a single commit. One ticket can span multiple commits, so reuse the same number for every commit that belongs to that unit of work. Increment to the next number only when starting a new unit of work. Numbers are sequential per repository and are never derived from research item, phase, or task numbers (research item R7 does not imply `ADEVX-7`).

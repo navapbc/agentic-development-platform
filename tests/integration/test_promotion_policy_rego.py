@@ -146,10 +146,10 @@ def test_a_deployment_invariant_still_denies():
 
 def test_input_allowlists_admit_a_backend_the_defaults_omit():
     document = _compliant(
-        jira_project="PFMLPB",
-        repository="archive-massgov-pfml",
-        allowed_projects=["PFMLPB"],
-        allowed_repos=["archive-massgov-pfml"],
+        jira_project="PROJ",
+        repository="example-service",
+        allowed_projects=["PROJ"],
+        allowed_repos=["example-service"],
         ci_status="skipped",
         ci_required=False,
     )

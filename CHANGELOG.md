@@ -39,7 +39,7 @@ AWS transition and FedRAMP Medium readiness. The platform documents its local-to
 - A governed evidence and audit retention period through `EVIDENCE_RETENTION_DAYS`, defaulting to 2555 days, written onto every stored record and applied as the S3 Object Lock window, and consumed by the evidence object store, the audit object writer, and the bucket bootstrap.
 - An evidence classification taxonomy of `standard`, `security`, and `audit` that each producer assigns and that is validated when a record is constructed, with `EVIDENCE_RETENTION_CLASSIFICATION_DAYS` overriding the baseline retention per classification. Retention resolves to the record's own numeric retention, then the classification override, then `EVIDENCE_RETENTION_DAYS`.
 - A remote Terraform state backend. A `tf-state` module provisions a versioned, encrypted, TLS-only state bucket, an `infra/terraform/bootstrap` root creates it once per account, and the `private-bedrock` composition root stores its state there with S3 native locking.
-- A tiered network in the `private-bedrock` composition root that follows the CMS Technical Reference Architecture zones, with public, application, management, and data subnets. The data tier spans two Availability Zones, has no default route, and sits behind a network ACL that admits only PostgreSQL, Valkey, and NFS from the application and management tiers.
+- A tiered network in the `private-bedrock` composition root that separates public, application, management, and data subnets into routed zones. The data tier spans two Availability Zones, has no default route, and sits behind a network ACL that admits only PostgreSQL, Valkey, and NFS from the application and management tiers.
 - An `egress` Terraform module whose `egress_mode` selects no egress, a hardened Amazon Linux 2023 NAT instance, or a NAT Gateway for the application and management tiers.
 - A `dns-firewall` Terraform module that limits the VPC to an allowlist of AWS, GitHub, Atlassian, and Slack domains through Route 53 Resolver DNS Firewall, fails closed, and logs every query.
 - An `aurora-postgresql` Terraform module for Aurora PostgreSQL 16.15 with Serverless v2 capacity that pauses when idle, an RDS-managed rotating master secret, IAM database authentication, enforced TLS, pgaudit DDL logging, 30-day backups, and deletion protection.
@@ -72,6 +72,8 @@ AWS transition and FedRAMP Medium readiness. The platform documents its local-to
 - External commands carry a timeout of 60, 900, or 3600 seconds by kind. A command that exceeds it is killed and raises `TimeoutExpired` where it previously ran without a limit.
 - Git commands that take a remote URL pass it after a `--` terminator, so a URL cannot be read as a git option.
 - The OpenHands sandbox image defaults to `ghcr.io/openhands/agent-server:1.56.0-python` pinned by digest in place of the floating `latest-python` tag. Sandbox pods run with a read-only root filesystem, `emptyDir` volumes at `/tmp` and `/home/sandbox`, and `HOME=/home/sandbox`.
+- `[tool.uv]` overrides filelock to 4.2.1 or newer. litellm declares `filelock<4.0`, and only filelock 4.2.1 fixes GHSA-567q-5qvw-pf92, GHSA-9vhv-jxww-xfm5, and GHSA-v4x8-3wr5-3wq8. filelock 4.0 changed only `SoftReadWriteLock`, which no installed package uses. Remove the override once litellm allows filelock 4.
+- pypdf moves to 6.21.2 and fastmcp to 3.4.11 for their security releases.
 - The jumphost image builds from Alpine 3.24.2 pinned by digest and runs as UID 65534. ECS Exec runs its agent as root whatever the container user is, so the port forward is unchanged.
 - The CloudTrail trail encrypts its log files with a customer-managed KMS key. The jumphost CloudWatch log group uses the jumphost KMS key, and the jumphost cluster has Container Insights enabled.
 - The VPC endpoint security group has no egress rule. Interface endpoints answer only inbound connections, and security groups are stateful.
@@ -86,6 +88,7 @@ AWS transition and FedRAMP Medium readiness. The platform documents its local-to
 - The CI jobs install uv 0.13.3 through `astral-sh/setup-uv` pinned to a commit SHA, and both images copy uv from its image pinned by digest.
 - `repo-index-worker` stays running and refreshes its heartbeat when no repositories are configured, in place of exiting and restarting.
 - `langfuse-web` binds on every interface inside its container through `HOSTNAME=0.0.0.0`, so its loopback health check reaches it.
+- Test fixtures, review eval cases, and the demo script use neutral repository names, ticket keys, tracker hosts, and account names. The repository-hygiene test checks every tracked file for developer home-directory paths with no file exemptions, and names no client, person, or program.
 
 ### Fixed
 

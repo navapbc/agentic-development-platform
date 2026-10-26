@@ -6,7 +6,7 @@ A spoken script for a recorded walkthrough of an in-progress build. Each act lis
 
 Show the cover slide with the title, subtitle, and your name.
 
-> Thank you all for joining. My name is Joe Robinson, and this is a state of development update on the Agentic Development Platform. In the next few minutes I will introduce what the platform is, show the guarantees it already provides, and walk through it carrying a tracked ticket all the way to a pull request.
+> Thank you all for joining. My name is [presenter], and this is a state of development update on the Agentic Development Platform. In the next few minutes I will introduce what the platform is, show the guarantees it already provides, and walk through it carrying a tracked ticket all the way to a pull request.
 
 ## Agenda
 

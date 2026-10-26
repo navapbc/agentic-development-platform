@@ -1,0 +1,132 @@
+agentic-dev-platform
+Copyright 2026 Nava PBC
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This NOTICE records third-party components that a build of this repository
+installs or invokes and whose licenses carry obligations beyond Apache-2.0.
+None of them is vendored in this repository. Each one is fetched when an
+operator builds an image or installs the package, and Nava PBC does not
+distribute images or packages that contain them. Dependencies under MIT, BSD,
+ISC, PSF, or Apache-2.0 terms are not listed. Debian packages in the base
+images are covered by the copyright files those images carry. Declared Python
+dependencies live in pyproject.toml.
+
+--------------------------------------------------------------------------------
+Atlassian CLI (acli)
+--------------------------------------------------------------------------------
+Component:  Atlassian CLI
+Version:    Set by ACLI_VERSION at build time
+License:    Atlassian proprietary terms
+Upstream:   https://developer.atlassian.com/cloud/acli/
+
+How it reaches a build
+    scripts/fetch_acli.py downloads the binary and verifies its checksum
+    while docker/Dockerfile builds the worker image. The platform runs it as a
+    separate process for Jira Cloud writes.
+
+Obligation
+    The Apache License does not cover acli. An operator who builds the worker
+    image accepts Atlassian's terms for the binary.
+
+--------------------------------------------------------------------------------
+lmnr-claude-code-proxy
+--------------------------------------------------------------------------------
+Component:  lmnr-claude-code-proxy
+Version:    Resolved by pip at install time
+License:    LicenseRef-Proprietary (Laminar Terms of Service)
+Upstream:   https://laminar.sh/policies/terms
+
+How it reaches a build
+    The sandbox extra installs openhands-sdk, which depends on lmnr, which
+    depends on this package. Platform code does not import it.
+
+Obligation
+    The Apache License does not cover this package. An install that includes
+    the sandbox extra accepts Laminar's terms for it.
+
+--------------------------------------------------------------------------------
+psycopg and psycopg-binary
+--------------------------------------------------------------------------------
+Component:  psycopg, psycopg-binary
+Version:    Resolved by pip at install time
+License:    LGPL-3.0-only
+Upstream:   https://www.psycopg.org (source: https://github.com/psycopg/psycopg)
+
+How it reaches a build
+    psycopg is a core dependency in pyproject.toml. The platform imports it
+    as an unmodified library.
+
+Obligation
+    A redistributor of an image or bundle that contains psycopg carries the
+    LGPL-3.0 notice and source-availability obligations for psycopg itself.
+
+--------------------------------------------------------------------------------
+func_timeout
+--------------------------------------------------------------------------------
+Component:  func_timeout
+Version:    Resolved by pip at install time
+License:    LGPL (LGPLv2 in the package metadata, LGPL-3.0 in the upstream
+            repository)
+Upstream:   https://github.com/kata198/func_timeout
+
+How it reaches a build
+    The sandbox extra installs openhands-tools, which depends on this package.
+
+Obligation
+    A redistributor of an image or bundle that contains func_timeout carries
+    the LGPL notice and source-availability obligations for func_timeout
+    itself.
+
+--------------------------------------------------------------------------------
+MPL-2.0 Python packages
+--------------------------------------------------------------------------------
+Component:  certifi, tqdm, orjson
+Version:    Resolved by pip at install time
+License:    certifi is MPL-2.0. tqdm is MPL-2.0 AND MIT. orjson is MPL-2.0 AND
+            (Apache-2.0 OR MIT).
+Upstream:   https://github.com/certifi/python-certifi
+            https://github.com/tqdm/tqdm
+            https://github.com/ijl/orjson
+
+How it reaches a build
+    These are transitive dependencies of the declared Python dependencies.
+
+Obligation
+    A redistributor carries the MPL-2.0 source-availability obligation for
+    the MPL-covered files of each package.
+
+--------------------------------------------------------------------------------
+terraform-ls
+--------------------------------------------------------------------------------
+Component:  terraform-ls
+Version:    0.39.0
+License:    MPL-2.0
+Upstream:   https://github.com/hashicorp/terraform-ls
+
+How it reaches a build
+    docker/repo-intelligence.Dockerfile downloads the release binary from
+    releases.hashicorp.com, verifies its checksum, and copies it into the
+    repository-intelligence image.
+
+Obligation
+    A redistributor of an image that contains terraform-ls carries the MPL-2.0
+    source-availability obligation for terraform-ls itself.
+
+--------------------------------------------------------------------------------
+Eclipse Temurin JDK
+--------------------------------------------------------------------------------
+Component:  Eclipse Temurin 21 JDK
+Version:    As shipped in maven:3.9.11-eclipse-temurin-21
+License:    GPL-2.0 with the Classpath Exception
+Upstream:   https://adoptium.net (source: https://github.com/adoptium)
+
+How it reaches a build
+    docker/repo-intelligence.Dockerfile copies /opt/java/openjdk from the
+    maven:3.9.11-eclipse-temurin-21 stage into the repository-intelligence
+    image, where the Java indexers run on it.
+
+Obligation
+    A redistributor of an image that contains the JDK carries the GPL-2.0
+    source-availability obligation for the JDK itself. The Classpath Exception
+    leaves programs that run on the JDK under their own licenses.

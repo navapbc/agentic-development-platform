@@ -86,7 +86,7 @@ async def test_jira_detection_records_and_signals_end_to_end(monkeypatch):
 
     detection = await dep.detect_dependency(
         dep.DetectDependencyRequest(
-            repo="archive-massgov-pfml",
+            repo="example-service",
             task_id="PROJ-1",
             execution_id="e1",
             issue_key="PROJ-1",
@@ -175,7 +175,7 @@ async def test_jira_without_link_type_records_nothing(monkeypatch):
 
     detection = await dep.detect_dependency(
         dep.DetectDependencyRequest(
-            repo="archive-massgov-pfml",
+            repo="example-service",
             task_id="PROJ-1",
             execution_id="e1",
             issue_key="PROJ-1",

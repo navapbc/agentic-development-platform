@@ -6,10 +6,10 @@ from services.orchestration.change_narrative import (
     read_pull_request_template,
 )
 
-MASSGOV_TEMPLATE = """## 🎫 Ticket
+TICKETED_TEMPLATE = """## 🎫 Ticket
 
-https://lwd.atlassian.net/browse/{TICKET ID}
-Subtask: https://lwd.atlassian.net/browse/{SUBTASK TICKET ID}
+https://tracker.example/browse/{TICKET ID}
+Subtask: https://tracker.example/browse/{SUBTASK TICKET ID}
 
 ## 🛠 Changes
 
@@ -25,9 +25,9 @@ Subtask: https://lwd.atlassian.net/browse/{SUBTASK TICKET ID}
 
 #### Previews and UAT
 
-Check the box below if your Portal PR will require UAT and is not feature-flagged.
+Check the box below if your PR will require UAT and is not feature-flagged.
 
-- [ ] Deploy Portal preview (connected to API TST1)
+- [ ] Deploy a preview environment (connected to the test API)
 
 ## 📜 Link to relevant documentation
 
@@ -37,7 +37,7 @@ Check the box below if your Portal PR will require UAT and is not feature-flagge
 
 def narrative(**overrides: str) -> PullRequestNarrative:
     defaults = {
-        "issue_key": "PSD-6948",
+        "issue_key": "PRJ-6948",
         "execution_id": "exec-9",
         "summary": "Removed the deprecated size prop from the Button component.",
         "description": "The size prop is unused and blocks the design system upgrade.",
@@ -48,7 +48,7 @@ def narrative(**overrides: str) -> PullRequestNarrative:
 
 
 def test_body_keeps_every_template_heading_in_order():
-    body = compose_pull_request_body(MASSGOV_TEMPLATE, narrative())
+    body = compose_pull_request_body(TICKETED_TEMPLATE, narrative())
 
     headings = [line for line in body.splitlines() if line.startswith("## ")]
     assert headings == [
@@ -61,15 +61,15 @@ def test_body_keeps_every_template_heading_in_order():
 
 
 def test_body_resolves_the_ticket_token_and_drops_the_unresolved_subtask_line():
-    body = compose_pull_request_body(MASSGOV_TEMPLATE, narrative())
+    body = compose_pull_request_body(TICKETED_TEMPLATE, narrative())
 
-    assert "https://lwd.atlassian.net/browse/PSD-6948" in body
+    assert "https://tracker.example/browse/PRJ-6948" in body
     assert "SUBTASK" not in body
     assert "{" not in body
 
 
 def test_body_replaces_placeholder_prose_with_the_narrative():
-    body = compose_pull_request_body(MASSGOV_TEMPLATE, narrative())
+    body = compose_pull_request_body(TICKETED_TEMPLATE, narrative())
 
     assert "Removed the deprecated size prop from the Button component." in body
     assert "(What was added, updated, or removed in this PR.)" not in body
@@ -78,14 +78,14 @@ def test_body_replaces_placeholder_prose_with_the_narrative():
 
 
 def test_body_preserves_checkboxes_and_instructions_inside_a_filled_section():
-    body = compose_pull_request_body(MASSGOV_TEMPLATE, narrative())
+    body = compose_pull_request_body(TICKETED_TEMPLATE, narrative())
 
-    assert "- [ ] Deploy Portal preview (connected to API TST1)" in body
+    assert "- [ ] Deploy a preview environment (connected to the test API)" in body
     assert "#### Previews and UAT" in body
 
 
 def test_body_marks_a_section_it_cannot_populate_rather_than_inventing_content():
-    body = compose_pull_request_body(MASSGOV_TEMPLATE, narrative())
+    body = compose_pull_request_body(TICKETED_TEMPLATE, narrative())
 
     documentation = body.split("## 📜 Link to relevant documentation", 1)[1]
     assert "(Provide links to documentation, such as tech specs.)" not in documentation
@@ -96,7 +96,7 @@ def test_body_falls_back_to_a_plain_summary_when_the_repository_has_no_template(
     body = compose_pull_request_body("", narrative())
 
     assert body.startswith("## Ticket")
-    assert "PSD-6948" in body
+    assert "PRJ-6948" in body
     assert "Removed the deprecated size prop from the Button component." in body
     assert "Repository checks passed in the platform pipeline." in body
 
@@ -119,27 +119,27 @@ def test_an_unrecognised_section_keeps_its_original_body():
 
 def test_commit_message_leads_with_the_issue_key_and_summary():
     message = compose_commit_message(
-        issue_key="PSD-6948",
+        issue_key="PRJ-6948",
         summary="Remove the deprecated size prop from the Button component",
         description="The size prop is unused and blocks the design system upgrade.",
     )
 
     subject, _, body = message.partition("\n\n")
-    assert subject == "PSD-6948: Remove the deprecated size prop from the Button component"
+    assert subject == "PRJ-6948: Remove the deprecated size prop from the Button component"
     assert body == "The size prop is unused and blocks the design system upgrade."
 
 
 def test_commit_message_subject_fits_the_git_convention():
     message = compose_commit_message(
-        issue_key="PSD-6948",
-        summary="Remove the deprecated size prop from every Button call site across the portal",
+        issue_key="PRJ-6948",
+        summary="Remove the deprecated size prop from every Button call site across the app",
         description="",
     )
 
     subject = message.splitlines()[0]
     assert len(subject) <= 72
     assert subject.endswith("...")
-    assert message.splitlines()[0].startswith("PSD-6948: Remove the deprecated size prop")
+    assert message.splitlines()[0].startswith("PRJ-6948: Remove the deprecated size prop")
 
 
 def test_commit_message_omits_the_prefix_when_there_is_no_issue_key():
@@ -149,9 +149,9 @@ def test_commit_message_omits_the_prefix_when_there_is_no_issue_key():
 
 
 def test_commit_message_falls_back_when_there_is_no_summary():
-    message = compose_commit_message(issue_key="PSD-6948", summary="", description="")
+    message = compose_commit_message(issue_key="PRJ-6948", summary="", description="")
 
-    assert message == "PSD-6948: Apply bounded agent change"
+    assert message == "PRJ-6948: Apply bounded agent change"
 
 
 def test_testing_evidence_names_only_the_stages_that_ran():

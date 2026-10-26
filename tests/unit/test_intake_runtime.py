@@ -277,12 +277,12 @@ async def test_start_prefers_a_declared_tracker_key_in_the_commit_message(
         _intake_start(
             summary="Add a widget",
             description="The widget is needed for onboarding.",
-            stored_issue={"labels": ["adp", "jira-pfmlpb-33739"]},
+            stored_issue={"labels": ["adp", "jira-proj-33739"]},
         )
     )
 
     (_, arg, _) = client.started[0]
-    assert arg.commit_message.startswith("PFMLPB-33739: Add a widget")
+    assert arg.commit_message.startswith("PROJ-33739: Add a widget")
     assert arg.issue_key == "ADEV-1"
 
 

@@ -1,4 +1,4 @@
-"""Invariants that keep a target repository out of the platform's tracked files."""
+"""Invariants that keep developer machines and operator configuration out of tracked files."""
 
 from __future__ import annotations
 
@@ -10,18 +10,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-CLIENT_REPOSITORY_MARKERS = ("archive-massgov-pfml",)
-DEVELOPER_MACHINE_PATH_MARKERS = ("joeoakhart", "/Users/", "Documents/Projects")
-
-DEFERRED_FIXTURE_FILES = frozenset(
-    {
-        "tests/integration/test_jira_dependency_detection.py",
-        "tests/integration/test_promotion_policy_rego.py",
-        "tests/unit/test_context_service.py",
-        "tests/unit/test_dependency_detection.py",
-        "tests/unit/test_draft_pull_request_workflow.py",
-    }
-)
+DEVELOPER_MACHINE_PATH_MARKERS = ("/Users/", "Documents/Projects")
 
 THIS_FILE = "tests/unit/test_repo_hygiene.py"
 
@@ -32,34 +21,22 @@ def _git(*args: str) -> str:
     ).stdout
 
 
-def _tracked_text_files() -> list[Path]:
-    paths = []
-    for name in _git("ls-files").splitlines():
-        if name in DEFERRED_FIXTURE_FILES or name == THIS_FILE:
-            continue
-        path = REPO_ROOT / name
-        if path.is_file():
-            paths.append(path)
-    return paths
-
-
 def _files_containing(markers: tuple[str, ...]) -> list[str]:
     hits = []
-    for path in _tracked_text_files():
+    for name in _git("ls-files").splitlines():
+        path = REPO_ROOT / name
+        if name == THIS_FILE or not path.is_file():
+            continue
         try:
             text = path.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):
             continue
         if any(marker in text for marker in markers):
-            hits.append(str(path.relative_to(REPO_ROOT)))
-    return hits
+            hits.append(name)
+    return sorted(hits)
 
 
-def test_no_tracked_file_names_a_client_repository():
-    assert _files_containing(CLIENT_REPOSITORY_MARKERS) == []
-
-
-def test_no_tracked_file_carries_a_personal_account_path():
+def test_no_tracked_file_carries_a_developer_machine_path():
     assert _files_containing(DEVELOPER_MACHINE_PATH_MARKERS) == []
 
 

@@ -6,7 +6,7 @@ Reusable module that gives the private application and management tiers an outbo
 
 | Mode | What it provisions | Use |
 |---|---|---|
-| `none` | Nothing | A network whose organization already provides egress, such as a CMS VPC routed through the enterprise proxy. Route the platform through it with `HTTPS_PROXY`. |
+| `none` | Nothing | A network whose organization already provides egress, such as a VPC routed through an enterprise proxy. Route the platform through it with `HTTPS_PROXY`. |
 | `nat_instance` | An Amazon Linux 2023 NAT instance with an Elastic IP and default routes through its interface | Evaluation and testing, at a fraction of the NAT Gateway hourly and per-GB cost |
 | `nat_gateway` | A NAT Gateway with an Elastic IP and default routes through it | Production, with AWS-managed availability and bandwidth |
 

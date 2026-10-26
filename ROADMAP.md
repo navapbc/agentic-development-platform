@@ -92,9 +92,10 @@ Version effort. 24-28h.
 
 ## Held, blocked on an external litellm release
 
-This item unblocks when a litellm release that the `openhands-sdk` version range accepts includes [BerriAI/litellm#44178](https://github.com/BerriAI/litellm/pull/44178) or an equivalent fix.
+These items unblock on a litellm release that the `openhands-sdk` version range accepts. The first needs [BerriAI/litellm#44178](https://github.com/BerriAI/litellm/pull/44178) or an equivalent fix, and the second needs litellm to allow filelock 4.
 
 - Raise the litellm floor to the fixed release. litellm declares `ReadOnly` items on TypedDict classes such as `OpenAIRealtimeInputAudioBufferSpeechEvent`, and pydantic emits a `UserWarning` when the OpenHands SDK imports litellm and builds their schemas. Confirm the warning is gone from `inv ci` output after the upgrade.
+- Remove the `filelock>=4.2.1` override from `[tool.uv]` once a litellm release that the `openhands-sdk` range accepts allows filelock 4. Confirm with `uv lock` that filelock stays at 4.2.1 or newer without the override.
 
 ## Source of truth
 

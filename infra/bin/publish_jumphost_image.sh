@@ -9,7 +9,8 @@ arch="arm64"
 repo="agentic-platform/jumphost-base"
 base_image=""
 region="${AWS_REGION:-us-east-1}"
-context_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../docker/jumphost-base" && pwd)"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+context_dir="${repo_root}/docker/jumphost-base"
 
 while getopts "t:a:r:b:R:" opt; do
   case "$opt" in
@@ -36,6 +37,6 @@ echo "[publish] target ${image} for ${platform}" >&2
 
 aws ecr get-login-password --region "$region" | docker login --username AWS --password-stdin "$registry"
 
-docker buildx build --platform "$platform" --provenance=false --sbom=false ${base_image:+--build-arg BASE_IMAGE="$base_image"} -t "$image" --push "$context_dir"
+docker buildx build --platform "$platform" --provenance=false --sbom=false --build-context repo="$repo_root" ${base_image:+--build-arg BASE_IMAGE="$base_image"} -t "$image" --push "$context_dir"
 
 echo "[publish] pushed ${image}" >&2

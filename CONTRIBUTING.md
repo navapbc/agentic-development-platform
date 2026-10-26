@@ -45,6 +45,12 @@ ADEVX-2
 - Migrations use Alembic and SQLAlchemy Core and are scoped to the `agent_platform` schema. Do not write migrations for the Temporal or Langfuse schemas.
 - Create a revision, then apply it with `inv db-migrate`. Rebuild the schema from scratch with `inv db-reset` when a local database drifts.
 
+## License
+
+This project is licensed under the [Apache License, Version 2.0](LICENSE). Under section 5 of that license, a contribution you intentionally submit for inclusion is licensed under the same terms, with no additional sign-off or agreement. If you do not want section 5 to apply to a contribution, say so in the pull request before it is reviewed.
+
+Authorship is recorded by the git author on each commit and is shown in the repository's contributor graph. Commit with a name and email that identify you.
+
 ## Before you open a pull request
 
 1. `ruff check .` and `ruff format --check .` are clean.

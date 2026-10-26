@@ -36,7 +36,7 @@ AWS_PROFILE=agentic-platform terraform apply -var-file=existing-network.tfvars
 
 ## Network tiers
 
-A created network follows the CMS Technical Reference Architecture zones. Each tier is a separate subnet group with its own route table, so a zone boundary is enforced by routing, network ACLs, and security groups rather than by convention.
+A created network is divided into public, application, management, and data zones. Each tier is a separate subnet group with its own route table, so a zone boundary is enforced by routing, network ACLs, and security groups rather than by convention.
 
 | Tier | Default CIDRs | Runs | Route to the internet |
 |---|---|---|---|

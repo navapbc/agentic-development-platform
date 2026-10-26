@@ -69,7 +69,7 @@ def test_surrounding_whitespace_is_trimmed() -> None:
 
 
 def test_tracker_key_is_read_and_upper_cased() -> None:
-    assert declared_issue_key(["jira-pfmlpb-33739"]) == "PFMLPB-33739"
+    assert declared_issue_key(["jira-proj-33739"]) == "PROJ-33739"
 
 
 def test_tracker_key_ignores_unrelated_labels() -> None:
@@ -81,11 +81,11 @@ def test_tracker_key_is_empty_without_labels() -> None:
 
 
 def test_first_tracker_key_wins_when_several_are_declared() -> None:
-    assert declared_issue_key(["jira-pfmlpb-1", "jira-pfmlpb-2"]) == "PFMLPB-1"
+    assert declared_issue_key(["jira-proj-1", "jira-proj-2"]) == "PROJ-1"
 
 
 def test_tracker_key_rejects_a_non_numeric_issue_number() -> None:
-    assert declared_issue_key(["jira-pfmlpb-backlog"]) == ""
+    assert declared_issue_key(["jira-proj-backlog"]) == ""
 
 
 def test_tracker_key_rejects_a_bare_prefix() -> None:
@@ -93,4 +93,4 @@ def test_tracker_key_rejects_a_bare_prefix() -> None:
 
 
 def test_tracker_key_trims_surrounding_whitespace() -> None:
-    assert declared_issue_key([" jira-pfmlpb-33739 "]) == "PFMLPB-33739"
+    assert declared_issue_key([" jira-proj-33739 "]) == "PROJ-33739"

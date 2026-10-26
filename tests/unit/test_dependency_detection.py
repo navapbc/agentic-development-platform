@@ -167,7 +167,7 @@ async def test_activity_detects_and_publishes(monkeypatch):
     dep, store = _patch(monkeypatch, backend, [_Exec("e2", "T2")], store=store)
     result = await dep.detect_dependency(
         dep.DetectDependencyRequest(
-            repo="archive-massgov-pfml",
+            repo="example-service",
             task_id="T1",
             execution_id="e1",
             issue_key="T1",

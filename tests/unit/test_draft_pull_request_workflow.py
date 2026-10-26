@@ -2660,7 +2660,7 @@ def _input(**kwargs) -> DraftPullRequestInput:
     base = {
         "task_id": "6948",
         "execution_id": "intake-1",
-        "repo": "archive-massgov-pfml",
+        "repo": "example-service",
         "base": "main",
         "base_sha": "abc123",
         "task": "Remove the size prop",
@@ -2751,7 +2751,7 @@ async def test_a_declared_tracker_key_names_the_pull_request():
     )
     params = replace(
         _ci_input(),
-        stored_issue={"summary": "Implement the change", "labels": ["adp", "jira-pfmlpb-33739"]},
+        stored_issue={"summary": "Implement the change", "labels": ["adp", "jira-proj-33739"]},
     )
 
     async with await WorkflowEnvironment.start_time_skipping() as env:
@@ -2765,8 +2765,8 @@ async def test_a_declared_tracker_key_names_the_pull_request():
             )
 
     assert result.status == PR_PROMOTED
-    assert pr_opens[0].title == "PFMLPB-33739: Implement the change"
-    assert "https://tracker.example/browse/PFMLPB-33739" in pr_opens[0].body
+    assert pr_opens[0].title == "PROJ-33739: Implement the change"
+    assert "https://tracker.example/browse/PROJ-33739" in pr_opens[0].body
     assert linkbacks[0].issue_key == "T-1"
 
 

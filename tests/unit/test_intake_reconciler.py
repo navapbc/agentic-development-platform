@@ -688,7 +688,7 @@ def test_rebar_candidate_carries_the_declared_file_impact() -> None:
         ],
     }
 
-    candidate = candidate_from_rebar(ticket, project="PFML", default_repo="repo-a")
+    candidate = candidate_from_rebar(ticket, project="PROJ", default_repo="repo-a")
 
     assert candidate.file_impact == ("portal/src/page.tsx", "portal/tests/page.test.ts")
 
@@ -702,6 +702,6 @@ def test_rebar_candidate_file_impact_is_empty_when_undeclared() -> None:
         "file_impact": [],
     }
 
-    candidate = candidate_from_rebar(ticket, project="PFML", default_repo="repo-a")
+    candidate = candidate_from_rebar(ticket, project="PROJ", default_repo="repo-a")
 
     assert candidate.file_impact == ()
