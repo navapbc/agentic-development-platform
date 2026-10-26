@@ -9,6 +9,7 @@ from scripts.rebar_poll import (
     PollCursor,
     PollEvent,
     PollFlags,
+    ReadOnlyWatermark,
     redact,
     run_poll,
 )
@@ -120,12 +121,18 @@ async def test_status_change_is_classified() -> None:
     audit = _Audit()
 
     await run_poll(
-        reader=reader, watermark=watermark, audit=audit, access=_authorized(),
+        reader=reader,
+        watermark=watermark,
+        audit=audit,
+        access=_authorized(),
         allowed_fields=_ALLOWED,
     )
     reader.set([_ticket("A", status="in_progress")], head="commit-2")
     report = await run_poll(
-        reader=reader, watermark=watermark, audit=audit, access=_authorized(),
+        reader=reader,
+        watermark=watermark,
+        audit=audit,
+        access=_authorized(),
         allowed_fields=_ALLOWED,
     )
     assert [e.kind for e in report.events] == [STATUS_CHANGE]
@@ -138,12 +145,18 @@ async def test_field_change_is_classified() -> None:
     watermark = _Watermark()
     audit = _Audit()
     await run_poll(
-        reader=reader, watermark=watermark, audit=audit, access=_authorized(),
+        reader=reader,
+        watermark=watermark,
+        audit=audit,
+        access=_authorized(),
         allowed_fields=_ALLOWED,
     )
     reader.set([_ticket("A", title="T2")], head="commit-2")
     report = await run_poll(
-        reader=reader, watermark=watermark, audit=audit, access=_authorized(),
+        reader=reader,
+        watermark=watermark,
+        audit=audit,
+        access=_authorized(),
         allowed_fields=_ALLOWED,
     )
     assert [e.kind for e in report.events] == [FIELD_CHANGE]
@@ -157,7 +170,10 @@ async def test_unauthorized_caller_is_rejected_and_audited() -> None:
     access = _Access(AccessDecision(authorized=False, identity="x", role="none"))
 
     report = await run_poll(
-        reader=reader, watermark=watermark, audit=audit, access=access,
+        reader=reader,
+        watermark=watermark,
+        audit=audit,
+        access=access,
         allowed_fields=_ALLOWED,
     )
     assert report.authorized is False
@@ -170,7 +186,10 @@ async def test_unauthorized_caller_is_rejected_and_audited() -> None:
 async def test_non_allowlisted_fields_are_redacted() -> None:
     reader = _Reader([_ticket("A", secret="top-secret")])
     report = await run_poll(
-        reader=reader, watermark=_Watermark(), audit=_Audit(), access=_authorized(),
+        reader=reader,
+        watermark=_Watermark(),
+        audit=_Audit(),
+        access=_authorized(),
         allowed_fields=_ALLOWED,
     )
     assert "secret_field" not in report.events[0].ticket
@@ -182,7 +201,10 @@ async def test_noop_invocation_is_audited() -> None:
     reader = _Reader([])
     audit = _Audit()
     report = await run_poll(
-        reader=reader, watermark=_Watermark(), audit=audit, access=_authorized(),
+        reader=reader,
+        watermark=_Watermark(),
+        audit=audit,
+        access=_authorized(),
         allowed_fields=_ALLOWED,
     )
     assert report.events == ()
@@ -201,8 +223,12 @@ async def test_events_carry_revision_and_branch_commit_before_side_effects() -> 
         return True
 
     report = await run_poll(
-        reader=reader, watermark=_Watermark(), audit=audit, access=_authorized(),
-        allowed_fields=_ALLOWED, intake=intake,
+        reader=reader,
+        watermark=_Watermark(),
+        audit=audit,
+        access=_authorized(),
+        allowed_fields=_ALLOWED,
+        intake=intake,
     )
     assert report.events[0].branch_commit == "deadbeef"
     assert report.events[0].revision != ""
@@ -223,8 +249,12 @@ async def test_failed_intake_does_not_advance_and_replays() -> None:
         return False
 
     first = await run_poll(
-        reader=reader, watermark=watermark, audit=audit, access=_authorized(),
-        allowed_fields=_ALLOWED, intake=failing,
+        reader=reader,
+        watermark=watermark,
+        audit=audit,
+        access=_authorized(),
+        allowed_fields=_ALLOWED,
+        intake=failing,
     )
     assert first.advanced is False
     assert watermark.cursor.branch_commit == ""
@@ -234,8 +264,12 @@ async def test_failed_intake_does_not_advance_and_replays() -> None:
         return True
 
     second = await run_poll(
-        reader=reader, watermark=watermark, audit=audit, access=_authorized(),
-        allowed_fields=_ALLOWED, intake=ok,
+        reader=reader,
+        watermark=watermark,
+        audit=audit,
+        access=_authorized(),
+        allowed_fields=_ALLOWED,
+        intake=ok,
     )
     assert [e.kind for e in second.events] == [NEW]
     assert attempts == ["A", "A"]
@@ -246,15 +280,20 @@ async def test_flags_select_categories() -> None:
     reader = _Reader([_ticket("A", status="open")])
     watermark = _Watermark()
     await run_poll(
-        reader=reader, watermark=watermark, audit=_Audit(), access=_authorized(),
+        reader=reader,
+        watermark=watermark,
+        audit=_Audit(),
+        access=_authorized(),
         allowed_fields=_ALLOWED,
     )
     reader.set([_ticket("A", status="in_progress")], head="commit-2")
     report = await run_poll(
-        reader=reader, watermark=watermark, audit=_Audit(), access=_authorized(),
-        allowed_fields=_ALLOWED, flags=PollFlags(
-            report_new=False, report_field_changes=False, report_status_changes=False
-        ),
+        reader=reader,
+        watermark=watermark,
+        audit=_Audit(),
+        access=_authorized(),
+        allowed_fields=_ALLOWED,
+        flags=PollFlags(report_new=False, report_field_changes=False, report_status_changes=False),
     )
     assert report.events == ()
 
@@ -262,3 +301,35 @@ async def test_flags_select_categories() -> None:
 def test_redact_keeps_only_allowlisted_fields() -> None:
     result = redact({"a": 1, "b": 2, "c": 3}, ("a", "c"))
     assert result == {"a": 1, "c": 3}
+
+
+@pytest.mark.asyncio
+async def test_change_report_leaves_the_ticket_new_for_the_next_intake_pass() -> None:
+    reader = _Reader([_ticket("A")])
+    cursor = _Watermark()
+
+    report = await run_poll(
+        reader=reader,
+        watermark=ReadOnlyWatermark(cursor),
+        audit=_Audit(),
+        access=_authorized(),
+        allowed_fields=_ALLOWED,
+    )
+    assert [e.kind for e in report.events] == [NEW]
+    assert cursor.saves == 0
+
+    started: list[str] = []
+
+    async def intake(event: PollEvent) -> bool:
+        started.append(event.ticket_id)
+        return True
+
+    await run_poll(
+        reader=reader,
+        watermark=cursor,
+        audit=_Audit(),
+        access=_authorized(),
+        allowed_fields=_ALLOWED,
+        intake=intake,
+    )
+    assert started == ["A"]

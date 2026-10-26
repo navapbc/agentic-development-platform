@@ -32,6 +32,7 @@ class GateContext:
     repo_root: str = ""
     subject: str = ""
     context_summary: str = ""
+    acceptance_criteria: str = ""
     params: dict[str, Any] = field(default_factory=dict)
 
 

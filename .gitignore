@@ -6,6 +6,8 @@
 *.key
 
 # Per-environment config edited by the operator (ship the .example template only)
+config/*/checks.yaml
+!config/*/checks.yaml.example
 config/*/github.yaml
 !config/*/github.yaml.example
 config/*/jira.yaml
@@ -24,6 +26,10 @@ config/*/review-signing-key
 config/*/review-signing-key.pub
 config/*/authorship-signing-key
 config/*/authorship-signing-key.pub
+
+# Project compose overlays (the platform's own compose files stay tracked)
+compose.*.yaml
+!compose.override.yaml
 
 # AWS / credentials
 .aws/
@@ -44,6 +50,7 @@ venv/
 # Local data / evidence
 data/
 evidence/
+!/schemas/evidence/
 repository_indexes/**/index/
 *.sqlite
 *.db
@@ -59,6 +66,7 @@ vendor/bin/*
 .terraform.lock.hcl
 *.tfvars
 !*.tfvars.example
+backend.hcl
 *.tfplan
 crash.log
 crash.*.log
@@ -76,3 +84,5 @@ crash.*.log
 # Generated local k8s secret env (derived from .env at deploy time)
 deploy/kubernetes/local/*.secret.env
 .context/compound-engineering/
+
+.sast/

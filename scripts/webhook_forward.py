@@ -12,9 +12,10 @@ import argparse
 import json
 import os
 import shutil
-import subprocess
 import sys
+from typing import Any
 
+from services import process
 from services.integration.credentials import ConfigError, SecretNotFoundError
 from services.integration.github.credentials import (
     UnconfiguredRepositoryError,
@@ -26,8 +27,8 @@ from scripts.config import get_settings
 EXTENSION = "cli/gh-webhook"
 
 
-def _run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(cmd, text=True, check=False, **kwargs)  # type: ignore[call-overload]
+def _run(cmd: list[str], *, timeout: float | None, **kwargs: Any) -> process.CompletedProcess[str]:
+    return process.run(cmd, timeout=timeout, text=True, check=False, **kwargs)
 
 
 def _resolve_gh() -> str | None:
@@ -38,11 +39,20 @@ def _resolve_gh() -> str | None:
 
 
 def _ensure_extension(gh: str) -> bool:
-    listed = _run([gh, "extension", "list"], capture_output=True)
+    listed = _run(
+        [gh, "extension", "list"],
+        timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS,
+        capture_output=True,
+    )
     if "gh-webhook" in (listed.stdout or ""):
         return True
     print(f"[webhook] installing the {EXTENSION} extension")
-    return _run([gh, "extension", "install", EXTENSION]).returncode == 0
+    return (
+        _run(
+            [gh, "extension", "install", EXTENSION], timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS
+        ).returncode
+        == 0
+    )
 
 
 def _forward(gh: str, owner_repo: str, url: str, events: str, secret: str) -> int:
@@ -51,11 +61,15 @@ def _forward(gh: str, owner_repo: str, url: str, events: str, secret: str) -> in
         cmd.append(f"--secret={secret}")
     print(f"[webhook] forwarding {events} events from {owner_repo} to {url}")
     print("[webhook] leave this running during the demo, press Ctrl-C to stop")
-    return _run(cmd).returncode
+    return _run(cmd, timeout=None).returncode
 
 
 def _remove(gh: str, owner_repo: str) -> int:
-    listed = _run([gh, "api", f"repos/{owner_repo}/hooks", "--paginate"], capture_output=True)
+    listed = _run(
+        [gh, "api", f"repos/{owner_repo}/hooks", "--paginate"],
+        timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS,
+        capture_output=True,
+    )
     if listed.returncode != 0:
         print(f"[webhook] could not list hooks for {owner_repo}", file=sys.stderr)
         print(listed.stderr or "", file=sys.stderr)
@@ -66,7 +80,10 @@ def _remove(gh: str, owner_repo: str) -> int:
         return 0
     for hook in cli_hooks:
         hook_id = hook["id"]
-        deleted = _run([gh, "api", "-X", "DELETE", f"repos/{owner_repo}/hooks/{hook_id}"])
+        deleted = _run(
+            [gh, "api", "-X", "DELETE", f"repos/{owner_repo}/hooks/{hook_id}"],
+            timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS,
+        )
         if deleted.returncode != 0:
             print(f"[webhook] failed to remove dev hook {hook_id}", file=sys.stderr)
             return deleted.returncode

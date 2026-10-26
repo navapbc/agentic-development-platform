@@ -7,10 +7,9 @@ from services.orchestration.gates.pod_runner import (
     PodEngineSpec,
     _run_script,
     _tail,
+    build_pod_manifest,
     pod_name_for,
 )
-
-pytestmark = pytest.mark.asyncio
 
 
 class _FakePodOps:
@@ -33,6 +32,9 @@ class _FakePodOps:
 
     async def copy_in(self, pod, namespace, source_dir, dest_dir):
         self.copied.append((source_dir, dest_dir))
+
+    async def copy_out(self, pod, namespace, source_dir, dest_dir, manifest_path):
+        return None
 
     async def exec_capture(self, pod, namespace, script):
         self.execed.append(script)
@@ -147,9 +149,7 @@ def test_run_script_disables_tls_verify_for_an_insecure_registry_pull():
 
 
 def test_run_script_keeps_tls_verify_on_by_default_in_image_mode():
-    script = _run_script(
-        _spec(source_path="", image="host.docker.internal:5001/gate-tool:519dd2f")
-    )
+    script = _run_script(_spec(source_path="", image="host.docker.internal:5001/gate-tool:519dd2f"))
     assert "--tls-verify=false" not in script
     assert "buildah from $hostflag" in script
 
@@ -177,3 +177,98 @@ def test_pod_name_is_sanitised_and_bounded():
     assert name.startswith("gate-engine-")
     assert len(name) <= 63
     assert name == name.lower()
+
+
+def _security_context(manifest):
+    return manifest["spec"]["containers"][0]["securityContext"]
+
+
+def test_pod_manifest_is_unprivileged_by_default():
+    manifest = build_pod_manifest("pod-1", "agent-sandbox", "builder:1")
+    assert _security_context(manifest) == {"runAsUser": 0}
+
+
+def test_pod_manifest_grants_privilege_when_requested():
+    manifest = build_pod_manifest("pod-1", "agent-sandbox", "builder:1", True)
+    assert _security_context(manifest) == {"runAsUser": 0, "privileged": True}
+
+
+async def test_runner_propagates_privilege_to_the_manifest():
+    ops = _FakePodOps()
+    runner = PodEngineRunner(ops, privileged=True)
+    await runner.run_engine(
+        PodEngineSpec(
+            name="gate",
+            execution_id="exec-1",
+            checkout_dir="/tmp/checkout",
+            entrypoint="run.sh",
+            base_ref="main",
+            image="img",
+        )
+    )
+    assert _security_context(ops.created[0])["privileged"] is True
+
+
+class _FakeProc:
+    def __init__(self, returncode=0, stderr=b""):
+        self.returncode = returncode
+        self.stdout = None
+        self._stderr = stderr
+
+    def communicate(self):
+        return b"", self._stderr
+
+    def wait(self):
+        return self.returncode
+
+
+def _patch_copy_out(monkeypatch, *, exec_rc=0, tar_rc=0, stderr=b""):
+    """Stand in for the kubectl-exec-into-tar pipe so the wiring can be asserted without a pod."""
+    import subprocess
+
+    from services import process
+
+    calls: list[list[str]] = []
+
+    def fake_popen(argv, **kwargs):
+        calls.append(argv)
+        if argv[0] == "tar":
+            return _FakeProc(tar_rc)
+        return _FakeProc(exec_rc, stderr)
+
+    monkeypatch.setattr(process, "resolve_executable", lambda name, path=None: name)
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    return calls
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_copy_out_streams_the_manifest_through_tar_into_the_destination(monkeypatch):
+    """copy_out is how a verified fix leaves the pod, so its wiring must be pinned."""
+    from services.orchestration.gates.pod_runner import KubectlPodOps
+
+    calls = _patch_copy_out(monkeypatch)
+    await KubectlPodOps().copy_out("pod-1", "ns", "/workspace", "/staging", "/workspace/.list")
+
+    exec_argv, tar_argv = calls
+    assert exec_argv[:2] == ["kubectl", "exec"]
+    assert "pod-1" in exec_argv and "ns" in exec_argv
+    script = exec_argv[-1]
+    assert "tar cf -" in script
+    assert "--ignore-failed-read" in script
+    assert "-C /workspace" in script
+    assert "-T /workspace/.list" in script
+    assert tar_argv == ["tar", "xmf", "-", "--no-same-owner", "-C", "/staging"]
+
+
+@pytest.mark.parametrize(("exec_rc", "tar_rc"), [(1, 0), (0, 1), (1, 1)])
+@pytest.mark.asyncio(loop_scope="function")
+async def test_a_failed_copy_out_is_raised_rather_than_silently_staging_nothing(
+    monkeypatch, exec_rc, tar_rc
+):
+    from services.orchestration.gates.pod_runner import KubectlPodOps
+
+    _patch_copy_out(monkeypatch, exec_rc=exec_rc, tar_rc=tar_rc, stderr=b"tar: cannot read")
+
+    with pytest.raises(PodEngineError):
+        await KubectlPodOps().copy_out("pod-1", "ns", "/workspace", "/staging", "/workspace/.list")

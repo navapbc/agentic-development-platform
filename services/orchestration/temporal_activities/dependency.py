@@ -189,9 +189,7 @@ async def signal_dependency_ready(
         return SignalDependencyReadyResult(0)
 
     settings = get_settings()
-    client = await Client.connect(
-        settings.temporal_host, namespace=settings.temporal_namespace
-    )
+    client = await Client.connect(settings.temporal_host, namespace=settings.temporal_namespace)
     signaled = 0
     for execution in await PostgresExecutionSeeder().list_active_executions():
         if execution.task_id in dependent_ids and execution.workflow_id:
@@ -199,4 +197,3 @@ async def signal_dependency_ready(
             await handle.signal(RESUME_SIGNAL, ResumeOn.DEPENDENCY_READY.value)
             signaled += 1
     return SignalDependencyReadyResult(signaled)
-

@@ -48,7 +48,6 @@ class RepoReader(Protocol):
     async def read_pr_feedback(self, repo: str, number: int) -> PRFeedback: ...
 
 
-
 class ContextFetch(Protocol):
     async def __call__(self, repo: str, commit: str, focus: str) -> dict[str, Any]: ...
 
@@ -75,9 +74,7 @@ class ReadOnlyToolset:
         gate = PostgresSequenceGate()
         return cls(
             jira=ProjectRoutingJiraReader(resolved),
-            github=GitHubMediator.from_settings(
-                build_git_host(resolved), ledger, gate, resolved
-            ),
+            github=GitHubMediator.from_settings(build_git_host(resolved), ledger, gate, resolved),
             evidence=PostgresEvidenceReader(),
             context_fetch=fetch_context_package,
             acceptance_field=acceptance_field(resolved),

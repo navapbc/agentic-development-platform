@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import TypedDict
 
@@ -23,14 +24,27 @@ _FAILURE_MARKERS = (
     "security",
     "issue",
     "shell=",
+    # Prettier and eslint name the offending file on its own "[warn] <path>" line, which carries
+    # no other marker and is what the repair agent needs to locate the change.
+    "[warn]",
 )
+
+# eslint's stylish output names the file on a bare path line above its violations, and that line
+# carries no marker of its own, so it is kept by adjacency to the violation it heads.
+_FILE_HEADING = re.compile(r"^\S+\.[A-Za-z][A-Za-z0-9]{0,5}$")
 
 
 def failure_summary(log_text: str, *, max_lines: int = 20) -> str:
     """Pick the failure-relevant lines from a check log, keeping the last max_lines."""
-    picked = [
-        line for line in log_text.splitlines() if any(m in line.lower() for m in _FAILURE_MARKERS)
-    ]
+    lines = log_text.splitlines()
+    picked: list[str] = []
+    for index, line in enumerate(lines):
+        if not any(m in line.lower() for m in _FAILURE_MARKERS):
+            continue
+        heading = lines[index - 1] if index else ""
+        if _FILE_HEADING.match(heading) and (not picked or picked[-1] != heading):
+            picked.append(heading)
+        picked.append(line)
     return "\n".join(picked[-max_lines:])
 
 
@@ -41,7 +55,18 @@ BUILD = "build"
 UNKNOWN = "unknown"
 
 _TEST_MARKERS = ("AssertionError", "FAILED", "assert ", "pytest", "test failed")
-_LINT_MARKERS = ("ruff", "flake8", "lint", "E501", "would reformat", "format")
+_LINT_MARKERS = (
+    "ruff",
+    "flake8",
+    "lint",
+    "E501",
+    "would reformat",
+    "format",
+    "prettier",
+    "code style",
+    "eslint",
+    "✖",
+)
 _SECURITY_MARKERS = (
     ">> issue:",
     "security issue",
@@ -56,6 +81,8 @@ _BUILD_MARKERS = (
     "NameError",
     "BUILD FAILURE",
     "compilation",
+    # tsc reports type errors as "file.ts(1,2): error TS2322: ...".
+    "error TS",
 )
 
 _INSTRUCTIONS = {
@@ -65,8 +92,10 @@ _INSTRUCTIONS = {
         "test to hide the failure.\n\n{summary}"
     ),
     LINT: (
-        "The CI build failed on a lint or format check. Apply the formatter and fix the lint "
-        "violations reported below without changing behaviour.\n\n{summary}"
+        "The CI build failed on a lint or format check. Fix the violations reported below "
+        "without changing behaviour, using the project's own tooling rather than a formatter "
+        "from another language's ecosystem. Change only the files named in the report."
+        "{fix_hint}\n\n{summary}"
     ),
     SECURITY: (
         "The CI build failed a security scan. Fix the security finding reported below by "
@@ -105,6 +134,7 @@ class _RepairState(TypedDict):
     category: str
     status: str
     instruction: str
+    fix_command: str
 
 
 def _classify(state: _RepairState) -> _RepairState:
@@ -121,11 +151,58 @@ def _route(state: _RepairState) -> str:
 
 def _plan(state: _RepairState) -> _RepairState:
     template = _INSTRUCTIONS[state["category"]]
+    fix_command = state.get("fix_command") or ""
+    fix_hint = (
+        f" The project declares its own fix command, so run `{fix_command}` before editing by hand."
+        if fix_command
+        else ""
+    )
     return {
         **state,
         "status": ACTIONABLE,
-        "instruction": template.format(summary=state["summary"].strip()),
+        "instruction": template.format(summary=state["summary"].strip(), fix_hint=fix_hint),
     }
+
+
+_PATH_PATTERN = re.compile(r"[\w./\\@-]+\.[A-Za-z][A-Za-z0-9]{0,5}")
+_PATH_NOISE = ("node_modules/", ".git/", "//")
+_PROSE_NOISE = ("e.g", "i.e", "etc")
+
+
+def failing_files(summary: str) -> tuple[str, ...]:
+    """Extract the source paths a check named, used to bound what a repair may touch."""
+    found: list[str] = []
+    for raw in _PATH_PATTERN.findall(summary or ""):
+        candidate = raw.strip().strip("'\"`,;:()[]").removeprefix("./")
+        if "/" not in candidate and "." not in candidate:
+            continue
+        if not candidate or any(noise in candidate for noise in _PATH_NOISE):
+            continue
+        if candidate.startswith("-") or candidate.endswith("."):
+            continue
+        if candidate.lower() in _PROSE_NOISE:
+            continue
+        if candidate not in found:
+            found.append(candidate)
+    return tuple(found)
+
+
+def in_repair_scope(changed_path: str, scope: tuple[str, ...]) -> bool:
+    """A changed file is in scope when it matches a path the failure named.
+
+    An empty scope names no file, so it constrains nothing and every path matches. Callers decide
+    what an unconstrained scope means. `_apply_staged_files` treats it as fail-closed and copies
+    nothing, because applying every file a project fix command touched is the whole-tree rewrite
+    this scoping exists to prevent.
+
+    A scope entry may be the shorter path, because a check reports files relative to its own
+    working directory while the workspace sees them relative to the repository root. The reverse
+    never holds, so a changed path that merely ends with a scope entry's parent is not a match.
+    """
+    if not scope:
+        return True
+    normalised = changed_path.removeprefix("./")
+    return any(normalised == entry or normalised.endswith("/" + entry) for entry in scope)
 
 
 def _abort(state: _RepairState) -> _RepairState:
@@ -147,9 +224,15 @@ def build_repair_graph():
 _GRAPH = build_repair_graph()
 
 
-def plan_repair(failure_summary: str) -> RepairPlan:
+def plan_repair(failure_summary: str, *, fix_command: str = "") -> RepairPlan:
     final = _GRAPH.invoke(
-        {"summary": failure_summary, "category": "", "status": "", "instruction": ""}
+        {
+            "summary": failure_summary,
+            "category": "",
+            "status": "",
+            "instruction": "",
+            "fix_command": fix_command,
+        }
     )
     return RepairPlan(
         status=final["status"],
@@ -192,9 +275,9 @@ def _model_instruction(failure_summary: str, category: str, *, runner=None, sett
 
 
 def analyze_failure(
-    failure_summary: str, *, use_model: bool, runner=None, settings=None
+    failure_summary: str, *, use_model: bool, runner=None, settings=None, fix_command: str = ""
 ) -> RepairPlan:
-    base = plan_repair(failure_summary)
+    base = plan_repair(failure_summary, fix_command=fix_command)
     if base.status != ACTIONABLE or not use_model:
         return base
     try:

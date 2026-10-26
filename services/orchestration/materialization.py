@@ -4,18 +4,29 @@ from __future__ import annotations
 
 import asyncio
 import re
-import subprocess
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 from adapters.interfaces.git_host import CommitRequest, agent_branch_name
 from scripts.config import Settings, get_settings
 
+from services import process
 from services.coordination.orphans import BRANCH, STAGING, OrphanArtifact, OrphanRegistry
 from services.integration.github.mediator import RepoNotAllowedError
 
 _SLUG = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _within(path: str, allowed: Sequence[str]) -> bool:
+    return any(path == entry or path.startswith(entry.rstrip("/") + "/") for entry in allowed)
+
+
+@dataclass(frozen=True)
+class StagedChange:
+    tree: str
+    changed: bool
+    excluded: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -36,17 +47,16 @@ def _slug(value: str) -> str:
 
 
 def _run_git(args: list[str], cwd: str | None) -> str:
-    proc = subprocess.run(
+    proc = process.run(
         ["git", "-c", "safe.directory=*", *args],
+        timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS,
         cwd=cwd,
         capture_output=True,
         text=True,
     )
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout).strip()
-        raise RuntimeError(
-            f"git {' '.join(args)} failed (exit {proc.returncode}): {detail}"
-        )
+        raise RuntimeError(f"git {' '.join(args)} failed (exit {proc.returncode}): {detail}")
     return proc.stdout.rstrip()
 
 
@@ -55,8 +65,12 @@ async def _git(*args: str, cwd: str | None = None) -> str:
 
 
 def _run_git_ok(args: list[str], cwd: str | None) -> bool:
-    proc = subprocess.run(
-        ["git", "-c", "safe.directory=*", *args], cwd=cwd, capture_output=True, text=True
+    proc = process.run(
+        ["git", "-c", "safe.directory=*", *args],
+        timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
     )
     return proc.returncode == 0
 
@@ -159,7 +173,7 @@ class WorkspaceMaterializer:
                 await _git("fetch", "--quiet", "origin", branch, cwd=str(path))
         else:
             path.parent.mkdir(parents=True, exist_ok=True)
-            await _git("clone", "--quiet", self.remote_url_for(repo), str(path))
+            await _git("clone", "--quiet", "--", self.remote_url_for(repo), str(path))
         await _git(
             "-c",
             "advice.detachedHead=false",
@@ -174,35 +188,63 @@ class WorkspaceMaterializer:
             await _git("reset", "--hard", commit_sha, cwd=str(path))
             await _git("clean", "-fd", cwd=str(path))
 
-    async def collect_changes(self, workspace: MaterializedWorkspace) -> dict[str, str]:
-        path = Path(workspace.path)
-        out = await _git("status", "--porcelain=v1", "--no-renames", cwd=str(path))
-        files: dict[str, str] = {}
-        for line in out.splitlines():
-            if not line.strip():
-                continue
-            code, rel = line[:2], line[3:].strip()
-            if "D" in code:
-                continue
-            candidate = path / rel
-            if candidate.is_file():
-                files[rel] = candidate.read_text(encoding="utf-8")
-        return files
+    async def changed_paths(self, workspace: MaterializedWorkspace) -> list[str]:
+        """Repository-relative paths the workspace has changed, deletions included.
+
+        `-z` is what makes a path outside ASCII usable, because `core.quotePath` would otherwise
+        C-quote it into something no caller can open.
+        """
+        out = await _git("status", "--porcelain=v1", "-z", "--no-renames", cwd=str(workspace.path))
+        paths: list[str] = []
+        for entry in out.split("\0"):
+            if len(entry) > 3:
+                paths.append(entry[3:])
+        return sorted(paths)
+
+    async def stage(
+        self, workspace: MaterializedWorkspace, *, allowed_paths: Sequence[str] = ()
+    ) -> StagedChange:
+        """Stage the workspace, limited to `allowed_paths` when the ticket declared any.
+
+        Build tooling rewrites tracked files the ticket never asked for, so an unrestricted
+        `git add -A` publishes whatever the workspace happens to hold. Declared paths are
+        intersected with the changed set before reaching git, because `git add -A -- <path>`
+        aborts on a pathspec that matches nothing. The index is reset to HEAD first, since the
+        implementation activity stages this same workspace before the commit activity runs.
+        """
+        path = str(workspace.path)
+        if not allowed_paths:
+            await _git("add", "-A", cwd=path)
+            excluded: tuple[str, ...] = ()
+        else:
+            changed = await self.changed_paths(workspace)
+            admitted = [p for p in changed if _within(p, allowed_paths)]
+            excluded = tuple(p for p in changed if p not in set(admitted))
+            await _git("read-tree", "HEAD", cwd=path)
+            if admitted:
+                await _git("add", "-A", "--", *admitted, cwd=path)
+        tree = await _git("write-tree", cwd=path)
+        head_tree = await _git("rev-parse", "HEAD^{tree}", cwd=path)
+        return StagedChange(tree=tree, changed=tree != head_tree, excluded=excluded)
 
     async def build_commit_request(
         self,
         workspace: MaterializedWorkspace,
         *,
         message: str,
-        files: Mapping[str, str] | None = None,
+        staged: StagedChange | None = None,
+        allowed_paths: Sequence[str] = (),
     ) -> CommitRequest:
-        resolved = dict(files) if files is not None else await self.collect_changes(workspace)
+        resolved = staged
+        if resolved is None:
+            resolved = await self.stage(workspace, allowed_paths=allowed_paths)
         return CommitRequest(
             repo=workspace.repo,
             branch=workspace.branch,
             base=workspace.base,
             message=message,
-            files=resolved,
+            workspace=str(workspace.path),
+            tree=resolved.tree,
             task_id=workspace.task_id,
             execution_id=workspace.execution_id,
         )

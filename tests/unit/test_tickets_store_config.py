@@ -89,9 +89,7 @@ def test_missing_write_role_fails() -> None:
 
 
 def test_committed_example_parses() -> None:
-    example = (
-        Path(__file__).resolve().parents[2] / "config" / "local" / "tickets.yaml.example"
-    )
+    example = Path(__file__).resolve().parents[2] / "config" / "local" / "tickets.yaml.example"
     raw = yaml.safe_load(example.read_text(encoding="utf-8"))
     config = parse_tickets_store_config(raw)
     assert config.roles.read_only != config.roles.write

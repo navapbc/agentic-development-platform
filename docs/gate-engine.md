@@ -131,6 +131,54 @@ gates:
       profile: cms-ars
 ```
 
+## Pod privilege
+
+Every pod path, the external gates, the project checks, and the built-in scanners below, unpacks an image with buildah inside the pod. Some clusters refuse that unprivileged, so `GATE_ENGINE_PRIVILEGED` sets `securityContext.privileged` on the pods the gate engine creates.
+
+```bash
+GATE_ENGINE_PRIVILEGED=true
+```
+
+It defaults to `false` and should stay there wherever the cluster allows it, because a privileged container gets host device access and the host kernel's full capability set, which removes most of the isolation the pod would otherwise provide. Turn it on only when image unpacking fails without it, as it does under the local k3s used for development, and prefer a cluster configured for rootless unpacking in any shared environment.
+
+## Running the built-in scanners from their own images
+
+The `semgrep` and `trivy` gates are built in, so they carry no engine config. They read `SCANNER_EXECUTION` instead, which follows the same subprocess-or-pod split the external gates use.
+
+`subprocess`, the default, invokes the scanner binary on the worker. When the binary is absent the gate reports a `ScannerError` naming the binary and pointing at pod mode, rather than surfacing a bare `FileNotFoundError`.
+
+`pod` runs the scanner from the image its maintainers publish, in an ephemeral pod, so the worker image carries no scanner binary and the platform's release stays decoupled from theirs. The checkout is copied into the pod at `/workspace`, and the location fields in the tool's findings are rewritten back to the worker's checkout path so results match a subprocess run.
+
+```bash
+SCANNER_EXECUTION=pod
+SEMGREP_IMAGE=docker.io/semgrep/semgrep:1.177.0@sha256:acaac22ffc7b7cc5926de0751b223bce0b2491c33d18422fa72f632c78d81198
+TRIVY_IMAGE=docker.io/aquasec/trivy:0.74.0@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969
+```
+
+Both image settings must be fully qualified, because the builder resolves short names only for official Docker Hub images, so an unqualified `semgrep/semgrep` fails the pull. The defaults above carry a digest as well as a tag, because a tag is mutable and its maintainer can repush it, and the digest is what makes a scan reproducible. Keep the digest when you move a version, and resolve the new one from the registry rather than dropping to a bare tag. Nothing verifies image provenance beyond the reference you supply.
+
+### Infrastructure failure is retried, not recorded as a finding
+
+A scan that cannot run is not a clean scan. The mediator re-raises `ScannerUnavailableError` so the activity retries, and turns every other exception into a finding, which fails the gate closed. Pod mode therefore classifies both of its infrastructure failures as unavailability.
+
+Losing the pod itself raises `PodEngineError` from the transport. Losing the scanner image does not, because the pull runs inside the pod and returns an exit code like any other command. The in-pod script reserves exit code 121 for that case, which neither scanner can produce, and the runner maps it to the same unavailability. Both log a warning naming the scanner and the reason, because a retried scan leaves no gate result to read.
+
+### Only the change can fail the gate
+
+The scanners read the whole checkout, so on an established repository the pre-existing findings would set every scanner verdict to `block` and no pull request would ever be promoted. `scan_scope` decides which of those findings may fail the gate.
+
+```bash
+SCAN_SCOPE=changed
+```
+
+`changed`, the default, lets a finding set a scanner verdict only when it sits in a file the change touched. The changed set is `git diff --name-only -z <base_ref>...<ref>` in the checkout, so the comparison is against the merge base and a file that moved on the base branch after the change branched off is not counted as this change's work. `repository` restores the earlier behaviour, where any finding anywhere fails the gate, which is what you want for a scheduled audit rather than a pull request.
+
+Scoping applies to the verdict and to `blocking_count`, which is the count of findings that could fail the gate and so agrees with the verdicts. Every finding the tools report is still written to the evidence record, and `severity_counts` still covers all of them, so the pre-existing backlog stays auditable rather than being discarded.
+
+Attribution is fail-safe, and each fallback logs a warning naming its cause, because silently reverting to repository scope would restore the blocking this setting removes with no signal that attribution had broken. A finding keeps its power to block when `base_ref` or `ref` is empty, when the `git` call fails or cannot start, when the diff reports no paths at all, when the finding carries no location, and when its location names something that is not a file in the checkout. The empty diff is included because a genuine no-op change and a mis-scoped range look identical from here, and only one of them is safe to let through. The last case covers trivy, which targets an ecosystem rather than a file for some findings, and which would otherwise be excluded for matching no changed path.
+
+The default changes existing behaviour. Before this setting, `scan_change` let any finding anywhere fail the gate, and that is now what `repository` means rather than what you get by default. The only caller is the draft pull request workflow, which is the case the narrower default is for. Set `SCAN_SCOPE=repository` on any deployment that calls `scan_change` for a repository-wide audit rather than for a single change, because such a caller will otherwise see verdicts turn to `pass` once its backlog stops being attributable.
+
 ## Integrating a different engine
 
 Because the boundary is the invocation and JSON contract, another review or classifier workflow integrates by configuration alone. Set `mode` and its source fields at the other engine, and set `review_entrypoint` and `classifier_entrypoint` to its harness paths. The engine reads the `--against` ref and the gateway env, and writes the review or classifier JSON. No adapter change is needed, and `ai-common-workflows` stands as the worked example rather than a hard dependency.

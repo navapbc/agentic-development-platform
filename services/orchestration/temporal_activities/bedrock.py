@@ -4,14 +4,28 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any
 
 import httpx
 from observability import langfuse_request_metadata, record_generation, stage_span
 from scripts.config import get_settings
 from temporalio import activity
+from temporalio.common import RetryPolicy
+from temporalio.exceptions import ApplicationError
 
 from services.prompts import load_prompt
+
+# The gateway retries a throttled or failed Claude call against Claude before it answers here,
+# so this budget sits on top of that and covers the gateway itself being unreachable.
+MODEL_RETRY_POLICY = RetryPolicy(
+    initial_interval=timedelta(seconds=2),
+    backoff_coefficient=2.0,
+    maximum_interval=timedelta(seconds=60),
+    maximum_attempts=6,
+)
+
+_RETRYABLE_STATUS = frozenset({408, 429, 500, 502, 503, 504})
 
 
 @dataclass
@@ -35,6 +49,15 @@ class ModelResponse:
 
 def _litellm_auth_headers(settings: Any) -> dict[str, str]:
     return {"Authorization": f"Bearer {settings.litellm_master_key}"}
+
+
+def _raise_for_status(resp: httpx.Response) -> None:
+    if resp.status_code < 400:
+        return
+    detail = f"litellm returned {resp.status_code}: {resp.text[:500]}"
+    if resp.status_code in _RETRYABLE_STATUS:
+        raise ApplicationError(detail, type="LiteLLMTransient")
+    raise ApplicationError(detail, type="LiteLLMRejected", non_retryable=True)
 
 
 @activity.defn
@@ -70,7 +93,7 @@ async def invoke_model(req: ModelRequest) -> ModelResponse:
     ) as span:
         async with httpx.AsyncClient(base_url=settings.litellm_base_url, timeout=120.0) as client:
             resp = await client.post("/v1/chat/completions", json=payload, headers=headers)
-            resp.raise_for_status()
+            _raise_for_status(resp)
             data = resp.json()
 
         choice = (data.get("choices") or [{}])[0]

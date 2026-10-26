@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
 from observability import (
@@ -249,6 +250,12 @@ async def main() -> None:
     instrument_llm_tracing()
     install_litellm_header_propagation(settings.rebar_llm_base_url)
     _warm_acli_auth(settings)
+    from scripts.aws_clients import configure_aws_fips
+
+    configure_aws_fips(settings)
+    from database.schema_guard import wait_for_platform_schema
+
+    await wait_for_platform_schema(settings.database_url)
     log.info(
         "connecting to Temporal at %s (ns=%s)",
         settings.temporal_host,
@@ -281,6 +288,11 @@ async def main() -> None:
 
         authorship_signing_preflight(settings)
 
+    if role in (WORKER_ROLE_ACTIVITY, WORKER_ROLE_REVIEW, WORKER_ROLE_ALL):
+        from services.review.evidence import evidence_object_store_preflight
+
+        evidence_object_store_preflight(settings)
+
     workers = [build_worker(client, task_queue, role)]
     queues = [task_queue]
     if role == WORKER_ROLE_ALL:
@@ -293,7 +305,22 @@ async def main() -> None:
         role,
         settings.agent_build_id,
     )
-    await asyncio.gather(*(worker.run() for worker in workers))
+    heartbeat_task = None
+    if settings.health_heartbeat_file:
+        from services.healthcheck import heartbeat
+
+        heartbeat_task = asyncio.create_task(
+            heartbeat(
+                Path(settings.health_heartbeat_file),
+                interval=settings.health_heartbeat_interval_seconds,
+                alive=lambda: all(worker.is_running for worker in workers),
+            )
+        )
+    try:
+        await asyncio.gather(*(worker.run() for worker in workers))
+    finally:
+        if heartbeat_task is not None:
+            heartbeat_task.cancel()
 
 
 if __name__ == "__main__":

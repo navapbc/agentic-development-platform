@@ -79,9 +79,7 @@ class TemporalRepairSignaller:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
 
-    async def signal_repair_decision(
-        self, workflow_id: str, *, retry: bool, actor: str
-    ) -> None:
+    async def signal_repair_decision(self, workflow_id: str, *, retry: bool, actor: str) -> None:
         from temporalio.client import Client
         from temporalio.service import RPCError, RPCStatusCode
 

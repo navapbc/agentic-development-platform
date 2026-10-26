@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -35,7 +34,8 @@ class CommitRequest:
     branch: str
     base: str
     message: str
-    files: Mapping[str, str]
+    workspace: str
+    tree: str
     task_id: str
     execution_id: str
     author_name: str = "agent-platform"
@@ -49,6 +49,7 @@ class CommitResult:
     commit_sha: str
     pushed: bool
     replayed: bool
+    published_tree: str
 
 
 @dataclass(frozen=True)
@@ -120,6 +121,16 @@ def reuse_from_pull_request(repo: str, head: str, pr: PullRequest | None) -> Pub
 
 def agent_branch_name(task_id: str) -> str:
     return f"agent/{task_id}"
+
+
+def author_env(request: CommitRequest) -> dict[str, str]:
+    """Identity for `git commit-tree`, which reads no `user.name` fallback of its own."""
+    return {
+        "GIT_AUTHOR_NAME": request.author_name,
+        "GIT_AUTHOR_EMAIL": request.author_email,
+        "GIT_COMMITTER_NAME": request.author_name,
+        "GIT_COMMITTER_EMAIL": request.author_email,
+    }
 
 
 class GitHost(Protocol):

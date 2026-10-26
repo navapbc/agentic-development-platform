@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Any
 
+import structlog
 from adapters.interfaces.git_host import (
     BranchRef,
     CodeHit,
@@ -26,6 +27,16 @@ from services.coordination.sequencing import (
     SequenceDecision,
     SequenceGate,
 )
+
+log = structlog.get_logger("github_mediator")
+
+
+class PublishedTreeMismatch(Exception):
+    """The tree a host published is not the tree the platform checked.
+
+    Unrecoverable rather than advisory. Reporting a passing check against content the pull
+    request does not carry is the failure this contract exists to prevent.
+    """
 
 
 class RepoNotAllowedError(Exception):
@@ -116,13 +127,27 @@ class GitHubMediator:
             request.task_id,
             request.execution_id,
             "github.commit",
-            f"{request.repo}:{request.branch}",
+            f"{request.repo}:{request.branch}@{request.tree}",
         )
 
         async def effect() -> dict[str, Any]:
             return asdict(await self.backend.commit_and_push(request))
 
-        return CommitResult(**await self._gated(action, ref, effect))
+        result = CommitResult(**await self._gated(action, ref, effect))
+        if result.published_tree != request.tree:
+            log.error(
+                "publish.tree_mismatch",
+                repo=result.repo,
+                branch=result.branch,
+                commit_sha=result.commit_sha,
+                verified_tree=request.tree,
+                published_tree=result.published_tree,
+            )
+            raise PublishedTreeMismatch(
+                f"{result.repo}:{result.branch} published {result.published_tree}, "
+                f"checks ran against {request.tree}"
+            )
+        return result
 
     async def open_draft_pr(
         self,
@@ -188,6 +213,8 @@ class GitHubMediator:
         reserved = await self.ledger.reserve(ref)
         if reserved.replayed:
             return reserved.result
+        if reserved.reentrant:
+            action = replace(action, reentrant=True)
         decision = await self.gate.admit(action)
         if decision.outcome != ADMITTED:
             raise StaleActionError(decision)

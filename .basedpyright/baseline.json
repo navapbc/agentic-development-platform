@@ -170,24 +170,6 @@
                 }
             }
         ],
-        "./services/repository_intelligence/providers/lsp/lsp_client.py": [
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 30,
-                    "endColumn": 44,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 46,
-                    "endColumn": 59,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./services/repository_intelligence/providers/lsp/lsp_provider.py": [
             {
                 "code": "reportCallIssue",
@@ -458,14 +440,6 @@
                 "range": {
                     "startColumn": 15,
                     "endColumn": 31,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportOptionalSubscript",
-                "range": {
-                    "startColumn": 23,
-                    "endColumn": 45,
                     "lineCount": 1
                 }
             },

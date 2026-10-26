@@ -76,9 +76,7 @@ def _redact_result(result: Any) -> Any:
 
 
 class _Redactor(CustomLogger):
-    def logging_hook(
-        self, kwargs: dict, result: Any, call_type: str
-    ) -> tuple[dict, Any]:
+    def logging_hook(self, kwargs: dict, result: Any, call_type: str) -> tuple[dict, Any]:
         if isinstance(kwargs.get("messages"), list):
             kwargs["messages"] = _redact_messages(kwargs["messages"])
         return kwargs, _redact_result(result)

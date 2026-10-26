@@ -5,6 +5,10 @@ x-python-service: &python-service
   build:
     context: .
     dockerfile: docker/Dockerfile
+    args:
+      INSTALL_ACLI: ${INSTALL_ACLI:-false}
+      ACLI_VERSION: ${ACLI_VERSION:-}
+      ACLI_SHA256: ${ACLI_SHA256:-}
   env_file: [.env]
   restart: unless-stopped
 
@@ -28,7 +32,7 @@ services:
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./database/init/00-create-multiple-databases.sh:/docker-entrypoint-initdb.d/00-create-multiple-databases.sh:ro
-    ports: ["5432:5432"]
+    ports: ["${POSTGRES_HOST_PORT:-5432}:5432"]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-platform} -d agent_platform"]
       interval: 10s
@@ -49,7 +53,7 @@ services:
       POSTGRES_PWD: ${POSTGRES_PASSWORD:-change-me-locally}
       DBNAME: temporal
       VISIBILITY_DBNAME: temporal_visibility
-    ports: ["7233:7233"]
+    ports: ["${TEMPORAL_HOST_PORT:-7233}:7233"]
     healthcheck:
       test: ["CMD", "tctl", "--address", "temporal:7233", "cluster", "health"]
       interval: 15s
@@ -63,12 +67,19 @@ services:
       TEMPORAL_ADDRESS: temporal:7233
       TEMPORAL_CORS_ORIGINS: http://localhost:3001
     ports: ["3001:8080"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
     restart: unless-stopped
 
   db-migrate:
     <<: *python-service
     command: ["alembic", "upgrade", "head"]
     restart: "no"
+    profiles: ["tasks"]
     environment:
       ALEMBIC_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-platform}:${POSTGRES_PASSWORD:-change-me-locally}@postgres:5432/agent_platform
       DB_MIGRATE_IN_CONTAINER: "1"
@@ -79,70 +90,91 @@ services:
   workflow-worker:
     <<: *python-service
     command: ["python", "-m", "services.orchestration.worker"]
+    healthcheck:
+      test: ["CMD", "python", "-m", "services.healthcheck", "heartbeat", "/tmp/worker.heartbeat", "--max-age", "60"]
+      interval: 30s
+      timeout: 10s
+      start_period: 180s
+      retries: 3
     volumes:
       - ./config/local:/app/config/local:ro
+      - ./config/platform:/app/config/platform:ro
     environment:
       WORKER_ROLE: workflow
       AGENT_BUILD_ID: ${AGENT_BUILD_ID:-dev}
+      HEALTH_HEARTBEAT_FILE: /tmp/worker.heartbeat
       REPO_INTELLIGENCE_URL: http://repo-intelligence:8120
       COORDINATION_URL: http://coordination-service:8130
       JIRA_ACLI_PATH: /app/vendor/bin/acli
       EXECUTION_WORKSPACE_ROOT: /home/appuser/agent-workspaces
+      AWS_USE_FIPS_ENDPOINT: ${AWS_USE_FIPS_ENDPOINT:-false}
     depends_on:
       temporal:
         condition: service_healthy
       postgres:
         condition: service_healthy
-      db-migrate:
-        condition: service_completed_successfully
       litellm:
         condition: service_started
 
   activity-worker:
     <<: *python-service
     command: ["python", "-m", "services.orchestration.worker"]
+    healthcheck:
+      test: ["CMD", "python", "-m", "services.healthcheck", "heartbeat", "/tmp/worker.heartbeat", "--max-age", "60"]
+      interval: 30s
+      timeout: 10s
+      start_period: 180s
+      retries: 3
     volumes:
       - ./config/local:/app/config/local:ro
+      - ./config/platform:/app/config/platform:ro
     environment:
       WORKER_ROLE: activity
       AGENT_BUILD_ID: ${AGENT_BUILD_ID:-dev}
+      HEALTH_HEARTBEAT_FILE: /tmp/worker.heartbeat
       REPO_INTELLIGENCE_URL: http://repo-intelligence:8120
       COORDINATION_URL: http://coordination-service:8130
       JIRA_ACLI_PATH: /app/vendor/bin/acli
       EXECUTION_WORKSPACE_ROOT: /home/appuser/agent-workspaces
+      AWS_USE_FIPS_ENDPOINT: ${AWS_USE_FIPS_ENDPOINT:-false}
     depends_on:
       temporal:
         condition: service_healthy
       postgres:
         condition: service_healthy
-      db-migrate:
-        condition: service_completed_successfully
       litellm:
         condition: service_started
 
   review-worker:
     <<: *python-service
     command: ["python", "-m", "services.orchestration.worker"]
+    healthcheck:
+      test: ["CMD", "python", "-m", "services.healthcheck", "heartbeat", "/tmp/worker.heartbeat", "--max-age", "60"]
+      interval: 30s
+      timeout: 10s
+      start_period: 180s
+      retries: 3
     volumes:
       - ./config/local:/app/config/local:ro
+      - ./config/platform:/app/config/platform:ro
       - ${HOME}/.aws:/home/appuser/.aws:ro
     environment:
       WORKER_ROLE: review
       AGENT_BUILD_ID: ${AGENT_BUILD_ID:-dev}
+      HEALTH_HEARTBEAT_FILE: /tmp/worker.heartbeat
       REPO_INTELLIGENCE_URL: http://repo-intelligence:8120
       COORDINATION_URL: http://coordination-service:8130
       JIRA_ACLI_PATH: /app/vendor/bin/acli
       EXECUTION_WORKSPACE_ROOT: /home/appuser/agent-workspaces
-      AWS_PROFILE: ${AWS_PROFILE}
+      AWS_PROFILE: ${PLATFORM_AWS_PROFILE:-${AWS_PROFILE}}
       AWS_REGION: ${AWS_REGION}
-      REBAR_LLM_CONFIG_FILE: /app/config/local/rebar-review.toml
+      AWS_USE_FIPS_ENDPOINT: ${AWS_USE_FIPS_ENDPOINT:-false}
+      REBAR_LLM_CONFIG_FILE: /app/config/platform/rebar-review.toml
     depends_on:
       temporal:
         condition: service_healthy
       postgres:
         condition: service_healthy
-      db-migrate:
-        condition: service_completed_successfully
       litellm:
         condition: service_started
 
@@ -150,6 +182,7 @@ services:
     <<: *python-service
     command: ["sh", "-c", "python -m scripts.reap --schedule && python -m scripts.intake --schedule"]
     restart: "no"
+    profiles: ["tasks"]
     environment:
       REAP_SCHEDULE_DRY_RUN: "true"
     depends_on:
@@ -163,6 +196,12 @@ services:
   coordination-service:
     <<: *python-service
     command: ["python", "-m", "services.coordination.service"]
+    healthcheck:
+      test: ["CMD", "python", "-m", "services.healthcheck", "http", "8130"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
     depends_on:
       postgres:
         condition: service_healthy
@@ -171,32 +210,48 @@ services:
   langgraph-service:
     <<: *python-service
     command: ["python", "-m", "services.orchestration.langgraph.service"]
+    healthcheck:
+      test: ["CMD", "python", "-m", "services.healthcheck", "http", "8100"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
     volumes:
       - ./config/local:/app/config/local:ro
+      - ./config/platform:/app/config/platform:ro
     depends_on:
       litellm:
         condition: service_started
-    ports: ["8100:8100"]
+    ports: ["${LANGGRAPH_HOST_PORT:-8100}:8100"]
 
   litellm:
     image: ghcr.io/berriai/litellm:v1.97.0@sha256:468c25f35f3e5ec4e414974f00deab93337b1b4d9953cabcfd3722e59415f834
     command: ["--config", "/app/config/litellm-config.yaml", "--port", "4000"]
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4000/health/liveliness', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
     environment:
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
-      AWS_PROFILE: ${AWS_PROFILE}
+      AWS_PROFILE: ${PLATFORM_AWS_PROFILE:-${AWS_PROFILE}}
       AWS_REGION: ${AWS_REGION}
+      AWS_USE_FIPS_ENDPOINT: ${AWS_USE_FIPS_ENDPOINT:-false}
       LANGFUSE_HOST: ${LANGFUSE_HOST:-http://langfuse-web:3000}
       LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY}
       LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY}
     volumes:
-      - ./config/local/litellm-config.yaml:/app/config/litellm-config.yaml:ro
-      - ./config/local/litellm_redaction.py:/app/litellm_redaction.py:ro
+      - ./config/platform/litellm-config.yaml:/app/config/litellm-config.yaml:ro
+      - ./config/platform/litellm_redaction.py:/app/litellm_redaction.py:ro
       - ${HOME}/.aws:/root/.aws:ro
-    ports: ["4000:4000"]
+    ports: ["${LITELLM_HOST_PORT:-4000}:4000"]
     restart: unless-stopped
 
   opa:
-    image: docker.io/openpolicyagent/opa:1.20.1@sha256:39daf255ae7f25d81103f03a0c18308a50b7b5bb67907bed6166f70e24a970ff
+    build:
+      context: .
+      dockerfile: docker/opa.Dockerfile
     command:
       - "run"
       - "--server"
@@ -205,11 +260,11 @@ services:
       - "/policies"
     volumes:
       - ./config/policies:/policies:ro
-    ports: ["8181:8181"]
+    ports: ["${OPA_HOST_PORT:-8181}:8181"]
     restart: unless-stopped
 
   clickhouse:
-    image: docker.io/clickhouse/clickhouse-server:25.12@sha256:8a790dd3468db22b1d4e7b18a176f378ff5ff6053b9c48dd4ea1fa71a24c5ba6
+    image: docker.io/clickhouse/clickhouse-server:26.9.19.9@sha256:bdb5c911a23d92fd364e246ab20b5a0a485f00112f3663fa626b083fb46c146b
     user: "101:101"
     environment:
       CLICKHOUSE_DB: default
@@ -227,12 +282,29 @@ services:
     restart: unless-stopped
 
   redis:
-    image: public.ecr.aws/docker/library/redis:7.4-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
-    command: ["redis-server", "--requirepass", "${REDIS_AUTH:-change-me-locally}", "--maxmemory-policy", "noeviction"]
+    image: valkey/valkey:9.1.2-alpine@sha256:48332870af354a799964c0012ae1194a0bf2bf894eb508f945810596dc2d8d11
+    command:
+      - valkey-server
+      - --rdb-version-check
+      - relaxed
+      - --maxmemory-policy
+      - noeviction
+      - --user
+      - default
+      - "off"
+      - --user
+      - ${REDIS_USERNAME:-langfuse}
+      - "on"
+      - ">${REDIS_AUTH:-change-me-locally}"
+      - "~*"
+      - "+@all"
+    environment:
+      REDIS_USERNAME: ${REDIS_USERNAME:-langfuse}
+      REDIS_AUTH: ${REDIS_AUTH:-change-me-locally}
     volumes:
       - langfuse-redis-data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "valkey-cli --no-auth-warning --user \"$$REDIS_USERNAME\" --pass \"$$REDIS_AUTH\" ping | grep -q PONG"]
       interval: 3s
       timeout: 10s
       retries: 10
@@ -259,7 +331,13 @@ services:
     restart: unless-stopped
 
   langfuse-worker: &langfuse-service
-    image: docker.langfuse.com/langfuse/langfuse-worker:4@sha256:37a7c4251b602e60fd39451e6c252195908bf61837d4e252adbd752c0809e835
+    image: docker.langfuse.com/langfuse/langfuse-worker:4.59.0@sha256:246a3a0fab57810734080d302492aa99d7ed0b6acc909c84b58832074b564175
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3030/api/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s
+      retries: 3
     depends_on: &langfuse-depends-on
       postgres:
         condition: service_healthy
@@ -270,6 +348,7 @@ services:
       minio:
         condition: service_healthy
     environment: &langfuse-env
+      HOSTNAME: 0.0.0.0
       DATABASE_URL: postgresql://${POSTGRES_USER:-platform}:${POSTGRES_PASSWORD:-change-me-locally}@postgres:5432/langfuse
       SALT: ${LANGFUSE_SALT:-change-me-locally}
       ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:-0000000000000000000000000000000000000000000000000000000000000000}
@@ -283,6 +362,7 @@ services:
       CLICKHOUSE_CLUSTER_ENABLED: "false"
       REDIS_HOST: redis
       REDIS_PORT: 6379
+      REDIS_USERNAME: ${REDIS_USERNAME:-langfuse}
       REDIS_AUTH: ${REDIS_AUTH:-change-me-locally}
       LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
       LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
@@ -302,8 +382,14 @@ services:
 
   langfuse-web:
     <<: *langfuse-service
-    image: docker.langfuse.com/langfuse/langfuse:4@sha256:c2350a95d710f726f6466ffd47675eb704d0ff77fa1df1b9e6751ada6134ef75
-    ports: ["3000:3000"]
+    image: docker.langfuse.com/langfuse/langfuse:4.59.0@sha256:48ecae32cd74d3a567588602c144de0ec626daf32dc5f2e831a03cebd0bb2d34
+    ports: ["${LANGFUSE_WEB_HOST_PORT:-3000}:3000"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3000/api/public/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s
+      retries: 3
     environment:
       <<: *langfuse-env
       LANGFUSE_INIT_ORG_ID: ${LANGFUSE_INIT_ORG_ID:-local}
@@ -317,15 +403,16 @@ services:
       LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:-change-me-locally}
 
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.160.0@sha256:799dc6cf12c96192af37b5bdba804da8c10b3bc563b43cb90c3f3c58d9572ad6
-    profiles: ["monitoring"]
+    build:
+      context: .
+      dockerfile: docker/otel-collector.Dockerfile
     command: ["--config=/etc/otel/config.yaml"]
     volumes:
       - ./observability/otel/otel-collector-config.yaml:/etc/otel/config.yaml:ro
     ports:
-      - "4317:4317"
-      - "4318:4318"
-      - "8889:8889"
+      - "${OTEL_GRPC_HOST_PORT:-4317}:4317"
+      - "${OTEL_HTTP_HOST_PORT:-4318}:4318"
+      - "${OTEL_METRICS_HOST_PORT:-8889}:8889"
     depends_on:
       - tempo
     restart: unless-stopped
@@ -334,6 +421,12 @@ services:
     image: ghcr.io/prometheus/prometheus:v3.14.0@sha256:5ce7540c3c00ef4ab0c9d2c995c6a5b9c421f44b4a115d97a2c7af3b1c21cbb0
     profiles: ["monitoring"]
     command: ["--config.file=/etc/prometheus/prometheus.yaml"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
     volumes:
       - ./observability/prometheus/prometheus.yaml:/etc/prometheus/prometheus.yaml:ro
       - prometheus-data:/prometheus
@@ -344,8 +437,9 @@ services:
     restart: unless-stopped
 
   tempo:
-    image: grafana/tempo:2.10.8@sha256:f0561deb1c68ec44d6e6e7e4487f30106c4e5e768642077695b37958b105812a
-    profiles: ["monitoring"]
+    build:
+      context: .
+      dockerfile: docker/tempo.Dockerfile
     command: ["-config.file=/etc/tempo/tempo.yaml", "-config.expand-env=true"]
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minio}
@@ -363,6 +457,12 @@ services:
   grafana:
     image: grafana/grafana:11.3.0@sha256:a0f881232a6fb71a0554a47d0fe2203b6888fe77f4cefb7ea62bed7eb54e13c3
     profiles: ["monitoring"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
     environment:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
@@ -379,15 +479,48 @@ services:
   repo-intelligence:
     <<: *repo-intelligence-service
     ports: ["8120:8120"]
+    healthcheck:
+      test: ["CMD", "python", "-m", "services.healthcheck", "http", "8120"]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s
+      retries: 3
     volumes:
       - repo-index-data:/app/repository_indexes
       - ./config/local:/app/config/local:ro
+      - ./config/platform:/app/config/platform:ro
+    restart: unless-stopped
 
   repo-index-worker:
     <<: *repo-intelligence-service
     command: ["python", "-m", "services.repository_intelligence.indexing.worker"]
+    healthcheck:
+      test: ["CMD", "python", "-m", "services.healthcheck", "heartbeat", "/tmp/worker.heartbeat", "--max-age", "120"]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s
+      retries: 3
+    environment:
+      HEALTH_HEARTBEAT_FILE: /tmp/worker.heartbeat
+    env_file: [.env]
     volumes:
       - repo-index-data:/app/repository_indexes
+
+  # Local stand-in for ECR that gate pods pull the engine image from in image mode. It serves
+  # plain HTTP, so the pods pull with GATE_REGISTRY_TLS_VERIFY=false.
+  registry:
+    image: registry:3.1.1@sha256:1be55279f18a2fe1a74edf2664cac61c1bea305b7b4642dab412e7affdcb3e33
+    profiles: ["registry"]
+    ports: ["5001:5000"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:5000/v2/"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+    volumes:
+      - registry-data:/var/lib/registry
+    restart: unless-stopped
 
 volumes:
   postgres-data:
@@ -399,3 +532,4 @@ volumes:
   tempo-data:
   grafana-data:
   prometheus-data:
+  registry-data:

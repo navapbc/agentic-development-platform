@@ -1,19 +1,39 @@
-# Greenfield example. Stand up a private VPC, endpoints, registry, audit trail,
-# and the jumphost from zero. Apply with:
+# Greenfield example. Stand up a tiered private VPC, endpoints, registry, audit trail,
+# egress, DNS filtering, and the jumphost from zero. Apply with:
+#   terraform init -backend-config=backend.hcl
 #   AWS_PROFILE=agentic-platform terraform apply -var-file=greenfield.tfvars
 
 region      = "us-east-1"
 name_prefix = "agentic-platform"
 
+# The bootstrap root prints this as its access_log_bucket output.
+access_log_bucket = "agentic-platform-access-logs-123456789012"
+
 create_network   = true
 vpc_cidr         = "10.0.0.0/16"
 new_subnet_cidrs = ["10.0.1.0/24"]
+
+management_subnet_cidrs = ["10.0.21.0/24"]
+data_subnet_cidrs       = ["10.0.11.0/24", "10.0.12.0/24"]
+public_subnet_cidrs     = ["10.0.31.0/24"]
+
+# nat_instance for testing, nat_gateway for production.
+egress_mode = "nat_instance"
+
+# ALERT logs queries outside the allowlist without blocking them.
+dns_firewall_default_action     = "BLOCK"
+dns_firewall_additional_domains = []
 
 create_endpoints      = true
 create_ecr_repository = true
 create_cloudtrail     = true
 
 jumphost_session_duration_seconds = 10800
+
+create_aurora             = false
+create_cache              = false
+create_clickhouse_storage = false
+create_langfuse_bucket    = false
 
 tags = {
   project = "agentic-dev-platform"

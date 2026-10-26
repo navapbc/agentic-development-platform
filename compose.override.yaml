@@ -4,6 +4,12 @@ services:
   bedrock-tunnel:
     image: docker.io/alpine/socat:1.8.1.3@sha256:3ed1cd38741bd445ebffa3aecb9d80c46a83db45f5b5ef03332976c7ca9814af
     command: TCP-LISTEN:443,fork,reuseaddr TCP:host.docker.internal:${BEDROCK_TUNNEL_LOCAL_PORT:-8444}
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "443"]
+      interval: 30s
+      timeout: 10s
+      start_period: 10s
+      retries: 3
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
@@ -73,9 +79,6 @@ services:
       - ../agentic-demo-php:/repos/agentic-demo-php:ro
       - ../agentic-demo-ruby:/repos/agentic-demo-ruby:ro
       - ../ai-common-workflows:/engines/ai-common-workflows:ro
-      # Local source-control backend. The PFML repo is writable so the local git
-      # host can commit branches, and the xlsx export is available for import.
-      - ../archive-massgov-pfml:/repos/archive-massgov-pfml
       - ./.agent-context:/app/.agent-context:ro
     environment:
       LOG_LEVEL: DEBUG
@@ -88,7 +91,7 @@ services:
       OPENHANDS_MAX_TOOL_CALLS: "100"
       INTAKE_RUN_REVIEWS: "true"
       INTAKE_RUN_POLICY: "true"
-      REPO_INTELLIGENCE_REPOS: "agentic-demo-service=/repos/agentic-demo-service,agentic-demo-greenfield=/repos/agentic-demo-greenfield,agentic-demo-ts=/repos/agentic-demo-ts,agentic-demo-tf=/repos/agentic-demo-tf,agentic-demo-java=/repos/agentic-demo-java,agentic-demo-php=/repos/agentic-demo-php,agentic-demo-ruby=/repos/agentic-demo-ruby,archive-massgov-pfml=/repos/archive-massgov-pfml"
+      REPO_INTELLIGENCE_REPOS: "agentic-demo-service=/repos/agentic-demo-service,agentic-demo-greenfield=/repos/agentic-demo-greenfield,agentic-demo-ts=/repos/agentic-demo-ts,agentic-demo-tf=/repos/agentic-demo-tf,agentic-demo-java=/repos/agentic-demo-java,agentic-demo-php=/repos/agentic-demo-php,agentic-demo-ruby=/repos/agentic-demo-ruby"
     extra_hosts:
       - "host.docker.internal:host-gateway"
       - "kubernetes.docker.internal:host-gateway"
@@ -110,10 +113,9 @@ services:
       - ../agentic-demo-java:/repos/agentic-demo-java:ro
       - ../agentic-demo-php:/repos/agentic-demo-php:ro
       - ../agentic-demo-ruby:/repos/agentic-demo-ruby:ro
-      - ../archive-massgov-pfml:/repos/archive-massgov-pfml:ro
       - ./vendor/bin/codebase-memory-mcp:/usr/local/bin/codebase-memory-mcp:ro
     environment: &repo-intelligence-env
-      REPO_INTELLIGENCE_REPOS: "agentic-demo-service=/repos/agentic-demo-service,agentic-demo-greenfield=/repos/agentic-demo-greenfield,agentic-demo-ts=/repos/agentic-demo-ts,agentic-demo-tf=/repos/agentic-demo-tf,agentic-demo-java=/repos/agentic-demo-java,agentic-demo-php=/repos/agentic-demo-php,agentic-demo-ruby=/repos/agentic-demo-ruby,archive-massgov-pfml=/repos/archive-massgov-pfml"
+      REPO_INTELLIGENCE_REPOS: "agentic-demo-service=/repos/agentic-demo-service,agentic-demo-greenfield=/repos/agentic-demo-greenfield,agentic-demo-ts=/repos/agentic-demo-ts,agentic-demo-tf=/repos/agentic-demo-tf,agentic-demo-java=/repos/agentic-demo-java,agentic-demo-php=/repos/agentic-demo-php,agentic-demo-ruby=/repos/agentic-demo-ruby"
       REPO_INTELLIGENCE_CBM_BINARY: /usr/local/bin/codebase-memory-mcp
       CBM_ALLOWED_ROOT: /repos
 

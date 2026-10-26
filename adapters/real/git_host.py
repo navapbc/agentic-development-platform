@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import os
 import re
-import subprocess
 import tempfile
 from collections.abc import Callable
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -22,10 +21,12 @@ from adapters.interfaces.git_host import (
     PRFeedback,
     PublishResult,
     PullRequest,
+    author_env,
     publish_from_pull_request,
     reuse_from_pull_request,
 )
 from scripts.config import Settings, get_settings
+from services import process
 
 if TYPE_CHECKING:
     from services.integration.github.credentials import (
@@ -81,13 +82,17 @@ class RealGitHost:
     def source_location(self, repo: str) -> str:
         return self._remote_url(repo)
 
-    async def _git(self, *args: str, cwd: str | None = None) -> str:
-        def run() -> subprocess.CompletedProcess[str]:
-            return subprocess.run(
+    async def _git(
+        self, *args: str, cwd: str | None = None, env: dict[str, str] | None = None
+    ) -> str:
+        def run() -> process.CompletedProcess[str]:
+            return process.run(
                 ["git", *args],
+                timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS,
                 cwd=cwd,
                 capture_output=True,
                 text=True,
+                env={**os.environ, **env} if env else None,
             )
 
         proc = await asyncio.to_thread(run)
@@ -98,7 +103,7 @@ class RealGitHost:
         return proc.stdout.strip()
 
     async def _ls_remote(self, remote: str, ref: str) -> str:
-        out = await self._git("ls-remote", "--heads", remote, ref)
+        out = await self._git("ls-remote", "--heads", "--", remote, ref)
         if not out:
             return ""
         return out.split()[0]
@@ -112,49 +117,72 @@ class RealGitHost:
         if not base_sha:
             raise KeyError(f"base branch missing: {repo}:{base}")
         with tempfile.TemporaryDirectory() as work:
-            await self._git("clone", "--branch", base, "--single-branch", remote, work)
+            await self._git("clone", "--branch", base, "--single-branch", "--", remote, work)
             await self._git("push", "origin", f"HEAD:refs/heads/{name}", cwd=work)
             head = await self._git("rev-parse", "HEAD", cwd=work)
         return BranchRef(repo=repo, name=name, head_sha=head, created=True)
 
     async def commit_and_push(self, request: CommitRequest) -> CommitResult:
+        """Publish the tree the workspace staged, then read back what the remote now holds.
+
+        The workspace is the checkout the platform ran its checks against, so committing its
+        tree object is what keeps the pushed tree equal to the checked one. Rebuilding the commit
+        in a separate clone from a mapping of path to text dropped deletions, lost file modes,
+        turned renames into an add without the matching delete, and could not carry bytes that
+        are not valid UTF-8.
+
+        `commit-tree` rather than `commit` because the branch survives between executions while
+        the workspace is reset to the base for each one. Naming the remote head as the parent
+        publishes the verified tree on top of whatever the branch already carries, where a plain
+        commit would build on the workspace parent and be rejected as a non-fast-forward.
+        It also runs no hook and reads no `commit.gpgsign`, both of which have produced a
+        reported success with no commit behind it when the client repository configured them.
+
+        Idempotency is the tree rather than a per-execution marker, because the repair loop
+        publishes several distinct commits within one execution and a per-execution marker
+        collapsed them into the first.
+        """
         remote = self._remote_url(request.repo)
-        trailer = f"execution_id: {request.execution_id}"
-        with tempfile.TemporaryDirectory() as work:
-            await self._git("clone", remote, work)
-            await self._git("config", "user.name", request.author_name, cwd=work)
-            await self._git("config", "user.email", request.author_email, cwd=work)
-            if await self._ls_remote(remote, request.branch):
-                await self._git("checkout", request.branch, cwd=work)
-            else:
-                await self._git(
-                    "checkout", "-b", request.branch, f"origin/{request.base}", cwd=work
-                )
-            existing = await self._git(
-                "log", f"--grep={trailer}", "-n", "1", "--format=%H", cwd=work
-            )
-            if existing:
+        work = request.workspace
+        remote_head = await self._ls_remote(remote, request.branch)
+        if remote_head:
+            await self._git("fetch", "--quiet", remote, request.branch, cwd=work)
+            if await self._tree_of(work, remote_head) == request.tree:
                 return CommitResult(
                     repo=request.repo,
                     branch=request.branch,
-                    commit_sha=existing,
+                    commit_sha=remote_head,
                     pushed=False,
                     replayed=True,
+                    published_tree=request.tree,
                 )
-            for path, text in request.files.items():
-                target = Path(work) / path
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(text, encoding="utf-8")
-            await self._git("add", "-A", cwd=work)
-            await self._git("commit", "-m", f"{request.message}\n\n{trailer}", cwd=work)
-            sha = await self._git("rev-parse", "HEAD", cwd=work)
-            await self._git("push", "origin", request.branch, cwd=work)
+        parent = remote_head or await self._git("rev-parse", "HEAD", cwd=work)
+        sha = await self._git(
+            "commit-tree",
+            request.tree,
+            "-p",
+            parent,
+            "-m",
+            request.message,
+            cwd=work,
+            env=author_env(request),
+        )
+        await self._git("push", remote, f"{sha}:refs/heads/{request.branch}", cwd=work)
+        await self._git("reset", "--soft", sha, cwd=work)
+        published_head = await self._ls_remote(remote, request.branch)
+        if not published_head:
+            raise RuntimeError(
+                f"{request.repo}:{request.branch} holds no ref after pushing {sha}, "
+                "so the published tree cannot be verified"
+            )
+        await self._git("fetch", "--quiet", remote, request.branch, cwd=work)
         return CommitResult(
             repo=request.repo,
             branch=request.branch,
             commit_sha=sha,
             pushed=True,
             replayed=False,
+            published_tree=await self._tree_of(work, published_head),
         )
 
     def _client(self, cred: GitHubRepoCredential) -> httpx.AsyncClient:
@@ -168,6 +196,9 @@ class RealGitHost:
             transport=self._transport,
             timeout=self._timeout,
         )
+
+    async def _tree_of(self, work: str, commit: str) -> str:
+        return await self._git("rev-parse", f"{commit}^{{tree}}", cwd=work)
 
     async def _get(
         self, cred: GitHubRepoCredential, path: str, params: dict[str, Any] | None = None

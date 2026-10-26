@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -79,14 +78,6 @@ class ImplementationResult:
     summary: str = ""
 
 
-def _hash_changes(changes: dict[str, str]) -> str:
-    digest = hashlib.sha256()
-    for path in sorted(changes):
-        content_hash = hashlib.sha256(changes[path].encode("utf-8")).hexdigest()
-        digest.update(f"{path}\x1f{content_hash}\x1e".encode())
-    return f"sha256:{digest.hexdigest()}"
-
-
 def _build_coordination_client():
     from services.orchestration.coordination_client import CoordinationClient
 
@@ -157,9 +148,7 @@ async def reset_task_coordination(req: ResetCoordinationRequest) -> ResetCoordin
     from services.coordination.sequencing import PostgresSequenceGate
 
     claim_id = claim_id_for(req.task_id, req.work_unit)
-    released = await PostgresWorkClaimStore().release(
-        claim_id, owner_workflow_id=req.workflow_id
-    )
+    released = await PostgresWorkClaimStore().release(claim_id, owner_workflow_id=req.workflow_id)
     await PostgresSequenceGate().reset(req.task_id)
     return ResetCoordinationResult(released=released, sequence_reset=True)
 
@@ -193,7 +182,7 @@ async def run_implementation_stage(req: ImplementationRequest) -> Implementation
         workspace_source=str(Path(workspace.path).resolve()),
         task_id=req.task_id,
     )
-    changes = await materializer.collect_changes(workspace)
+    staged = await materializer.stage(workspace)
     return ImplementationResult(
         status=outcome.status,
         terminal_reason=outcome.terminal_reason,
@@ -208,10 +197,10 @@ async def run_implementation_stage(req: ImplementationRequest) -> Implementation
         cache_write_tokens=outcome.cache_write_tokens,
         branch=workspace.branch,
         commit_sha=workspace.commit_sha,
-        diff_hash=_hash_changes(changes),
+        diff_hash=staged.tree,
         model_id=get_settings().coding_model,
         prompt_version=IMPLEMENTATION_PROMPT_VERSION,
         workspace_path=workspace.path,
-        changed_files=sorted(changes),
+        changed_files=await materializer.changed_paths(workspace),
         summary=outcome.summary,
     )

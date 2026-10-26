@@ -49,17 +49,26 @@ def test_fetch_filters_by_session_and_pages():
     pages = [
         {
             "data": [
-                {"sessionId": "exec-1", "usageDetails": {"input": 100, "output": 40},
-                 "costDetails": {"total": 0.20}},
-                {"sessionId": "other", "usageDetails": {"input": 999, "output": 999},
-                 "costDetails": {"total": 9.99}},
+                {
+                    "sessionId": "exec-1",
+                    "usageDetails": {"input": 100, "output": 40},
+                    "costDetails": {"total": 0.20},
+                },
+                {
+                    "sessionId": "other",
+                    "usageDetails": {"input": 999, "output": 999},
+                    "costDetails": {"total": 9.99},
+                },
             ],
             "meta": {"cursor": "next"},
         },
         {
             "data": [
-                {"sessionId": "exec-1", "usageDetails": {"input": 500, "output": 300},
-                 "costDetails": {"total": 1.50}},
+                {
+                    "sessionId": "exec-1",
+                    "usageDetails": {"input": 500, "output": 300},
+                    "costDetails": {"total": 1.50},
+                },
             ],
             "meta": {},
         },
@@ -90,8 +99,11 @@ def test_fetch_reports_drift_against_usage_metrics():
     pages = [
         {
             "data": [
-                {"sessionId": "exec-2", "usageDetails": {"input": 100, "output": 40},
-                 "costDetails": {"total": 0.20}},
+                {
+                    "sessionId": "exec-2",
+                    "usageDetails": {"input": 100, "output": 40},
+                    "costDetails": {"total": 0.20},
+                },
             ],
             "meta": {},
         }
@@ -145,10 +157,20 @@ def test_fetch_generation_rows_filters_by_session():
     pages = [
         {
             "data": [
-                {"sessionId": "exec-9", "name": "plan-review", "model": "review-model",
-                 "usageDetails": {"input": 10, "output": 5}, "costDetails": {"total": 0.01}},
-                {"sessionId": "other", "name": "plan-review", "model": "review-model",
-                 "usageDetails": {"input": 999, "output": 999}, "costDetails": {"total": 9.9}},
+                {
+                    "sessionId": "exec-9",
+                    "name": "plan-review",
+                    "model": "review-model",
+                    "usageDetails": {"input": 10, "output": 5},
+                    "costDetails": {"total": 0.01},
+                },
+                {
+                    "sessionId": "other",
+                    "name": "plan-review",
+                    "model": "review-model",
+                    "usageDetails": {"input": 999, "output": 999},
+                    "costDetails": {"total": 9.9},
+                },
             ],
             "meta": {},
         }
@@ -156,8 +178,11 @@ def test_fetch_generation_rows_filters_by_session():
     transport = httpx.MockTransport(_paged_handler(pages))
     client = httpx.Client(base_url="http://langfuse", transport=transport)
     rows = fetch_session_generation_rows(
-        host="http://langfuse", public_key="pk", secret_key="sk",
-        session_id="exec-9", client=client,
+        host="http://langfuse",
+        public_key="pk",
+        secret_key="sk",
+        session_id="exec-9",
+        client=client,
     )
     client.close()
     assert len(rows) == 1

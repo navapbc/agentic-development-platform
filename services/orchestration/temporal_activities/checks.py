@@ -25,6 +25,7 @@ class RunChecksRequest:
     execution_id: str
     workspace_path: str
     commit_sha: str
+    changed_paths: tuple[str, ...] = ()
 
 
 @dataclass
@@ -37,8 +38,9 @@ class RunChecksResult:
 
 def _clean_checkout(workspace_path: str, dest: str) -> None:
     """Copy the implementation working tree (base plus the change) into dest, isolated from the
-    agent, without the .git directory, virtualenvs, or tool caches. The uncommitted working tree is
-    the change under review, so the checks run against exactly what the pull request will carry.
+    agent, without the .git directory, virtualenvs, or tool caches. Publication commits this same
+    working tree and verifies the tree it published, so what runs here is what the pull request
+    carries. See docs/change-publication.md.
     """
     shutil.copytree(workspace_path, dest, dirs_exist_ok=True, ignore=_IGNORED)
 
@@ -68,6 +70,7 @@ async def run_checks(req: RunChecksRequest) -> RunChecksResult:
             KubectlPodOps(),
             namespace=settings.gate_engine_namespace,
             builder_image=settings.gate_engine_builder_image,
+            privileged=settings.gate_engine_privileged,
         )
         result = await runner.run_checks(
             ChecksSpec(
@@ -78,6 +81,7 @@ async def run_checks(req: RunChecksRequest) -> RunChecksResult:
                 image=config.image,
                 build=config.build,
                 working_dir=config.working_dir,
+                changed_paths=tuple(req.changed_paths),
             )
         )
         if result.exit_code == 0:

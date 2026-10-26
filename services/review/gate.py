@@ -9,6 +9,10 @@ from typing import Any
 from scripts.config import Settings, get_settings
 
 from services.review.attestation import Attestor, HmacAttestor, ReviewAttestationError
+from services.review.classification import (
+    CLASSIFICATION_SECURITY,
+    CLASSIFICATION_STANDARD,
+)
 from services.review.evidence import EvidenceRecord, EvidenceSink
 from services.review.kernel import ReviewKernel
 from services.review.types import RawReview, ReviewInput, ReviewResult, ReviewStage
@@ -16,6 +20,12 @@ from services.review.types import RawReview, ReviewInput, ReviewResult, ReviewSt
 SOURCE_COMPONENT = "review-kernel"
 
 SIGNED_STAGES = frozenset(ReviewStage)
+
+
+def _classification_for_stage(stage: ReviewStage) -> str:
+    if stage is ReviewStage.SECURITY_REVIEW:
+        return CLASSIFICATION_SECURITY
+    return CLASSIFICATION_STANDARD
 
 
 class ReviewSigningNotConfigured(ReviewAttestationError):
@@ -83,13 +93,11 @@ class ReviewGate:
         sink: EvidenceSink,
         attestor: Attestor | None = None,
         *,
-        classification: str = "final",
         retention: str | None = None,
     ) -> None:
         self._kernel = kernel
         self._sink = sink
         self._attestor = attestor or HmacAttestor(get_settings().review_attestation_secret)
-        self._classification = classification
         self._retention = retention
 
     async def review(self, review: ReviewInput, *, execution_id: str) -> ReviewResult:
@@ -105,7 +113,7 @@ class ReviewGate:
             execution_id=execution_id,
             content_hash=attestation.content_hash,
             source_component=SOURCE_COMPONENT,
-            classification=self._classification,
+            classification=_classification_for_stage(review.stage),
             retention=self._retention,
             location=None,
             metadata={

@@ -223,10 +223,11 @@ async def run_bounded_task(
             terminal_reason=pause.classification.category,
         )
 
+    staged = await deps.materializer.stage(workspace, allowed_paths=request.file_impact)
     commit_request = await deps.materializer.build_commit_request(
-        workspace, message=request.commit_message
+        workspace, message=request.commit_message, staged=staged
     )
-    if not commit_request.files:
+    if not staged.changed:
         return PipelineResult(
             request.execution_id,
             NO_CHANGES,

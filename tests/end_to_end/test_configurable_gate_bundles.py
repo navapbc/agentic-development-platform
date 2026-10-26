@@ -14,7 +14,6 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-import pytest
 from adapters.interfaces.policy_engine import PolicyGate
 from adapters.interfaces.security_scanner import HIGH, ScanFinding, ScanTarget
 from services.orchestration.gates.builtin import scanner_gate
@@ -45,8 +44,6 @@ from tests.unit.test_draft_pull_request_workflow import (
     _start_ci_worker,
 )
 from tests.unit.test_policy_engine import _client, _compliant
-
-pytestmark = pytest.mark.asyncio
 
 SUCCESS = "SUCCESS"
 
@@ -116,8 +113,15 @@ def test_two_bundles_select_different_gate_sets():
     private = parse_gates_config(_private_raw())
 
     gov_required = {spec.name for spec in government.enabled_gates() if spec.required}
-    assert {"code-review", "security-review", "acceptance", "semgrep", "trivy", "snyk",
-            "ai-security-review"} <= gov_required
+    assert {
+        "code-review",
+        "security-review",
+        "acceptance",
+        "semgrep",
+        "trivy",
+        "snyk",
+        "ai-security-review",
+    } <= gov_required
 
     private_names = {spec.name for spec in private.enabled_gates()}
     assert "snyk" not in private_names

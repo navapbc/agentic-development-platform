@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import os
 import shutil
-import subprocess
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
+from services import process
 from services.repository_intelligence.indexing import scip_builder, zoekt_builder
 from services.repository_intelligence.indexing.scip_builder import ScipIndexer
 from services.repository_intelligence.normalization.models import RepoRef
@@ -21,7 +21,7 @@ def changed_paths(
     if not base_commit:
         return None
     try:
-        completed = subprocess.run(
+        completed = process.run(
             [
                 "git",
                 "-C",
@@ -30,11 +30,12 @@ def changed_paths(
                 "--name-only",
                 f"{base_commit}..{target_commit}",
             ],
+            timeout=process.SHORT_COMMAND_TIMEOUT_SECONDS,
             check=True,
             capture_output=True,
             text=True,
         )
-    except (subprocess.CalledProcessError, OSError):
+    except (process.CalledProcessError, OSError):
         return None
     return tuple(line for line in completed.stdout.splitlines() if line)
 

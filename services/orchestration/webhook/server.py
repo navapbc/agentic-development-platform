@@ -34,7 +34,6 @@ from services.orchestration.webhook.pr_events import (
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("inbound-webhook")
 
-HOST = "0.0.0.0"  # noqa: S104
 PORT = 8140
 _SERVICE = "inbound-webhook"
 
@@ -65,9 +64,7 @@ async def build_routes(settings: Settings) -> dict[str, Route]:
     )
     return {
         "/webhook/pr": Route(handler=pr_closed, allowed=frozenset(allowed_repos(settings))),
-        "/webhook/jira": Route(
-            handler=jira_intake, allowed=frozenset(allowed_projects(settings))
-        ),
+        "/webhook/jira": Route(handler=jira_intake, allowed=frozenset(allowed_projects(settings))),
     }
 
 
@@ -126,8 +123,14 @@ def main() -> None:
     routes = asyncio.run_coroutine_threadsafe(build_routes(settings), loop).result()
     ledger = PostgresSideEffectLedger()
     handler = build_handler(routes, ledger, settings, loop)
-    log.info("%s listening on %s:%d for %s", _SERVICE, HOST, PORT, ", ".join(sorted(routes)))
-    ThreadingHTTPServer((HOST, PORT), handler).serve_forever()
+    log.info(
+        "%s listening on %s:%d for %s",
+        _SERVICE,
+        settings.bind_host,
+        PORT,
+        ", ".join(sorted(routes)),
+    )
+    ThreadingHTTPServer((settings.bind_host, PORT), handler).serve_forever()
 
 
 if __name__ == "__main__":

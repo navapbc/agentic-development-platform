@@ -133,9 +133,12 @@ def test_candidate_callers_dedupes_to_file_level(tmp_path, monkeypatch):
     assert candidates[0].call_site == Location(path="app/main.py", start_line=12)
 
 
+_SIBLING_CORPUS = Path(__file__).resolve().parents[2].parent / "agentic-demo-service"
+
+
 @requires_cbm
 def test_index_reports_staleness_against_real_binary(tmp_path):
-    corpus = Path("~/Documents/Projects/Nava/agentic-demo-service").expanduser()
+    corpus = _SIBLING_CORPUS
     provider = CBMProvider(corpus, _CBM_BINARY, allowed_root=corpus, cache_dir=tmp_path)
 
     assert provider.is_available() is True
@@ -148,7 +151,7 @@ def test_index_reports_staleness_against_real_binary(tmp_path):
 
 @requires_cbm
 def test_candidate_references_are_file_level_against_real_binary(tmp_path):
-    corpus = Path("~/Documents/Projects/Nava/agentic-demo-service").expanduser()
+    corpus = _SIBLING_CORPUS
     provider = CBMProvider(corpus, _CBM_BINARY, allowed_root=corpus, cache_dir=tmp_path)
     provider.index()
 

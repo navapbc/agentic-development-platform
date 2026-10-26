@@ -29,9 +29,7 @@ class GateDecisionResult:
     def message(self) -> str:
         verb = "approve" if self.approved else "reject"
         if not self.signalled:
-            return (
-                f"{self.issue_key} has no workflow parked at a human gate, nothing to resume"
-            )
+            return f"{self.issue_key} has no workflow parked at a human gate, nothing to resume"
         workflows = ", ".join(self.signalled)
         return f"{self.issue_key} sent a {verb} decision for gate {self.gate} to {workflows}"
 
@@ -57,9 +55,7 @@ async def resume_gate(
 ) -> GateDecisionResult:
     parked = await store.parked_workflow_ids(issue_key)
     for workflow_id in parked:
-        await signaller.signal_gate_decision(
-            workflow_id, gate=gate, approved=approved, actor=actor
-        )
+        await signaller.signal_gate_decision(workflow_id, gate=gate, approved=approved, actor=actor)
     return GateDecisionResult(issue_key, gate=gate, approved=approved, signalled=tuple(parked))
 
 

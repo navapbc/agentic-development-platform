@@ -32,12 +32,12 @@ def test_extract_file_paths_handles_jira_link_and_line_anchors():
     text = (
         "* [portal/src/components/FileCard.tsx|portal/src/components/FileCard.tsx#L52-L75]\n"
         "* features/status/PaymentFAQSection.tsx:129\n"
-        "api/massgov/pfml/api/claims.py"
+        "api/example/benefits/api/claims.py"
     )
     assert extract_file_paths(text) == [
         "portal/src/components/FileCard.tsx",
         "features/status/PaymentFAQSection.tsx",
-        "api/massgov/pfml/api/claims.py",
+        "api/example/benefits/api/claims.py",
     ]
 
 

@@ -133,9 +133,7 @@ async def run_operator_done(
     )
     await signaler(workflow_id, merged)
     ledger.mark(key)
-    audit.record(
-        {"event": "operator_done_signaled", "workflow_id": workflow_id, "merged": merged}
-    )
+    audit.record({"event": "operator_done_signaled", "workflow_id": workflow_id, "merged": merged})
     return OperatorDoneResult(
         authorized=True,
         verified=True,
