@@ -70,6 +70,7 @@ class ImplementationInput:
     activity_timeout_seconds: float = 2400.0
     plan: str = ""
     context_package: dict[str, Any] = field(default_factory=dict)
+    owner_workflow_id: str = ""
 
 
 @dataclass
@@ -142,6 +143,7 @@ class ImplementationWorkflow:
                     work_unit=params.work_unit,
                     agent_id=params.agent_id or params.execution_id,
                     file_impact=list(params.file_impact),
+                    owner_workflow_id=params.owner_workflow_id,
                 ),
                 start_to_close_timeout=short,
                 retry_policy=retry,
@@ -168,7 +170,7 @@ class ImplementationWorkflow:
                     claimed=False,
                 )
             claim_version = claim.claim_version
-            claim_owner = claim.owner_workflow_id or workflow_id
+            claim_owner = claim.owner_workflow_id or params.owner_workflow_id or workflow_id
 
         if params.repo:
             existing: FindOpenPrResult = await workflow.execute_activity(

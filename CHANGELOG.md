@@ -92,6 +92,8 @@ AWS transition and FedRAMP Medium readiness. The platform documents its local-to
 
 ### Fixed
 
+- The draft pull request orchestrator settles its work claim on every outcome. A completed run marks the claim completed, and a failure, a cancellation, or an abandoned repair releases it. The claim was previously released only on the human-intervention alert path, and the release was addressed to the implementation child workflow rather than the parent that holds the claim, so no outcome released anything and the work unit stayed locked until an operator edited the table.
+- `inv restart` drops a stranded work claim even when the intake dedup record is already gone, and reports the dropped claims separately from the dropped intake records. The count it reported previously covered intake records alone while reading as though it covered claims.
 - The rebar change report no longer saves the cursor the rebar intake pass reads. A ticket the report listed was previously treated as already seen and never started.
 - Slack alert delivery and the `acli` download refuse any URL that is not https, including a redirect to http. The Slack sender previously accepted a `file:` URL.
 - The sandbox copy-in and patch extraction quote the project path in the pod shell command.

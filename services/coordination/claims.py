@@ -216,6 +216,7 @@ class PostgresWorkClaimStore:
                     .where(
                         work_claims.c.claim_id == claim_id,
                         work_claims.c.owner_workflow_id == owner_workflow_id,
+                        work_claims.c.state == CLAIMED,
                     )
                     .values(state=COMPLETED, released_at=func.now())
                     .returning(work_claims.c.claim_id)
@@ -279,6 +280,8 @@ class InMemoryWorkClaimStore:
     async def complete(self, claim_id: str, *, owner_workflow_id: str) -> bool:
         row = self._claims.get(claim_id)
         if row is None or str(row.get("owner_workflow_id") or "") != owner_workflow_id:
+            return False
+        if row["state"] != CLAIMED:
             return False
         row["state"] = COMPLETED
         return True

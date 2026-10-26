@@ -58,10 +58,15 @@ class IntakeRetryResult:
                 "running, not retriggered"
             )
         if self.intake_cleared == 0:
+            if self.claims_cleared:
+                return (
+                    f"{self.issue_key} had no intake record to clear, nothing to retrigger, "
+                    f"dropped {self.claims_cleared} stranded work claim(s)"
+                )
             return f"{self.issue_key} had no intake record to clear, nothing to retrigger"
         return (
             f"{self.issue_key} cleared for retrigger, dropped {self.intake_cleared} intake "
-            f"dedup record(s), released {self.claims_cleared} work claim(s), and marked "
+            f"dedup record(s), dropped {self.claims_cleared} work claim(s), and marked "
             f"{self.superseded} stale execution(s) failed"
         )
 
@@ -103,10 +108,9 @@ async def retry_intake(
         )
     intake_cleared = await store.clear_intake_dedup(issue_key, repo)
     superseded = 0
-    claims_cleared = 0
+    claims_cleared = await store.clear_work_claims(issue_key)
     if intake_cleared:
         superseded = await store.mark_non_terminal_failed(issue_key)
-        claims_cleared = await store.clear_work_claims(issue_key)
         await store.clear_sequence_gate(issue_key)
     return IntakeRetryResult(
         issue_key,

@@ -20,6 +20,7 @@ class ClaimRequest:
     work_unit: str
     agent_id: str
     file_impact: list[str] = field(default_factory=list)
+    owner_workflow_id: str = ""
 
 
 @dataclass
@@ -34,12 +35,10 @@ class ClaimResult:
 class ResetCoordinationRequest:
     task_id: str
     work_unit: str
-    owner_workflow_id: str
 
 
 @dataclass
 class ResetCoordinationResult:
-    released: bool
     sequence_reset: bool
 
 
@@ -137,7 +136,7 @@ def _build_runtime():
 async def claim_work_unit(req: ClaimRequest) -> ClaimResult:
     from services.coordination.claims import WorkUnit
 
-    owner_workflow_id = activity.info().workflow_id
+    owner_workflow_id = req.owner_workflow_id or activity.info().workflow_id
     client = _build_coordination_client()
     outcome = await client.try_claim(
         WorkUnit(
@@ -159,20 +158,10 @@ async def claim_work_unit(req: ClaimRequest) -> ClaimResult:
 
 @activity.defn
 async def reset_task_coordination(req: ResetCoordinationRequest) -> ResetCoordinationResult:
-    from services.coordination.claims import (
-        PostgresWorkClaimStore,
-        claim_id_for,
-    )
     from services.coordination.sequencing import PostgresSequenceGate
 
-    released = False
-    if req.owner_workflow_id:
-        claim_id = claim_id_for(req.task_id, req.work_unit)
-        released = await PostgresWorkClaimStore().release(
-            claim_id, owner_workflow_id=req.owner_workflow_id
-        )
     await PostgresSequenceGate().reset(req.task_id)
-    return ResetCoordinationResult(released=released, sequence_reset=True)
+    return ResetCoordinationResult(sequence_reset=True)
 
 
 @activity.defn

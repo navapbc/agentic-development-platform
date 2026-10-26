@@ -101,7 +101,7 @@ async def test_restart_clears_the_work_claim_and_says_so():
 
     assert intake_store.claims_cleared is True
     assert result.retry.claims_cleared == 1
-    assert "released 1 work claim(s)" in result.message
+    assert "dropped 1 work claim(s)" in result.message
     assert "dropped 1 intake dedup record(s)" in result.message
 
 

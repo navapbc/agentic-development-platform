@@ -493,17 +493,22 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         if not owner:
             return
         self._claim_owner_workflow_id = ""
-        await workflow.execute_activity(
-            finalize_work_claim,
-            FinalizeClaimRequest(
-                task_id=params.task_id,
-                work_unit=params.work_unit,
-                owner_workflow_id=owner,
-                completed=self._claim_completed,
-            ),
-            start_to_close_timeout=timedelta(seconds=30),
-            retry_policy=RetryPolicy(maximum_attempts=3),
-        )
+        try:
+            await workflow.execute_activity(
+                finalize_work_claim,
+                FinalizeClaimRequest(
+                    task_id=params.task_id,
+                    work_unit=params.work_unit,
+                    owner_workflow_id=owner,
+                    completed=self._claim_completed,
+                ),
+                start_to_close_timeout=timedelta(seconds=30),
+                retry_policy=RetryPolicy(maximum_attempts=3),
+            )
+        except Exception:
+            # A claim the workflow cannot settle is recoverable through the liveness
+            # probe or inv restart, so it must not replace the run's own outcome.
+            self._claim_owner_workflow_id = owner
 
     async def _orchestrate(self, params: DraftPullRequestInput) -> DraftPullRequestOutput:
         retry = RetryPolicy(maximum_attempts=3)
@@ -570,6 +575,9 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             params, kind="plan", artifact=plan_text or params.task, commit=self._base_sha
         )
 
+        if params.work_unit:
+            self._claim_owner_workflow_id = workflow_id
+
         impl: ImplementationOutput = await workflow.execute_child_workflow(
             ImplementationWorkflow.run,
             ImplementationInput(
@@ -589,6 +597,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 activity_timeout_seconds=params.activity_timeout_seconds,
                 plan=plan_text,
                 context_package=context_package,
+                owner_workflow_id=workflow_id,
             ),
             id=f"{workflow_id}-impl",
         )
@@ -1016,7 +1025,6 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             ResetCoordinationRequest(
                 task_id=params.task_id,
                 work_unit=params.work_unit,
-                owner_workflow_id=self._claim_owner_workflow_id,
             ),
             start_to_close_timeout=short,
             retry_policy=retry,
@@ -2099,8 +2107,6 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         promotion_base = self._post_repair_sequence_base(params, impl)
 
         async def persist(state: str) -> None:
-            if state == COMPLETED:
-                self._claim_completed = True
             await workflow.execute_activity(
                 persist_execution_state,
                 ExecutionState(
@@ -2114,6 +2120,8 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 start_to_close_timeout=short,
                 retry_policy=retry,
             )
+            if state == COMPLETED:
+                self._claim_completed = True
 
         approver = ""
         approved = True
@@ -2364,8 +2372,6 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         short = timedelta(seconds=30)
 
         async def persist(state: str) -> None:
-            if state == COMPLETED:
-                self._claim_completed = True
             await workflow.execute_activity(
                 persist_execution_state,
                 ExecutionState(
@@ -2378,6 +2384,8 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 start_to_close_timeout=short,
                 retry_policy=retry,
             )
+            if state == COMPLETED:
+                self._claim_completed = True
 
         await persist(AWAITING_PR_CLOSE)
         await self.await_resume(

@@ -395,7 +395,7 @@ def _make_activities(
 
     @activity.defn(name="reset_task_coordination")
     async def fake_reset(req: ResetCoordinationRequest) -> ResetCoordinationResult:
-        return ResetCoordinationResult(released=True, sequence_reset=True)
+        return ResetCoordinationResult(sequence_reset=True)
 
     @activity.defn(name="finalize_work_claim")
     async def fake_finalize(req: FinalizeClaimRequest) -> FinalizeClaimResult:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 
+import pytest
 from services.coordination.claims import (
     CLAIMED,
     COMPLETED,
@@ -18,6 +19,8 @@ from services.orchestration.temporal_activities.implementation import (
     ClaimResult,
     FinalizeClaimRequest,
     FinalizeClaimResult,
+    ImplementationRequest,
+    ImplementationResult,
     ResetCoordinationRequest,
     ResetCoordinationResult,
 )
@@ -35,6 +38,8 @@ from services.orchestration.temporal_workflows.implementation import Implementat
 from services.orchestration.temporal_workflows.pull_request import PullRequestWorkflow
 from services.orchestration.temporal_workflows.review import PlanReviewWorkflow
 from temporalio import activity
+from temporalio.client import WorkflowFailureError
+from temporalio.exceptions import ApplicationError
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 from temporalio.worker.workflow_sandbox import SandboxedWorkflowRunner, SandboxRestrictions
@@ -48,7 +53,7 @@ _CLAIM_ID = claim_id_for(_TASK_ID, _WORK_UNIT)
 def _claim_activities(store: InMemoryWorkClaimStore, owners: list[str]):
     @activity.defn(name="claim_work_unit")
     async def fake_claim(req: ClaimRequest) -> ClaimResult:
-        owner = activity.info().workflow_id
+        owner = req.owner_workflow_id or activity.info().workflow_id
         owners.append(owner)
         outcome = await store.try_claim(
             WorkUnit(
@@ -68,14 +73,8 @@ def _claim_activities(store: InMemoryWorkClaimStore, owners: list[str]):
         )
 
     @activity.defn(name="reset_task_coordination")
-    async def fake_reset(req: ResetCoordinationRequest) -> ResetCoordinationResult:
-        released = False
-        if req.owner_workflow_id:
-            released = await store.release(
-                claim_id_for(req.task_id, req.work_unit),
-                owner_workflow_id=req.owner_workflow_id,
-            )
-        return ResetCoordinationResult(released=released, sequence_reset=True)
+    async def fake_reset(_req: ResetCoordinationRequest) -> ResetCoordinationResult:
+        return ResetCoordinationResult(sequence_reset=True)
 
     @activity.defn(name="finalize_work_claim")
     async def fake_finalize(req: FinalizeClaimRequest) -> FinalizeClaimResult:
@@ -92,8 +91,8 @@ def _claim_activities(store: InMemoryWorkClaimStore, owners: list[str]):
     return [fake_claim, fake_reset, fake_finalize]
 
 
-def _activities(store: InMemoryWorkClaimStore, owners: list[str], overrides: dict):
-    replacements = _claim_activities(store, owners)
+def _activities(store: InMemoryWorkClaimStore, owners: list[str], overrides: dict, extra=()):
+    replacements = [*_claim_activities(store, owners), *extra]
     replaced = {fn.__temporal_activity_definition.name for fn in replacements}
     kept = [
         fn
@@ -148,10 +147,27 @@ async def _await_park(handle, stage: str) -> dict[str, str]:
     return state
 
 
-async def _run(*, workflow_input=None, signal=None, park_stage: str = "", **overrides):
-    store = InMemoryWorkClaimStore()
+async def _live_owner_store() -> InMemoryWorkClaimStore:
+    async def owner_active(_workflow_id: str) -> bool:
+        return True
+
+    return InMemoryWorkClaimStore(owner_active=owner_active)
+
+
+async def _run(
+    *,
+    workflow_input=None,
+    signal=None,
+    park_stage: str = "",
+    extra_activities=(),
+    at_park=None,
+    store=None,
+    expect_failure: bool = False,
+    **overrides,
+):
+    store = store if store is not None else InMemoryWorkClaimStore()
     owners: list[str] = []
-    activities = _activities(store, owners, overrides)
+    activities = _activities(store, owners, overrides, extra_activities)
     params = workflow_input or _input()
 
     async with await WorkflowEnvironment.start_time_skipping() as env:
@@ -163,10 +179,19 @@ async def _run(*, workflow_input=None, signal=None, park_stage: str = "", **over
                 id=f"wf-{uuid.uuid4().hex[:8]}",
                 task_queue=task_queue,
             )
-            if signal is not None:
+            if at_park is not None:
                 await _await_park(handle, park_stage)
+                await at_park(store)
+            if signal is not None:
+                if at_park is None:
+                    await _await_park(handle, park_stage)
                 await handle.signal(signal[0], args=list(signal[1]))
-            result = await handle.result()
+            if expect_failure:
+                result = None
+                with pytest.raises(WorkflowFailureError):
+                    await handle.result()
+            else:
+                result = await handle.result()
     return result, store, owners
 
 
@@ -263,3 +288,71 @@ async def test_a_released_claim_is_reclaimable():
 
     assert reclaim.won is True
     assert _claim_state(store) == CLAIMED
+
+
+def _stage_raises():
+    @activity.defn(name="run_implementation_stage")
+    async def fake_stage(_req: ImplementationRequest) -> ImplementationResult:
+        raise ApplicationError("sandbox could not be provisioned", non_retryable=True)
+
+    return [fake_stage]
+
+
+def _stage_fails():
+    @activity.defn(name="run_implementation_stage")
+    async def fake_stage(_req: ImplementationRequest) -> ImplementationResult:
+        return ImplementationResult(
+            status="failed",
+            terminal_reason="agent_gave_up",
+            tool_calls=1,
+            elapsed_seconds=1.0,
+            cost=0.1,
+            tokens=10,
+            llm_calls=1,
+            branch="",
+            commit_sha="",
+            diff_hash="",
+            model_id="coding-model",
+            prompt_version="implementation/v1",
+        )
+
+    return [fake_stage]
+
+
+async def test_a_raising_implementation_stage_releases_the_claim():
+    _result, store, _owners = await _run(
+        extra_activities=_stage_raises(),
+        expect_failure=True,
+    )
+
+    assert _claim_state(store) == RELEASED
+    assert (await _reclaim(store)).won is True
+
+
+async def test_a_failed_implementation_releases_the_claim():
+    result, store, _owners = await _run(extra_activities=_stage_fails())
+
+    assert result.status == "impl_failed"
+    assert _claim_state(store) == RELEASED
+
+
+async def test_the_claim_is_held_while_a_human_decides_on_a_repair():
+    held: dict[str, object] = {}
+
+    async def inspect(store: InMemoryWorkClaimStore) -> None:
+        held["state"] = _claim_state(store)
+        held["rival_won"] = (await _reclaim(store)).won
+
+    result, store, _owners = await _run(
+        workflow_input=_input(max_repair_attempts=1),
+        ci_result=FAILURE,
+        store=await _live_owner_store(),
+        at_park=inspect,
+        signal=("submit_repair_decision", (False, "release-manager")),
+        park_stage="repair",
+    )
+
+    assert held["state"] == CLAIMED
+    assert held["rival_won"] is False
+    assert result.terminal_reason == "human_abandoned"
+    assert _claim_state(store) == RELEASED
