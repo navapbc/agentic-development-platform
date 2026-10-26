@@ -24,6 +24,7 @@ from services.orchestration.temporal_activities.implementation import (
     ResetCoordinationRequest,
     ResetCoordinationResult,
 )
+from services.orchestration.temporal_activities.persistence import AuditEvent
 from services.orchestration.temporal_workflows.branch_sync import BranchSyncWorkflow
 from services.orchestration.temporal_workflows.draft_pull_request import (
     CI_FAILED,
@@ -92,14 +93,13 @@ def _claim_activities(store: InMemoryWorkClaimStore, owners: list[str]):
 
 
 def _activities(store: InMemoryWorkClaimStore, owners: list[str], overrides: dict, extra=()):
-    replacements = [*_claim_activities(store, owners), *extra]
-    replaced = {fn.__temporal_activity_definition.name for fn in replacements}
-    kept = [
-        fn
-        for fn in _make_activities(None, 1, [], [], [], **overrides)
-        if fn.__temporal_activity_definition.name not in replaced
+    ordered = [
+        *_make_activities(None, 1, [], [], [], **overrides),
+        *_claim_activities(store, owners),
+        *extra,
     ]
-    return [*kept, *replacements]
+    by_name = {fn.__temporal_activity_definition.name: fn for fn in ordered}
+    return list(by_name.values())
 
 
 def _input(**overrides) -> DraftPullRequestInput:
@@ -167,16 +167,18 @@ async def _run(
 ):
     store = store if store is not None else InMemoryWorkClaimStore()
     owners: list[str] = []
+    parent_workflow_id = ""
     activities = _activities(store, owners, overrides, extra_activities)
     params = workflow_input or _input()
 
     async with await WorkflowEnvironment.start_time_skipping() as env:
         task_queue = f"claim-{uuid.uuid4().hex[:8]}"
+        parent_workflow_id = f"wf-{uuid.uuid4().hex[:8]}"
         async with _worker(env, task_queue, activities):
             handle = await env.client.start_workflow(
                 DraftPullRequestWorkflow.run,
                 params,
-                id=f"wf-{uuid.uuid4().hex[:8]}",
+                id=parent_workflow_id,
                 task_queue=task_queue,
             )
             if at_park is not None:
@@ -192,7 +194,7 @@ async def _run(
                     await handle.result()
             else:
                 result = await handle.result()
-    return result, store, owners
+    return result, store, owners, parent_workflow_id
 
 
 def _claim_state(store: InMemoryWorkClaimStore) -> str:
@@ -212,20 +214,22 @@ async def _reclaim(store: InMemoryWorkClaimStore):
 
 
 async def test_promoted_run_completes_the_claim():
-    result, store, _owners = await _run()
+    result, store, _owners, _parent = await _run()
 
     assert result.status == PR_PROMOTED
     assert _claim_state(store) == COMPLETED
 
 
-async def test_the_claim_owner_is_the_workflow_that_took_it():
-    _result, store, owners = await _run()
+async def test_the_claim_owner_is_the_parent_orchestrator_not_the_implementation_child():
+    _result, store, owners, parent_workflow_id = await _run()
 
-    assert owners == [store._claims[_CLAIM_ID]["owner_workflow_id"]]
+    assert owners == [parent_workflow_id]
+    assert not owners[0].endswith("-impl")
+    assert store._claims[_CLAIM_ID]["owner_workflow_id"] == parent_workflow_id
 
 
 async def test_human_abandoned_repair_releases_the_claim():
-    result, store, _owners = await _run(
+    result, store, _owners, _parent = await _run(
         workflow_input=_input(max_repair_attempts=1),
         ci_result=FAILURE,
         signal=("submit_repair_decision", (False, "release-manager")),
@@ -238,7 +242,7 @@ async def test_human_abandoned_repair_releases_the_claim():
 
 
 async def test_a_cancelled_promotion_releases_the_claim():
-    result, store, _owners = await _run(
+    result, store, _owners, _parent = await _run(
         recheck_requires_pause=True,
         recheck_category="scope_changed",
     )
@@ -248,7 +252,7 @@ async def test_a_cancelled_promotion_releases_the_claim():
 
 
 async def test_an_unmerged_pull_request_releases_the_claim():
-    result, store, _owners = await _run(
+    result, store, _owners, _parent = await _run(
         workflow_input=_input(await_pr_close=True),
         signal=("submit_pr_closed", (False,)),
         park_stage="pr_close",
@@ -259,7 +263,7 @@ async def test_an_unmerged_pull_request_releases_the_claim():
 
 
 async def test_a_merged_pull_request_completes_the_claim():
-    result, store, _owners = await _run(
+    result, store, _owners, _parent = await _run(
         workflow_input=_input(await_pr_close=True),
         signal=("submit_pr_closed", (True,)),
         park_stage="pr_close",
@@ -270,7 +274,7 @@ async def test_a_merged_pull_request_completes_the_claim():
 
 
 async def test_a_completed_claim_is_not_reclaimable():
-    _result, store, _owners = await _run()
+    _result, store, _owners, _parent = await _run()
 
     reclaim = await _reclaim(store)
 
@@ -279,7 +283,7 @@ async def test_a_completed_claim_is_not_reclaimable():
 
 
 async def test_a_released_claim_is_reclaimable():
-    _result, store, _owners = await _run(
+    _result, store, _owners, _parent = await _run(
         recheck_requires_pause=True,
         recheck_category="scope_changed",
     )
@@ -320,7 +324,7 @@ def _stage_fails():
 
 
 async def test_a_raising_implementation_stage_releases_the_claim():
-    _result, store, _owners = await _run(
+    _result, store, _owners, _parent = await _run(
         extra_activities=_stage_raises(),
         expect_failure=True,
     )
@@ -330,7 +334,7 @@ async def test_a_raising_implementation_stage_releases_the_claim():
 
 
 async def test_a_failed_implementation_releases_the_claim():
-    result, store, _owners = await _run(extra_activities=_stage_fails())
+    result, store, _owners, _parent = await _run(extra_activities=_stage_fails())
 
     assert result.status == "impl_failed"
     assert _claim_state(store) == RELEASED
@@ -343,7 +347,7 @@ async def test_the_claim_is_held_while_a_human_decides_on_a_repair():
         held["state"] = _claim_state(store)
         held["rival_won"] = (await _reclaim(store)).won
 
-    result, store, _owners = await _run(
+    result, store, _owners, _parent = await _run(
         workflow_input=_input(max_repair_attempts=1),
         ci_result=FAILURE,
         store=await _live_owner_store(),
@@ -356,3 +360,68 @@ async def test_the_claim_is_held_while_a_human_decides_on_a_repair():
     assert held["rival_won"] is False
     assert result.terminal_reason == "human_abandoned"
     assert _claim_state(store) == RELEASED
+
+
+async def test_resetting_task_coordination_does_not_touch_the_work_claim(monkeypatch):
+    import services.coordination.claims as claims_module
+    import services.coordination.sequencing as sequencing_module
+    from services.orchestration.temporal_activities.implementation import (
+        reset_task_coordination,
+    )
+
+    reset_tasks: list[str] = []
+
+    class _SpyGate:
+        async def reset(self, task_id: str) -> int:
+            reset_tasks.append(task_id)
+            return 1
+
+    def _forbidden(*_args, **_kwargs):
+        raise AssertionError("reset_task_coordination must not reach the work claim store")
+
+    monkeypatch.setattr(sequencing_module, "PostgresSequenceGate", _SpyGate)
+    monkeypatch.setattr(claims_module, "PostgresWorkClaimStore", _forbidden)
+
+    result = await reset_task_coordination(
+        ResetCoordinationRequest(task_id=_TASK_ID, work_unit=_WORK_UNIT)
+    )
+
+    assert result.sequence_reset is True
+    assert reset_tasks == [_TASK_ID]
+
+
+def _audit_collector(events: list[AuditEvent]):
+    @activity.defn(name="record_audit_event")
+    async def fake_audit(event: AuditEvent) -> str:
+        events.append(event)
+        return event.event_id
+
+    return [fake_audit]
+
+
+async def test_settling_a_claim_records_an_audit_event():
+    events: list[AuditEvent] = []
+
+    _result, _store, _owners, _parent = await _run(extra_activities=_audit_collector(events))
+
+    settled = [e for e in events if e.event_type == "WORK_UNIT_SETTLED"]
+    assert len(settled) == 1
+    assert settled[0].decision == COMPLETED
+    assert settled[0].reason is None
+
+
+async def test_a_claim_that_cannot_be_settled_is_recorded_as_unsettled():
+    events: list[AuditEvent] = []
+
+    @activity.defn(name="finalize_work_claim")
+    async def fake_finalize(req: FinalizeClaimRequest) -> FinalizeClaimResult:
+        raise ApplicationError("coordination database unreachable", non_retryable=True)
+
+    _result, _store, _owners, _parent = await _run(
+        extra_activities=[*_audit_collector(events), fake_finalize]
+    )
+
+    settled = [e for e in events if e.event_type == "WORK_UNIT_SETTLED"]
+    assert len(settled) == 1
+    assert settled[0].decision == "not_settled"
+    assert "did not complete" in settled[0].reason
