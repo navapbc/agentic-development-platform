@@ -181,3 +181,24 @@ async def test_release_refuses_a_completed_claim():
     await store.transition(first.claim_id, expected_version=1, new_state=COMPLETED)
 
     assert await store.release(first.claim_id, owner_workflow_id="wf-1") is False
+
+
+async def test_complete_retires_a_claim_for_good():
+    async def owner_active(_workflow_id: str) -> bool:
+        return False
+
+    store = InMemoryWorkClaimStore(owner_active=owner_active)
+    first = await store.try_claim(_owned_unit("u1", "wf-1"))
+
+    completed = await store.complete(first.claim_id, owner_workflow_id="wf-1")
+    reclaim = await store.try_claim(_owned_unit("u1", "wf-2"))
+
+    assert completed is True
+    assert reclaim.won is False
+
+
+async def test_complete_requires_the_matching_owner():
+    store = InMemoryWorkClaimStore()
+    first = await store.try_claim(_owned_unit("u1", "wf-1"))
+
+    assert await store.complete(first.claim_id, owner_workflow_id="wf-other") is False

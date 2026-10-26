@@ -1,0 +1,265 @@
+"""The work claim reaches a terminal state on every orchestrator outcome."""
+
+from __future__ import annotations
+
+import asyncio
+import uuid
+
+from services.coordination.claims import (
+    CLAIMED,
+    COMPLETED,
+    RELEASED,
+    InMemoryWorkClaimStore,
+    WorkUnit,
+    claim_id_for,
+)
+from services.orchestration.temporal_activities.implementation import (
+    ClaimRequest,
+    ClaimResult,
+    FinalizeClaimRequest,
+    FinalizeClaimResult,
+    ResetCoordinationRequest,
+    ResetCoordinationResult,
+)
+from services.orchestration.temporal_workflows.branch_sync import BranchSyncWorkflow
+from services.orchestration.temporal_workflows.draft_pull_request import (
+    CI_FAILED,
+    PR_CLOSED_UNMERGED,
+    PR_MERGED,
+    PR_PROMOTED,
+    PROMOTION_CANCELLED,
+    DraftPullRequestInput,
+    DraftPullRequestWorkflow,
+)
+from services.orchestration.temporal_workflows.implementation import ImplementationWorkflow
+from services.orchestration.temporal_workflows.pull_request import PullRequestWorkflow
+from services.orchestration.temporal_workflows.review import PlanReviewWorkflow
+from temporalio import activity
+from temporalio.testing import WorkflowEnvironment
+from temporalio.worker import Worker
+from temporalio.worker.workflow_sandbox import SandboxedWorkflowRunner, SandboxRestrictions
+from tests.unit.test_draft_pull_request_workflow import FAILURE, _make_activities
+
+_TASK_ID = "T-1"
+_WORK_UNIT = "unit-1"
+_CLAIM_ID = claim_id_for(_TASK_ID, _WORK_UNIT)
+
+
+def _claim_activities(store: InMemoryWorkClaimStore, owners: list[str]):
+    @activity.defn(name="claim_work_unit")
+    async def fake_claim(req: ClaimRequest) -> ClaimResult:
+        owner = activity.info().workflow_id
+        owners.append(owner)
+        outcome = await store.try_claim(
+            WorkUnit(
+                task_id=req.task_id,
+                work_unit=req.work_unit,
+                execution_id=req.execution_id,
+                agent_id=req.agent_id,
+                file_impact=tuple(req.file_impact),
+                workflow_id=owner,
+            )
+        )
+        return ClaimResult(
+            claim_id=outcome.claim_id,
+            won=outcome.won,
+            claim_version=outcome.claim_version,
+            owner_workflow_id=owner if outcome.won else "",
+        )
+
+    @activity.defn(name="reset_task_coordination")
+    async def fake_reset(req: ResetCoordinationRequest) -> ResetCoordinationResult:
+        released = False
+        if req.owner_workflow_id:
+            released = await store.release(
+                claim_id_for(req.task_id, req.work_unit),
+                owner_workflow_id=req.owner_workflow_id,
+            )
+        return ResetCoordinationResult(released=released, sequence_reset=True)
+
+    @activity.defn(name="finalize_work_claim")
+    async def fake_finalize(req: FinalizeClaimRequest) -> FinalizeClaimResult:
+        claim_id = claim_id_for(req.task_id, req.work_unit)
+        state = COMPLETED if req.completed else RELEASED
+        if not req.owner_workflow_id:
+            return FinalizeClaimResult(claim_id=claim_id, finalized=False, state=state)
+        if req.completed:
+            finalized = await store.complete(claim_id, owner_workflow_id=req.owner_workflow_id)
+        else:
+            finalized = await store.release(claim_id, owner_workflow_id=req.owner_workflow_id)
+        return FinalizeClaimResult(claim_id=claim_id, finalized=finalized, state=state)
+
+    return [fake_claim, fake_reset, fake_finalize]
+
+
+def _activities(store: InMemoryWorkClaimStore, owners: list[str], overrides: dict):
+    replacements = _claim_activities(store, owners)
+    replaced = {fn.__temporal_activity_definition.name for fn in replacements}
+    kept = [
+        fn
+        for fn in _make_activities(None, 1, [], [], [], **overrides)
+        if fn.__temporal_activity_definition.name not in replaced
+    ]
+    return [*kept, *replacements]
+
+
+def _input(**overrides) -> DraftPullRequestInput:
+    fields = {
+        "task_id": _TASK_ID,
+        "execution_id": "exec-1",
+        "repo": "agentic-demo-service",
+        "base": "main",
+        "base_sha": "a" * 40,
+        "task": "Implement the change",
+        "issue_key": _TASK_ID,
+        "work_unit": _WORK_UNIT,
+        "file_impact": ["feature.py"],
+        "stored_issue": {"summary": "Implement the change"},
+    }
+    fields.update(overrides)
+    return DraftPullRequestInput(**fields)
+
+
+def _worker(env, task_queue: str, activities) -> Worker:
+    return Worker(
+        env.client,
+        task_queue=task_queue,
+        workflows=[
+            DraftPullRequestWorkflow,
+            ImplementationWorkflow,
+            BranchSyncWorkflow,
+            PullRequestWorkflow,
+            PlanReviewWorkflow,
+        ],
+        workflow_runner=SandboxedWorkflowRunner(
+            restrictions=SandboxRestrictions.default.with_passthrough_modules("beartype")
+        ),
+        activities=activities,
+    )
+
+
+async def _await_park(handle, stage: str) -> dict[str, str]:
+    state: dict[str, str] = {}
+    for _ in range(50):
+        state = await handle.query(DraftPullRequestWorkflow.suspension_state)
+        if state.get("stage") == stage:
+            return state
+        await asyncio.sleep(0.05)
+    return state
+
+
+async def _run(*, workflow_input=None, signal=None, park_stage: str = "", **overrides):
+    store = InMemoryWorkClaimStore()
+    owners: list[str] = []
+    activities = _activities(store, owners, overrides)
+    params = workflow_input or _input()
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"claim-{uuid.uuid4().hex[:8]}"
+        async with _worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                params,
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+            if signal is not None:
+                await _await_park(handle, park_stage)
+                await handle.signal(signal[0], args=list(signal[1]))
+            result = await handle.result()
+    return result, store, owners
+
+
+def _claim_state(store: InMemoryWorkClaimStore) -> str:
+    return str(store._claims[_CLAIM_ID]["state"])
+
+
+async def _reclaim(store: InMemoryWorkClaimStore):
+    return await store.try_claim(
+        WorkUnit(
+            task_id=_TASK_ID,
+            work_unit=_WORK_UNIT,
+            execution_id="exec-2",
+            agent_id="agent-b",
+            workflow_id="wf-later",
+        )
+    )
+
+
+async def test_promoted_run_completes_the_claim():
+    result, store, _owners = await _run()
+
+    assert result.status == PR_PROMOTED
+    assert _claim_state(store) == COMPLETED
+
+
+async def test_the_claim_owner_is_the_workflow_that_took_it():
+    _result, store, owners = await _run()
+
+    assert owners == [store._claims[_CLAIM_ID]["owner_workflow_id"]]
+
+
+async def test_human_abandoned_repair_releases_the_claim():
+    result, store, _owners = await _run(
+        workflow_input=_input(max_repair_attempts=1),
+        ci_result=FAILURE,
+        signal=("submit_repair_decision", (False, "release-manager")),
+        park_stage="repair",
+    )
+
+    assert result.status == CI_FAILED
+    assert result.terminal_reason == "human_abandoned"
+    assert _claim_state(store) == RELEASED
+
+
+async def test_a_cancelled_promotion_releases_the_claim():
+    result, store, _owners = await _run(
+        recheck_requires_pause=True,
+        recheck_category="scope_changed",
+    )
+
+    assert result.status == PROMOTION_CANCELLED
+    assert _claim_state(store) == RELEASED
+
+
+async def test_an_unmerged_pull_request_releases_the_claim():
+    result, store, _owners = await _run(
+        workflow_input=_input(await_pr_close=True),
+        signal=("submit_pr_closed", (False,)),
+        park_stage="pr_close",
+    )
+
+    assert result.status == PR_CLOSED_UNMERGED
+    assert _claim_state(store) == RELEASED
+
+
+async def test_a_merged_pull_request_completes_the_claim():
+    result, store, _owners = await _run(
+        workflow_input=_input(await_pr_close=True),
+        signal=("submit_pr_closed", (True,)),
+        park_stage="pr_close",
+    )
+
+    assert result.status == PR_MERGED
+    assert _claim_state(store) == COMPLETED
+
+
+async def test_a_completed_claim_is_not_reclaimable():
+    _result, store, _owners = await _run()
+
+    reclaim = await _reclaim(store)
+
+    assert reclaim.won is False
+    assert _claim_state(store) == COMPLETED
+
+
+async def test_a_released_claim_is_reclaimable():
+    _result, store, _owners = await _run(
+        recheck_requires_pause=True,
+        recheck_category="scope_changed",
+    )
+
+    reclaim = await _reclaim(store)
+
+    assert reclaim.won is True
+    assert _claim_state(store) == CLAIMED

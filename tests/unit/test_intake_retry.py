@@ -25,6 +25,7 @@ class _FakeStore:
         self.cleared_repo: str | None = "unset"
         self.marked = False
         self.gate_cleared = False
+        self.claims_cleared = False
 
     async def workflow_ids(self, issue_key: str) -> list[str]:
         return self._workflow_ids
@@ -40,6 +41,10 @@ class _FakeStore:
     async def clear_sequence_gate(self, issue_key: str) -> int:
         self.gate_cleared = True
         return 1
+
+    async def clear_work_claims(self, issue_key: str) -> int:
+        self.claims_cleared = True
+        return 2
 
 
 def _active(*running: str):
@@ -64,11 +69,26 @@ async def test_retry_clears_dedup_and_marks_stale_execution_failed():
 
     assert isinstance(result, IntakeRetryResult)
     assert result.retriggered
-    assert result.released == 1
+    assert result.intake_cleared == 1
     assert result.superseded == 1
+    assert result.claims_cleared == 2
     assert store.marked is True
     assert store.gate_cleared is True
-    assert "cleared for retrigger" in result.message
+    assert store.claims_cleared is True
+    assert result.message == (
+        "ADSER-20 cleared for retrigger, dropped 1 intake dedup record(s), released 2 work "
+        "claim(s), and marked 1 stale execution(s) failed"
+    )
+
+
+@pytest.mark.asyncio
+async def test_retry_does_not_touch_work_claims_when_nothing_is_cleared():
+    store = _FakeStore(workflow_ids=[], dedup=0)
+
+    result = await retry_intake("ADSER-98", store=store, liveness=_active())
+
+    assert result.claims_cleared == 0
+    assert store.claims_cleared is False
 
 
 @pytest.mark.asyncio
@@ -88,7 +108,7 @@ async def test_retry_refuses_when_a_workflow_is_still_running():
 
     assert not result.retriggered
     assert result.blocked_by == ("wf-live",)
-    assert result.released == 0
+    assert result.intake_cleared == 0
     assert store.cleared_repo == "unset"
     assert store.marked is False
     assert store.gate_cleared is False
@@ -102,7 +122,7 @@ async def test_retry_with_no_intake_record_reports_nothing_to_do():
     result = await retry_intake("ADSER-99", store=store, liveness=_active())
 
     assert not result.retriggered
-    assert result.released == 0
+    assert result.intake_cleared == 0
     assert store.marked is False
     assert "nothing to retrigger" in result.message
 
@@ -125,7 +145,7 @@ async def test_unreachable_temporal_refuses_without_claiming_a_workflow_runs():
     assert not result.retriggered
     assert result.blocked_by == ()
     assert result.undetermined == ("wf-unreachable",)
-    assert result.released == 0
+    assert result.intake_cleared == 0
     assert store.marked is False
     assert store.gate_cleared is False
     assert "still has a running workflow" not in result.message

@@ -91,6 +91,7 @@ class ImplementationOutput:
     cache_read_tokens: int = 0
     llm_calls: int = 0
     claim_version: int = 0
+    claim_owner_workflow_id: str = ""
     summary: str = ""
 
 
@@ -131,6 +132,7 @@ class ImplementationWorkflow:
         await persist("IMPLEMENTING")
 
         claim_version = 0
+        claim_owner = ""
         if params.work_unit:
             claim: ClaimResult = await workflow.execute_activity(
                 claim_work_unit,
@@ -166,6 +168,7 @@ class ImplementationWorkflow:
                     claimed=False,
                 )
             claim_version = claim.claim_version
+            claim_owner = claim.owner_workflow_id or workflow_id
 
         if params.repo:
             existing: FindOpenPrResult = await workflow.execute_activity(
@@ -198,6 +201,7 @@ class ImplementationWorkflow:
                     branch=existing.head,
                     pr_number=existing.number,
                     pr_url=existing.url,
+                    claim_owner_workflow_id=claim_owner,
                 )
 
         context_package = params.context_package
@@ -316,6 +320,7 @@ class ImplementationWorkflow:
                 tokens=result.tokens,
                 cache_read_tokens=result.cache_read_tokens,
                 llm_calls=result.llm_calls,
+                claim_owner_workflow_id=claim_owner,
             )
 
         await audit(
@@ -350,5 +355,6 @@ class ImplementationWorkflow:
             cache_read_tokens=result.cache_read_tokens,
             llm_calls=result.llm_calls,
             claim_version=claim_version,
+            claim_owner_workflow_id=claim_owner,
             summary=result.summary,
         )
