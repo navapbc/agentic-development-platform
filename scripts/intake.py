@@ -56,7 +56,7 @@ async def _retry(source: str, ticket_key: str, repo: str | None) -> int:
 
     result = await run_intake_retry(ticket_key, repo=repo)
     print(f"[intake:{source}] {result.message}")
-    return 1 if result.blocked_by or result.undetermined else 0
+    return 0 if result.retriggered else 1
 
 
 async def install_schedule(source: str, client: Any = None) -> int:

@@ -6,11 +6,14 @@ from typing import Any
 import pytest
 import yaml
 from services.integration.credentials import ConfigError
+from services.integration.tickets.rebar_config import parse_rebar_backend_config
 from services.integration.tickets.store_config import (
     TicketsStoreConfig,
     load_tickets_store_config,
     parse_tickets_store_config,
 )
+
+_EXAMPLE = Path(__file__).resolve().parents[2] / "config" / "local" / "tickets.yaml.example"
 
 
 def _base() -> dict[str, Any]:
@@ -89,10 +92,22 @@ def test_missing_write_role_fails() -> None:
 
 
 def test_committed_example_parses() -> None:
-    example = Path(__file__).resolve().parents[2] / "config" / "local" / "tickets.yaml.example"
-    raw = yaml.safe_load(example.read_text(encoding="utf-8"))
+    raw = yaml.safe_load(_EXAMPLE.read_text(encoding="utf-8"))
     config = parse_tickets_store_config(raw)
     assert config.roles.read_only != config.roles.write
+
+
+def test_committed_example_names_an_absolute_store_root() -> None:
+    raw = yaml.safe_load(_EXAMPLE.read_text(encoding="utf-8"))
+
+    assert Path(parse_rebar_backend_config(raw).repo_root).is_absolute()
+
+
+def test_a_relative_store_root_is_refused_because_host_and_worker_disagree() -> None:
+    raw = {"backend": {"repo_root": ".agent-workspaces/rebar-tickets"}}
+
+    with pytest.raises(ConfigError, match="must be an absolute path"):
+        parse_rebar_backend_config(raw)
 
 
 def test_loader_reads_operator_file(tmp_path: Path) -> None:

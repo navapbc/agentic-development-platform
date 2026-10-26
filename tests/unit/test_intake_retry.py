@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+from services.orchestration.intake_cursor import CursorRelease
 from services.orchestration.intake_retry import (
     IntakeRetryResult,
     PostgresIntakeRetryStore,
@@ -47,6 +48,17 @@ def _active(*running: str):
         return WorkflowLiveness.RUNNING if workflow_id in running else WorkflowLiveness.ENDED
 
     return _check
+
+
+class _FakeCursor:
+    def __init__(self, held: int = 1, warning: str = "") -> None:
+        self._held = held
+        self._warning = warning
+        self.released: list[str] = []
+
+    async def release(self, ticket_key: str) -> CursorRelease:
+        self.released.append(ticket_key)
+        return CursorRelease(self._held, self._warning)
 
 
 def _undetermined():
@@ -159,6 +171,86 @@ async def test_temporal_probe_reports_unknown_when_the_connection_fails(monkeypa
     probe = temporal_workflow_liveness(settings)
 
     assert await probe("wf-x") is WorkflowLiveness.UNKNOWN
+
+
+@pytest.mark.asyncio
+async def test_retry_releases_the_poll_cursor_alongside_the_ledger():
+    store = _FakeStore(workflow_ids=[], dedup=1)
+    cursor = _FakeCursor()
+
+    result = await retry_intake("ADEV-30", store=store, liveness=_active(), cursor=cursor)
+
+    assert cursor.released == ["ADEV-30"]
+    assert result.cursor_released == 1
+    assert result.retriggered
+    assert "released the poll cursor" in result.message
+
+
+@pytest.mark.asyncio
+async def test_releasing_only_the_poll_cursor_still_fails_the_stale_executions():
+    store = _FakeStore(workflow_ids=[], dedup=0)
+    cursor = _FakeCursor()
+
+    result = await retry_intake("ADEV-31", store=store, liveness=_active(), cursor=cursor)
+
+    assert result.released == 0
+    assert result.retriggered
+    assert store.gate_cleared is True
+    # A surviving non-terminal row makes the next pass call the ticket a duplicate and consume
+    # the release, so the cursor-only path has to clear it too.
+    assert store.marked is True
+    assert result.superseded == 1
+    assert "nothing to retrigger" not in result.message
+
+
+@pytest.mark.asyncio
+async def test_a_cursor_that_held_nothing_leaves_the_retry_with_nothing_to_do():
+    store = _FakeStore(workflow_ids=[], dedup=0)
+
+    result = await retry_intake(
+        "ADEV-32", store=store, liveness=_active(), cursor=_FakeCursor(held=0)
+    )
+
+    assert not result.retriggered
+    assert store.gate_cleared is False
+    assert "nothing to retrigger" in result.message
+
+
+@pytest.mark.asyncio
+async def test_a_running_workflow_leaves_the_poll_cursor_alone():
+    store = _FakeStore(workflow_ids=["wf-live"], dedup=1)
+    cursor = _FakeCursor()
+
+    result = await retry_intake("ADEV-33", store=store, liveness=_active("wf-live"), cursor=cursor)
+
+    assert cursor.released == []
+    assert result.cursor_released == 0
+    assert not result.retriggered
+
+
+@pytest.mark.asyncio
+async def test_a_cursor_warning_is_reported_without_withholding_the_retrigger():
+    store = _FakeStore(workflow_ids=[], dedup=0)
+    cursor = _FakeCursor(warning="the rebar store does not list ADEV-34 as ready")
+
+    result = await retry_intake("ADEV-34", store=store, liveness=_active(), cursor=cursor)
+
+    assert result.retriggered
+    assert cursor.released == ["ADEV-34"]
+    assert "cleared for retrigger" in result.message
+    assert "does not list ADEV-34 as ready" in result.message
+
+
+@pytest.mark.asyncio
+async def test_a_warning_from_a_cursor_that_held_nothing_still_reaches_the_operator():
+    store = _FakeStore(workflow_ids=[], dedup=0)
+    cursor = _FakeCursor(held=0, warning="no rebar poll cursor exists at /srv/x")
+
+    result = await retry_intake("ADEV-35", store=store, liveness=_active(), cursor=cursor)
+
+    assert not result.retriggered
+    assert "nothing to retrigger" in result.message
+    assert "no rebar poll cursor exists at /srv/x" in result.message
 
 
 def _like_pattern(pattern: str) -> re.Pattern[str]:
@@ -303,3 +395,18 @@ async def test_clearing_intake_dedup_for_an_unmatched_repo_deletes_nothing():
 
     assert cleared == 0
     assert set(engine.rows) == {"k-a"}
+
+
+@pytest.mark.asyncio
+async def test_the_retry_command_exits_non_zero_when_nothing_was_retriggered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from scripts.intake import _retry
+    from services.orchestration import intake_retry as module
+
+    async def _run(ticket_key: str, *, repo: str | None = None) -> IntakeRetryResult:
+        return IntakeRetryResult(ticket_key, released=0, superseded=0, blocked_by=())
+
+    monkeypatch.setattr(module, "run_intake_retry", _run)
+
+    assert await _retry("rebar", "ADEV-50", None) == 1

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from services.orchestration.intake_cursor import CursorRelease
 from services.orchestration.intake_retry import WorkflowLiveness
 from services.orchestration.task_restart import RestartResult, restart_task
 
@@ -166,3 +167,57 @@ async def test_restart_reports_an_unreachable_probe_without_claiming_a_workflow_
     assert intake_store.marked is False
     assert "still has a running workflow" not in result.message
     assert "could not determine" in result.message
+
+
+class _Cursor:
+    def __init__(self, held: int = 1, warning: str = "") -> None:
+        self._held = held
+        self._warning = warning
+        self.released: list[str] = []
+
+    async def release(self, ticket_key: str) -> CursorRelease:
+        self.released.append(ticket_key)
+        return CursorRelease(self._held, self._warning)
+
+
+@pytest.mark.asyncio
+async def test_restart_releases_the_poll_cursor_for_the_ticket_it_abandoned():
+    wf = "draft-pr-ADEV-40-intake-39d2c862"
+    cursor = _Cursor()
+
+    result = await restart_task(
+        "ADEV-40",
+        repair_store=_RepairStore([wf]),
+        repair_signaller=_RepairSignaller(),
+        intake_store=_IntakeStore(workflow_ids=[wf], dedup=0),
+        liveness=_active(set()),
+        settle_delay=0.0,
+        sleep=_no_sleep,
+        cursor=cursor,
+    )
+
+    assert cursor.released == ["ADEV-40"]
+    assert result.restarted
+
+
+@pytest.mark.asyncio
+async def test_a_cursor_warning_does_not_withhold_the_abandon_or_the_restart():
+    wf = "draft-pr-ADEV-41-intake-39d2c862"
+    repair_signaller = _RepairSignaller()
+    cursor = _Cursor(warning="the rebar store does not list ADEV-41 as ready")
+
+    result = await restart_task(
+        "ADEV-41",
+        repair_store=_RepairStore([wf]),
+        repair_signaller=repair_signaller,
+        intake_store=_IntakeStore(workflow_ids=[wf], dedup=1),
+        liveness=_active(set()),
+        settle_delay=0.0,
+        sleep=_no_sleep,
+        cursor=cursor,
+    )
+
+    assert result.restarted
+    assert result.abandoned == (wf,)
+    assert repair_signaller.sent == [(wf, False, "operator")]
+    assert "does not list ADEV-41 as ready" in result.message
