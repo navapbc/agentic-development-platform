@@ -110,6 +110,18 @@ async def test_wait_retries_when_the_revision_cannot_be_read(caplog):
     assert "could not read the schema revision" in caplog.records[0].getMessage()
 
 
+async def test_an_unreachable_database_points_at_postgres_not_at_a_migration(caplog):
+    """An operator told to migrate while the database is down chases the wrong fault."""
+    clock = _Clock()
+    fetch = _fetcher(ConnectionRefusedError("[Errno 111] Connect call failed"), {HEAD})
+    with caplog.at_level(logging.WARNING, logger="schema-guard"):
+        await wait_for_schema_head(fetch, script=SCRIPT, sleep=clock.sleep, clock=clock)
+    message = caplog.records[0].getMessage()
+    assert "docker compose ps postgres" in message
+    assert "DATABASE_URL" in message
+    assert "inv db-migrate" not in message
+
+
 async def test_wait_exits_when_the_database_is_ahead_of_the_image():
     clock = _Clock()
     with pytest.raises(SchemaAheadOfImage) as excinfo:

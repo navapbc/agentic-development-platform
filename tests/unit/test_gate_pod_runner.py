@@ -10,6 +10,7 @@ from services.orchestration.gates.pod_runner import (
     _run_script,
     _tail,
     build_pod_manifest,
+    describe_pod_not_ready,
     pod_name_for,
 )
 
@@ -294,3 +295,106 @@ async def test_a_failed_copy_out_is_raised_rather_than_silently_staging_nothing(
 
     with pytest.raises(PodEngineError):
         await KubectlPodOps().copy_out("pod-1", "ns", "/workspace", "/staging", "/workspace/.list")
+
+
+def _unschedulable_status(message="0/1 nodes are available: 1 Insufficient cpu."):
+    return {
+        "phase": "Pending",
+        "conditions": [
+            {
+                "type": "PodScheduled",
+                "status": "False",
+                "reason": "Unschedulable",
+                "message": message,
+            }
+        ],
+    }
+
+
+def test_an_unschedulable_pod_is_described_as_a_resource_shortfall():
+    text = describe_pod_not_ready(_unschedulable_status())
+
+    assert "Pending" in text
+    assert "Unschedulable" in text
+    assert "Insufficient cpu" in text
+    assert "lower the pod resource requests" in text
+
+
+def test_a_pod_whose_image_will_not_pull_names_the_registry_as_the_next_check():
+    text = describe_pod_not_ready(
+        {
+            "phase": "Pending",
+            "conditions": [{"type": "PodScheduled", "status": "True"}],
+            "containerStatuses": [
+                {
+                    "state": {
+                        "waiting": {
+                            "reason": "ImagePullBackOff",
+                            "message": "back-off pulling image quay.io/buildah/stable",
+                        }
+                    }
+                }
+            ],
+        }
+    )
+
+    assert "ImagePullBackOff" in text
+    assert "quay.io/buildah/stable" in text
+    assert "access to the registry" in text
+
+
+def test_a_pod_with_no_explaining_condition_still_reports_its_phase():
+    assert "Running" in describe_pod_not_ready({"phase": "Running"})
+
+
+class _CompletedProc:
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def _patch_wait_ready(monkeypatch, *, status_payload, get_rc=0, get_stderr=""):
+    """Stand in for `kubectl wait` timing out and the follow-up `kubectl get pod -o json`."""
+    from services import process
+
+    def fake_run(argv, **kwargs):
+        if argv[1] == "wait":
+            return _CompletedProc(1, "", "error: timed out waiting for the condition")
+        assert argv[1:3] == ["get", "pod"]
+        return _CompletedProc(get_rc, json.dumps(status_payload), get_stderr)
+
+    monkeypatch.setattr(process, "run", fake_run)
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_a_readiness_timeout_reports_why_the_pod_never_scheduled(monkeypatch):
+    """A `kubectl wait` timeout alone cannot distinguish a starved cluster from a slow one."""
+    from services.orchestration.gates.pod_runner import KubectlPodOps
+
+    _patch_wait_ready(monkeypatch, status_payload={"status": _unschedulable_status()})
+
+    with pytest.raises(PodEngineError) as caught:
+        await KubectlPodOps(ready_timeout_seconds=180.0).wait_ready("checks-1", "agent-sandbox")
+
+    message = str(caught.value)
+    assert "checks-1" in message
+    assert "agent-sandbox" in message
+    assert "180s" in message
+    assert "Unschedulable" in message
+    assert "Insufficient cpu" in message
+    assert "timed out waiting for the condition" in message
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_a_readiness_timeout_survives_an_unreadable_pod_status(monkeypatch):
+    from services.orchestration.gates.pod_runner import KubectlPodOps
+
+    _patch_wait_ready(
+        monkeypatch, status_payload={}, get_rc=1, get_stderr='pods "checks-1" not found'
+    )
+
+    with pytest.raises(PodEngineError) as caught:
+        await KubectlPodOps(ready_timeout_seconds=30.0).wait_ready("checks-1", "agent-sandbox")
+
+    assert 'pods "checks-1" not found' in str(caught.value)

@@ -107,14 +107,21 @@ def test_classification_retention_rejects_non_numeric_days(monkeypatch):
         _classification_days(monkeypatch, "security:soon")
 
 
+def _declared_ports() -> Settings:
+    """Settings carrying the declared host ports, so a remapped .env cannot move the assertion."""
+    return hermetic_settings(postgres_host_port=5432, temporal_host_port=7233)
+
+
 def test_host_rewrite_maps_compose_service_names_to_localhost(monkeypatch):
     monkeypatch.delenv("PLATFORM_IN_CONTAINER", raising=False)
 
+    ports = _declared_ports()
+
     assert (
-        to_host_url("postgresql+psycopg://platform:pw@postgres:5432/agent_platform")
+        to_host_url("postgresql+psycopg://platform:pw@postgres:5432/agent_platform", ports)
         == "postgresql+psycopg://platform:pw@localhost:5432/agent_platform"
     )
-    assert to_host_hostport("temporal:7233") == "localhost:7233"
+    assert to_host_hostport("temporal:7233", ports) == "localhost:7233"
 
 
 def test_host_rewrite_leaves_unknown_hosts_alone(monkeypatch):

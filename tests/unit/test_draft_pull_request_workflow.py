@@ -2495,6 +2495,7 @@ async def test_approval_rejection_cancels_promotion():
 async def test_approval_snapshot_drift_cancels_promotion():
     approvals: list[RecordApprovalRequest] = []
     promotions: list[PromotePrRequest] = []
+    alerts: list[AlertHumanInterventionRequest] = []
     activities = _make_activities(
         None,
         1,
@@ -2504,6 +2505,7 @@ async def test_approval_snapshot_drift_cancels_promotion():
         ci_result=SUCCESS,
         approvals=approvals,
         promotions=promotions,
+        alerts=alerts,
         recheck_requires_pause=True,
         recheck_category="scope_change",
     )
@@ -2528,6 +2530,7 @@ async def test_approval_snapshot_drift_cancels_promotion():
     assert result.promoted is False
     assert len(approvals) == 1
     assert len(promotions) == 0
+    assert alerts[-1].detail == "issue changed"
 
 
 async def test_authorship_signs_both_and_code_binds_the_promoted_commit():
