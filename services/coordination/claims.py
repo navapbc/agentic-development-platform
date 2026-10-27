@@ -9,7 +9,7 @@ from typing import Protocol
 
 from database.models.schema import work_claims
 from scripts.config import get_settings
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
@@ -86,6 +86,8 @@ class WorkClaimStore(Protocol):
     ) -> int | None: ...
 
     async def release(self, claim_id: str, *, owner_workflow_id: str) -> bool: ...
+
+    async def complete(self, claim_id: str, *, owner_workflow_id: str) -> bool: ...
 
 
 class PostgresWorkClaimStore:
@@ -199,7 +201,24 @@ class PostgresWorkClaimStore:
                         work_claims.c.owner_workflow_id == owner_workflow_id,
                         work_claims.c.state != COMPLETED,
                     )
-                    .values(state=RELEASED)
+                    .values(state=RELEASED, released_at=func.now())
+                    .returning(work_claims.c.claim_id)
+                )
+            ).first()
+        return row is not None
+
+    async def complete(self, claim_id: str, *, owner_workflow_id: str) -> bool:
+        engine = self._get_engine()
+        async with engine.begin() as conn:
+            row = (
+                await conn.execute(
+                    update(work_claims)
+                    .where(
+                        work_claims.c.claim_id == claim_id,
+                        work_claims.c.owner_workflow_id == owner_workflow_id,
+                        work_claims.c.state == CLAIMED,
+                    )
+                    .values(state=COMPLETED, released_at=func.now())
                     .returning(work_claims.c.claim_id)
                 )
             ).first()
@@ -256,4 +275,13 @@ class InMemoryWorkClaimStore:
         ):
             return False
         row["state"] = RELEASED
+        return True
+
+    async def complete(self, claim_id: str, *, owner_workflow_id: str) -> bool:
+        row = self._claims.get(claim_id)
+        if row is None or str(row.get("owner_workflow_id") or "") != owner_workflow_id:
+            return False
+        if row["state"] != CLAIMED:
+            return False
+        row["state"] = COMPLETED
         return True

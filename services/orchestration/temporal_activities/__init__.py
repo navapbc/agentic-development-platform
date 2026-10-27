@@ -23,6 +23,7 @@ from services.orchestration.temporal_activities.gates import (
 )
 from services.orchestration.temporal_activities.implementation import (
     claim_work_unit,
+    finalize_work_claim,
     reset_task_coordination,
     run_implementation_stage,
 )
@@ -80,6 +81,7 @@ __all__ = [
     "capture_base_head",
     "check_dependency_cycle",
     "claim_work_unit",
+    "finalize_work_claim",
     "reset_task_coordination",
     "classify_test_failures",
     "clear_suspension",
