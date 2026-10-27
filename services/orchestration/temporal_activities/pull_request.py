@@ -164,6 +164,7 @@ class CommitPushResult:
     replayed: bool
     pr_template: str = ""
     excluded_paths: list[str] = field(default_factory=list)
+    changed: bool = True
 
 
 @dataclass
@@ -306,6 +307,7 @@ async def commit_and_push(req: CommitPushRequest) -> CommitPushResult:
         replayed=result.replayed,
         pr_template=read_pull_request_template(workspace.path),
         excluded_paths=list(staged.excluded),
+        changed=staged.changed,
     )
 
 

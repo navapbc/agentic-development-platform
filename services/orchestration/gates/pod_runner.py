@@ -14,6 +14,7 @@ import json
 import re
 import shlex
 from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
@@ -61,8 +62,27 @@ def pod_name_for(name: str, execution_id: str, prefix: str = "gate-engine") -> s
     return f"{prefix}-{slug or 'run'}"[:63].rstrip("-")
 
 
+DEFAULT_POD_RESOURCES: dict[str, dict[str, str]] = {
+    "requests": {"cpu": "500m", "memory": "1Gi"},
+    "limits": {"cpu": "2", "memory": "4Gi"},
+}
+
+# A project's test suite runs under the same wall-clock assertions its authors wrote on a developer
+# machine. Helpers such as testing-library's waitFor budget a fixed 1000ms that no jest flag
+# overrides, so a CPU-starved pod fails tests that are not defective. Two CPUs reproduces those
+# failures and six clears them.
+CHECKS_POD_RESOURCES: dict[str, dict[str, str]] = {
+    "requests": {"cpu": "2", "memory": "2Gi"},
+    "limits": {"cpu": "6", "memory": "8Gi"},
+}
+
+
 def build_pod_manifest(
-    pod: str, namespace: str, builder_image: str, privileged: bool = False
+    pod: str,
+    namespace: str,
+    builder_image: str,
+    privileged: bool = False,
+    resources: dict[str, dict[str, str]] | None = None,
 ) -> dict:
     # Unpacking an image layer remounts the container root MS_PRIVATE|MS_REC, which some clusters
     # (k3s, Colima) deny to an unprivileged pod even with CAP_SYS_ADMIN and seccomp unconfined.
@@ -93,10 +113,7 @@ def build_pod_manifest(
                         {"name": "BUILDAH_ISOLATION", "value": "chroot"},
                     ],
                     "securityContext": security_context,
-                    "resources": {
-                        "requests": {"cpu": "500m", "memory": "1Gi"},
-                        "limits": {"cpu": "2", "memory": "4Gi"},
-                    },
+                    "resources": deepcopy(resources or DEFAULT_POD_RESOURCES),
                 }
             ],
         },

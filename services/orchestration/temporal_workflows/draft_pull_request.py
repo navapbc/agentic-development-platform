@@ -683,7 +683,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 workflow_id,
                 reason=impl.terminal_reason or IMPL_FAILED,
                 stage="implementation",
-                detail=impl.terminal_reason,
+                detail=impl.summary or impl.terminal_reason,
             )
             return DraftPullRequestOutput(
                 execution_id=params.execution_id,
@@ -834,7 +834,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 workflow_id,
                 reason=sync.terminal_reason or SYNC_PAUSED,
                 stage="branch_sync",
-                detail=sync.terminal_reason,
+                detail=sync.detail or sync.terminal_reason,
             )
             return DraftPullRequestOutput(
                 execution_id=params.execution_id,
@@ -1327,6 +1327,8 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 instruction=plan.instruction,
                 failure_summary=self._checks_output,
                 changed_paths=tuple(params.file_impact),
+                task=params.focus or params.task,
+                base_commit=params.base_sha,
             ),
             start_to_close_timeout=timedelta(seconds=params.activity_timeout_seconds),
             retry_policy=RetryPolicy(maximum_attempts=1),
@@ -1384,7 +1386,38 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 artifact_hashes={"files": ",".join(repair.changed_files)},
             )
         )
+        dropped = self._repair_dropped_by_scope(repair)
+        if dropped:
+            await self._audit(
+                AuditEvent(
+                    event_id=f"{params.execution_id}:REPAIR_OUT_OF_SCOPE:{attempt}",
+                    task_id=params.task_id,
+                    execution_id=params.execution_id,
+                    event_type="REPAIR_OUT_OF_SCOPE",
+                    stage="repair",
+                    new_state=REPAIRING,
+                    workflow_id=workflow_id,
+                    reason=(
+                        "the repair only changed files the ticket's file_impact excludes, so the "
+                        "commit dropped it: " + ", ".join(dropped)
+                    ),
+                )
+            )
+            return replace(repair, applied=False)
         return repair
+
+    def _repair_dropped_by_scope(self, repair: ApplyCIRepairResult) -> list[str]:
+        """Repair-authored paths the commit discarded, when the commit kept nothing at all.
+
+        A repair that only writes files outside the ticket's declared `file_impact` never reaches
+        the branch, so re-running the checks would fail the same way until the budget runs out.
+        Paths are reported only when the commit staged nothing, because a commit that did land
+        something made progress even though it also dropped an unrelated file such as a lockfile.
+        """
+        commit = self._commit
+        if commit is None or commit.changed:
+            return []
+        return sorted(set(commit.excluded_paths) & set(repair.changed_files))
 
     async def _run_ci(
         self,

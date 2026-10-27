@@ -4,6 +4,7 @@ from dataclasses import replace
 from typing import Any
 
 import pytest
+from services.orchestration.temporal_activities.pull_request import CommitPushResult
 from services.orchestration.temporal_activities.repair import ApplyCIRepairResult
 from services.orchestration.temporal_workflows.draft_pull_request import (
     CI_FAILED,
@@ -110,3 +111,42 @@ async def test_budget_breach_without_an_applied_repair_runs_no_further_checks() 
     assert loop.ci_runs == 1
     assert outcome.status == CI_FAILED
     assert outcome.terminal_reason == LLM_CALLS_EXCEEDED
+
+
+def _commit(*, changed: bool, excluded: list[str]) -> CommitPushResult:
+    return CommitPushResult(
+        branch="agent/t",
+        commit_sha="b" * 40,
+        pushed=True,
+        replayed=False,
+        excluded_paths=excluded,
+        changed=changed,
+    )
+
+
+def test_a_repair_confined_to_excluded_paths_is_reported_as_dropped() -> None:
+    workflow = DraftPullRequestWorkflow()
+    workflow._commit = _commit(changed=False, excluded=["portal/tests/__snapshots__/a.snap"])
+    repair = ApplyCIRepairResult(
+        applied=True, changed_files=["portal/tests/__snapshots__/a.snap"]
+    )
+
+    assert workflow._repair_dropped_by_scope(repair) == ["portal/tests/__snapshots__/a.snap"]
+
+
+def test_a_repair_that_landed_a_commit_is_not_reported_despite_an_excluded_lockfile() -> None:
+    workflow = DraftPullRequestWorkflow()
+    workflow._commit = _commit(changed=True, excluded=["portal/package-lock.json"])
+    repair = ApplyCIRepairResult(
+        applied=True,
+        changed_files=["portal/src/a.tsx", "portal/package-lock.json"],
+    )
+
+    assert workflow._repair_dropped_by_scope(repair) == []
+
+
+def test_a_repair_is_not_reported_before_any_commit_exists() -> None:
+    workflow = DraftPullRequestWorkflow()
+    repair = ApplyCIRepairResult(applied=True, changed_files=["portal/src/a.tsx"])
+
+    assert workflow._repair_dropped_by_scope(repair) == []
