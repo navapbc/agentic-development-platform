@@ -1,6 +1,7 @@
 name: agentic-dev-platform
 
 x-python-service: &python-service
+  image: agentic-development-platform-py:latest
   build:
     context: .
     dockerfile: docker/Dockerfile
@@ -11,9 +12,17 @@ x-python-service: &python-service
   env_file: [.env]
   restart: unless-stopped
 
+repo-intelligence-service: &repo-intelligence-service
+  image: agentic-development-platform-repo-intelligence:latest
+  build:
+    context: .
+    dockerfile: docker/repo-intelligence.Dockerfile
+  env_file: [.env]
+  restart: unless-stopped
+
 services:
   postgres:
-    image: postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
+    image: public.ecr.aws/docker/library/postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-platform}
@@ -31,7 +40,7 @@ services:
       retries: 10
 
   temporal:
-    image: temporalio/auto-setup:1.29.7@sha256:f14912b699cf73015ad5c4fc18d522d4b014db90e794039214dfb7c022c2644f
+    image: docker.io/temporalio/auto-setup:1.29.7@sha256:f14912b699cf73015ad5c4fc18d522d4b014db90e794039214dfb7c022c2644f
     restart: unless-stopped
     depends_on:
       postgres:
@@ -52,7 +61,7 @@ services:
       retries: 15
 
   temporal-ui:
-    image: temporalio/ui:2.53.3@sha256:eef301146e60fad34b47adaecfae4149016e34b2d44ba94fca5fd8e5441f182a
+    image: docker.io/temporalio/ui:2.53.3@sha256:eef301146e60fad34b47adaecfae4149016e34b2d44ba94fca5fd8e5441f182a
     depends_on: [temporal]
     environment:
       TEMPORAL_ADDRESS: temporal:7233
@@ -255,7 +264,7 @@ services:
     restart: unless-stopped
 
   clickhouse:
-    image: clickhouse/clickhouse-server:26.9.19.9@sha256:bdb5c911a23d92fd364e246ab20b5a0a485f00112f3663fa626b083fb46c146b
+    image: docker.io/clickhouse/clickhouse-server:26.9.19.9@sha256:bdb5c911a23d92fd364e246ab20b5a0a485f00112f3663fa626b083fb46c146b
     user: "101:101"
     environment:
       CLICKHOUSE_DB: default
@@ -409,7 +418,8 @@ services:
     restart: unless-stopped
 
   prometheus:
-    image: prom/prometheus:v3.14.0@sha256:5ce7540c3c00ef4ab0c9d2c995c6a5b9c421f44b4a115d97a2c7af3b1c21cbb0
+    image: ghcr.io/prometheus/prometheus:v3.14.0@sha256:5ce7540c3c00ef4ab0c9d2c995c6a5b9c421f44b4a115d97a2c7af3b1c21cbb0
+    profiles: ["monitoring"]
     command: ["--config.file=/etc/prometheus/prometheus.yaml"]
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:9090/-/healthy"]
@@ -446,6 +456,7 @@ services:
 
   grafana:
     image: grafana/grafana:11.3.0@sha256:a0f881232a6fb71a0554a47d0fe2203b6888fe77f4cefb7ea62bed7eb54e13c3
+    profiles: ["monitoring"]
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3000/api/health"]
       interval: 30s
@@ -466,10 +477,7 @@ services:
     restart: unless-stopped
 
   repo-intelligence:
-    build:
-      context: .
-      dockerfile: docker/repo-intelligence.Dockerfile
-    env_file: [.env]
+    <<: *repo-intelligence-service
     ports: ["8120:8120"]
     healthcheck:
       test: ["CMD", "python", "-m", "services.healthcheck", "http", "8120"]
@@ -484,9 +492,7 @@ services:
     restart: unless-stopped
 
   repo-index-worker:
-    build:
-      context: .
-      dockerfile: docker/repo-intelligence.Dockerfile
+    <<: *repo-intelligence-service
     command: ["python", "-m", "services.repository_intelligence.indexing.worker"]
     healthcheck:
       test: ["CMD", "python", "-m", "services.healthcheck", "heartbeat", "/tmp/worker.heartbeat", "--max-age", "120"]
@@ -499,7 +505,6 @@ services:
     env_file: [.env]
     volumes:
       - repo-index-data:/app/repository_indexes
-    restart: unless-stopped
 
   # Local stand-in for ECR that gate pods pull the engine image from in image mode. It serves
   # plain HTTP, so the pods pull with GATE_REGISTRY_TLS_VERIFY=false.

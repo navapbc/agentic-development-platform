@@ -2,7 +2,7 @@
 services:
   # Used only by the jumphost and ssh-bastion providers. The direct provider needs no sidecar.
   bedrock-tunnel:
-    image: alpine/socat:1.8.1.3@sha256:3ed1cd38741bd445ebffa3aecb9d80c46a83db45f5b5ef03332976c7ca9814af
+    image: docker.io/alpine/socat:1.8.1.3@sha256:3ed1cd38741bd445ebffa3aecb9d80c46a83db45f5b5ef03332976c7ca9814af
     command: TCP-LISTEN:443,fork,reuseaddr TCP:host.docker.internal:${BEDROCK_TUNNEL_LOCAL_PORT:-8444}
     healthcheck:
       test: ["CMD", "nc", "-z", "127.0.0.1", "443"]
