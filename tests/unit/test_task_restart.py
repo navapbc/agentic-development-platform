@@ -29,6 +29,7 @@ class _IntakeStore:
         self.cleared_repo: str | None = "unset"
         self.marked = False
         self.gate_cleared = False
+        self.claims_cleared = False
 
     async def workflow_ids(self, issue_key: str) -> list[str]:
         return self._workflow_ids
@@ -43,6 +44,10 @@ class _IntakeStore:
 
     async def clear_sequence_gate(self, issue_key: str) -> int:
         self.gate_cleared = True
+        return 1
+
+    async def clear_work_claims(self, issue_key: str) -> int:
+        self.claims_cleared = True
         return 1
 
 
@@ -79,6 +84,26 @@ async def test_restart_abandons_then_retriggers_intake():
     assert intake_store.gate_cleared is True
     assert result.restarted
     assert "restarted" in result.message
+
+
+@pytest.mark.asyncio
+async def test_restart_clears_the_work_claim_and_says_so():
+    wf = "draft-pr-ADSER-24-intake-39d2c862"
+    intake_store = _IntakeStore(workflow_ids=[wf], dedup=1)
+
+    result = await restart_task(
+        "ADSER-24",
+        repair_store=_RepairStore([wf]),
+        repair_signaller=_RepairSignaller(),
+        intake_store=intake_store,
+        liveness=_active(set()),
+        sleep=_no_sleep,
+    )
+
+    assert intake_store.claims_cleared is True
+    assert result.retry.claims_cleared == 1
+    assert "dropped 1 work claim(s)" in result.message
+    assert "dropped 1 intake dedup record(s)" in result.message
 
 
 @pytest.mark.asyncio

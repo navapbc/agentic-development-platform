@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Protocol
 
-from database.models.schema import executions, sequence_gate, side_effects
+from database.models.schema import executions, sequence_gate, side_effects, work_claims
 from scripts.config import Settings, get_settings, to_host_hostport, to_host_url
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
@@ -41,9 +41,10 @@ WorkflowLivenessProbe = Callable[[str], Awaitable[WorkflowLiveness]]
 @dataclass(frozen=True)
 class IntakeRetryResult:
     issue_key: str
-    released: int
+    intake_cleared: int
     superseded: int
     blocked_by: tuple[str, ...]
+    claims_cleared: int = 0
     undetermined: tuple[str, ...] = ()
     cursor_released: int = 0
     cursor_warning: str = ""
@@ -52,7 +53,7 @@ class IntakeRetryResult:
     def retriggered(self) -> bool:
         if self.blocked_by or self.undetermined:
             return False
-        return self.released > 0 or self.cursor_released > 0
+        return self.intake_cleared > 0 or self.cursor_released > 0
 
     @property
     def message(self) -> str:
@@ -65,16 +66,21 @@ class IntakeRetryResult:
                 f"{self.issue_key} could not determine whether {unreachable} is still "
                 "running, not retriggered"
             )
-        if not self.released and not self.cursor_released:
-            head = f"{self.issue_key} had no intake record to clear, nothing to retrigger"
+        if not self.intake_cleared and not self.cursor_released:
+            parts = [f"{self.issue_key} had no intake record to clear, nothing to retrigger"]
+            if self.claims_cleared:
+                parts.append(f"dropped {self.claims_cleared} stranded work claim(s)")
+            head = ", ".join(parts)
             return f"{head}. {self.cursor_warning}" if self.cursor_warning else head
         cleared = []
-        if self.released:
-            cleared.append(f"released {self.released} intake record(s)")
+        if self.intake_cleared:
+            cleared.append(f"dropped {self.intake_cleared} intake dedup record(s)")
         if self.cursor_released:
             cleared.append("released the poll cursor so the next pass offers the ticket again")
+        cleared.append(f"dropped {self.claims_cleared} work claim(s)")
         cleared.append(f"marked {self.superseded} stale execution(s) failed")
-        head = f"{self.issue_key} cleared for retrigger, {', '.join(cleared)}"
+        listed = f"{', '.join(cleared[:-1])}, and {cleared[-1]}"
+        head = f"{self.issue_key} cleared for retrigger, {listed}"
         return f"{head}. {self.cursor_warning}" if self.cursor_warning else head
 
 
@@ -86,6 +92,8 @@ class IntakeRetryStore(Protocol):
     async def mark_non_terminal_failed(self, issue_key: str) -> int: ...
 
     async def clear_sequence_gate(self, issue_key: str) -> int: ...
+
+    async def clear_work_claims(self, issue_key: str) -> int: ...
 
 
 async def retry_intake(
@@ -107,14 +115,15 @@ async def retry_intake(
     if running or undetermined:
         return IntakeRetryResult(
             issue_key,
-            released=0,
+            intake_cleared=0,
             superseded=0,
             blocked_by=tuple(running),
             undetermined=tuple(undetermined),
         )
-    released = await store.clear_intake_dedup(issue_key, repo)
+    intake_cleared = await store.clear_intake_dedup(issue_key, repo)
     cursor_release = await cursor.release(issue_key) if cursor is not None else CursorRelease()
-    reopened = released or cursor_release.released
+    claims_cleared = await store.clear_work_claims(issue_key)
+    reopened = intake_cleared or cursor_release.released
     # A stale non-terminal execution makes the next pass record the ticket as a duplicate and
     # consume the cursor release, so the rows have to be failed whichever cursor was cleared.
     superseded = await store.mark_non_terminal_failed(issue_key) if reopened else 0
@@ -122,9 +131,10 @@ async def retry_intake(
         await store.clear_sequence_gate(issue_key)
     return IntakeRetryResult(
         issue_key,
-        released=released,
+        intake_cleared=intake_cleared,
         superseded=superseded,
         blocked_by=(),
+        claims_cleared=claims_cleared,
         cursor_released=cursor_release.released,
         cursor_warning=cursor_release.warning,
     )
@@ -186,6 +196,12 @@ class PostgresIntakeRetryStore:
                 await conn.execute(
                     delete(sequence_gate).where(sequence_gate.c.task_id == issue_key)
                 )
+            ).rowcount or 0
+
+    async def clear_work_claims(self, issue_key: str) -> int:
+        async with self._engine.begin() as conn:
+            return (
+                await conn.execute(delete(work_claims).where(work_claims.c.task_id == issue_key))
             ).rowcount or 0
 
 
