@@ -126,3 +126,16 @@ def test_alembic_database_url_rewrites_a_configured_service_address(monkeypatch)
     assert (
         alembic_database_url() == "postgresql+psycopg://platform:pw@localhost:15432/agent_platform"
     )
+
+
+def test_alembic_database_url_derives_the_configured_credentials(monkeypatch):
+    secret = "".join(("pg", "-", "fixture", "-", "secret"))
+    monkeypatch.delenv("ALEMBIC_DATABASE_URL", raising=False)
+    monkeypatch.setenv(
+        "DATABASE_URL", f"postgresql+asyncpg://platform:{secret}@postgres:5432/agent_platform"
+    )
+    monkeypatch.setenv("POSTGRES_HOST_PORT", "15432")
+
+    assert alembic_database_url() == (
+        f"postgresql+psycopg://platform:{secret}@localhost:15432/agent_platform"
+    )

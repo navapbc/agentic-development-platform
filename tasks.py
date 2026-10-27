@@ -114,20 +114,21 @@ def logs(c, service=""):
 @task
 def db_migrate(c):
     """Apply migrations by running the db-migrate container."""
-    c.run(f"{COMPOSE} {_compose_files()} run --rm db-migrate", pty=True)
+    c.run(f"{COMPOSE} {_compose_files()} run --rm --build db-migrate", pty=True)
 
 
 @task
 def schedules_install(c):
     """Register the Temporal reap and intake schedules by running the schedule-bootstrap task."""
-    c.run(f"{COMPOSE} {_compose_files()} run --rm schedule-bootstrap", pty=True)
+    c.run(f"{COMPOSE} {_compose_files()} run --rm --build schedule-bootstrap", pty=True)
 
 
 @task
 def db_reset(c):
     """Drop and recreate the ``agent_platform`` schema, then re-migrate."""
     c.run(
-        f"{COMPOSE} {_compose_files()} run --rm --entrypoint python db-migrate -m scripts.db_reset",
+        f"{COMPOSE} {_compose_files()} run --rm --build --entrypoint python "
+        "db-migrate -m scripts.db_reset",
         pty=True,
     )
     db_migrate(c)
