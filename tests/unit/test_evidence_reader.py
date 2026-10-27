@@ -18,8 +18,9 @@ from services.review.evidence import (
     PULL_REQUEST_SUMMARY_COMPONENT,
     EvidenceRecord,
 )
-from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.sql.elements import BinaryExpression
+from sqlalchemy.sql import operators
 from tests.unit._evidence_producers import PRODUCERS
 
 COMPONENTS = {
@@ -48,7 +49,11 @@ class _FakeResult:
 
 
 class _FakeConnection:
-    """Stands in for the evidence table, matching on the artifact id the statement binds."""
+    """Stands in for the evidence table, evaluating the statement's own WHERE predicate.
+
+    Matching on the compiled SQL text would accept a reader that filtered on the wrong
+    column, because the bound value appears in the text either way.
+    """
 
     def __init__(self, rows: dict[str, dict[str, Any]]) -> None:
         self._rows = rows
@@ -59,12 +64,23 @@ class _FakeConnection:
     async def __aexit__(self, *exc_info: object) -> bool:
         return False
 
+    @staticmethod
+    def _predicates(statement) -> list[tuple[str, Any]]:
+        whereclause = statement.whereclause
+        clauses = getattr(whereclause, "clauses", [whereclause])
+        pairs = []
+        for clause in clauses:
+            if not isinstance(clause, BinaryExpression):
+                raise AssertionError(f"unsupported predicate {clause!r}")
+            if clause.operator is not operators.eq:
+                raise AssertionError(f"unsupported operator in {clause!r}")
+            pairs.append((clause.left.name, clause.right.value))
+        return pairs
+
     async def execute(self, statement) -> _FakeResult:
-        sql = str(
-            statement.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})
-        )
-        for artifact_id, row in self._rows.items():
-            if f"'{artifact_id}'" in sql:
+        predicates = self._predicates(statement)
+        for row in self._rows.values():
+            if all(row.get(column) == value for column, value in predicates):
                 return _FakeResult(row)
         return _FakeResult(None)
 

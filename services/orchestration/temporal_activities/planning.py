@@ -2,7 +2,8 @@
 
 ``gather_repo_context`` assembles the repository context package the planner reads, and
 ``record_plan_evidence`` routes an accepted plan through the content-addressed evidence
-sink so the plan body is retrievable by artifact id.
+sink, which records the plan's content address and its metadata under an artifact id. The
+plan body is not stored and stays in the workflow history.
 """
 
 from __future__ import annotations

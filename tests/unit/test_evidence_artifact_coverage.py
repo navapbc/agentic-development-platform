@@ -194,3 +194,15 @@ async def test_a_replayed_write_keeps_the_same_content_address(kind: str, monkey
 
     assert first.content_hash == second.content_hash
     assert first.artifact_id != second.artifact_id
+
+
+async def test_a_changed_body_changes_the_content_address():
+    """The sink drops conflicting addresses, so a collapsing address loses evidence silently."""
+    from services.review.evidence import evidence_content_hash
+
+    base = {"execution_id": "exec-7", "plan": "build the thing"}
+
+    assert evidence_content_hash(base) != evidence_content_hash(
+        {**base, "plan": "build the other thing"}
+    )
+    assert evidence_content_hash(base) != evidence_content_hash({**base, "execution_id": "exec-8"})
