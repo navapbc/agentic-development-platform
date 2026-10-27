@@ -63,6 +63,12 @@ def parse_rebar_backend_config(raw: Mapping[str, Any]) -> RebarBackendConfig:
     repo_root = backend.get("repo_root")
     if not isinstance(repo_root, str) or not repo_root.strip():
         raise ConfigError("tickets backend.repo_root is required")
+    if not Path(repo_root.strip()).is_absolute():
+        raise ConfigError(
+            "tickets backend.repo_root must be an absolute path and ~ is not expanded, because "
+            "operator commands resolve it on the host while the intake poll resolves it inside "
+            f"the worker container, so {repo_root.strip()!r} names a different store in each"
+        )
     return RebarBackendConfig(
         repo_root=repo_root.strip(),
         status_flow=_parse_status_flow(backend.get("status_flow")),
