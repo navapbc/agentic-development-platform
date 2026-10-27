@@ -19,8 +19,8 @@ from services.review.evidence import (
     EvidenceRecord,
 )
 from sqlalchemy.ext.asyncio import AsyncEngine
-from sqlalchemy.sql.elements import BinaryExpression
 from sqlalchemy.sql import operators
+from sqlalchemy.sql.elements import BinaryExpression
 from tests.unit._evidence_producers import PRODUCERS
 
 COMPONENTS = {
