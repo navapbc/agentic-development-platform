@@ -450,14 +450,15 @@ def index_repo(c, repo, commit="", local=False):
         "issue": "Jira issue key parked for human repair, for example ADSER-24.",
         "retry": "Re-run CI and repair on the current branch head.",
         "abandon": "Abandon the workflow so intake can relaunch a fresh execution.",
+        "local": "Run on the host instead of the activity-worker container.",
     }
 )
-def repair(c, issue, retry=False, abandon=False):
+def repair(c, issue, retry=False, abandon=False, local=False):
     """Release the AWAITING_HUMAN pause on a workflow parked after CI repair exhaustion."""
     if retry == abandon:
         raise Exit("pass exactly one of --retry or --abandon")
     decision = "--retry" if retry else "--abandon"
-    c.run(f"python -m scripts.repair {issue} {decision}", pty=True)
+    _run_scripted(c, f"python -m scripts.repair {issue} {decision}", local=local)
 
 
 @task(
@@ -466,26 +467,30 @@ def repair(c, issue, retry=False, abandon=False):
         "gate": "Name of the human gate to resolve, for example plan.",
         "approve": "Approve the gate and continue the run.",
         "reject": "Reject the gate and cancel the run.",
+        "local": "Run on the host instead of the activity-worker container.",
     }
 )
-def gate(c, issue, gate, approve=False, reject=False):
+def gate(c, issue, gate, approve=False, reject=False, local=False):
     """Release the AWAITING_HUMAN pause on a workflow parked at a configured human gate."""
     if approve == reject:
         raise Exit("pass exactly one of --approve or --reject")
     decision = "--approve" if approve else "--reject"
-    c.run(f"python -m scripts.gate_decision {issue} --gate {gate} {decision}", pty=True)
+    _run_scripted(
+        c, f"python -m scripts.gate_decision {issue} --gate {gate} {decision}", local=local
+    )
 
 
 @task(
     help={
         "issue": "Jira issue key to restart, for example ADSER-24.",
         "repo": "Scope the intake retry to one repository when the issue fanned out to several.",
+        "local": "Run on the host instead of the activity-worker container.",
     }
 )
-def restart(c, issue, repo=""):
+def restart(c, issue, repo="", local=False):
     """Abandon a parked workflow and re-trigger intake for a fresh execution."""
     repo_flag = f" --repo {repo}" if repo else ""
-    c.run(f"python -m scripts.restart {issue}{repo_flag}", pty=True)
+    _run_scripted(c, f"python -m scripts.restart {issue}{repo_flag}", local=local)
 
 
 @task(
