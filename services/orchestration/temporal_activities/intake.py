@@ -53,6 +53,7 @@ async def _reconcile_jira_pass() -> IntakeReconcileReport:
     from services.coordination.idempotency import PostgresSideEffectLedger
     from services.integration.jira.credentials import build_jira_credential_resolver
     from services.integration.jira.intake_read import JiraPollReadSource
+    from services.orchestration.checks.config import required_checks_repos
     from services.orchestration.intake_reconciler import reconcile_intake
     from services.orchestration.intake_runtime import (
         NotificationsAlerter,
@@ -77,6 +78,7 @@ async def _reconcile_jira_pass() -> IntakeReconcileReport:
         active_guard=execution_store,
         run_counter=execution_store,
         base_resolver=starter,
+        checks_repos=required_checks_repos(settings),
     )
     return IntakeReconcileReport(
         started=sum(1 for record in report.started if not record.duplicate),
@@ -106,6 +108,7 @@ async def _reconcile_rebar_pass() -> IntakeReconcileReport:
         load_poll_config,
         load_rebar_backend_config,
     )
+    from services.orchestration.checks.config import required_checks_repos
     from services.orchestration.intake_reconciler import IntakeContext, build_admission
     from services.orchestration.intake_runtime import (
         NotificationsAlerter,
@@ -135,6 +138,7 @@ async def _reconcile_rebar_pass() -> IntakeReconcileReport:
         active_guard=execution_store,
         admission=await build_admission(settings, execution_store),
         base_resolver=starter,
+        checks_repos=required_checks_repos(settings),
     )
 
     ready_ids = {str(t.get("ticket_id") or "") for t in rebar.ready(repo_root=repo_root)}

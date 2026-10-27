@@ -135,6 +135,9 @@ class RealGitHost:
         the workspace is reset to the base for each one. Naming the remote head as the parent
         publishes the verified tree on top of whatever the branch already carries, where a plain
         commit would build on the workspace parent and be rejected as a non-fast-forward.
+        When the base moved after an earlier execution published, the workspace commit is not in
+        the branch history, so it becomes a second parent. Without it the base is not an ancestor
+        of the branch and the pull request diff carries every change the base gained since.
         It also runs no hook and reads no `commit.gpgsign`, both of which have produced a
         reported success with no commit behind it when the client repository configured them.
 
@@ -156,12 +159,14 @@ class RealGitHost:
                     replayed=True,
                     published_tree=request.tree,
                 )
-        parent = remote_head or await self._git("rev-parse", "HEAD", cwd=work)
+        workspace_head = await self._git("rev-parse", "HEAD", cwd=work)
+        parents = ["-p", remote_head or workspace_head]
+        if remote_head and not await self._is_ancestor(work, workspace_head, remote_head):
+            parents += ["-p", workspace_head]
         sha = await self._git(
             "commit-tree",
             request.tree,
-            "-p",
-            parent,
+            *parents,
             "-m",
             request.message,
             cwd=work,
@@ -199,6 +204,9 @@ class RealGitHost:
 
     async def _tree_of(self, work: str, commit: str) -> str:
         return await self._git("rev-parse", f"{commit}^{{tree}}", cwd=work)
+
+    async def _is_ancestor(self, work: str, ancestor: str, descendant: str) -> bool:
+        return await self._git("merge-base", ancestor, descendant, cwd=work) == ancestor
 
     async def _get(
         self, cred: GitHubRepoCredential, path: str, params: dict[str, Any] | None = None
