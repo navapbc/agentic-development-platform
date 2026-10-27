@@ -221,3 +221,23 @@ async def test_a_changed_body_changes_the_content_address():
         {**base, "plan": "build the other thing"}
     )
     assert evidence_content_hash(base) != evidence_content_hash({**base, "execution_id": "exec-8"})
+
+
+async def test_every_artifact_write_shares_one_database_engine(monkeypatch):
+    """A sink is built per artifact, so a per-sink engine would leak a pool each write."""
+    from services.review import evidence
+
+    monkeypatch.setattr(evidence, "_shared_engine", None)
+    built = []
+
+    def _record_engine(*args, **kwargs):
+        built.append(args)
+        return object()
+
+    monkeypatch.setattr(evidence, "create_async_engine", _record_engine)
+
+    first = evidence.PostgresEvidenceSink()._get_engine()
+    second = evidence.PostgresEvidenceSink()._get_engine()
+
+    assert first is second
+    assert len(built) == 1

@@ -68,15 +68,30 @@ def resolve_retention(record: EvidenceRecord, settings: Settings) -> EvidenceRec
     return replace(record, retention=str(days))
 
 
+_shared_engine: AsyncEngine | None = None
+
+
+def _shared_evidence_engine() -> AsyncEngine:
+    """One engine per process, shared by every sink this module builds.
+
+    ``persist_artifact_evidence`` builds a sink per artifact, so an engine per sink would
+    leave a connection pool behind on every write.
+    """
+    global _shared_engine
+    if _shared_engine is None:
+        _shared_engine = create_async_engine(
+            get_settings().database_url, future=True, pool_pre_ping=True
+        )
+    return _shared_engine
+
+
 class PostgresEvidenceSink:
     def __init__(self, engine: AsyncEngine | None = None) -> None:
         self._engine = engine
 
     def _get_engine(self) -> AsyncEngine:
         if self._engine is None:
-            self._engine = create_async_engine(
-                get_settings().database_url, future=True, pool_pre_ping=True
-            )
+            self._engine = _shared_evidence_engine()
         return self._engine
 
     async def persist(self, record: EvidenceRecord) -> str:
