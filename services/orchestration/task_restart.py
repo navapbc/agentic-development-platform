@@ -10,6 +10,10 @@ from typing import Any
 from scripts.config import get_settings, to_host_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from services.orchestration.intake_cursor import (
+    IntakeCursorRelease,
+    build_intake_cursor_release,
+)
 from services.orchestration.intake_retry import (
     IntakeRetryResult,
     IntakeRetryStore,
@@ -68,6 +72,7 @@ async def restart_task(
     repair_signaller: RepairSignaller,
     intake_store: IntakeRetryStore,
     liveness: WorkflowLivenessProbe,
+    cursor: IntakeCursorRelease | None = None,
     settle_attempts: int = 40,
     settle_delay: float = 0.5,
     sleep: Sleep = asyncio.sleep,
@@ -80,7 +85,9 @@ async def restart_task(
             if await liveness(workflow_id) is WorkflowLiveness.ENDED:
                 break
             await sleep(settle_delay)
-    retry = await retry_intake(issue_key, store=intake_store, liveness=liveness, repo=repo)
+    retry = await retry_intake(
+        issue_key, store=intake_store, liveness=liveness, repo=repo, cursor=cursor
+    )
     return RestartResult(issue_key, abandoned=decision.signalled, retry=retry)
 
 
@@ -100,6 +107,7 @@ async def run_restart_task(
             repair_signaller=TemporalRepairSignaller(resolved),
             intake_store=PostgresIntakeRetryStore(engine),
             liveness=temporal_workflow_liveness(resolved),
+            cursor=build_intake_cursor_release(resolved),
         )
     finally:
         await engine.dispose()

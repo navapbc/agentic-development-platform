@@ -13,6 +13,11 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from services.coordination.idempotency import intake_start_target_repo
+from services.orchestration.intake_cursor import (
+    CursorRelease,
+    IntakeCursorRelease,
+    build_intake_cursor_release,
+)
 
 _INTAKE_START = "intake_start"
 _TERMINAL_STATES = ("COMPLETED", "FAILED", "CANCELLED")
@@ -41,10 +46,14 @@ class IntakeRetryResult:
     blocked_by: tuple[str, ...]
     claims_cleared: int = 0
     undetermined: tuple[str, ...] = ()
+    cursor_released: int = 0
+    cursor_warning: str = ""
 
     @property
     def retriggered(self) -> bool:
-        return not self.blocked_by and not self.undetermined and self.intake_cleared > 0
+        if self.blocked_by or self.undetermined:
+            return False
+        return self.intake_cleared > 0 or self.cursor_released > 0
 
     @property
     def message(self) -> str:
@@ -57,18 +66,22 @@ class IntakeRetryResult:
                 f"{self.issue_key} could not determine whether {unreachable} is still "
                 "running, not retriggered"
             )
-        if self.intake_cleared == 0:
+        if not self.intake_cleared and not self.cursor_released:
+            parts = [f"{self.issue_key} had no intake record to clear, nothing to retrigger"]
             if self.claims_cleared:
-                return (
-                    f"{self.issue_key} had no intake record to clear, nothing to retrigger, "
-                    f"dropped {self.claims_cleared} stranded work claim(s)"
-                )
-            return f"{self.issue_key} had no intake record to clear, nothing to retrigger"
-        return (
-            f"{self.issue_key} cleared for retrigger, dropped {self.intake_cleared} intake "
-            f"dedup record(s), dropped {self.claims_cleared} work claim(s), and marked "
-            f"{self.superseded} stale execution(s) failed"
-        )
+                parts.append(f"dropped {self.claims_cleared} stranded work claim(s)")
+            head = ", ".join(parts)
+            return f"{head}. {self.cursor_warning}" if self.cursor_warning else head
+        cleared = []
+        if self.intake_cleared:
+            cleared.append(f"dropped {self.intake_cleared} intake dedup record(s)")
+        if self.cursor_released:
+            cleared.append("released the poll cursor so the next pass offers the ticket again")
+        cleared.append(f"dropped {self.claims_cleared} work claim(s)")
+        cleared.append(f"marked {self.superseded} stale execution(s) failed")
+        listed = f"{', '.join(cleared[:-1])}, and {cleared[-1]}"
+        head = f"{self.issue_key} cleared for retrigger, {listed}"
+        return f"{head}. {self.cursor_warning}" if self.cursor_warning else head
 
 
 class IntakeRetryStore(Protocol):
@@ -89,6 +102,7 @@ async def retry_intake(
     store: IntakeRetryStore,
     liveness: WorkflowLivenessProbe,
     repo: str | None = None,
+    cursor: IntakeCursorRelease | None = None,
 ) -> IntakeRetryResult:
     running: list[str] = []
     undetermined: list[str] = []
@@ -107,10 +121,13 @@ async def retry_intake(
             undetermined=tuple(undetermined),
         )
     intake_cleared = await store.clear_intake_dedup(issue_key, repo)
-    superseded = 0
+    cursor_release = await cursor.release(issue_key) if cursor is not None else CursorRelease()
     claims_cleared = await store.clear_work_claims(issue_key)
-    if intake_cleared:
-        superseded = await store.mark_non_terminal_failed(issue_key)
+    reopened = intake_cleared or cursor_release.released
+    # A stale non-terminal execution makes the next pass record the ticket as a duplicate and
+    # consume the cursor release, so the rows have to be failed whichever cursor was cleared.
+    superseded = await store.mark_non_terminal_failed(issue_key) if reopened else 0
+    if reopened:
         await store.clear_sequence_gate(issue_key)
     return IntakeRetryResult(
         issue_key,
@@ -118,6 +135,8 @@ async def retry_intake(
         superseded=superseded,
         blocked_by=(),
         claims_cleared=claims_cleared,
+        cursor_released=cursor_release.released,
+        cursor_warning=cursor_release.warning,
     )
 
 
@@ -222,6 +241,7 @@ async def run_intake_retry(
             store=PostgresIntakeRetryStore(engine),
             liveness=temporal_workflow_liveness(resolved),
             repo=repo,
+            cursor=build_intake_cursor_release(resolved),
         )
     finally:
         await engine.dispose()

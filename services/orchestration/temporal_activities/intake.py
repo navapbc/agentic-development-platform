@@ -89,8 +89,6 @@ async def _reconcile_jira_pass() -> IntakeReconcileReport:
 
 
 async def _reconcile_rebar_pass() -> IntakeReconcileReport:
-    from pathlib import Path
-
     import rebar
     from scripts.config import get_settings
     from scripts.rebar_poll import (
@@ -99,6 +97,7 @@ async def _reconcile_rebar_pass() -> IntakeReconcileReport:
         InMemoryIdempotencyGuard,
         RebarIdentityAccess,
         StructlogAuditSink,
+        watermark_path,
     )
     from temporalio.client import Client
 
@@ -146,7 +145,7 @@ async def _reconcile_rebar_pass() -> IntakeReconcileReport:
 
     report = await reconcile_rebar_intake(
         reader=GitTicketStoreReader(repo_root),
-        watermark=FileWatermarkStore(Path(repo_root) / ".rebar-poll-watermark.json"),
+        watermark=FileWatermarkStore(watermark_path(repo_root)),
         audit=StructlogAuditSink(),
         access=RebarIdentityAccess(
             repo_root,
