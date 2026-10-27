@@ -9,6 +9,7 @@ from datetime import timedelta
 from typing import Any
 
 import httpx
+import structlog
 from observability import langfuse_request_metadata, record_generation, stage_span
 from scripts.config import get_settings
 from temporalio import activity
@@ -16,6 +17,8 @@ from temporalio.common import RetryPolicy
 from temporalio.exceptions import ApplicationError
 
 from services.prompts import load_prompt
+
+log = structlog.get_logger("model_gateway")
 
 # The gateway retries a throttled or failed Claude call against Claude before it answers here,
 # so this budget sits on top of that and covers the gateway itself being unreachable.
@@ -140,7 +143,18 @@ async def invoke_model(req: ModelRequest) -> ModelResponse:
             input_tokens=usage.get("prompt_tokens"),
             output_tokens=usage.get("completion_tokens"),
         )
-    await _persist_prompt_evidence(req, prompt_version=prompt_version, model_id=model_id)
+    try:
+        await _persist_prompt_evidence(req, prompt_version=prompt_version, model_id=model_id)
+    except Exception as exc:
+        # The completion is already billed at this point. Failing here would retry the whole
+        # activity under MODEL_RETRY_POLICY and pay for the same call again.
+        log.warning(
+            "prompt_reference_not_recorded",
+            execution_id=req.execution_id,
+            logical_model=req.logical_model,
+            stage=req.stage or "",
+            error=str(exc),
+        )
     return ModelResponse(
         logical_model=req.logical_model,
         content=content,

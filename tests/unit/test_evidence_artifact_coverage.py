@@ -107,6 +107,21 @@ async def test_a_model_call_writes_a_prompt_reference(monkeypatch):
     assert "Plan the change." not in str(records[0].metadata)
 
 
+async def test_a_model_call_survives_an_evidence_write_that_fails(monkeypatch):
+    """The completion is already billed, so a failed write must not retry the activity."""
+    patch_model_client(monkeypatch)
+
+    class _FailingSink:
+        async def persist(self, record):
+            raise RuntimeError("evidence store unreachable")
+
+    monkeypatch.setattr("services.review.evidence.PostgresEvidenceSink", _FailingSink)
+
+    response = await bedrock.invoke_model(model_request())
+
+    assert response.model_id == "bedrock/claude-x"
+
+
 async def test_a_model_call_without_an_execution_writes_nothing(monkeypatch):
     patch_model_client(monkeypatch)
     records = capture_evidence(monkeypatch)
