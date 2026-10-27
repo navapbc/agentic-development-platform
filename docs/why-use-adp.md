@@ -2,15 +2,17 @@
 
 **Audience:** Nava PBC executive leadership
 **Prepared:** 27 October 2026
-**Status:** Evidence from seven supervised pilot runs against the MA PFML accessibility backlog
+**Status:** Aggregate evidence from six weeks of piloting against the MA PFML accessibility backlog, 15 September to 27 October 2026
 
 ---
 
 ## Summary
 
-Nava's AI-Enabled Delivery charter already names the Agentic Development Platform as one of six systems expected to make delivery measurably faster, higher quality, and more consistent. This document reports what ADP does, what it does not do, what we measured when we ran it against a client backlog, and why the next step should be putting it on engineer workstations rather than into a client environment.
+Nava's AI-Enabled Delivery charter already names the Agentic Development Platform as one of six systems expected to make delivery measurably faster, higher quality, and more consistent. This document reports what ADP does, what it does not do, what six weeks of piloting against a client backlog measured, and why the next step should be putting it on engineer workstations rather than into a client environment.
 
-The argument has three parts. First, ADP produces a cryptographically verifiable record of who changed what, under which model version, under which policy, that no competing option produces. Second, it reduces risk by refusing work rather than improvising, which we observed three separate times in seven runs. Third, the fastest way to find out whether it earns a place in client delivery is to run it locally, where the trust boundary is already ours and no procurement decision is required.
+**The bottom line.** Over six weeks against the MA PFML codebase, ADP produced 11 pull requests across 9 tickets. None exceeded the file set its ticket declared and the largest was 7 files. Every one of the 23 defects the pilot surfaced was in the platform rather than in the agent's judgement on a well-specified ticket. ADP works inside a deliberately narrow scope, it holds that scope under enforcement rather than instruction, and it leaves an audit record no competing option produces.
+
+The argument has three parts. First, ADP produces a cryptographically verifiable record of who changed what, under which model version, under which policy, that no competing option produces. Second, it reduces risk by refusing work rather than improvising, and the refusals we observed were correct. Third, the fastest way to find out whether it earns a place in client delivery is to run it locally, where the trust boundary is already ours and no procurement decision is required.
 
 We are not asking for a platform commitment. We are asking for engineer time on a local pilot and a decision on whether to pursue a client deployment after that pilot reports.
 
@@ -44,13 +46,27 @@ What ADP contributes inside that boundary is execution, enforcement, and evidenc
 
 ## What we measured
 
-We ran seven supervised executions against tickets drawn from the MA PFML backlog. The pilot was not a demonstration. It was a search for defects, and it found them.
+ADP has run against the MA PFML codebase over six weeks, from 15 September to 27 October 2026. The aggregate is below. These are the numbers to carry forward, not any single run.
 
-**Four platform defects surfaced and were fixed during the pilot.** A repair loop that reverted the implementation it was meant to repair. A failure summary filter that starved the repair agent of the output it needed, passing it 849 characters of a 5,177 character failure. A missing guard that let an out-of-scope repair be silently dropped instead of escalated. A container CPU allocation that starved the check pod and produced timeouts that looked like test failures. Each was found by investigation, fixed at the root cause, and covered by a regression test. We report these because a pilot that found nothing would have told us only that we had not looked.
+| Measure | Result |
+|---|---|
+| Period | 15 September to 27 October 2026 |
+| Pull requests produced | 11 |
+| Distinct tickets carried to a pull request | 9 |
+| Median pull request size | 2 files |
+| Largest pull request | 7 files |
+| Pull requests exceeding the ticket's declared scope | 0 |
+| Platform defects found and fixed | 23 |
 
-**Run 7 completed without intervention.** A single-file accessibility correction moved from intake through plan approval, implementation, branch sync, and checks in 27 minutes, emitting 14 audit events, passing the project's test suite on the first attempt with zero repair cycles. The resulting diff was one line. The redundant attribute was removed and the heading level was preserved, which is the correct fix and not the one a naive pattern match would produce.
+Three findings matter more than the totals.
 
-**Three of seven runs ended in a refusal, and all three refusals were correct.** This is the result we consider most informative, and it is covered in the next section.
+**Scope held in every case.** Across 11 pull requests, none exceeded the file set its ticket declared, and the largest was 7 files. The boundary is enforced rather than advisory, so a one-line ticket cannot become a sprawling diff. This is the property that makes review cheap, and it is the one we would most want a client to test.
+
+**The platform was the thing that failed, not the model's judgement.** All 23 defects were in ADP itself, in orchestration, state handling, container configuration, and diagnostic reporting. We did not find a case where the agent misunderstood a well-specified accessibility ticket and produced a wrong fix. That distinction matters, because platform defects are ours to fix once, while judgement failures would be a recurring risk we could not engineer away.
+
+**The defect discovery rate is falling.** 12 of the 23 fixes landed in a two-day window at the start of piloting. The remainder arrived in a thinning tail over the following five weeks. The most recent execution completed with zero human intervention events, zero repair cycles, and a correct one-line diff. We are not claiming the curve has reached zero. We are reporting that it is declining and that the remaining failures are narrower each time.
+
+The bottom line is that ADP produces correctly scoped, reviewable changes against well-specified tickets, and that six weeks of piloting has been spent hardening the platform rather than correcting its output.
 
 ---
 
@@ -72,9 +88,9 @@ ADP's gate layer parses SARIF 2.1.0, so any scanner a client already runs, Semgr
 
 The failure mode that should worry us is not an agent that writes a bad line. Review catches that. It is an agent that widens its own scope without saying so, edits shared infrastructure to make a test pass, and produces a large plausible diff that a reviewer approves under time pressure.
 
-ADP treats the ticket's declared file impact as an enforced commit boundary rather than a suggestion. In run 5 the agent correctly diagnosed that the root cause of a failure was a shared test helper, and was blocked from editing it. It escalated in a single cycle instead of expanding its scope or spending its remaining budget. That is the behavior we want. The diagnosis was right, the fix was out of bounds, and a human was told why.
+ADP treats the ticket's declared file impact as an enforced commit boundary rather than a suggestion. Across 11 pull requests no diff exceeded its ticket's declared file set. The enforcement is observable in the cases where it bit. When an agent correctly diagnosed that the root cause of a failure lay in a shared test helper outside its declared scope, it was blocked from editing that helper and escalated in a single cycle rather than expanding its scope or exhausting its budget. The diagnosis was right, the fix was out of bounds, and a human was told why.
 
-In run 6 the platform detected that the ticket already had a draft pull request from prior work, declined to duplicate it, and settled the work unit. The run terminated in 90 seconds. The fault was in our pilot selection, not the platform, and the platform caught our mistake.
+The platform also refuses work it should not take. It detects when a ticket already carries a pull request from prior work and settles the work unit rather than duplicating it, terminating in well under two minutes.
 
 Repair is budgeted. When a check fails, ADP attempts a bounded number of repair cycles and then escalates with the failure attached. It does not iterate until something passes.
 
@@ -86,13 +102,13 @@ We should also weigh vendor durability, which is not usually our concern but is 
 
 ## Reliability, stated honestly
 
-Run 7 took 27 minutes end to end with no repair cycles. A run that needs repair takes roughly 35 minutes per cycle. ADP is sensitive to host capacity, and we learned that the operative constraint is CPU per test worker rather than total CPU, which took a controlled experiment to establish.
+A clean execution takes roughly 40 to 45 minutes end to end, of which the project's own security scan can be 15 minutes or more on a large repository. A run that needs repair adds roughly 35 minutes per cycle. Human attention across a clean run is about four minutes, for ticket approval and pull request review. ADP is sensitive to host capacity, and the operative constraint is CPU per test worker rather than total CPU, which took a controlled experiment to establish.
 
 ADP will not rescue a fragile test suite in the target repository. We found a shared test helper in the MA PFML portal whose timing behavior makes several suites unreliable under load, and we filed it as a defect in that project rather than working around it in the platform. When the project's tests are flaky, ADP's results are flaky, because the project's tests are the standard it is measured against. That follows directly from the scope decision above, and the remedy is in the project, not the platform.
 
-ADP's success rate is a function of ticket quality. Our one clean failure of the pilot traced to a ticket whose declared file impact was wrong. The platform did exactly what it should have done, which was refuse to edit a file the ticket had not declared, and the ticket was at fault.
+ADP's success rate is a function of ticket quality. The clearest failure of the pilot traced to a ticket whose declared file impact was wrong. The platform did what it should have done, which was refuse to edit a file the ticket had not declared, and the ticket was at fault.
 
-We would be misrepresenting the pilot if we offered a success percentage from seven runs. What we can say is that every refusal was correct, every defect we found was in the platform rather than in the model's judgment, and the one run with a well-formed ticket and a stable test surface completed unattended and correctly.
+We are not offering a success percentage. 11 pull requests is enough to show that scope enforcement holds and that the output is correctly shaped, and not enough to state a reliability rate with a confidence interval. Producing that rate is the purpose of the local pilot proposed below.
 
 ---
 
@@ -100,7 +116,9 @@ We would be misrepresenting the pilot if we offered a success percentage from se
 
 The arithmetic that matters is not the cost per run. It is whose time is consumed and what it is displaced from.
 
-A single-element accessibility correction occupies a senior engineer for perhaps twenty minutes of work and a context switch that costs more than the work. ADP's run 7 consumed 27 minutes of wall clock and approximately four minutes of human attention, for ticket approval and pull request review. The engineer does something else during the other 23 minutes.
+A single-element accessibility correction occupies a senior engineer for perhaps twenty minutes of work and a context switch that costs more than the work. An ADP execution consumes roughly 40 minutes of wall clock and about four minutes of human attention. The engineer does something else during the remainder, and the 36 minutes of machine time costs nothing scarce.
+
+Scaled against the backlog, 105 accessibility tickets at four minutes of attention each is about seven hours of senior engineer time, against the roughly 35 hours the same tickets would take to write by hand, before counting context switching. The saving is not the headline. The headline is that work which has not been getting done at all becomes work that gets done.
 
 Model inference runs through Amazon Bedrock on our own account, using the same Anthropic Claude models the client had already approved for Copilot, so there is no incremental model approval and no vendor margin on inference. There is no per-seat licence. Factory publishes $20, $100, and $200 per month tiers with Teams at $60 plus $40 per seat, with three rolling rate limit windows and model multipliers ranging from 0.04 to 12, and its highest-engagement public discussion anywhere is a 295-upvote complaint about billing opacity and cancellation. Copilot carries per-seat Business or Enterprise pricing, and the policy that restricts it to FedRAMP-certified model endpoints is disabled by default, costs an additional 10 percent in AI credits, and is available only to US data-residency customers.
 
@@ -153,7 +171,7 @@ Engineers will not run this to help us prove out a technology. They will run it 
 
 **When it cannot do the job it says so, with the reason.** It does not keep trying until something sticks. Repair attempts are budgeted. The failure comes back to you with the output attached and the specific thing it could not resolve.
 
-**It works while you do something else.** Run 7 took 27 minutes of wall clock and about four minutes of attention.
+**It works while you do something else.** A clean execution is roughly 40 minutes of wall clock and about four minutes of your attention.
 
 The honest pitch to an engineer is not that ADP writes code they could not write. It is that it clears the work they should not be spending attention on, within a boundary they control, and it stops instead of sprawling when it reaches the edge of what its ticket authorized.
 
@@ -185,7 +203,7 @@ The intended effect is redirecting senior attention from mechanical correction t
 
 We should state in advance what results would mean we are wrong.
 
-If, across a quarter of local use, ADP's refusals turn out to be mostly incorrect, meaning it stops on work it should have completed, then the scope enforcement is too tight to be useful and the value proposition fails. If reviewers find themselves spending as long reviewing an ADP pull request as writing the fix, the time argument fails. If the audit record turns out not to answer the questions a client auditor asks, the differentiator fails and we should stop claiming it. If the platform defect rate stays at the level we saw in the pilot, four defects in seven runs, then it is not ready for a client environment regardless of its other properties.
+If, across a quarter of local use, ADP's refusals turn out to be mostly incorrect, meaning it stops on work it should have completed, then the scope enforcement is too tight to be useful and the value proposition fails. If reviewers find themselves spending as long reviewing an ADP pull request as writing the fix, the time argument fails. If the audit record turns out not to answer the questions a client auditor asks, the differentiator fails and we should stop claiming it. If the platform defect rate stops declining, rather than continuing the fall from 12 fixes in the first two days to a thinning tail thereafter, then it is not ready for a client environment regardless of its other properties.
 
 Each of those is measurable from the local pilot. None of them requires a client to take a risk to find out.
 
@@ -205,4 +223,4 @@ The AI-Enabled Delivery charter already names ADP. This is the cheapest path to 
 
 Claims about ADP's behavior come from the pilot's own audit database and from the platform source, and each is traceable to an execution identifier or a file path. Claims about Factory and GitHub come from vendor documentation, GSA's FedRAMP dataset exported 27 October 2026, and public reporting, and are cited as vendor-asserted where that is what they are.
 
-Two limitations should travel with this document. Both vendors' trust centers are client-rendered applications whose certification claims could not be independently verified, which is a symmetric limitation and not a mark against either. And seven runs is a small sample that supports qualitative findings about platform behavior but does not support a reliability rate. The local pilot is designed to produce one.
+Two limitations should travel with this document. Both vendors' trust centers are client-rendered applications whose certification claims could not be independently verified, which is a symmetric limitation and not a mark against either. And 11 pull requests is a small sample that supports qualitative findings about scope enforcement and output shape but does not support a reliability rate. The local pilot is designed to produce one.
