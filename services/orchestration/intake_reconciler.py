@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -197,6 +198,11 @@ class IntakeContext:
     active_guard: IntakeActiveGuard | None = None
     admission: RunAdmission | None = None
     base_resolver: IntakeBaseResolver | None = None
+    checks_repos: frozenset[str] | None = None
+
+
+def checks_not_configured_reason(repos: Sequence[str]) -> str:
+    return f"checks_not_configured: no project checks entry for {', '.join(sorted(repos))}"
 
 
 async def reconcile_intake(
@@ -212,6 +218,7 @@ async def reconcile_intake(
     active_guard: IntakeActiveGuard | None = None,
     run_counter: IntakeRunCounter | None = None,
     base_resolver: IntakeBaseResolver | None = None,
+    checks_repos: frozenset[str] | None = None,
 ) -> IntakeReport:
     resolved = settings or get_settings()
     jira_resolver = jira_resolver or build_jira_credential_resolver(resolved)
@@ -227,6 +234,7 @@ async def reconcile_intake(
         active_guard=active_guard,
         admission=await build_admission(resolved, run_counter),
         base_resolver=base_resolver,
+        checks_repos=checks_repos,
     )
     report = IntakeReport()
 
@@ -300,6 +308,17 @@ async def route_candidate(
             candidate.task_id, project, resolution.reason, digest, ctx.alerter, ctx.ledger, report
         )
         return
+    if ctx.checks_repos is not None:
+        unchecked = [repo for repo in resolution.repos if repo not in ctx.checks_repos]
+        if unchecked:
+            reason = checks_not_configured_reason(unchecked)
+            await _hold(
+                candidate.task_id, project, reason, digest, ctx.alerter, ctx.ledger, report
+            )
+            # The fix lands in operator config rather than the ticket, so a watermark poll
+            # must re-read the ticket on the next pass instead of treating it as settled.
+            report.deferred.append(candidate.task_id)
+            return
     for repo in resolution.repos:
         await _start(
             candidate=candidate,

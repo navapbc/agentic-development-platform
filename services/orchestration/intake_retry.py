@@ -182,9 +182,7 @@ class PostgresIntakeRetryStore:
     async def clear_work_claims(self, issue_key: str) -> int:
         async with self._engine.begin() as conn:
             return (
-                await conn.execute(
-                    delete(work_claims).where(work_claims.c.task_id == issue_key)
-                )
+                await conn.execute(delete(work_claims).where(work_claims.c.task_id == issue_key))
             ).rowcount or 0
 
 

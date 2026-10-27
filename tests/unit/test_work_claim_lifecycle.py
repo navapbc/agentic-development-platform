@@ -425,3 +425,23 @@ async def test_a_claim_that_cannot_be_settled_is_recorded_as_unsettled():
     assert len(settled) == 1
     assert settled[0].decision == "not_settled"
     assert "did not complete" in settled[0].reason
+
+
+async def test_a_claim_no_longer_held_names_the_owner_and_the_work_unit():
+    events: list[AuditEvent] = []
+
+    @activity.defn(name="finalize_work_claim")
+    async def fake_finalize(req: FinalizeClaimRequest) -> FinalizeClaimResult:
+        return FinalizeClaimResult(
+            claim_id=claim_id_for(req.task_id, req.work_unit), finalized=False, state=RELEASED
+        )
+
+    _result, _store, _owners, parent = await _run(
+        extra_activities=[*_audit_collector(events), fake_finalize]
+    )
+
+    settled = [e for e in events if e.event_type == "WORK_UNIT_SETTLED"]
+    assert len(settled) == 1
+    assert settled[0].decision == "not_settled"
+    assert parent in settled[0].reason
+    assert _WORK_UNIT in settled[0].reason

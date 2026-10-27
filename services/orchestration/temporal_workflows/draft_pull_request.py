@@ -479,7 +479,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         """Drive the orchestration and settle the work claim however the run ends.
 
         Every exit has to settle the claim, otherwise the work unit stays claimed and no
-        later run can take it. Direct SQL is the only way back from that state.
+        later run can take it. `inv restart` drops a row this leaves behind.
         """
         try:
             outcome = await self._orchestrate(params)
@@ -633,7 +633,12 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             ),
             id=f"{workflow_id}-impl",
         )
-        self._claim_owner_workflow_id = impl.claim_owner_workflow_id
+        if impl.claimed:
+            # A child that completed under the previous build reports no owner, and the claim
+            # row it wrote names the child workflow rather than this one.
+            self._claim_owner_workflow_id = impl.claim_owner_workflow_id or f"{workflow_id}-impl"
+        else:
+            self._claim_owner_workflow_id = ""
 
         if impl.status == EXISTING_PR_REUSED:
             action = await linkback_existing(impl.pr_url, impl.branch)

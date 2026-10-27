@@ -54,8 +54,9 @@ Run these once from the repository root.
 8. Validate the Bedrock path and local reachability with `inv connectivity-check`.
 9. Build the images, apply database migrations, and start the stack with `inv local-up`.
 10. Register the Temporal reap and intake schedules with `inv schedules-install`. They persist in Temporal's database, so run it again only after the volumes are wiped or a schedule setting changes.
-11. Confirm everything is healthy with `inv smoke-test`.
-12. Load allowlisted seed data with `inv seed` when you need demo fixtures.
+11. Publish the prompt library to Langfuse with `inv seed-prompts`. Without it each stage falls back to the static text in `services/prompts/library.py` and logs a prompt fetch warning on every run.
+12. Confirm everything is healthy with `inv smoke-test`.
+13. Load allowlisted seed data with `inv seed` when you need demo fixtures.
 
 ## Vendored binaries
 
@@ -71,9 +72,9 @@ Two binaries live under `vendor/bin` and are provisioned outside the Python inst
 
 | Group | Keys | What to set |
 | --- | --- | --- |
-| Postgres | `POSTGRES_*`, `DATABASE_URL`, `ALEMBIC_DATABASE_URL` | Defaults work locally. The Alembic URL targets `localhost`, the app URL targets the `postgres` service |
+| Postgres | `POSTGRES_*`, `DATABASE_URL`, `ALEMBIC_DATABASE_URL` | Defaults work locally. Both URLs target the `postgres` service, and a host-run task rewrites the address to the published port |
 | Temporal | `TEMPORAL_HOST`, `TEMPORAL_NAMESPACE`, `TEMPORAL_TASK_QUEUE` | Defaults work locally |
-| Bedrock | `AWS_PROFILE`, `AWS_REGION`, `BEDROCK_CONNECTIVITY_PROVIDER`, `BEDROCK_ENDPOINT_URL`, provider keys | Set your profile and provider. See [Bedrock connectivity](#bedrock-connectivity) |
+| Bedrock | `AWS_PROFILE`, `PLATFORM_AWS_PROFILE`, `AWS_REGION`, `BEDROCK_CONNECTIVITY_PROVIDER`, `BEDROCK_ENDPOINT_URL`, provider keys | Set your profile and provider. See [Bedrock connectivity](#bedrock-connectivity) |
 | LiteLLM | `LITELLM_BASE_URL`, `LITELLM_MASTER_KEY` | Set a local master key |
 | Review (rebar) | `REBAR_LLM_*`, `REVIEW_ATTESTATION_SECRET` | Point at LiteLLM, set an attestation secret for the HMAC fallback |
 | Review signing | `REVIEW_SIGNING_ENABLED`, `REVIEW_SIGNING_KEY_PATH`, `REVIEW_TRUST_ROOT_PATH` | On by default. Provision a signing key and trust root, or set enabled to false. See [docs/review-verdict-signing.md](docs/review-verdict-signing.md) |
@@ -239,6 +240,14 @@ Naming the file is now a convenience rather than a requirement, so `rebar review
 `BEDROCK_ENDPOINT_URL` is the injected endpoint used by boto3 and the Bedrock model client. An empty value uses the default regional resolver. A project with no interface endpoint can apply the `infra/terraform/vpc-endpoints` module to provision one, or apply the `infra/terraform/examples/private-bedrock` composition to stand up the whole private path at once.
 
 Set `AWS_USE_FIPS_ENDPOINT=true` in a deployed environment to select FIPS-validated service endpoints on every AWS SDK path, the native review Bedrock client, the LiteLLM gateway, the evidence object store, and the rebar ticket sync. The variable is wired into the worker and LiteLLM containers and read by botocore, so it covers all of them at once. Leave it false locally, because the tunnel and MinIO use custom endpoints that have no FIPS variant.
+
+### Credentials in the containers
+
+The LiteLLM gateway and the review worker mount `~/.aws` read-only and sign with `AWS_PROFILE`. They carry no AWS CLI, so a profile that resolves through `credential_process` or another helper binary fails there with an error naming the missing program, even though the same profile works on the host. Compose also reads a shell export ahead of `.env`, so a profile exported by your shell startup files reaches the containers regardless of what `.env` says.
+
+Set `PLATFORM_AWS_PROFILE` to the profile the containers should use when it differs from the one your shell exports. Name a profile the mounted `~/.aws` resolves on its own, such as one holding static keys or an SSO profile with a cached token. The host keeps its own `AWS_PROFILE` unchanged. Leave `PLATFORM_AWS_PROFILE` empty to pass `AWS_PROFILE` through.
+
+Host-side tooling keeps reading `AWS_PROFILE`, so `inv tunnel-start` and `inv connectivity-check` report the host profile while the containers sign with the one you set here. The two names differ by design whenever the override is in use.
 
 ### Reaching the private endpoint
 
