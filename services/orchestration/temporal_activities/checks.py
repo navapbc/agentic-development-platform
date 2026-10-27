@@ -45,6 +45,29 @@ def _clean_checkout(workspace_path: str, dest: str) -> None:
     shutil.copytree(workspace_path, dest, dirs_exist_ok=True, ignore=_IGNORED)
 
 
+async def _persist_checks_evidence(req: RunChecksRequest, *, exit_code: int, output: str) -> None:
+    from services.review.evidence import BUILD_AND_TEST_COMPONENT, persist_artifact_evidence
+
+    await persist_artifact_evidence(
+        execution_id=req.execution_id,
+        source_component=BUILD_AND_TEST_COMPONENT,
+        body={
+            "execution_id": req.execution_id,
+            "repo": req.repo,
+            "commit_sha": req.commit_sha,
+            "exit_code": exit_code,
+            "output": output,
+        },
+        metadata={
+            "repo": req.repo,
+            "commit_sha": req.commit_sha,
+            "exit_code": exit_code,
+            "passed": exit_code == 0,
+            "changed_path_count": len(req.changed_paths),
+        },
+    )
+
+
 @activity.defn
 async def run_checks(req: RunChecksRequest) -> RunChecksResult:
     from scripts.config import get_settings
@@ -90,6 +113,7 @@ async def run_checks(req: RunChecksRequest) -> RunChecksResult:
             from services.orchestration.langgraph.ci_repair import failure_summary
 
             output = failure_summary(result.output) or result.output
+        await _persist_checks_evidence(req, exit_code=result.exit_code, output=output)
         return RunChecksResult(ran=True, exit_code=result.exit_code, output=output)
     finally:
         shutil.rmtree(checkout, ignore_errors=True)

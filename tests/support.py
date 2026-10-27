@@ -5,11 +5,30 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
 from scripts.config import Settings
+from services.review.evidence import EvidenceRecord
 
 
 def hermetic_settings(**overrides: object) -> Settings:
     return Settings(_env_file=None, **overrides)  # pyright: ignore[reportCallIssue]
+
+
+def capture_evidence(monkeypatch: pytest.MonkeyPatch) -> list[EvidenceRecord]:
+    """Swap the Postgres evidence sink for a recorder and return the records it collects.
+
+    ``build_evidence_sink`` resolves ``PostgresEvidenceSink`` by name at call time, so
+    patching the attribute reaches every producer without touching the factory.
+    """
+    records: list[EvidenceRecord] = []
+
+    class _RecordingSink:
+        async def persist(self, record: EvidenceRecord) -> str:
+            records.append(record)
+            return record.artifact_id
+
+    monkeypatch.setattr("services.review.evidence.PostgresEvidenceSink", _RecordingSink)
+    return records
 
 
 def seed_rebar_store(root: Path, tickets: list[dict] | None = None) -> list[str]:

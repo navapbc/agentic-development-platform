@@ -16,6 +16,7 @@ from services.orchestration.checks.runner import (
     _fix_inner_script,
     checks_pod_name,
 )
+from tests.support import capture_evidence
 
 
 def test_parse_checks_config_image_mode():
@@ -245,6 +246,7 @@ async def test_run_checks_activity_forwards_changed_paths(tmp_path, monkeypatch)
             return ChecksResult(exit_code=0, output="ok")
 
     _patch_checks_stack(monkeypatch, _Runner)
+    capture_evidence(monkeypatch)
     workspace = tmp_path / "ws"
     workspace.mkdir()
     (workspace / "a.py").write_text("x = 1\n")

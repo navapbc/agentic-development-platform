@@ -18,6 +18,7 @@ from observability import (
     token_cost_usd,
 )
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from tests.support import capture_evidence
 
 _LITELLM_CONFIG = (
     Path(__file__).resolve().parents[2] / "config" / "platform" / "litellm-config.yaml"
@@ -106,6 +107,7 @@ async def test_invoke_model_sends_metadata_and_stamps_the_span(monkeypatch) -> N
         "AsyncClient",
         lambda **_: _FakeClient(captured, response_data),
     )
+    capture_evidence(monkeypatch)
 
     result = await bedrock.invoke_model(
         bedrock.ModelRequest(
@@ -154,6 +156,7 @@ async def test_invoke_model_resolves_a_system_prompt(monkeypatch) -> None:
         "AsyncClient",
         lambda **_: _FakeClient(captured, response_data),
     )
+    capture_evidence(monkeypatch)
 
     await bedrock.invoke_model(
         bedrock.ModelRequest(

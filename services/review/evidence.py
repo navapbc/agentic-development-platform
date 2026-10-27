@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import uuid
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol, runtime_checkable
@@ -13,7 +14,18 @@ from scripts.config import Settings, get_settings
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
-from services.review.classification import CLASSIFICATION_AUDIT, validate_classification
+from services.review.attestation import content_hash
+from services.review.classification import (
+    CLASSIFICATION_AUDIT,
+    CLASSIFICATION_STANDARD,
+    validate_classification,
+)
+
+PLAN_COMPONENT = "plan"
+PULL_REQUEST_SUMMARY_COMPONENT = "pull-request-summary"
+APPROVAL_COMPONENT = "approval"
+PROMPT_REFERENCE_COMPONENT = "prompt-reference"
+BUILD_AND_TEST_COMPONENT = "build-and-test"
 
 
 @dataclass(frozen=True)
@@ -56,15 +68,30 @@ def resolve_retention(record: EvidenceRecord, settings: Settings) -> EvidenceRec
     return replace(record, retention=str(days))
 
 
+_shared_engine: AsyncEngine | None = None
+
+
+def _shared_evidence_engine() -> AsyncEngine:
+    """One engine per process, shared by every sink this module builds.
+
+    ``persist_artifact_evidence`` builds a sink per artifact, so an engine per sink would
+    leave a connection pool behind on every write.
+    """
+    global _shared_engine
+    if _shared_engine is None:
+        _shared_engine = create_async_engine(
+            get_settings().database_url, future=True, pool_pre_ping=True
+        )
+    return _shared_engine
+
+
 class PostgresEvidenceSink:
     def __init__(self, engine: AsyncEngine | None = None) -> None:
         self._engine = engine
 
     def _get_engine(self) -> AsyncEngine:
         if self._engine is None:
-            self._engine = create_async_engine(
-                get_settings().database_url, future=True, pool_pre_ping=True
-            )
+            self._engine = _shared_evidence_engine()
         return self._engine
 
     async def persist(self, record: EvidenceRecord) -> str:
@@ -238,6 +265,35 @@ def build_evidence_sink(settings: Settings | None = None) -> EvidenceSink:
     if resolved.evidence_object_store_enabled:
         return ObjectStoreEvidenceSink(settings=resolved)
     return PostgresEvidenceSink()
+
+
+def evidence_content_hash(body: dict[str, Any]) -> str:
+    """Content address an artifact body with the prefixed digest the sink keys on."""
+    return f"sha256:{content_hash(body)}"
+
+
+async def persist_artifact_evidence(
+    *,
+    execution_id: str,
+    source_component: str,
+    body: dict[str, Any],
+    classification: str = CLASSIFICATION_STANDARD,
+    metadata: dict[str, Any] | None = None,
+) -> str:
+    """Persist one artifact body through the sink and return its artifact id.
+
+    The content hash covers the canonical body, so a replayed activity writes the same
+    key and the sink's conflict clause keeps the first record.
+    """
+    record = EvidenceRecord(
+        artifact_id=uuid.uuid4().hex,
+        execution_id=execution_id,
+        content_hash=evidence_content_hash(body),
+        source_component=source_component,
+        classification=classification,
+        metadata=metadata or {},
+    )
+    return await build_evidence_sink().persist(record)
 
 
 def evidence_object_store_preflight(settings: Settings | None = None) -> None:
