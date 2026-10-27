@@ -2,6 +2,8 @@ import json
 
 import pytest
 from services.orchestration.gates.pod_runner import (
+    CHECKS_POD_RESOURCES,
+    DEFAULT_POD_RESOURCES,
     PodEngineError,
     PodEngineRunner,
     PodEngineSpec,
@@ -191,6 +193,26 @@ def test_pod_manifest_is_unprivileged_by_default():
 def test_pod_manifest_grants_privilege_when_requested():
     manifest = build_pod_manifest("pod-1", "agent-sandbox", "builder:1", True)
     assert _security_context(manifest) == {"runAsUser": 0, "privileged": True}
+
+
+def test_pod_manifest_defaults_to_the_small_gate_allocation():
+    manifest = build_pod_manifest("pod-1", "agent-sandbox", "builder:1")
+    assert manifest["spec"]["containers"][0]["resources"] == DEFAULT_POD_RESOURCES
+
+
+def test_pod_manifest_accepts_a_larger_allocation():
+    manifest = build_pod_manifest(
+        "pod-1", "agent-sandbox", "builder:1", resources=CHECKS_POD_RESOURCES
+    )
+    assert manifest["spec"]["containers"][0]["resources"]["limits"]["cpu"] == "6"
+
+
+def test_pod_manifest_does_not_share_mutable_resource_state():
+    first = build_pod_manifest("pod-1", "agent-sandbox", "builder:1")
+    first["spec"]["containers"][0]["resources"]["limits"]["cpu"] = "99"
+    second = build_pod_manifest("pod-2", "agent-sandbox", "builder:1")
+    assert second["spec"]["containers"][0]["resources"]["limits"]["cpu"] == "2"
+    assert DEFAULT_POD_RESOURCES["limits"]["cpu"] == "2"
 
 
 async def test_runner_propagates_privilege_to_the_manifest():

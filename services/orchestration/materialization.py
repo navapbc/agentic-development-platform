@@ -201,6 +201,17 @@ class WorkspaceMaterializer:
                 paths.append(entry[3:])
         return sorted(paths)
 
+    async def diff_paths_against(self, workspace: MaterializedWorkspace, base: str) -> list[str]:
+        """Repository-relative paths by which the workspace differs from `base`.
+
+        The comparison spans the branch commits and the uncommitted worktree together, which is
+        what answers whether any of the task's work survives at this moment.
+        """
+        out = await _git(
+            "diff", "--name-only", "-z", "--no-renames", base, cwd=str(workspace.path)
+        )
+        return sorted(entry for entry in out.split("\0") if entry)
+
     async def stage(
         self, workspace: MaterializedWorkspace, *, allowed_paths: Sequence[str] = ()
     ) -> StagedChange:

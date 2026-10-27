@@ -386,3 +386,95 @@ def test_a_malformed_checks_config_degrades_the_hint_instead_of_failing_analysis
 
     assert result.actionable is True
     assert "fix command" not in result.instruction
+
+
+class _FakeWorkspace:
+    path = "/workspace"
+
+
+class _FakeMaterializer:
+    """A materializer whose diff answers are scripted, so the guard can be exercised alone."""
+
+    def __init__(self, changed: tuple[str, ...], surviving: tuple[str, ...]) -> None:
+        self._changed = changed
+        self._surviving = surviving
+        self.compared: list[str] = []
+
+    async def materialize(self, **kwargs):
+        return _FakeWorkspace()
+
+    async def changed_paths(self, workspace):
+        return list(self._changed)
+
+    async def diff_paths_against(self, workspace, base):
+        self.compared.append(base)
+        return list(self._surviving)
+
+
+class _FakeRuntime:
+    def __init__(self) -> None:
+        self.task = ""
+
+    async def run_implementation(self, *, execution_id, task, context, workspace_source, task_id):
+        from types import SimpleNamespace
+
+        self.task = task
+        return SimpleNamespace(cost=0.1, tokens=10, cache_read_tokens=1, llm_calls=2)
+
+
+def _repair_request(**overrides) -> ApplyCIRepairRequest:
+    base: dict[str, Any] = {
+        "task_id": "t",
+        "execution_id": "e",
+        "repo": "org/app",
+        "base": "main",
+        "commit": "c",
+        "instruction": "Fix the failing test.",
+        "failure_summary": "portal/a.tsx broken",
+        "task": "Remove the Heading size prop",
+        "base_commit": "base-sha",
+    }
+    base.update(overrides)
+    return ApplyCIRepairRequest(**base)
+
+
+def _run_repair(monkeypatch, materializer, runtime):
+    from services.orchestration.temporal_activities import implementation as impl_module
+    from services.orchestration.temporal_activities import repair as repair_module
+
+    async def no_autofix(*args, **kwargs):
+        return False
+
+    monkeypatch.setattr(repair_module, "_project_autofix", no_autofix)
+    monkeypatch.setattr(impl_module, "_build_materializer", lambda *a, **k: materializer)
+    monkeypatch.setattr(impl_module, "_build_runtime", lambda *a, **k: runtime)
+    return asyncio.run(repair_module.apply_ci_repair(_repair_request()))
+
+
+def test_a_repair_that_reverts_the_task_change_is_not_applied(monkeypatch):
+    """A branch identical to its base passes every check while delivering none of the work."""
+    materializer = _FakeMaterializer(changed=("portal/a.tsx",), surviving=())
+
+    result = _run_repair(monkeypatch, materializer, _FakeRuntime())
+
+    assert result.applied is False
+    assert materializer.compared == ["base-sha"]
+
+
+def test_a_repair_that_keeps_the_task_change_is_applied(monkeypatch):
+    materializer = _FakeMaterializer(changed=("portal/a.tsx",), surviving=("portal/a.tsx",))
+
+    result = _run_repair(monkeypatch, materializer, _FakeRuntime())
+
+    assert result.applied is True
+    assert result.changed_files == ["portal/a.tsx"]
+
+
+def test_the_repair_agent_is_told_which_task_it_must_not_undo(monkeypatch):
+    runtime = _FakeRuntime()
+    materializer = _FakeMaterializer(changed=("portal/a.tsx",), surviving=("portal/a.tsx",))
+
+    _run_repair(monkeypatch, materializer, runtime)
+
+    assert "Fix the failing test." in runtime.task
+    assert "Remove the Heading size prop" in runtime.task

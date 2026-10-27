@@ -311,3 +311,77 @@ def test_a_declared_fix_command_does_not_leak_into_other_categories():
     )
 
     assert "npm run lint:fix" not in plan.instruction
+
+
+_SNAPSHOT_SUMMARY = (
+    "FAIL tests/pages/applications/phone-number.test.ts\n"
+    " \u203a 1 snapshot failed.\n"
+    "Tests:       2 failed, 5095 passed, 5097 total\n"
+)
+
+
+def test_a_stale_snapshot_may_be_updated_rather_than_reverting_the_change():
+    """Without this carve-out the agent reverts the change to satisfy the old recording."""
+    plan = plan_repair(_SNAPSHOT_SUMMARY)
+
+    assert plan.category == TEST_FAILURE
+    assert "update the stored snapshot" in plan.instruction
+
+
+def test_the_instruction_names_the_task_so_the_repair_cannot_revert_it():
+    from services.orchestration.langgraph.ci_repair import instruction_for_task
+
+    instruction = instruction_for_task("Fix the failing test.", "Remove the Heading size prop")
+
+    assert "Fix the failing test." in instruction
+    assert "Remove the Heading size prop" in instruction
+    assert "Keep it." in instruction
+
+
+def test_an_absent_task_leaves_the_instruction_untouched():
+    from services.orchestration.langgraph.ci_repair import instruction_for_task
+
+    assert instruction_for_task("Fix the failing test.", "   ") == "Fix the failing test."
+    assert instruction_for_task("", "Remove the prop") == ""
+
+
+_JEST_SNAPSHOT_LOG = (
+    "> portal@1.0.0 test\n"
+    "npm warn deprecated glob@10.5.0: contains publicized security vulnerabilities\n"
+    "PASS tests/pages/landing.test.ts\n"
+    " FAIL  tests/pages/applications/phone-number.test.ts\n"
+    "  \u25cf PhoneNumber \u203a renders the page\n"
+    "\n"
+    "    expect(received).toMatchSnapshot()\n"
+    "\n"
+    "    - Snapshot  - 1\n"
+    "    + Received  + 1\n"
+    "\n"
+    "          <h2\n"
+    '    -       class="font-heading-lg text-bold"\n'
+    '    +       class="font-heading-md text-bold"\n'
+    "          >\n"
+    "PASS tests/storybook/claim-review.test.tsx\n"
+    "Test Suites: 1 failed, 362 passed, 363 total\n"
+)
+
+
+def test_a_jest_snapshot_diff_survives_the_summary_for_the_repair_agent():
+    summary = failure_summary(_JEST_SNAPSHOT_LOG)
+
+    assert 'class="font-heading-lg text-bold"' in summary
+    assert 'class="font-heading-md text-bold"' in summary
+    assert "expect(received).toMatchSnapshot()" in summary
+
+
+def test_the_summary_keeps_passing_suites_out_of_the_failure_block():
+    summary = failure_summary(_JEST_SNAPSHOT_LOG)
+
+    assert "PASS tests/pages/landing.test.ts" not in summary
+    assert "PASS tests/storybook/claim-review.test.tsx" not in summary
+
+
+def test_package_manager_advisories_never_reach_the_repair_agent():
+    summary = failure_summary(_JEST_SNAPSHOT_LOG)
+
+    assert "npm warn deprecated" not in summary

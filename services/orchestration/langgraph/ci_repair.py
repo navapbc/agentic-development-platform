@@ -34,17 +34,50 @@ _FAILURE_MARKERS = (
 _FILE_HEADING = re.compile(r"^\S+\.[A-Za-z][A-Za-z0-9]{0,5}$")
 
 
-def failure_summary(log_text: str, *, max_lines: int = 20) -> str:
-    """Pick the failure-relevant lines from a check log, keeping the last max_lines."""
-    lines = log_text.splitlines()
-    picked: list[str] = []
-    for index, line in enumerate(lines):
-        if not any(m in line.lower() for m in _FAILURE_MARKERS):
+# Package managers emit advisory lines that carry failure words such as "security" without
+# describing the failure under repair, and they would otherwise crowd out the diagnosis.
+def _is_noise(line: str) -> bool:
+    return line.lstrip().lower().startswith(("npm warn", "npm notice"))
+
+
+def _is_detail(line: str) -> bool:
+    """Whether the line continues the block a failure line heads, rather than starting output."""
+    return bool(line.strip()) and line[:1] in (" ", "\t")
+
+
+def _bridges_detail(lines: list[str], index: int) -> bool:
+    """Whether a blank line sits inside a detail block rather than ending it."""
+    for line in lines[index + 1 :]:
+        if not line.strip():
             continue
-        heading = lines[index - 1] if index else ""
-        if _FILE_HEADING.match(heading) and (not picked or picked[-1] != heading):
-            picked.append(heading)
-        picked.append(line)
+        return _is_detail(line)
+    return False
+
+
+def failure_summary(log_text: str, *, max_lines: int = 120) -> str:
+    """Pick the failure-relevant lines from a check log, keeping the last max_lines.
+
+    Line-oriented tools such as ruff, prettier and eslint put the whole finding on the matched
+    line. A test runner instead prints the name of the failing test on that line and the
+    diagnosis, such as the assertion diff or the snapshot that no longer matches, in the indented
+    block beneath it. That block is kept so the repair agent is shown what actually differs
+    rather than only the name of the test that failed.
+    """
+    lines = log_text.splitlines()
+    keep = [False] * len(lines)
+    for index, line in enumerate(lines):
+        if _is_noise(line) or not any(m in line.lower() for m in _FAILURE_MARKERS):
+            continue
+        if index and _FILE_HEADING.match(lines[index - 1]):
+            keep[index - 1] = True
+        keep[index] = True
+        for offset in range(index + 1, len(lines)):
+            detail = _is_detail(lines[offset])
+            bridge = not lines[offset].strip() and _bridges_detail(lines, offset)
+            if not (detail or bridge):
+                break
+            keep[offset] = True
+    picked = [line for index, line in enumerate(lines) if keep[index]]
     return "\n".join(picked[-max_lines:])
 
 
@@ -89,7 +122,9 @@ _INSTRUCTIONS = {
     TEST_FAILURE: (
         "The CI build failed on a test. Read the failing test output below, make the smallest "
         "change that makes the test pass without weakening the assertion, and do not edit the "
-        "test to hide the failure.\n\n{summary}"
+        "test to hide the failure. A recorded snapshot is generated output rather than an "
+        "assertion, so when the change under repair deliberately alters what the code renders, "
+        "update the stored snapshot instead of reverting the change.\n\n{summary}"
     ),
     LINT: (
         "The CI build failed on a lint or format check. Fix the violations reported below "
@@ -114,6 +149,25 @@ class RepairPlan:
     status: str
     category: str
     instruction: str
+
+
+def instruction_for_task(instruction: str, task: str) -> str:
+    """Name the change under repair, so the repair cannot satisfy a check by undoing it.
+
+    The repair agent reads the failure and nothing else, so an expectation that the change
+    deliberately invalidated reads to it as a defect in the change rather than in the
+    expectation. Reverting then looks like the smallest fix, and it leaves a branch that passes
+    every check while delivering none of the work.
+    """
+    if not instruction.strip() or not task.strip():
+        return instruction
+    return (
+        f"{instruction}\n\n"
+        f"Task under repair: {task.strip()}\n"
+        "That change is the purpose of this branch. Keep it. Undoing it, narrowing it, or "
+        "restoring the behaviour it replaced is not a repair, even when doing so makes the "
+        "check pass."
+    )
 
 
 def classify_failure(failure_summary: str) -> str:

@@ -31,6 +31,8 @@ class ApplyCIRepairRequest:
     instruction: str
     failure_summary: str = ""
     changed_paths: tuple[str, ...] = ()
+    task: str = ""
+    base_commit: str = ""
 
 
 @dataclass
@@ -75,6 +77,7 @@ async def analyze_ci_failure(req: AnalyzeCIFailureRequest) -> AnalyzeCIFailureRe
 
 @activity.defn
 async def apply_ci_repair(req: ApplyCIRepairRequest) -> ApplyCIRepairResult:
+    from services.orchestration.langgraph.ci_repair import instruction_for_task
     from services.orchestration.temporal_activities.implementation import (
         _build_materializer,
         _build_runtime,
@@ -90,25 +93,51 @@ async def apply_ci_repair(req: ApplyCIRepairRequest) -> ApplyCIRepairResult:
     )
     if await _project_autofix(req, workspace.path):
         changed = await materializer.changed_paths(workspace)
-        if changed:
+        if changed and await _keeps_task_change(materializer, workspace, req.base_commit):
             return ApplyCIRepairResult(applied=True, changed_files=changed)
     runtime = _build_runtime()
     outcome = await runtime.run_implementation(
         execution_id=req.execution_id,
-        task=req.instruction,
+        task=instruction_for_task(req.instruction, req.task),
         context=req.failure_summary,
         workspace_source=str(Path(workspace.path).resolve()),
         task_id=req.task_id,
     )
     changed = await materializer.changed_paths(workspace)
+    applied = bool(changed) and await _keeps_task_change(materializer, workspace, req.base_commit)
     return ApplyCIRepairResult(
-        applied=bool(changed),
+        applied=applied,
         changed_files=changed,
         cost=outcome.cost,
         tokens=outcome.tokens,
         cache_read_tokens=outcome.cache_read_tokens,
         llm_calls=outcome.llm_calls,
     )
+
+
+async def _keeps_task_change(materializer, workspace, base_commit: str) -> bool:
+    """Whether any of the task's work still survives in the workspace.
+
+    A repair that leaves the tree identical to the commit the branch started from has satisfied
+    the checks by deleting the work, which would otherwise publish a branch that is green and
+    empty. That outcome is reported as an unapplied repair so the workflow escalates it rather
+    than committing it.
+    """
+    if not base_commit:
+        return True
+    try:
+        surviving = await materializer.diff_paths_against(workspace, base_commit)
+    except Exception:  # noqa: BLE001
+        activity.logger.warning("could not compare the repair against its base", exc_info=True)
+        return True
+    if surviving:
+        return True
+    activity.logger.error(
+        "repair reverted the task change, leaving the branch identical to %s",
+        base_commit,
+        extra={"repair_outcome": "reverted-task-change", "base_commit": base_commit},
+    )
+    return False
 
 
 def _record_fix_outcome(outcome: str, **fields: object) -> None:
