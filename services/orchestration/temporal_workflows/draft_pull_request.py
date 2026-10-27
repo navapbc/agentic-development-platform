@@ -2376,7 +2376,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                     workflow_id,
                     reason=PROMOTION_CANCELLED,
                     stage="approval",
-                    detail=recheck.category,
+                    detail=recheck.reason or recheck.category,
                 )
                 return replace(
                     outcome,

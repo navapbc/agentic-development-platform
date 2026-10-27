@@ -64,6 +64,17 @@ def _raise_for_status(resp: httpx.Response) -> None:
     raise ApplicationError(detail, type="LiteLLMRejected", non_retryable=True)
 
 
+def _unreachable_gateway_error(base_url: str, exc: httpx.TransportError) -> ApplicationError:
+    """Name the gateway and the command that starts it, which a transport error never does."""
+    return ApplicationError(
+        f"the LiteLLM model gateway at {base_url} could not be reached. "
+        f"{exc.__class__.__name__} {exc}. Start the local stack with inv local-up, then check "
+        "docker compose ps litellm. If the gateway is up, check the Bedrock connectivity tunnel "
+        "with inv tunnel-status",
+        type="LiteLLMUnreachable",
+    )
+
+
 async def _persist_prompt_evidence(
     req: ModelRequest, *, prompt_version: str | None, model_id: str | None
 ) -> None:
@@ -128,7 +139,10 @@ async def invoke_model(req: ModelRequest) -> ModelResponse:
         prompt_version=prompt_version,
     ) as span:
         async with httpx.AsyncClient(base_url=settings.litellm_base_url, timeout=120.0) as client:
-            resp = await client.post("/v1/chat/completions", json=payload, headers=headers)
+            try:
+                resp = await client.post("/v1/chat/completions", json=payload, headers=headers)
+            except httpx.TransportError as exc:
+                raise _unreachable_gateway_error(settings.litellm_base_url, exc) from exc
             _raise_for_status(resp)
             data = resp.json()
 
