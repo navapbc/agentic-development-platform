@@ -90,3 +90,17 @@ def checks_for_repo(
     repo: str, settings=None, *, environment: str | None = None
 ) -> ChecksConfig | None:
     return load_checks_configs(settings, environment=environment).get(repo)
+
+
+def required_checks_repos(
+    settings=None, *, environment: str | None = None
+) -> frozenset[str] | None:
+    """Repositories with a checks entry when the backend requires CI, or None when it does not."""
+    from scripts.config import get_settings
+
+    from services.integration.github.factory import GITHUB, resolve_source_control_backend_name
+
+    resolved = settings or get_settings()
+    if resolve_source_control_backend_name(resolved) != GITHUB:
+        return None
+    return frozenset(load_checks_configs(resolved, environment=environment))

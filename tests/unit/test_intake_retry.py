@@ -25,6 +25,7 @@ class _FakeStore:
         self.cleared_repo: str | None = "unset"
         self.marked = False
         self.gate_cleared = False
+        self.claims_cleared = False
 
     async def workflow_ids(self, issue_key: str) -> list[str]:
         return self._workflow_ids
@@ -40,6 +41,10 @@ class _FakeStore:
     async def clear_sequence_gate(self, issue_key: str) -> int:
         self.gate_cleared = True
         return 1
+
+    async def clear_work_claims(self, issue_key: str) -> int:
+        self.claims_cleared = True
+        return 2
 
 
 def _active(*running: str):
@@ -64,11 +69,16 @@ async def test_retry_clears_dedup_and_marks_stale_execution_failed():
 
     assert isinstance(result, IntakeRetryResult)
     assert result.retriggered
-    assert result.released == 1
+    assert result.intake_cleared == 1
     assert result.superseded == 1
+    assert result.claims_cleared == 2
     assert store.marked is True
     assert store.gate_cleared is True
-    assert "cleared for retrigger" in result.message
+    assert store.claims_cleared is True
+    assert result.message == (
+        "ADSER-20 cleared for retrigger, dropped 1 intake dedup record(s), dropped 2 work "
+        "claim(s), and marked 1 stale execution(s) failed"
+    )
 
 
 @pytest.mark.asyncio
@@ -88,7 +98,7 @@ async def test_retry_refuses_when_a_workflow_is_still_running():
 
     assert not result.retriggered
     assert result.blocked_by == ("wf-live",)
-    assert result.released == 0
+    assert result.intake_cleared == 0
     assert store.cleared_repo == "unset"
     assert store.marked is False
     assert store.gate_cleared is False
@@ -102,7 +112,7 @@ async def test_retry_with_no_intake_record_reports_nothing_to_do():
     result = await retry_intake("ADSER-99", store=store, liveness=_active())
 
     assert not result.retriggered
-    assert result.released == 0
+    assert result.intake_cleared == 0
     assert store.marked is False
     assert "nothing to retrigger" in result.message
 
@@ -125,7 +135,7 @@ async def test_unreachable_temporal_refuses_without_claiming_a_workflow_runs():
     assert not result.retriggered
     assert result.blocked_by == ()
     assert result.undetermined == ("wf-unreachable",)
-    assert result.released == 0
+    assert result.intake_cleared == 0
     assert store.marked is False
     assert store.gate_cleared is False
     assert "still has a running workflow" not in result.message
@@ -303,3 +313,71 @@ async def test_clearing_intake_dedup_for_an_unmatched_repo_deletes_nothing():
 
     assert cleared == 0
     assert set(engine.rows) == {"k-a"}
+
+
+@pytest.mark.asyncio
+async def test_a_stranded_claim_is_dropped_when_the_intake_record_is_already_gone():
+    store = _FakeStore(workflow_ids=["wf-1"], dedup=0)
+
+    result = await retry_intake("ADEVX-1", store=store, liveness=_active())
+
+    assert store.claims_cleared is True
+    assert result.claims_cleared == 2
+    assert result.retriggered is False
+    assert "dropped 2 stranded work claim(s)" in result.message
+
+
+@pytest.mark.asyncio
+async def test_a_running_workflow_keeps_its_claim():
+    store = _FakeStore(workflow_ids=["wf-1"], dedup=1)
+
+    result = await retry_intake("ADEVX-1", store=store, liveness=_active("wf-1"))
+
+    assert store.claims_cleared is False
+    assert result.claims_cleared == 0
+
+
+class _StatementCapturingEngine:
+    def __init__(self, rowcount: int) -> None:
+        self.rowcount = rowcount
+        self.sql = ""
+        self.params: dict[str, Any] = {}
+
+    def begin(self):
+        return _StatementCapturingConnection(self)
+
+
+class _StatementCapturingConnection:
+    def __init__(self, engine: _StatementCapturingEngine) -> None:
+        self._engine = engine
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        return None
+
+    async def execute(self, statement):
+        compiled = statement.compile(dialect=postgresql.dialect())
+        self._engine.sql = str(compiled)
+        self._engine.params = dict(compiled.params)
+        return _FakeLedgerResult([], rowcount=self._engine.rowcount)
+
+
+async def test_clearing_work_claims_deletes_only_the_ticket_s_claims():
+    engine = _StatementCapturingEngine(rowcount=3)
+    store = PostgresIntakeRetryStore(cast(AsyncEngine, engine))
+
+    cleared = await store.clear_work_claims("ADEV-1")
+
+    assert cleared == 3
+    assert "DELETE FROM agent_platform.work_claims" in engine.sql
+    assert "WHERE agent_platform.work_claims.task_id = " in engine.sql
+    assert engine.params["task_id_1"] == "ADEV-1"
+
+
+async def test_clearing_work_claims_reports_zero_when_no_rows_match():
+    engine = _StatementCapturingEngine(rowcount=0)
+    store = PostgresIntakeRetryStore(cast(AsyncEngine, engine))
+
+    assert await store.clear_work_claims("ADEV-1") == 0

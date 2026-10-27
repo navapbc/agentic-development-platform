@@ -60,7 +60,10 @@ with workflow.unsafe.imports_passed_through():
         load_gate_plan,
     )
     from services.orchestration.temporal_activities.implementation import (
+        FinalizeClaimRequest,
+        FinalizeClaimResult,
         ResetCoordinationRequest,
+        finalize_work_claim,
         reset_task_coordination,
     )
     from services.orchestration.temporal_activities.manifest import (
@@ -413,6 +416,8 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         self._dependency_seq: int = 0
         self._base_sha: str = ""
         self._authorship: dict[str, dict] = {}
+        self._claim_owner_workflow_id: str = ""
+        self._claim_completed: bool = False
 
     async def _sign_authorship(
         self,
@@ -474,6 +479,73 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
 
     @workflow.run
     async def run(self, params: DraftPullRequestInput) -> DraftPullRequestOutput:
+        """Drive the orchestration and settle the work claim however the run ends.
+
+        Every exit has to settle the claim, otherwise the work unit stays claimed and no
+        later run can take it. `inv restart` drops a row this leaves behind.
+        """
+        try:
+            outcome = await self._orchestrate(params)
+        except Exception:
+            await self._finalize_claim(params)
+            raise
+        await self._finalize_claim(params)
+        return outcome
+
+    async def _finalize_claim(self, params: DraftPullRequestInput) -> None:
+        owner = self._claim_owner_workflow_id
+        if not owner:
+            return
+        self._claim_owner_workflow_id = ""
+        settled: FinalizeClaimResult | None = None
+        try:
+            settled = await workflow.execute_activity(
+                finalize_work_claim,
+                FinalizeClaimRequest(
+                    task_id=params.task_id,
+                    work_unit=params.work_unit,
+                    owner_workflow_id=owner,
+                    completed=self._claim_completed,
+                ),
+                start_to_close_timeout=timedelta(seconds=30),
+                retry_policy=RetryPolicy(maximum_attempts=3),
+            )
+        except Exception:
+            settled = None
+        try:
+            await self._audit(self._settlement_event(params, owner, settled))
+        except Exception:
+            # Neither settling the claim nor recording the attempt may replace the run's
+            # own outcome. A claim left unsettled is recoverable with inv restart.
+            return
+
+    def _settlement_event(
+        self,
+        params: DraftPullRequestInput,
+        owner: str,
+        settled: FinalizeClaimResult | None,
+    ) -> AuditEvent:
+        if settled is None:
+            decision = "not_settled"
+            reason = "finalize_work_claim did not complete"
+        elif not settled.finalized:
+            decision = "not_settled"
+            reason = f"no claim held by {owner} for work unit {params.work_unit}"
+        else:
+            decision = settled.state
+            reason = None
+        return AuditEvent(
+            event_id=f"{params.execution_id}:WORK_UNIT_SETTLED",
+            task_id=params.task_id,
+            execution_id=params.execution_id,
+            event_type="WORK_UNIT_SETTLED",
+            stage="SETTLING",
+            decision=decision,
+            reason=reason,
+            workflow_id=owner,
+        )
+
+    async def _orchestrate(self, params: DraftPullRequestInput) -> DraftPullRequestOutput:
         retry = RetryPolicy(maximum_attempts=3)
         short = timedelta(seconds=30)
         workflow_id = workflow.info().workflow_id
@@ -538,6 +610,9 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             params, kind="plan", artifact=plan_text or params.task, commit=self._base_sha
         )
 
+        if params.work_unit:
+            self._claim_owner_workflow_id = workflow_id
+
         impl: ImplementationOutput = await workflow.execute_child_workflow(
             ImplementationWorkflow.run,
             ImplementationInput(
@@ -557,9 +632,16 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 activity_timeout_seconds=params.activity_timeout_seconds,
                 plan=plan_text,
                 context_package=context_package,
+                owner_workflow_id=workflow_id,
             ),
             id=f"{workflow_id}-impl",
         )
+        if impl.claimed:
+            # A child that completed under the previous build reports no owner, and the claim
+            # row it wrote names the child workflow rather than this one.
+            self._claim_owner_workflow_id = impl.claim_owner_workflow_id or f"{workflow_id}-impl"
+        else:
+            self._claim_owner_workflow_id = ""
 
         if impl.status == EXISTING_PR_REUSED:
             action = await linkback_existing(impl.pr_url, impl.branch)
@@ -984,7 +1066,6 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             ResetCoordinationRequest(
                 task_id=params.task_id,
                 work_unit=params.work_unit,
-                workflow_id=workflow_id,
             ),
             start_to_close_timeout=short,
             retry_policy=retry,
@@ -2091,6 +2172,8 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 start_to_close_timeout=short,
                 retry_policy=retry,
             )
+            if state == COMPLETED:
+                self._claim_completed = True
 
         approver = ""
         approved = True
@@ -2354,6 +2437,8 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 start_to_close_timeout=short,
                 retry_policy=retry,
             )
+            if state == COMPLETED:
+                self._claim_completed = True
 
         await persist(AWAITING_PR_CLOSE)
         await self.await_resume(

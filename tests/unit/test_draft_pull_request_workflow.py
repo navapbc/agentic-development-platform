@@ -60,6 +60,8 @@ from services.orchestration.temporal_activities.gates import (
 from services.orchestration.temporal_activities.implementation import (
     ClaimRequest,
     ClaimResult,
+    FinalizeClaimRequest,
+    FinalizeClaimResult,
     ImplementationRequest,
     ImplementationResult,
     ResetCoordinationRequest,
@@ -405,7 +407,15 @@ def _make_activities(
 
     @activity.defn(name="reset_task_coordination")
     async def fake_reset(req: ResetCoordinationRequest) -> ResetCoordinationResult:
-        return ResetCoordinationResult(released=True, sequence_reset=True)
+        return ResetCoordinationResult(sequence_reset=True)
+
+    @activity.defn(name="finalize_work_claim")
+    async def fake_finalize(req: FinalizeClaimRequest) -> FinalizeClaimResult:
+        return FinalizeClaimResult(
+            claim_id="claim-1",
+            finalized=True,
+            state="completed" if req.completed else "released",
+        )
 
     def _review_outcome(stage: str, verdict: str) -> ReviewOutcome:
         return ReviewOutcome(
@@ -580,6 +590,7 @@ def _make_activities(
         fake_apply_repair,
         fake_alert,
         fake_reset,
+        fake_finalize,
         fake_load_gate_plan,
         fake_evaluate_gate,
         fake_invoke_model,
