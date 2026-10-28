@@ -98,6 +98,12 @@ variable "kms_key_arn" {
   default     = ""
 }
 
+variable "password_version" {
+  description = "Generation of the Terraform-written user password. Incrementing it writes a new password to the user and its secret, which resets the user to that single password. Routine rotation runs through Secrets Manager and leaves this value unchanged."
+  type        = number
+  default     = 1
+}
+
 variable "secret_kms_key_arn" {
   description = "KMS key ARN for the user credential secret. Empty uses the AWS managed aws/secretsmanager key."
   type        = string

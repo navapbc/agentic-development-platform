@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
-from scripts.config import get_settings
+from scripts.config import configured_log_level, get_settings
 
 from services.healthcheck import touch
 from services.repository_intelligence.indexing import scip_builder
@@ -143,5 +143,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(level=configured_log_level())
     main()

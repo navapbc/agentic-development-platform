@@ -13,12 +13,9 @@ from __future__ import annotations
 import base64
 import shlex
 from dataclasses import dataclass
-from typing import Any
 
 from services.orchestration.gates.pod_runner import (
-    PodEngineError,
     PodOps,
-    _tail,
     build_pod_manifest,
 )
 
@@ -35,10 +32,6 @@ _OWNERSHIP_FLAGS = (
     "-e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=*"
 )
 _PATH_SEPARATOR = "\n"
-
-
-class ChecksError(PodEngineError):
-    """The checks pod could not build or start the declared command."""
 
 
 @dataclass(frozen=True)
@@ -287,11 +280,3 @@ class ChecksRunner:
             )
         finally:
             await self._ops.delete(pod, self._namespace)
-
-
-def _summary(result: ChecksResult) -> str:
-    return _tail(result.output)
-
-
-def describe_outcome(result: ChecksResult) -> dict[str, Any]:
-    return {"exit_code": result.exit_code, "summary": _summary(result)}

@@ -1,8 +1,8 @@
 # private-bedrock
 
-Reference composition root that stands up the platform's AWS network, the private Bedrock path, the Fargate jumphost, and the data tier for a single account. It wires the core infrastructure modules (`vpc-endpoints`, `ecr`, `cloudtrail`, `egress`, `dns-firewall`), the application modules (`bedrock-iam`, `bedrock-jumphost-fargate`), and the data tier modules (`aurora-postgresql`, `elasticache`, `clickhouse-storage`, `langfuse-blob-store`) into one apply.
+Reference composition root that stands up the platform's AWS network, the private Bedrock path, the Fargate jumphost, and the data tier for a single account. It wires the core infrastructure modules (`vpc-endpoints`, `ecr`, `cloudtrail`, `egress`, `dns-firewall`), the application modules (`bedrock-iam`, `bedrock-jumphost-fargate`), the data tier modules (`aurora-postgresql`, `elasticache`, `clickhouse-storage`, `langfuse-blob-store`), and the `secret-store` module into one apply.
 
-It works from zero or against existing infrastructure. Set `create_network = true` to provision a tiered private VPC, or set it false and supply `vpc_id`, `subnet_ids`, `endpoint_allowed_cidrs`, and the existing tier subnets. Each core piece has its own toggle, so an account that already has VPC endpoints, a registry, an organization CloudTrail, or organization egress can skip them. The data tier services are off until enabled.
+It works from zero or against existing infrastructure. Set `create_network = true` to provision a tiered private VPC, or set it false and supply `vpc_id`, `subnet_ids`, `endpoint_allowed_cidrs`, and the existing tier subnets. Each core piece has its own toggle, so an account that already has VPC endpoints, a registry, an organization CloudTrail, or organization egress can skip them. The data tier services and the secret store are off until enabled.
 
 ## State
 
@@ -42,7 +42,7 @@ A created network is divided into public, application, management, and data zone
 |---|---|---|---|
 | Public (presentation) | `10.0.31.0/24` | The NAT instance or NAT Gateway | Internet gateway. Created only when an egress path is selected. |
 | Application | `new_subnet_cidrs`, `10.0.1.0/24` | The interface endpoints and the platform services | Through the egress path |
-| Management | `10.0.21.0/24` | The jumphost and administrative tasks such as database role bootstrap | Through the egress path |
+| Management | `10.0.21.0/24` | The jumphost and the secret rotation functions | Through the egress path |
 | Data | `10.0.11.0/24`, `10.0.12.0/24` | Aurora, ElastiCache, and the ClickHouse file system | None |
 
 The data tier spans two Availability Zones because Aurora requires it. Its network ACL admits only PostgreSQL (5432), Valkey (6379), and NFS (2049) from the application and management tiers, returns responses to them, and allows traffic within the tier. The data tier has no default route, so it cannot originate a connection outside the VPC.
@@ -64,18 +64,25 @@ A created network also enables the Route 53 Resolver DNS Firewall, which resolve
 
 `aurora_instance_count`, `aurora_serverless_max_capacity`, and `cache_num_nodes` raise capacity and availability for production. `kms_key_arn` applies one customer managed key across the data tier, the NAT instance volume, and the log groups.
 
+## Secret store
+
+`create_secret_store = true` provisions the [secret-store](../../secret-store) module. It creates the platform secrets in Secrets Manager under a dedicated KMS key and adds the `secretsmanager` interface endpoint. With `create_aurora` it also enables the Aurora Data API, adds the `rds-data` endpoint, and creates the per-service database credentials with their rotation function in the management tier. With `create_cache` it encrypts the cache user secret with the same key, adds the `elasticache` endpoint, and rotates the cache user.
+
+`secret_readers` grants read access per secret to the workload roles, and `secret_restart_services` names the ECS services to redeploy after each secret changes. The module README lists the secret keys, the rotation schedule, and the manual rotation runbook.
+
 ## After apply
 
 1. Push the jumphost image to the repository shown in the `jumphost_ecr_repository_url` output with `inv publish-jumphost-image --tag v1`.
 2. Attach the `bedrock_invoke_policy_arn` output to the workload role that signs Bedrock inference.
 3. Bring up the platform and open the tunnel with `inv tunnel-start --detach`.
+4. With the secret store and Aurora enabled, create the per-service database roles before the first migration with `inv db-bootstrap-roles --function-name "$(terraform output -raw role_bootstrap_function_name)"`. Then set each external secret, such as `github_token`, with `aws secretsmanager put-secret-value`.
 
 ## Toggles for existing infrastructure
 
 | Variable | Set false when |
 |----------|----------------|
 | `create_network` | A VPC and private subnets already exist. Then set `vpc_id`, `subnet_ids`, and `endpoint_allowed_cidrs`, plus `management_subnet_ids`, `management_cidr_blocks`, and `data_subnet_ids` for the tiers. |
-| `create_endpoints` | The account already has the bedrock-runtime, ssmmessages, ECR, logs, and kms endpoints. |
+| `create_endpoints` | The account already has the bedrock-runtime, ssmmessages, ECR, logs, and kms endpoints, plus secretsmanager, rds-data, and elasticache when the secret store is enabled. Then set `existing_endpoints_security_group_id`. |
 | `create_ecr_repository` | A registry already holds the jumphost image. Then set `jumphost_repository_name`. |
 | `create_cloudtrail` | An organization CloudTrail already covers this account. |
 | `create_dns_firewall` | The organization already filters DNS for the VPC. |

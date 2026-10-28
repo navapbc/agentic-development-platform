@@ -14,6 +14,7 @@ from typing import Any
 
 from scripts.config import Settings, get_settings
 
+from services.orchestration.signing_keys import SigningKeyError, review_signing_key_path
 from services.review.trust_root import (
     TrustRoot,
     TrustRootError,
@@ -42,7 +43,10 @@ def review_signing_preflight(settings: Settings | None = None) -> None:
     missing = [
         name
         for name, value in (
-            ("REVIEW_SIGNING_KEY_PATH", resolved.review_signing_key_path),
+            (
+                "REVIEW_SIGNING_KEY or REVIEW_SIGNING_KEY_PATH",
+                resolved.review_signing_key or resolved.review_signing_key_path,
+            ),
             ("REVIEW_TRUST_ROOT_PATH", resolved.review_trust_root_path),
         )
         if not value
@@ -54,10 +58,12 @@ def review_signing_preflight(settings: Settings | None = None) -> None:
             + " is not set. Provision the signing key and trust root, or set "
             "REVIEW_SIGNING_ENABLED=false."
         )
-    if not Path(resolved.review_signing_key_path).is_file():
-        raise ReviewSigningConfigError(
-            f"review signing key not found at {resolved.review_signing_key_path}"
-        )
+    try:
+        key_path = review_signing_key_path(resolved)
+    except SigningKeyError as exc:
+        raise ReviewSigningConfigError(str(exc)) from exc
+    if not Path(key_path).is_file():
+        raise ReviewSigningConfigError(f"review signing key not found at {key_path}")
     load_trust_root(resolved.review_trust_root_path)
     from rebar.attest.sshsig import ensure_available
 

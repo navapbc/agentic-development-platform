@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import pytest
 import tasks as tasks_module
-from invoke import Collection, Context
+from invoke.collection import Collection
+from invoke.context import Context
 
 EXPECTED_TASKS = {
     "tunnel-start",
@@ -20,6 +21,7 @@ EXPECTED_TASKS = {
     "db-migrate",
     "schedules-install",
     "db-reset",
+    "db-bootstrap-roles",
     "seed",
     "import-rebar-tickets",
     "rebar-changes",
@@ -28,6 +30,7 @@ EXPECTED_TASKS = {
     "operator-done",
     "smoke-test",
     "prompts-seed",
+    "evidence-bucket-bootstrap",
     "review-eval",
     "context-eval",
     "cost-rollup",

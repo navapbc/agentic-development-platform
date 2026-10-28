@@ -120,6 +120,12 @@ resource "aws_cloudwatch_log_group" "postgresql" {
   tags              = var.tags
 }
 
+resource "random_id" "final_snapshot" {
+  count = local.enabled ? 1 : 0
+
+  byte_length = 4
+}
+
 resource "aws_rds_cluster" "this" {
   count = local.enabled ? 1 : 0
 
@@ -135,6 +141,7 @@ resource "aws_rds_cluster" "this" {
   master_user_secret_kms_key_id = var.master_user_secret_kms_key_arn == "" ? null : var.master_user_secret_kms_key_arn
 
   iam_database_authentication_enabled = true
+  enable_http_endpoint                = var.enable_data_api
   storage_encrypted                   = true
   kms_key_id                          = var.kms_key_arn == "" ? null : var.kms_key_arn
 
@@ -147,8 +154,8 @@ resource "aws_rds_cluster" "this" {
   preferred_maintenance_window = var.preferred_maintenance_window
   copy_tags_to_snapshot        = true
   deletion_protection          = var.deletion_protection
-  skip_final_snapshot          = false
-  final_snapshot_identifier    = "${local.cluster_identifier}-final"
+  skip_final_snapshot          = var.skip_final_snapshot
+  final_snapshot_identifier    = "${local.cluster_identifier}-final-${random_id.final_snapshot[0].hex}"
   allow_major_version_upgrade  = false
 
   enabled_cloudwatch_logs_exports = ["postgresql"]

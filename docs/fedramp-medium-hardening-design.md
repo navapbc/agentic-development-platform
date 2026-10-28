@@ -42,9 +42,9 @@ Controls. SC-28 protection at rest through Aurora storage encryption in [aurora-
 
 ## Secrets
 
-Posture. Secret material reaches a workload from the deployment secret store rather than from source. Signing keys, model API keys, and webhook secrets are mounted or fetched at runtime, and the trust-root bundle, which holds only public keys, ships as non-secret configuration.
+Posture. Secret material reaches a workload from AWS Secrets Manager rather than from source. The [secret-store](../infra/terraform/secret-store) module encrypts every secret with a dedicated KMS key, allows each secret to be read only by the roles that consume it, and injects the values into tasks at start. Each service connects to PostgreSQL as its own role, limited to its own database, rather than as the master user. The database and cache credentials rotate on a quarterly schedule in an after-hours window, the consuming services redeploy when a credential changes, and the README runbook covers the event-driven rotation of every other secret. The trust-root bundle, which holds only public keys, ships as non-secret configuration.
 
-Controls. IA-5 authenticator management through the out-of-band provisioning of signing keys and API keys described in the [local-to-AWS mapping](local-to-aws-mapping.md). SC-12 cryptographic key establishment through the KMS keys the modules consume, with automatic key rotation enabled on the KMS key in [bedrock-jumphost-fargate](../infra/terraform/bedrock-jumphost-fargate). SC-28 at-rest protection of secret values in the secret store.
+Controls. IA-5 authenticator management through the organization-defined rotation period and event triggers of IA-5(f) and IA-5(i), generated values that never enter Terraform state, and passwords set as SCRAM verifiers so no log holds them. IA-5(7) through secrets that live only in Secrets Manager and never in source or images. AC-6 least privilege through the per-secret resource policies and the per-service database roles. SC-12 cryptographic key establishment through the KMS keys the modules consume, with automatic key rotation enabled on the secret-store key and the key in [bedrock-jumphost-fargate](../infra/terraform/bedrock-jumphost-fargate). SC-28 at-rest protection of secret values under the customer managed key.
 
 ## Identity
 

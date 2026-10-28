@@ -99,14 +99,19 @@ module "vpc_endpoints" {
   allowed_cidr_blocks = local.endpoint_allowed_cidrs
   route_table_ids     = local.route_table_ids
 
-  interface_services = [
-    "bedrock-runtime",
-    "ssmmessages",
-    "ecr.api",
-    "ecr.dkr",
-    "logs",
-    "kms",
-  ]
+  interface_services = concat(
+    [
+      "bedrock-runtime",
+      "ssmmessages",
+      "ecr.api",
+      "ecr.dkr",
+      "logs",
+      "kms",
+    ],
+    var.create_secret_store ? ["secretsmanager"] : [],
+    local.secret_store_database ? ["rds-data"] : [],
+    local.secret_store_cache ? ["elasticache"] : [],
+  )
 
   name_prefix = var.name_prefix
   tags        = var.tags

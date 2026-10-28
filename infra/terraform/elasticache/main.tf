@@ -89,11 +89,11 @@ resource "aws_elasticache_parameter_group" "this" {
   tags = var.tags
 }
 
-resource "random_password" "user" {
+ephemeral "aws_secretsmanager_random_password" "user" {
   count = local.enabled ? 1 : 0
 
-  length  = 40
-  special = false
+  password_length     = 40
+  exclude_punctuation = true
 }
 
 resource "aws_elasticache_user" "client" {
@@ -104,16 +104,10 @@ resource "aws_elasticache_user" "client" {
   engine        = "valkey"
   access_string = var.access_string
 
-  authentication_mode {
-    type      = "password"
-    passwords = [random_password.user[0].result]
-  }
+  passwords_wo         = ephemeral.aws_secretsmanager_random_password.user[0].random_password
+  passwords_wo_version = var.password_version
 
   tags = var.tags
-
-  lifecycle {
-    ignore_changes = [authentication_mode]
-  }
 }
 
 resource "aws_elasticache_user_group" "this" {
@@ -138,15 +132,12 @@ resource "aws_secretsmanager_secret_version" "user" {
   count = local.enabled ? 1 : 0
 
   secret_id = aws_secretsmanager_secret.user[0].id
-  secret_string = jsonencode({
+  secret_string_wo = jsonencode({
     username = var.username
-    password = random_password.user[0].result
+    password = ephemeral.aws_secretsmanager_random_password.user[0].random_password
     user_arn = aws_elasticache_user.client[0].arn
   })
-
-  lifecycle {
-    ignore_changes = [secret_string]
-  }
+  secret_string_wo_version = var.password_version
 }
 
 resource "aws_cloudwatch_log_group" "engine" {

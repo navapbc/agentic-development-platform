@@ -92,3 +92,18 @@ output "langfuse_bucket" {
   description = "Langfuse event and media bucket, or null when create_langfuse_bucket is false."
   value       = module.langfuse_blob_store.bucket_id
 }
+
+output "secret_arns" {
+  description = "Platform secret ARNs keyed by secret key, empty when create_secret_store is false."
+  value       = module.secret_store.secret_arns
+}
+
+output "database_secret_arns" {
+  description = "Per-service database credential secret ARNs keyed by role."
+  value       = module.secret_store.database_secret_arns
+}
+
+output "role_bootstrap_function_name" {
+  description = "Function that inv db-bootstrap-roles invokes to create the per-service database roles and databases."
+  value       = module.secret_store.role_bootstrap_function_name
+}
