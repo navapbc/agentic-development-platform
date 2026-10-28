@@ -16,7 +16,7 @@ from services.integration.credentials import (
     parse_allowlist,
     require_current_config,
 )
-from services.operator_remedy import RemediableError
+from services.operator_remedy import RemediableError, config_key
 
 
 @dataclass(frozen=True)
@@ -62,8 +62,9 @@ class UnconfiguredRepositoryError(RemediableError, RuntimeError):
         super().__init__(repo)
         self.repo = repo
         self.remedy = (
-            f"Add a host, owner, and token_ref entry for {repo} to the github.yaml config for "
-            "this environment, then run `inv config-check` to confirm it resolves."
+            f"Add a host, owner, and token_ref entry for {repo} under "
+            f"{config_key('github', 'repositories')}, then restart the worker so it rereads the "
+            "config."
         )
 
     def condition(self) -> str:

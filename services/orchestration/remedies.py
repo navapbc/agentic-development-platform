@@ -13,6 +13,8 @@ from collections.abc import Sequence
 from enum import StrEnum
 from typing import assert_never
 
+from services.operator_remedy import config_key
+
 
 def _issue(issue_key: str) -> str:
     return issue_key or "<issue_key>"
@@ -30,11 +32,11 @@ def generic_remedy(issue_key: str, stage: str) -> str:
     )
 
 
-def _budget_remedy(issue_key: str, execution_id: str, limit: str) -> str:
+def _budget_remedy(issue_key: str, execution_id: str, limit: str, setting: str) -> str:
     return (
         f"The run stopped after exhausting its {limit}. Run `inv cost-rollup --execution-id "
-        f"{execution_id or '<execution_id>'}` to see which stage consumed the budget. Raise the "
-        f"corresponding limit in the environment config or narrow the task scope, then run "
+        f"{execution_id or '<execution_id>'}` to see which stage consumed the budget. Raise "
+        f"{setting} in .env or narrow the task scope, then run "
         f"{restart_command(issue_key)}."
     )
 
@@ -67,21 +69,27 @@ def implementation_remedy(token: str, *, issue_key: str, execution_id: str) -> s
         case ImplementationReason.WORK_UNIT_CLAIMED:
             return _claim_remedy(issue_key)
         case ImplementationReason.COST_BUDGET_EXCEEDED:
-            return _budget_remedy(issue_key, execution_id, "cost budget")
+            return _budget_remedy(
+                issue_key, execution_id, "cost budget", "IMPLEMENTATION_MAX_COST_USD"
+            )
         case ImplementationReason.TOKEN_BUDGET_EXCEEDED:
-            return _budget_remedy(issue_key, execution_id, "token budget")
+            return _budget_remedy(
+                issue_key, execution_id, "token budget", "IMPLEMENTATION_MAX_TOKENS"
+            )
         case ImplementationReason.LLM_CALLS_EXCEEDED:
-            return _budget_remedy(issue_key, execution_id, "LLM call budget")
+            return _budget_remedy(
+                issue_key, execution_id, "LLM call budget", "IMPLEMENTATION_MAX_LLM_CALLS"
+            )
         case ImplementationReason.TOOL_CALLS_EXCEEDED:
             return (
                 "The coding agent hit its tool-call cap before finishing. Narrow the task scope "
-                "or raise the tool-call cap in the environment config, then run "
+                "or raise OPENHANDS_MAX_TOOL_CALLS in .env, then run "
                 f"{restart_command(issue_key)}."
             )
         case ImplementationReason.WALL_CLOCK_EXCEEDED:
             return (
                 "The coding agent hit its wall-clock cap before finishing. Narrow the task scope "
-                "or raise the wall-clock cap in the environment config, then run "
+                "or raise OPENHANDS_MAX_WALL_CLOCK_SECONDS in .env, then run "
                 f"{restart_command(issue_key)}."
             )
         case ImplementationReason.ERROR | ImplementationReason.IMPL_FAILED:
@@ -169,11 +177,17 @@ def repair_remedy(token: str, *, issue_key: str, execution_id: str) -> str:
                 f"run `inv restart --issue {_issue(issue_key)}`."
             )
         case RepairReason.COST_BUDGET_EXCEEDED:
-            return _budget_remedy(issue_key, execution_id, "cost budget")
+            return _budget_remedy(
+                issue_key, execution_id, "cost budget", "IMPLEMENTATION_MAX_COST_USD"
+            )
         case RepairReason.TOKEN_BUDGET_EXCEEDED:
-            return _budget_remedy(issue_key, execution_id, "token budget")
+            return _budget_remedy(
+                issue_key, execution_id, "token budget", "IMPLEMENTATION_MAX_TOKENS"
+            )
         case RepairReason.LLM_CALLS_EXCEEDED:
-            return _budget_remedy(issue_key, execution_id, "LLM call budget")
+            return _budget_remedy(
+                issue_key, execution_id, "LLM call budget", "IMPLEMENTATION_MAX_LLM_CALLS"
+            )
         case _:
             assert_never(reason)
 
@@ -267,6 +281,15 @@ def base_conflict_remedy(issue_key: str) -> str:
     )
 
 
+def code_defect_remedy(issue_key: str, detail: str) -> str:
+    return (
+        f"A defect in ADP itself stopped the push, so the ticket is parked rather than failed. "
+        f"Fix the defect in ADP, deploy a newer build, and the parked run resumes on its own. "
+        f"If the ticket should not wait for that, run `inv restart --issue {_issue(issue_key)}` "
+        f"once the newer build is deployed. The failure was {detail}."
+    )
+
+
 def existing_pr_remedy(issue_key: str, pr_url: str) -> str:
     return (
         f"A pull request for this ticket already exists at {pr_url}, so the run stopped rather "
@@ -280,14 +303,14 @@ def unroutable_remedy(issue_key: str, project: str, unlisted: Sequence[str] = ()
         names = ", ".join(unlisted)
         return (
             f"The ticket names {names}, which the allowlist for this environment does not carry, "
-            f"so intake will not build against it. Add {names} to allowed_repos in the github "
-            f"config for this environment, or point the ticket at a listed repository, then run "
-            f"`inv restart --issue {_issue(issue_key)}` to re-admit it."
+            f"so intake will not build against it. Add {names} under "
+            f"{config_key('github', 'allowlist')}, or point the ticket at a listed repository, "
+            f"then run `inv restart --issue {_issue(issue_key)}` to re-admit it."
         )
     return (
         f"Intake could not resolve a target repository for {_issue(issue_key)}. Add a repos marker "
-        f"to the ticket description, or set a default_repo for the {project} project in the intake "
-        f"config, then run `inv restart --issue {_issue(issue_key)}` to re-admit it."
+        f"to the ticket description, or set {config_key('jira', 'default_repo')} for the "
+        f"{project} project, then run `inv restart --issue {_issue(issue_key)}` to re-admit it."
     )
 
 

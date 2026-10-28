@@ -319,7 +319,7 @@ def test_an_unschedulable_pod_is_described_as_a_resource_shortfall():
     assert "Unschedulable" in text
     assert "Insufficient cpu" in text
     assert f"{NEXT_STEP_PREFIX} Give the cluster node more CPU" in text
-    assert "lower the pod resource requests" in text
+    assert "lower DEFAULT_POD_RESOURCES or CHECKS_POD_RESOURCES" in text
 
 
 def test_a_pod_whose_image_will_not_pull_names_the_registry_as_the_next_check():
@@ -345,7 +345,7 @@ def test_a_pod_whose_image_will_not_pull_names_the_registry_as_the_next_check():
     assert "ImagePullBackOff" in text
     assert "quay.io/buildah/stable" in text
     assert text.startswith("The pod is Pending and its container is waiting")
-    assert f"{NEXT_STEP_PREFIX} Check the image reference" in text
+    assert f"{NEXT_STEP_PREFIX} Check that GATE_ENGINE_BUILDER_IMAGE" in text
 
 
 def test_a_pod_with_no_explaining_condition_still_reports_its_phase():

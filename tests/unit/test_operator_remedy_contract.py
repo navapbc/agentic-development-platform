@@ -55,7 +55,7 @@ def test_no_alert_site_supplies_an_empty_remedy():
 
 
 def test_the_workflow_still_has_the_alert_sites_this_contract_covers():
-    assert len(_alert_calls()) == 17
+    assert len(_alert_calls()) == 18
 
 
 def test_with_remedy_appends_one_next_step_line():
@@ -299,7 +299,7 @@ def test_an_unlisted_repository_is_not_told_to_add_a_repos_marker():
     text = remedies.unroutable_remedy("ADSER-24", "ADSER", ("navapbc/secret",))
 
     assert "navapbc/secret" in text
-    assert "allowed_repos" in text
+    assert "allowlist in config/<environment>/github.yaml" in text
     assert "repos marker" not in text
     assert "default_repo" not in text
 
@@ -308,7 +308,7 @@ def test_a_ticket_naming_no_repository_is_told_where_to_name_one():
     text = remedies.unroutable_remedy("ADSER-24", "ADSER")
 
     assert "repos marker" in text
-    assert "allowed_repos" not in text
+    assert "allowlist" not in text
 
 
 def test_the_unlisted_repositories_reach_the_remedy_from_target_resolution():
@@ -324,7 +324,7 @@ def test_the_unlisted_repositories_reach_the_remedy_from_target_resolution():
 
     assert not resolution.routable
     assert resolution.unlisted == ("navapbc/secret",)
-    assert "allowed_repos" in remedies.unroutable_remedy("ADSER-24", "ADSER", resolution.unlisted)
+    assert "allowlist" in remedies.unroutable_remedy("ADSER-24", "ADSER", resolution.unlisted)
 
 
 def test_abandoning_a_repair_does_not_claim_intake_will_relaunch():
@@ -401,3 +401,160 @@ def test_one_enormous_line_cannot_push_the_next_step_out_of_reach():
 
     assert len(bounded) < DETAIL_CHAR_LIMIT + 200
     assert bounded.endswith("tail")
+
+
+def _config_key_calls() -> list[tuple[str, str]]:
+    sources = [
+        Path(__file__).resolve().parents[2] / "services/orchestration/remedies.py",
+        Path(__file__).resolve().parents[2] / "services/integration/github/credentials.py",
+    ]
+    calls: list[tuple[str, str]] = []
+    for source in sources:
+        for node in ast.walk(ast.parse(source.read_text())):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "config_key"
+            ):
+                args = [a.value for a in node.args if isinstance(a, ast.Constant)]
+                assert len(args) == 2, f"config_key takes two literals, got {args}"
+                calls.append((str(args[0]), str(args[1])))
+    return calls
+
+
+def _template_keys(config: str) -> set[str]:
+    import yaml
+
+    template = Path(__file__).resolve().parents[2] / f"config/local/{config}.yaml.example"
+    assert template.exists(), f"no committed template for {config}"
+
+    def walk(node: object) -> set[str]:
+        if isinstance(node, dict):
+            keys: set[str] = set()
+            for key, value in node.items():
+                keys.add(str(key))
+                keys |= walk(value)
+            return keys
+        if isinstance(node, list):
+            return set().union(*(walk(item) for item in node)) if node else set()
+        return set()
+
+    return walk(yaml.safe_load(template.read_text()))
+
+
+def test_every_config_key_named_in_a_remedy_exists_in_the_committed_template():
+    """A remedy that names a key the config does not have sends the operator looking for
+    something that is not there. One such key reached review: the remedy said `allowed_repos`,
+    which is the name of the Python reader, while the key is `allowlist`."""
+    calls = _config_key_calls()
+
+    assert calls, "the config_key helper is how remedies name config keys"
+    for config, key in calls:
+        assert key in _template_keys(config), (
+            f"remedy names {key} in {config}.yaml, which the committed template does not have"
+        )
+
+
+def test_every_command_named_in_a_remedy_is_a_registered_invoke_task():
+    """A remedy naming a task that does not exist leaves the operator with a command that errors
+    out. The command is the whole point of attaching a remedy."""
+    import re
+
+    import tasks
+
+    texts = [
+        remedies.unroutable_remedy("ADSER-24", "ADSER"),
+        remedies.unroutable_remedy("ADSER-24", "ADSER", ("navapbc/x",)),
+        remedies.existing_pr_remedy("ADSER-24", "https://example.invalid/pr/1"),
+        remedies.code_defect_remedy("ADSER-24", "boom"),
+        remedies.base_conflict_remedy("ADSER-24"),
+        remedies.unresolvable_base_remedy("ADSER-24"),
+        remedies.checks_not_configured_remedy("ADSER-24", ["repo-a"]),
+        remedies.gate_rejected_remedy("ADSER-24", "security-review"),
+        remedies.gate_decision_remedy("ADSER-24", "security-review"),
+        remedies.review_blocked_remedy("ADSER-24", "fail_closed"),
+        remedies.plan_rejected_remedy("ADSER-24"),
+        remedies.policy_denied_remedy("ADSER-24", "bundle"),
+        remedies.approval_rejected_remedy("ADSER-24"),
+        remedies.claim_denied_remedy("ADSER-24"),
+        *(
+            remedies.implementation_remedy(token, issue_key="ADSER-24", execution_id="exec-1")
+            for token in ("cost_budget_exceeded", "tool_calls_exceeded", "wall_clock_exceeded")
+        ),
+        *(
+            remedies.repair_remedy(token, issue_key="ADSER-24", execution_id="exec-1")
+            for token in ("repair_exhausted", "human_abandoned")
+        ),
+    ]
+    registered = {task.name.replace("-", "_") for task in tasks.ns.tasks.values()}
+    named = {
+        name.replace("-", "_") for text in texts for name in re.findall(r"`inv ([a-z0-9-]+)", text)
+    }
+
+    assert named, "the remedies under test name at least one command"
+    assert named <= registered, f"remedies name unregistered tasks: {sorted(named - registered)}"
+
+
+def test_a_code_defect_park_tells_the_operator_the_run_is_waiting_not_dead():
+    """The push_branch code-defect path parks the ticket and waits for a newer build. Without an
+    alert the operator sees a ticket silently moved to the parked status."""
+    text = remedies.code_defect_remedy("ADSER-24", "AttributeError: nope")
+
+    assert text != NO_NEXT_STEP
+    assert "newer build" in text
+    assert "AttributeError: nope" in text
+
+
+def test_every_setting_and_constant_named_in_a_remedy_resolves():
+    """Remedies that cannot name a config key name an environment variable or a module constant
+    instead. Those drift the same way a config key does, and the operator has no way to tell a
+    stale name from a current one."""
+    import re
+
+    from scripts.config import Settings
+    from services.orchestration.gates import pod_runner
+
+    texts = [
+        remedies.implementation_remedy(token, issue_key="ADSER-24", execution_id="exec-1")
+        for token in ("cost_budget_exceeded", "tool_calls_exceeded", "wall_clock_exceeded")
+    ]
+    texts += [
+        pod_runner.describe_pod_not_ready(_unschedulable(), "runner-7", "gates"),
+        pod_runner.describe_pod_not_ready(_image_pull_failed(), "runner-7", "gates"),
+    ]
+    env_names = {name.upper() for name in Settings.model_fields}
+    constants = {name for name in vars(pod_runner) if name.isupper()}
+    named = {
+        token
+        for text in texts
+        for token in re.findall(r"\b[A-Z][A-Z0-9_]{4,}\b", text)
+        if "_" in token
+    }
+
+    assert named, "the remedies under test name at least one setting or constant"
+    unresolved = {token for token in named if token not in env_names and token not in constants}
+    assert not unresolved, f"remedies name settings or constants that do not exist: {unresolved}"
+
+
+def _unschedulable() -> dict:
+    return {
+        "phase": "Pending",
+        "conditions": [
+            {
+                "type": "PodScheduled",
+                "status": "False",
+                "reason": "Unschedulable",
+                "message": "0/1 nodes are available: Insufficient cpu.",
+            }
+        ],
+    }
+
+
+def _image_pull_failed() -> dict:
+    return {
+        "phase": "Pending",
+        "conditions": [{"type": "PodScheduled", "status": "True"}],
+        "containerStatuses": [
+            {"state": {"waiting": {"reason": "ImagePullBackOff", "message": "back-off"}}}
+        ],
+    }

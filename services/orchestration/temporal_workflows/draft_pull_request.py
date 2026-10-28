@@ -26,6 +26,7 @@ with workflow.unsafe.imports_passed_through():
         approval_rejected_remedy,
         branch_sync_remedy,
         claim_denied_remedy,
+        code_defect_remedy,
         existing_pr_remedy,
         gate_decision_remedy,
         gate_rejected_remedy,
@@ -765,6 +766,14 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                     ),
                     start_to_close_timeout=short,
                     retry_policy=retry,
+                )
+                await self._terminal_alert(
+                    params,
+                    workflow_id,
+                    reason=SuspendReason.AWAITING_FIX.value,
+                    stage="push_branch",
+                    detail=str(exc),
+                    remedy=code_defect_remedy(params.issue_key, str(exc)),
                 )
                 parked_from = ""
                 if params.issue_key and params.parked_status:

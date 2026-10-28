@@ -154,8 +154,9 @@ def describe_pod_not_ready(status: Mapping[str, Any], pod: str, namespace: str) 
         scheduler = f" The scheduler reported {message}." if message else ""
         return with_remedy(
             f"The pod is {phase} and the scheduler has not placed it, reason {reason}.{scheduler}",
-            "Give the cluster node more CPU or memory, or lower the pod resource requests in the "
-            "gate config, then rerun the gate.",
+            "Give the cluster node more CPU or memory, or lower DEFAULT_POD_RESOURCES or "
+            "CHECKS_POD_RESOURCES in services/orchestration/gates/pod_runner.py, then rerun the "
+            "gate.",
         )
     for container in status.get("containerStatuses") or []:
         waiting = (container.get("state") or {}).get("waiting") or {}
@@ -165,8 +166,8 @@ def describe_pod_not_ready(status: Mapping[str, Any], pod: str, namespace: str) 
         message = str(waiting.get("message") or "").strip().rstrip(".")
         kubelet = f" The kubelet reported {message}." if message else ""
         remedy = (
-            "Check the image reference in the gate config and the cluster's access to the "
-            "registry, then rerun the gate."
+            "Check that GATE_ENGINE_BUILDER_IMAGE names an image the cluster can pull, and that "
+            "the cluster can reach the registry, then rerun the gate."
             if reason in _IMAGE_WAIT_REASONS
             else _inspect_the_pod(pod, namespace)
         )

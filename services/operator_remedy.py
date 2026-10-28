@@ -31,6 +31,16 @@ class RemediableError(Exception):
         return with_remedy(self.condition(), self.remedy)
 
 
+def config_key(config: str, key: str) -> str:
+    """Name a per-environment config key the way an operator finds it on disk.
+
+    Both halves are checked against the committed template by the operator remedy contract tests,
+    so a key renamed in the template fails the suite rather than sending an operator to a key that
+    is not there.
+    """
+    return f"{key} in config/<environment>/{config}.yaml"
+
+
 def with_remedy(body: str, remedy: str) -> str:
     """Append the remedy to ``body`` as a ``Next step:`` line, or return ``body`` unchanged."""
     if not remedy or remedy == NO_NEXT_STEP:
