@@ -328,7 +328,7 @@ def db_bootstrap_roles(c, function_name="", region=""):
     flags = f" --function-name {shlex.quote(function_name)}"
     flags += f" --region {shlex.quote(region)}" if region else ""
     env = {"AWS_PROFILE": settings.aws_profile, "AWS_REGION": settings.aws_region}
-    c.run(f"python -m scripts.db_bootstrap_roles{flags}", pty=True, env=env)
+    c.run(f"{HOST_PYTHON} -m scripts.db_bootstrap_roles{flags}", pty=True, env=env)
 
 
 @task(help={"offline": "Use the deterministic offline fixture instead of the rebar kernel."})
