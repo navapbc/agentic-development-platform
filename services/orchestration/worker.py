@@ -17,7 +17,8 @@ from observability import (
     temporal_interceptors,
 )
 from scripts.config import configured_log_level, get_settings
-from temporalio.client import Client
+from temporalio.client import BuildIdOpAddNewDefault, Client
+from temporalio.service import RPCError
 from temporalio.worker import Worker
 from temporalio.worker.workflow_sandbox import SandboxedWorkflowRunner, SandboxRestrictions
 
@@ -216,6 +217,31 @@ def build_worker(client: Client, task_queue: str, role: str) -> Worker:
     )
 
 
+async def register_build_id(client: Client, queues: list[str], settings) -> None:
+    """Make this build the default of each task queue's version set.
+
+    A versioned worker polls for its own build id alone, and the server dispatches nothing to a
+    build id the task queue does not list, so a worker that polls before this registration runs
+    receives no task and reports nothing wrong. The operation is idempotent for a build id that
+    is already the default.
+    """
+    for queue in queues:
+        try:
+            await client.update_worker_build_id_compatibility(
+                queue, BuildIdOpAddNewDefault(settings.agent_build_id)
+            )
+        except RPCError as exc:
+            raise SystemExit(
+                f"could not register build id {settings.agent_build_id!r} on task queue {queue!r}, "
+                f"so a versioned worker would poll and receive nothing. Enable "
+                f"frontend.workerVersioningDataAPIs on the Temporal namespace, or set "
+                f"WORKER_VERSIONING_ENABLED=false to run unversioned. Server reported: {exc}"
+            ) from exc
+        log.info(
+            "registered build %s as the default of task queue %s", settings.agent_build_id, queue
+        )
+
+
 def _warm_acli_auth(settings) -> None:
     """Authenticate the cloud Jira acli client once at worker startup.
 
@@ -302,6 +328,9 @@ async def main() -> None:
     if role == WORKER_ROLE_ALL:
         workers.append(build_worker(client, settings.review_task_queue, WORKER_ROLE_REVIEW))
         queues.append(settings.review_task_queue)
+
+    if settings.worker_versioning_enabled:
+        await register_build_id(client, queues, settings)
 
     log.info(
         "worker started on task queues %s (role=%s, build=%s)",

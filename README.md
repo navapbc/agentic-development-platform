@@ -405,6 +405,14 @@ The scan fails on any finding that [security/sast-accepted.yaml](security/sast-a
 
 `inv smoke-test` checks the database and the `agent_platform` schema, the LiteLLM, OPA, and Langfuse health endpoints, and a Bedrock inference round trip through LiteLLM. `inv durability-proof` shows a workflow surviving a worker restart. `inv workflow-status` lists recent Temporal executions.
 
+## Worker builds
+
+Each `inv local-up` writes a build identifier of the form `<release version>.<UTC timestamp>`, for example `0.3.0.20261028093000`, into `AGENT_BUILD_ID` in `.env`. Compose passes it to the three worker services, and host tasks read the same `.env`, so a parked execution records the build that parked it and `inv resume-parked` compares against the build now deployed. `services/orchestration/suspension.py` orders two identifiers by the digit runs it reads out of them, so the timestamp suffix is what makes a later build rank above an earlier one. A commit SHA would not.
+
+The workers run with Temporal worker versioning on, which pins each execution to the build that started it, so a deploy mid-run replays that execution on its own build in place of failing it on a non-determinism error. A versioned worker polls for its own build identifier alone, so it registers that identifier as the new default of the task queues it serves before it polls, and the Temporal namespace has to permit the registration. The Compose Temporal service mounts `config/platform/temporal-dynamic-config.yaml` for that. A worker that cannot register exits with the server's reason.
+
+Versioning pins the executions that start under it and nothing earlier. Drain the executions already in flight once, before the first deploy that runs versioned workers. Set `WORKER_VERSIONING_ENABLED=false` to run unversioned.
+
 ## Everyday commands
 
 Run `inv --list` for the full set. The common tasks are below.
@@ -424,6 +432,7 @@ Run `inv --list` for the full set. The common tasks are below.
 | `inv fetch-acli` | Vendor the Atlassian `acli` binary |
 | `inv cbm-build [--source PATH] [--ref TAG]` | Build and vendor the `codebase-memory-mcp` binary, cloning upstream by default |
 | `inv reap [--apply]` | Reap expired orphan artifacts, dry-run by default |
+| `inv resume-parked` | Signal every execution parked for a newer agent build that this build can retry it |
 | `inv intake [--source jira\|rebar] [--schedule]` | Reconcile ticket intake into runs, single pass by default. `--source` defaults to `TICKET_BACKEND` and must match it. Add `--local` to run on the host instead of the worker container |
 | `inv rebar-changes [--new] [--field-changes] [--status-changes]` | Report rebar ticket changes since the last intake pass without starting work or moving the intake cursor |
 | `inv import-rebar-tickets --xlsx PATH [--reset] [--status S] [--limit N]` | Seed the rebar ticket store from a Jira xlsx export |
