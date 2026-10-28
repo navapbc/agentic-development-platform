@@ -84,6 +84,8 @@ class AuditEvent:
     new_state: str | None = None
     model_id: str | None = None
     reason: str | None = None
+    remedy: str | None = None
+    alert_channels: list[str] = field(default_factory=list)
     workflow_id: str | None = None
     decision: str | None = None
     prompt_version: str | None = None
@@ -104,6 +106,8 @@ async def record_audit_event(event: AuditEvent) -> str:
             new_state=event.new_state,
             model_id=event.model_id,
             reason=event.reason,
+            remedy=event.remedy,
+            alert_channels=event.alert_channels or None,
             workflow_id=event.workflow_id,
             decision=event.decision,
             prompt_version=event.prompt_version,
@@ -131,6 +135,8 @@ def _audit_event_body(event: AuditEvent) -> dict[str, Any]:
         "new_state": event.new_state,
         "model_id": event.model_id,
         "reason": event.reason,
+        "remedy": event.remedy,
+        "alert_channels": event.alert_channels or [],
         "workflow_id": event.workflow_id,
         "decision": event.decision,
         "prompt_version": event.prompt_version,

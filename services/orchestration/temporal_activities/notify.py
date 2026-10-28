@@ -6,6 +6,10 @@ from dataclasses import dataclass, field
 
 from temporalio import activity
 
+from services.operator_remedy import NO_NEXT_STEP
+
+__all__ = ["NO_NEXT_STEP"]
+
 
 @dataclass
 class AlertHumanInterventionRequest:
@@ -17,6 +21,7 @@ class AlertHumanInterventionRequest:
     reason: str
     stage: str
     detail: str = ""
+    remedy: str = ""
 
 
 @dataclass
@@ -43,6 +48,7 @@ async def alert_human_intervention(
             reason=req.reason,
             stage=req.stage,
             detail=req.detail,
+            remedy=req.remedy,
         )
     )
     return AlertHumanInterventionResult(channels=channels)

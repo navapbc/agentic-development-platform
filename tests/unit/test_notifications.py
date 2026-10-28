@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import logging
+from dataclasses import replace
+
 import httpx
+import pytest
 from scripts.config import Settings
+from services.operator_remedy import NEXT_STEP_PREFIX, NO_NEXT_STEP
 from services.orchestration.notifications import (
     HumanInterventionAlert,
     send_human_intervention_alert,
+    send_intake_unroutable_alert,
 )
 
 
@@ -141,3 +147,104 @@ def test_channel_error_is_swallowed(monkeypatch):
     )
 
     assert send_human_intervention_alert(_alert(), settings) == []
+
+
+def _unconfigured() -> Settings:
+    return Settings(
+        slack_webhook_url="",
+        smtp_host="",
+        alert_email_from="",
+        alert_email_to="",
+    )
+
+
+def test_the_remedy_renders_as_a_next_step_line(monkeypatch):
+    posted: list[dict[str, object]] = []
+
+    def fake_post(url, *, json, timeout):
+        posted.append(json)
+        return httpx.Response(200)
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    settings = Settings(
+        slack_webhook_url="https://hooks.slack.test/x",
+        smtp_host="",
+        alert_email_from="",
+        alert_email_to="",
+    )
+    alert = replace(_alert(), remedy="Run `inv repair --issue ADSER-24 --retry`.")
+
+    send_human_intervention_alert(alert, settings)
+
+    assert posted[0]["text"].endswith(
+        f"{NEXT_STEP_PREFIX} Run `inv repair --issue ADSER-24 --retry`."
+    )
+
+
+@pytest.mark.parametrize("remedy", ["", NO_NEXT_STEP])
+def test_an_alert_with_no_next_step_renders_no_next_step_line(monkeypatch, remedy):
+    posted: list[dict[str, object]] = []
+
+    def fake_post(url, *, json, timeout):
+        posted.append(json)
+        return httpx.Response(200)
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    settings = Settings(
+        slack_webhook_url="https://hooks.slack.test/x",
+        smtp_host="",
+        alert_email_from="",
+        alert_email_to="",
+    )
+
+    send_human_intervention_alert(replace(_alert(), remedy=remedy), settings)
+
+    assert NEXT_STEP_PREFIX not in posted[0]["text"]
+
+
+def test_an_alert_that_reaches_no_channel_is_logged_as_an_error(caplog):
+    with caplog.at_level(logging.ERROR, logger="services.orchestration.notifications"):
+        delivered = send_human_intervention_alert(_alert(), _unconfigured())
+
+    assert delivered == []
+    assert "reached no channel" in caplog.text
+    assert "SLACK_WEBHOOK_URL" in caplog.text
+
+
+def test_an_alert_whose_every_channel_raises_is_logged_as_an_error(monkeypatch, caplog):
+    def boom(issue_key, settings=None):
+        raise RuntimeError("no jira")
+
+    monkeypatch.setattr("services.integration.tickets.build_ticket_backend_for_issue", boom)
+
+    with caplog.at_level(logging.ERROR, logger="services.orchestration.notifications"):
+        delivered = send_human_intervention_alert(_alert(), _unconfigured())
+
+    assert delivered == []
+    assert "reached no channel" in caplog.text
+
+
+def test_the_unroutable_intake_alert_renders_its_required_remedy(monkeypatch):
+    posted: list[dict[str, object]] = []
+
+    def fake_post(url, *, json, timeout):
+        posted.append(json)
+        return httpx.Response(200)
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    settings = Settings(
+        slack_webhook_url="https://hooks.slack.test/x",
+        smtp_host="",
+        alert_email_from="",
+        alert_email_to="",
+    )
+
+    send_intake_unroutable_alert(
+        issue_key="ADSER-24",
+        project="ADSER",
+        reason="no allowlisted repository",
+        remedy="Add the repository to github.yaml.",
+        settings=settings,
+    )
+
+    assert f"{NEXT_STEP_PREFIX} Add the repository to github.yaml." in posted[0]["text"]

@@ -71,6 +71,7 @@ with workflow.unsafe.imports_passed_through():
         record_manifest,
     )
     from services.orchestration.temporal_activities.notify import (
+        NO_NEXT_STEP,
         AlertHumanInterventionRequest,
         alert_human_intervention,
     )
@@ -157,6 +158,19 @@ with workflow.unsafe.imports_passed_through():
         PullRequestInput,
         PullRequestOutput,
         PullRequestWorkflow,
+    )
+    from services.orchestration.temporal_workflows.remedies import (
+        approval_rejected_remedy,
+        branch_sync_remedy,
+        claim_denied_remedy,
+        gate_decision_remedy,
+        gate_rejected_remedy,
+        implementation_remedy,
+        issue_recheck_remedy,
+        plan_rejected_remedy,
+        policy_denied_remedy,
+        repair_remedy,
+        review_blocked_remedy,
     )
     from services.orchestration.temporal_workflows.review import (
         PlanReviewInput,
@@ -651,6 +665,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 reason=EXISTING_PR_REUSED,
                 stage="implementation",
                 detail=impl.pr_url,
+                remedy=NO_NEXT_STEP,
             )
             return DraftPullRequestOutput(
                 execution_id=params.execution_id,
@@ -670,6 +685,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 reason=CLAIM_DENIED,
                 stage="claim",
                 detail=impl.terminal_reason,
+                remedy=claim_denied_remedy(params.issue_key),
             )
             return DraftPullRequestOutput(
                 execution_id=params.execution_id,
@@ -684,6 +700,11 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 reason=impl.terminal_reason or IMPL_FAILED,
                 stage="implementation",
                 detail=impl.summary or impl.terminal_reason,
+                remedy=implementation_remedy(
+                    impl.terminal_reason or IMPL_FAILED,
+                    issue_key=params.issue_key,
+                    execution_id=params.execution_id,
+                ),
             )
             return DraftPullRequestOutput(
                 execution_id=params.execution_id,
@@ -835,6 +856,11 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 reason=sync.terminal_reason or SYNC_PAUSED,
                 stage="branch_sync",
                 detail=sync.detail or sync.terminal_reason,
+                remedy=branch_sync_remedy(
+                    sync.terminal_reason or SYNC_PAUSED,
+                    issue_key=params.issue_key,
+                    branch=impl.branch,
+                ),
             )
             return DraftPullRequestOutput(
                 execution_id=params.execution_id,
@@ -1029,10 +1055,11 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         reason: str,
         stage: str,
         detail: str = "",
+        remedy: str,
     ) -> None:
         retry = RetryPolicy(maximum_attempts=3)
         short = timedelta(seconds=30)
-        await workflow.execute_activity(
+        alert = await workflow.execute_activity(
             alert_human_intervention,
             AlertHumanInterventionRequest(
                 task_id=params.task_id,
@@ -1043,6 +1070,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 reason=reason,
                 stage=stage,
                 detail=detail,
+                remedy=remedy,
             ),
             start_to_close_timeout=short,
             retry_policy=retry,
@@ -1059,6 +1087,8 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 stage=stage,
                 workflow_id=workflow_id,
                 reason=reason,
+                remedy=remedy,
+                alert_channels=list(alert.channels),
             )
         )
         await workflow.execute_activity(
@@ -1091,6 +1121,9 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             reason=reason,
             stage="repair",
             detail=failure_summary,
+            remedy=repair_remedy(
+                reason, issue_key=params.issue_key, execution_id=params.execution_id
+            ),
         )
 
     async def _await_repair_decision(
@@ -1165,6 +1198,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         stage: str,
         detail: str = "",
         parked_build_id: str = "",
+        remedy: str,
     ) -> bool:
         retry = RetryPolicy(maximum_attempts=3)
         short = timedelta(seconds=30)
@@ -1188,6 +1222,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             reason=f"gate_paused:{gate}",
             stage=stage,
             detail=detail,
+            remedy=remedy,
         )
         await self._audit(
             AuditEvent(
@@ -1199,6 +1234,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 new_state=AWAITING_HUMAN,
                 workflow_id=workflow_id,
                 reason=gate,
+                remedy=remedy,
             )
         )
         self._gate_decision = None
@@ -1622,6 +1658,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                     stage="review",
                     detail=f"paused gates: {', '.join(paused)}",
                     parked_build_id=params.build_id,
+                    remedy=gate_decision_remedy(params.issue_key, ",".join(paused)),
                 )
                 blocked = not approved
                 if not approved:
@@ -1631,6 +1668,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                         reason=REVIEW_BLOCKED,
                         stage="review",
                         detail=f"gate decision rejected: {', '.join(paused)}",
+                        remedy=gate_rejected_remedy(params.issue_key, ",".join(paused)),
                     )
             else:
                 await self._terminal_alert(
@@ -1639,6 +1677,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                     reason=REVIEW_BLOCKED,
                     stage="review",
                     detail=f"blocking gates: {', '.join(blocking)}",
+                    remedy=review_blocked_remedy(params.issue_key, ", ".join(blocking)),
                 )
 
         return replace(
@@ -1694,6 +1733,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 reason=PLAN_REJECTED,
                 stage="plan",
                 detail=plan_out.verdict,
+                remedy=plan_rejected_remedy(params.issue_key),
             )
             return _PlanResult(
                 rejected=True,
@@ -1716,6 +1756,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 gate="plan",
                 stage="plan",
                 detail="plan approval requested",
+                remedy=gate_decision_remedy(params.issue_key, "plan"),
             )
             if not approved:
                 await self._terminal_alert(
@@ -1724,6 +1765,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                     reason=PLAN_REJECTED,
                     stage="plan",
                     detail="plan rejected by human gate",
+                    remedy=gate_rejected_remedy(params.issue_key, "plan"),
                 )
                 return _PlanResult(
                     rejected=True,
@@ -2149,6 +2191,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 stage="policy",
                 detail=f"policy human review: {', '.join(decision.human_review)}",
                 parked_build_id=params.build_id,
+                remedy=gate_decision_remedy(params.issue_key, ",".join(decision.human_review)),
             )
             if not allowed:
                 await self._terminal_alert(
@@ -2157,6 +2200,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                     reason=POLICY_DENIED,
                     stage="policy",
                     detail=f"policy human review rejected: {', '.join(decision.human_review)}",
+                    remedy=gate_rejected_remedy(params.issue_key, ",".join(decision.human_review)),
                 )
         elif not decision.allow:
             await self._terminal_alert(
@@ -2165,6 +2209,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 reason=POLICY_DENIED,
                 stage="policy",
                 detail=",".join(decision.reasons),
+                remedy=policy_denied_remedy(params.issue_key, ", ".join(decision.reasons)),
             )
 
         return replace(
@@ -2335,6 +2380,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                     reason=PROMOTION_CANCELLED,
                     stage="approval",
                     detail="approval_rejected",
+                    remedy=approval_rejected_remedy(params.issue_key),
                 )
                 return replace(
                     outcome,
@@ -2377,6 +2423,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                     reason=PROMOTION_CANCELLED,
                     stage="approval",
                     detail=recheck.reason or recheck.category,
+                    remedy=issue_recheck_remedy(recheck.category, issue_key=params.issue_key),
                 )
                 return replace(
                     outcome,

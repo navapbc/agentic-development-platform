@@ -21,6 +21,7 @@ from services.integration.github.credentials import (
     UnconfiguredRepositoryError,
     build_github_credential_resolver,
 )
+from services.operator_remedy import operator_text
 
 from scripts.config import get_settings
 
@@ -110,7 +111,7 @@ def main() -> int:
     try:
         cred = build_github_credential_resolver(settings).resolve(args.repo)
     except (ConfigError, SecretNotFoundError, UnconfiguredRepositoryError) as exc:
-        print(f"[webhook] {exc}", file=sys.stderr)
+        print(f"[webhook] {operator_text(exc)}", file=sys.stderr)
         return 1
     if cred is None:
         print(

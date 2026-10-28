@@ -115,7 +115,14 @@ class NotificationsAlerter:
         from services.orchestration.notifications import send_intake_unroutable_alert
 
         send_intake_unroutable_alert(
-            issue_key=issue_key, project=project, reason=reason, settings=self._settings
+            issue_key=issue_key,
+            project=project,
+            reason=reason,
+            remedy=(
+                "Add a repos marker to the ticket description or set a default_repo for the "
+                "project, then intake retries on the next poll."
+            ),
+            settings=self._settings,
         )
 
 

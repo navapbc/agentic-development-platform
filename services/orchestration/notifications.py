@@ -12,6 +12,8 @@ from urllib.parse import urlsplit
 import httpx
 from scripts.config import Settings, get_settings
 
+from services.operator_remedy import with_remedy
+
 log = logging.getLogger(__name__)
 
 
@@ -32,6 +34,7 @@ class HumanInterventionAlert:
     reason: str
     stage: str
     detail: str = ""
+    remedy: str = ""
 
 
 def _post_jira_comment(settings: Settings, message: AlertMessage) -> bool:
@@ -83,6 +86,12 @@ def deliver_alert(message: AlertMessage, settings: Settings | None = None) -> li
                 delivered.append(channel)
         except Exception:  # noqa: BLE001
             log.warning("alert delivery over %s failed", channel, exc_info=True)
+    if not delivered:
+        log.error(
+            "alert for %s reached no channel. Configure a Jira issue key, SLACK_WEBHOOK_URL, "
+            "or SMTP_HOST with ALERT_EMAIL_FROM and ALERT_EMAIL_TO, then re-run the alert.",
+            message.issue_key or "an unidentified ticket",
+        )
     return delivered
 
 
@@ -95,7 +104,7 @@ def _intervention_message(alert: HumanInterventionAlert) -> AlertMessage:
     )
     return AlertMessage(
         subject=f"Human intervention needed on {alert.repo} for {alert.task_id}",
-        body=body,
+        body=with_remedy(body, alert.remedy),
         issue_key=alert.issue_key,
     )
 
@@ -107,18 +116,21 @@ def send_human_intervention_alert(
 
 
 def send_intake_unroutable_alert(
-    *, issue_key: str, project: str, reason: str, settings: Settings | None = None
+    *,
+    issue_key: str,
+    project: str,
+    reason: str,
+    remedy: str,
+    settings: Settings | None = None,
 ) -> list[str]:
     body = (
         f"Ticket intake could not resolve a target repository for {issue_key} "
         f"in project {project}.\n"
-        f"{reason}.\n"
-        "Add a repos marker to the ticket description or set a default_repo for the project, "
-        "then intake retries on the next poll."
+        f"{reason}."
     )
     message = AlertMessage(
         subject=f"Ticket intake could not route {issue_key}",
-        body=body,
+        body=with_remedy(body, remedy),
         issue_key=issue_key,
     )
     return deliver_alert(message, settings)

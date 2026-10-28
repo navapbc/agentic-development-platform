@@ -114,16 +114,6 @@
                 }
             }
         ],
-        "./services/orchestration/temporal_activities/implementation.py": [
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 24,
-                    "endColumn": 51,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./services/repository_intelligence/context_builder/context_service.py": [
             {
                 "code": "reportArgumentType",

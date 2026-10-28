@@ -351,8 +351,9 @@ def test(c):
 
 @task
 def ci(c):
-    """Run the portable CI checks: lint, the hermetic test tiers, and the evaluation gate."""
+    """Run the portable CI checks: lint, types, the hermetic test tiers, and the evaluation gate."""
     c.run(f"{HOST_PYTHON} -m ruff check", pty=True)
+    c.run(f"{HOST_PYTHON} -m basedpyright services", pty=True)
     c.run(f"{HOST_PYTHON} -m pytest -q tests/unit tests/end_to_end", pty=True)
     c.run(f"{HOST_PYTHON} -m scripts.eval_gate", pty=True)
 

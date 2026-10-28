@@ -11,6 +11,8 @@ from typing import Any, Protocol, runtime_checkable
 import yaml
 from dotenv import dotenv_values
 
+from services.operator_remedy import RemediableError
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_VERSION_KEY = "config_version"
 
@@ -34,25 +36,33 @@ def current_config_version(name: str, *, versions: Mapping[str, int] | None = No
         raise ConfigError(f"no current config version registered for {name!r}") from None
 
 
-class ConfigError(RuntimeError):
-    """Raised when a per-environment config file is missing or malformed."""
+class ConfigError(RuntimeError, RemediableError):
+    """Raised when a per-environment config file is missing or malformed.
+
+    Validation failures name the offending key and need no remedy beyond that. Sites whose fix is
+    a command or a file the operator has to create pass ``remedy``.
+    """
+
+    def __init__(self, message: str, *, remedy: str = "") -> None:
+        super().__init__(message)
+        self.remedy = remedy
 
 
-class SecretNotFoundError(KeyError):
+class SecretNotFoundError(KeyError, RemediableError):
     """Raised when a secret reference resolves to no value."""
 
     def __init__(self, ref: str, *, env_file: Path | None = None) -> None:
         super().__init__(ref)
         self.ref = ref
         self.env_file = env_file
+        self.remedy = (
+            f"Export {ref}, or add a {ref}= line to the .env file, then restart the stack with "
+            "`inv local-up` so the workers pick it up."
+        )
 
     def __str__(self) -> str:
         where = f" or in {self.env_file}" if self.env_file is not None else ""
-        return (
-            f"the secret {self.ref} is not set in the process environment{where}. "
-            f"Export {self.ref}, or add a {self.ref}= line to the .env file, then restart the "
-            "stack with inv local-up so the workers pick it up."
-        )
+        return f"the secret {self.ref} is not set in the process environment{where}."
 
 
 @runtime_checkable
@@ -94,7 +104,11 @@ def load_env_config(name: str, *, environment: str, root: Path | None = None) ->
     base = root if root is not None else _REPO_ROOT
     path = base / "config" / environment / f"{name}.yaml"
     if not path.exists():
-        raise ConfigError(f"config file missing: {path}; copy {path.name}.example to create it")
+        raise ConfigError(
+            f"config file {path} does not exist.",
+            remedy=f"Copy {path.name}.example to {path.name} in that directory, then fill in the "
+            "environment values.",
+        )
     parsed = yaml.safe_load(path.read_text(encoding="utf-8"))
     if parsed is None:
         return {}
@@ -213,5 +227,6 @@ def require_current_config(
         return
     raise ConfigError(
         f"config/{environment}/{name}.yaml is version {operator_version} but this release "
-        f"expects version {current_version}. Run `inv config-check` and add the new keys."
+        f"expects version {current_version}.",
+        remedy="Run `inv config-check` and add the new keys to the config file.",
     )

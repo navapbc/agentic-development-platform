@@ -16,6 +16,7 @@ from services.integration.credentials import (
     parse_allowlist,
     require_current_config,
 )
+from services.operator_remedy import RemediableError
 
 
 @dataclass(frozen=True)
@@ -54,15 +55,19 @@ class GitHubSourceConfig:
     allowlist: tuple[str, ...] = ()
 
 
-class UnconfiguredRepositoryError(RuntimeError):
+class UnconfiguredRepositoryError(RuntimeError, RemediableError):
     """Raised when an allowlisted repository resolves to no complete host, owner, and token."""
 
     def __init__(self, repo: str) -> None:
         super().__init__(repo)
         self.repo = repo
+        self.remedy = (
+            f"Add a host, owner, and token_ref entry for {repo} to the github.yaml config for "
+            "this environment, then run `inv config-check` to confirm it resolves."
+        )
 
     def __str__(self) -> str:
-        return f"no complete GitHub source (host, owner, token) for repository: {self.repo}"
+        return f"repository {self.repo} has no complete GitHub source (host, owner, and token)."
 
 
 def _string_fields(raw: Mapping[str, object], context: str) -> dict[str, str]:

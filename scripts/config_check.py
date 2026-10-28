@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 
 from services.integration.credentials import ConfigError, config_status
+from services.operator_remedy import operator_text
 
 from scripts.config import get_settings
 
@@ -18,7 +19,7 @@ def main() -> int:
         try:
             status = config_status(name, environment=env)
         except ConfigError as exc:
-            print(f"[config-check] {name}: {exc}")
+            print(f"[config-check] {name}: {operator_text(exc)}")
             outdated += 1
             continue
         if not status.example_matches_current:
