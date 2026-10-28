@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from datetime import timedelta
 from typing import Any
@@ -25,6 +26,7 @@ with workflow.unsafe.imports_passed_through():
         approval_rejected_remedy,
         branch_sync_remedy,
         claim_denied_remedy,
+        existing_pr_remedy,
         gate_decision_remedy,
         gate_rejected_remedy,
         implementation_remedy,
@@ -84,7 +86,6 @@ with workflow.unsafe.imports_passed_through():
         record_manifest,
     )
     from services.orchestration.temporal_activities.notify import (
-        NO_NEXT_STEP,
         AlertHumanInterventionRequest,
         alert_human_intervention,
     )
@@ -204,6 +205,19 @@ REVIEW_PASSED = "review_passed"
 REVIEW_BLOCKED = "review_blocked"
 POLICY_ALLOWED = "policy_allowed"
 POLICY_DENIED = "policy_denied"
+_GATE_FAILED_PREFIX = "gate_failed:"
+
+
+def _gate_names(human_review: Sequence[str]) -> str:
+    """Render policy human-review entries as the gate names an operator passes to `inv gate`.
+
+    The promotion policy emits each entry as ``gate_failed:<name>``. Carried through verbatim the
+    operator is told to approve a gate called ``gate_failed:security-review``, which is not the
+    name on any gate.
+    """
+    return ",".join(entry.removeprefix(_GATE_FAILED_PREFIX) for entry in human_review)
+
+
 POLICY_EVALUATION = "POLICY_EVALUATION"
 PR_PROMOTED = "pr_promoted"
 PROMOTION_CANCELLED = "promotion_cancelled"
@@ -665,7 +679,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 reason=EXISTING_PR_REUSED,
                 stage="implementation",
                 detail=impl.pr_url,
-                remedy=NO_NEXT_STEP,
+                remedy=existing_pr_remedy(params.issue_key, impl.pr_url),
             )
             return DraftPullRequestOutput(
                 execution_id=params.execution_id,
@@ -2186,14 +2200,15 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
 
         allowed = decision.allow
         if not decision.allow and not decision.reasons and decision.human_review:
+            review_gates = _gate_names(decision.human_review)
             allowed = await self._park_for_gate_decision(
                 params,
                 workflow_id,
-                gate=",".join(decision.human_review),
+                gate=review_gates,
                 stage="policy",
-                detail=f"policy human review: {', '.join(decision.human_review)}",
+                detail=f"policy human review: {review_gates}",
                 parked_build_id=params.build_id,
-                remedy=gate_decision_remedy(params.issue_key, ",".join(decision.human_review)),
+                remedy=gate_decision_remedy(params.issue_key, review_gates),
             )
             if not allowed:
                 await self._terminal_alert(
@@ -2201,8 +2216,8 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                     workflow_id,
                     reason=POLICY_DENIED,
                     stage="policy",
-                    detail=f"policy human review rejected: {', '.join(decision.human_review)}",
-                    remedy=gate_rejected_remedy(params.issue_key, ",".join(decision.human_review)),
+                    detail=f"policy human review rejected: {review_gates}",
+                    remedy=gate_rejected_remedy(params.issue_key, review_gates),
                 )
         elif not decision.allow:
             await self._terminal_alert(

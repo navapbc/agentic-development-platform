@@ -198,7 +198,7 @@ def test_the_pod_not_ready_remedy_is_the_last_line_of_the_message():
     }
     message = (
         f"pod p in namespace n was not Ready within 60s. kubectl reported nothing. "
-        f"{describe_pod_not_ready(status)}"
+        f"{describe_pod_not_ready(status, 'p', 'n')}"
     )
 
     assert message.splitlines()[-1].startswith(NEXT_STEP_PREFIX)
@@ -290,3 +290,114 @@ def test_a_short_detail_is_left_intact():
     from services.orchestration.notifications import _bounded_detail
 
     assert _bounded_detail("one\ntwo") == "one\ntwo"
+
+
+def test_an_unlisted_repository_is_not_told_to_add_a_repos_marker():
+    """Intake rejects a ticket for two structurally different reasons. Naming no repository is
+    fixed on the ticket. Naming one outside the allowlist is fixed in the environment config, and
+    the marker advice tells the operator to redo the thing that already failed."""
+    text = remedies.unroutable_remedy("ADSER-24", "ADSER", ("navapbc/secret",))
+
+    assert "navapbc/secret" in text
+    assert "allowed_repos" in text
+    assert "repos marker" not in text
+    assert "default_repo" not in text
+
+
+def test_a_ticket_naming_no_repository_is_told_where_to_name_one():
+    text = remedies.unroutable_remedy("ADSER-24", "ADSER")
+
+    assert "repos marker" in text
+    assert "allowed_repos" not in text
+
+
+def test_the_unlisted_repositories_reach_the_remedy_from_target_resolution():
+    """The two causes are only distinguishable at the resolver. If the discriminator stops being
+    carried, both alerts collapse back onto the marker advice."""
+    from services.integration.jira.intake_targets import resolve_targets
+
+    resolution = resolve_targets(
+        "repos: navapbc/secret",
+        default_repo="",
+        allowlist=frozenset({"navapbc/demo"}),
+    )
+
+    assert not resolution.routable
+    assert resolution.unlisted == ("navapbc/secret",)
+    assert "allowed_repos" in remedies.unroutable_remedy("ADSER-24", "ADSER", resolution.unlisted)
+
+
+def test_abandoning_a_repair_does_not_claim_intake_will_relaunch():
+    """`--abandon` signals the workflow and leaves the intake dedup record in place, so intake
+    skips the ticket forever after. Only `inv restart` clears it."""
+    text = remedies.repair_remedy("repair_exhausted", issue_key="ADSER-24", execution_id="exec-1")
+
+    assert "--abandon" not in text
+    assert "inv restart --issue ADSER-24" in text
+
+
+def test_the_invalidating_remedy_names_fields_that_can_invalidate_a_run():
+    """Only the identity fields pause a run. Citing assignee or repository sends the operator
+    looking for a change that classifies as metadata and never stopped anything."""
+    from services.integration.jira.edits import _IDENTITY_FIELDS
+
+    text = remedies.branch_sync_remedy(
+        "execution_invalidating", issue_key="ADSER-24", branch="feat/x"
+    )
+
+    assert "assignee" not in text
+    assert any(field.replace("_", " ") in text for field in _IDENTITY_FIELDS)
+
+
+def test_a_reused_pull_request_names_the_pull_request_as_the_next_step():
+    """The run stops under a human-intervention headline, so the sentinel leaves the operator with
+    a stop and no action when there is one."""
+    text = remedies.existing_pr_remedy("ADSER-24", "https://github.com/navapbc/demo/pull/7")
+
+    assert text != NO_NEXT_STEP
+    assert "https://github.com/navapbc/demo/pull/7" in text
+
+
+def test_a_policy_human_review_gate_is_named_the_way_the_operator_must_type_it():
+    """The promotion policy emits each entry as `gate_failed:<name>`. Carried through verbatim the
+    operator is told to approve a gate that no gate is called."""
+    from services.orchestration.temporal_workflows.draft_pull_request import _gate_names
+
+    assert _gate_names(["gate_failed:security-review"]) == "security-review"
+    assert (
+        _gate_names(["gate_failed:security-review", "gate_failed:coverage"])
+        == "security-review,coverage"
+    )
+    assert "gate_failed" not in remedies.gate_decision_remedy(
+        "ADSER-24", _gate_names(["gate_failed:security-review"])
+    )
+
+
+def test_the_promotion_policy_is_still_the_only_producer_of_the_stripped_prefix():
+    """The stripping is only correct while every human_review entry carries the prefix."""
+    rego = (Path(__file__).resolve().parents[2] / "config/policies/promotion.rego").read_text()
+    producers = [line for line in rego.splitlines() if line.startswith("human_review contains")]
+
+    assert producers, "the human_review rule moved"
+    assert all("gate_failed:%s" in line for line in producers)
+
+
+def test_a_pod_whose_status_cannot_be_read_still_names_a_next_step():
+    """The three read-failure branches short-circuit before the describe path, so they bypassed
+    every remedy the pod runner attaches."""
+    from services.orchestration.gates.pod_runner import _check_kubectl_access, _inspect_the_pod
+
+    assert NEXT_STEP_PREFIX in with_remedy("x", _check_kubectl_access("gates"))
+    assert "gates" in _check_kubectl_access("gates")
+    assert "<namespace>" not in _inspect_the_pod("runner-7", "gates")
+    assert "kubectl describe pod -n gates runner-7" in _inspect_the_pod("runner-7", "gates")
+
+
+def test_one_enormous_line_cannot_push_the_next_step_out_of_reach():
+    """A line cap alone passes a six-line detail holding a single minified payload."""
+    from services.orchestration.notifications import DETAIL_CHAR_LIMIT, _bounded_detail
+
+    bounded = _bounded_detail("head\n" + "x" * 200_000 + "\ntail")
+
+    assert len(bounded) < DETAIL_CHAR_LIMIT + 200
+    assert bounded.endswith("tail")

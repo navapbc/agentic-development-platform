@@ -96,20 +96,28 @@ def deliver_alert(message: AlertMessage, settings: Settings | None = None) -> li
 
 
 DETAIL_LINE_LIMIT = 40
+DETAIL_CHAR_LIMIT = 4000
 
 
 def _bounded_detail(detail: str) -> str:
     """Keep the tail of a long detail block so the ``Next step:`` line stays reachable.
 
     A check stage can carry a whole CI log here. Rendered in full it pushes the remedy hundreds
-    of lines down a Jira comment, which defeats the point of attaching one.
+    of lines down a Jira comment, which defeats the point of attaching one. Both bounds are
+    needed because a log can be long in lines and a single line can hold a whole minified payload.
     """
     lines = detail.splitlines()
-    if len(lines) <= DETAIL_LINE_LIMIT:
+    dropped_lines = max(len(lines) - DETAIL_LINE_LIMIT, 0)
+    kept = "\n".join(lines[-DETAIL_LINE_LIMIT:]) if dropped_lines else detail
+    notes: list[str] = []
+    if dropped_lines:
+        notes.append(f"{dropped_lines} earlier lines omitted")
+    if len(kept) > DETAIL_CHAR_LIMIT:
+        notes.append(f"{len(kept) - DETAIL_CHAR_LIMIT} earlier characters omitted")
+        kept = kept[-DETAIL_CHAR_LIMIT:]
+    if not notes:
         return detail
-    dropped = len(lines) - DETAIL_LINE_LIMIT
-    kept = "\n".join(lines[-DETAIL_LINE_LIMIT:])
-    return f"[{dropped} earlier lines omitted]\n{kept}"
+    return f"[{', '.join(notes)}]\n{kept}"
 
 
 def _intervention_message(alert: HumanInterventionAlert) -> AlertMessage:

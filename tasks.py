@@ -468,7 +468,9 @@ def index_repo(c, repo, commit="", local=False):
     help={
         "issue": "Jira issue key parked for human repair, for example ADSER-24.",
         "retry": "Re-run CI and repair on the current branch head.",
-        "abandon": "Abandon the workflow so intake can relaunch a fresh execution.",
+        "abandon": (
+            "End the workflow. Run `inv restart --issue X` to have intake admit the ticket again."
+        ),
         "local": "Run on the host instead of the activity-worker container.",
     }
 )

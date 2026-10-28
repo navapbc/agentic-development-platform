@@ -125,13 +125,21 @@ def build_pod_manifest(
 _IMAGE_WAIT_REASONS = frozenset({"ErrImagePull", "ImagePullBackOff", "InvalidImageName"})
 
 
-_INSPECT_THE_POD = (
-    "Run `kubectl describe pod -n <namespace> <pod>` against the gate cluster to read the pod "
-    "events, then rerun the gate."
-)
+def _inspect_the_pod(pod: str, namespace: str) -> str:
+    return (
+        f"Run `kubectl describe pod -n {namespace} {pod}` against the gate cluster to read the "
+        f"pod events, then rerun the gate."
+    )
 
 
-def describe_pod_not_ready(status: Mapping[str, Any]) -> str:
+def _check_kubectl_access(namespace: str) -> str:
+    return (
+        f"Confirm this host can reach the gate cluster and that `kubectl get pod -n {namespace}` "
+        f"succeeds with the configured credentials, then rerun the gate."
+    )
+
+
+def describe_pod_not_ready(status: Mapping[str, Any], pod: str, namespace: str) -> str:
     """Explain why a pod has not become Ready, from its phase, conditions, and container state.
 
     `kubectl wait` reports only that the condition was not met, so an unschedulable pod and a pod
@@ -160,14 +168,14 @@ def describe_pod_not_ready(status: Mapping[str, Any]) -> str:
             "Check the image reference in the gate config and the cluster's access to the "
             "registry, then rerun the gate."
             if reason in _IMAGE_WAIT_REASONS
-            else _INSPECT_THE_POD
+            else _inspect_the_pod(pod, namespace)
         )
         return with_remedy(
             f"The pod is {phase} and its container is waiting, reason {reason}.{kubelet}", remedy
         )
     return with_remedy(
         f"The pod is {phase} and no scheduling or container condition explains it.",
-        _INSPECT_THE_POD,
+        _inspect_the_pod(pod, namespace),
     )
 
 
@@ -354,15 +362,23 @@ class KubectlPodOps:
                 text=True,
             )
         except (OSError, process.SubprocessError) as exc:
-            return f"The pod status could not be read because {exc}."
+            return with_remedy(
+                f"The pod status could not be read because {exc}.",
+                _check_kubectl_access(namespace),
+            )
         if proc.returncode:
             kubectl_error = proc.stderr.strip()
-            return f"The pod status could not be read because kubectl reported {kubectl_error}."
+            return with_remedy(
+                f"The pod status could not be read because kubectl reported {kubectl_error}.",
+                _check_kubectl_access(namespace),
+            )
         try:
             status = json.loads(proc.stdout).get("status") or {}
         except (json.JSONDecodeError, AttributeError):
-            return "The pod status could not be parsed."
-        return describe_pod_not_ready(status)
+            return with_remedy(
+                "The pod status could not be parsed.", _inspect_the_pod(pod, namespace)
+            )
+        return describe_pod_not_ready(status, pod, namespace)
 
     async def copy_in(self, pod: str, namespace: str, source_dir: str, dest_dir: str) -> None:
         import asyncio

@@ -317,7 +317,7 @@ async def route_candidate(
             candidate.task_id,
             project,
             resolution.reason,
-            unroutable_remedy(candidate.task_id, project),
+            unroutable_remedy(candidate.task_id, project, resolution.unlisted),
             digest,
             ctx.alerter,
             ctx.ledger,

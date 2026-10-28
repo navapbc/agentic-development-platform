@@ -313,7 +313,7 @@ def _unschedulable_status(message="0/1 nodes are available: 1 Insufficient cpu."
 
 
 def test_an_unschedulable_pod_is_described_as_a_resource_shortfall():
-    text = describe_pod_not_ready(_unschedulable_status())
+    text = describe_pod_not_ready(_unschedulable_status(), "p", "n")
 
     assert "Pending" in text
     assert "Unschedulable" in text
@@ -337,7 +337,9 @@ def test_a_pod_whose_image_will_not_pull_names_the_registry_as_the_next_check():
                     }
                 }
             ],
-        }
+        },
+        "p",
+        "n",
     )
 
     assert "ImagePullBackOff" in text
@@ -347,7 +349,10 @@ def test_a_pod_whose_image_will_not_pull_names_the_registry_as_the_next_check():
 
 
 def test_a_pod_with_no_explaining_condition_still_reports_its_phase():
-    assert "Running" in describe_pod_not_ready({"phase": "Running"})
+    text = describe_pod_not_ready({"phase": "Running"}, "runner-7", "gates")
+
+    assert "Running" in text
+    assert f"{NEXT_STEP_PREFIX} Run `kubectl describe pod -n gates runner-7`" in text
 
 
 class _CompletedProc:

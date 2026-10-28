@@ -131,7 +131,8 @@ def branch_sync_remedy(token: str, *, issue_key: str, branch: str) -> str:
         case BranchSyncReason.EXECUTION_INVALIDATING:
             return (
                 "The ticket changed in a way that invalidates this run, for example a different "
-                "assignee, repository, or a status that withdraws it. Confirm the ticket is still "
+                "project or issue type, or a status that withdraws it. Confirm the ticket is "
+                "still "
                 f"meant to be worked, then run {restart_command(issue_key)} to pick up the "
                 "current ticket content."
             )
@@ -164,8 +165,8 @@ def repair_remedy(token: str, *, issue_key: str, execution_id: str) -> str:
             return (
                 "Automated CI repair ran out of attempts with checks still failing. Fix the "
                 f"failing checks on the branch and run `inv repair --issue {_issue(issue_key)} "
-                f"--retry` to resume, or run `inv repair --issue {_issue(issue_key)} --abandon` "
-                "to discard the run so intake can relaunch it."
+                f"--retry` to resume. To end this run and have intake admit the ticket again, "
+                f"run `inv restart --issue {_issue(issue_key)}`."
             )
         case RepairReason.COST_BUDGET_EXCEEDED:
             return _budget_remedy(issue_key, execution_id, "cost budget")
@@ -266,7 +267,23 @@ def base_conflict_remedy(issue_key: str) -> str:
     )
 
 
-def unroutable_remedy(issue_key: str, project: str) -> str:
+def existing_pr_remedy(issue_key: str, pr_url: str) -> str:
+    return (
+        f"A pull request for this ticket already exists at {pr_url}, so the run stopped rather "
+        f"than open a second one. Review and merge it, or close it and run "
+        f"`inv restart --issue {_issue(issue_key)}` to build the ticket again."
+    )
+
+
+def unroutable_remedy(issue_key: str, project: str, unlisted: Sequence[str] = ()) -> str:
+    if unlisted:
+        names = ", ".join(unlisted)
+        return (
+            f"The ticket names {names}, which the allowlist for this environment does not carry, "
+            f"so intake will not build against it. Add {names} to allowed_repos in the github "
+            f"config for this environment, or point the ticket at a listed repository, then run "
+            f"`inv restart --issue {_issue(issue_key)}` to re-admit it."
+        )
     return (
         f"Intake could not resolve a target repository for {_issue(issue_key)}. Add a repos marker "
         f"to the ticket description, or set a default_repo for the {project} project in the intake "

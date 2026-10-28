@@ -6,10 +6,6 @@ from dataclasses import dataclass, field
 
 from temporalio import activity
 
-from services.operator_remedy import NO_NEXT_STEP
-
-__all__ = ["NO_NEXT_STEP"]
-
 
 @dataclass
 class AlertHumanInterventionRequest:
