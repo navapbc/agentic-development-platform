@@ -78,17 +78,18 @@ async def test_rest_calls_use_each_repository_own_owner_and_token() -> None:
     assert not any("tok-a" in (auth or "") for _, auth in b_calls)
 
 
-def test_git_remote_url_carries_each_repository_own_token_and_owner() -> None:
+def test_git_remote_url_carries_each_repository_own_owner_and_no_token() -> None:
     resolver = _resolver()
 
-    assert (
-        resolver.git_remote_url("repo-a")
-        == "https://x-access-token:tok-a@acme.ghe/acme-org/repo-a.git"
-    )
-    assert (
-        resolver.git_remote_url("repo-b")
-        == "https://x-access-token:tok-b@globex.ghe/globex-org/repo-b.git"
-    )
+    assert resolver.git_remote_url("repo-a") == "https://acme.ghe/acme-org/repo-a.git"
+    assert resolver.git_remote_url("repo-b") == "https://globex.ghe/globex-org/repo-b.git"
+
+
+def test_git_auth_carries_each_repository_own_token() -> None:
+    resolver = _resolver()
+
+    assert resolver.git_auth("repo-a").token == "tok-a"
+    assert resolver.git_auth("repo-b").token == "tok-b"
 
 
 def test_non_allowlisted_repository_resolves_nothing() -> None:

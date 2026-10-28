@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import uuid
 from datetime import UTC, datetime
 
@@ -29,6 +30,7 @@ from services.coordination import (
     partition_by_file_impact,
 )
 from services.integration.github.credentials import build_github_credential_resolver
+from services.integration.github.git_auth import GitAuth
 from services.integration.jira.adapter import build_jira_adapter_for_issue
 from services.integration.jira.snapshot import (
     AllowlistError,
@@ -50,13 +52,15 @@ def _clock(value: datetime | None = None) -> str:
     return (value or datetime.now(UTC)).strftime("%H:%M:%S.%f")[:-3]
 
 
-def _head_sha(remote: str) -> str:
+def _head_sha(remote: str, auth: GitAuth) -> str:
+    env = auth.env()
     proc = process.run(
-        ["git", "ls-remote", "--", remote, "HEAD"],
+        ["git", *auth.config_args(), "ls-remote", "--", remote, "HEAD"],
         timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS,
         check=True,
         capture_output=True,
         text=True,
+        env={**os.environ, **env} if env else None,
     )
     return proc.stdout.split()[0] if proc.stdout.strip() else ""
 
@@ -140,7 +144,9 @@ async def main() -> int:
 
     gh_resolver = build_github_credential_resolver(settings)
     try:
-        repository_sha = _head_sha(gh_resolver.git_remote_url(args.repo))
+        repository_sha = _head_sha(
+            gh_resolver.git_remote_url(args.repo), gh_resolver.git_auth(args.repo)
+        )
     except Exception as exc:  # noqa: BLE001
         print(f"[demo] could not read the head commit of {args.repo} because {exc}")
         await engine.dispose()

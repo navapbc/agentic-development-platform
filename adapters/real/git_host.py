@@ -27,6 +27,7 @@ from adapters.interfaces.git_host import (
 )
 from scripts.config import Settings, get_settings
 from services import process
+from services.integration.github.git_auth import NO_AUTH, GitAuth
 
 if TYPE_CHECKING:
     from services.integration.github.credentials import (
@@ -82,17 +83,27 @@ class RealGitHost:
     def source_location(self, repo: str) -> str:
         return self._remote_url(repo)
 
+    def _auth(self, repo: str) -> GitAuth:
+        cred = self._resolver.resolve(repo)
+        return GitAuth(cred.token) if cred is not None else NO_AUTH
+
     async def _git(
-        self, *args: str, cwd: str | None = None, env: dict[str, str] | None = None
+        self,
+        *args: str,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        auth: GitAuth = NO_AUTH,
     ) -> str:
+        merged = {**auth.env(), **(env or {})}
+
         def run() -> process.CompletedProcess[str]:
             return process.run(
-                ["git", *args],
+                ["git", *auth.config_args(), *args],
                 timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS,
                 cwd=cwd,
                 capture_output=True,
                 text=True,
-                env={**os.environ, **env} if env else None,
+                env={**os.environ, **merged} if merged else None,
             )
 
         proc = await asyncio.to_thread(run)
@@ -102,23 +113,26 @@ class RealGitHost:
             raise RuntimeError(f"git {shown} failed (rc {proc.returncode}): {detail}")
         return proc.stdout.strip()
 
-    async def _ls_remote(self, remote: str, ref: str) -> str:
-        out = await self._git("ls-remote", "--heads", "--", remote, ref)
+    async def _ls_remote(self, remote: str, ref: str, auth: GitAuth = NO_AUTH) -> str:
+        out = await self._git("ls-remote", "--heads", "--", remote, ref, auth=auth)
         if not out:
             return ""
         return out.split()[0]
 
     async def ensure_branch(self, repo: str, name: str, base: str) -> BranchRef:
         remote = self._remote_url(repo)
-        existing = await self._ls_remote(remote, name)
+        auth = self._auth(repo)
+        existing = await self._ls_remote(remote, name, auth)
         if existing:
             return BranchRef(repo=repo, name=name, head_sha=existing, created=False)
-        base_sha = await self._ls_remote(remote, base)
+        base_sha = await self._ls_remote(remote, base, auth)
         if not base_sha:
             raise KeyError(f"base branch missing: {repo}:{base}")
         with tempfile.TemporaryDirectory() as work:
-            await self._git("clone", "--branch", base, "--single-branch", "--", remote, work)
-            await self._git("push", "origin", f"HEAD:refs/heads/{name}", cwd=work)
+            await self._git(
+                "clone", "--branch", base, "--single-branch", "--", remote, work, auth=auth
+            )
+            await self._git("push", "origin", f"HEAD:refs/heads/{name}", cwd=work, auth=auth)
             head = await self._git("rev-parse", "HEAD", cwd=work)
         return BranchRef(repo=repo, name=name, head_sha=head, created=True)
 
@@ -146,10 +160,11 @@ class RealGitHost:
         collapsed them into the first.
         """
         remote = self._remote_url(request.repo)
+        auth = self._auth(request.repo)
         work = request.workspace
-        remote_head = await self._ls_remote(remote, request.branch)
+        remote_head = await self._ls_remote(remote, request.branch, auth)
         if remote_head:
-            await self._git("fetch", "--quiet", remote, request.branch, cwd=work)
+            await self._git("fetch", "--quiet", remote, request.branch, cwd=work, auth=auth)
             if await self._tree_of(work, remote_head) == request.tree:
                 return CommitResult(
                     repo=request.repo,
@@ -172,15 +187,15 @@ class RealGitHost:
             cwd=work,
             env=author_env(request),
         )
-        await self._git("push", remote, f"{sha}:refs/heads/{request.branch}", cwd=work)
+        await self._git("push", remote, f"{sha}:refs/heads/{request.branch}", cwd=work, auth=auth)
         await self._git("reset", "--soft", sha, cwd=work)
-        published_head = await self._ls_remote(remote, request.branch)
+        published_head = await self._ls_remote(remote, request.branch, auth)
         if not published_head:
             raise RuntimeError(
                 f"{request.repo}:{request.branch} holds no ref after pushing {sha}, "
                 "so the published tree cannot be verified"
             )
-        await self._git("fetch", "--quiet", remote, request.branch, cwd=work)
+        await self._git("fetch", "--quiet", remote, request.branch, cwd=work, auth=auth)
         return CommitResult(
             repo=request.repo,
             branch=request.branch,
@@ -310,9 +325,10 @@ class RealGitHost:
 
     async def delete_branch(self, repo: str, name: str) -> bool:
         remote = self._remote_url(repo)
-        if not await self._ls_remote(remote, name):
+        auth = self._auth(repo)
+        if not await self._ls_remote(remote, name, auth):
             return False
-        await self._git("push", remote, "--delete", f"refs/heads/{name}")
+        await self._git("push", remote, "--delete", f"refs/heads/{name}", auth=auth)
         return True
 
     async def close_pr(self, repo: str, number: int) -> PullRequest:

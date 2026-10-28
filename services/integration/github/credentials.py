@@ -16,6 +16,7 @@ from services.integration.credentials import (
     parse_allowlist,
     require_current_config,
 )
+from services.integration.github.git_auth import GitAuth
 
 
 @dataclass(frozen=True)
@@ -167,13 +168,23 @@ class GitHubCredentialResolver:
         )
 
     def git_remote_url(self, repo: str) -> str:
+        """Return the remote URL for `repo`, carrying no credential.
+
+        Git writes a clone URL verbatim into `.git/config` and a fetch URL into
+        `.git/FETCH_HEAD`, so a token embedded here would persist in every workspace the
+        platform materializes. Callers pair this with `git_auth` instead.
+        """
         cred = self.resolve(repo)
         if cred is None:
             raise UnconfiguredRepositoryError(repo)
         base = cred.git_base_url.rstrip("/")
-        if cred.token and base.startswith("https://"):
-            base = f"https://x-access-token:{cred.token}@{base[len('https://') :]}"
         return f"{base}/{cred.owner}/{repo}.git"
+
+    def git_auth(self, repo: str) -> GitAuth:
+        cred = self.resolve(repo)
+        if cred is None:
+            raise UnconfiguredRepositoryError(repo)
+        return GitAuth(cred.token)
 
     def _effective(self, repo: str) -> tuple[_Host, str, str] | None:
         override = self._config.repositories.get(repo)

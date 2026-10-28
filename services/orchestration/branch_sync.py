@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -11,6 +12,7 @@ from typing import Protocol
 from scripts.config import Settings, get_settings
 
 from services import process
+from services.integration.github.git_auth import NO_AUTH, GitAuth
 from services.integration.github.mediator import RepoNotAllowedError
 
 FAST_FORWARD = "fast_forward"
@@ -36,18 +38,20 @@ class SyncOutcome:
     conflicts: list[ConflictPayload] = field(default_factory=list)
 
 
-def _run_git(args: list[str], cwd: str) -> process.CompletedProcess[str]:
+def _run_git(args: list[str], cwd: str, auth: GitAuth = NO_AUTH) -> process.CompletedProcess[str]:
+    env = auth.env()
     return process.run(
-        ["git", "-c", "safe.directory=*", *args],
+        ["git", "-c", "safe.directory=*", *auth.config_args(), *args],
         timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS,
         cwd=cwd,
         capture_output=True,
         text=True,
+        env={**os.environ, **env} if env else None,
     )
 
 
-async def _git(*args: str, cwd: str) -> str:
-    proc = await asyncio.to_thread(_run_git, list(args), cwd)
+async def _git(*args: str, cwd: str, auth: GitAuth = NO_AUTH) -> str:
+    proc = await asyncio.to_thread(_run_git, list(args), cwd, auth)
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.strip())
     return proc.stdout.rstrip()
@@ -76,21 +80,28 @@ class GitBranchSynchronizer:
     allowed_repos: frozenset[str]
     remote_url_for: Callable[[str], str]
     agent_email: str = _AGENT_EMAIL
+    auth_for: Callable[[str], GitAuth] | None = None
 
     @classmethod
     def from_settings(
         cls,
         *,
         remote_url_for: Callable[[str], str] | None = None,
+        auth_for: Callable[[str], GitAuth] | None = None,
         settings: Settings | None = None,
     ) -> GitBranchSynchronizer:
+        from services.integration.github.factory import build_git_auth_for
         from services.integration.source_control import source_control_repos
 
         resolved = settings or get_settings()
         return cls(
             allowed_repos=frozenset(source_control_repos(resolved)),
             remote_url_for=remote_url_for or (lambda repo: repo),
+            auth_for=auth_for or build_git_auth_for(resolved),
         )
+
+    def _auth(self, repo: str) -> GitAuth:
+        return self.auth_for(repo) if self.auth_for is not None else NO_AUTH
 
     async def synchronize(
         self,
@@ -105,9 +116,10 @@ class GitBranchSynchronizer:
         if repo not in self.allowed_repos:
             raise RepoNotAllowedError(repo)
         cwd = str(Path(workspace_path))
-        await _git("fetch", "--quiet", "origin", base, cwd=cwd)
+        auth = self._auth(repo)
+        await _git("fetch", "--quiet", "origin", base, cwd=cwd, auth=auth)
         base_head = await _git("rev-parse", "FETCH_HEAD", cwd=cwd)
-        human_commits = await self._human_commits(branch, base_sha, cwd=cwd)
+        human_commits = await self._human_commits(branch, base_sha, cwd=cwd, auth=auth)
         if base_head == base_sha:
             return SyncOutcome(FAST_FORWARD, base_head, human_commits)
 
@@ -149,11 +161,13 @@ class GitBranchSynchronizer:
                 files[rel] = candidate.read_text(encoding="utf-8")
         return files
 
-    async def _human_commits(self, branch: str, base_sha: str, *, cwd: str) -> bool:
-        remote = await _git("ls-remote", "--heads", "origin", branch, cwd=cwd)
+    async def _human_commits(
+        self, branch: str, base_sha: str, *, cwd: str, auth: GitAuth = NO_AUTH
+    ) -> bool:
+        remote = await _git("ls-remote", "--heads", "origin", branch, cwd=cwd, auth=auth)
         if not remote:
             return False
-        await _git("fetch", "--quiet", "origin", branch, cwd=cwd)
+        await _git("fetch", "--quiet", "origin", branch, cwd=cwd, auth=auth)
         emails = await _git("log", f"{base_sha}..FETCH_HEAD", "--format=%ae", cwd=cwd)
         return any(
             line.strip() and line.strip() != self.agent_email for line in emails.splitlines()

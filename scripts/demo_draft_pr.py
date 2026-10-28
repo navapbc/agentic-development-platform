@@ -25,6 +25,7 @@ from services.integration.github.credentials import (
     allowed_repos,
     build_github_credential_resolver,
 )
+from services.integration.github.git_auth import GitAuth
 from services.integration.github.mediator import GitHubMediator
 from services.integration.jira import (
     CLOUD,
@@ -64,13 +65,15 @@ def _demo_status_flow(settings: Settings, issue_key: str) -> StatusFlow:
         return StatusFlow()
 
 
-def _remote_head(remote: str, branch: str) -> str:
+def _remote_head(remote: str, branch: str, auth: GitAuth) -> str:
+    env = auth.env()
     proc = process.run(
-        ["git", "ls-remote", "--", remote, f"refs/heads/{branch}"],
+        ["git", *auth.config_args(), "ls-remote", "--", remote, f"refs/heads/{branch}"],
         timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS,
         check=True,
         capture_output=True,
         text=True,
+        env={**os.environ, **env} if env else None,
     )
     return proc.stdout.split()[0] if proc.stdout.strip() else ""
 
@@ -419,7 +422,10 @@ async def main() -> int:
     def remote_url_for(name: str) -> str:
         return gh_resolver.git_remote_url(name)
 
-    base_sha = _remote_head(remote_url_for(repo), base)
+    def auth_for(name: str) -> GitAuth:
+        return gh_resolver.git_auth(name)
+
+    base_sha = _remote_head(remote_url_for(repo), base, auth_for(repo))
     if not base_sha:
         print(f"Could not read {base} on the remote. Confirm the repo exists and the token works.")
         return 2
@@ -431,10 +437,13 @@ async def main() -> int:
         backend=host, ledger=ledger, gate=gate, allowed_repos=frozenset(allowlist)
     )
     materializer = WorkspaceMaterializer.from_settings(
-        InMemoryOrphanRegistry(), remote_url_for=remote_url_for, settings=settings
+        InMemoryOrphanRegistry(),
+        remote_url_for=remote_url_for,
+        auth_for=auth_for,
+        settings=settings,
     )
     synchronizer = GitBranchSynchronizer.from_settings(
-        remote_url_for=remote_url_for, settings=settings
+        remote_url_for=remote_url_for, auth_for=auth_for, settings=settings
     )
     existing_pr = await mediator.find_open_pr(repo, task_id)
     if _jira_configured(settings, task_id):
