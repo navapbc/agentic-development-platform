@@ -2,7 +2,8 @@
 
 A deployed environment injects each private signing key from the secret store as an
 environment value. ssh-keygen signs from a file, so an injected key is written once
-per process to a private file, with its public half alongside as ``<path>.pub``.
+per process to a private file, with its public half alongside as ``<path>.pub``. The file
+lives in a temporary directory that is removed when the process exits.
 """
 
 from __future__ import annotations
@@ -10,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import os
 import tempfile
+import threading
 from pathlib import Path
 
 from scripts.config import Settings
@@ -17,6 +19,8 @@ from scripts.config import Settings
 from services import process
 
 _materialized: dict[str, str] = {}
+_key_directories: list[tempfile.TemporaryDirectory[str]] = []
+_lock = threading.Lock()
 
 
 class SigningKeyError(RuntimeError):
@@ -43,10 +47,22 @@ def resolve_signing_key_path(private_key: str, key_path: str) -> str:
 def materialize_signing_key(private_key: str) -> str:
     content = private_key.strip() + "\n"
     digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
-    cached = _materialized.get(digest)
-    if cached is not None and Path(cached).is_file():
-        return cached
-    directory = Path(tempfile.mkdtemp(prefix="signing-key-"))
+    with _lock:
+        cached = _materialized.get(digest)
+        if cached is not None and Path(cached).is_file():
+            return cached
+        holder = tempfile.TemporaryDirectory(prefix="signing-key-")
+        try:
+            key_file = _write_key_pair(Path(holder.name), content)
+        except BaseException:
+            holder.cleanup()
+            raise
+        _key_directories.append(holder)
+        _materialized[digest] = str(key_file)
+        return str(key_file)
+
+
+def _write_key_pair(directory: Path, content: str) -> Path:
     key_file = directory / "key"
     descriptor = os.open(key_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
@@ -60,12 +76,9 @@ def materialize_signing_key(private_key: str) -> str:
             text=True,
         )
     except (OSError, process.SubprocessError) as exc:
-        key_file.unlink(missing_ok=True)
-        directory.rmdir()
         raise SigningKeyError(
             "the injected signing key is not a readable OpenSSH private key, "
             "or ssh-keygen is not on PATH"
         ) from exc
     (directory / "key.pub").write_text(derived.stdout, encoding="utf-8")
-    _materialized[digest] = str(key_file)
-    return str(key_file)
+    return key_file

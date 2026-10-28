@@ -14,6 +14,9 @@ import json
 
 from scripts.config import get_settings
 
+FUNCTION_TIMEOUT_SECONDS = 900
+INVOKE_READ_TIMEOUT_SECONDS = FUNCTION_TIMEOUT_SECONDS + 60
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -31,8 +34,19 @@ def main(argv: list[str] | None = None) -> int:
     configure_aws_fips(settings)
 
     import boto3
+    from botocore.config import Config
 
-    client = boto3.client("lambda", region_name=args.region or settings.aws_region)
+    # The bootstrap waits for a paused cluster to resume, which outlasts botocore's 60 second
+    # read timeout, and a retried invoke races the first one on CREATE ROLE.
+    client = boto3.client(
+        "lambda",
+        region_name=args.region or settings.aws_region,
+        config=Config(
+            read_timeout=INVOKE_READ_TIMEOUT_SECONDS,
+            connect_timeout=10,
+            retries={"max_attempts": 0},
+        ),
+    )
     response = client.invoke(
         FunctionName=args.function_name,
         Payload=json.dumps({"action": "bootstrap"}).encode("utf-8"),

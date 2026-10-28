@@ -5,10 +5,13 @@ from __future__ import annotations
 import shutil
 import stat
 import subprocess
+import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 from scripts.config import Settings
+from services.orchestration import signing_keys
 from services.orchestration.authorship import signing_key_path
 from services.orchestration.review_signing import (
     ReviewSigningConfigError,
@@ -62,9 +65,35 @@ def test_injected_key_is_written_once_per_process(tmp_path):
 
 
 @requires_ssh_keygen
-def test_invalid_injected_key_raises():
+def test_invalid_injected_key_raises_and_leaves_no_directory(monkeypatch, tmp_path):
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+
     with pytest.raises(SigningKeyError):
         materialize_signing_key("not a private key")
+
+    assert list(tmp_path.iterdir()) == []
+
+
+@requires_ssh_keygen
+def test_materialized_key_is_removed_when_its_directory_is_released(tmp_path):
+    private_key, _ = _keypair(tmp_path)
+    key_file = Path(materialize_signing_key(private_key))
+
+    for holder in signing_keys._key_directories:
+        holder.cleanup()
+
+    assert not key_file.exists()
+    assert not key_file.parent.exists()
+
+
+@requires_ssh_keygen
+def test_concurrent_callers_share_one_materialized_key(tmp_path):
+    private_key, _ = _keypair(tmp_path)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        paths = set(pool.map(lambda _: materialize_signing_key(private_key + " "), range(16)))
+
+    assert len(paths) == 1
 
 
 @requires_ssh_keygen
