@@ -159,7 +159,7 @@ def _unconfigured() -> Settings:
 
 
 def test_the_remedy_renders_as_a_next_step_line(monkeypatch):
-    posted: list[dict[str, object]] = []
+    posted: list[dict[str, str]] = []
 
     def fake_post(url, *, json, timeout):
         posted.append(json)
@@ -183,7 +183,7 @@ def test_the_remedy_renders_as_a_next_step_line(monkeypatch):
 
 @pytest.mark.parametrize("remedy", ["", NO_NEXT_STEP])
 def test_an_alert_with_no_next_step_renders_no_next_step_line(monkeypatch, remedy):
-    posted: list[dict[str, object]] = []
+    posted: list[dict[str, str]] = []
 
     def fake_post(url, *, json, timeout):
         posted.append(json)
@@ -225,7 +225,7 @@ def test_an_alert_whose_every_channel_raises_is_logged_as_an_error(monkeypatch, 
 
 
 def test_the_unroutable_intake_alert_renders_its_required_remedy(monkeypatch):
-    posted: list[dict[str, object]] = []
+    posted: list[dict[str, str]] = []
 
     def fake_post(url, *, json, timeout):
         posted.append(json)

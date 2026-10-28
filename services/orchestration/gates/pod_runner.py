@@ -154,9 +154,9 @@ def describe_pod_not_ready(status: Mapping[str, Any], pod: str, namespace: str) 
         scheduler = f" The scheduler reported {message}." if message else ""
         return with_remedy(
             f"The pod is {phase} and the scheduler has not placed it, reason {reason}.{scheduler}",
-            "Give the cluster node more CPU or memory, or lower DEFAULT_POD_RESOURCES or "
-            "CHECKS_POD_RESOURCES in services/orchestration/gates/pod_runner.py, then rerun the "
-            "gate.",
+            "Give the cluster node more CPU or memory, then rerun the gate. Lowering the pod "
+            "requests instead means changing the DEFAULT_POD_RESOURCES and CHECKS_POD_RESOURCES "
+            "constants, which needs a new build.",
         )
     for container in status.get("containerStatuses") or []:
         waiting = (container.get("state") or {}).get("waiting") or {}

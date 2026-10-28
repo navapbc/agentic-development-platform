@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import ast
+import inspect
+import re
 from pathlib import Path
 
 import pytest
@@ -558,3 +560,89 @@ def _image_pull_failed() -> dict:
             {"state": {"waiting": {"reason": "ImagePullBackOff", "message": "back-off"}}}
         ],
     }
+
+
+def _every_rendered_remedy() -> dict[str, str]:
+    from services.orchestration.gates import pod_runner
+
+    texts = {
+        "unroutable_no_repo": remedies.unroutable_remedy("ADSER-24", "ADSER"),
+        "unroutable_unlisted": remedies.unroutable_remedy("ADSER-24", "ADSER", ("navapbc/x",)),
+        "existing_pr": remedies.existing_pr_remedy("ADSER-24", "https://example.invalid/pr/1"),
+        "code_defect": remedies.code_defect_remedy("ADSER-24", "boom"),
+        "base_conflict": remedies.base_conflict_remedy("ADSER-24"),
+        "unresolvable_base": remedies.unresolvable_base_remedy("ADSER-24"),
+        "checks_not_configured": remedies.checks_not_configured_remedy("ADSER-24", ["repo-a"]),
+        "gate_rejected": remedies.gate_rejected_remedy("ADSER-24", "security-review"),
+        "gate_decision": remedies.gate_decision_remedy("ADSER-24", "security-review"),
+        "review_blocked": remedies.review_blocked_remedy("ADSER-24", "fail_closed"),
+        "plan_rejected": remedies.plan_rejected_remedy("ADSER-24"),
+        "policy_denied": remedies.policy_denied_remedy("ADSER-24", "bundle"),
+        "approval_rejected": remedies.approval_rejected_remedy("ADSER-24"),
+        "claim_denied": remedies.claim_denied_remedy("ADSER-24"),
+        "generic": remedies.generic_remedy("ADSER-24", "implementation"),
+        "unschedulable": pod_runner.describe_pod_not_ready(_unschedulable(), "runner-7", "gates"),
+        "image_pull": pod_runner.describe_pod_not_ready(_image_pull_failed(), "runner-7", "gates"),
+    }
+    for token in remedies.ImplementationReason:
+        texts[f"implementation:{token}"] = remedies.implementation_remedy(
+            str(token), issue_key="ADSER-24", execution_id="exec-1"
+        )
+    for token in remedies.RepairReason:
+        texts[f"repair:{token}"] = remedies.repair_remedy(
+            str(token), issue_key="ADSER-24", execution_id="exec-1"
+        )
+    for token in remedies.BranchSyncReason:
+        texts[f"branch_sync:{token}"] = remedies.branch_sync_remedy(
+            str(token), issue_key="ADSER-24", branch="feat/x"
+        )
+    for token in remedies.IssueRecheckReason:
+        texts[f"issue_recheck:{token}"] = remedies.issue_recheck_remedy(
+            str(token), issue_key="ADSER-24"
+        )
+    return texts
+
+
+def test_no_remedy_sends_the_operator_to_a_local_only_location():
+    """ADP is deployed to a container platform as well as run locally. `.env` is the local secret
+    and settings file, and docs/local-to-aws-mapping.md maps it to Secrets Manager or SSM in a
+    deployed environment, so a remedy naming it is wrong for every deployment that is not a
+    laptop. Name the setting and let the operator apply it where their environment supplies it."""
+    offenders = {
+        name: text for name, text in _every_rendered_remedy().items() if ".env" in text
+    }
+
+    assert not offenders, f"remedies send the operator to .env: {sorted(offenders)}"
+
+
+def test_no_remedy_tells_the_operator_to_edit_adp_source():
+    """A remedy naming a path inside ADP's own tree asks the operator to edit the platform rather
+    than their deployment, which needs a new build and is not an operator action. Repository
+    config under config/<environment> is exempt, because load_env_config reads exactly that path
+    in every environment."""
+    source_path = re.compile(r"\b[a-z_]+(?:/[a-z_0-9]+)*\.py\b")
+    offenders = {
+        name: source_path.findall(text)
+        for name, text in _every_rendered_remedy().items()
+        if source_path.search(text)
+    }
+
+    assert not offenders, f"remedies name ADP source files: {offenders}"
+
+
+def test_the_location_guards_render_every_remedy_the_module_exports():
+    """The two guards above only bind to remedies _every_rendered_remedy builds. A remedy added
+    without a line there would be unchecked while the suite stayed green, so the coverage is
+    asserted rather than trusted."""
+    tree = ast.parse((Path(remedies.__file__)).read_text())
+    exported = {
+        node.name
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name.endswith("_remedy")
+        and not node.name.startswith("_")
+    }
+    source = inspect.getsource(_every_rendered_remedy)
+    rendered = set(re.findall(r"remedies\.(\w+_remedy)\(", source))
+
+    assert not exported - rendered, f"remedies never rendered by the guards: {exported - rendered}"

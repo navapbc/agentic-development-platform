@@ -36,7 +36,7 @@ def _budget_remedy(issue_key: str, execution_id: str, limit: str, setting: str) 
     return (
         f"The run stopped after exhausting its {limit}. Run `inv cost-rollup --execution-id "
         f"{execution_id or '<execution_id>'}` to see which stage consumed the budget. Raise "
-        f"{setting} in .env or narrow the task scope, then run "
+        f"{setting} in the worker environment or narrow the task scope, then run "
         f"{restart_command(issue_key)}."
     )
 
@@ -83,13 +83,13 @@ def implementation_remedy(token: str, *, issue_key: str, execution_id: str) -> s
         case ImplementationReason.TOOL_CALLS_EXCEEDED:
             return (
                 "The coding agent hit its tool-call cap before finishing. Narrow the task scope "
-                "or raise OPENHANDS_MAX_TOOL_CALLS in .env, then run "
+                "or raise OPENHANDS_MAX_TOOL_CALLS in the worker environment, then run "
                 f"{restart_command(issue_key)}."
             )
         case ImplementationReason.WALL_CLOCK_EXCEEDED:
             return (
                 "The coding agent hit its wall-clock cap before finishing. Narrow the task scope "
-                "or raise OPENHANDS_MAX_WALL_CLOCK_SECONDS in .env, then run "
+                "or raise OPENHANDS_MAX_WALL_CLOCK_SECONDS in the worker environment, then run "
                 f"{restart_command(issue_key)}."
             )
         case ImplementationReason.ERROR | ImplementationReason.IMPL_FAILED:
