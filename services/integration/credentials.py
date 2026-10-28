@@ -41,12 +41,18 @@ class ConfigError(RuntimeError):
 class SecretNotFoundError(KeyError):
     """Raised when a secret reference resolves to no value."""
 
-    def __init__(self, ref: str) -> None:
+    def __init__(self, ref: str, *, env_file: Path | None = None) -> None:
         super().__init__(ref)
         self.ref = ref
+        self.env_file = env_file
 
     def __str__(self) -> str:
-        return f"secret reference not found: {self.ref}"
+        where = f" or in {self.env_file}" if self.env_file is not None else ""
+        return (
+            f"the secret {self.ref} is not set in the process environment{where}. "
+            f"Export {self.ref}, or add a {self.ref}= line to the .env file, then restart the "
+            "stack with inv local-up so the workers pick it up."
+        )
 
 
 @runtime_checkable
@@ -70,7 +76,7 @@ class EnvSecretResolver:
         source = self._source if self._source is not None else self._load()
         value = source.get(ref)
         if not value:
-            raise SecretNotFoundError(ref)
+            raise SecretNotFoundError(ref, env_file=self._env_file)
         return value
 
     def _load(self) -> Mapping[str, str]:

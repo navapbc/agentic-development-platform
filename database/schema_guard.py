@@ -91,7 +91,12 @@ async def wait_for_schema_head(
         try:
             applied = await fetch_applied()
         except Exception as exc:
-            reason = f"could not read the schema revision ({exc.__class__.__name__}: {exc})"
+            reason = f"could not read the schema revision ({exc.__class__.__name__} {exc})"
+            action = (
+                "The database did not answer, so a migration is not what is missing. Check that "
+                "Postgres is up with docker compose ps postgres, and that DATABASE_URL names the "
+                "host and port it listens on."
+            )
         else:
             state = classify(applied, script)
             if state is SchemaState.CURRENT:
@@ -106,9 +111,10 @@ async def wait_for_schema_head(
             current = ", ".join(sorted(applied)) or "no revision"
             expected = ", ".join(heads)
             reason = f"the database schema is at {current} and this image expects {expected}"
+            action = "Run inv db-migrate."
         now = clock()
         if last_logged is None or now - last_logged >= log_every_seconds:
-            log.warning("waiting for migrations. %s. Run inv db-migrate.", reason)
+            log.warning("waiting for the platform schema. %s. %s", reason, action)
             last_logged = now
         await sleep(poll_seconds)
 

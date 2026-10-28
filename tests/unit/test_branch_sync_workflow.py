@@ -163,6 +163,8 @@ async def test_advanced_base_with_material_conflict_pauses():
     assert result.status == "paused"
     assert result.terminal_reason == "material_conflict"
     assert result.escalated is True
+    assert "calc.py" in result.detail
+    assert result.detail != result.terminal_reason
     assert recheck_calls == []
     types = _event_types(audits)
     assert "CONFLICT_PAUSE" in types
@@ -186,6 +188,7 @@ async def test_material_jira_edit_pauses_before_pr():
     assert result.status == "paused"
     assert result.terminal_reason == "MATERIAL_CHANGE"
     assert result.escalated is True
+    assert result.detail == "summary changed"
     assert len(recheck_calls) == 1
     types = _event_types(audits)
     assert "ISSUE_RECHECK_PAUSED" in types
@@ -199,6 +202,7 @@ async def test_human_commits_pauses_without_force_push():
 
     assert result.status == "paused"
     assert result.terminal_reason == "human_commits"
+    assert result.detail == "human commits present on the agent branch"
     assert resolve_calls == []
     assert recheck_calls == []
     assert "BRANCH_SYNC_PAUSED" in _event_types(audits)
@@ -218,6 +222,7 @@ async def test_rebase_cap_exhaustion_pauses():
     assert result.status == "paused"
     assert result.terminal_reason == "rebase_cap_exceeded"
     assert result.escalated is True
+    assert "cap 1" in result.detail
     assert len(sync_calls) == 2
     assert len(resolve_calls) == 1
     pause = next(a for a in audits if a.event_type == "BRANCH_SYNC_PAUSED")

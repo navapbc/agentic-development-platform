@@ -323,6 +323,7 @@ class ImplementationWorkflow:
                 cache_read_tokens=result.cache_read_tokens,
                 llm_calls=result.llm_calls,
                 claim_owner_workflow_id=claim_owner,
+                summary=result.summary,
             )
 
         await audit(

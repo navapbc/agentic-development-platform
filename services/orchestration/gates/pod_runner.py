@@ -14,6 +14,7 @@ import json
 import re
 import shlex
 from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
@@ -61,8 +62,27 @@ def pod_name_for(name: str, execution_id: str, prefix: str = "gate-engine") -> s
     return f"{prefix}-{slug or 'run'}"[:63].rstrip("-")
 
 
+DEFAULT_POD_RESOURCES: dict[str, dict[str, str]] = {
+    "requests": {"cpu": "500m", "memory": "1Gi"},
+    "limits": {"cpu": "2", "memory": "4Gi"},
+}
+
+# A project's test suite runs under the same wall-clock assertions its authors wrote on a developer
+# machine. Helpers such as testing-library's waitFor budget a fixed 1000ms that no jest flag
+# overrides, so a CPU-starved pod fails tests that are not defective. Two CPUs reproduces those
+# failures and six clears them.
+CHECKS_POD_RESOURCES: dict[str, dict[str, str]] = {
+    "requests": {"cpu": "2", "memory": "2Gi"},
+    "limits": {"cpu": "6", "memory": "8Gi"},
+}
+
+
 def build_pod_manifest(
-    pod: str, namespace: str, builder_image: str, privileged: bool = False
+    pod: str,
+    namespace: str,
+    builder_image: str,
+    privileged: bool = False,
+    resources: dict[str, dict[str, str]] | None = None,
 ) -> dict:
     # Unpacking an image layer remounts the container root MS_PRIVATE|MS_REC, which some clusters
     # (k3s, Colima) deny to an unprivileged pod even with CAP_SYS_ADMIN and seccomp unconfined.
@@ -93,14 +113,47 @@ def build_pod_manifest(
                         {"name": "BUILDAH_ISOLATION", "value": "chroot"},
                     ],
                     "securityContext": security_context,
-                    "resources": {
-                        "requests": {"cpu": "500m", "memory": "1Gi"},
-                        "limits": {"cpu": "2", "memory": "4Gi"},
-                    },
+                    "resources": deepcopy(resources or DEFAULT_POD_RESOURCES),
                 }
             ],
         },
     }
+
+
+_IMAGE_WAIT_REASONS = frozenset({"ErrImagePull", "ImagePullBackOff", "InvalidImageName"})
+
+
+def describe_pod_not_ready(status: Mapping[str, Any]) -> str:
+    """Explain why a pod has not become Ready, from its phase, conditions, and container state.
+
+    `kubectl wait` reports only that the condition was not met, so an unschedulable pod and a pod
+    whose image will not pull are indistinguishable from its output alone.
+    """
+    phase = str(status.get("phase") or "unknown")
+    for condition in status.get("conditions") or []:
+        if condition.get("type") != "PodScheduled" or condition.get("status") == "True":
+            continue
+        reason = str(condition.get("reason") or "Unschedulable").strip()
+        message = str(condition.get("message") or "").strip().rstrip(".")
+        scheduler = f" The scheduler reported {message}." if message else ""
+        return (
+            f"The pod is {phase} and the scheduler has not placed it, reason {reason}.{scheduler}"
+            " Give the cluster node more CPU or memory, or lower the pod resource requests."
+        )
+    for container in status.get("containerStatuses") or []:
+        waiting = (container.get("state") or {}).get("waiting") or {}
+        reason = str(waiting.get("reason") or "").strip()
+        if not reason:
+            continue
+        message = str(waiting.get("message") or "").strip().rstrip(".")
+        kubelet = f" The kubelet reported {message}." if message else ""
+        action = (
+            " Check the image reference and the cluster's access to the registry."
+            if reason in _IMAGE_WAIT_REASONS
+            else ""
+        )
+        return f"The pod is {phase} and its container is waiting, reason {reason}.{kubelet}{action}"
+    return f"The pod is {phase} and no scheduling or container condition explains it."
 
 
 def _run_script(spec: PodEngineSpec) -> str:
@@ -268,7 +321,32 @@ class KubectlPodOps:
             text=True,
         )
         if proc.returncode:
-            raise PodEngineError(f"pod {pod} not ready: {proc.stderr.strip()}")
+            raise PodEngineError(
+                f"pod {pod} in namespace {namespace} was not Ready within "
+                f"{int(self._ready_timeout)}s. {self._not_ready_reason(pod, namespace)} "
+                f"kubectl reported {proc.stderr.strip() or 'nothing'}"
+            )
+
+    def _not_ready_reason(self, pod: str, namespace: str) -> str:
+        from services import process
+
+        try:
+            proc = process.run(
+                [self._kubectl, "get", "pod", pod, "-n", namespace, "-o", "json"],
+                timeout=process.SHORT_COMMAND_TIMEOUT_SECONDS,
+                capture_output=True,
+                text=True,
+            )
+        except (OSError, process.SubprocessError) as exc:
+            return f"The pod status could not be read because {exc}."
+        if proc.returncode:
+            kubectl_error = proc.stderr.strip()
+            return f"The pod status could not be read because kubectl reported {kubectl_error}."
+        try:
+            status = json.loads(proc.stdout).get("status") or {}
+        except (json.JSONDecodeError, AttributeError):
+            return "The pod status could not be parsed."
+        return describe_pod_not_ready(status)
 
     async def copy_in(self, pod: str, namespace: str, source_dir: str, dest_dir: str) -> None:
         import asyncio

@@ -222,6 +222,20 @@ def test_env_secret_resolver_reads_dotenv(tmp_path):
     assert resolver.resolve("TOKEN_A") == "from-dotenv"
 
 
+def test_a_missing_secret_names_the_variable_the_env_file_and_the_next_command(tmp_path):
+    """An operator has to learn which name to set and where, not only that one is absent."""
+    env_file = tmp_path / ".env"
+    env_file.write_text("OTHER=value\n", encoding="utf-8")
+
+    with pytest.raises(SecretNotFoundError) as caught:
+        EnvSecretResolver(env_file=env_file).resolve("GITHUB_TOKEN")
+
+    message = str(caught.value)
+    assert "GITHUB_TOKEN" in message
+    assert str(env_file) in message
+    assert "inv local-up" in message
+
+
 def test_committed_example_template_is_valid_and_resolves():
     example = Path(__file__).resolve().parents[2] / "config" / "local" / "github.yaml.example"
     raw = yaml.safe_load(example.read_text(encoding="utf-8"))

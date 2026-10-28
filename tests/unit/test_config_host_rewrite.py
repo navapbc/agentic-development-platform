@@ -26,6 +26,12 @@ def on_the_host(monkeypatch):
     get_settings.cache_clear()
 
 
+def _declared_ports() -> Settings:
+    """Settings carrying every declared host port, so a remapped .env cannot move an assertion."""
+    fields = {field for ports in _COMPOSE_PUBLISHED_PORTS.values() for field in ports.values()}
+    return Settings(**{field: Settings.model_fields[field].default for field in fields})
+
+
 def test_host_url_uses_the_published_port_when_remapped():
     settings = Settings(postgres_host_port=15432)
 
@@ -35,7 +41,7 @@ def test_host_url_uses_the_published_port_when_remapped():
 
 
 def test_host_url_keeps_the_default_port_when_unmapped():
-    settings = Settings()
+    settings = _declared_ports()
 
     rewritten = to_host_url("postgresql://postgres:5432/agent_platform", settings)
 
@@ -95,7 +101,7 @@ def test_host_url_without_a_port_gains_none():
 
 def test_every_rewritable_service_publishes_through_a_variable():
     compose = yaml.safe_load(COMPOSE_PATH.read_text(encoding="utf-8"))
-    defaults = Settings()
+    defaults = _declared_ports()
 
     for service, port_map in _COMPOSE_PUBLISHED_PORTS.items():
         published = {

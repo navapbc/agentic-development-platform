@@ -15,6 +15,7 @@ import shlex
 from dataclasses import dataclass
 
 from services.orchestration.gates.pod_runner import (
+    CHECKS_POD_RESOURCES,
     PodOps,
     build_pod_manifest,
 )
@@ -236,7 +237,13 @@ class ChecksRunner:
 
     async def run_checks(self, spec: ChecksSpec) -> ChecksResult:
         pod = checks_pod_name(spec.repo, spec.execution_id)
-        manifest = build_pod_manifest(pod, self._namespace, self._builder_image, self._privileged)
+        manifest = build_pod_manifest(
+            pod,
+            self._namespace,
+            self._builder_image,
+            self._privileged,
+            CHECKS_POD_RESOURCES,
+        )
         await self._ops.create(manifest)
         try:
             await self._ops.wait_ready(pod, self._namespace)
@@ -258,7 +265,13 @@ class ChecksRunner:
         if not spec.fix_command:
             return ChecksFixResult(verified=False, exit_code=1, output="no fix_command declared")
         pod = checks_pod_name(spec.repo, f"{spec.execution_id}-fix")
-        manifest = build_pod_manifest(pod, self._namespace, self._builder_image, self._privileged)
+        manifest = build_pod_manifest(
+            pod,
+            self._namespace,
+            self._builder_image,
+            self._privileged,
+            CHECKS_POD_RESOURCES,
+        )
         await self._ops.create(manifest)
         try:
             await self._ops.wait_ready(pod, self._namespace)

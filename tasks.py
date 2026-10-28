@@ -11,6 +11,11 @@ from services import process
 
 COMPOSE = "docker compose"
 
+# A task that runs on the host must use the interpreter running invoke. A bare `python` resolves
+# to whatever the operator's PATH offers, which on a machine with a system or pyenv Python has
+# none of the project's dependencies and fails on an import rather than on a missing interpreter.
+HOST_PYTHON = shlex.quote(sys.executable)
+
 
 def _env_file_value(name: str, path: str = ".env") -> str:
     if not os.path.exists(path):
@@ -42,10 +47,17 @@ def _compose_files() -> str:
     return " ".join(files)
 
 
+def _on_host(command: str) -> str:
+    """Point a ``python ...`` command at the interpreter running invoke."""
+    if command == "python" or command.startswith("python "):
+        return HOST_PYTHON + command[len("python") :]
+    return command
+
+
 def _run_scripted(c, command: str, *, local: bool, service: str = "activity-worker") -> None:
     """Run a python -m command in the activity-worker container, or on the host with local=True."""
     if local:
-        c.run(command, pty=True)
+        c.run(_on_host(command), pty=True)
     else:
         c.run(f"{COMPOSE} {_compose_files()} exec -T {service} {command}", pty=True)
 
@@ -53,31 +65,31 @@ def _run_scripted(c, command: str, *, local: bool, service: str = "activity-work
 @task(help={"detach": "Run the tunnel in the background."})
 def tunnel_start(c, detach=False):
     """Start the jump-host tunnel to Bedrock."""
-    c.run(f"python -m scripts.tunnel start {'--detach' if detach else ''}".strip(), pty=True)
+    c.run(f"{HOST_PYTHON} -m scripts.tunnel start {'--detach' if detach else ''}".strip(), pty=True)
 
 
 @task
 def tunnel_stop(c):
     """Stop the backgrounded Bedrock connectivity tunnel."""
-    c.run("python -m scripts.tunnel stop", pty=True)
+    c.run(f"{HOST_PYTHON} -m scripts.tunnel stop", pty=True)
 
 
 @task
 def tunnel_status(c):
     """Report whether the backgrounded Bedrock connectivity tunnel is running."""
-    c.run("python -m scripts.tunnel status", pty=True)
+    c.run(f"{HOST_PYTHON} -m scripts.tunnel status", pty=True)
 
 
 @task
 def connectivity_check(c):
     """Validate the Bedrock path and local service reachability."""
-    c.run("python -m scripts.connectivity", pty=True)
+    c.run(f"{HOST_PYTHON} -m scripts.connectivity", pty=True)
 
 
 @task
 def config_check(c):
     """Report each per-environment config file version against the version this release expects."""
-    c.run("python -m scripts.config_check", pty=True)
+    c.run(f"{HOST_PYTHON} -m scripts.config_check", pty=True)
 
 
 @task
@@ -138,7 +150,7 @@ def db_reset(c):
 @task
 def seed(c):
     """Load local seed/fixture data (allowlisted AGENTDEV + demo repos)."""
-    c.run("python -m scripts.seed", pty=True)
+    c.run(f"{HOST_PYTHON} -m scripts.seed", pty=True)
 
 
 @task(
@@ -275,25 +287,29 @@ def operator_done(c, workflow_id, repo, branch, completion_signal_id="", closed_
         flags += f" --completion-signal-id {completion_signal_id}"
     if closed_unmerged:
         flags += " --closed-unmerged"
-    c.run(f"python -m scripts.operator_done {flags}", pty=True, env=_host_source_control_env())
+    c.run(
+        f"{HOST_PYTHON} -m scripts.operator_done {flags}",
+        pty=True,
+        env=_host_source_control_env(),
+    )
 
 
 @task
 def smoke_test(c):
     """Run the smoke test: DB reachable, services healthy, Bedrock path."""
-    c.run("python -m scripts.smoke_test", pty=True)
+    c.run(f"{HOST_PYTHON} -m scripts.smoke_test", pty=True)
 
 
 @task
 def prompts_seed(c):
     """Publish the platform prompt library to Langfuse."""
-    c.run("python -m scripts.seed_prompts", pty=True)
+    c.run(f"{HOST_PYTHON} -m scripts.seed_prompts", pty=True)
 
 
 @task
 def evidence_bucket_bootstrap(c):
     """Create the evidence object-lock bucket for local development."""
-    c.run("python -m scripts.evidence_bucket_bootstrap", pty=True)
+    c.run(f"{HOST_PYTHON} -m scripts.evidence_bucket_bootstrap", pty=True)
 
 
 @task(
@@ -320,14 +336,14 @@ def review_eval(c, offline=False, out=""):
     """Score the rebar review kernel against the keyword baseline on the gold set."""
     flags = " --offline" if offline else ""
     flags += f" --out {out}" if out else ""
-    c.run(f"python -m scripts.review_eval{flags}", pty=True)
+    c.run(f"{HOST_PYTHON} -m scripts.review_eval{flags}", pty=True)
 
 
 @task(help={"out": "Optional path to write the consolidated scorecard."})
 def context_eval(c, out=""):
     """Reproduce the consolidated repository-context accuracy scorecard on the demo corpora."""
     flags = f" --out {out}" if out else ""
-    c.run(f"python -m services.repository_intelligence.eval.consolidate{flags}", pty=True)
+    c.run(f"{HOST_PYTHON} -m services.repository_intelligence.eval.consolidate{flags}", pty=True)
 
 
 @task(help={"execution-id": "The execution id to roll up."})
@@ -335,7 +351,7 @@ def cost_rollup(c, execution_id=""):
     """Print the per-stage cost, token, and budget rollup for one execution."""
     if not execution_id:
         raise Exit("provide --execution-id")
-    c.run(f"python -m scripts.cost_rollup --execution-id {execution_id}", pty=True)
+    c.run(f"{HOST_PYTHON} -m scripts.cost_rollup --execution-id {execution_id}", pty=True)
 
 
 @task(help={"execution-id": "The execution id to reconcile."})
@@ -343,51 +359,51 @@ def reconcile_usage(c, execution_id=""):
     """Reconcile an execution's Langfuse generations against its usage metrics."""
     if not execution_id:
         raise Exit("provide --execution-id")
-    c.run(f"python -m scripts.reconcile_usage --execution-id {execution_id}", pty=True)
+    c.run(f"{HOST_PYTHON} -m scripts.reconcile_usage --execution-id {execution_id}", pty=True)
 
 
 @task
 def test(c):
     """Run the pytest suite."""
-    c.run("pytest", pty=True)
+    c.run(f"{HOST_PYTHON} -m pytest", pty=True)
 
 
 @task
 def ci(c):
     """Run the portable CI checks: lint, the hermetic test tiers, and the evaluation gate."""
-    c.run("ruff check", pty=True)
-    c.run("pytest -q tests/unit tests/end_to_end", pty=True)
-    c.run("python -m scripts.eval_gate", pty=True)
+    c.run(f"{HOST_PYTHON} -m ruff check", pty=True)
+    c.run(f"{HOST_PYTHON} -m pytest -q tests/unit tests/end_to_end", pty=True)
+    c.run(f"{HOST_PYTHON} -m scripts.eval_gate", pty=True)
 
 
 @task
 def sast(c):
     """Run the SAST, secret, misconfiguration, and dependency scans against the register."""
-    c.run("python -m scripts.sast_scan", pty=True)
+    c.run(f"{HOST_PYTHON} -m scripts.sast_scan", pty=True)
 
 
 @task
 def workflow_status(c):
     """Show recent Temporal workflow executions."""
-    c.run("python -m scripts.workflow_status", pty=True)
+    c.run(f"{HOST_PYTHON} -m scripts.workflow_status", pty=True)
 
 
 @task
 def resume_parked(c):
     """Resume parked workflows a newer agent build can retry."""
-    c.run("python -m scripts.resume_parked", pty=True)
+    c.run(f"{HOST_PYTHON} -m scripts.resume_parked", pty=True)
 
 
 @task
 def durability_proof(c):
     """Prove a workflow survives a worker restart."""
-    c.run("python -m scripts.durability_proof", pty=True)
+    c.run(f"{HOST_PYTHON} -m scripts.durability_proof", pty=True)
 
 
 @task(help={"dest": "Output path for the vendored binary (default vendor/bin/acli)."})
 def fetch_acli(c, dest="vendor/bin/acli"):
     """Fetch and vendor the Atlassian acli binary (configurable URL, pinned sha256)."""
-    c.run(f"python -m scripts.fetch_acli --dest {dest}", pty=True)
+    c.run(f"{HOST_PYTHON} -m scripts.fetch_acli --dest {dest}", pty=True)
 
 
 @task(
@@ -401,7 +417,7 @@ def cbm_build(c, source="", ref="", dest="vendor/bin"):
     """Build and vendor the codebase-memory-mcp binary from upstream or a local checkout."""
     flags = f" --source {source}" if source else ""
     flags += f" --ref {ref}" if ref else ""
-    c.run(f"python -m scripts.build_cbm --dest {dest}{flags}", pty=True)
+    c.run(f"{HOST_PYTHON} -m scripts.build_cbm --dest {dest}{flags}", pty=True)
 
 
 @task(
@@ -429,7 +445,7 @@ def publish_jumphost_image(c, tag="v1", arch="arm64", base_image="", repo="", re
 @task(help={"apply": "Perform real deletions instead of a dry-run."})
 def reap(c, apply=False):
     """Reap expired platform orphan artifacts (dry-run by default)."""
-    c.run(f"python -m scripts.reap {'--apply' if apply else ''}".strip(), pty=True)
+    c.run(f"{HOST_PYTHON} -m scripts.reap {'--apply' if apply else ''}".strip(), pty=True)
 
 
 @task(
@@ -556,7 +572,7 @@ def demo_durable_counter(c, target=50):
 )
 def demo_coordination(c, task="ADSER-13", repo="agentic-demo-service"):
     """Demo: the coordination stack blocks double-work and duplicate side effects (Act 3)."""
-    c.run(f"python -m scripts.demo_coordination --task {task} --repo {repo}", pty=True)
+    c.run(f"{HOST_PYTHON} -m scripts.demo_coordination --task {task} --repo {repo}", pty=True)
 
 
 @task(
@@ -571,7 +587,7 @@ def demo_repo_intelligence(c, repo="agentic-demo-service", commit="", focus="Tas
     flags = f"--repo {repo}"
     flags += f" --commit {commit}" if commit else ""
     flags += f' --focus "{focus}"' if focus else ""
-    c.run(f"python -m scripts.demo_repo_intelligence {flags}".strip(), pty=True)
+    c.run(f"{HOST_PYTHON} -m scripts.demo_repo_intelligence {flags}".strip(), pty=True)
 
 
 @task(
@@ -608,7 +624,7 @@ def demo_draft_pr(
     flags += " --full-pipeline" if full_pipeline else ""
     flags += f" --ci-job {ci_job}" if ci_job else ""
     flags += " --await-pr-close" if await_pr_close else ""
-    c.run(f"python -m scripts.demo_draft_pr {flags}".strip(), pty=True)
+    c.run(f"{HOST_PYTHON} -m scripts.demo_draft_pr {flags}".strip(), pty=True)
 
 
 @task(
@@ -625,7 +641,7 @@ def approve_pr(c, workflow_id, reject=False, pr_closed=False, merged=False):
     flags += " --reject" if reject else ""
     flags += " --pr-closed" if pr_closed else ""
     flags += " --merged" if merged else ""
-    c.run(f"python -m scripts.approve_pr {flags}".strip(), pty=True)
+    c.run(f"{HOST_PYTHON} -m scripts.approve_pr {flags}".strip(), pty=True)
 
 
 _K8S_LOCAL = "deploy/kubernetes/local"
@@ -718,14 +734,14 @@ def k8s_delete(c):
 def webhook_setup(c, repo="", url="http://localhost:8140/webhook/pr"):
     """Forward GitHub pull-request events to the local inbound-webhook via gh webhook forward."""
     repo_flag = f"--repo {repo}" if repo else ""
-    c.run(f"python -m scripts.webhook_forward {repo_flag} --url {url}".strip(), pty=True)
+    c.run(f"{HOST_PYTHON} -m scripts.webhook_forward {repo_flag} --url {url}".strip(), pty=True)
 
 
 @task(help={"repo": "Repository name under GITHUB_OWNER to clean dev hooks from."})
 def webhook_teardown(c, repo=""):
     """Delete the gh webhook forward dev hooks left on the repository."""
     repo_flag = f"--repo {repo}" if repo else ""
-    c.run(f"python -m scripts.webhook_forward {repo_flag} --remove".strip(), pty=True)
+    c.run(f"{HOST_PYTHON} -m scripts.webhook_forward {repo_flag} --remove".strip(), pty=True)
 
 
 ns = Collection()
