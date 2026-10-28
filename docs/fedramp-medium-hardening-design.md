@@ -66,9 +66,9 @@ Controls. AU-2 and AU-12 audit generation through the platform `audit_events` re
 
 ## Webhook relay policy
 
-Posture. The single public ingress is the webhook receiver. It authenticates each inbound delivery, rejects an unsigned or mis-signed request, and converges duplicate deliveries on one outcome through the coordination idempotency ledger.
+Posture. The single public ingress is the webhook receiver. It authenticates each inbound delivery, rejects an unsigned or mis-signed request, and converges duplicate deliveries on one outcome through the coordination idempotency ledger. An integration configured for inbound deliveries refuses to start without its signing secret, so an unconfigured secret cannot degrade into accepting unsigned traffic. Every request handler bounds the declared body length and sets a connection timeout, so a client that declares a body and sends nothing releases its handler thread rather than holding it.
 
-Controls. SI-10 information input validation through the HMAC-SHA256 signature check with a constant-time comparison in [pr_events.py](../services/orchestration/webhook/pr_events.py). IA-3 device and sender authentication through the shared webhook secret. SC-8 transmission confidentiality over TLS. SC-5 denial-of-service consideration through the idempotency ledger that collapses duplicate deliveries.
+Controls. SI-10 information input validation through the HMAC-SHA256 signature check with a constant-time comparison in [pr_events.py](../services/orchestration/webhook/pr_events.py). IA-3 device and sender authentication through the shared webhook secret, and on the coordination RPC through the shared bearer token checked in [service.py](../services/coordination/service.py). SC-8 transmission confidentiality over TLS. SC-5 denial-of-service consideration through the idempotency ledger that collapses duplicate deliveries, and through the body cap and connection timeout in [http_front_door.py](../services/http_front_door.py).
 
 ## Cross-cutting integrity
 

@@ -690,9 +690,11 @@ def _write_k8s_secret_env() -> None:
     env = _read_env_file(".env")
     database_url = env.get("DATABASE_URL", "").replace("@postgres:", "@host.docker.internal:")
     github_webhook_secret = env.get("GITHUB_WEBHOOK_SECRET", "local-demo-secret")
+    jira_webhook_secret = env.get("JIRA_WEBHOOK_SECRET", "local-demo-secret")
     with open(_K8S_SECRET_ENV, "w", encoding="utf-8") as handle:
         handle.write(f"database_url={database_url}\n")
         handle.write(f"github_webhook_secret={github_webhook_secret}\n")
+        handle.write(f"jira_webhook_secret={jira_webhook_secret}\n")
 
 
 @task(help={"build": "Build and tag the image from docker/Dockerfile before deploying."})

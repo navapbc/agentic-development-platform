@@ -13,6 +13,11 @@ from typing import Any, cast
 from scripts.config import Settings, configured_log_level, get_settings, to_host_hostport
 
 from services.coordination.idempotency import PostgresSideEffectLedger, SideEffectLedger
+from services.http_front_door import (
+    REQUEST_TIMEOUT_SECONDS,
+    RequestRejected,
+    read_bounded_body,
+)
 from services.integration.github.credentials import (
     allowed_repos,
     build_github_credential_resolver,
@@ -42,6 +47,28 @@ _SERVICE = "inbound-webhook"
 class Route:
     handler: IntegrationHandler
     allowed: frozenset[str]
+
+
+_SECRET_ENV_VARS = {
+    "pr_closed": "GITHUB_WEBHOOK_SECRET",
+    "jira_intake": "JIRA_WEBHOOK_SECRET",
+}
+
+
+def require_webhook_secrets(settings: Settings) -> None:
+    """Refuse to serve an integration whose inbound mode has no signing secret configured."""
+    integrations = load_integrations_config(settings)
+    secrets = {
+        "pr_closed": settings.github_webhook_secret,
+        "jira_intake": settings.jira_webhook_secret,
+    }
+    missing = sorted(
+        _SECRET_ENV_VARS[name]
+        for name, secret in secrets.items()
+        if integrations.webhook_enabled(name) and not secret
+    )
+    if missing:
+        raise SystemExit(f"set {' and '.join(missing)} to accept inbound deliveries")
 
 
 async def build_routes(settings: Settings) -> dict[str, Route]:
@@ -75,6 +102,8 @@ def build_handler(
     loop: asyncio.AbstractEventLoop,
 ) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
+        timeout = REQUEST_TIMEOUT_SECONDS
+
         def do_GET(self) -> None:
             if self.path in ("/health", "/healthz", "/"):
                 self._respond(200, {"status": "ok", "service": _SERVICE})
@@ -86,8 +115,12 @@ def build_handler(
             if route is None:
                 self._respond(404, {"error": "not found"})
                 return
-            length = int(self.headers.get("Content-Length") or 0)
-            body = self.rfile.read(length) if length else b""
+            try:
+                body = read_bounded_body(self.rfile, self.headers)
+            except RequestRejected as exc:
+                self.close_connection = True
+                self._respond(exc.status, {"error": exc.message})
+                return
             mode = load_integrations_config(settings).mode(route.handler.name)
             code, payload = asyncio.run_coroutine_threadsafe(
                 handle_inbound(
@@ -118,6 +151,7 @@ def build_handler(
 
 def main() -> None:
     settings = get_settings()
+    require_webhook_secrets(settings)
     loop = asyncio.new_event_loop()
     threading.Thread(target=loop.run_forever, name="inbound-webhook-loop", daemon=True).start()
     routes = asyncio.run_coroutine_threadsafe(build_routes(settings), loop).result()

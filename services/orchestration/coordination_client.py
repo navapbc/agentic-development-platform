@@ -12,6 +12,7 @@ from scripts.config import get_settings
 from services.coordination.claims import ClaimOutcome, Schedule, WorkUnit
 from services.coordination.idempotency import SideEffectOutcome, SideEffectRef
 from services.coordination.sequencing import SequencedAction, SequenceDecision
+from services.http_front_door import bearer_header
 
 Effect = Callable[[], Any] | Callable[[], Awaitable[Any]]
 
@@ -24,13 +25,16 @@ async def _resolve(effect: Effect) -> Any:
 
 
 class CoordinationClient:
-    def __init__(self, base_url: str | None = None, *, timeout: float = 30.0) -> None:
+    def __init__(
+        self, base_url: str | None = None, *, timeout: float = 30.0, token: str | None = None
+    ) -> None:
         self._base_url = base_url or get_settings().coordination_url
+        self._token = token if token is not None else get_settings().coordination_shared_secret
         self._timeout = timeout
 
     async def _post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
         async with httpx.AsyncClient(base_url=self._base_url, timeout=self._timeout) as client:
-            resp = await client.post(path, json=body)
+            resp = await client.post(path, json=body, headers=bearer_header(self._token))
             resp.raise_for_status()
             return resp.json()
 
