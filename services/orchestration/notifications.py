@@ -95,12 +95,29 @@ def deliver_alert(message: AlertMessage, settings: Settings | None = None) -> li
     return delivered
 
 
+DETAIL_LINE_LIMIT = 40
+
+
+def _bounded_detail(detail: str) -> str:
+    """Keep the tail of a long detail block so the ``Next step:`` line stays reachable.
+
+    A check stage can carry a whole CI log here. Rendered in full it pushes the remedy hundreds
+    of lines down a Jira comment, which defeats the point of attaching one.
+    """
+    lines = detail.splitlines()
+    if len(lines) <= DETAIL_LINE_LIMIT:
+        return detail
+    dropped = len(lines) - DETAIL_LINE_LIMIT
+    kept = "\n".join(lines[-DETAIL_LINE_LIMIT:])
+    return f"[{dropped} earlier lines omitted]\n{kept}"
+
+
 def _intervention_message(alert: HumanInterventionAlert) -> AlertMessage:
     body = (
         f"Human intervention required for {alert.task_id} on {alert.repo}.\n"
         f"The run stopped at the {alert.stage} stage with reason {alert.reason}.\n"
         f"Task {alert.task_id}, execution {alert.execution_id}, workflow {alert.workflow_id}.\n"
-        f"{alert.detail}"
+        f"{_bounded_detail(alert.detail)}"
     )
     return AlertMessage(
         subject=f"Human intervention needed on {alert.repo} for {alert.task_id}",
@@ -123,13 +140,9 @@ def send_intake_unroutable_alert(
     remedy: str,
     settings: Settings | None = None,
 ) -> list[str]:
-    body = (
-        f"Ticket intake could not resolve a target repository for {issue_key} "
-        f"in project {project}.\n"
-        f"{reason}."
-    )
+    body = f"Ticket intake stopped on {issue_key} in project {project}.\n{reason}."
     message = AlertMessage(
-        subject=f"Ticket intake could not route {issue_key}",
+        subject=f"Ticket intake stopped on {issue_key}",
         body=with_remedy(body, remedy),
         issue_key=issue_key,
     )

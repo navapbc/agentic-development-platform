@@ -232,3 +232,61 @@ def test_the_intake_hold_conditions_do_not_share_one_remedy():
     }
 
     assert len(texts) == 4
+
+
+def test_every_runtime_cap_outcome_is_a_known_implementation_reason():
+    """``assert_never`` proves the match covers the enum, not that the enum covers the producers.
+
+    ``openhands/runtime/caps.py`` is the external producer most likely to grow a new outcome, and
+    one added there type-checks clean while degrading to the generic remedy. Reading its constants
+    from the module rather than restating them is what makes this catch the drift.
+    """
+    from openhands.runtime import caps
+
+    emitted = {
+        value
+        for name, value in vars(caps).items()
+        if name.isupper() and isinstance(value, str) and not name.startswith("_")
+    }
+    narrowed = {member.value for member in remedies.ImplementationReason}
+
+    assert emitted - narrowed == {caps.COMPLETED}, (
+        "a new runtime cap outcome needs a matching ImplementationReason member, or the alert "
+        "for it silently falls back to the generic remedy"
+    )
+
+
+def test_a_long_check_log_cannot_push_the_next_step_out_of_reach():
+    """A check stage carries its CI log as the alert detail. Rendered whole it buries the one
+    actionable sentence hundreds of lines down a Jira comment."""
+    from services.orchestration.notifications import (
+        DETAIL_LINE_LIMIT,
+        HumanInterventionAlert,
+        _intervention_message,
+    )
+
+    message = _intervention_message(
+        HumanInterventionAlert(
+            task_id="ADSER-24",
+            execution_id="exec-1",
+            workflow_id="wf-1",
+            repo="navapbc/demo",
+            stage="checks",
+            reason="checks_failed",
+            detail="\n".join(f"log line {n}" for n in range(400)),
+            issue_key="ADSER-24",
+            remedy="Run `inv repair --issue ADSER-24 --retry`.",
+        )
+    )
+    lines = message.body.splitlines()
+
+    assert lines[-1].startswith(NEXT_STEP_PREFIX)
+    assert len(lines) < DETAIL_LINE_LIMIT + 10
+    assert "log line 399" in message.body, "the tail of the log is what diagnoses the failure"
+    assert "[360 earlier lines omitted]" in message.body
+
+
+def test_a_short_detail_is_left_intact():
+    from services.orchestration.notifications import _bounded_detail
+
+    assert _bounded_detail("one\ntwo") == "one\ntwo"

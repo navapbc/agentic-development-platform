@@ -760,18 +760,21 @@ def test_required_checks_repos_lists_configured_repositories_under_github(monkey
     assert required_checks_repos(hermetic_settings()) == frozenset({"repo-a"})
 
 
-async def test_each_hold_condition_sends_its_own_remedy_to_the_alerter():
-    """One shared remedy cannot be correct for conditions fixed in the ticket, the intake config,
-    and the target repository alike."""
-    conflict, unroutable, unchecked, base = (
-        remedies.base_conflict_remedy("ADSER-24"),
-        remedies.unroutable_remedy("ADSER-24", "ADSER"),
-        remedies.checks_not_configured_remedy("ADSER-24", ["navapbc/demo"]),
-        remedies.unresolvable_base_remedy("ADSER-24"),
-    )
+async def test_a_base_label_conflict_sends_its_own_remedy_to_the_alerter():
+    """The remedy has to survive the trip through ``_hold`` to the alerter, not merely exist."""
+    read = _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV", labels=("base:x", "base:y"))]})
+    starter, alerter, ledger, store, resolver = _defaults()
 
-    assert len({conflict, unroutable, unchecked, base}) == 4
-    assert "base-branch label" in conflict
-    assert "repos marker" in unroutable
-    assert "checks config" in unchecked
-    assert "does not exist" in base
+    await _run(read, starter, alerter, ledger, store, resolver)
+
+    assert alerter.remedies == [remedies.base_conflict_remedy("ADEV-1")]
+
+
+async def test_an_unroutable_ticket_sends_a_different_remedy_than_a_base_conflict():
+    read = _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV")]})
+    starter, alerter, ledger, store, resolver = _defaults(default_repo="")
+
+    await _run(read, starter, alerter, ledger, store, resolver)
+
+    assert alerter.remedies == [remedies.unroutable_remedy("ADEV-1", "ADEV")]
+    assert alerter.remedies != [remedies.base_conflict_remedy("ADEV-1")]
