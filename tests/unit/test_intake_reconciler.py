@@ -9,6 +9,7 @@ from services.coordination.idempotency import InMemorySideEffectLedger, SideEffe
 from services.integration.jira import CLOUD
 from services.integration.jira.credentials import ComponentRepos
 from services.integration.jira.snapshot import TaskSnapshot, snapshot_id_for
+from services.orchestration import remedies
 from services.orchestration.checks.config import required_checks_repos
 from services.orchestration.intake_base import UnresolvableBaseBranch
 from services.orchestration.intake_reconciler import (
@@ -58,9 +59,11 @@ class _Starter:
 class _Alerter:
     def __init__(self) -> None:
         self.alerts: list[tuple[str, str, str]] = []
+        self.remedies: list[str] = []
 
-    async def unroutable(self, *, issue_key: str, project: str, reason: str) -> None:
+    async def unroutable(self, *, issue_key: str, project: str, reason: str, remedy: str) -> None:
         self.alerts.append((issue_key, project, reason))
+        self.remedies.append(remedy)
 
 
 class _Seeder:
@@ -755,3 +758,20 @@ def test_required_checks_repos_lists_configured_repositories_under_github(monkey
     )
 
     assert required_checks_repos(hermetic_settings()) == frozenset({"repo-a"})
+
+
+async def test_each_hold_condition_sends_its_own_remedy_to_the_alerter():
+    """One shared remedy cannot be correct for conditions fixed in the ticket, the intake config,
+    and the target repository alike."""
+    conflict, unroutable, unchecked, base = (
+        remedies.base_conflict_remedy("ADSER-24"),
+        remedies.unroutable_remedy("ADSER-24", "ADSER"),
+        remedies.checks_not_configured_remedy("ADSER-24", ["navapbc/demo"]),
+        remedies.unresolvable_base_remedy("ADSER-24"),
+    )
+
+    assert len({conflict, unroutable, unchecked, base}) == 4
+    assert "base-branch label" in conflict
+    assert "repos marker" in unroutable
+    assert "checks config" in unchecked
+    assert "does not exist" in base

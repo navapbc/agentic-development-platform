@@ -9,6 +9,7 @@ guidance instead of stalling the run.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from enum import StrEnum
 from typing import assert_never
 
@@ -255,3 +256,36 @@ def approval_rejected_remedy(issue_key: str) -> str:
 
 def claim_denied_remedy(issue_key: str) -> str:
     return _claim_remedy(issue_key)
+
+
+def base_conflict_remedy(issue_key: str) -> str:
+    return (
+        f"The ticket carries more than one base-branch label, so intake cannot tell which branch "
+        f"to build from. Leave a single base label on {_issue(issue_key)}, then run "
+        f"`inv restart --issue {_issue(issue_key)}` to re-admit it."
+    )
+
+
+def unroutable_remedy(issue_key: str, project: str) -> str:
+    return (
+        f"Intake could not resolve a target repository for {_issue(issue_key)}. Add a repos marker "
+        f"to the ticket description, or set a default_repo for the {project} project in the intake "
+        f"config, then run `inv restart --issue {_issue(issue_key)}` to re-admit it."
+    )
+
+
+def checks_not_configured_remedy(issue_key: str, repos: Sequence[str]) -> str:
+    names = ", ".join(repos) or "the target repository"
+    return (
+        f"No checks config is registered for {names}, so the run would have no gates to pass. Add "
+        f"an entry for {names} to the checks config, then run `inv restart --issue "
+        f"{_issue(issue_key)}` to re-admit the ticket."
+    )
+
+
+def unresolvable_base_remedy(issue_key: str) -> str:
+    return (
+        f"The base branch named on {_issue(issue_key)} does not exist on the target repository. "
+        f"Push the branch, or correct the base label on the ticket, then run `inv restart --issue "
+        f"{_issue(issue_key)}` to re-admit it."
+    )

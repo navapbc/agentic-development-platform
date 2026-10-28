@@ -86,7 +86,7 @@ class _Starter:
 
 
 class _Alerter:
-    async def unroutable(self, *, issue_key: str, project: str, reason: str) -> None:
+    async def unroutable(self, *, issue_key: str, project: str, reason: str, remedy: str) -> None:
         return None
 
 

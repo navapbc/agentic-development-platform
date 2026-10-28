@@ -21,6 +21,19 @@ with workflow.unsafe.imports_passed_through():
     from services.orchestration.gates.contract import PAUSE_FOR_HUMAN, GateContext
     from services.orchestration.gates.runner import run_gate_stage
     from services.orchestration.intake_base import declared_issue_key
+    from services.orchestration.remedies import (
+        approval_rejected_remedy,
+        branch_sync_remedy,
+        claim_denied_remedy,
+        gate_decision_remedy,
+        gate_rejected_remedy,
+        implementation_remedy,
+        issue_recheck_remedy,
+        plan_rejected_remedy,
+        policy_denied_remedy,
+        repair_remedy,
+        review_blocked_remedy,
+    )
     from services.orchestration.temporal_activities.authorship import (
         SignAuthorshipRequest,
         VerifyAuthorshipRequest,
@@ -158,19 +171,6 @@ with workflow.unsafe.imports_passed_through():
         PullRequestInput,
         PullRequestOutput,
         PullRequestWorkflow,
-    )
-    from services.orchestration.temporal_workflows.remedies import (
-        approval_rejected_remedy,
-        branch_sync_remedy,
-        claim_denied_remedy,
-        gate_decision_remedy,
-        gate_rejected_remedy,
-        implementation_remedy,
-        issue_recheck_remedy,
-        plan_rejected_remedy,
-        policy_denied_remedy,
-        repair_remedy,
-        review_blocked_remedy,
     )
     from services.orchestration.temporal_workflows.review import (
         PlanReviewInput,
@@ -1677,7 +1677,9 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                     reason=REVIEW_BLOCKED,
                     stage="review",
                     detail=f"blocking gates: {', '.join(blocking)}",
-                    remedy=review_blocked_remedy(params.issue_key, ", ".join(blocking)),
+                    remedy=review_blocked_remedy(
+                        params.issue_key, ", ".join(fail_closed or blocking)
+                    ),
                 )
 
         return replace(

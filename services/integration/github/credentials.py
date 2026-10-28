@@ -55,7 +55,7 @@ class GitHubSourceConfig:
     allowlist: tuple[str, ...] = ()
 
 
-class UnconfiguredRepositoryError(RuntimeError, RemediableError):
+class UnconfiguredRepositoryError(RemediableError, RuntimeError):
     """Raised when an allowlisted repository resolves to no complete host, owner, and token."""
 
     def __init__(self, repo: str) -> None:
@@ -66,7 +66,7 @@ class UnconfiguredRepositoryError(RuntimeError, RemediableError):
             "this environment, then run `inv config-check` to confirm it resolves."
         )
 
-    def __str__(self) -> str:
+    def condition(self) -> str:
         return f"repository {self.repo} has no complete GitHub source (host, owner, and token)."
 
 

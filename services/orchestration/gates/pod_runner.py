@@ -125,6 +125,12 @@ def build_pod_manifest(
 _IMAGE_WAIT_REASONS = frozenset({"ErrImagePull", "ImagePullBackOff", "InvalidImageName"})
 
 
+_INSPECT_THE_POD = (
+    "Run `kubectl describe pod -n <namespace> <pod>` against the gate cluster to read the pod "
+    "events, then rerun the gate."
+)
+
+
 def describe_pod_not_ready(status: Mapping[str, Any]) -> str:
     """Explain why a pod has not become Ready, from its phase, conditions, and container state.
 
@@ -154,12 +160,15 @@ def describe_pod_not_ready(status: Mapping[str, Any]) -> str:
             "Check the image reference in the gate config and the cluster's access to the "
             "registry, then rerun the gate."
             if reason in _IMAGE_WAIT_REASONS
-            else ""
+            else _INSPECT_THE_POD
         )
         return with_remedy(
             f"The pod is {phase} and its container is waiting, reason {reason}.{kubelet}", remedy
         )
-    return f"The pod is {phase} and no scheduling or container condition explains it."
+    return with_remedy(
+        f"The pod is {phase} and no scheduling or container condition explains it.",
+        _INSPECT_THE_POD,
+    )
 
 
 def _run_script(spec: PodEngineSpec) -> str:
@@ -329,8 +338,9 @@ class KubectlPodOps:
         if proc.returncode:
             raise PodEngineError(
                 f"pod {pod} in namespace {namespace} was not Ready within "
-                f"{int(self._ready_timeout)}s. {self._not_ready_reason(pod, namespace)} "
-                f"kubectl reported {proc.stderr.strip() or 'nothing'}"
+                f"{int(self._ready_timeout)}s. kubectl reported "
+                f"{proc.stderr.strip() or 'nothing'}. "
+                f"{self._not_ready_reason(pod, namespace)}"
             )
 
     def _not_ready_reason(self, pod: str, namespace: str) -> str:

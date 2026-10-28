@@ -111,17 +111,16 @@ class NotificationsAlerter:
     def __init__(self, settings: Any) -> None:
         self._settings = settings
 
-    async def unroutable(self, *, issue_key: str, project: str, reason: str) -> None:
+    async def unroutable(
+        self, *, issue_key: str, project: str, reason: str, remedy: str
+    ) -> None:
         from services.orchestration.notifications import send_intake_unroutable_alert
 
         send_intake_unroutable_alert(
             issue_key=issue_key,
             project=project,
             reason=reason,
-            remedy=(
-                "Add a repos marker to the ticket description or set a default_repo for the "
-                "project, then intake retries on the next poll."
-            ),
+            remedy=remedy,
             settings=self._settings,
         )
 

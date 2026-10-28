@@ -13,6 +13,8 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from temporalio import activity
 
+from services.operator_remedy import NO_NEXT_STEP
+
 _engine: AsyncEngine | None = None
 
 
@@ -90,6 +92,10 @@ class AuditEvent:
     decision: str | None = None
     prompt_version: str | None = None
     artifact_hashes: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.remedy == NO_NEXT_STEP:
+            self.remedy = None
 
 
 @activity.defn

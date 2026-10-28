@@ -11,10 +11,9 @@ from services.integration.github.credentials import UnconfiguredRepositoryError
 from services.operator_remedy import (
     NEXT_STEP_PREFIX,
     NO_NEXT_STEP,
-    operator_text,
     with_remedy,
 )
-from services.orchestration.temporal_workflows import remedies
+from services.orchestration import remedies
 
 _WORKFLOW = (
     Path(__file__).resolve().parents[2]
@@ -106,29 +105,130 @@ def test_a_missing_issue_key_still_renders_a_runnable_shaped_command():
     assert "inv restart --issue <issue_key>" in remedies.generic_remedy("", "plan")
 
 
-def test_secret_not_found_states_the_condition_without_the_remedy():
+def test_secret_not_found_renders_condition_then_remedy():
     exc = SecretNotFoundError("JIRA_API_TOKEN")
 
-    assert "is not set in the process environment" in str(exc)
-    assert "Export" not in str(exc)
+    assert exc.condition().startswith("the secret JIRA_API_TOKEN is not set")
     assert "Export JIRA_API_TOKEN" in exc.remedy
-    assert operator_text(exc) == f"{exc}\n{NEXT_STEP_PREFIX} {exc.remedy}"
+    assert str(exc) == f"{exc.condition()}\n{NEXT_STEP_PREFIX} {exc.remedy}"
 
 
-def test_config_error_states_the_condition_without_the_remedy():
+def test_secret_not_found_keeps_key_error_semantics():
+    exc = SecretNotFoundError("JIRA_API_TOKEN")
+
+    assert isinstance(exc, KeyError)
+    assert "Export JIRA_API_TOKEN" in str(exc), "KeyError.__str__ must not win the MRO"
+
+
+def test_config_error_renders_condition_then_remedy():
     exc = ConfigError("github.yaml is version 1", remedy="Run `inv config-check`.")
 
-    assert "inv config-check" not in str(exc)
-    assert NEXT_STEP_PREFIX in operator_text(exc)
+    assert isinstance(exc, RuntimeError)
+    assert str(exc) == f"github.yaml is version 1\n{NEXT_STEP_PREFIX} Run `inv config-check`."
+
+
+def test_config_error_without_a_remedy_renders_only_the_condition():
+    assert str(ConfigError("scan_scope must be a string")) == "scan_scope must be a string"
 
 
 def test_unconfigured_repository_carries_a_remedy():
     exc = UnconfiguredRepositoryError("navapbc/agentic-demo-service")
 
-    assert "config-check" not in str(exc)
     assert "github.yaml" in exc.remedy
-    assert NEXT_STEP_PREFIX in operator_text(exc)
+    assert str(exc).endswith(exc.remedy)
 
 
-def test_operator_text_passes_through_an_error_with_no_remedy():
-    assert operator_text(ValueError("plain")) == "plain"
+def test_a_remediable_error_survives_the_temporal_failure_converter():
+    """Temporal encodes an activity failure with ``str(exception)``, so the remedy must live
+    there or it is lost before an operator ever opens the workflow in the UI."""
+    from temporalio.api.failure.v1 import Failure
+    from temporalio.converter import DefaultFailureConverter, DefaultPayloadConverter
+
+    failure = Failure()
+    DefaultFailureConverter().to_failure(
+        SecretNotFoundError("JIRA_API_TOKEN"), DefaultPayloadConverter(), failure
+    )
+
+    assert NEXT_STEP_PREFIX in failure.message
+    assert "Export JIRA_API_TOKEN" in failure.message
+
+
+def test_the_no_next_step_sentinel_never_reaches_the_audit_record():
+    """``NO_NEXT_STEP`` is an internal marker. Persisting it would put ``__no_next_step__`` in
+    front of an operator reading ``audit_events`` or the Object-Locked evidence store."""
+    from services.orchestration.temporal_activities.persistence import (
+        AuditEvent,
+        _audit_event_body,
+    )
+
+    event = AuditEvent(
+        event_id="e",
+        task_id="t",
+        execution_id="x",
+        event_type="HUMAN_INTERVENTION_ALERTED",
+        remedy=NO_NEXT_STEP,
+    )
+
+    assert event.remedy is None
+    assert _audit_event_body(event)["remedy"] is None
+
+
+def test_an_authored_remedy_still_reaches_the_audit_record():
+    from services.orchestration.temporal_activities.persistence import AuditEvent
+
+    event = AuditEvent(
+        event_id="e",
+        task_id="t",
+        execution_id="x",
+        event_type="HUMAN_INTERVENTION_ALERTED",
+        remedy="Run `inv restart --issue ADSER-24`.",
+    )
+
+    assert event.remedy == "Run `inv restart --issue ADSER-24`."
+
+
+def test_the_pod_not_ready_remedy_is_the_last_line_of_the_message():
+    """The caller appends kubectl output, so the remedy has to be composed last or the
+    ``Next step:`` line stops being the final instruction an operator reads."""
+    from services.orchestration.gates.pod_runner import describe_pod_not_ready
+
+    status = {
+        "phase": "Pending",
+        "conditions": [{"type": "PodScheduled", "status": "False", "reason": "Unschedulable"}],
+    }
+    message = (
+        f"pod p in namespace n was not Ready within 60s. kubectl reported nothing. "
+        f"{describe_pod_not_ready(status)}"
+    )
+
+    assert message.splitlines()[-1].startswith(NEXT_STEP_PREFIX)
+
+
+@pytest.mark.parametrize(
+    ("author", "kwargs"),
+    [
+        (remedies.base_conflict_remedy, {"issue_key": "ADSER-24"}),
+        (remedies.unroutable_remedy, {"issue_key": "ADSER-24", "project": "ADSER"}),
+        (
+            remedies.checks_not_configured_remedy,
+            {"issue_key": "ADSER-24", "repos": ["navapbc/demo"]},
+        ),
+        (remedies.unresolvable_base_remedy, {"issue_key": "ADSER-24"}),
+    ],
+)
+def test_each_intake_hold_condition_names_a_distinct_runnable_command(author, kwargs):
+    text = author(**kwargs)
+
+    assert "inv restart --issue ADSER-24" in text
+    assert text.rstrip().endswith(".")
+
+
+def test_the_intake_hold_conditions_do_not_share_one_remedy():
+    texts = {
+        remedies.base_conflict_remedy("ADSER-24"),
+        remedies.unroutable_remedy("ADSER-24", "ADSER"),
+        remedies.checks_not_configured_remedy("ADSER-24", ["navapbc/demo"]),
+        remedies.unresolvable_base_remedy("ADSER-24"),
+    }
+
+    assert len(texts) == 4

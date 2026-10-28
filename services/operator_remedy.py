@@ -13,17 +13,22 @@ NEXT_STEP_PREFIX = "Next step:"
 
 
 class RemediableError(Exception):
-    """An error whose message states what happened and whose ``remedy`` states what to do.
+    """An error that states what happened and, separately, what the operator should do.
 
-    ``str(exc)`` carries only the condition so callers can log, match, and wrap it without
-    operator instructions bleeding into other contexts. Operator-facing surfaces render
-    ``operator_message()`` instead.
+    ``str(exc)`` renders both, because the surfaces that show an operator an exception mostly do
+    so through ``str``, including the Temporal failure converter and every ``%s`` log call.
+    ``remedy`` stays separately addressable so audit records and alerts can store the guidance as
+    its own field rather than parsing it back out of a message.
     """
 
     remedy: str = ""
 
-    def operator_message(self) -> str:
-        return with_remedy(str(self), self.remedy)
+    def condition(self) -> str:
+        """What happened, with no instruction to the operator."""
+        return super().__str__()
+
+    def __str__(self) -> str:
+        return with_remedy(self.condition(), self.remedy)
 
 
 def with_remedy(body: str, remedy: str) -> str:
@@ -31,10 +36,3 @@ def with_remedy(body: str, remedy: str) -> str:
     if not remedy or remedy == NO_NEXT_STEP:
         return body
     return f"{body}\n{NEXT_STEP_PREFIX} {remedy}"
-
-
-def operator_text(exc: BaseException) -> str:
-    """Render any exception for an operator, adding its remedy when it carries one."""
-    if isinstance(exc, RemediableError):
-        return exc.operator_message()
-    return str(exc)

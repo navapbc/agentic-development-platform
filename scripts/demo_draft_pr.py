@@ -41,7 +41,6 @@ from services.integration.jira.credentials import (
 from services.integration.jira.linkback import post_pr_linkback
 from services.integration.jira.normalize import normalize_issue
 from services.integration.jira.snapshot import SnapshotCandidate, snapshot_id_for
-from services.operator_remedy import operator_text
 from services.orchestration.bounded_task_pipeline import (
     DRAFT_PR_OPEN,
     EXISTING_PR_REUSED,
@@ -169,7 +168,7 @@ def _missing(settings: Settings) -> list[str]:
             return ["config/<env>/github.yaml has no allowlisted repository with an identity"]
         resolver.resolve(repos[0])
     except (ConfigError, SecretNotFoundError, UnconfiguredRepositoryError) as exc:
-        return [operator_text(exc)]
+        return [str(exc)]
     return []
 
 

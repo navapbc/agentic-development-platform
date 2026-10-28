@@ -19,7 +19,7 @@ from services.integration.github.credentials import (
     UnconfiguredRepositoryError,
     parse_github_config,
 )
-from services.operator_remedy import NEXT_STEP_PREFIX, operator_text
+from services.operator_remedy import NEXT_STEP_PREFIX
 
 
 def _config() -> dict:
@@ -231,13 +231,13 @@ def test_a_missing_secret_names_the_variable_the_env_file_and_the_next_command(t
     with pytest.raises(SecretNotFoundError) as caught:
         EnvSecretResolver(env_file=env_file).resolve("GITHUB_TOKEN")
 
-    condition = str(caught.value)
+    condition = caught.value.condition()
     assert "GITHUB_TOKEN" in condition
     assert str(env_file) in condition
     assert "inv local-up" not in condition
 
-    message = operator_text(caught.value)
-    assert f"{NEXT_STEP_PREFIX} " in message
+    message = str(caught.value)
+    assert message == f"{condition}\n{NEXT_STEP_PREFIX} {caught.value.remedy}"
     assert "inv local-up" in message
 
 

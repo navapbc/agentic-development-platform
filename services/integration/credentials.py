@@ -36,7 +36,7 @@ def current_config_version(name: str, *, versions: Mapping[str, int] | None = No
         raise ConfigError(f"no current config version registered for {name!r}") from None
 
 
-class ConfigError(RuntimeError, RemediableError):
+class ConfigError(RemediableError, RuntimeError):
     """Raised when a per-environment config file is missing or malformed.
 
     Validation failures name the offending key and need no remedy beyond that. Sites whose fix is
@@ -48,7 +48,7 @@ class ConfigError(RuntimeError, RemediableError):
         self.remedy = remedy
 
 
-class SecretNotFoundError(KeyError, RemediableError):
+class SecretNotFoundError(RemediableError, KeyError):
     """Raised when a secret reference resolves to no value."""
 
     def __init__(self, ref: str, *, env_file: Path | None = None) -> None:
@@ -60,7 +60,7 @@ class SecretNotFoundError(KeyError, RemediableError):
             "`inv local-up` so the workers pick it up."
         )
 
-    def __str__(self) -> str:
+    def condition(self) -> str:
         where = f" or in {self.env_file}" if self.env_file is not None else ""
         return f"the secret {self.ref} is not set in the process environment{where}."
 
