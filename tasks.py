@@ -312,6 +312,25 @@ def evidence_bucket_bootstrap(c):
     c.run(f"{HOST_PYTHON} -m scripts.evidence_bucket_bootstrap", pty=True)
 
 
+@task(
+    help={
+        "function_name": "The role_bootstrap_function_name Terraform output.",
+        "region": "Function region. Defaults to AWS_REGION.",
+    }
+)
+def db_bootstrap_roles(c, function_name="", region=""):
+    """Create the per-service database roles and databases in a deployed Aurora cluster."""
+    if not function_name:
+        raise Exit("provide --function-name")
+    from scripts.config import get_settings
+
+    settings = get_settings()
+    flags = f" --function-name {shlex.quote(function_name)}"
+    flags += f" --region {shlex.quote(region)}" if region else ""
+    env = {"AWS_PROFILE": settings.aws_profile, "AWS_REGION": settings.aws_region}
+    c.run(f"{HOST_PYTHON} -m scripts.db_bootstrap_roles{flags}", pty=True, env=env)
+
+
 @task(help={"offline": "Use the deterministic offline fixture instead of the rebar kernel."})
 def review_eval(c, offline=False, out=""):
     """Score the rebar review kernel against the keyword baseline on the gold set."""
@@ -740,6 +759,7 @@ for _t in (
     db_migrate,
     schedules_install,
     db_reset,
+    db_bootstrap_roles,
     seed,
     import_rebar_tickets,
     rebar_changes,
@@ -748,6 +768,7 @@ for _t in (
     operator_done,
     smoke_test,
     prompts_seed,
+    evidence_bucket_bootstrap,
     review_eval,
     context_eval,
     cost_rollup,

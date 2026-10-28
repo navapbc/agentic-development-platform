@@ -308,6 +308,17 @@ def test_select_attestor_signs_every_stage(tmp_path):
         assert isinstance(select_attestor(stage, settings), SshsigAttestor)
 
 
+def test_select_attestor_reports_an_unreadable_injected_key_as_not_configured(tmp_path):
+    from services.review.gate import ReviewSigningNotConfigured, select_attestor
+
+    settings = _signing_settings(tmp_path).model_copy(
+        update={"review_signing_key": "not a private key"}
+    )
+
+    with pytest.raises(ReviewSigningNotConfigured):
+        select_attestor(ReviewStage.CODE_REVIEW, settings)
+
+
 def test_select_attestor_uses_hmac_when_signing_disabled(tmp_path):
     from scripts.config import Settings
     from services.review.attestation import HmacAttestor

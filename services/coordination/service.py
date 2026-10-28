@@ -11,7 +11,7 @@ from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-from scripts.config import get_settings
+from scripts.config import configured_log_level, get_settings
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -32,7 +32,7 @@ from services.coordination.sequencing import (
     SequenceGate,
 )
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=configured_log_level())
 log = logging.getLogger("coordination-service")
 
 PORT = 8130

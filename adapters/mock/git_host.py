@@ -229,6 +229,3 @@ class MockGitHost:
                 record.prs[index] = ready
                 return ready
         raise KeyError(f"pull request missing: {repo}#{number}")
-
-    def add_pr_comment(self, repo: str, number: int, author: str, body: str) -> None:
-        self._repo(repo).comments.setdefault(number, []).append(PRComment(author, body))

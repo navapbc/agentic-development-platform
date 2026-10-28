@@ -158,22 +158,3 @@ class GitBranchSynchronizer:
         return any(
             line.strip() and line.strip() != self.agent_email for line in emails.splitlines()
         )
-
-
-class FakeBranchSynchronizer:
-    def __init__(self, outcomes: list[SyncOutcome]) -> None:
-        self._outcomes = list(outcomes)
-        self.calls: list[dict[str, str]] = []
-
-    async def synchronize(
-        self,
-        *,
-        repo: str,
-        base: str,
-        base_sha: str,
-        branch: str,
-        workspace_path: str,
-        resolved_files: Mapping[str, str],
-    ) -> SyncOutcome:
-        self.calls.append({"repo": repo, "base_sha": base_sha, "resolved": dict(resolved_files)})
-        return self._outcomes.pop(0)

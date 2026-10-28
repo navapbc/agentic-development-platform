@@ -6,9 +6,9 @@ import json
 import logging
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from scripts.config import get_settings
+from scripts.config import configured_log_level, get_settings
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=configured_log_level())
 log = logging.getLogger("langgraph-service")
 
 PORT = 8100

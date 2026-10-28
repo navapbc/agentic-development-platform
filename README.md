@@ -23,6 +23,17 @@ Install these on the host before you start.
 | uv 0.13.3 or newer | Installs the locked Python dependencies | Install it from [docs.astral.sh/uv](https://docs.astral.sh/uv/). `pyproject.toml` refuses an older uv |
 | git | Clone this repo and its siblings | |
 | An AWS profile with Bedrock access | Inference | An IAM principal with `bedrock:InvokeModel` and credentials under `~/.aws`. Set the profile and region in `.env` |
+| AWS CLI v2 | The jumphost tunnel, the jumphost image push, and the secret values | The default `jumphost` connectivity provider calls it |
+| AWS Session Manager plugin | The jumphost tunnel | Install `session-manager-plugin` from the [AWS documentation](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) |
+| jq | The jumphost tunnel | The connect script parses the ECS and SSM responses with it |
+
+Deploying the infrastructure to AWS needs these as well. See [Deploying to AWS](#deploying-to-aws).
+
+| Requirement | Why | Notes |
+| --- | --- | --- |
+| Terraform 1.11 or newer | Applies the infrastructure roots under `infra/terraform` | Every module requires it, because the secrets are written through write-only arguments from ephemeral resources. `.terraform-version` pins 1.11.4, which tfenv selects inside this repository whatever its global version is |
+| An AWS profile for the target account | Creates the network, IAM roles, KMS keys, data tier, and secrets | The examples use the `agentic-platform` profile. Confirm it with `aws sts get-caller-identity --profile agentic-platform` |
+| Docker Buildx | Builds the arm64 jumphost image | Docker Desktop includes it |
 
 The review path installs `rebar` (distribution `nava-rebar`) from PyPI through the `review` extra, so no local checkout of the library is required.
 
@@ -54,9 +65,40 @@ Run these once from the repository root.
 8. Validate the Bedrock path and local reachability with `inv connectivity-check`.
 9. Build the images, apply database migrations, and start the stack with `inv local-up`.
 10. Register the Temporal reap and intake schedules with `inv schedules-install`. They persist in Temporal's database, so run it again only after the volumes are wiped or a schedule setting changes.
-11. Publish the prompt library to Langfuse with `inv seed-prompts`. Without it each stage falls back to the static text in `services/prompts/library.py` and logs a prompt fetch warning on every run.
+11. Publish the prompt library to Langfuse with `inv prompts-seed`. Without it each stage falls back to the static text in `services/prompts/library.py` and logs a prompt fetch warning on every run.
 12. Confirm everything is healthy with `inv smoke-test`.
 13. Load allowlisted seed data with `inv seed` when you need demo fixtures.
+
+## Deploying to AWS
+
+These steps stand up the AWS infrastructure for one account from a workstation: the tiered network, the private Bedrock path, the Fargate jumphost, the data tier, and the secret store. Run them from the repository root unless a step changes directory, and pass the `agentic-platform` profile, or your own, to every AWS command. The platform services do not run in AWS yet. The container-platform services feature on the [roadmap](ROADMAP.md) adds them, together with the deployment steps that migrate the database and start the services.
+
+1. Create the state bucket and the access-log bucket once per account. Run `cd infra/terraform/bootstrap`, copy `terraform.tfvars.example` to `terraform.tfvars` only to override a default, then run `terraform init` and `AWS_PROFILE=agentic-platform terraform apply`. This root keeps its own state locally. See the [bootstrap README](infra/terraform/bootstrap/README.md).
+2. Write the backend settings for the composition root with `terraform output -raw backend_hcl > ../examples/private-bedrock/backend.hcl`, and record the access-log bucket name from `terraform output -raw access_log_bucket`. The file belongs in `infra/terraform/examples/private-bedrock`, next to the committed `backend.hcl.example` that shows its shape, so you can also copy the example and fill in the bucket by hand. Never commit `backend.hcl`.
+3. Choose the network shape. Run `cd ../examples/private-bedrock`, then copy `greenfield.tfvars.example` to `greenfield.tfvars` to create the VPC, or `existing-network.tfvars.example` to `existing-network.tfvars` to reuse one. Set `access_log_bucket`, `region`, and `name_prefix`. Never commit the tfvars files.
+4. Choose the services in the same tfvars file by setting each toggle to `true`. `create_aurora`, `create_cache`, `create_clickhouse_storage`, and `create_langfuse_bucket` add the data tier, and `create_secret_store` adds the secret store with the per-service database credentials and their rotation. The data tier and the secret store together cost a few dollars a day while they run. See the [composition root README](infra/terraform/examples/private-bedrock/README.md) for every toggle.
+5. Initialize the remote state with `terraform init -backend-config=backend.hcl`. A working directory that already holds a local `terraform.tfstate` from an earlier apply moves it into the bucket once with `terraform init -migrate-state -backend-config=backend.hcl`. Confirm with a plan that no changes are pending, then delete the local `terraform.tfstate` and `terraform.tfstate.backup`.
+6. Review the change set with `AWS_PROFILE=agentic-platform terraform plan -var-file=greenfield.tfvars`, then apply it with `AWS_PROFILE=agentic-platform terraform apply -var-file=greenfield.tfvars`. Use `existing-network.tfvars` in both commands for an existing network. With every service enabled the apply creates about 220 resources and takes 15 to 20 minutes, most of it Aurora and ElastiCache. A second plan reports no changes.
+7. Return to the repository root and push the jumphost image to the repository in the `jumphost_ecr_repository_url` output with `inv publish-jumphost-image --tag v1`. The tag must match `jumphost_image_tag`.
+8. Record the `bedrock_invoke_policy_arn` output. It grants `bedrock:InvokeModel` and is attached to the role of each platform service that calls Bedrock once those services run in AWS. A workstation keeps signing with the profile from the prerequisites, which already needs `bedrock:InvokeModel`, so nothing is attached at this step for local use.
+9. With the secret store and Aurora enabled, and with `.venv` active, create the per-service database roles and databases before anything connects to the cluster with `inv db-bootstrap-roles --function-name "$(AWS_PROFILE=agentic-platform terraform -chdir=infra/terraform/examples/private-bedrock output -raw role_bootstrap_function_name)"`. The task signs with `AWS_PROFILE` from `.env`. The first scheduled rotation fails until the roles exist.
+10. With the secret store enabled, set each external secret, for example `aws secretsmanager put-secret-value --profile agentic-platform --secret-id agentic-platform/external/github-token --secret-string file://github-token.txt`. The [secret-store README](infra/terraform/secret-store/README.md) lists every secret, which ones Terraform generates, and how each one rotates.
+11. Point the local stack at the deployed jumphost. Set `BEDROCK_CONNECTIVITY_PROVIDER=jumphost`, `JUMPHOST_NAME` to the `jumphost_name` variable, which defaults to `bedrock-jumphost`, and `AWS_PROFILE` and `AWS_REGION` to the target account in `.env`.
+12. Open the tunnel with `inv tunnel-start --detach` and confirm the private Bedrock path with `inv connectivity-check`.
+
+For a later change, run the plan and apply from step 6 again. Read the breaking changes in [CHANGELOG.md](CHANGELOG.md) before applying a new release, because some releases need a `terraform init -upgrade` or a one-time state step.
+
+### Tearing down the AWS infrastructure
+
+The composition root protects its data by default, so a destroy needs a preparation apply first. The bootstrap root stays, because it holds the state of every other root.
+
+1. Stop the tunnel with `inv tunnel-stop`, then stop any jumphost task that is still running with `aws ecs stop-task --cluster agentic-platform-bedrock-jumphost --task <task arn>`. A running task holds a network interface that blocks the subnet delete.
+2. Empty the Langfuse bucket, including every object version, when Langfuse has written to it. The bucket is versioned and refuses to delete while it holds objects.
+3. Set `aurora_deletion_protection = false` in the tfvars file. In a disposable environment also set `aurora_skip_final_snapshot = true` to delete the cluster without a final snapshot, and `secret_recovery_window_days = 0` so the secret names can be created again at once. Otherwise each name stays reserved for 30 days.
+4. Apply the change with `AWS_PROFILE=agentic-platform terraform apply -var-file=greenfield.tfvars`. Terraform reads these settings from state when it destroys, so this apply must come first.
+5. Destroy with `AWS_PROFILE=agentic-platform terraform destroy -var-file=greenfield.tfvars`.
+
+The destroy removes the jumphost image and the external secret values, so a later deployment repeats steps 7 and 10. The KMS keys wait 30 days before deletion and can be restored with `aws kms cancel-key-deletion` during that time. A final snapshot, when one is taken, and the ClickHouse file system backups in the `aws/efs/automatic-backup-vault` vault remain after the destroy and are deleted separately.
 
 ## Vendored binaries
 
@@ -77,8 +119,8 @@ Two binaries live under `vendor/bin` and are provisioned outside the Python inst
 | Bedrock | `AWS_PROFILE`, `PLATFORM_AWS_PROFILE`, `AWS_REGION`, `BEDROCK_CONNECTIVITY_PROVIDER`, `BEDROCK_ENDPOINT_URL`, provider keys | Set your profile and provider. See [Bedrock connectivity](#bedrock-connectivity) |
 | LiteLLM | `LITELLM_BASE_URL`, `LITELLM_MASTER_KEY` | Set a local master key |
 | Review (rebar) | `REBAR_LLM_*`, `REVIEW_ATTESTATION_SECRET` | Point at LiteLLM, set an attestation secret for the HMAC fallback |
-| Review signing | `REVIEW_SIGNING_ENABLED`, `REVIEW_SIGNING_KEY_PATH`, `REVIEW_TRUST_ROOT_PATH` | On by default. Provision a signing key and trust root, or set enabled to false. See [docs/review-verdict-signing.md](docs/review-verdict-signing.md) |
-| Authorship signing | `AUTHORSHIP_SIGNING_ENABLED`, `AUTHORSHIP_IDENTITY_ID`, `AUTHORSHIP_SIGNING_KEY_PATH` | On by default, active only on the rebar backend with an identity set. Jira does not participate. See [docs/authored-identity-signing.md](docs/authored-identity-signing.md) |
+| Review signing | `REVIEW_SIGNING_ENABLED`, `REVIEW_SIGNING_KEY_PATH` or `REVIEW_SIGNING_KEY`, `REVIEW_TRUST_ROOT_PATH` | On by default. Provision a signing key and trust root, or set enabled to false. See [docs/review-verdict-signing.md](docs/review-verdict-signing.md) |
+| Authorship signing | `AUTHORSHIP_SIGNING_ENABLED`, `AUTHORSHIP_IDENTITY_ID`, `AUTHORSHIP_SIGNING_KEY_PATH` or `AUTHORSHIP_SIGNING_KEY` | On by default, active only on the rebar backend with an identity set. Jira does not participate. See [docs/authored-identity-signing.md](docs/authored-identity-signing.md) |
 | Backends | `TICKET_BACKEND`, `SOURCE_CONTROL_BACKEND`, `SOURCE_CONTROL_LOCAL_*` | Select the ticket and source-control backends. Defaults are Jira and GitHub. See [Ticket and source-control backends](#ticket-and-source-control-backends) |
 | Admission | `MAX_CONCURRENT_RUNS`, `EXECUTION_ORPHAN_GRACE_SECONDS` | Cap on runs in flight and the grace window before a dead run's slot is reclaimed. Defaults work locally |
 | Dependency discovery | `DEPENDENCY_DETECTION_ENABLED`, `DEPENDENCY_REPLAN_ATTEMPTS` | Enable cross-ticket dependency discovery and set the re-plan attempt cap. Defaults to off. See [Cross-ticket dependency discovery](#cross-ticket-dependency-discovery) |
@@ -259,7 +301,7 @@ The `vpc-endpoints` module provisions a `bedrock-runtime` interface endpoint tha
 
 ### Provisioning modules
 
-The AWS infrastructure is split into reusable Terraform modules under `infra/terraform`. `vpc-endpoints` owns the shared interface and gateway endpoints, `ecr` owns the jumphost image registry, `cloudtrail` owns the audit trail, `bedrock-iam` owns the `bedrock:InvokeModel` policy, `bedrock-jumphost-fargate` provisions an ephemeral ECS Exec hop to the private endpoint, and `evidence-store` provisions the S3 bucket for the evidence and audit object store under Object Lock. `egress` provides the outbound path through a NAT instance or a NAT Gateway, and `dns-firewall` limits the VPC to an allowlist of domains. The data tier is `aurora-postgresql` for the platform database, `elasticache` for the Valkey cache, `clickhouse-storage` for the ClickHouse file system, and `langfuse-blob-store` for the Langfuse upload bucket. `tf-state` provisions the encrypted, versioned state bucket, and `access-logs` provisions the bucket that receives S3 server access logs from every other bucket. The `infra/terraform/bootstrap` root creates both once per account, and each composition root takes the access-log bucket name as its required `access_log_bucket`. Each is toggleable so an account reuses infrastructure it already has. The `infra/terraform/examples/private-bedrock` composition root wires them into one apply over a tiered network with public, application, management, and data subnets, keeps its state in the S3 backend, and works from zero or against an existing VPC through tfvars. After the apply, build and push the jumphost image with `inv publish-jumphost-image --tag v1` and attach the emitted `bedrock:InvokeModel` policy to the workload role. See [infra/terraform/examples/private-bedrock/README.md](infra/terraform/examples/private-bedrock/README.md).
+The AWS infrastructure is split into reusable Terraform modules under `infra/terraform`. `vpc-endpoints` owns the shared interface and gateway endpoints, `ecr` owns the jumphost image registry, `cloudtrail` owns the audit trail, `bedrock-iam` owns the `bedrock:InvokeModel` policy, `bedrock-jumphost-fargate` provisions an ephemeral ECS Exec hop to the private endpoint, and `evidence-store` provisions the S3 bucket for the evidence and audit object store under Object Lock. `egress` provides the outbound path through a NAT instance or a NAT Gateway, and `dns-firewall` limits the VPC to an allowlist of domains. The data tier is `aurora-postgresql` for the platform database, `elasticache` for the Valkey cache, `clickhouse-storage` for the ClickHouse file system, and `langfuse-blob-store` for the Langfuse upload bucket. `secret-store` holds the platform secrets in Secrets Manager, creates the per-service database roles through `inv db-bootstrap-roles`, and rotates the database and cache credentials. `tf-state` provisions the encrypted, versioned state bucket, and `access-logs` provisions the bucket that receives S3 server access logs from every other bucket. The `infra/terraform/bootstrap` root creates both once per account, and each composition root takes the access-log bucket name as its required `access_log_bucket`. Each is toggleable so an account reuses infrastructure it already has. The `infra/terraform/examples/private-bedrock` composition root wires them into one apply over a tiered network with public, application, management, and data subnets, keeps its state in the S3 backend, and works from zero or against an existing VPC through tfvars. After the apply, build and push the jumphost image with `inv publish-jumphost-image --tag v1` and attach the emitted `bedrock:InvokeModel` policy to the workload role. See [infra/terraform/examples/private-bedrock/README.md](infra/terraform/examples/private-bedrock/README.md).
 
 ### Evidence and audit object store
 

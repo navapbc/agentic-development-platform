@@ -94,32 +94,12 @@
                 }
             }
         ],
-        "./services/orchestration/branch_sync.py": [
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 75,
-                    "endColumn": 95,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./services/orchestration/langgraph/service.py": [
             {
                 "code": "reportIncompatibleMethodOverride",
                 "range": {
                     "startColumn": 8,
                     "endColumn": 19,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./services/orchestration/temporal_activities/implementation.py": [
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 24,
-                    "endColumn": 51,
                     "lineCount": 1
                 }
             }
@@ -1724,16 +1704,6 @@
                 "range": {
                     "startColumn": 41,
                     "endColumn": 48,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./tests/unit/test_tasks.py": [
-            {
-                "code": "reportPrivateImportUsage",
-                "range": {
-                    "startColumn": 19,
-                    "endColumn": 29,
                     "lineCount": 1
                 }
             }
