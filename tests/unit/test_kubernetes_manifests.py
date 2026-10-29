@@ -11,9 +11,11 @@ import pytest
 import yaml
 from services import process
 
-MANIFESTS = Path(__file__).resolve().parents[2] / "deploy" / "kubernetes"
+REPOSITORY = Path(__file__).resolve().parents[2]
+MANIFESTS = REPOSITORY / "deploy" / "kubernetes"
 LOCAL_OVERLAY = MANIFESTS / "local"
-RENDER = ["kubectl", "kustomize", "--load-restrictor", "LoadRestrictionsNone", str(LOCAL_OVERLAY)]
+CONFIG_LOCAL = REPOSITORY / "config" / "local"
+GENERATED_CONFIG = ("github.yaml", "jira.yaml", "integrations.yaml")
 
 
 def _container_env(documents: Iterable[dict[str, Any] | None], name: str) -> dict[str, Any]:
@@ -40,6 +42,24 @@ def _overlay_patch_env(kind: str, name: str) -> dict[str, Any]:
     raise AssertionError(f"no {kind} patch named {name} in the local overlay")
 
 
+def _hermetic_overlay(root: Path) -> Path:
+    """Reproduce the tree the overlay walks up to, from tracked files only.
+
+    Its generators read an operator secret and three `config/local` files that the
+    repository does not track, so a checkout renders in place only on a machine that
+    already runs the sandbox. The copy skips any secret file an operator holds, so the
+    render reads the same inputs everywhere.
+    """
+    manifests = root / "deploy" / "kubernetes"
+    shutil.copytree(MANIFESTS, manifests, ignore=shutil.ignore_patterns("*.secret.env"))
+    (manifests / "local" / "agentic-platform.secret.env").write_text("")
+    config_local = root / "config" / "local"
+    config_local.mkdir(parents=True)
+    for name in GENERATED_CONFIG:
+        shutil.copyfile(CONFIG_LOCAL / f"{name}.example", config_local / name)
+    return manifests / "local"
+
+
 def test_local_overlay_clears_the_synthetic_gateway_allowed_hosts():
     base = _container_env(
         yaml.safe_load_all((MANIFESTS / "mcp-gateway.yaml").read_text()), "mcp-gateway"
@@ -50,9 +70,15 @@ def test_local_overlay_clears_the_synthetic_gateway_allowed_hosts():
 
 
 @pytest.mark.skipif(shutil.which("kubectl") is None, reason="kubectl renders the overlay")
-def test_rendered_local_overlay_leaves_the_gateway_host_header_unchecked():
+def test_rendered_local_overlay_leaves_the_gateway_host_header_unchecked(tmp_path: Path):
     rendered = process.run(
-        RENDER,
+        [
+            "kubectl",
+            "kustomize",
+            "--load-restrictor",
+            "LoadRestrictionsNone",
+            str(_hermetic_overlay(tmp_path)),
+        ],
         timeout=process.SHORT_COMMAND_TIMEOUT_SECONDS,
         capture_output=True,
         text=True,
