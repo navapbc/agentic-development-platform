@@ -66,14 +66,13 @@ def _demo_status_flow(settings: Settings, issue_key: str) -> StatusFlow:
 
 
 def _remote_head(remote: str, branch: str, auth: GitAuth) -> str:
-    env = auth.env()
     proc = process.run(
         ["git", *auth.config_args(), "ls-remote", "--", remote, f"refs/heads/{branch}"],
         timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS,
         check=True,
         capture_output=True,
         text=True,
-        env={**os.environ, **env} if env else None,
+        env={**os.environ, **auth.env()},
     )
     return proc.stdout.split()[0] if proc.stdout.strip() else ""
 

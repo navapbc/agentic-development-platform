@@ -53,14 +53,13 @@ def _clock(value: datetime | None = None) -> str:
 
 
 def _head_sha(remote: str, auth: GitAuth) -> str:
-    env = auth.env()
     proc = process.run(
         ["git", *auth.config_args(), "ls-remote", "--", remote, "HEAD"],
         timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS,
         check=True,
         capture_output=True,
         text=True,
-        env={**os.environ, **env} if env else None,
+        env={**os.environ, **auth.env()},
     )
     return proc.stdout.split()[0] if proc.stdout.strip() else ""
 

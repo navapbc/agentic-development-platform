@@ -103,7 +103,7 @@ class RealGitHost:
                 cwd=cwd,
                 capture_output=True,
                 text=True,
-                env={**os.environ, **merged} if merged else None,
+                env={**os.environ, **merged},
             )
 
         proc = await asyncio.to_thread(run)

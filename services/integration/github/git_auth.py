@@ -17,11 +17,18 @@ _HELPER = (
 )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class GitAuth:
-    """Credential material for one git invocation, carried in the environment only."""
+    """Credential material for one git invocation, carried in the environment only.
+
+    The generated `repr` is replaced because it would render the token into any log line,
+    exception message, or Temporal failure payload that formats the value.
+    """
 
     token: str = ""
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}(token={'set' if self.token else 'unset'})"
 
     def config_args(self) -> tuple[str, ...]:
         """Return `-c` arguments that place the helper ahead of the git subcommand.
@@ -34,9 +41,20 @@ class GitAuth:
         return ("-c", "credential.helper=", "-c", f"credential.helper={_HELPER}")
 
     def env(self) -> dict[str, str]:
+        """Return the environment one git invocation runs with.
+
+        Prompt suppression applies with or without a token, because a git call that finds no
+        credential would otherwise block on the terminal until the command timeout expires.
+        """
+        environment = {"GIT_TERMINAL_PROMPT": "0"}
         if not self.token:
-            return {}
-        return {CREDENTIAL_ENV: self.token, "GIT_TERMINAL_PROMPT": "0"}
+            return environment
+        return {**environment, CREDENTIAL_ENV: self.token}
 
 
 NO_AUTH = GitAuth()
+
+
+def no_auth_for(repo: str) -> GitAuth:
+    """Resolve every repository to no credential, for backends that authenticate nothing."""
+    return NO_AUTH

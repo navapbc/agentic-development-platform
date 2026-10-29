@@ -12,7 +12,7 @@ from typing import Protocol
 from scripts.config import Settings, get_settings
 
 from services import process
-from services.integration.github.git_auth import NO_AUTH, GitAuth
+from services.integration.github.git_auth import NO_AUTH, GitAuth, no_auth_for
 from services.integration.github.mediator import RepoNotAllowedError
 
 FAST_FORWARD = "fast_forward"
@@ -39,14 +39,13 @@ class SyncOutcome:
 
 
 def _run_git(args: list[str], cwd: str, auth: GitAuth = NO_AUTH) -> process.CompletedProcess[str]:
-    env = auth.env()
     return process.run(
         ["git", "-c", "safe.directory=*", *auth.config_args(), *args],
         timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS,
         cwd=cwd,
         capture_output=True,
         text=True,
-        env={**os.environ, **env} if env else None,
+        env={**os.environ, **auth.env()},
     )
 
 
@@ -80,7 +79,7 @@ class GitBranchSynchronizer:
     allowed_repos: frozenset[str]
     remote_url_for: Callable[[str], str]
     agent_email: str = _AGENT_EMAIL
-    auth_for: Callable[[str], GitAuth] | None = None
+    auth_for: Callable[[str], GitAuth] = no_auth_for
 
     @classmethod
     def from_settings(
@@ -100,9 +99,6 @@ class GitBranchSynchronizer:
             auth_for=auth_for or build_git_auth_for(resolved),
         )
 
-    def _auth(self, repo: str) -> GitAuth:
-        return self.auth_for(repo) if self.auth_for is not None else NO_AUTH
-
     async def synchronize(
         self,
         *,
@@ -116,7 +112,7 @@ class GitBranchSynchronizer:
         if repo not in self.allowed_repos:
             raise RepoNotAllowedError(repo)
         cwd = str(Path(workspace_path))
-        auth = self._auth(repo)
+        auth = self.auth_for(repo)
         await _git("fetch", "--quiet", "origin", base, cwd=cwd, auth=auth)
         base_head = await _git("rev-parse", "FETCH_HEAD", cwd=cwd)
         human_commits = await self._human_commits(branch, base_sha, cwd=cwd, auth=auth)

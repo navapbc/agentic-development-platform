@@ -136,3 +136,36 @@ async def test_materialized_workspace_holds_no_token_after_clone_and_fetch(
     assert _token_bearing_files(Path(workspace.path)) == []
     config = (git_dir / "config").read_text(encoding="utf-8")
     assert "credential" not in config
+
+
+async def test_reusing_a_workspace_clears_a_token_an_earlier_release_persisted(
+    remote: tuple[str, str], tmp_path: Path
+) -> None:
+    bare, head = remote
+    materializer = WorkspaceMaterializer(
+        registry=InMemoryOrphanRegistry(),
+        allowed_repos=frozenset({REPO}),
+        workspace_root=tmp_path / "workspaces",
+        remote_url_for=lambda repo: bare,
+        auth_for=lambda repo: GitAuth(TOKEN),
+    )
+    workspace = await materializer.materialize(
+        repo=REPO, task_id=TASK_ID, execution_id=EXECUTION_ID, base="main", commit_sha=head
+    )
+    git_dir = Path(workspace.path) / ".git"
+    _git(
+        ["remote", "set-url", "origin", f"https://x-access-token:{TOKEN}@acme.ghe/a/b.git"],
+        workspace.path,
+    )
+    (git_dir / "FETCH_HEAD").write_text(
+        f"{head}\t\tbranch 'main' of https://x-access-token:{TOKEN}@acme.ghe/a/b\n",
+        encoding="utf-8",
+    )
+    assert _token_bearing_files(Path(workspace.path))
+
+    await materializer.materialize(
+        repo=REPO, task_id=TASK_ID, execution_id=EXECUTION_ID, base="main", commit_sha=head
+    )
+
+    assert _token_bearing_files(Path(workspace.path)) == []
+    assert _git(["remote", "get-url", "origin"], workspace.path) == bare

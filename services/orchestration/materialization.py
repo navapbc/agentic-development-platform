@@ -14,7 +14,7 @@ from scripts.config import Settings, get_settings
 
 from services import process
 from services.coordination.orphans import BRANCH, STAGING, OrphanArtifact, OrphanRegistry
-from services.integration.github.git_auth import NO_AUTH, GitAuth
+from services.integration.github.git_auth import NO_AUTH, GitAuth, no_auth_for
 from services.integration.github.mediator import RepoNotAllowedError
 
 _SLUG = re.compile(r"[^A-Za-z0-9._-]+")
@@ -49,14 +49,13 @@ def _slug(value: str) -> str:
 
 
 def _run_git(args: list[str], cwd: str | None, auth: GitAuth = NO_AUTH) -> str:
-    env = auth.env()
     proc = process.run(
         ["git", "-c", "safe.directory=*", *auth.config_args(), *args],
         timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS,
         cwd=cwd,
         capture_output=True,
         text=True,
-        env={**os.environ, **env} if env else None,
+        env={**os.environ, **auth.env()},
     )
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout).strip()
@@ -89,7 +88,7 @@ class WorkspaceMaterializer:
     allowed_repos: frozenset[str]
     workspace_root: Path
     remote_url_for: Callable[[str], str]
-    auth_for: Callable[[str], GitAuth] | None = None
+    auth_for: Callable[[str], GitAuth] = no_auth_for
 
     @classmethod
     def from_settings(
@@ -113,9 +112,6 @@ class WorkspaceMaterializer:
             remote_url_for=remote_url_for,
             auth_for=auth_for or build_git_auth_for(resolved),
         )
-
-    def _auth(self, repo: str) -> GitAuth:
-        return self.auth_for(repo) if self.auth_for is not None else NO_AUTH
 
     def _guard(self, repo: str) -> None:
         if repo not in self.allowed_repos:
@@ -173,9 +169,10 @@ class WorkspaceMaterializer:
         branch: str,
         commit_sha: str,
     ) -> None:
-        auth = self._auth(repo)
+        auth = self.auth_for(repo)
         reused = (path / ".git").is_dir()
         if reused:
+            await self._drop_persisted_credential(repo, path)
             head = await _git("rev-parse", "HEAD", cwd=str(path))
             current = await _git("rev-parse", "--abbrev-ref", "HEAD", cwd=str(path))
             if head == commit_sha and current == branch:
@@ -198,6 +195,17 @@ class WorkspaceMaterializer:
         if reused:
             await _git("reset", "--hard", commit_sha, cwd=str(path))
             await _git("clean", "-fd", cwd=str(path))
+
+    async def _drop_persisted_credential(self, repo: str, path: Path) -> None:
+        """Clear the credential an earlier release left in a workspace that is being reused.
+
+        That release cloned and fetched with the token inside the remote URL, so `.git/config`
+        and `.git/FETCH_HEAD` of any workspace materialized then still hold it, and both files
+        are archived into the agent sandbox and the gate pods. Every reader of `FETCH_HEAD`
+        fetches in the same call, so removing a stale one costs nothing.
+        """
+        await _git_ok("remote", "set-url", "origin", self.remote_url_for(repo), cwd=str(path))
+        (path / ".git" / "FETCH_HEAD").unlink(missing_ok=True)
 
     async def changed_paths(self, workspace: MaterializedWorkspace) -> list[str]:
         """Repository-relative paths the workspace has changed, deletions included.
