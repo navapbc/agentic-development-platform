@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, cast
@@ -49,23 +50,19 @@ class Route:
     allowed: frozenset[str]
 
 
-_SECRET_ENV_VARS = {
-    "pr_closed": "GITHUB_WEBHOOK_SECRET",
-    "jira_intake": "JIRA_WEBHOOK_SECRET",
+_INBOUND_SECRETS: dict[str, tuple[str, Callable[[Settings], str]]] = {
+    "pr_closed": ("GITHUB_WEBHOOK_SECRET", lambda settings: settings.github_webhook_secret),
+    "jira_intake": ("JIRA_WEBHOOK_SECRET", lambda settings: settings.jira_webhook_secret),
 }
 
 
 def require_webhook_secrets(settings: Settings) -> None:
     """Refuse to serve an integration whose inbound mode has no signing secret configured."""
     integrations = load_integrations_config(settings)
-    secrets = {
-        "pr_closed": settings.github_webhook_secret,
-        "jira_intake": settings.jira_webhook_secret,
-    }
     missing = sorted(
-        _SECRET_ENV_VARS[name]
-        for name, secret in secrets.items()
-        if integrations.webhook_enabled(name) and not secret
+        env_var
+        for name, (env_var, read_secret) in _INBOUND_SECRETS.items()
+        if integrations.webhook_enabled(name) and not read_secret(settings)
     )
     if missing:
         raise SystemExit(f"set {' and '.join(missing)} to accept inbound deliveries")
