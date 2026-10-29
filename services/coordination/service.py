@@ -15,6 +15,7 @@ from scripts.config import configured_log_level, get_settings
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from services.coordination.auth import SHARED_SECRET_ENV_VAR, SHARED_SECRET_REMEDY
 from services.coordination.claims import (
     PostgresWorkClaimStore,
     WorkClaimStore,
@@ -200,7 +201,9 @@ def main() -> None:
 
     settings = get_settings()
     if not settings.coordination_shared_secret:
-        raise SystemExit("set COORDINATION_SHARED_SECRET before starting the coordination service")
+        raise SystemExit(
+            f"the coordination service has no {SHARED_SECRET_ENV_VAR}. {SHARED_SECRET_REMEDY}"
+        )
     asyncio.run(wait_for_platform_schema(settings.database_url))
     loop = asyncio.new_event_loop()
     threading.Thread(target=loop.run_forever, name="coordination-loop", daemon=True).start()

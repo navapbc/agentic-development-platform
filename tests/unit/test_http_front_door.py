@@ -14,6 +14,8 @@ from services.coordination import (
     InMemorySideEffectLedger,
     InMemoryWorkClaimStore,
 )
+from services.coordination.auth import CoordinationAuthError
+from services.coordination.idempotency import SideEffectRef
 from services.coordination.service import build_handler
 from services.coordination.service import main as coordination_main
 from services.http_front_door import (
@@ -22,6 +24,7 @@ from services.http_front_door import (
     bearer_token_accepted,
     declared_body_length,
 )
+from services.orchestration.coordination_client import CoordinationClient
 from services.orchestration.webhook.jira_events import verify_jira_signature
 from services.orchestration.webhook.pr_events import verify_signature
 from services.orchestration.webhook.server import require_webhook_secrets
@@ -29,6 +32,10 @@ from tests.support import hermetic_settings
 
 SHARED_SECRET = "coordination-test-secret"
 _RESERVE_BODY = b'{"task_id": "T-1", "execution_id": "e-1", "operation": "op", "target": "t"}'
+
+
+def _names_the_remedy(message: str) -> bool:
+    return all(part in message for part in ("COORDINATION_SHARED_SECRET", ".env", "inv local-up"))
 
 
 @pytest.fixture
@@ -174,7 +181,22 @@ def test_coordination_service_refuses_to_start_without_a_shared_secret(monkeypat
     )
     with pytest.raises(SystemExit) as excinfo:
         coordination_main()
-    assert "COORDINATION_SHARED_SECRET" in str(excinfo.value)
+    assert _names_the_remedy(str(excinfo.value))
+
+
+def test_coordination_client_refuses_an_empty_token():
+    with pytest.raises(CoordinationAuthError) as excinfo:
+        CoordinationClient("http://127.0.0.1:1", token="")
+    assert _names_the_remedy(str(excinfo.value))
+
+
+def test_coordination_client_names_the_remedy_for_a_refused_token(coordination_address):
+    host, port = coordination_address
+    client = CoordinationClient(f"http://{host}:{port}", token="another-secret")
+    ref = SideEffectRef(task_id="T-1", execution_id="e-1", operation="op", target="t")
+    with pytest.raises(CoordinationAuthError) as excinfo:
+        asyncio.run(client.reserve_side_effect(ref))
+    assert _names_the_remedy(str(excinfo.value))
 
 
 def test_github_verification_fails_on_an_empty_secret():
