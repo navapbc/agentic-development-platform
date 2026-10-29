@@ -115,7 +115,6 @@ require_completion_verification_for_close = true
 
 [tool.rebar.jira]
 url = "https://navasage.atlassian.net"
-user = "joeoakhart@navapbc.com"
 project = "ADP"
 
 # A running gate pins its read-root to an attested git snapshot, which holds no untracked
