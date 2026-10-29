@@ -57,6 +57,11 @@ spec:
                 secretKeyRef:
                   name: agentic-platform
                   key: github_webhook_secret
+            - name: JIRA_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: agentic-platform
+                  key: jira_webhook_secret
           volumeMounts:
             - name: integration-config
               mountPath: /app/config/local
@@ -128,12 +133,22 @@ metadata:
     alb.ingress.kubernetes.io/scheme: internet-facing
     alb.ingress.kubernetes.io/target-type: ip
     alb.ingress.kubernetes.io/healthcheck-path: /health
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS13-1-2-2021-06
+    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:us-east-1:123456789012:certificate/00000000-0000-0000-0000-000000000000
 spec:
   ingressClassName: alb
   rules:
     - http:
         paths:
           - path: /webhook/pr
+            pathType: Prefix
+            backend:
+              service:
+                name: inbound-webhook
+                port:
+                  name: http
+          - path: /webhook/jira
             pathType: Prefix
             backend:
               service:

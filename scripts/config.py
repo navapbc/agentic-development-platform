@@ -147,6 +147,7 @@ class Settings(BaseSettings):
     repo_intelligence_cbm_binary: str = ""
 
     coordination_url: str = "http://localhost:8130"
+    mcp_allowed_hosts: str = ""
     repo_intelligence_repos: str = ""
     repo_index_poll_interval_seconds: float = 30.0
     repo_index_worker_concurrency: int = 2
@@ -239,6 +240,11 @@ class Settings(BaseSettings):
             root = self.repo_intelligence_repo_root
             registry[Path(root).name] = (root, self.repo_intelligence_commit or None)
         return registry
+
+    def mcp_allowed_host_values(self) -> tuple[str, ...]:
+        """Parse the Host header values the MCP gateway accepts, empty when unconfigured."""
+        raw = self.mcp_allowed_hosts.replace("\n", ",").replace(";", ",")
+        return tuple(entry.strip() for entry in raw.split(",") if entry.strip())
 
 
 @lru_cache

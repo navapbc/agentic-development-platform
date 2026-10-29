@@ -72,6 +72,9 @@ patches:
             containers:
               - name: mcp-gateway
                 imagePullPolicy: IfNotPresent
+                env:
+                  - name: MCP_ALLOWED_HOSTS
+                    value: ""
   - target:
       kind: Deployment
       name: inbound-webhook
