@@ -13,7 +13,7 @@ Both Ingress resources declare an HTTPS-only listener through `alb.ingress.kuber
 
 ### Overriding the certificate ARN
 
-Add a patch to the environment overlay `kustomization.yaml` for each Ingress.
+Add a patch to the environment overlay `kustomization.yaml` for each Ingress. Both need their own certificate, so both need a patch.
 
 ```yaml
 patches:
@@ -26,9 +26,27 @@ patches:
       metadata:
         name: inbound-webhook
         annotations:
-          alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:<region>:<account-id>:certificate/<certificate-id>
+          alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:<region>:<account-id>:certificate/<webhook-certificate-id>
+  - target:
+      kind: Ingress
+      name: mcp-gateway
+    patch: |
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: mcp-gateway
+        annotations:
+          alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:<region>:<account-id>:certificate/<gateway-certificate-id>
 ```
 
 `inbound-webhook` fronts an internet-facing ALB, so its certificate must cover the public hostname registered as the GitHub webhook URL. `mcp-gateway` fronts an internal ALB, so its certificate must cover the in-VPC hostname its clients resolve.
+
+## Target group health checks
+
+Both Ingress resources set `alb.ingress.kubernetes.io/healthcheck-path: /health`. Each service answers `/health`, `/healthz`, and `/` with a 200 and a JSON body, so the ALB default of `GET /` also succeeds. The health check reaches the pod over HTTP on the traffic port. Terminating TLS at the listener does not change it.
+
+## MCP gateway host header
+
+The MCP gateway runs the FastMCP streamable-HTTP transport with its DNS rebinding protection at the library default, which accepts only loopback `Host` values. A request that an ALB forwards to `/mcp` carries the client hostname and is refused with 421. The health paths are served outside that check and answer normally. Configuring the allowed host list is tracked separately and is not covered by these manifests.
 
 Render an overlay with `kubectl kustomize --load-restrictor LoadRestrictionsNone deploy/kubernetes/local`.

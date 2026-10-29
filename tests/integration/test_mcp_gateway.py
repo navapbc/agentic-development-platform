@@ -6,8 +6,9 @@ import json
 
 from adapters.interfaces.git_host import CodeHit, FileContent, PRComment, PRFeedback
 from mcp.shared.memory import create_connected_server_and_client_session
-from services.integration.mcp_gateway.server import build_server
+from services.integration.mcp_gateway.server import HEALTH_PATHS, build_server
 from services.integration.mcp_gateway.tools import READ_TOOL_NAMES, ReadOnlyToolset
+from starlette.testclient import TestClient
 
 
 class _FakeJira:
@@ -132,3 +133,17 @@ async def test_gateway_refuses_a_tool_outside_the_catalog():
         )
 
     assert result.isError is True
+
+
+def test_gateway_health_paths_answer_an_alb_target_health_check():
+    app = build_server(_toolset()).streamable_http_app()
+    pod_address = {"Host": "10.0.1.23:8150"}
+
+    with TestClient(app) as client:
+        responses = {path: client.get(path, headers=pod_address) for path in HEALTH_PATHS}
+        unknown = client.get("/not-a-route", headers=pod_address)
+
+    for path, response in responses.items():
+        assert response.status_code == 200, path
+        assert response.json() == {"status": "ok", "service": "mcp-gateway"}
+    assert unknown.status_code == 404
