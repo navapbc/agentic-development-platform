@@ -27,6 +27,7 @@ from adapters.interfaces.git_host import (
 )
 from scripts.config import Settings, get_settings
 from services import process
+from services.integration.github.credentials import UnconfiguredRepositoryError
 from services.integration.github.git_auth import NO_AUTH, GitAuth
 
 if TYPE_CHECKING:
@@ -84,7 +85,16 @@ class RealGitHost:
         return self._remote_url(repo)
 
     def _auth(self, repo: str) -> GitAuth:
-        cred = self._resolver.resolve(repo)
+        """Resolve the credential for `repo`, or no credential when none is configured.
+
+        A repository the caller configured no credential for is answered with `NO_AUTH`, which
+        matches `build_git_auth_for`. A configured repository whose token is missing still
+        raises, because the secret lookup is what fails there rather than the configuration.
+        """
+        try:
+            cred = self._resolver.resolve(repo)
+        except UnconfiguredRepositoryError:
+            return NO_AUTH
         return GitAuth(cred.token, cred.git_base_url) if cred is not None else NO_AUTH
 
     async def _git(

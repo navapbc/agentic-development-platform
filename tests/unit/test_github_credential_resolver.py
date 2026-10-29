@@ -17,6 +17,7 @@ from services.integration.github.credentials import (
     GitHubCredentialResolver,
     GitHubRepoCredential,
     UnconfiguredRepositoryError,
+    build_single_identity_resolver,
     parse_github_config,
 )
 
@@ -249,3 +250,35 @@ def test_committed_example_template_is_valid_and_resolves():
     assert cred.token == "tok"
     assert cred.git_base_url == "https://github.com"
     assert resolver.resolve("not-an-allowlisted-repo") is None
+
+
+def test_a_single_identity_without_a_token_reports_the_repository_unconfigured():
+    """The token reference is synthetic, so an empty token must not resolve it as a secret."""
+    resolver = build_single_identity_resolver(
+        api_url="https://ghe.corp/api/v3",
+        owner="platform",
+        git_base_url="https://ghe.corp",
+        token="",
+        repos={"repo-x"},
+    )
+
+    assert resolver.repos() == set()
+    with pytest.raises(UnconfiguredRepositoryError):
+        resolver.resolve("repo-x")
+
+
+def test_a_single_identity_with_a_token_resolves_the_credential():
+    resolver = build_single_identity_resolver(
+        api_url="https://ghe.corp/api/v3",
+        owner="platform",
+        git_base_url="https://ghe.corp",
+        token="ghs-single",
+        repos={"repo-x"},
+    )
+
+    assert resolver.resolve("repo-x") == GitHubRepoCredential(
+        api_url="https://ghe.corp/api/v3",
+        owner="platform",
+        git_base_url="https://ghe.corp",
+        token="ghs-single",
+    )

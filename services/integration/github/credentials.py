@@ -239,9 +239,16 @@ def build_single_identity_resolver(
     token: str,
     repos: set[str],
 ) -> GitHubCredentialResolver:
+    """Build a resolver for one host and owner, which resolves to no credential without a token.
+
+    The token reference is synthetic, so an empty token would otherwise resolve to a secret
+    named `__token__` that no operator can set, and the resolver would raise where it means
+    that this caller configured no credential.
+    """
+    identity = _Identity(host="default", owner=owner, token_ref="__token__") if token else None
     config = GitHubSourceConfig(
         hosts={"default": _Host(api_url=api_url, git_base_url=git_base_url)},
-        default=_Identity(host="default", owner=owner, token_ref="__token__"),
+        default=identity,
         repositories={},
     )
     return GitHubCredentialResolver(config, set(repos), EnvSecretResolver({"__token__": token}))
