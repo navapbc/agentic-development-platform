@@ -51,7 +51,7 @@ all = [
     { name = "langfuse" },
     { name = "langgraph" },
     { name = "mcp" },
-    { name = "nava-rebar", extra = ["agents", "jira-datacenter"] },
+    { name = "nava-rebar", extra = ["agents", "jira-datacenter", "s3"] },
     { name = "openhands-sdk" },
     { name = "openhands-tools" },
     { name = "openpyxl" },
@@ -87,7 +87,7 @@ reasoning = [
     { name = "langgraph" },
 ]
 review = [
-    { name = "nava-rebar", extra = ["agents", "jira-datacenter"] },
+    { name = "nava-rebar", extra = ["agents", "jira-datacenter", "s3"] },
     { name = "openpyxl" },
 ]
 sandbox = [
@@ -103,7 +103,7 @@ worker = [
     { name = "kubernetes" },
     { name = "langfuse" },
     { name = "langgraph" },
-    { name = "nava-rebar", extra = ["agents", "jira-datacenter"] },
+    { name = "nava-rebar", extra = ["agents", "jira-datacenter", "s3"] },
     { name = "openhands-sdk" },
     { name = "openhands-tools" },
     { name = "openpyxl" },
@@ -132,7 +132,7 @@ requires-dist = [
     { name = "langfuse", marker = "extra == 'prompts'", specifier = ">=3,<5" },
     { name = "langgraph", marker = "extra == 'reasoning'", specifier = ">=1.2,<2" },
     { name = "mcp", marker = "extra == 'gateway'", specifier = ">=1.30,<2" },
-    { name = "nava-rebar", extras = ["agents", "jira-datacenter"], marker = "extra == 'review'", specifier = "==0.13.1" },
+    { name = "nava-rebar", extras = ["agents", "jira-datacenter", "s3"], marker = "extra == 'review'", specifier = "==0.13.1" },
     { name = "openhands-sdk", marker = "extra == 'sandbox'", specifier = ">=1.56,<2" },
     { name = "openhands-tools", marker = "extra == 'sandbox'", specifier = ">=1.56,<2" },
     { name = "openpyxl", marker = "extra == 'review'", specifier = ">=3.1,<4" },
@@ -1611,6 +1611,20 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/84/0b/4b430d9c6ff0c76e42b91fc4cedff84dfbefa1a35b885fad45a22d29303f/genai_prices-0.0.73.tar.gz", hash = "sha256:ddad5b23dadd7aac8a58ab5af7506addb062114037e96427324703e50bc35077", size = 88406, upload-time = "2026-07-29T12:48:58.215Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a8/85/527a729ecd58b7169430e47febdab2e3f91193d0e3f5a56d721c04525709/genai_prices-0.0.73-py3-none-any.whl", hash = "sha256:64dfbbf55df91db6b74ff2b24ac752b8154952e0aed4e62868d6cd42710bf742", size = 92507, upload-time = "2026-07-29T12:48:57.194Z" },
+]
+
+[[package]]
+name = "git-remote-s3"
+version = "0.4.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "boto3" },
+    { name = "botocore" },
+    { name = "urllib3" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/0f/14/54c1cde57dcd424204e85b39f3265405a81185a1b848f112e4933395e76b/git_remote_s3-0.4.2.tar.gz", hash = "sha256:b7b5075a4f7837518b2593aada0fd86271cab11aaccdd724af9060bba2faab09", size = 29776, upload-time = "2026-08-20T14:10:00.533Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/fd/20/3669c75eaa81cd401b0da0fe2cad8d979b62c22446def04a3113986f128c/git_remote_s3-0.4.2-py3-none-any.whl", hash = "sha256:7f910b87e0e640faa2135219e6cdbdade377644ad7fa5732d8d07adf080c849f", size = 28655, upload-time = "2026-08-20T14:10:01.545Z" },
 ]
 
 [[package]]
@@ -3301,6 +3315,9 @@ agents = [
 ]
 jira-datacenter = [
     { name = "jira" },
+]
+s3 = [
+    { name = "git-remote-s3" },
 ]
 
 [[package]]
