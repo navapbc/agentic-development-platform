@@ -678,6 +678,12 @@ def k8s_deploy(c, build=False):
 
 
 @task
+def k8s_node_forward(c):
+    """Set the minikube node FORWARD policy to ACCEPT so sandbox pods can reach DNS and the host."""
+    c.run("minikube ssh -- sudo iptables -P FORWARD ACCEPT", pty=True)
+
+
+@task
 def k8s_delete(c):
     """Remove the local mcp-gateway and inbound-webhook deployment."""
     c.run(f"{_K8S_RENDER} | kubectl delete --ignore-not-found -f -", pty=True)
@@ -750,6 +756,7 @@ for _t in (
     demo_draft_pr,
     approve_pr,
     k8s_deploy,
+    k8s_node_forward,
     k8s_delete,
     webhook_setup,
     webhook_teardown,
