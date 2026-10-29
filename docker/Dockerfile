@@ -1,5 +1,5 @@
 # Python image with uv pre-installed. See https://docs.astral.sh/uv/guides/integration/docker/#available-images
-FROM ghcr.io/astral-sh/uv:python3.13-trixie@sha256:62ff9165c89a46680b0684e29625d73585ce82739d598b19743dba6eb632e33c
+FROM ghcr.io/astral-sh/uv:python3.13-trixie@sha256:168667f2727b68b450de7fc5648cfdca4c3f4170ca2a1a8f0de8f0c71f9156bf
 
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 
@@ -53,8 +53,9 @@ COPY database ./database
 COPY scripts ./scripts
 COPY observability ./observability
 COPY openhands ./openhands
+COPY vendor ./vendor
 
-RUN useradd --create-home --uid 10001 appuser
-USER appuser
+#RUN useradd --create-home --uid 10001 appuser
+#USER appuser
 
 CMD ["python", "-m", "services.orchestration.worker"]
