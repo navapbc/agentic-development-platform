@@ -411,6 +411,10 @@ Each `inv local-up` writes a build identifier of the form `<release version>.<UT
 
 The workers run with Temporal worker versioning on, which pins each execution to the build that started it, so a deploy mid-run replays that execution on its own build in place of failing it on a non-determinism error. A versioned worker polls for its own build identifier alone, so it registers that identifier as the new default of the task queues it serves before it polls, and the Temporal namespace has to permit the registration. The Compose Temporal service mounts `config/platform/temporal-dynamic-config.yaml` for that. A worker that cannot register exits with the server's reason.
 
+A queue that already lists the identifier keeps it where it sits rather than taking it as the default again, which the server refuses. A worker on a superseded build therefore restarts into the set that holds its own executions and goes on draining them, and the three worker services registering at once settle on one set between them.
+
+Each identifier the server has not seen before takes one of the version sets a task queue may hold. `limit.versionCompatibleSetLimitPerQueue` in the dynamic config raises that ceiling to 100 from the Temporal default of 10, so a queue accepts 100 builds against one Temporal database. The worker that meets the ceiling exits naming the key, because a versioned worker past it would poll for work the server cannot route to it. Raise the key further, or start over with a Temporal database that carries no version sets.
+
 Versioning pins the executions that start under it and nothing earlier. Drain the executions already in flight once, before the first deploy that runs versioned workers. Set `WORKER_VERSIONING_ENABLED=false` to run unversioned.
 
 ## Everyday commands

@@ -56,12 +56,20 @@ async def test_build_worker_all_role_registers_both() -> None:
         assert config["activities"]
 
 
-async def test_build_worker_pins_the_build_id_when_versioning_is_enabled() -> None:
-    async with await WorkflowEnvironment.start_time_skipping() as env:
-        async with build_worker(env.client, "q-versioned", WORKER_ROLE_ACTIVITY) as worker:
-            config = worker.config()
-        assert config["use_worker_versioning"] is True
-        assert config["build_id"] == get_settings().agent_build_id
+async def test_build_worker_pins_the_build_id_when_versioning_is_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WORKER_VERSIONING_ENABLED", "true")
+    monkeypatch.setenv("AGENT_BUILD_ID", "0.3.0.20261028093000")
+    get_settings.cache_clear()
+    try:
+        async with await WorkflowEnvironment.start_time_skipping() as env:
+            async with build_worker(env.client, "q-versioned", WORKER_ROLE_ACTIVITY) as worker:
+                config = worker.config()
+            assert config["use_worker_versioning"] is True
+            assert config["build_id"] == "0.3.0.20261028093000"
+    finally:
+        get_settings.cache_clear()
 
 
 async def test_build_worker_leaves_versioning_off_when_the_setting_is_false(
@@ -88,10 +96,43 @@ async def test_register_build_id_makes_the_build_the_default_of_every_queue() ->
     assert {op.build_id for _, op in client.calls} == {"0.3.0.20261028093000"}
 
 
+async def test_register_build_id_leaves_a_build_the_queue_already_routes_to_alone() -> None:
+    client = _RecordingClient(listed={"q-one": {"0.3.0.20261028093000", "0.3.0.20261028094000"}})
+
+    await register_build_id(client, ["q-one"], _BuildSettings("0.3.0.20261028093000"))
+
+    assert client.calls == []
+
+
+async def test_register_build_id_accepts_a_queue_a_concurrent_worker_registered_first() -> None:
+    client = _RecordingClient(
+        error=RPCError("version already exists", RPCStatusCode.INVALID_ARGUMENT, b""),
+        listed_after_error={"q-one": {"0.3.0.20261028093000"}},
+    )
+
+    await register_build_id(client, ["q-one"], _BuildSettings("0.3.0.20261028093000"))
+
+    assert [queue for queue, _ in client.calls] == ["q-one"]
+
+
 async def test_register_build_id_refuses_to_start_a_worker_the_server_cannot_route_to() -> None:
     client = _RecordingClient(error=RPCError("disabled", RPCStatusCode.PERMISSION_DENIED, b""))
 
     with pytest.raises(SystemExit, match="WORKER_VERSIONING_ENABLED=false"):
+        await register_build_id(client, ["q-one"], _BuildSettings("0.3.0.20261028093000"))
+
+
+async def test_register_build_id_names_the_version_set_ceiling_when_the_queue_is_full() -> None:
+    client = _RecordingClient(
+        error=RPCError(
+            "update would exceed number of compatible version sets permitted in namespace "
+            "dynamic config (101/100)",
+            RPCStatusCode.FAILED_PRECONDITION,
+            b"",
+        )
+    )
+
+    with pytest.raises(SystemExit, match="limit.versionCompatibleSetLimitPerQueue"):
         await register_build_id(client, ["q-one"], _BuildSettings("0.3.0.20261028093000"))
 
 
@@ -101,14 +142,35 @@ class _BuildSettings:
 
 
 class _RecordingClient:
-    def __init__(self, error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        error: Exception | None = None,
+        listed: dict[str, set[str]] | None = None,
+        listed_after_error: dict[str, set[str]] | None = None,
+    ) -> None:
         self.calls: list[tuple[str, object]] = []
         self._error = error
+        self._listed = listed or {}
+        self._listed_after_error = listed_after_error or {}
 
     async def update_worker_build_id_compatibility(self, task_queue, operation) -> None:
         self.calls.append((task_queue, operation))
         if self._error is not None:
+            self._listed = self._listed_after_error
             raise self._error
+
+    async def get_worker_build_id_compatibility(self, task_queue) -> object:
+        return _FakeVersionSets(self._listed.get(task_queue, set()))
+
+
+class _FakeVersionSets:
+    def __init__(self, build_ids: set[str]) -> None:
+        self.version_sets = [_FakeVersionSet(build_id) for build_id in sorted(build_ids)]
+
+
+class _FakeVersionSet:
+    def __init__(self, build_id: str) -> None:
+        self.build_ids = [build_id]
 
 
 class _FakeCred:

@@ -14,6 +14,8 @@ from tasks import _stamp_build_id
 REPO_ROOT = Path(__file__).resolve().parents[2]
 COMPOSE_PATH = REPO_ROOT / "compose.yaml"
 ENV_EXAMPLE_PATH = REPO_ROOT / ".env.example"
+DYNAMIC_CONFIG_PATH = REPO_ROOT / "config" / "platform" / "temporal-dynamic-config.yaml"
+TEMPORAL_VERSION_SET_DEFAULT_LIMIT = 10
 
 
 def test_a_later_build_of_one_release_outranks_an_earlier_one():
@@ -77,3 +79,26 @@ def test_the_declared_fallbacks_track_the_release_version():
     assert set(declared) == {"workflow-worker", "activity-worker", "review-worker"}
     assert set(declared.values()) == {"${AGENT_BUILD_ID:-" + release_version() + "}"}
     assert f"AGENT_BUILD_ID={release_version()}" in ENV_EXAMPLE_PATH.read_text().splitlines()
+
+
+def test_the_temporal_service_reads_the_versioning_dynamic_config():
+    compose = yaml.safe_load(COMPOSE_PATH.read_text())
+    temporal = compose["services"]["temporal"]
+    mount_path = temporal["environment"]["DYNAMIC_CONFIG_FILE_PATH"]
+
+    source, target, _ = next(
+        volume.split(":") for volume in temporal["volumes"] if volume.endswith(":ro")
+    )
+
+    assert Path(source) == Path(".") / DYNAMIC_CONFIG_PATH.relative_to(REPO_ROOT)
+    assert target == mount_path
+
+
+def test_the_queue_holds_more_build_version_sets_than_the_temporal_default():
+    config = yaml.safe_load(DYNAMIC_CONFIG_PATH.read_text())
+
+    assert config["frontend.workerVersioningDataAPIs"][0]["value"] is True
+    assert (
+        config["limit.versionCompatibleSetLimitPerQueue"][0]["value"]
+        > TEMPORAL_VERSION_SET_DEFAULT_LIMIT
+    )
