@@ -76,3 +76,6 @@ crash.*.log
 # Generated local k8s secret env (derived from .env at deploy time)
 deploy/kubernetes/local/*.secret.env
 .context/compound-engineering/
+
+# Audit artifacts written by rebar bridge sync (snapshots, manifests, sync logs)
+bridge_state/
