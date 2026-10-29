@@ -1,7 +1,7 @@
 # The Agentic Development Platform on Government Projects
 
 **Prepared:** 27 October 2026
-**Status:** Aggregate evidence from six weeks of piloting against the MA PFML accessibility backlog, 15 September to 27 October 2026
+**Status:** Aggregate evidence from six weeks of piloting against a state benefits accessibility backlog, 15 September to 27 October 2026
 
 ---
 
@@ -9,7 +9,7 @@
 
 Nava's AI-Enabled Delivery charter already names the Agentic Development Platform as one of six systems expected to make delivery measurably faster, higher quality, and more consistent. This document reports what ADP does, what it does not do, what six weeks of piloting against a client backlog measured, and how it compares to the other agentic coding options available to us.
 
-**The bottom line.** Over six weeks against the MA PFML codebase, ADP produced 11 pull requests across 9 tickets. None exceeded the file set its ticket declared and the largest was 7 files. Every one of the 23 defects the pilot surfaced was in the platform rather than in the agent's judgement on a well-specified ticket. ADP works inside a deliberately narrow scope, it holds that scope under enforcement rather than instruction, and it leaves an audit record no competing option produces.
+**The bottom line.** Over six weeks against the pilot codebase, ADP produced 11 pull requests across 9 tickets. None exceeded the file set its ticket declared and the largest was 7 files. Every one of the 23 defects the pilot surfaced was in the platform rather than in the agent's judgement on a well-specified ticket. ADP works inside a deliberately narrow scope, it holds that scope under enforcement rather than instruction, and it leaves an audit record no competing option produces.
 
 Three findings carry the weight. First, ADP produces a cryptographically verifiable record of who changed what, under which model version, under which policy, that no competing option produces. Second, it reduces risk by refusing work rather than improvising, and the refusals we observed were correct. Third, it runs on engineer workstations against repositories we already hold, so the trust boundary stays ours and no procurement decision is involved.
 
@@ -19,7 +19,7 @@ This document records the evidence rather than proposing a course of action. It 
 
 ## The problem, with a denominator
 
-The MA PFML backlog carries 132 open tickets. 105 of them are accessibility defects. The distribution is bimodal. A large group are single-element corrections, a redundant `size` attribute on a form control, a heading level that breaks document outline, a missing label association. The remainder require design judgment and cannot be delegated to anything, human or otherwise, without a conversation first.
+The pilot backlog carries 132 open tickets. 105 of them are accessibility defects. The distribution is bimodal. A large group are single-element corrections, a redundant `size` attribute on a form control, a heading level that breaks document outline, a missing label association. The remainder require design judgment and cannot be delegated to anything, human or otherwise, without a conversation first.
 
 Work in the shallow mode is the problem worth solving. It is individually trivial, collectively large, and competes for the attention of engineers who should be working on determination logic and claimant experience. It also does not get done, because it never outranks anything else in a sprint. A backlog of 105 accessibility defects on a benefits system is a civic problem before it is an engineering one. Every unlabeled control is a claimant using a screen reader who cannot complete an application without help.
 
@@ -45,7 +45,7 @@ What ADP contributes inside that boundary is execution, enforcement, and evidenc
 
 ## What we measured
 
-ADP has run against the MA PFML codebase over six weeks, from 15 September to 27 October 2026. The aggregate is below. These are the numbers to carry forward, not any single run.
+ADP has run against the pilot codebase over six weeks, from 15 September to 27 October 2026. The aggregate is below. These are the numbers to carry forward, not any single run.
 
 | Measure | Result |
 |---|---|
@@ -121,7 +121,7 @@ We should also weigh vendor durability, which is not usually our concern but is 
 
 A clean execution takes roughly 40 to 45 minutes end to end, of which the project's own security scan can be 15 minutes or more on a large repository. A run that needs repair adds roughly 35 minutes per cycle. Human attention across a clean run is about four minutes, for ticket approval and pull request review. ADP is sensitive to host capacity, and the operative constraint is CPU per test worker rather than total CPU, which took a controlled experiment to establish.
 
-ADP will not rescue a fragile test suite in the target repository. We found a shared test helper in the MA PFML portal whose timing behavior makes several suites unreliable under load, and we filed it as a defect in that project rather than working around it in the platform. When the project's tests are flaky, ADP's results are flaky, because the project's tests are the standard it is measured against. That follows directly from the scope decision above, and the remedy is in the project, not the platform.
+ADP will not rescue a fragile test suite in the target repository. We found a shared test helper in the pilot project's portal whose timing behavior makes several suites unreliable under load, and we filed it as a defect in that project rather than working around it in the platform. When the project's tests are flaky, ADP's results are flaky, because the project's tests are the standard it is measured against. That follows directly from the scope decision above, and the remedy is in the project, not the platform.
 
 ADP's success rate is a function of ticket quality. The clearest failure of the pilot traced to a ticket whose declared file impact was wrong. The platform did what it should have done, which was refuse to edit a file the ticket had not declared, and the ticket was at fault.
 
@@ -178,7 +178,7 @@ It also puts the evidence in the right order. 11 pull requests support qualitati
 
 From an engineer's seat the behavior is narrow and concrete.
 
-**It takes the tickets you keep deferring.** The 105 accessibility defects in the PFML backlog are not interesting. They are a redundant attribute, a heading level, a missing label. Each one costs you a context switch worth more than the fix. ADP takes the ticket and gives you back a draft pull request.
+**It takes the tickets you keep deferring.** The 105 accessibility defects in that backlog are not interesting. They are a redundant attribute, a heading level, a missing label. Each one costs you a context switch worth more than the fix. ADP takes the ticket and gives you back a draft pull request.
 
 **You keep the decision.** It opens a draft. It cannot approve, it cannot merge, and it cannot push anywhere except its own branch. Reviewing its output is the same review you already do, and it is a shorter one, because of the next point.
 
