@@ -1,6 +1,5 @@
 # The Agentic Development Platform on Government Projects
 
-**Audience:** Nava PBC executive leadership
 **Prepared:** 27 October 2026
 **Status:** Aggregate evidence from six weeks of piloting against the MA PFML accessibility backlog, 15 September to 27 October 2026
 
