@@ -17,8 +17,7 @@ from observability import (
     temporal_interceptors,
 )
 from scripts.config import configured_log_level, get_settings
-from temporalio.client import BuildIdOpAddNewDefault, Client
-from temporalio.service import RPCError
+from temporalio.client import Client
 from temporalio.worker import Worker
 from temporalio.worker.workflow_sandbox import SandboxedWorkflowRunner, SandboxRestrictions
 
@@ -84,6 +83,7 @@ from services.orchestration.temporal_workflows import (
     PullRequestWorkflow,
     ReapWorkflow,
 )
+from services.orchestration.worker_versioning import deployment_config, set_current_version
 
 logging.basicConfig(level=configured_log_level())
 log = logging.getLogger("workflow-worker")
@@ -191,10 +191,7 @@ def build_worker(client: Client, task_queue: str, role: str) -> Worker:
     settings = get_settings()
     versioning: dict[str, Any] = {}
     if settings.worker_versioning_enabled:
-        versioning = {
-            "build_id": settings.agent_build_id,
-            "use_worker_versioning": True,
-        }
+        versioning = {"deployment_config": deployment_config(settings)}
     if role == WORKER_ROLE_WORKFLOW:
         return Worker(
             client,
@@ -215,56 +212,6 @@ def build_worker(client: Client, task_queue: str, role: str) -> Worker:
         workflow_runner=runner,
         **versioning,
     )
-
-
-async def _listed_build_ids(client: Client, queue: str) -> set[str]:
-    """Report the build ids a task queue already routes to, empty when the sets cannot be read."""
-    try:
-        sets = await client.get_worker_build_id_compatibility(queue)
-    except RPCError:
-        return set()
-    return {build_id for version_set in sets.version_sets for build_id in version_set.build_ids}
-
-
-async def register_build_id(client: Client, queues: list[str], settings) -> None:
-    """Make this build routable on each task queue before the worker polls it.
-
-    A versioned worker polls for its own build id alone, and the server dispatches nothing to a
-    build id the task queue does not list, so a worker that polls before this registration runs
-    receives no task and reports nothing wrong.
-
-    The server refuses a build id the queue already lists with `INVALID_ARGUMENT: version
-    <id> already exists`, so a build id already present is left where it sits. A worker on a
-    superseded build restarts into the set that holds its own executions and keeps draining
-    them, in place of exiting and stranding them, and workers starting together race to the
-    same registration without one of them losing.
-    """
-    build_id = settings.agent_build_id
-    for queue in queues:
-        if build_id in await _listed_build_ids(client, queue):
-            log.info("task queue %s already routes to build %s", queue, build_id)
-            continue
-        try:
-            await client.update_worker_build_id_compatibility(
-                queue, BuildIdOpAddNewDefault(build_id)
-            )
-        except RPCError as exc:
-            if build_id in await _listed_build_ids(client, queue):
-                log.info(
-                    "task queue %s routes to build %s after a concurrent worker registered it",
-                    queue,
-                    build_id,
-                )
-                continue
-            raise SystemExit(
-                f"could not register build id {build_id!r} on task queue {queue!r}, so a "
-                f"versioned worker would poll and receive nothing. Enable "
-                f"frontend.workerVersioningDataAPIs on the Temporal namespace, raise "
-                f"limit.versionCompatibleSetLimitPerQueue when the queue has reached its "
-                f"version set ceiling, or set WORKER_VERSIONING_ENABLED=false to run "
-                f"unversioned. Server reported: {exc}"
-            ) from exc
-        log.info("registered build %s as the default of task queue %s", build_id, queue)
 
 
 def _warm_acli_auth(settings) -> None:
@@ -354,9 +301,6 @@ async def main() -> None:
         workers.append(build_worker(client, settings.review_task_queue, WORKER_ROLE_REVIEW))
         queues.append(settings.review_task_queue)
 
-    if settings.worker_versioning_enabled:
-        await register_build_id(client, queues, settings)
-
     log.info(
         "worker started on task queues %s (role=%s, build=%s)",
         queues,
@@ -374,8 +318,11 @@ async def main() -> None:
                 alive=lambda: all(worker.is_running for worker in workers),
             )
         )
+    runners = [worker.run() for worker in workers]
+    if settings.worker_versioning_enabled:
+        runners.append(set_current_version(client, settings, queues))
     try:
-        await asyncio.gather(*(worker.run() for worker in workers))
+        await asyncio.gather(*runners)
     finally:
         if heartbeat_task is not None:
             heartbeat_task.cancel()

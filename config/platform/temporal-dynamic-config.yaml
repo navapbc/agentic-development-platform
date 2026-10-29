@@ -1,8 +1,0 @@
-frontend.workerVersioningDataAPIs:
-  - value: true
-frontend.workerVersioningWorkflowAPIs:
-  - value: true
-# Every build registers its own version set, and the server default of 10 would stop the
-# workers on the eleventh build against one Temporal database.
-limit.versionCompatibleSetLimitPerQueue:
-  - value: 100

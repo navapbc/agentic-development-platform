@@ -53,6 +53,9 @@ RUN if [ "${INSTALL_ACLI}" = "true" ]; then \
 
 ENV JIRA_ACLI_PATH=/app/vendor/bin/acli
 
+ARG AGENT_BUILD_ID=0.3.0
+ENV AGENT_BUILD_ID=${AGENT_BUILD_ID}
+
 RUN useradd --create-home --uid 10001 appuser
 USER appuser
 

@@ -42,6 +42,7 @@ EXPECTED_TASKS = {
     "sast",
     "workflow-status",
     "durability-proof",
+    "prune-worker-versions",
     "fetch-acli",
     "cbm-build",
     "publish-jumphost-image",

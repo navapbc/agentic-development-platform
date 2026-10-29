@@ -7,7 +7,7 @@ import shlex
 import sys
 
 from invoke import Collection, Exit, task
-from scripts.build_id import generate_build_id
+from scripts.build_id import resolve_build_id
 from services import process
 
 COMPOSE = "docker compose"
@@ -30,23 +30,6 @@ def _env_file_value(name: str, path: str = ".env") -> str:
             if key.strip() == name:
                 return value.strip().strip("\"'")
     return ""
-
-
-def _stamp_build_id(path: str = ".env") -> str:
-    """Record the build identifier of this build in the env file Compose and host tasks share."""
-    build_id = generate_build_id()
-    lines = []
-    if os.path.exists(path):
-        with open(path, encoding="utf-8") as handle:
-            lines = [
-                line
-                for line in handle.read().splitlines()
-                if not line.strip().startswith("AGENT_BUILD_ID=")
-            ]
-    lines.append(f"AGENT_BUILD_ID={build_id}")
-    with open(path, "w", encoding="utf-8") as handle:
-        handle.write("\n".join(lines) + "\n")
-    return build_id
 
 
 def _compose_files() -> str:
@@ -113,8 +96,10 @@ def config_check(c):
 @task
 def local_up(c):
     """Build the images, apply migrations, then start the stack and wait for it to be healthy."""
-    print(f"[local-up] build id {_stamp_build_id()}")
-    c.run(f"{COMPOSE} {_compose_files()} build")
+    build_id = resolve_build_id()
+    print(f"[local-up] build id {build_id}")
+    os.environ["AGENT_BUILD_ID"] = build_id
+    c.run(f"{COMPOSE} {_compose_files()} build --build-arg AGENT_BUILD_ID={shlex.quote(build_id)}")
     db_migrate(c)
     c.run(f"{COMPOSE} {_compose_files()} up -d --wait --wait-timeout 600")
 
@@ -411,6 +396,12 @@ def workflow_status(c):
 def resume_parked(c):
     """Resume parked workflows a newer agent build can retry."""
     c.run(f"{HOST_PYTHON} -m scripts.resume_parked", pty=True)
+
+
+@task
+def prune_worker_versions(c):
+    """Delete the drained versions of the Temporal worker deployment."""
+    c.run(f"{HOST_PYTHON} -m scripts.prune_worker_versions", pty=True)
 
 
 @task
@@ -796,6 +787,7 @@ for _t in (
     ci,
     workflow_status,
     durability_proof,
+    prune_worker_versions,
     fetch_acli,
     sast,
     cbm_build,

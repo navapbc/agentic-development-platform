@@ -8,6 +8,7 @@ x-python-service: &python-service
       INSTALL_ACLI: ${INSTALL_ACLI:-false}
       ACLI_VERSION: ${ACLI_VERSION:-}
       ACLI_SHA256: ${ACLI_SHA256:-}
+      AGENT_BUILD_ID: ${AGENT_BUILD_ID:-0.3.0}
   env_file: [.env]
   restart: unless-stopped
 
@@ -44,9 +45,6 @@ services:
       POSTGRES_PWD: ${POSTGRES_PASSWORD:-change-me-locally}
       DBNAME: temporal
       VISIBILITY_DBNAME: temporal_visibility
-      DYNAMIC_CONFIG_FILE_PATH: /etc/temporal/config/dynamicconfig/platform.yaml
-    volumes:
-      - ./config/platform/temporal-dynamic-config.yaml:/etc/temporal/config/dynamicconfig/platform.yaml:ro
     ports: ["${TEMPORAL_HOST_PORT:-7233}:7233"]
     healthcheck:
       test: ["CMD", "tctl", "--address", "temporal:7233", "cluster", "health"]
@@ -95,7 +93,6 @@ services:
       - ./config/platform:/app/config/platform:ro
     environment:
       WORKER_ROLE: workflow
-      AGENT_BUILD_ID: ${AGENT_BUILD_ID:-0.3.0}
       HEALTH_HEARTBEAT_FILE: /tmp/worker.heartbeat
       REPO_INTELLIGENCE_URL: http://repo-intelligence:8120
       COORDINATION_URL: http://coordination-service:8130
@@ -124,7 +121,6 @@ services:
       - ./config/platform:/app/config/platform:ro
     environment:
       WORKER_ROLE: activity
-      AGENT_BUILD_ID: ${AGENT_BUILD_ID:-0.3.0}
       HEALTH_HEARTBEAT_FILE: /tmp/worker.heartbeat
       REPO_INTELLIGENCE_URL: http://repo-intelligence:8120
       COORDINATION_URL: http://coordination-service:8130
@@ -154,7 +150,6 @@ services:
       - ${HOME}/.aws:/home/appuser/.aws:ro
     environment:
       WORKER_ROLE: review
-      AGENT_BUILD_ID: ${AGENT_BUILD_ID:-0.3.0}
       HEALTH_HEARTBEAT_FILE: /tmp/worker.heartbeat
       REPO_INTELLIGENCE_URL: http://repo-intelligence:8120
       COORDINATION_URL: http://coordination-service:8130

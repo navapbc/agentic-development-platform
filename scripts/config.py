@@ -10,7 +10,7 @@ from urllib.parse import urlparse, urlunparse
 from pydantic import ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
-from scripts.build_id import release_version
+from scripts.build_id import recorded_build_id
 
 
 class Settings(BaseSettings):
@@ -27,7 +27,8 @@ class Settings(BaseSettings):
     temporal_namespace: str = "default"
     temporal_task_queue: str = "agent-platform"
     review_task_queue: str = "agent-platform-review"
-    agent_build_id: str = release_version()
+    agent_build_id: str = recorded_build_id()
+    worker_deployment_name: str = "agent-platform"
     worker_versioning_enabled: bool = True
     workflow_execution_timeout_seconds: float = 3600.0
     draft_pr_execution_timeout_seconds: float = 86400.0
