@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import httpx
+import pytest
 from adapters.real.git_host import RealGitHost
 from services.integration.credentials import EnvSecretResolver
 from services.integration.github.credentials import (
     GitHubCredentialResolver,
+    UnconfiguredRepositoryError,
     parse_github_config,
 )
 
@@ -94,3 +96,8 @@ def test_git_auth_carries_each_repository_own_token() -> None:
 
 def test_non_allowlisted_repository_resolves_nothing() -> None:
     assert _resolver().resolve("repo-c") is None
+
+
+def test_git_auth_refuses_a_non_allowlisted_repository() -> None:
+    with pytest.raises(UnconfiguredRepositoryError):
+        _resolver().git_auth("repo-c")
