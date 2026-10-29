@@ -157,7 +157,7 @@ services:
     volumes:
       - ./config/local:/app/config/local:ro
       - ./config/platform:/app/config/platform:ro
-      - ${HOME}/.aws:/home/appuser/.aws:ro
+      - ${HOME}/.aws:/root/.aws:ro
     environment:
       WORKER_ROLE: review
       AGENT_BUILD_ID: ${AGENT_BUILD_ID:-dev}
@@ -282,7 +282,7 @@ services:
     restart: unless-stopped
 
   redis:
-    image: valkey/valkey:9.1.2-alpine@sha256:48332870af354a799964c0012ae1194a0bf2bf894eb508f945810596dc2d8d11
+    image: public.ecr.aws/valkey/valkey:9.1.2-alpine@sha256:48332870af354a799964c0012ae1194a0bf2bf894eb508f945810596dc2d8d11
     command:
       - valkey-server
       - --rdb-version-check
@@ -403,6 +403,7 @@ services:
       LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:-change-me-locally}
 
   otel-collector:
+    profiles: ["monitoring"]
     build:
       context: .
       dockerfile: docker/otel-collector.Dockerfile
@@ -437,6 +438,7 @@ services:
     restart: unless-stopped
 
   tempo:
+    profiles: ["monitoring"]
     build:
       context: .
       dockerfile: docker/tempo.Dockerfile
