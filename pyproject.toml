@@ -28,7 +28,7 @@ reasoning = [
     "langgraph>=1.2,<2",
 ]
 review = [
-    "nava-rebar[agents,jira-datacenter]==0.13.1",
+    "nava-rebar[agents,jira-datacenter,s3]==0.13.1",
     "openpyxl>=3.1,<4",
 ]
 sandbox = [
@@ -112,6 +112,13 @@ extraPaths = [".venv/lib/python3.14/site-packages/rebar/_engine"]
 require_plan_review_for_close = true
 require_plan_review_for_claim = true
 require_completion_verification_for_close = true
+
+# The ticket event log syncs to S3 rather than to a `tickets` branch on GitHub. This names a
+# git remote, not a URL, and git remotes live in .git/config, which is untracked. Every clone
+# and every CI runner has to add the remote before sync works. The reconciler's
+# refs/reconciler/* lock refs follow this same remote. See docs/rebar-s3-ticket-store.md.
+[tool.rebar.sync]
+remote = "s3tickets"
 
 [tool.rebar.jira]
 url = "https://navasage.atlassian.net"

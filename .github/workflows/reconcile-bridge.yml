@@ -12,6 +12,12 @@
 # the wait. Enable it only where that cost is acceptable, such as public repositories or
 # self-hosted runners. This repository leaves the continuous chain disabled. Hourly scheduling
 # is the automatic fallback, and manual dispatch remains available.
+#
+# This workflow is dormant on `v0.3.0`. GitHub runs `schedule` only from the default branch,
+# and a workflow must exist on the default branch to be dispatchable, so neither trigger fires
+# while `main` remains the default. Reconciliation runs locally until `v0.3.0` becomes the
+# default branch, at which point the hourly schedule starts on its own with no edit to this
+# file. Configure the variables and secrets in `docs/jira-sync-setup.md` before that switch.
 
 name: Reconcile Bridge
 
@@ -39,16 +45,18 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write   # push reconciler events back to the tickets orphan branch
+  contents: read    # checkout only. Reconciler events go to the S3 store, not to GitHub
+  id-token: write   # mint the OIDC token that assumes the ticket-store writer role
 
 jobs:
   reconcile:
     name: Run rebar reconciler
     runs-on: ubuntu-latest
-    # A job-level block REPLACES the workflow-level one wholesale, so the entry declared above
-    # must be restated here. Dropping it silently breaks the reconciler's commit-back.
+    # A job-level block REPLACES the workflow-level one wholesale, so both entries declared
+    # above must be restated here. Dropping id-token silently breaks the OIDC role assumption.
     permissions:
-      contents: write   # push reconciler events back to the tickets orphan branch
+      contents: read
+      id-token: write
     # Initial sync creates Jira issues serially, and commit-back persists only a completed
     # pass. Sixty minutes is a bulk-cutover ceiling, not the expected incremental duration.
     timeout-minutes: 60
@@ -64,7 +72,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
-          persist-credentials: true   # the mounted worktree reuses these creds to push
+          persist-credentials: false   # the reconciler pushes to S3, never back to GitHub
           filter: blob:none
           # Compaction reconciliation requires a merge base, so the checkout fetches full
           # history. Later reconciliation performs the merge. A shallow checkout or rebase can
@@ -91,37 +99,9 @@ jobs:
           [ -z "${JIRA_USER:-}" ] && missing="$missing JIRA_USER(var)"
           [ -z "${JIRA_API_TOKEN:-}" ] && missing="$missing JIRA_API_TOKEN(secret)"
           if [ -n "$missing" ]; then
-            echo "::error::Missing required Jira config:$missing — see docs/jira-sync-setup.md"
+            echo "::error::Missing required Jira config:$missing. See docs/jira-sync-setup.md"
             exit 1
           fi
-
-      - name: Mount tickets branch as a worktree
-        # The store lives on the `tickets` orphan branch at the repo root. Mount it
-        # as .tickets-tracker on the ACTUAL `tickets` branch (not detached) so
-        # tracker.branch matches and `rebar fsck` does not WARN on a mismatch.
-        run: |
-          set -euo pipefail
-          # Full fetch (no --depth): a shallow tickets history defeats merge-base and
-          # corrupts compaction reconciliation (bug f193). See fetch-depth note above.
-          git fetch origin '+tickets:refs/remotes/origin/tickets'
-          rm -rf .tickets-tracker
-          git worktree add -B tickets .tickets-tracker origin/tickets
-
-      - name: Configure tickets merge driver
-        # .bridge_state/* uses merge=ours; define that custom driver before the
-        # push-retry loop can merge origin/tickets into the mounted worktree.
-        run: |
-          set -euo pipefail
-          git config merge.ours.driver true
-
-      - name: Sync reconciler lock refs (ref-lock backend)
-        # The pass lock and phase gate use `refs/reconciler/*`, which is outside the tickets
-        # tree. Fetch those refs on a best-effort basis before acquisition. Each lock operation
-        # also synchronizes the refs and uses `--force-with-lease`. A first run or file backend
-        # may have no refs.
-        run: |
-          set -euo pipefail
-          git fetch origin '+refs/reconciler/*:refs/reconciler/*' || true
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
@@ -135,6 +115,89 @@ jobs:
         # reconciler code is reproducible across runs. Reconcile does NOT need the
         # [agents] extra. Bump both pins together.
         run: pip install --require-hashes -r .github/reconcile-bridge-requirements.txt
+
+      - name: Validate ticket-store configuration
+        env:
+          TICKETS_S3_URL: ${{ vars.TICKETS_S3_URL }}
+          AWS_BRIDGE_ROLE_ARN: ${{ vars.AWS_BRIDGE_ROLE_ARN }}
+          AWS_BRIDGE_REGION: ${{ vars.AWS_BRIDGE_REGION }}
+        run: |
+          set -euo pipefail
+          missing=""
+          [ -z "${TICKETS_S3_URL:-}" ] && missing="$missing TICKETS_S3_URL(var)"
+          [ -z "${AWS_BRIDGE_ROLE_ARN:-}" ] && missing="$missing AWS_BRIDGE_ROLE_ARN(var)"
+          [ -z "${AWS_BRIDGE_REGION:-}" ] && missing="$missing AWS_BRIDGE_REGION(var)"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing required ticket-store config:$missing. See docs/jira-sync-setup.md"
+            exit 1
+          fi
+          case "${TICKETS_S3_URL}" in
+            s3://*/*)
+              ;;
+            *)
+              echo "::error::TICKETS_S3_URL must be s3://bucket/prefix. See docs/rebar-s3-ticket-store.md"
+              exit 1
+              ;;
+          esac
+          # git resolves an s3:// remote through this helper, which arrives with the rebar
+          # [s3] extra. Without it git reports only an opaque unknown-transport error.
+          command -v git-remote-s3 >/dev/null || {
+            echo "::error::git-remote-s3 is missing. The pinned requirements must install nava-rebar[s3]"
+            exit 1
+          }
+
+      - name: Configure AWS credentials for the ticket store
+        # OIDC keeps the writer role reachable without a long-lived access key in secrets.
+        # This is what `id-token: write` above exists for. The role must trust this
+        # repository through the account's GitHub OIDC provider.
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_BRIDGE_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_BRIDGE_REGION }}
+          role-session-name: reconcile-bridge-${{ github.run_id }}
+
+      - name: Add the S3 ticket-store remote
+        # `[tool.rebar.sync] remote` names a git remote, and git remotes live in .git/config,
+        # which no clone carries. The runner has to create it on every pass. The URL omits a
+        # profile because the OIDC step above exports credentials into the environment.
+        env:
+          TICKETS_S3_URL: ${{ vars.TICKETS_S3_URL }}
+        run: |
+          set -euo pipefail
+          git remote remove s3tickets 2>/dev/null || true
+          git remote add s3tickets "${TICKETS_S3_URL}"
+          git ls-remote --exit-code s3tickets 'refs/heads/tickets' >/dev/null || {
+            echo "::error::Cannot read refs/heads/tickets from ${TICKETS_S3_URL}. Check the role's S3 and KMS grants"
+            exit 1
+          }
+
+      - name: Mount tickets branch as a worktree
+        # The store lives on a `tickets` branch inside the S3 remote. Mount it as
+        # .tickets-tracker on the ACTUAL `tickets` branch (not detached) so tracker.branch
+        # matches and `rebar fsck` does not WARN on a mismatch.
+        run: |
+          set -euo pipefail
+          # Full fetch (no --depth): a shallow tickets history defeats merge-base and
+          # corrupts compaction reconciliation (bug f193). See fetch-depth note above.
+          git fetch s3tickets '+refs/heads/tickets:refs/remotes/s3tickets/tickets'
+          rm -rf .tickets-tracker
+          git worktree add -B tickets .tickets-tracker s3tickets/tickets
+
+      - name: Configure tickets merge driver
+        # .bridge_state/* uses merge=ours, so define that custom driver before the
+        # push-retry loop can merge s3tickets/tickets into the mounted worktree.
+        run: |
+          set -euo pipefail
+          git config merge.ours.driver true
+
+      - name: Sync reconciler lock refs (ref-lock backend)
+        # The pass lock and phase gate use `refs/reconciler/*`, which is outside the tickets
+        # tree. They follow sync.remote, so they live beside the store in S3. Fetch them on a
+        # best-effort basis before acquisition. Each lock operation also synchronizes the refs
+        # and uses `--force-with-lease`. A first run or file backend may have no refs.
+        run: |
+          set -euo pipefail
+          git fetch s3tickets '+refs/reconciler/*:refs/reconciler/*' || true
 
       - name: Require a pinned acli version and digest
         env:
@@ -223,7 +286,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${REBAR_BOT_SIGNING_KEY:-}" ]; then
-            echo "REBAR_BOT_SIGNING_KEY unset — reconciler writes will be unsigned (advisory)"
+            echo "REBAR_BOT_SIGNING_KEY unset. Reconciler writes will be unsigned (advisory)"
             exit 0
           fi
           echo "::add-mask::${REBAR_BOT_SIGNING_KEY}"
@@ -268,13 +331,13 @@ jobs:
             echo ""
             echo "GitHub emails the account that last modified this workflow file when a scheduled run fails. No other alerting is wired up for this repository."
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "::error title=Reconcile Bridge failed::See run summary — $GH_RUN_URL"
+          echo "::error title=Reconcile Bridge failed::See run summary at $GH_RUN_URL"
 
       - name: Re-dispatch to sustain the continuous loop (opt-in)
         # `RECONCILE_CONTINUOUS=true` chains runs through `workflow_dispatch`, which requires the
         # `GITHUB_TOKEN` exception and `actions: write`. This repository grants only
-        # `contents: write`, so enabling the variable also requires restoring `actions: write` at
-        # both the workflow and job level. Concurrency and the pass lock allow one
+        # `contents: read` and `id-token: write`, so enabling the variable also requires adding
+        # `actions: write` at both the workflow and job level. Concurrency and the pass lock allow one
         # running pass and one queued pass without interruption or fan-out. A pass shorter than
         # 1800 seconds waits for the smaller of its elapsed duration and 900 seconds before
         # dispatching its successor. A pass that reaches 1800 seconds skips the wait. A missing or
@@ -289,15 +352,15 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          echo "RECONCILE_CONTINUOUS=true — re-dispatching to sustain the loop (mode=${MODE})."
+          echo "RECONCILE_CONTINUOUS=true. Re-dispatching to sustain the loop (mode=${MODE})."
           started="${PASS_STARTED_EPOCH:-}"
           if ! printf '%s' "${started}" | grep -Eq '^[0-9]+$'; then
-            echo "PASS_STARTED_EPOCH unset or non-numeric — chain pacing skipped for this run."
+            echo "PASS_STARTED_EPOCH unset or non-numeric. Chain pacing skipped for this run."
           else
             elapsed=$(( $(date +%s) - started ))
             [ "${elapsed}" -lt 0 ] && elapsed=0
             if [ "${elapsed}" -ge 1800 ]; then
-              echo "Pass took ${elapsed}s (>= 1800s) — already self-pacing, no pacing sleep."
+              echo "Pass took ${elapsed}s (>= 1800s), already self-pacing, no pacing sleep."
             else
               pause="${elapsed}"
               [ "${pause}" -gt 900 ] && pause=900
@@ -309,10 +372,10 @@ jobs:
           # an ALREADY-CONVERGED pass. When the workflow is disabled, gh exits non-zero with
           # `HTTP 422: Cannot trigger a 'workflow_dispatch' on a disabled workflow`, and
           # `set -e` turned that into a red run whose reconcile had fully succeeded (runs
-          # 31129551929 / 31129431096) — tripping the heartbeat/alerting path for a non-problem.
+          # 31129551929 / 31129431096), tripping the heartbeat/alerting path for a non-problem.
           # Re-seeding is already self-healing: the hourly schedule above is the documented
           # backstop that restarts the chain. So the disabled-workflow 422 is a benign no-op.
-          # The downgrade is deliberately NARROW — it requires BOTH the 422 status and the
+          # The downgrade is deliberately NARROW. It requires BOTH the 422 status and the
           # disabled-workflow phrase, so an unrelated 422 (and every auth/404/network/rate-limit
           # failure) still fails the step loudly.
           dispatch_rc=0
@@ -323,7 +386,7 @@ jobs:
           fi
           # The two tokens are matched with shell BUILTINS, never a `grep` pipeline. Under
           # `set -o pipefail` a pipeline hands the benign-vs-fatal verdict to a second
-          # process, so any transient non-zero from it -- not just a real mismatch -- reds
+          # process, so any transient non-zero from it, not just a real mismatch, reds
           # an already-converged pass. That is the very outcome this downgrade exists to
           # prevent, and it was observed in CI (bug a11a) taking the fatal branch while
           # `dispatch_out` demonstrably carried both tokens. A builtin match cannot fail
@@ -336,8 +399,8 @@ jobs:
           fi
           shopt -u nocasematch
           if [[ "${dispatch_out}" == *"HTTP 422"* ]] && [ "${disabled_workflow}" = true ]; then
-            echo "::warning::Re-dispatch skipped: this workflow is disabled (HTTP 422). The reconcile pass itself converged; the hourly schedule backstop re-seeds the continuous loop once the workflow is re-enabled."
+            echo "::warning::Re-dispatch skipped because this workflow is disabled (HTTP 422). The reconcile pass itself converged. The hourly schedule backstop re-seeds the continuous loop once the workflow is re-enabled."
             exit 0
           fi
-          echo "::error::Re-dispatch failed (exit ${dispatch_rc}) — see the captured gh output above"
+          echo "::error::Re-dispatch failed (exit ${dispatch_rc}). See the captured gh output above"
           exit "${dispatch_rc}"
