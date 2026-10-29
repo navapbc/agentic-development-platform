@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import subprocess
+
 import pytest
 from services.orchestration.worker import (
     WORKER_ROLE_ACTIVITY,
     WORKER_ROLE_ALL,
     WORKER_ROLE_WORKFLOW,
     _resolve_role,
+    _scrub_workspace_credentials,
     build_worker,
 )
 from temporalio.testing import WorkflowEnvironment
@@ -103,3 +106,30 @@ def test_warm_acli_auth_is_best_effort_on_error(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(credentials, "build_jira_credential_resolver", _boom)
 
     _warm_acli_auth(_FakeSettings())
+
+
+async def test_activity_worker_startup_clears_a_persisted_workspace_credential(
+    tmp_path,
+) -> None:
+    checkout = tmp_path / "repo" / "ADSER-1" / "exec-1"
+    checkout.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(checkout)], check=True, capture_output=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(checkout),
+            "remote",
+            "add",
+            "origin",
+            "https://x-access-token:ghs-startup-secret@acme.ghe/acme-org/demo.git",
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+    await _scrub_workspace_credentials(str(tmp_path))
+
+    config = (checkout / ".git" / "config").read_text(encoding="utf-8")
+    assert "ghs-startup-secret" not in config
+    assert "https://acme.ghe/acme-org/demo.git" in config

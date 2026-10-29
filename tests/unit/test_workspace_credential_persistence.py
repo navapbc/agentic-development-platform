@@ -111,12 +111,12 @@ async def test_materialized_workspace_holds_no_token_after_clone_and_fetch(
         allowed_repos=frozenset({REPO}),
         workspace_root=tmp_path / "workspaces",
         remote_url_for=lambda repo: bare,
-        auth_for=lambda repo: GitAuth(TOKEN),
+        auth_for=lambda repo: GitAuth(TOKEN, "https://acme.ghe"),
     )
     synchronizer = GitBranchSynchronizer(
         allowed_repos=frozenset({REPO}),
         remote_url_for=lambda repo: bare,
-        auth_for=lambda repo: GitAuth(TOKEN),
+        auth_for=lambda repo: GitAuth(TOKEN, "https://acme.ghe"),
     )
 
     workspace = await materializer.materialize(
@@ -147,7 +147,7 @@ async def test_reusing_a_workspace_clears_a_token_an_earlier_release_persisted(
         allowed_repos=frozenset({REPO}),
         workspace_root=tmp_path / "workspaces",
         remote_url_for=lambda repo: bare,
-        auth_for=lambda repo: GitAuth(TOKEN),
+        auth_for=lambda repo: GitAuth(TOKEN, "https://acme.ghe"),
     )
     workspace = await materializer.materialize(
         repo=REPO, task_id=TASK_ID, execution_id=EXECUTION_ID, base="main", commit_sha=head
@@ -169,3 +169,25 @@ async def test_reusing_a_workspace_clears_a_token_an_earlier_release_persisted(
 
     assert _token_bearing_files(Path(workspace.path)) == []
     assert _git(["remote", "get-url", "origin"], workspace.path) == bare
+
+
+async def test_a_failed_scrub_stops_the_workspace_being_reused(
+    remote: tuple[str, str], tmp_path: Path
+) -> None:
+    bare, head = remote
+    materializer = WorkspaceMaterializer(
+        registry=InMemoryOrphanRegistry(),
+        allowed_repos=frozenset({REPO}),
+        workspace_root=tmp_path / "workspaces",
+        remote_url_for=lambda repo: bare,
+        auth_for=lambda repo: GitAuth(TOKEN, "https://acme.ghe"),
+    )
+    workspace = await materializer.materialize(
+        repo=REPO, task_id=TASK_ID, execution_id=EXECUTION_ID, base="main", commit_sha=head
+    )
+    _git(["remote", "remove", "origin"], workspace.path)
+
+    with pytest.raises(RuntimeError, match="remote set-url"):
+        await materializer.materialize(
+            repo=REPO, task_id=TASK_ID, execution_id=EXECUTION_ID, base="main", commit_sha=head
+        )

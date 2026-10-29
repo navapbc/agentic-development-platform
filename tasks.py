@@ -450,6 +450,18 @@ def reap(c, apply=False):
 
 @task(
     help={
+        "root": "Workspace root to scrub (empty uses EXECUTION_WORKSPACE_ROOT).",
+        "local": "Run on the host instead of the activity-worker container.",
+    }
+)
+def scrub_workspaces(c, root="", local=False):
+    """Clear the git credential earlier releases persisted into execution workspaces."""
+    root_flag = f" --root {root}" if root else ""
+    _run_scripted(c, f"python -m scripts.scrub_workspaces{root_flag}", local=local)
+
+
+@task(
+    help={
         "source": "Ticket source, jira or rebar. Defaults to TICKET_BACKEND and must match it.",
         "schedule": "Install the Temporal intake schedule for the source.",
         "retry": "Clear the intake dedup for a failed ticket so the next pass relaunches it.",
@@ -782,6 +794,7 @@ for _t in (
     cbm_build,
     publish_jumphost_image,
     reap,
+    scrub_workspaces,
     intake,
     index_repo,
     repair,

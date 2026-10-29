@@ -15,6 +15,7 @@ from services.integration.github.git_auth import CREDENTIAL_ENV, NO_AUTH, GitAut
 from tests.support import hermetic_settings
 
 TOKEN = "ghs-helper-secret"
+BASE_URL = "https://acme.ghe"
 
 
 def _credential(auth: GitAuth, operation: str, request: str, cwd: Path) -> str:
@@ -32,7 +33,7 @@ def _credential(auth: GitAuth, operation: str, request: str, cwd: Path) -> str:
 
 def test_the_helper_answers_git_with_the_token_from_the_environment(tmp_path: Path) -> None:
     answer = _credential(
-        GitAuth(TOKEN), "fill", "protocol=https\nhost=acme.ghe\n\n", tmp_path
+        GitAuth(TOKEN, BASE_URL), "fill", "protocol=https\nhost=acme.ghe\n\n", tmp_path
     ).splitlines()
 
     assert "username=x-access-token" in answer
@@ -40,7 +41,7 @@ def test_the_helper_answers_git_with_the_token_from_the_environment(tmp_path: Pa
 
 
 def test_the_reset_stops_an_inherited_helper_persisting_the_credential(tmp_path: Path) -> None:
-    auth = GitAuth(TOKEN)
+    auth = GitAuth(TOKEN, BASE_URL)
     without_reset = tmp_path / "without-reset"
     with_reset = tmp_path / "with-reset"
     approve = f"protocol=https\nhost=acme.ghe\nusername=x-access-token\npassword={TOKEN}\n\n"
@@ -65,7 +66,7 @@ def test_the_reset_stops_an_inherited_helper_persisting_the_credential(tmp_path:
 
 
 def test_the_token_stays_out_of_the_command_and_the_repr() -> None:
-    auth = GitAuth(TOKEN)
+    auth = GitAuth(TOKEN, BASE_URL)
 
     assert TOKEN not in " ".join(auth.config_args())
     assert TOKEN not in repr(auth)
@@ -119,3 +120,25 @@ def test_an_unreadable_github_config_resolves_to_no_credential(
     auth_for = factory.build_git_auth_for(hermetic_settings(source_control_backend="github"))
 
     assert auth_for("agentic-demo-service") == NO_AUTH
+
+
+def test_the_helper_refuses_a_host_the_credential_was_not_issued_for(tmp_path: Path) -> None:
+    auth = GitAuth(TOKEN, BASE_URL)
+    proc = subprocess.run(
+        ["git", *auth.config_args(), "credential", "fill"],
+        input="protocol=https\nhost=redirect-target.invalid\n\n",
+        cwd=tmp_path,
+        env={**os.environ, **auth.env()},
+        capture_output=True,
+        text=True,
+    )
+
+    assert proc.returncode != 0
+    assert TOKEN not in proc.stdout
+
+
+def test_a_credential_with_no_host_to_scope_it_offers_nothing() -> None:
+    unscoped = GitAuth(TOKEN)
+
+    assert unscoped.config_args() == ()
+    assert CREDENTIAL_ENV not in unscoped.env()

@@ -170,9 +170,9 @@ class GitHubCredentialResolver:
     def git_remote_url(self, repo: str) -> str:
         """Return the remote URL for `repo`, carrying no credential.
 
-        Git writes a clone URL verbatim into `.git/config` and a fetch URL into
-        `.git/FETCH_HEAD`, so a token embedded here would persist in every workspace the
-        platform materializes. Callers pair this with `git_auth` instead.
+        Git writes a clone URL verbatim into `.git/config`, so a token embedded here would
+        persist in every workspace the platform materializes. Callers pair this with
+        `git_auth` instead.
         """
         cred = self.resolve(repo)
         if cred is None:
@@ -184,7 +184,7 @@ class GitHubCredentialResolver:
         cred = self.resolve(repo)
         if cred is None:
             raise UnconfiguredRepositoryError(repo)
-        return GitAuth(cred.token)
+        return GitAuth(cred.token, cred.git_base_url)
 
     def _effective(self, repo: str) -> tuple[_Host, str, str] | None:
         override = self._config.repositories.get(repo)

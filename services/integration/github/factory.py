@@ -65,6 +65,6 @@ def build_git_auth_for(settings: Settings | None = None) -> Callable[[str], GitA
 
     def auth_for(repo: str) -> GitAuth:
         cred = github_resolver.resolve(repo)
-        return GitAuth(cred.token) if cred is not None else NO_AUTH
+        return GitAuth(cred.token, cred.git_base_url) if cred is not None else NO_AUTH
 
     return auth_for

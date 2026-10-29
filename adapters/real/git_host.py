@@ -85,7 +85,7 @@ class RealGitHost:
 
     def _auth(self, repo: str) -> GitAuth:
         cred = self._resolver.resolve(repo)
-        return GitAuth(cred.token) if cred is not None else NO_AUTH
+        return GitAuth(cred.token, cred.git_base_url) if cred is not None else NO_AUTH
 
     async def _git(
         self,

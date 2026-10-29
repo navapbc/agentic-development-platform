@@ -200,11 +200,12 @@ class WorkspaceMaterializer:
         """Clear the credential an earlier release left in a workspace that is being reused.
 
         That release cloned and fetched with the token inside the remote URL, so `.git/config`
-        and `.git/FETCH_HEAD` of any workspace materialized then still hold it, and both files
-        are archived into the agent sandbox and the gate pods. Every reader of `FETCH_HEAD`
-        fetches in the same call, so removing a stale one costs nothing.
+        of any workspace materialized then still holds it, and that file is archived into the
+        agent sandbox and the gate pods. Git strips the userinfo before it writes `FETCH_HEAD`,
+        which therefore never held the token, and every reader of `FETCH_HEAD` fetches in the
+        same call, so removing a stale one costs nothing.
         """
-        await _git_ok("remote", "set-url", "origin", self.remote_url_for(repo), cwd=str(path))
+        await _git("remote", "set-url", "origin", self.remote_url_for(repo), cwd=str(path))
         (path / ".git" / "FETCH_HEAD").unlink(missing_ok=True)
 
     async def changed_paths(self, workspace: MaterializedWorkspace) -> list[str]:
