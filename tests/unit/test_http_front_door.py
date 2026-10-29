@@ -15,7 +15,13 @@ from services.coordination import (
     InMemoryWorkClaimStore,
 )
 from services.coordination.service import build_handler
-from services.http_front_door import MAX_REQUEST_BODY_BYTES, RequestRejected, declared_body_length
+from services.coordination.service import main as coordination_main
+from services.http_front_door import (
+    MAX_REQUEST_BODY_BYTES,
+    RequestRejected,
+    bearer_token_accepted,
+    declared_body_length,
+)
 from services.orchestration.webhook.jira_events import verify_jira_signature
 from services.orchestration.webhook.pr_events import verify_signature
 from services.orchestration.webhook.server import require_webhook_secrets
@@ -142,6 +148,33 @@ def test_declared_body_length_rejects_a_negative_length():
     with pytest.raises(RequestRejected) as excinfo:
         declared_body_length({"Content-Length": "-1"})
     assert excinfo.value.status == 400
+
+
+def test_bearer_token_is_refused_when_no_token_is_expected():
+    assert bearer_token_accepted({"Authorization": "Bearer anything"}, "") is False
+
+
+def test_bearer_token_is_refused_without_an_authorization_header():
+    assert bearer_token_accepted({}, SHARED_SECRET) is False
+
+
+def test_bearer_token_is_refused_for_another_authorization_scheme():
+    headers = {"Authorization": f"Basic {SHARED_SECRET}"}
+    assert bearer_token_accepted(headers, SHARED_SECRET) is False
+
+
+def test_bearer_token_is_accepted_for_the_expected_value():
+    assert bearer_token_accepted(_authorized(), SHARED_SECRET) is True
+
+
+def test_coordination_service_refuses_to_start_without_a_shared_secret(monkeypatch):
+    monkeypatch.setattr(
+        "services.coordination.service.get_settings",
+        lambda: hermetic_settings(coordination_shared_secret=""),
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        coordination_main()
+    assert "COORDINATION_SHARED_SECRET" in str(excinfo.value)
 
 
 def test_github_verification_fails_on_an_empty_secret():
