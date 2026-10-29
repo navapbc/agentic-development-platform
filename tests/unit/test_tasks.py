@@ -27,6 +27,7 @@ EXPECTED_TASKS = {
     "seed",
     "import-rebar-tickets",
     "rebar-changes",
+    "rebar-store-remote",
     "rebar-review-plan",
     "rebar-review-code",
     "operator-done",
@@ -40,6 +41,7 @@ EXPECTED_TASKS = {
     "test",
     "ci",
     "sast",
+    "terraform-test",
     "workflow-status",
     "durability-proof",
     "fetch-acli",
@@ -146,3 +148,16 @@ def test_no_host_task_invokes_a_bare_python(project):
 
     assert 'c.run("python ' not in source
     assert 'c.run(f"python ' not in source
+
+
+def test_rebar_store_remote_runs_in_a_one_off_worker_container(project):
+    container, host = _RecordingContext(), _RecordingContext()
+
+    tasks_module.rebar_store_remote(container)
+    tasks_module.rebar_store_remote(host, local=True)
+
+    assert container.commands == [
+        f"{tasks_module.COMPOSE} -f compose.yaml run --rm --no-deps activity-worker "
+        "python -m scripts.rebar_store_remote"
+    ]
+    assert host.commands == [f"{tasks_module.HOST_PYTHON} -m scripts.rebar_store_remote"]
