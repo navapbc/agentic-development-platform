@@ -65,6 +65,23 @@ def _result_dict(result) -> dict:
     return json.loads(result.content[0].text)
 
 
+def _initialize(client: TestClient, host: str):
+    return client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "test-client", "version": "1"},
+            },
+        },
+        headers={"Accept": "application/json, text/event-stream", "Host": host},
+    )
+
+
 async def test_gateway_serves_exactly_the_read_tools():
     async with create_connected_server_and_client_session(build_server(_toolset())) as session:
         listed = await session.list_tools()
@@ -147,3 +164,27 @@ def test_gateway_health_paths_answer_an_alb_target_health_check():
         assert response.status_code == 200, path
         assert response.json() == {"status": "ok", "service": "mcp-gateway"}
     assert unknown.status_code == 404
+
+
+def test_gateway_checks_the_host_header_against_the_configured_list_when_bound_to_all_interfaces():
+    app = build_server(
+        _toolset(), host="0.0.0.0", allowed_hosts=["mcp.internal.example:443"]
+    ).streamable_http_app()
+
+    with TestClient(app) as client:
+        refused = _initialize(client, "rebind.example:443")
+        accepted = _initialize(client, "mcp.internal.example:443")
+        health = client.get("/health", headers={"Host": "10.0.1.23:8150"})
+
+    assert refused.status_code == 421
+    assert accepted.status_code == 200
+    assert health.status_code == 200
+
+
+def test_gateway_leaves_the_host_header_unchecked_when_no_allowed_hosts_are_configured():
+    app = build_server(_toolset(), host="0.0.0.0", allowed_hosts=[]).streamable_http_app()
+
+    with TestClient(app) as client:
+        response = _initialize(client, "anything.example")
+
+    assert response.status_code == 200

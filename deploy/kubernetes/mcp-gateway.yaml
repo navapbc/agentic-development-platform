@@ -52,6 +52,8 @@ spec:
                 configMapKeyRef:
                   name: agentic-platform
                   key: jira_acceptance_field
+            - name: MCP_ALLOWED_HOSTS
+              value: mcp.internal.example,mcp.internal.example:443
           volumeMounts:
             - name: integration-config
               mountPath: /app/config/local
