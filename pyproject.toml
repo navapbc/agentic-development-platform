@@ -95,5 +95,4 @@ extraPaths = [".venv/lib/python3.14/site-packages/rebar/_engine"]
 
 [tool.rebar.jira]
 url = "https://navasage.atlassian.net"
-user = "joeoakhart@navapbc.com"
 project = "ADP"
