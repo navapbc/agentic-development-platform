@@ -86,3 +86,6 @@ deploy/kubernetes/local/*.secret.env
 .context/compound-engineering/
 
 .sast/
+
+# Audit artifacts written by rebar bridge sync (snapshots, manifests, sync logs)
+bridge_state/
