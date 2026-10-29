@@ -54,6 +54,8 @@ A request whose `Host` header is outside the list is refused with 421, and one w
 
 FastMCP turns the protection on by itself only when the server binds a loopback address, and the platform image sets `BIND_HOST=0.0.0.0`. Leaving `MCP_ALLOWED_HOSTS` empty in a deployed pod therefore leaves the gateway accepting every `Host` value.
 
+The `local/` overlay patches `MCP_ALLOWED_HOSTS` to an empty value, so the sandbox gateway accepts any `Host`. A sandbox client reaches it through `kubectl port-forward` or the in-cluster service name, and the `Host` header those produce varies with the forwarded port and the DNS form the client uses, so a fixed list would refuse valid sandbox traffic with 421 while the health paths kept the pod green. An environment overlay that fronts the gateway with an ALB sets the hostname instead, as below. Changing the base value means checking `local/` as well, because the overlay inherits anything it does not patch.
+
 Patch the value from the environment overlay `kustomization.yaml`.
 
 ```yaml
