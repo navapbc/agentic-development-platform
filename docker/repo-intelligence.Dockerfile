@@ -105,15 +105,17 @@ COPY --from=phpactor-cli /usr/local/bin/phpactor /usr/local/bin/phpactor
 COPY --from=scip-ruby /usr/local/bin/scip-ruby /usr/local/bin/scip-ruby
 
 WORKDIR /app
+
 COPY --from=ghcr.io/astral-sh/uv:0.13.3@sha256:bee0a2a458fd956c5df7b8b4c5fed2257b0af34866e3da7b51db0be3acb375d1 /uv /usr/local/bin/uv
 COPY pyproject.toml uv.lock README.md LICENSE NOTICE ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --locked --extra=dev
+
 COPY services ./services
 COPY adapters ./adapters
 COPY schemas ./schemas
 COPY database ./database
 COPY scripts ./scripts
-
-RUN uv sync --locked --extra dev
 
 RUN useradd --create-home --uid 10001 appuser
 RUN mkdir -p /app/repository_indexes && chown -R 10001:10001 /app/repository_indexes

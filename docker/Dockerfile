@@ -1,4 +1,5 @@
-FROM python:3.12-slim-trixie@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a
+# Python image with uv pre-installed. See https://docs.astral.sh/uv/guides/integration/docker/#available-images
+FROM ghcr.io/astral-sh/uv:python3.12-trixie@sha256:bbfd59ce8a3a58a621e7197fefe160e4ca6311c00a7837edb44446cd0491d451
 
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 
@@ -29,19 +30,11 @@ RUN ARCH="$(dpkg --print-architecture)" \
     && echo "${KUBECTL_SHA256}  /usr/local/bin/kubectl" | sha256sum -c - \
     && chmod +x /usr/local/bin/kubectl
 
-COPY --from=ghcr.io/astral-sh/uv:0.13.3@sha256:bee0a2a458fd956c5df7b8b4c5fed2257b0af34866e3da7b51db0be3acb375d1 /uv /usr/local/bin/uv
-
 COPY pyproject.toml uv.lock README.md LICENSE NOTICE alembic.ini ./
-COPY services ./services
-COPY adapters ./adapters
-COPY schemas ./schemas
-COPY database ./database
-COPY scripts ./scripts
-COPY observability ./observability
-COPY openhands ./openhands
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --locked --extra worker
 
-RUN uv sync --locked --extra worker
-
+COPY scripts/fetch_acli.py ./scripts/fetch_acli.py
 ARG TARGETOS
 ARG TARGETARCH
 ARG INSTALL_ACLI=false
@@ -52,6 +45,15 @@ RUN if [ "${INSTALL_ACLI}" = "true" ]; then \
     fi
 
 ENV JIRA_ACLI_PATH=/app/vendor/bin/acli
+
+COPY services ./services
+COPY adapters ./adapters
+COPY schemas ./schemas
+COPY database ./database
+COPY scripts ./scripts
+COPY observability ./observability
+COPY openhands ./openhands
+COPY vendor ./vendor
 
 RUN useradd --create-home --uid 10001 appuser
 USER appuser
