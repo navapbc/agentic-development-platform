@@ -4,7 +4,7 @@ The `Reconcile Bridge` workflow (`.github/workflows/reconcile-bridge.yml`) synch
 
 ## Dormancy on a non-default branch
 
-The workflow is dormant while it lives on a branch that is not the repository default. GitHub runs `schedule` only from the default branch, and a workflow must exist on the default branch before it can be dispatched. On `v0.3.0` neither trigger fires while `main` is the default. Run `rebar bridge run` locally until the default branch changes. No edit to the workflow is needed when it does.
+The workflow runs only on manual dispatch, and a workflow must exist on the default branch before it can be dispatched, so it cannot run while it lives on `v0.3.0` and `main` is the default. Run `rebar bridge run` locally until the default branch changes. It carries no `schedule` trigger, so the switch does not start it on its own. Every pass writes rebar-side state back into Jira, so add a `schedule` trigger only once the bridge's role for project ADP is settled.
 
 ## Repository variables
 
@@ -35,7 +35,19 @@ Set these under Settings, then Secrets and variables, then Actions, on the Varia
 
 ## Ticket store access
 
-The reconciler writes to the S3 ticket store rather than to a branch in this repository, so the job needs `id-token: write` to mint an OIDC token and assume `AWS_BRIDGE_ROLE_ARN`. No long-lived AWS key is stored as a secret. The role's trust policy must accept this repository through the account's GitHub OIDC provider, and its permissions policy must cover the store prefix plus the bucket's KMS key. See `docs/rebar-s3-ticket-store.md`.
+The reconciler writes to the S3 ticket store rather than to a branch in this repository, so the job needs `id-token: write` to mint an OIDC token and assume `AWS_BRIDGE_ROLE_ARN`. No long-lived AWS key is stored as a secret. The role's trust policy must scope to this workflow on the default branch, not to the repository, because any workflow on any branch that requests `id-token: write` can otherwise assume the role. Condition the `sts:AssumeRoleWithWebIdentity` statement on both claims:
+
+```json
+"Condition": {
+  "StringEquals": {
+    "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+    "token.actions.githubusercontent.com:sub": "repo:navapbc/agentic-development-platform:ref:refs/heads/main",
+    "token.actions.githubusercontent.com:job_workflow_ref": "navapbc/agentic-development-platform/.github/workflows/reconcile-bridge.yml@refs/heads/main"
+  }
+}
+```
+
+Update both values when the default branch changes. The permissions policy must cover the store prefix plus the bucket's KMS key. See `docs/rebar-s3-ticket-store.md`.
 
 ## Pinning acli
 

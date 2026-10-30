@@ -1,32 +1,27 @@
-# This workflow is the Jira <-> rebar reconciliation template. Client repositories copy it and
-# configure the variables and secrets documented in `docs/jira-sync-setup.md`. The installed
-# package supplies the runner. The hourly schedule and manual `dry-run`, `live`, and
-# `bootstrap` modes invoke `bridge preview` or `bridge sync`. Exit 0 reports success or a
-# benign result. Exit 1 reports an operational failure. Exit 2 reports an invocation or
-# configuration failure. The strict adapter commits remaining events and requires the push to
-# converge. Actions concurrency permits one pass to finish. The `refs/reconciler/lock` ref
-# prevents overlapping runs as described by ADR 0031. `RECONCILE_CONTINUOUS=true` chains paced
-# `workflow_dispatch` runs. A pass waits for at most 900 seconds based on its elapsed duration
-# before dispatching the next pass. A pass that reaches 1800 seconds skips the wait. The hourly
-# schedule restarts a stopped chain. The setting defaults to false because hosted runners bill
-# the wait. Enable it only where that cost is acceptable, such as public repositories or
-# self-hosted runners. This repository leaves the continuous chain disabled. Hourly scheduling
-# is the automatic fallback, and manual dispatch remains available.
+# Jira <-> rebar reconciliation for this repository. Configure the variables and secrets
+# documented in `docs/jira-sync-setup.md`. The installed package supplies the runner. The
+# `dry-run`, `live`, and `bootstrap` modes invoke `bridge preview` or `bridge sync`. Exit 0
+# reports success or a benign result. Exit 1 reports an operational failure. Exit 2 reports an
+# invocation or configuration failure. The strict adapter commits remaining events and requires
+# the push to converge. Actions concurrency permits one pass to finish. The
+# `refs/reconciler/lock` ref prevents overlapping runs as described by ADR 0031.
+# `RECONCILE_CONTINUOUS=true` chains paced `workflow_dispatch` runs. A pass waits for at most
+# 900 seconds based on its elapsed duration before dispatching the next pass. A pass that
+# reaches 1800 seconds skips the wait. The setting defaults to false because hosted runners
+# bill the wait. Enable it only where that cost is acceptable, such as public repositories or
+# self-hosted runners. This repository leaves the continuous chain disabled.
 #
-# This workflow is dormant on `v0.3.0`. GitHub runs `schedule` only from the default branch,
-# and a workflow must exist on the default branch to be dispatchable, so neither trigger fires
-# while `main` remains the default. Reconciliation runs locally until `v0.3.0` becomes the
-# default branch, at which point the hourly schedule starts on its own with no edit to this
-# file. Configure the variables and secrets in `docs/jira-sync-setup.md` before that switch.
+# `workflow_dispatch` is the only trigger, so every pass is started by a person. Jira project
+# ADP is the source of truth for the roadmap and release sprints, and the bridge has no one-way
+# mode, so a pass writes rebar-side state back into ADP: it creates issues for new tickets,
+# closes the issues of deleted tickets, and resolves a field changed on both sides to the rebar
+# value. An hourly schedule would start that on its own the moment this file reached the
+# default branch, with no edit here. Add a `schedule` trigger once the bridge's role for ADP is
+# settled, or once ADP leaves the store's sync list.
 
 name: Reconcile Bridge
 
 on:
-  # Hourly, deliberately off the top of the hour: GitHub's scheduler is best-effort and
-  # most heavily contended at :00, so an on-:00 entry is the likeliest to be delayed or
-  # dropped. Worst-case Jira<->rebar sync latency is therefore 1 hour.
-  schedule:
-    - cron: '23 * * * *'
   workflow_dispatch:
     inputs:
       mode:
@@ -111,9 +106,10 @@ jobs:
           cache-dependency-path: .github/reconcile-bridge-requirements.txt
 
       - name: Install rebar
-        # Pinned to the same release this project depends on in pyproject.toml, so the
-        # reconciler code is reproducible across runs. Reconcile does NOT need the
-        # [agents] extra. Bump both pins together.
+        # Pinned with hashes in `.github/reconcile-bridge-requirements.in`, which compiles to the
+        # `.txt` file this installs, so the reconciler code is reproducible across runs.
+        # Reconcile does NOT need the [agents] extra. Bump the release in the `.in` file and
+        # recompile, as `docs/jira-sync-setup.md` describes.
         run: pip install --require-hashes -r .github/reconcile-bridge-requirements.txt
 
       - name: Validate ticket-store configuration
@@ -329,7 +325,7 @@ jobs:
             echo "- **Mode:** \`${MODE}\`"
             echo "- **Triggered by:** \`$EVENT_NAME\`"
             echo ""
-            echo "GitHub emails the account that last modified this workflow file when a scheduled run fails. No other alerting is wired up for this repository."
+            echo "GitHub emails the account that last modified this workflow file when a run it scheduled fails. Every pass here is dispatched by a person, so watch the run you started. No other alerting is wired up for this repository."
           } >> "$GITHUB_STEP_SUMMARY"
           echo "::error title=Reconcile Bridge failed::See run summary at $GH_RUN_URL"
 
@@ -344,8 +340,8 @@ jobs:
         # nonnumeric `PASS_STARTED_EPOCH` skips the wait calculation. These bounds preserve the
         # 60-minute job budget. A failed pass starts another pass. Cancellation stops the chain.
         # Disabling the variable lets the current pass finish and prevents another dispatch.
-        # Without the variable, the hourly schedule remains the automatic trigger. Manual
-        # dispatch stays available.
+        # Without the variable, manual dispatch is the only trigger, because this workflow
+        # carries no `schedule`.
         if: ${{ !cancelled() && vars.RECONCILE_CONTINUOUS == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -373,8 +369,8 @@ jobs:
           # `HTTP 422: Cannot trigger a 'workflow_dispatch' on a disabled workflow`, and
           # `set -e` turned that into a red run whose reconcile had fully succeeded (runs
           # 31129551929 / 31129431096), tripping the heartbeat/alerting path for a non-problem.
-          # Re-seeding is already self-healing: the hourly schedule above is the documented
-          # backstop that restarts the chain. So the disabled-workflow 422 is a benign no-op.
+          # Re-seeding costs one manual dispatch, because this workflow carries no `schedule`
+          # to restart the chain. So the disabled-workflow 422 is a benign no-op.
           # The downgrade is deliberately NARROW. It requires BOTH the 422 status and the
           # disabled-workflow phrase, so an unrelated 422 (and every auth/404/network/rate-limit
           # failure) still fails the step loudly.
@@ -399,7 +395,7 @@ jobs:
           fi
           shopt -u nocasematch
           if [[ "${dispatch_out}" == *"HTTP 422"* ]] && [ "${disabled_workflow}" = true ]; then
-            echo "::warning::Re-dispatch skipped because this workflow is disabled (HTTP 422). The reconcile pass itself converged. The hourly schedule backstop re-seeds the continuous loop once the workflow is re-enabled."
+            echo "::warning::Re-dispatch skipped because this workflow is disabled (HTTP 422). The reconcile pass itself converged. Dispatch the workflow once it is re-enabled to re-seed the continuous loop."
             exit 0
           fi
           echo "::error::Re-dispatch failed (exit ${dispatch_rc}). See the captured gh output above"
