@@ -143,12 +143,13 @@ async def check_dependency_cycle(
 async def capture_base_head(req: CaptureBaseHeadRequest) -> CaptureBaseHeadResult:
     from scripts.config import get_settings
 
-    from services.integration.github.factory import build_git_host
+    from services.integration.github.factory import build_git_auth_for, build_git_host
     from services.orchestration.intake_runtime import remote_head
 
     settings = get_settings()
     location = build_git_host(settings).source_location(req.repo)
-    return CaptureBaseHeadResult(base_sha=remote_head(location, req.base))
+    auth = build_git_auth_for(settings)(req.repo)
+    return CaptureBaseHeadResult(base_sha=remote_head(location, req.base, auth))
 
 
 @dataclass

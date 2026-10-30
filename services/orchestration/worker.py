@@ -244,6 +244,30 @@ def _warm_acli_auth(settings) -> None:
         log.warning("acli startup authentication skipped: %s", exc)
 
 
+async def _scrub_workspace_credentials(workspace_root: str) -> None:
+    """Clear the credential releases before the per-invocation helper left in every checkout.
+
+    A workspace is keyed by execution id and nothing deletes it, so the scrub that runs when a
+    workspace is materialized again never reaches most of them.
+    """
+    from services.orchestration.workspace_scrub import scrub_workspace_credentials
+
+    receipt = await asyncio.to_thread(scrub_workspace_credentials, Path(workspace_root))
+    if receipt.rewritten:
+        log.warning(
+            "cleared a persisted git credential from %d of %d workspace checkouts under %s",
+            len(receipt.rewritten),
+            receipt.scanned,
+            workspace_root,
+        )
+    if receipt.failed:
+        log.error(
+            "could not clear a persisted git credential from %d workspace checkouts: %s",
+            len(receipt.failed),
+            ", ".join(receipt.failed),
+        )
+
+
 async def main() -> None:
     settings = get_settings()
     role = _resolve_role()
@@ -288,9 +312,12 @@ async def main() -> None:
             log.info("recorded review trust-root change: %s", change)
 
     if role in (WORKER_ROLE_ACTIVITY, WORKER_ROLE_ALL):
+        from services.integration.tickets.store_remote import tickets_store_preflight
         from services.orchestration.authorship import authorship_signing_preflight
 
+        tickets_store_preflight(settings)
         authorship_signing_preflight(settings)
+        await _scrub_workspace_credentials(settings.execution_workspace_root)
 
     if role in (WORKER_ROLE_ACTIVITY, WORKER_ROLE_REVIEW, WORKER_ROLE_ALL):
         from services.review.evidence import evidence_object_store_preflight

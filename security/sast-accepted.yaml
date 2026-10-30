@@ -11,7 +11,7 @@
 - tool: bandit
   rule: B106
   path: services/integration/github/credentials.py
-  match: default=_Identity(host="default", owner=owner, token_ref="__token__"),
+  match: identity = _Identity(host="default", owner=owner, token_ref="__token__") if token else None
   justification: __token__ is the key under which the in-memory EnvSecretResolver stores the token passed to build_single_identity_resolver. It is a lookup name, not a credential.
 - tool: bandit
   rule: B106
@@ -108,3 +108,18 @@
   path: tests/unit/test_metrics_and_logs.py
   match: 3fcf369cd920565dc165584cd0decbaa4966008e:tests/unit/test_metrics_and_logs.py:generic-api-key:117
   justification: A synthetic token-shaped fixture in a redaction test, committed before the fixtures were built at runtime. Commits are immutable, so the finding stays in history. The value was never a credential for any service.
+- tool: semgrep
+  rule: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
+  path: services/orchestration/worker.py
+  match: log.warning(
+  justification: The rule fires on the word credential in the format string. The arguments are the count of rewritten checkouts, the count of scanned checkouts, and the workspace root path from EXECUTION_WORKSPACE_ROOT. No token value is in scope at the call.
+- tool: semgrep
+  rule: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
+  path: services/orchestration/worker.py
+  match: log.error(
+  justification: The rule fires on the word credential in the format string. The arguments are the count of failed checkouts and a comma-joined list of workspace directory paths. No token value is in scope at the call.
+- tool: semgrep
+  rule: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
+  path: services/orchestration/workspace_scrub.py
+  match: 'log.error("workspace credential scrub failed for %s: %s", workspace, exc)'
+  justification: The rule fires on the word credential in the format string. The arguments are a workspace directory path and an OSError or RuntimeError raised by git config. The RuntimeError carries git stderr, which reports the config file and line number rather than the line content, and the only value the scrub passes on the git command line is the URL it already stripped the userinfo from.
