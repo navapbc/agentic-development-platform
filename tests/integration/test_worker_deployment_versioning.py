@@ -14,7 +14,12 @@ from dataclasses import dataclass
 from datetime import timedelta
 
 import pytest
-from services.orchestration.worker_versioning import deployment_config, set_current_version
+from services.orchestration.worker_versioning import (
+    deployment_config,
+    move_to_current_version,
+    pinned_executions,
+    set_current_version,
+)
 from temporalio import activity, workflow
 from temporalio.api.enums.v1 import VersioningBehavior as VersioningBehaviorProto
 from temporalio.client import Client
@@ -31,6 +36,7 @@ REVIEW_ACTIVITY = "report_review_build"
 class _VersionSettings:
     agent_build_id: str
     worker_deployment_name: str
+    worker_versioning_enabled: bool = True
 
 
 @workflow.defn(name="BuildPinningWorkflow")
@@ -121,6 +127,37 @@ async def test_a_pinned_execution_keeps_both_queues_on_the_build_that_started_it
         assert await started_after.result() == {
             "workflow_queue": second.agent_build_id,
             "review_queue": second.agent_build_id,
+        }
+
+
+@pytest.mark.asyncio
+async def test_a_parked_execution_moves_to_the_current_build_before_it_is_resumed() -> None:
+    deployment = f"versioning-move-{uuid.uuid4().hex[:8]}"
+    parked_on = _VersionSettings("0.3.0.20261028093000", deployment)
+    resumed_on = _VersionSettings("0.3.0.20261029093000", deployment)
+
+    async with await WorkflowEnvironment.start_local() as env, AsyncExitStack() as stack:
+        async with AsyncExitStack() as retired:
+            await _deploy(env.client, parked_on, retired)
+            parked = await env.client.start_workflow(
+                BuildPinningWorkflow.run,
+                id=f"parked-{uuid.uuid4().hex[:8]}",
+                task_queue=MAIN_QUEUE,
+            )
+            claimed = await _await_version_claim(parked)
+            assert claimed.deployment_version.build_id == parked_on.agent_build_id
+
+        await _deploy(env.client, resumed_on, stack)
+        assert await pinned_executions(env.client, deployment, parked_on.agent_build_id) == [
+            parked.id
+        ]
+        await move_to_current_version(env.client, resumed_on, parked.id)
+        assert await pinned_executions(env.client, deployment, parked_on.agent_build_id) == []
+
+        await parked.signal(BuildPinningWorkflow.release)
+        assert await parked.result() == {
+            "workflow_queue": resumed_on.agent_build_id,
+            "review_queue": resumed_on.agent_build_id,
         }
 
 

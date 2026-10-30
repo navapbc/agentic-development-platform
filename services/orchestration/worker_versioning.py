@@ -13,13 +13,18 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from google.protobuf.field_mask_pb2 import FieldMask
+from temporalio.api.common.v1 import WorkflowExecution as WorkflowExecutionProto
 from temporalio.api.deployment.v1 import WorkerDeploymentVersion as DeploymentVersionProto
 from temporalio.api.enums.v1 import VersionDrainageStatus
+from temporalio.api.workflow.v1 import VersioningOverride as VersioningOverrideProto
+from temporalio.api.workflow.v1 import WorkflowExecutionOptions as WorkflowExecutionOptionsProto
 from temporalio.api.workflowservice.v1 import (
     DeleteWorkerDeploymentVersionRequest,
     DescribeWorkerDeploymentRequest,
     DescribeWorkerDeploymentVersionRequest,
     SetWorkerDeploymentCurrentVersionRequest,
+    UpdateWorkflowExecutionOptionsRequest,
 )
 from temporalio.client import Client
 from temporalio.common import VersioningBehavior, WorkerDeploymentVersion
@@ -125,11 +130,16 @@ async def set_current_version(
             log.info("build %s is already the current version of %s", build_id, deployment_name)
             return
         if current and not is_newer_build(build_id, current):
-            log.info(
-                "leaving build %s current on %s, which outranks this build %s",
+            log.warning(
+                "build %s stays current on %s because it outranks this worker's build %s, so "
+                "new executions route to %s and not to the code this worker is running. Run "
+                "`inv local-up` to rebuild and restart the workers on a build that outranks "
+                "%s.",
                 current,
                 deployment_name,
                 build_id,
+                current,
+                current,
             )
             return
         try:
@@ -176,6 +186,56 @@ async def set_current_version(
 
 def _is_conflict(exc: RPCError) -> bool:
     return "conflict token" in str(exc).lower()
+
+
+async def pinned_executions(
+    client: Client, deployment_name: str, build_id: str, limit: int = 20
+) -> list[str]:
+    """Return the ids of the running executions pinned to one deployment version.
+
+    Stopping that version's workers leaves each of these with nowhere to run its next workflow
+    task, so the caller can report them before it replaces the workers.
+    """
+    query = (
+        'ExecutionStatus = "Running" '
+        'AND TemporalWorkflowVersioningBehavior = "Pinned" '
+        f'AND TemporalWorkerDeploymentVersion = "{deployment_name}:{build_id}"'
+    )
+    stranded: list[str] = []
+    async for execution in client.list_workflows(query):
+        stranded.append(execution.id)
+        if len(stranded) >= limit:
+            break
+    return stranded
+
+
+async def move_to_current_version(client: Client, settings, workflow_id: str) -> None:
+    """Repin a parked execution to this build so its next workflow task runs here.
+
+    A signal on its own does not move a pinned execution. The workflow task the signal creates
+    routes to the version that pinned the execution, which either no longer polls, leaving the
+    execution stalled, or still runs the build the execution parked to escape.
+    """
+    if not settings.worker_versioning_enabled:
+        return
+    pinned = VersioningOverrideProto.PinnedOverride(
+        behavior=VersioningOverrideProto.PinnedOverrideBehavior.PINNED_OVERRIDE_BEHAVIOR_PINNED,
+        version=DeploymentVersionProto(
+            build_id=settings.agent_build_id,
+            deployment_name=settings.worker_deployment_name,
+        ),
+    )
+    await client.workflow_service.update_workflow_execution_options(
+        UpdateWorkflowExecutionOptionsRequest(
+            namespace=client.namespace,
+            workflow_execution=WorkflowExecutionProto(workflow_id=workflow_id),
+            workflow_execution_options=WorkflowExecutionOptionsProto(
+                versioning_override=VersioningOverrideProto(pinned=pinned)
+            ),
+            update_mask=FieldMask(paths=["versioning_override"]),
+            identity=f"resume-parked-{settings.agent_build_id}",
+        )
+    )
 
 
 async def prune_drained_versions(client: Client, settings) -> tuple[list[str], list[str]]:

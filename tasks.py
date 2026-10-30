@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import shlex
 import sys
 
 from invoke import Collection, Exit, task
-from scripts.build_id import resolve_build_id
+from scripts.build_id import recorded_build_id, resolve_build_id
 from services import process
 
 COMPOSE = "docker compose"
@@ -93,15 +94,61 @@ def config_check(c):
     c.run(f"{HOST_PYTHON} -m scripts.config_check", pty=True)
 
 
-@task
-def local_up(c):
+@task(
+    help={
+        "force": "Replace the workers even when running executions are pinned to the "
+        "outgoing build."
+    }
+)
+def local_up(c, force=False):
     """Build the images, apply migrations, then start the stack and wait for it to be healthy."""
+    outgoing = recorded_build_id()
     build_id = resolve_build_id()
+    if build_id != outgoing and not force:
+        _refuse_to_strand(outgoing)
     print(f"[local-up] build id {build_id}")
     os.environ["AGENT_BUILD_ID"] = build_id
     c.run(f"{COMPOSE} {_compose_files()} build --build-arg AGENT_BUILD_ID={shlex.quote(build_id)}")
     db_migrate(c)
     c.run(f"{COMPOSE} {_compose_files()} up -d --wait --wait-timeout 600")
+
+
+def _refuse_to_strand(outgoing: str) -> None:
+    """Abort when replacing the workers would leave running executions with nowhere to run.
+
+    A pinned execution only makes progress while workers on its own version poll, and this build
+    replaces them. Reaching the server is best effort, because the stack is down on a first run
+    and an unreachable server reports no executions to strand either way.
+    """
+    from scripts.config import get_settings, to_host_hostport
+
+    settings = get_settings()
+    if not settings.worker_versioning_enabled:
+        return
+
+    async def _stranded() -> list[str]:
+        from services.orchestration.worker_versioning import pinned_executions
+        from temporalio.client import Client
+
+        client = await Client.connect(
+            to_host_hostport(settings.temporal_host), namespace=settings.temporal_namespace
+        )
+        return await pinned_executions(client, settings.worker_deployment_name, outgoing)
+
+    try:
+        stranded = asyncio.run(_stranded())
+    except Exception as exc:
+        print(f"[local-up] could not list executions pinned to build {outgoing}: {exc}")
+        return
+    if not stranded:
+        return
+    listed = "\n".join(f"  {workflow_id}" for workflow_id in stranded)
+    raise Exit(
+        f"{len(stranded)} running execution(s) are pinned to build {outgoing}, whose workers this "
+        f"build replaces. Each one stops until a worker on that build polls again.\n{listed}\n"
+        f"Let them finish, or resume the parked ones with `inv resume-parked`, which repins them "
+        f"to the current build. Run `inv local-up --force` to replace the workers anyway."
+    )
 
 
 @task
