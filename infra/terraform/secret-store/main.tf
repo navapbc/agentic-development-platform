@@ -56,6 +56,11 @@ locals {
       prefix      = ""
       hex         = false
     }
+    coordination_shared_secret = {
+      description = "Bearer token for the coordination RPC, set as COORDINATION_SHARED_SECRET on the coordination service and on every worker."
+      prefix      = ""
+      hex         = false
+    }
   }
 
   external_secrets = {

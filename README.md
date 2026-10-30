@@ -326,7 +326,7 @@ Each record carries an evidence classification that selects its retention window
 | `temporal` | 7233 | Durable workflow engine |
 | `temporal-ui` | 3001 | Workflow inspection UI |
 | `workflow-worker`, `activity-worker` | none | Temporal workers for workflows and activities |
-| `coordination-service` | 8130 | Claims, ordering, exactly-once, orphan reaping |
+| `coordination-service` | none | Claims, ordering, exactly-once, orphan reaping |
 | `repo-intelligence` | 8120 | Context packages built from indexed repos |
 | `repo-index-worker` | none | Reindexes each repo when its commit moves |
 | `langgraph-service` | 8100 | Bounded reasoning stages |

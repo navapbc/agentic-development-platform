@@ -25,6 +25,7 @@ from services.orchestration.coordination_client import CoordinationClient
 
 TASK_ID = "AGENTDEV-1"
 EXECUTION_ID = "exec-1"
+SHARED_SECRET = "coordination-test-secret"
 
 
 @pytest.fixture
@@ -37,6 +38,7 @@ def coordination_url() -> Iterator[str]:
         InMemorySequenceGate(),
         InMemoryWorkClaimStore(),
         loop,
+        shared_secret=SHARED_SECRET,
     )
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -70,7 +72,7 @@ class _FakeWriteClient:
 
 
 async def test_idempotency_reserve_record_and_network_replay_is_a_noop(coordination_url: str):
-    client = CoordinationClient(coordination_url)
+    client = CoordinationClient(coordination_url, token=SHARED_SECRET)
     ref = SideEffectRef(TASK_ID, EXECUTION_ID, "jira_comment", TASK_ID)
 
     reserved = await client.reserve_side_effect(ref)
@@ -88,7 +90,7 @@ async def test_idempotency_reserve_record_and_network_replay_is_a_noop(coordinat
 
 
 async def test_run_once_over_the_network_runs_the_effect_exactly_once(coordination_url: str):
-    client = CoordinationClient(coordination_url)
+    client = CoordinationClient(coordination_url, token=SHARED_SECRET)
     ref = SideEffectRef(TASK_ID, EXECUTION_ID, "jira_comment", TASK_ID)
     writer = IdempotentJiraWriter(_FakeWriteClient())
     calls = {"n": 0}
@@ -109,7 +111,7 @@ async def test_run_once_over_the_network_runs_the_effect_exactly_once(coordinati
 
 
 async def test_sequence_gate_admits_then_discards_stale_over_the_network(coordination_url: str):
-    client = CoordinationClient(coordination_url)
+    client = CoordinationClient(coordination_url, token=SHARED_SECRET)
 
     first = await client.admit_sequence(SequencedAction(TASK_ID, EXECUTION_ID, 1))
     second = await client.admit_sequence(SequencedAction(TASK_ID, EXECUTION_ID, 2))
@@ -121,7 +123,7 @@ async def test_sequence_gate_admits_then_discards_stale_over_the_network(coordin
 
 
 async def test_claim_is_won_once_and_next_batch_defers_file_collisions(coordination_url: str):
-    client = CoordinationClient(coordination_url)
+    client = CoordinationClient(coordination_url, token=SHARED_SECRET)
     unit_a = WorkUnit(TASK_ID, "agent-a", EXECUTION_ID, "agent-a", ("src/client.py",))
     unit_b = WorkUnit(TASK_ID, "agent-b", EXECUTION_ID, "agent-b", ("src/client.py",))
 

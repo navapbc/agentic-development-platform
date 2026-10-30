@@ -23,7 +23,7 @@ _ACCEPTED_EVENTS = frozenset({"jira:issue_created", "jira:issue_updated"})
 
 def verify_jira_signature(secret: str, body: bytes, header: str) -> bool:
     if not secret:
-        return True
+        return False
     if not header.startswith(_SIGNATURE_PREFIX):
         return False
     digest = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()

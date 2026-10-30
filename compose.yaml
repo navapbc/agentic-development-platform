@@ -221,7 +221,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    ports: ["8130:8130"]
 
   langgraph-service:
     <<: *python-service

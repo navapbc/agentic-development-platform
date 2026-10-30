@@ -7,10 +7,13 @@ from pathlib import Path
 from typing import Any
 
 from temporalio import activity
+from temporalio.exceptions import ApplicationError
 
 from services.prompts.library import IMPLEMENTATION_VERSION
 
 IMPLEMENTATION_PROMPT_VERSION = IMPLEMENTATION_VERSION
+
+COORDINATION_AUTH_ERROR_TYPE = "CoordinationAuth"
 
 
 @dataclass
@@ -134,22 +137,28 @@ def _build_runtime():
 
 @activity.defn
 async def claim_work_unit(req: ClaimRequest) -> ClaimResult:
+    from services.coordination.auth import CoordinationAuthError
     from services.coordination.claims import WorkUnit
 
     owner_workflow_id = req.owner_workflow_id or activity.info().workflow_id
     if not owner_workflow_id:
         raise RuntimeError("claim_work_unit runs only inside a workflow")
-    client = _build_coordination_client()
-    outcome = await client.try_claim(
-        WorkUnit(
-            task_id=req.task_id,
-            work_unit=req.work_unit,
-            execution_id=req.execution_id,
-            agent_id=req.agent_id,
-            file_impact=tuple(req.file_impact),
-            workflow_id=owner_workflow_id,
+    try:
+        client = _build_coordination_client()
+        outcome = await client.try_claim(
+            WorkUnit(
+                task_id=req.task_id,
+                work_unit=req.work_unit,
+                execution_id=req.execution_id,
+                agent_id=req.agent_id,
+                file_impact=tuple(req.file_impact),
+                workflow_id=owner_workflow_id,
+            )
         )
-    )
+    except CoordinationAuthError as exc:
+        raise ApplicationError(
+            str(exc), type=COORDINATION_AUTH_ERROR_TYPE, non_retryable=True
+        ) from exc
     return ClaimResult(
         claim_id=outcome.claim_id,
         won=outcome.won,
