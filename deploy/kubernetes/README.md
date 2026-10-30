@@ -80,6 +80,6 @@ patches:
 
 ## Webhook paths
 
-The `inbound-webhook` Ingress routes `/webhook/pr` and `/webhook/jira` to the service, which serves both. Register the GitHub webhook URL as `https://<webhook-hostname>/webhook/pr` and, when `jira_intake` runs in `webhook` or `hybrid` mode in `config/<env>/integrations.yaml`, the Jira webhook URL as `https://<webhook-hostname>/webhook/jira`. The Deployment reads `JIRA_WEBHOOK_SECRET` from the `agentic-platform` secret under the key `jira_webhook_secret`. An empty value leaves the Jira signature check satisfied by any request, so set it to the secret configured at the issuer.
+The `inbound-webhook` Ingress routes `/webhook/pr` and `/webhook/jira` to the service, which serves both. Register the GitHub webhook URL as `https://<webhook-hostname>/webhook/pr` and, when `jira_intake` runs in `webhook` or `hybrid` mode in `config/<env>/integrations.yaml`, the Jira webhook URL as `https://<webhook-hostname>/webhook/jira`. The Deployment reads `JIRA_WEBHOOK_SECRET` from the `agentic-platform` secret under the key `jira_webhook_secret`. Set it to the secret configured at the issuer whenever `jira_intake` runs in `webhook` or `hybrid` mode. The key is optional, so an environment that runs `jira_intake` in polling mode starts without it.
 
 Render an overlay with `kubectl kustomize --load-restrictor LoadRestrictionsNone deploy/kubernetes/local`.
