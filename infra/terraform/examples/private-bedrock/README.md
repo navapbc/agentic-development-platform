@@ -1,6 +1,6 @@
 # private-bedrock
 
-Reference composition root that stands up the platform's AWS network, the private Bedrock path, the Fargate jumphost, and the data tier for a single account. It wires the core infrastructure modules (`vpc-endpoints`, `ecr`, `cloudtrail`, `egress`, `dns-firewall`), the application modules (`bedrock-iam`, `bedrock-jumphost-fargate`), the data tier modules (`aurora-postgresql`, `elasticache`, `clickhouse-storage`, `langfuse-blob-store`), and the `secret-store` module into one apply.
+Reference composition root that stands up the platform's AWS network, the private Bedrock path, the Fargate jumphost, and the data tier for a single account. It wires the core infrastructure modules (`vpc-endpoints`, `ecr`, `cloudtrail`, `egress`, `dns-firewall`), the application modules (`bedrock-iam`, `bedrock-jumphost-fargate`), the data tier modules (`aurora-postgresql`, `elasticache`, `clickhouse-storage`, `langfuse-blob-store`), and the `secret-store` and `rebar-ticket-store` modules into one apply.
 
 It works from zero or against existing infrastructure. Set `create_network = true` to provision a tiered private VPC, or set it false and supply `vpc_id`, `subnet_ids`, `endpoint_allowed_cidrs`, and the existing tier subnets. Each core piece has its own toggle, so an account that already has VPC endpoints, a registry, an organization CloudTrail, or organization egress can skip them. The data tier services and the secret store are off until enabled.
 
@@ -69,6 +69,10 @@ A created network also enables the Route 53 Resolver DNS Firewall, which resolve
 `create_secret_store = true` provisions the [secret-store](../../secret-store) module. It creates the platform secrets in Secrets Manager under a dedicated KMS key and adds the `secretsmanager` interface endpoint. With `create_aurora` it also enables the Aurora Data API, adds the `rds-data` endpoint, and creates the per-service database credentials with their rotation function in the management tier. With `create_cache` it encrypts the cache user secret with the same key, adds the `elasticache` endpoint, and rotates the cache user.
 
 `secret_readers` grants read access per secret to the workload roles, and `secret_restart_services` names the ECS services to redeploy after each secret changes. The module README lists the secret keys, the rotation schedule, and the manual rotation runbook.
+
+## Rebar ticket store
+
+`create_rebar_ticket_store = true` provisions the [rebar-ticket-store](../../rebar-ticket-store) module, the bucket the rebar ticket store syncs to through `git-remote-s3`. It creates a dedicated KMS key and a reader and a writer role, trusted by `rebar_ticket_store_trusted_principals`. Set `rebar_ticket_store_existing_reader_role_arn` and `rebar_ticket_store_existing_writer_role_arn` to use roles the organization issues instead. `rebar_ticket_store_admin_principals` names the principals that seed the store and empty the bucket before a destroy. The store reaches S3 through the S3 gateway endpoint, so it needs no interface endpoint. With the trail enabled, the root also records object-level CloudTrail data events on the bucket.
 
 ## After apply
 

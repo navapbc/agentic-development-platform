@@ -121,6 +121,7 @@ services:
       - ./config/platform:/app/config/platform:ro
     environment:
       WORKER_ROLE: activity
+      AWS_CONFIG_FILE: /app/config/local/rebar-store-aws-config
       HEALTH_HEARTBEAT_FILE: /tmp/worker.heartbeat
       REPO_INTELLIGENCE_URL: http://repo-intelligence:8120
       COORDINATION_URL: http://coordination-service:8130
@@ -302,7 +303,7 @@ services:
   minio:
     image: cgr.dev/chainguard/minio:latest@sha256:cfdf1bed85da055bc031883d0959f373c4dbe9f3cb120855dcdc13943cd6284b
     entrypoint: sh
-    command: -c 'mkdir -p /data/langfuse /data/tempo && minio server --address ":9000" --console-address ":9001" /data'
+    command: -c 'mkdir -p /data/langfuse /data/tempo /data/rebar-tickets && minio server --address ":9000" --console-address ":9001" /data'
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minio}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-change-me-locally}

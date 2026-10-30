@@ -286,8 +286,10 @@ async def main() -> None:
             log.info("recorded review trust-root change: %s", change)
 
     if role in (WORKER_ROLE_ACTIVITY, WORKER_ROLE_ALL):
+        from services.integration.tickets.store_remote import tickets_store_preflight
         from services.orchestration.authorship import authorship_signing_preflight
 
+        tickets_store_preflight(settings)
         authorship_signing_preflight(settings)
 
     if role in (WORKER_ROLE_ACTIVITY, WORKER_ROLE_REVIEW, WORKER_ROLE_ALL):

@@ -81,12 +81,13 @@ resource "aws_route_table_association" "private" {
 module "cloudtrail" {
   source = "../../cloudtrail"
 
-  create_cloudtrail = var.create_cloudtrail
-  trail_name        = var.cloudtrail_name
-  region            = var.region
-  access_log_bucket = var.access_log_bucket
-  name_prefix       = var.name_prefix
-  tags              = var.tags
+  create_cloudtrail      = var.create_cloudtrail
+  trail_name             = var.cloudtrail_name
+  region                 = var.region
+  access_log_bucket      = var.access_log_bucket
+  data_event_bucket_arns = var.create_rebar_ticket_store ? [module.rebar_ticket_store.bucket_arn] : []
+  name_prefix            = var.name_prefix
+  tags                   = var.tags
 }
 
 module "vpc_endpoints" {
