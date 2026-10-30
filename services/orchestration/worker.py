@@ -83,6 +83,7 @@ from services.orchestration.temporal_workflows import (
     PullRequestWorkflow,
     ReapWorkflow,
 )
+from services.orchestration.worker_versioning import deployment_config, set_current_version
 
 logging.basicConfig(level=configured_log_level())
 log = logging.getLogger("workflow-worker")
@@ -190,10 +191,7 @@ def build_worker(client: Client, task_queue: str, role: str) -> Worker:
     settings = get_settings()
     versioning: dict[str, Any] = {}
     if settings.worker_versioning_enabled:
-        versioning = {
-            "build_id": settings.agent_build_id,
-            "use_worker_versioning": True,
-        }
+        versioning = {"deployment_config": deployment_config(settings)}
     if role == WORKER_ROLE_WORKFLOW:
         return Worker(
             client,
@@ -347,8 +345,11 @@ async def main() -> None:
                 alive=lambda: all(worker.is_running for worker in workers),
             )
         )
+    runners = [worker.run() for worker in workers]
+    if settings.worker_versioning_enabled:
+        runners.append(set_current_version(client, settings, queues))
     try:
-        await asyncio.gather(*(worker.run() for worker in workers))
+        await asyncio.gather(*runners)
     finally:
         if heartbeat_task is not None:
             heartbeat_task.cancel()

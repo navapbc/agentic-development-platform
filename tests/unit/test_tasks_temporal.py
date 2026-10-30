@@ -11,6 +11,7 @@ from invoke.context import Context
 from invoke.runners import Result
 
 COMPOSE = f"{tasks_module.COMPOSE} -f compose.yaml"
+BUILD_ID = "0.3.0.20261028093000"
 
 
 class _DatabaseContext(Context):
@@ -32,6 +33,15 @@ class _DatabaseContext(Context):
         assert isinstance(env, dict)
         self.commands.append((command, env))
         return Result()
+
+
+@pytest.fixture(autouse=True)
+def fixed_build_id(monkeypatch):
+    """Hold the build identifier still so `local_up` neither digests the sources nor reaches
+    Temporal. A matching recorded identifier means this build replaces no worker, which is the
+    case these tests exercise."""
+    monkeypatch.setattr(tasks_module, "resolve_build_id", lambda: BUILD_ID)
+    monkeypatch.setattr(tasks_module, "recorded_build_id", lambda: BUILD_ID)
 
 
 @pytest.fixture
@@ -93,7 +103,7 @@ def test_local_up_applies_the_schema_before_the_server_and_the_namespace_before_
     tasks_module.local_up(context)
 
     assert [command for command, _ in context.commands] == [
-        f"{COMPOSE} build",
+        f"{COMPOSE} build --build-arg AGENT_BUILD_ID={BUILD_ID}",
         f"{COMPOSE} run --rm --build db-migrate",
         f"{COMPOSE} run --rm temporal-admin-tools schema",
         f"{COMPOSE} up -d --wait --wait-timeout 600 temporal",

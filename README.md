@@ -429,6 +429,24 @@ The scan fails on any finding that [security/sast-accepted.yaml](security/sast-a
 
 `inv smoke-test` checks the database and the `agent_platform` schema, the LiteLLM, OPA, and Langfuse health endpoints, and a Bedrock inference round trip through LiteLLM. `inv durability-proof` shows a workflow surviving a worker restart. `inv workflow-status` lists recent Temporal executions.
 
+## Worker builds
+
+`inv local-up` derives a build identifier of the form `<release version>.<UTC timestamp>`, for example `0.3.0.20261028093000`, from a digest of the sources the worker image is built from, and passes it to `docker compose build` as the `AGENT_BUILD_ID` build argument. The Dockerfile bakes it into the image as an environment variable, so every environment that runs the image reports the build it was built as, including a Kubernetes or ECS deployment that never runs `inv local-up`. A build whose sources have not changed finds its identifier in `.build-id.json` and reuses it, so a rebuild of unchanged sources consumes no new version. An `AGENT_BUILD_ID` line in `.env` overrides the baked identifier, so remove one left from an earlier checkout.
+
+Host tasks read `.build-id.json` for the identifier the last build recorded, so a parked execution records the build that parked it and `inv resume-parked` compares against the build now deployed. `services/orchestration/suspension.py` orders two identifiers by the digit runs it reads out of them, so the timestamp suffix is what makes a later build rank above an earlier one. A commit SHA would not.
+
+The workers register as a Temporal Worker Deployment named by `WORKER_DEPLOYMENT_NAME`, with the default versioning behaviour `PINNED`. Each execution stays on the deployment version that started it for its whole life, so a deploy mid-run replays that execution on its own build in place of failing it on a non-determinism error. A pinned execution therefore only makes progress while workers on its own version keep polling. Stop them, and its next workflow task has nowhere to run and the execution stalls until they return or something repins it. A deployment version spans every task queue its workers poll, so a pinned execution runs its review activities on the review worker of its own version rather than the newest one. Once a worker polls, it makes its version the current one, which routes executions that start afterwards to it. A worker restarted on a superseded build leaves the newer version current and goes on draining the executions pinned to its own.
+
+`inv resume-parked` repins each execution it resumes to the current deployment version before it signals, because a signal alone leaves the execution on the build that parked it, which is the build it parked to escape. Set `WORKER_VERSIONING_ENABLED=false` and the repin is skipped along with the rest of versioning.
+
+Replacing the workers is what strands a pinned execution, and `inv local-up` does exactly that whenever the sources have changed. A draft pull request run waits on plan approval, pull request approval, and pull request close, so it can sit open for days across several rebuilds. `inv local-up` therefore lists the running executions pinned to the outgoing build and refuses to replace the workers while any remain. Let them finish, resume the parked ones, or pass `--force` to replace the workers and leave them waiting for a worker on their own build. Reaching Temporal for that check is best effort, so a first run against a stopped stack reports what it could not read and carries on.
+
+Worker Deployments replace Worker Versioning V1, the build-id compatibility sets that Temporal server 1.28.0 deprecates, 1.31.0 sunsets, and 1.33 removes. They need no dynamic config entries, so `config/platform/temporal-dynamicconfig.yaml` carries none.
+
+A version the server keeps counts against the per-deployment version ceiling. Run `inv prune-worker-versions` to delete every version the server reports as drained, which is every version with no execution left pinned to it. The server refuses to delete a version whose task queues still have pollers, so a version whose workers are still running stays for the next pass, which the task reports. A worker that cannot make its version current exits with the server's reason.
+
+Versioning pins the executions that start under it and nothing earlier. Drain the executions already in flight once, before the first deploy that runs versioned workers. Set `WORKER_VERSIONING_ENABLED=false` to run unversioned.
+
 ## Everyday commands
 
 Run `inv --list` for the full set. The common tasks are below.
@@ -450,6 +468,8 @@ Run `inv --list` for the full set. The common tasks are below.
 | `inv fetch-acli` | Vendor the Atlassian `acli` binary |
 | `inv cbm-build [--source PATH] [--ref TAG]` | Build and vendor the `codebase-memory-mcp` binary, cloning upstream by default |
 | `inv reap [--apply]` | Reap expired orphan artifacts, dry-run by default |
+| `inv resume-parked` | Repin every execution parked for a newer agent build to the current build and signal it to retry |
+| `inv prune-worker-versions` | Delete the drained versions of the Temporal worker deployment |
 | `inv scrub-workspaces [--root PATH]` | Rewrite every execution workspace remote URL that carries a credential an earlier release persisted. Add `--local` to run on the host instead of the worker container |
 | `inv intake [--source jira\|rebar] [--schedule]` | Reconcile ticket intake into runs, single pass by default. `--source` defaults to `TICKET_BACKEND` and must match it. Add `--local` to run on the host instead of the worker container |
 | `inv rebar-changes [--new] [--field-changes] [--status-changes]` | Report rebar ticket changes since the last intake pass without starting work or moving the intake cursor |
