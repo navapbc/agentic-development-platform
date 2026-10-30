@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 _OPA_IMAGE = (
+    "docker.io/"
     "openpolicyagent/opa:1.20.1"
     "@sha256:39daf255ae7f25d81103f03a0c18308a50b7b5bb67907bed6166f70e24a970ff"
 )
@@ -45,8 +46,6 @@ def _decision(document: dict) -> dict:
             _RUNTIME,
             "run",
             "--rm",
-            "--platform",
-            "linux/amd64",
             "-i",
             "-v",
             f"{_POLICIES}:/policies:ro",
