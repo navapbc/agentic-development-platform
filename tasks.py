@@ -6,6 +6,8 @@ import asyncio
 import os
 import shlex
 import sys
+from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from invoke import Collection, Exit, task
 from scripts.build_id import recorded_build_id, resolve_build_id
@@ -101,16 +103,153 @@ def config_check(c):
     }
 )
 def local_up(c, force=False):
-    """Build the images, apply migrations, then start the stack and wait for it to be healthy."""
+    """Build the images, apply the schemas, then start the stack and wait for it to be healthy."""
     outgoing = recorded_build_id()
     build_id = resolve_build_id()
     if build_id != outgoing and not force:
         _refuse_to_strand(outgoing)
     print(f"[local-up] build id {build_id}")
     os.environ["AGENT_BUILD_ID"] = build_id
-    c.run(f"{COMPOSE} {_compose_files()} build --build-arg AGENT_BUILD_ID={shlex.quote(build_id)}")
+    files = _compose_files()
+    c.run(f"{COMPOSE} {files} build --build-arg AGENT_BUILD_ID={shlex.quote(build_id)}")
     db_migrate(c)
-    c.run(f"{COMPOSE} {_compose_files()} up -d --wait --wait-timeout 600")
+    _require_temporal_schema_at_target(c)
+    _temporal_admin(c, "schema")
+    c.run(f"{COMPOSE} {files} up -d --wait --wait-timeout 600 temporal")
+    _temporal_admin(c, "namespace")
+    c.run(f"{COMPOSE} {files} up -d --wait --wait-timeout 600")
+
+
+@dataclass(frozen=True)
+class TemporalRelease:
+    version: str
+    schema: tuple[int, int]
+    visibility: tuple[int, int]
+    server_image: str = ""
+    admin_tools_image: str = ""
+
+    def image_env(self) -> dict[str, str]:
+        if not self.server_image:
+            return {}
+        return {
+            "TEMPORAL_SERVER_IMAGE": self.server_image,
+            "TEMPORAL_ADMIN_TOOLS_IMAGE": self.admin_tools_image,
+        }
+
+
+# Temporal upgrades only between consecutive minor releases, from the highest patch of each.
+# The schema versions are those in schema/postgresql/v12/version.go at each release tag.
+TEMPORAL_UPGRADE_PATH = (
+    TemporalRelease("1.29.7", (1, 18), (1, 9)),
+    TemporalRelease(
+        "1.30.8",
+        (1, 18),
+        (1, 13),
+        "temporalio/server:1.30.8@sha256:54c59485b185ad787061f9a2ed72bd31c8efeae2d4144c61f22873df52c3c781",
+        "temporalio/admin-tools:1.30.8@sha256:22d417fd0d541da6b18486912a546b3203f516f0bf9f8b2f27611506fca2507c",
+    ),
+    TemporalRelease(
+        "1.31.4",
+        (1, 19),
+        (1, 14),
+        "temporalio/server:1.31.4@sha256:1986d4554cc0da8cf09ddcaa10bc348f22f192972b4c2ec1f768f7307c5892e6",
+        "temporalio/admin-tools:1.31.4@sha256:c286fe515148587228d692806bc6f7652be5febc384a73dfd16379aed69f7d87",
+    ),
+)
+TEMPORAL_TARGET = TemporalRelease("1.32.1", (1, 19), (1, 14))
+TEMPORAL_DATABASES = ("temporal", "temporal_visibility")
+
+
+def _temporal_admin(c, action: str, env: dict[str, str] | None = None) -> None:
+    c.run(
+        f"{COMPOSE} {_compose_files()} run --rm temporal-admin-tools {action}",
+        pty=True,
+        env=env or {},
+    )
+
+
+def _psql(c, database: str, query: str) -> str:
+    sql = shlex.quote(f'psql -U "$POSTGRES_USER" -d {database} -Atc "{query}"')
+    return c.run(
+        f"{COMPOSE} {_compose_files()} exec -T postgres sh -c {sql}", hide=True
+    ).stdout.strip()
+
+
+def _temporal_schema_version(c, database: str) -> tuple[int, int] | None:
+    if not _psql(c, database, "select to_regclass('schema_version')"):
+        return None
+    major, _, minor = _psql(c, database, "select curr_version from schema_version").partition(".")
+    return int(major), int(minor)
+
+
+def _require_temporal_schema_at_target(c) -> None:
+    targets = (TEMPORAL_TARGET.schema, TEMPORAL_TARGET.visibility)
+    for database, target in zip(TEMPORAL_DATABASES, targets, strict=True):
+        current = _temporal_schema_version(c, database)
+        if current is None or current == target:
+            continue
+        version = ".".join(map(str, current))
+        if current < target:
+            raise Exit(
+                f"The {database} database is at schema {version}, older than server "
+                f"{TEMPORAL_TARGET.version} upgrades from. Run inv temporal-upgrade."
+            )
+        raise Exit(
+            f"The {database} database is at schema {version}, newer than server "
+            f"{TEMPORAL_TARGET.version} supports. Check out the release that wrote it."
+        )
+
+
+def _temporal_upgrade_steps(
+    schema: tuple[int, int], visibility: tuple[int, int]
+) -> list[TemporalRelease]:
+    for index, release in enumerate(TEMPORAL_UPGRADE_PATH):
+        if (release.schema, release.visibility) == (schema, visibility):
+            return [*TEMPORAL_UPGRADE_PATH[index + 1 :], TEMPORAL_TARGET]
+    raise Exit(
+        f"No upgrade path from schema {schema[0]}.{schema[1]} and visibility schema "
+        f"{visibility[0]}.{visibility[1]}. "
+        f"The path starts at server {TEMPORAL_UPGRADE_PATH[0].version}."
+    )
+
+
+def _backup_temporal_databases(c, directory: str) -> None:
+    os.makedirs(directory, exist_ok=True)
+    for database in TEMPORAL_DATABASES:
+        dump = shlex.quote(f'pg_dump -U "$POSTGRES_USER" -Fc {database}')
+        target = shlex.quote(os.path.join(directory, f"{database}.dump"))
+        c.run(f"{COMPOSE} {_compose_files()} exec -T postgres sh -c {dump} > {target}")
+    print(f"[temporal-upgrade] backed up {', '.join(TEMPORAL_DATABASES)} to {directory}")
+
+
+@task(
+    help={
+        "backup_dir": "Directory for the pg_dump backups (default ~/temporal-backup/<UTC time>).",
+        "skip_backup": "Skip the backup, for a stack whose Temporal data is disposable.",
+    }
+)
+def temporal_upgrade(c, backup_dir="", skip_backup=False):
+    """Back up the Temporal databases and upgrade them one minor release at a time."""
+    files = _compose_files()
+    c.run(f"{COMPOSE} {files} up -d --wait postgres")
+    schema, visibility = (_temporal_schema_version(c, database) for database in TEMPORAL_DATABASES)
+    if schema is None or visibility is None:
+        raise Exit("No Temporal schema to upgrade. Run inv local-up to set up a new database.")
+    steps = _temporal_upgrade_steps(schema, visibility)
+    if not skip_backup:
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        _backup_temporal_databases(
+            c, backup_dir or os.path.join(os.path.expanduser("~"), "temporal-backup", stamp)
+        )
+    for release in steps:
+        print(f"[temporal-upgrade] applying the schema and starting server {release.version}")
+        env = release.image_env()
+        _temporal_admin(c, "schema", env)
+        c.run(
+            f"{COMPOSE} {files} up -d --build --no-deps --wait --wait-timeout 600 temporal",
+            env=env,
+        )
+    _temporal_admin(c, "namespace")
 
 
 def _refuse_to_strand(outgoing: str) -> None:
@@ -131,7 +270,8 @@ def _refuse_to_strand(outgoing: str) -> None:
         from temporalio.client import Client
 
         client = await Client.connect(
-            to_host_hostport(settings.temporal_host), namespace=settings.temporal_namespace
+            to_host_hostport(settings.temporal_host, settings),
+            namespace=settings.temporal_namespace,
         )
         return await pinned_executions(client, settings.worker_deployment_name, outgoing)
 
@@ -532,6 +672,18 @@ def reap(c, apply=False):
 
 @task(
     help={
+        "root": "Workspace root to scrub (empty uses EXECUTION_WORKSPACE_ROOT).",
+        "local": "Run on the host instead of the activity-worker container.",
+    }
+)
+def scrub_workspaces(c, root="", local=False):
+    """Clear the git credential earlier releases persisted into execution workspaces."""
+    root_flag = f" --root {root}" if root else ""
+    _run_scripted(c, f"python -m scripts.scrub_workspaces{root_flag}", local=local)
+
+
+@task(
+    help={
         "source": "Ticket source, jira or rebar. Defaults to TICKET_BACKEND and must match it.",
         "schedule": "Install the Temporal intake schedule for the source.",
         "retry": "Clear the intake dedup for a failed ticket so the next pass relaunches it.",
@@ -834,6 +986,7 @@ for _t in (
     connectivity_check,
     config_check,
     local_up,
+    temporal_upgrade,
     local_down,
     local_stop,
     local_destroy,
@@ -867,6 +1020,7 @@ for _t in (
     cbm_build,
     publish_jumphost_image,
     reap,
+    scrub_workspaces,
     intake,
     index_repo,
     repair,

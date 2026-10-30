@@ -374,3 +374,48 @@ async def test_rerun_on_an_unchanged_base_keeps_a_single_parent(local_repo, tmp_
 
     parents = _git(repo, "rev-list", "--parents", "-n", "1", second.commit_sha).split()[1:]
     assert parents == [first.commit_sha]
+
+
+def test_the_git_host_falls_back_to_no_credential_for_an_unconfigured_repository() -> None:
+    from services.integration.github.credentials import build_single_identity_resolver
+    from services.integration.github.git_auth import NO_AUTH
+
+    host = RealGitHost(
+        build_single_identity_resolver(
+            api_url="https://ghe.invalid/api/v3",
+            owner="acme",
+            git_base_url="https://ghe.invalid",
+            token="",
+            repos={"demo"},
+        ),
+        remote_url_for=lambda repo: "/srv/git/demo.git",
+    )
+
+    assert host._auth("demo") == NO_AUTH
+
+
+def test_the_git_host_still_reports_a_configured_repository_whose_token_is_missing() -> None:
+    from services.integration.credentials import EnvSecretResolver, SecretNotFoundError
+    from services.integration.github.credentials import (
+        GitHubCredentialResolver,
+        parse_github_config,
+    )
+
+    config = parse_github_config(
+        {
+            "hosts": {
+                "acme": {
+                    "api_url": "https://ghe.invalid/api/v3",
+                    "git_base_url": "https://ghe.invalid",
+                }
+            },
+            "default": {"host": "acme", "owner": "acme", "token_ref": "ACME_TOKEN"},
+        }
+    )
+    host = RealGitHost(
+        GitHubCredentialResolver(config, {"demo"}, EnvSecretResolver({})),
+        remote_url_for=lambda repo: "/srv/git/demo.git",
+    )
+
+    with pytest.raises(SecretNotFoundError):
+        host._auth("demo")

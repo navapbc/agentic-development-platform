@@ -32,7 +32,7 @@ class _Host:
 
 @pytest.mark.asyncio
 async def test_start_sets_run_flags_and_no_ci_job(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(intake_runtime, "remote_head", lambda remote, branch: "abc123")
+    monkeypatch.setattr(intake_runtime, "remote_head", lambda remote, branch, auth=None: "abc123")
     monkeypatch.setattr(
         "services.integration.github.factory.build_git_host", lambda settings: _Host()
     )
@@ -66,7 +66,7 @@ async def test_start_sets_run_flags_and_no_ci_job(monkeypatch: pytest.MonkeyPatc
 async def test_start_awaits_pr_close_for_local_backend(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
-    monkeypatch.setattr(intake_runtime, "remote_head", lambda remote, branch: "abc123")
+    monkeypatch.setattr(intake_runtime, "remote_head", lambda remote, branch, auth=None: "abc123")
     (tmp_path / "agentic-demo-service").mkdir()
     client = _Client()
     settings = hermetic_settings(
@@ -110,7 +110,7 @@ def _intake_start(**overrides: Any) -> IntakeStart:
 async def test_start_uses_the_declared_base_branch(monkeypatch: pytest.MonkeyPatch) -> None:
     looked_up: list[str] = []
 
-    def _remote_head(remote: str, branch: str) -> str:
+    def _remote_head(remote: str, branch: str, auth: object = None) -> str:
         looked_up.append(branch)
         return "feature-sha" if branch == "feature-x" else "main-sha"
 
@@ -135,7 +135,7 @@ async def test_declared_base_sha_is_resolved_from_that_branch(
     monkeypatch.setattr(
         intake_runtime,
         "remote_head",
-        lambda remote, branch: "feature-sha" if branch == "feature-x" else "main-sha",
+        lambda remote, branch, auth=None: "feature-sha" if branch == "feature-x" else "main-sha",
     )
     monkeypatch.setattr(
         "services.integration.github.factory.build_git_host", lambda settings: _Host()
@@ -153,7 +153,7 @@ async def test_declared_base_sha_is_resolved_from_that_branch(
 async def test_start_falls_back_to_the_default_base_branch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(intake_runtime, "remote_head", lambda remote, branch: "main-sha")
+    monkeypatch.setattr(intake_runtime, "remote_head", lambda remote, branch, auth=None: "main-sha")
     monkeypatch.setattr(
         "services.integration.github.factory.build_git_host", lambda settings: _Host()
     )
@@ -170,7 +170,7 @@ async def test_start_falls_back_to_the_default_base_branch(
 
 @pytest.mark.asyncio
 async def test_unresolvable_declared_base_raises(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(intake_runtime, "remote_head", lambda remote, branch: "")
+    monkeypatch.setattr(intake_runtime, "remote_head", lambda remote, branch, auth=None: "")
     monkeypatch.setattr(
         "services.integration.github.factory.build_git_host", lambda settings: _Host()
     )
@@ -187,7 +187,7 @@ async def test_unresolvable_declared_base_raises(monkeypatch: pytest.MonkeyPatch
 
 @pytest.mark.asyncio
 async def test_remote_lookup_failure_propagates(monkeypatch: pytest.MonkeyPatch) -> None:
-    def _boom(remote: str, branch: str) -> str:
+    def _boom(remote: str, branch: str, auth: object = None) -> str:
         raise CalledProcessError(128, ["git", "ls-remote"])
 
     monkeypatch.setattr(intake_runtime, "remote_head", _boom)
@@ -202,7 +202,9 @@ async def test_remote_lookup_failure_propagates(monkeypatch: pytest.MonkeyPatch)
 
 @pytest.mark.asyncio
 async def test_resolve_base_returns_the_remote_head(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(intake_runtime, "remote_head", lambda remote, branch: f"sha-{branch}")
+    monkeypatch.setattr(
+        intake_runtime, "remote_head", lambda remote, branch, auth=None: f"sha-{branch}"
+    )
     monkeypatch.setattr(
         "services.integration.github.factory.build_git_host", lambda settings: _Host()
     )
@@ -217,7 +219,7 @@ async def test_resolve_base_returns_the_remote_head(monkeypatch: pytest.MonkeyPa
 async def test_resolve_base_returns_empty_for_a_missing_branch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(intake_runtime, "remote_head", lambda remote, branch: "")
+    monkeypatch.setattr(intake_runtime, "remote_head", lambda remote, branch, auth=None: "")
     monkeypatch.setattr(
         "services.integration.github.factory.build_git_host", lambda settings: _Host()
     )
@@ -230,7 +232,7 @@ async def test_resolve_base_returns_empty_for_a_missing_branch(
 async def test_start_does_not_raise_when_the_default_base_is_unresolved(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(intake_runtime, "remote_head", lambda remote, branch: "")
+    monkeypatch.setattr(intake_runtime, "remote_head", lambda remote, branch, auth=None: "")
     monkeypatch.setattr(
         "services.integration.github.factory.build_git_host", lambda settings: _Host()
     )
@@ -247,7 +249,7 @@ async def test_start_does_not_raise_when_the_default_base_is_unresolved(
 async def test_start_derives_the_commit_message_from_the_ticket(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(intake_runtime, "remote_head", lambda remote, branch: "main-sha")
+    monkeypatch.setattr(intake_runtime, "remote_head", lambda remote, branch, auth=None: "main-sha")
     monkeypatch.setattr(
         "services.integration.github.factory.build_git_host", lambda settings: _Host()
     )
@@ -266,7 +268,7 @@ async def test_start_derives_the_commit_message_from_the_ticket(
 async def test_start_prefers_a_declared_tracker_key_in_the_commit_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(intake_runtime, "remote_head", lambda remote, branch: "main-sha")
+    monkeypatch.setattr(intake_runtime, "remote_head", lambda remote, branch, auth=None: "main-sha")
     monkeypatch.setattr(
         "services.integration.github.factory.build_git_host", lambda settings: _Host()
     )
@@ -288,7 +290,7 @@ async def test_start_prefers_a_declared_tracker_key_in_the_commit_message(
 
 @pytest.mark.asyncio
 async def test_start_carries_the_declared_file_impact(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(intake_runtime, "remote_head", lambda remote, branch: "abc123")
+    monkeypatch.setattr(intake_runtime, "remote_head", lambda remote, branch, auth=None: "abc123")
     monkeypatch.setattr(
         "services.integration.github.factory.build_git_host", lambda settings: _Host()
     )
@@ -316,7 +318,7 @@ async def test_start_carries_the_declared_file_impact(monkeypatch: pytest.Monkey
 async def test_start_leaves_file_impact_empty_when_undeclared(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(intake_runtime, "remote_head", lambda remote, branch: "abc123")
+    monkeypatch.setattr(intake_runtime, "remote_head", lambda remote, branch, auth=None: "abc123")
     monkeypatch.setattr(
         "services.integration.github.factory.build_git_host", lambda settings: _Host()
     )
@@ -340,7 +342,7 @@ async def test_start_leaves_file_impact_empty_when_undeclared(
 
 
 async def _started_input(monkeypatch: pytest.MonkeyPatch, settings: Any) -> Any:
-    monkeypatch.setattr(intake_runtime, "remote_head", lambda remote, branch: "abc123")
+    monkeypatch.setattr(intake_runtime, "remote_head", lambda remote, branch, auth=None: "abc123")
     monkeypatch.setattr(
         "services.integration.github.factory.build_git_host", lambda settings: _Host()
     )

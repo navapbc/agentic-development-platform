@@ -8,6 +8,7 @@ import re
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 import yaml
 from scripts.build_id import (
     IMAGE_SOURCE_PATHS,
@@ -153,9 +154,13 @@ def test_no_worker_service_overrides_the_baked_identifier():
 def test_the_temporal_service_needs_no_versioning_dynamic_config():
     compose = yaml.safe_load(COMPOSE_PATH.read_text())
     temporal = compose["services"]["temporal"]
+    mount_path = temporal["environment"]["DYNAMIC_CONFIG_FILE_PATH"]
+    source = next(
+        volume.split(":")[0] for volume in temporal["volumes"] if volume.split(":")[1] == mount_path
+    )
+    dynamic_config = yaml.safe_load((REPO_ROOT / source).read_text()) or {}
 
-    assert "DYNAMIC_CONFIG_FILE_PATH" not in temporal["environment"]
-    assert "volumes" not in temporal
+    assert [key for key in dynamic_config if "version" in key.lower()] == []
     assert not (REPO_ROOT / "config" / "platform" / "temporal-dynamic-config.yaml").exists()
 
 
@@ -163,7 +168,10 @@ def test_local_up_passes_the_resolved_identifier_as_a_build_argument(monkeypatch
     import tasks
 
     monkeypatch.setattr(tasks, "resolve_build_id", lambda: "0.3.0.20261028093000")
+    monkeypatch.setattr(tasks, "recorded_build_id", lambda: "0.3.0.20261028093000")
     monkeypatch.setattr(tasks, "db_migrate", lambda c: None)
+    monkeypatch.setattr(tasks, "_require_temporal_schema_at_target", lambda c: None)
+    monkeypatch.setattr(tasks, "_temporal_admin", lambda c, step: None)
     monkeypatch.delenv("AGENT_BUILD_ID", raising=False)
 
     from invoke import Context
@@ -175,3 +183,80 @@ def test_local_up_passes_the_resolved_identifier_as_a_build_argument(monkeypatch
     build = next(command for command in commands if " build " in f"{command} ")
     assert "--build-arg AGENT_BUILD_ID=0.3.0.20261028093000" in build
     assert os.environ["AGENT_BUILD_ID"] == "0.3.0.20261028093000"
+
+
+def _pin_builds(monkeypatch, outgoing: str, incoming: str, stranded: list[str]) -> list[str]:
+    """Point `local_up` at a rebuild that replaces the workers holding `stranded`."""
+    import scripts.config
+    import services.orchestration.worker_versioning as versioning
+    import tasks
+    from invoke import Context
+    from temporalio.client import Client
+
+    class _Settings:
+        worker_versioning_enabled = True
+        worker_deployment_name = "agent-platform"
+        temporal_host = "temporal:7233"
+        temporal_host_port = 7233
+        temporal_namespace = "default"
+
+    async def _connect(*args, **kwargs):
+        return object()
+
+    async def _pinned(client, deployment_name, build_id, limit=20):
+        return list(stranded)
+
+    monkeypatch.setattr(scripts.config, "get_settings", lambda: _Settings())
+    monkeypatch.setattr(Client, "connect", _connect)
+    monkeypatch.setattr(versioning, "pinned_executions", _pinned)
+    monkeypatch.setattr(tasks, "resolve_build_id", lambda: incoming)
+    monkeypatch.setattr(tasks, "recorded_build_id", lambda: outgoing)
+    monkeypatch.setattr(tasks, "db_migrate", lambda c: None)
+    monkeypatch.setattr(tasks, "_require_temporal_schema_at_target", lambda c: None)
+    monkeypatch.setattr(tasks, "_temporal_admin", lambda c, step: None)
+
+    commands: list[str] = []
+    monkeypatch.setattr(Context, "run", lambda self, command, **kwargs: commands.append(command))
+    return commands
+
+
+def test_local_up_refuses_to_replace_the_workers_holding_a_pinned_execution(monkeypatch):
+    import tasks
+    from invoke import Context, Exit
+
+    commands = _pin_builds(
+        monkeypatch, "0.3.0.20261028093000", "0.3.0.20261029093000", ["draft-pr-7"]
+    )
+
+    with pytest.raises(Exit) as refusal:
+        tasks.local_up(Context())
+
+    assert "draft-pr-7" in str(refusal.value)
+    assert "--force" in str(refusal.value)
+    assert commands == []
+
+
+def test_local_up_replaces_the_workers_when_forced(monkeypatch):
+    import tasks
+    from invoke import Context
+
+    commands = _pin_builds(
+        monkeypatch, "0.3.0.20261028093000", "0.3.0.20261029093000", ["draft-pr-7"]
+    )
+
+    tasks.local_up(Context(), force=True)
+
+    assert any("--build-arg AGENT_BUILD_ID=0.3.0.20261029093000" in c for c in commands)
+
+
+def test_local_up_builds_when_the_sources_have_not_changed(monkeypatch):
+    import tasks
+    from invoke import Context
+
+    commands = _pin_builds(
+        monkeypatch, "0.3.0.20261029093000", "0.3.0.20261029093000", ["draft-pr-7"]
+    )
+
+    tasks.local_up(Context())
+
+    assert any("--build-arg AGENT_BUILD_ID=0.3.0.20261029093000" in c for c in commands)
