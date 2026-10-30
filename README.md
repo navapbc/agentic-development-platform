@@ -430,6 +430,7 @@ Run `inv --list` for the full set. The common tasks are below.
 | `inv fetch-acli` | Vendor the Atlassian `acli` binary |
 | `inv cbm-build [--source PATH] [--ref TAG]` | Build and vendor the `codebase-memory-mcp` binary, cloning upstream by default |
 | `inv reap [--apply]` | Reap expired orphan artifacts, dry-run by default |
+| `inv scrub-workspaces [--root PATH]` | Rewrite every execution workspace remote URL that carries a credential an earlier release persisted. Add `--local` to run on the host instead of the worker container |
 | `inv intake [--source jira\|rebar] [--schedule]` | Reconcile ticket intake into runs, single pass by default. `--source` defaults to `TICKET_BACKEND` and must match it. Add `--local` to run on the host instead of the worker container |
 | `inv rebar-changes [--new] [--field-changes] [--status-changes]` | Report rebar ticket changes since the last intake pass without starting work or moving the intake cursor |
 | `inv import-rebar-tickets --xlsx PATH [--reset] [--status S] [--limit N]` | Seed the rebar ticket store from a Jira xlsx export |

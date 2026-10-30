@@ -48,6 +48,7 @@ EXPECTED_TASKS = {
     "cbm-build",
     "publish-jumphost-image",
     "reap",
+    "scrub-workspaces",
     "intake",
     "index-repo",
     "repair",

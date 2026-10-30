@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import structlog
 from scripts.config import Settings
 
 from services import process
+from services.integration.github.git_auth import NO_AUTH, GitAuth
 from services.integration.jira.credentials import acceptance_field
 from services.orchestration.change_narrative import compose_commit_message
 from services.orchestration.execution_reconciler import ActiveExecution
@@ -17,13 +19,14 @@ from services.orchestration.intake_reconciler import IntakeContext, IntakeStart
 _log = structlog.get_logger(__name__)
 
 
-def remote_head(remote: str, branch: str) -> str:
+def remote_head(remote: str, branch: str, auth: GitAuth = NO_AUTH) -> str:
     proc = process.run(
-        ["git", "ls-remote", "--", remote, f"refs/heads/{branch}"],
+        ["git", *auth.config_args(), "ls-remote", "--", remote, f"refs/heads/{branch}"],
         timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS,
         check=True,
         capture_output=True,
         text=True,
+        env={**os.environ, **auth.env()},
     )
     return proc.stdout.split()[0] if proc.stdout.strip() else ""
 
@@ -35,13 +38,18 @@ class TemporalStarter:
         self._gh = gh_resolver
 
     async def resolve_base(self, *, repo: str, branch: str) -> str:
-        from services.integration.github.factory import build_git_host
+        from services.integration.github.factory import build_git_auth_for, build_git_host
 
-        return remote_head(build_git_host(self._settings).source_location(repo), branch)
+        return remote_head(
+            build_git_host(self._settings).source_location(repo),
+            branch,
+            build_git_auth_for(self._settings)(repo),
+        )
 
     async def start(self, start: IntakeStart) -> str:
         from services.integration.github.factory import (
             LOCAL,
+            build_git_auth_for,
             build_git_host,
             resolve_source_control_backend_name,
         )
@@ -57,7 +65,8 @@ class TemporalStarter:
 
         base = start.base or self._settings.github_default_base_branch
         source_location = build_git_host(self._settings).source_location(start.repo)
-        base_sha = remote_head(source_location, base)
+        base_auth = build_git_auth_for(self._settings)(start.repo)
+        base_sha = remote_head(source_location, base, base_auth)
         if start.base and not base_sha:
             raise UnresolvableBaseBranch(base, start.repo)
         run_test_triage = triage_engine(load_gate_engine_configs(self._settings)) is not None
