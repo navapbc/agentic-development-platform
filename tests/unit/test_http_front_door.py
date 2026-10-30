@@ -25,9 +25,14 @@ from services.http_front_door import (
     declared_body_length,
 )
 from services.orchestration.coordination_client import CoordinationClient
+from services.orchestration.temporal_activities.implementation import (
+    ClaimRequest,
+    claim_work_unit,
+)
 from services.orchestration.webhook.jira_events import verify_jira_signature
 from services.orchestration.webhook.pr_events import verify_signature
 from services.orchestration.webhook.server import require_webhook_secrets
+from temporalio.exceptions import ApplicationError
 from tests.support import hermetic_settings
 
 SHARED_SECRET = "coordination-test-secret"
@@ -196,6 +201,27 @@ def test_coordination_client_names_the_remedy_for_a_refused_token(coordination_a
     ref = SideEffectRef(task_id="T-1", execution_id="e-1", operation="op", target="t")
     with pytest.raises(CoordinationAuthError) as excinfo:
         asyncio.run(client.reserve_side_effect(ref))
+    assert _names_the_remedy(str(excinfo.value))
+
+
+def test_a_missing_shared_secret_fails_the_claim_activity_without_retry(monkeypatch):
+    """Temporal retries a bare RuntimeError forever, which a config error never outgrows."""
+    monkeypatch.setattr(
+        "services.orchestration.coordination_client.get_settings",
+        lambda: hermetic_settings(coordination_shared_secret=""),
+    )
+    request = ClaimRequest(
+        task_id="T-1",
+        execution_id="e-1",
+        work_unit="unit",
+        agent_id="agent",
+        owner_workflow_id="wf-1",
+    )
+
+    with pytest.raises(ApplicationError) as excinfo:
+        asyncio.run(claim_work_unit(request))
+
+    assert excinfo.value.non_retryable is True
     assert _names_the_remedy(str(excinfo.value))
 
 
