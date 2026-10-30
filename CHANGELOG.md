@@ -28,6 +28,7 @@ AWS transition and FedRAMP Medium readiness. The platform documents its local-to
 - Python dependencies install from a committed `uv.lock` through uv 0.13.3 or newer. Replace `pip install -e ".[dev,...]"` with `uv sync --locked --all-extras`, which also removes packages the lock does not list from `.venv`. Change a dependency with `uv lock` or `uv lock --upgrade-package <name>` and commit the lock. CI and both image builds refuse a stale lock.
 - The draft pull request workflow schedules a `record_plan_evidence` activity at plan acceptance, so its history changes. An execution that is in flight across the upgrade and has already passed plan acceptance blocks on a non-determinism error when the new worker replays it, because the new command does not match the event its history recorded at that point. An execution parked at or before the plan gate is unaffected, since the new command is appended to history with nothing to contradict it. Let the late-stage executions finish before deploying, or terminate and restart them. Worker versioning covers them only if workers running the previous build keep polling the task queue until those executions drain, so setting `WORKER_VERSIONING_ENABLED=true` and a new `AGENT_BUILD_ID` at the same deploy is not on its own sufficient.
 - The platform image installs its packages into `/opt/venv` from the new `worker` extra, which holds the extras it installed before plus `pydantic-ai-slim[openai]` and `ruff`. A derived image that adds a Python library the platform imports must install it into `/opt/venv`, for example with `uv pip install --python /opt/venv/bin/python <package>`. A command-line tool installed with the system `pip`, such as the scanner example in `docs/gate-engine.md`, still lands on `PATH`.
+- The local Temporal server moves from `temporalio/auto-setup:1.29.7` to `temporalio/server:1.32.1`, and the schema change is one-way. `inv local-up` refuses a database whose schema predates server 1.31. Run `inv temporal-upgrade` once on an existing stack. It backs up the `temporal` and `temporal_visibility` databases to `~/temporal-backup/<UTC time>` with `pg_dump`, then runs servers 1.30.8, 1.31.4, and 1.32.1 in turn, applying each release's schema before its server starts. Restoring a 1.29.7 server requires restoring both databases from that backup, as the README describes. `docker compose up` alone no longer applies the Temporal schema or registers the `default` namespace.
 
 ### Added
 
@@ -73,6 +74,8 @@ AWS transition and FedRAMP Medium readiness. The platform documents its local-to
 - An `enable_data_api` variable on the `aurora-postgresql` module and a `password_version` variable on the `elasticache` module.
 - Health checks on every long-running compose service. HTTP services are probed on loopback through `python -m services.healthcheck http`, the Temporal workers and `repo-index-worker` refresh a heartbeat file that `python -m services.healthcheck heartbeat` checks, and third-party services use their own health endpoints.
 - Thin `opa`, `otel-collector`, and `tempo` images that add a static Go loopback probe from `docker/healthprobe` and declare a `HEALTHCHECK`, because the upstream images carry no shell or HTTP client. The collector enables its `health_check` extension on loopback.
+- `inv temporal-upgrade` backs up the Temporal databases and moves them one minor release at a time to the server the checkout pins.
+- A `temporal-admin-tools` service under the `tasks` profile applies the Temporal schemas with `temporal-sql-tool` and registers the `default` namespace. `inv local-up` runs it before the server and the workers start.
 
 ### Changed
 
@@ -113,6 +116,9 @@ AWS transition and FedRAMP Medium readiness. The platform documents its local-to
 - `repo-index-worker` stays running and refreshes its heartbeat when no repositories are configured, in place of exiting and restarting.
 - `langfuse-web` binds on every interface inside its container through `HOSTNAME=0.0.0.0`, so its loopback health check reaches it.
 - Test fixtures, review eval cases, and the demo script use neutral repository names, ticket keys, tracker hosts, and account names. The repository-hygiene test checks every tracked file for developer home-directory paths with no file exemptions, and names no client, person, or program.
+- The `temporal` service builds from `docker/temporal.Dockerfile`, which adds the static loopback probe to `temporalio/server:1.32.1` and checks `/api/v1/namespaces/temporal-system` on the frontend HTTP port in place of `tctl cluster health`. The server reads its dynamic configuration from `config/platform/temporal-dynamicconfig.yaml`.
+- Temporal UI moves from 2.53.3 to 2.57.0, pinned by digest.
+- The lock moves `joserfc` from 1.7.5 to 1.7.7, which fixes CVE-2026-119284. `authlib`, `fastmcp-slim`, and `openhands-sdk` pull it in.
 
 ### Fixed
 

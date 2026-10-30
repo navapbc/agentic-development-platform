@@ -318,7 +318,7 @@ Each record carries an evidence classification that selects its retention window
 
 ## Services and ports
 
-`inv local-up` builds the images, runs the `db-migrate` task, starts the services below, and waits up to ten minutes for every service to report healthy. It fails and names the service when one does not. Each long-running service declares a health check. The HTTP services answer `/health` or their own readiness endpoint, the Temporal workers and `repo-index-worker` refresh a heartbeat file that `python -m services.healthcheck heartbeat` checks for freshness, and `opa`, `otel-collector`, and `tempo` build from thin images that add a static loopback probe because their upstream images carry no shell or HTTP client. Run `docker compose ps` to see each service's health. The four backing databases `agent_platform`, `temporal`, `temporal_visibility`, and `langfuse` are created in the one Postgres container.
+`inv local-up` builds the images, runs the `db-migrate` task, applies the Temporal schemas and namespace, starts the services below, and waits up to ten minutes for every service to report healthy. It fails and names the service when one does not. Each long-running service declares a health check. The HTTP services answer `/health` or their own readiness endpoint, the Temporal workers and `repo-index-worker` refresh a heartbeat file that `python -m services.healthcheck heartbeat` checks for freshness, and `opa`, `otel-collector`, and `tempo` build from thin images that add a static loopback probe because their upstream images carry no shell or HTTP client. `temporal` builds the same way because its upstream image carries no Temporal CLI. Run `docker compose ps` to see each service's health. The four backing databases `agent_platform`, `temporal`, `temporal_visibility`, and `langfuse` are created in the one Postgres container.
 
 | Service | Host port | Role |
 | --- | --- | --- |
@@ -345,12 +345,31 @@ The one-shot services run under the `tasks` profile, so `up` never creates them.
 | --- | --- | --- |
 | `db-migrate` | `inv db-migrate`, `inv db-reset`, `inv local-up` | Applies the migrations |
 | `schedule-bootstrap` | `inv schedules-install` | Registers the reap schedule and the intake schedule for the configured ticket source |
+| `temporal-admin-tools` | `inv local-up`, `inv temporal-upgrade` | Applies the Temporal schemas and registers the `default` namespace |
 
 The workers and `coordination-service` check the schema revision at startup. While the database is behind the migrations their image carries, they wait and log `Run inv db-migrate` every 30 seconds. When the database holds a revision their image does not carry, as after a newer checkout migrated it, they exit.
 
 The `registry` service runs under the `registry` profile. It is the local stand-in for ECR that gate pods pull the engine image from in image mode. Start it with `docker compose --profile registry up -d registry`.
 
-Migrations only touch the platform's own `agent_platform` schema. Temporal and Langfuse manage their own schemas. Langfuse v4 runs as `langfuse-web` and `langfuse-worker` backed by ClickHouse, Valkey, and the shared MinIO object store, reusing the `langfuse` Postgres database.
+Migrations only touch the platform's own `agent_platform` schema. The `temporal-admin-tools` task applies the Temporal schemas, and Langfuse manages its own. Langfuse v4 runs as `langfuse-web` and `langfuse-worker` backed by ClickHouse, Valkey, and the shared MinIO object store, reusing the `langfuse` Postgres database.
+
+### Temporal server
+
+`compose.yaml` runs Temporal server 1.32.1 and Temporal UI 2.57.0, both pinned by digest. The server image builds from `docker/temporal.Dockerfile`, which takes the upstream image through the `TEMPORAL_SERVER_IMAGE` build argument and adds the loopback probe. The server reads its dynamic configuration from `config/platform/temporal-dynamicconfig.yaml`. The `temporal-admin-tools` task applies the schemas to the `temporal` and `temporal_visibility` databases and registers the `default` namespace with a 24-hour retention. `inv local-up` runs the schema step before the server starts and the namespace step before the workers start, and both steps leave a current database unchanged.
+
+Temporal upgrades only between consecutive minor releases, each from the highest patch of the current minor, and each server must run before the next schema change. A stack started before v0.3.0 runs server 1.29.7, and `inv local-up` refuses its database until it is upgraded. Upgrade it once, then start the stack.
+
+```
+inv temporal-upgrade && inv local-up
+```
+
+`inv temporal-upgrade` starts Postgres, reads the schema versions, and backs up both databases with `pg_dump` to `~/temporal-backup/<UTC time>`, or to `--backup-dir`. It then applies the 1.30.8 schema and starts server 1.30.8, does the same for 1.31.4, and finishes on 1.32.1, waiting for each server to report healthy before the next step. Executions in flight continue on the upgraded server. The schema change is one-way, so changing the image tags back does not restore a 1.29.7 server.
+
+Restoring means checking out the previous version, recreating both databases from the backup, and starting the stack. `pg_restore --clean` leaves behind the tables a newer schema added, so the command drops and recreates each database first. Run it from the previous checkout with `BACKUP` set to the backup directory.
+
+```
+docker compose stop temporal temporal-ui workflow-worker activity-worker review-worker && for db in temporal temporal_visibility; do docker compose exec -T postgres sh -c "dropdb -U \"\$POSTGRES_USER\" --force $db && createdb -U \"\$POSTGRES_USER\" $db && pg_restore -U \"\$POSTGRES_USER\" -d $db" < "$BACKUP/$db.dump"; done && docker compose up -d
+```
 
 ### Langfuse backing services
 
@@ -364,10 +383,10 @@ Moving an existing checkout to these versions takes a backup, a pull, a one-time
 mkdir -p "$HOME/langfuse-backup" && docker compose stop langfuse-web langfuse-worker redis clickhouse && docker run --rm -v agentic-dev-platform_langfuse-redis-data:/cache:ro -v agentic-dev-platform_langfuse-clickhouse-data:/clickhouse:ro -v "$HOME/langfuse-backup":/dst alpine:3.24 sh -c 'cp -p /cache/dump.rdb /dst/cache-dump.rdb && tar -czf /dst/clickhouse-data.tgz -C /clickhouse .' && docker compose exec -T postgres sh -c 'pg_dump -U "$POSTGRES_USER" -Fc langfuse' > "$HOME/langfuse-backup/langfuse.dump"
 ```
 
-Then pull, remove the exited one-shot containers an earlier `up` left behind, and start the stack:
+Then pull, remove the exited one-shot containers an earlier `up` left behind, upgrade the Temporal databases as [Temporal server](#temporal-server) describes, and start the stack.
 
 ```
-git pull && docker compose rm -f db-migrate schedule-bootstrap && inv local-up
+git pull && docker compose rm -f db-migrate schedule-bootstrap && inv temporal-upgrade && inv local-up
 ```
 
 No `.env` change is needed, because `REDIS_USERNAME` defaults in `compose.yaml` and `REDIS_AUTH` already exists. Valkey loads the Redis snapshot through `--rdb-version-check relaxed`, which stays in place through v0.3.x and is removed in v0.4.0.
@@ -419,6 +438,7 @@ Run `inv --list` for the full set. The common tasks are below.
 | `inv local-up`, `inv local-down` | Build, migrate, and start the stack, or stop it with volumes preserved |
 | `inv logs [--service NAME]` | Follow logs for the stack or one service |
 | `inv db-migrate`, `inv db-reset` | Apply migrations, or rebuild the schema then migrate |
+| `inv temporal-upgrade` | Back up the Temporal databases and upgrade them one minor release at a time |
 | `inv schedules-install` | Register the reap schedule and the intake schedule for the configured ticket source |
 | `inv seed` | Load allowlisted seed data |
 | `inv smoke-test`, `inv connectivity-check` | Health and Bedrock path checks |
