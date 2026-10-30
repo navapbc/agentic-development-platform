@@ -1,0 +1,402 @@
+# Jira <-> rebar reconciliation for this repository. Configure the variables and secrets
+# documented in `docs/jira-sync-setup.md`. The installed package supplies the runner. The
+# `dry-run`, `live`, and `bootstrap` modes invoke `bridge preview` or `bridge sync`. Exit 0
+# reports success or a benign result. Exit 1 reports an operational failure. Exit 2 reports an
+# invocation or configuration failure. The strict adapter commits remaining events and requires
+# the push to converge. Actions concurrency permits one pass to finish. The
+# `refs/reconciler/lock` ref prevents overlapping runs as described by ADR 0031.
+# `RECONCILE_CONTINUOUS=true` chains paced `workflow_dispatch` runs. A pass waits for at most
+# 900 seconds based on its elapsed duration before dispatching the next pass. A pass that
+# reaches 1800 seconds skips the wait. The setting defaults to false because hosted runners
+# bill the wait. Enable it only where that cost is acceptable, such as public repositories or
+# self-hosted runners. This repository leaves the continuous chain disabled.
+#
+# `workflow_dispatch` is the only trigger, so every pass is started by a person. Jira project
+# ADP is the source of truth for the roadmap and release sprints, and the bridge has no one-way
+# mode, so a pass writes rebar-side state back into ADP: it creates issues for new tickets,
+# closes the issues of deleted tickets, and resolves a field changed on both sides to the rebar
+# value. An hourly schedule would start that on its own the moment this file reached the
+# default branch, with no edit here. Add a `schedule` trigger once the bridge's role for ADP is
+# settled, or once ADP leaves the store's sync list.
+
+name: Reconcile Bridge
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Bridge operation profile'
+        required: false
+        default: 'live'
+        type: choice
+        options:
+          - dry-run           # compute mutations, apply none
+          - bootstrap-strict
+          - bootstrap-throttle
+          - live
+
+concurrency:
+  group: reconcile-bridge
+  cancel-in-progress: false
+
+permissions:
+  contents: read    # checkout only. Reconciler events go to the S3 store, not to GitHub
+  id-token: write   # mint the OIDC token that assumes the ticket-store writer role
+
+jobs:
+  reconcile:
+    name: Run rebar reconciler
+    runs-on: ubuntu-latest
+    # A job-level block REPLACES the workflow-level one wholesale, so both entries declared
+    # above must be restated here. Dropping id-token silently breaks the OIDC role assumption.
+    permissions:
+      contents: read
+      id-token: write
+    # Initial sync creates Jira issues serially, and commit-back persists only a completed
+    # pass. Sixty minutes is a bulk-cutover ceiling, not the expected incremental duration.
+    timeout-minutes: 60
+
+    env:
+      MODE: ${{ github.event.inputs.mode || 'live' }}
+      # The materialization step writes `REBAR_IDENTITY_SIGNING_KEY` to `$GITHUB_ENV`.
+      # `${{ runner.temp }}` is available only within steps and cannot appear in the job-level
+      # environment. The later `Run reconciler` step inherits the exported path for its internal
+      # ticket writes.
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false   # the reconciler pushes to S3, never back to GitHub
+          filter: blob:none
+          # Compaction reconciliation requires a merge base, so the checkout fetches full
+          # history. Later reconciliation performs the merge. A shallow checkout or rebase can
+          # restore deleted events and produce `SNAPSHOT_INCONSISTENT`.
+          fetch-depth: 0
+
+      - name: Record the pass start time (chain pacing)
+        # Read by the paced re-dispatch step at the end of the job to compute how long
+        # this pass took. Exported via $GITHUB_ENV because a job-level `env:` cannot be
+        # computed. Kept first-ish so it measures the whole pass, install included.
+        run: |
+          set -euo pipefail
+          echo "PASS_STARTED_EPOCH=$(date +%s)" >> "${GITHUB_ENV}"
+
+      - name: Validate Jira configuration
+        env:
+          JIRA_URL: ${{ vars.JIRA_URL }}
+          JIRA_USER: ${{ vars.JIRA_USER }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          missing=""
+          [ -z "${JIRA_URL:-}" ] && missing="$missing JIRA_URL(var)"
+          [ -z "${JIRA_USER:-}" ] && missing="$missing JIRA_USER(var)"
+          [ -z "${JIRA_API_TOKEN:-}" ] && missing="$missing JIRA_API_TOKEN(secret)"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing required Jira config:$missing. See docs/jira-sync-setup.md"
+            exit 1
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: .github/reconcile-bridge-requirements.txt
+
+      - name: Install rebar
+        # Pinned with hashes in `.github/reconcile-bridge-requirements.in`, which compiles to the
+        # `.txt` file this installs, so the reconciler code is reproducible across runs.
+        # Reconcile does NOT need the [agents] extra. Bump the release in the `.in` file and
+        # recompile, as `docs/jira-sync-setup.md` describes.
+        run: pip install --require-hashes -r .github/reconcile-bridge-requirements.txt
+
+      - name: Validate ticket-store configuration
+        env:
+          TICKETS_S3_URL: ${{ vars.TICKETS_S3_URL }}
+          AWS_BRIDGE_ROLE_ARN: ${{ vars.AWS_BRIDGE_ROLE_ARN }}
+          AWS_BRIDGE_REGION: ${{ vars.AWS_BRIDGE_REGION }}
+        run: |
+          set -euo pipefail
+          missing=""
+          [ -z "${TICKETS_S3_URL:-}" ] && missing="$missing TICKETS_S3_URL(var)"
+          [ -z "${AWS_BRIDGE_ROLE_ARN:-}" ] && missing="$missing AWS_BRIDGE_ROLE_ARN(var)"
+          [ -z "${AWS_BRIDGE_REGION:-}" ] && missing="$missing AWS_BRIDGE_REGION(var)"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing required ticket-store config:$missing. See docs/jira-sync-setup.md"
+            exit 1
+          fi
+          case "${TICKETS_S3_URL}" in
+            s3://*/*)
+              ;;
+            *)
+              echo "::error::TICKETS_S3_URL must be s3://bucket/prefix. See docs/rebar-s3-ticket-store.md"
+              exit 1
+              ;;
+          esac
+          # git resolves an s3:// remote through this helper, which arrives with the rebar
+          # [s3] extra. Without it git reports only an opaque unknown-transport error.
+          command -v git-remote-s3 >/dev/null || {
+            echo "::error::git-remote-s3 is missing. The pinned requirements must install nava-rebar[s3]"
+            exit 1
+          }
+
+      - name: Configure AWS credentials for the ticket store
+        # OIDC keeps the writer role reachable without a long-lived access key in secrets.
+        # This is what `id-token: write` above exists for. The role must trust this
+        # repository through the account's GitHub OIDC provider.
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_BRIDGE_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_BRIDGE_REGION }}
+          role-session-name: reconcile-bridge-${{ github.run_id }}
+
+      - name: Add the S3 ticket-store remote
+        # `[tool.rebar.sync] remote` names a git remote, and git remotes live in .git/config,
+        # which no clone carries. The runner has to create it on every pass. The URL omits a
+        # profile because the OIDC step above exports credentials into the environment.
+        env:
+          TICKETS_S3_URL: ${{ vars.TICKETS_S3_URL }}
+        run: |
+          set -euo pipefail
+          git remote remove s3tickets 2>/dev/null || true
+          git remote add s3tickets "${TICKETS_S3_URL}"
+          git ls-remote --exit-code s3tickets 'refs/heads/tickets' >/dev/null || {
+            echo "::error::Cannot read refs/heads/tickets from ${TICKETS_S3_URL}. Check the role's S3 and KMS grants"
+            exit 1
+          }
+
+      - name: Mount tickets branch as a worktree
+        # The store lives on a `tickets` branch inside the S3 remote. Mount it as
+        # .tickets-tracker on the ACTUAL `tickets` branch (not detached) so tracker.branch
+        # matches and `rebar fsck` does not WARN on a mismatch.
+        run: |
+          set -euo pipefail
+          # Full fetch (no --depth): a shallow tickets history defeats merge-base and
+          # corrupts compaction reconciliation (bug f193). See fetch-depth note above.
+          git fetch s3tickets '+refs/heads/tickets:refs/remotes/s3tickets/tickets'
+          rm -rf .tickets-tracker
+          git worktree add -B tickets .tickets-tracker s3tickets/tickets
+
+      - name: Configure tickets merge driver
+        # .bridge_state/* uses merge=ours, so define that custom driver before the
+        # push-retry loop can merge s3tickets/tickets into the mounted worktree.
+        run: |
+          set -euo pipefail
+          git config merge.ours.driver true
+
+      - name: Sync reconciler lock refs (ref-lock backend)
+        # The pass lock and phase gate use `refs/reconciler/*`, which is outside the tickets
+        # tree. They follow sync.remote, so they live beside the store in S3. Fetch them on a
+        # best-effort basis before acquisition. Each lock operation also synchronizes the refs
+        # and uses `--force-with-lease`. A first run or file backend may have no refs.
+        run: |
+          set -euo pipefail
+          git fetch s3tickets '+refs/reconciler/*:refs/reconciler/*' || true
+
+      - name: Require a pinned acli version and digest
+        env:
+          ACLI_VERSION: ${{ vars.ACLI_VERSION }}
+          ACLI_SHA256: ${{ vars.ACLI_SHA256 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ACLI_VERSION:-}" ] || [ "$ACLI_VERSION" = "latest" ]; then
+            echo "::error::ACLI_VERSION repo variable is unset or 'latest'. Pin a specific version, for example 1.3.39-stable."
+            exit 1
+          fi
+          if [ -z "${ACLI_SHA256:-}" ]; then
+            echo "::error::ACLI_SHA256 repo variable is unset. Set it to the sha256 of acli_${ACLI_VERSION}_linux_amd64.tar.gz."
+            exit 1
+          fi
+
+      - name: Cache acli archive
+        id: cache-acli
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          # The archive is cached rather than the extracted binary so the verify step below
+          # runs on every pass. The digest is part of the key, so repinning ACLI_SHA256 misses
+          # the old entry instead of reusing it.
+          path: ~/.acli/acli.tar.gz
+          key: acli-${{ runner.os }}-${{ vars.ACLI_VERSION }}-${{ vars.ACLI_SHA256 }}
+
+      - name: Download acli
+        if: steps.cache-acli.outputs.cache-hit != 'true'
+        env:
+          ACLI_VERSION: ${{ vars.ACLI_VERSION }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.acli
+          curl -sSL "https://acli.atlassian.com/linux/${ACLI_VERSION}/acli_${ACLI_VERSION}_linux_amd64.tar.gz" -o ~/.acli/acli.tar.gz
+
+      - name: Verify + install acli
+        env:
+          ACLI_SHA256: ${{ vars.ACLI_SHA256 }}
+        run: |
+          set -euo pipefail
+          echo "${ACLI_SHA256}  $HOME/.acli/acli.tar.gz" | sha256sum -c --strict
+          tar xzf ~/.acli/acli.tar.gz -C ~/.acli/ --strip-components=1
+          chmod +x ~/.acli/acli
+          if [ ! -s "$HOME/.acli/acli" ] || [ ! -x "$HOME/.acli/acli" ]; then
+            echo "::error::Extracted acli binary missing, empty, or not executable"
+            ls -la ~/.acli/ || true
+            exit 1
+          fi
+          if ! "$HOME/.acli/acli" --version >/dev/null 2>&1; then
+            echo "::error::Extracted acli binary failed --version smoke check"
+            exit 1
+          fi
+
+      - name: Add acli to PATH and authenticate
+        env:
+          JIRA_URL: ${{ vars.JIRA_URL }}
+          JIRA_USER: ${{ vars.JIRA_USER }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          sudo ln -sf "$HOME/.acli/acli" /usr/local/bin/acli
+          echo "$JIRA_API_TOKEN" | acli jira auth login \
+            --site "$JIRA_URL" \
+            --email "$JIRA_USER" \
+            --token
+
+      - name: Configure git identity for the bridge bot
+        # Set a global identity because the checkout, tickets mount, and temporary worktrees can
+        # all create commits. Git otherwise rejects those commits when no identity is configured.
+        env:
+          BRIDGE_BOT_NAME: ${{ vars.BRIDGE_BOT_NAME || 'rebar-bridge[bot]' }}
+          # The git-email fallback maps inline-signed events to a configured identity.
+          # Set the BRIDGE_BOT_EMAIL repo variable to select one.
+          BRIDGE_BOT_EMAIL: ${{ vars.BRIDGE_BOT_EMAIL || 'rebar-bridge@users.noreply.github.com' }}
+        run: |
+          set -euo pipefail
+          git config --global user.name "${BRIDGE_BOT_NAME}"
+          git config --global user.email "${BRIDGE_BOT_EMAIL}"
+
+      - name: Materialize the Rebar Bot signing key
+        # Materialize the inline event-signing key as a job-temporary 0600 file and export its
+        # path. Without a resolved key, events remain unsigned while identity verification is
+        # advisory.
+        env:
+          REBAR_BOT_SIGNING_KEY: ${{ secrets.REBAR_BOT_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${REBAR_BOT_SIGNING_KEY:-}" ]; then
+            echo "REBAR_BOT_SIGNING_KEY unset. Reconciler writes will be unsigned (advisory)"
+            exit 0
+          fi
+          echo "::add-mask::${REBAR_BOT_SIGNING_KEY}"
+          KEYFILE="${RUNNER_TEMP}/rebar-bot-signing-key"
+          install -m 600 /dev/null "${KEYFILE}"
+          printf '%s\n' "${REBAR_BOT_SIGNING_KEY}" > "${KEYFILE}"
+          echo "REBAR_IDENTITY_SIGNING_KEY=${KEYFILE}" >> "${GITHUB_ENV}"
+          echo "Materialized bot signing key to ${KEYFILE} (0600)"
+
+      - name: Run reconciler
+        id: reconcile
+        # The runner-neutral adapter owns mode routing, pause recognition, canonical
+        # provider exits, timeout enforcement, and strict tickets-store delivery.
+        env:
+          BRIDGE_RUN_ID: ${{ github.run_id }}
+          BRIDGE_BOT_NAME: ${{ vars.BRIDGE_BOT_NAME || 'rebar-bridge[bot]' }}
+          BRIDGE_BOT_EMAIL: ${{ vars.BRIDGE_BOT_EMAIL || 'rebar-bridge@users.noreply.github.com' }}
+          JIRA_URL: ${{ vars.JIRA_URL }}
+          JIRA_USER: ${{ vars.JIRA_USER }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          JIRA_PROJECT: ${{ vars.JIRA_PROJECT }}
+          REBAR_ENV_ID: ${{ vars.REBAR_ENV_ID || 'reconciler' }}
+          # `REBAR_RECONCILER_FAIL_SILENT_NOOP=1` turns silent suboperation no-ops and swallowed
+          # comment failures into errors. The option defaults to off outside this workflow.
+          REBAR_RECONCILER_FAIL_SILENT_NOOP: "1"
+        run: rebar bridge run
+
+      - name: Notify on bridge failure
+        if: failure()
+        env:
+          GH_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          WORKFLOW_NAME: ${{ github.workflow }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          {
+            echo "## :rotating_light: Reconcile Bridge run FAILED"
+            echo ""
+            echo "- **Workflow:** \`$WORKFLOW_NAME\`"
+            echo "- **Run:** $GH_RUN_URL"
+            echo "- **Mode:** \`${MODE}\`"
+            echo "- **Triggered by:** \`$EVENT_NAME\`"
+            echo ""
+            echo "GitHub emails the account that last modified this workflow file when a run it scheduled fails. Every pass here is dispatched by a person, so watch the run you started. No other alerting is wired up for this repository."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::error title=Reconcile Bridge failed::See run summary at $GH_RUN_URL"
+
+      - name: Re-dispatch to sustain the continuous loop (opt-in)
+        # `RECONCILE_CONTINUOUS=true` chains runs through `workflow_dispatch`, which requires the
+        # `GITHUB_TOKEN` exception and `actions: write`. This repository grants only
+        # `contents: read` and `id-token: write`, so enabling the variable also requires adding
+        # `actions: write` at both the workflow and job level. Concurrency and the pass lock allow one
+        # running pass and one queued pass without interruption or fan-out. A pass shorter than
+        # 1800 seconds waits for the smaller of its elapsed duration and 900 seconds before
+        # dispatching its successor. A pass that reaches 1800 seconds skips the wait. A missing or
+        # nonnumeric `PASS_STARTED_EPOCH` skips the wait calculation. These bounds preserve the
+        # 60-minute job budget. A failed pass starts another pass. Cancellation stops the chain.
+        # Disabling the variable lets the current pass finish and prevents another dispatch.
+        # Without the variable, manual dispatch is the only trigger, because this workflow
+        # carries no `schedule`.
+        if: ${{ !cancelled() && vars.RECONCILE_CONTINUOUS == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          echo "RECONCILE_CONTINUOUS=true. Re-dispatching to sustain the loop (mode=${MODE})."
+          started="${PASS_STARTED_EPOCH:-}"
+          if ! printf '%s' "${started}" | grep -Eq '^[0-9]+$'; then
+            echo "PASS_STARTED_EPOCH unset or non-numeric. Chain pacing skipped for this run."
+          else
+            elapsed=$(( $(date +%s) - started ))
+            [ "${elapsed}" -lt 0 ] && elapsed=0
+            if [ "${elapsed}" -ge 1800 ]; then
+              echo "Pass took ${elapsed}s (>= 1800s), already self-pacing, no pacing sleep."
+            else
+              pause="${elapsed}"
+              [ "${pause}" -gt 900 ] && pause=900
+              echo "Pacing the chain: pass took ${elapsed}s, sleeping ${pause}s so the chain's period is two pass durations."
+              sleep "${pause}"
+            fi
+          fi
+          # Bug 8aed: a bare `gh workflow run` here let a transient re-dispatch failure fail
+          # an ALREADY-CONVERGED pass. When the workflow is disabled, gh exits non-zero with
+          # `HTTP 422: Cannot trigger a 'workflow_dispatch' on a disabled workflow`, and
+          # `set -e` turned that into a red run whose reconcile had fully succeeded (runs
+          # 31129551929 / 31129431096), tripping the heartbeat/alerting path for a non-problem.
+          # Re-seeding costs one manual dispatch, because this workflow carries no `schedule`
+          # to restart the chain. So the disabled-workflow 422 is a benign no-op.
+          # The downgrade is deliberately NARROW. It requires BOTH the 422 status and the
+          # disabled-workflow phrase, so an unrelated 422 (and every auth/404/network/rate-limit
+          # failure) still fails the step loudly.
+          dispatch_rc=0
+          dispatch_out="$(gh workflow run reconcile-bridge.yml --ref "${REF_NAME}" --field mode="${MODE}" 2>&1)" || dispatch_rc=$?
+          printf '%s\n' "${dispatch_out}"
+          if [ "${dispatch_rc}" -eq 0 ]; then
+            exit 0
+          fi
+          # The two tokens are matched with shell BUILTINS, never a `grep` pipeline. Under
+          # `set -o pipefail` a pipeline hands the benign-vs-fatal verdict to a second
+          # process, so any transient non-zero from it, not just a real mismatch, reds
+          # an already-converged pass. That is the very outcome this downgrade exists to
+          # prevent, and it was observed in CI (bug a11a) taking the fatal branch while
+          # `dispatch_out` demonstrably carried both tokens. A builtin match cannot fail
+          # that way. `nocasematch` is scoped to the phrase alone so the status stays an
+          # exact match, preserving the deliberate narrowness below.
+          disabled_workflow=false
+          shopt -s nocasematch
+          if [[ "${dispatch_out}" == *"disabled workflow"* ]]; then
+            disabled_workflow=true
+          fi
+          shopt -u nocasematch
+          if [[ "${dispatch_out}" == *"HTTP 422"* ]] && [ "${disabled_workflow}" = true ]; then
+            echo "::warning::Re-dispatch skipped because this workflow is disabled (HTTP 422). The reconcile pass itself converged. Dispatch the workflow once it is re-enabled to re-seed the continuous loop."
+            exit 0
+          fi
+          echo "::error::Re-dispatch failed (exit ${dispatch_rc}). See the captured gh output above"
+          exit "${dispatch_rc}"
