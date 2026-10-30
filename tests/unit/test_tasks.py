@@ -16,6 +16,7 @@ EXPECTED_TASKS = {
     "connectivity-check",
     "config-check",
     "local-up",
+    "temporal-upgrade",
     "local-down",
     "local-stop",
     "local-destroy",
