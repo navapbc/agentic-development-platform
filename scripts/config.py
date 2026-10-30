@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from functools import lru_cache
 from pathlib import Path
@@ -43,10 +44,12 @@ class Settings(BaseSettings):
     rebar_review_native: bool = True
     review_attestation_secret: str = "change-me-locally"
     review_signing_enabled: bool = True
+    review_signing_key: str = ""
     review_signing_key_path: str = ""
     review_trust_root_path: str = ""
     authorship_signing_enabled: bool = True
     authorship_identity_id: str = ""
+    authorship_signing_key: str = ""
     authorship_signing_key_path: str = ""
     repair_analysis_use_llm: bool = True
 
@@ -70,7 +73,6 @@ class Settings(BaseSettings):
     aws_region: str = "us-east-1"
     aws_use_fips_endpoint: bool = False
     bedrock_runtime_endpoint: str = "com.amazonaws.us-east-1.bedrock-runtime"
-    bedrock_proxy_url: str = ""
     bedrock_runtime_host: str = "bedrock-runtime.us-east-1.amazonaws.com"
     bedrock_endpoint_url: str = ""
     bedrock_connectivity_provider: str = "jumphost"
@@ -94,6 +96,14 @@ class Settings(BaseSettings):
         if info.field_name is not None and (value is None or value == ""):
             return cls.model_fields[info.field_name].default
         return value
+
+    @field_validator("log_level")
+    @classmethod
+    def _known_log_level(cls, value: str) -> str:
+        name = value.strip().upper()
+        if name not in logging.getLevelNamesMapping():
+            raise ValueError(f"unknown LOG_LEVEL {value!r}")
+        return name
 
     @field_validator("evidence_retention_classification_days", mode="before")
     @classmethod
@@ -120,7 +130,6 @@ class Settings(BaseSettings):
     opa_url: str = "http://localhost:8181"
     langfuse_host: str = "http://localhost:3000"
     langfuse_project_id: str = "agentic-dev-platform"
-    otel_exporter_otlp_endpoint: str = "http://localhost:4317"
 
     postgres_host_port: int = 5432
     temporal_host_port: int = 7233
@@ -186,7 +195,6 @@ class Settings(BaseSettings):
     implementation_max_cost_usd: float = 5.0
     implementation_max_llm_calls: int = 200
     implementation_max_tokens: int = 2_000_000
-    implementation_activity_timeout_seconds: float = 2400.0
     sandbox_workspace_mount_path: str = "/workspace"
     sandbox_litellm_base_url: str = "http://host.docker.internal:4000"
     gate_engine_execution: str = "subprocess"
@@ -236,6 +244,11 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+def configured_log_level() -> str:
+    """Return LOG_LEVEL without populating the settings cache, for module-import logging setup."""
+    return Settings().log_level
 
 
 _COMPOSE_PUBLISHED_PORTS: dict[str, dict[int, str]] = {

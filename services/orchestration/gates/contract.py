@@ -94,9 +94,3 @@ def gate_from_callable(name: str, kind: str, evaluate: EvaluateFn) -> Gate:
     if kind not in _KINDS:
         raise ValueError(f"gate {name!r} kind must be one of {sorted(_KINDS)}, got {kind!r}")
     return _CallableGate(name=name, kind=kind, _evaluate=evaluate)
-
-
-def normalize_verdict(verdict: str) -> str:
-    if verdict not in _VERDICTS:
-        raise ValueError(f"verdict must be one of {sorted(_VERDICTS)}, got {verdict!r}")
-    return verdict

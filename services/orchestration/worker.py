@@ -16,7 +16,7 @@ from observability import (
     instrument_llm_tracing,
     temporal_interceptors,
 )
-from scripts.config import get_settings
+from scripts.config import configured_log_level, get_settings
 from temporalio.client import Client
 from temporalio.worker import Worker
 from temporalio.worker.workflow_sandbox import SandboxedWorkflowRunner, SandboxRestrictions
@@ -84,7 +84,7 @@ from services.orchestration.temporal_workflows import (
     ReapWorkflow,
 )
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=configured_log_level())
 log = logging.getLogger("workflow-worker")
 
 WORKER_ROLE_ALL = "all"
@@ -288,8 +288,10 @@ async def main() -> None:
             log.info("recorded review trust-root change: %s", change)
 
     if role in (WORKER_ROLE_ACTIVITY, WORKER_ROLE_ALL):
+        from services.integration.tickets.store_remote import tickets_store_preflight
         from services.orchestration.authorship import authorship_signing_preflight
 
+        tickets_store_preflight(settings)
         authorship_signing_preflight(settings)
 
     if role in (WORKER_ROLE_ACTIVITY, WORKER_ROLE_REVIEW, WORKER_ROLE_ALL):

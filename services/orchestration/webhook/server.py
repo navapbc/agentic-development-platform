@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, cast
 
-from scripts.config import Settings, get_settings, to_host_hostport
+from scripts.config import Settings, configured_log_level, get_settings, to_host_hostport
 
 from services.coordination.idempotency import PostgresSideEffectLedger, SideEffectLedger
 from services.integration.github.credentials import (
@@ -31,7 +31,7 @@ from services.orchestration.webhook.pr_events import (
     TemporalSignaller,
 )
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=configured_log_level())
 log = logging.getLogger("inbound-webhook")
 
 PORT = 8140

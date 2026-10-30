@@ -1,6 +1,9 @@
 locals {
   enabled = var.create_dns_firewall
   domains = distinct(concat(var.allowed_domains, var.additional_allowed_domains))
+
+  # Route 53 Resolver stores each domain as a fully qualified name, so a name without the trailing dot plans a change on every run.
+  fqdns = [for domain in local.domains : endswith(domain, ".") ? domain : "${domain}."]
 }
 
 resource "terraform_data" "inputs_guard" {
@@ -16,7 +19,7 @@ resource "aws_route53_resolver_firewall_domain_list" "allowed" {
   count = local.enabled ? 1 : 0
 
   name    = "${var.name_prefix}-allowed"
-  domains = local.domains
+  domains = local.fqdns
   tags    = var.tags
 }
 
@@ -24,7 +27,7 @@ resource "aws_route53_resolver_firewall_domain_list" "everything" {
   count = local.enabled ? 1 : 0
 
   name    = "${var.name_prefix}-everything"
-  domains = ["*"]
+  domains = ["*."]
   tags    = var.tags
 }
 

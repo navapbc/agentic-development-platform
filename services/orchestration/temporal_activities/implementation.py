@@ -136,7 +136,9 @@ def _build_runtime():
 async def claim_work_unit(req: ClaimRequest) -> ClaimResult:
     from services.coordination.claims import WorkUnit
 
-    owner_workflow_id = req.owner_workflow_id or activity.info().workflow_id or ""
+    owner_workflow_id = req.owner_workflow_id or activity.info().workflow_id
+    if not owner_workflow_id:
+        raise RuntimeError("claim_work_unit runs only inside a workflow")
     client = _build_coordination_client()
     outcome = await client.try_claim(
         WorkUnit(

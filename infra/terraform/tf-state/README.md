@@ -13,7 +13,7 @@ Reusable module that provisions the S3 bucket holding Terraform state for the pl
 
 ## Locking
 
-The composition roots lock state with S3 native locking through `use_lockfile = true`, which writes a lock object beside the state file. It needs Terraform 1.10 or later and no DynamoDB table.
+The composition roots lock state with S3 native locking through `use_lockfile = true`, which writes a lock object beside the state file. S3 native locking needs Terraform 1.10 or later and no DynamoDB table, and every module in this repository requires Terraform 1.11 or later.
 
 ## Usage
 

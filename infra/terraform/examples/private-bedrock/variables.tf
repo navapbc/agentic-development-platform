@@ -235,6 +235,12 @@ variable "aurora_deletion_protection" {
   default     = true
 }
 
+variable "aurora_skip_final_snapshot" {
+  description = "Destroy the Aurora cluster without a final snapshot. Set true only in a disposable environment."
+  type        = bool
+  default     = false
+}
+
 variable "aurora_bedtime_tags" {
   description = "Tags an organization scheduler reads to stop the cluster off hours, such as CustodianRdsBedtime."
   type        = map(string)
@@ -263,4 +269,58 @@ variable "create_langfuse_bucket" {
   description = "Create the S3 bucket for Langfuse event and media uploads."
   type        = bool
   default     = false
+}
+
+variable "create_secret_store" {
+  description = "Create the secret store. With create_aurora it adds the per-service database credentials, the role bootstrap, and their rotation. With create_cache it rotates the cache user."
+  type        = bool
+  default     = false
+}
+
+variable "secret_readers" {
+  description = "IAM role ARNs allowed to read each secret, keyed by secret key. See the secret-store module README."
+  type        = map(list(string))
+  default     = {}
+}
+
+variable "secret_restart_services" {
+  description = "ECS service ARNs to redeploy after each secret changes, keyed by secret key."
+  type        = map(list(string))
+  default     = {}
+}
+
+variable "secret_recovery_window_days" {
+  description = "Days a deleted secret stays recoverable. A secret name cannot be reused during the window, so set 0 in a disposable environment that is destroyed and applied again."
+  type        = number
+  default     = 30
+}
+
+variable "create_rebar_ticket_store" {
+  description = "Create the S3 bucket, KMS key, and reader and writer roles for the rebar ticket store."
+  type        = bool
+  default     = false
+}
+
+variable "rebar_ticket_store_trusted_principals" {
+  description = "IAM principal ARNs allowed to assume the ticket store reader and writer roles the module creates."
+  type        = list(string)
+  default     = []
+}
+
+variable "rebar_ticket_store_admin_principals" {
+  description = "IAM principal ARNs allowed to seed the ticket store and to empty its bucket before a destroy."
+  type        = list(string)
+  default     = []
+}
+
+variable "rebar_ticket_store_existing_reader_role_arn" {
+  description = "Existing role that fetches the ticket store. Set it with the writer role to skip creating both."
+  type        = string
+  default     = ""
+}
+
+variable "rebar_ticket_store_existing_writer_role_arn" {
+  description = "Existing role that pushes the ticket store. Set it with the reader role to skip creating both."
+  type        = string
+  default     = ""
 }

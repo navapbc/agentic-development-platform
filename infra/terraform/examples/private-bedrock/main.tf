@@ -81,12 +81,13 @@ resource "aws_route_table_association" "private" {
 module "cloudtrail" {
   source = "../../cloudtrail"
 
-  create_cloudtrail = var.create_cloudtrail
-  trail_name        = var.cloudtrail_name
-  region            = var.region
-  access_log_bucket = var.access_log_bucket
-  name_prefix       = var.name_prefix
-  tags              = var.tags
+  create_cloudtrail      = var.create_cloudtrail
+  trail_name             = var.cloudtrail_name
+  region                 = var.region
+  access_log_bucket      = var.access_log_bucket
+  data_event_bucket_arns = var.create_rebar_ticket_store ? [module.rebar_ticket_store.bucket_arn] : []
+  name_prefix            = var.name_prefix
+  tags                   = var.tags
 }
 
 module "vpc_endpoints" {
@@ -99,14 +100,19 @@ module "vpc_endpoints" {
   allowed_cidr_blocks = local.endpoint_allowed_cidrs
   route_table_ids     = local.route_table_ids
 
-  interface_services = [
-    "bedrock-runtime",
-    "ssmmessages",
-    "ecr.api",
-    "ecr.dkr",
-    "logs",
-    "kms",
-  ]
+  interface_services = concat(
+    [
+      "bedrock-runtime",
+      "ssmmessages",
+      "ecr.api",
+      "ecr.dkr",
+      "logs",
+      "kms",
+    ],
+    var.create_secret_store ? ["secretsmanager"] : [],
+    local.secret_store_database ? ["rds-data"] : [],
+    local.secret_store_cache ? ["elasticache"] : [],
+  )
 
   name_prefix = var.name_prefix
   tags        = var.tags

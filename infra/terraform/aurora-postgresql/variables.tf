@@ -109,6 +109,12 @@ variable "kms_key_arn" {
   default     = ""
 }
 
+variable "enable_data_api" {
+  description = "Enable the RDS Data API. The secret-store module runs the per-service role bootstrap and the credential rotation through it, so no client needs a network path to the cluster."
+  type        = bool
+  default     = false
+}
+
 variable "master_user_secret_kms_key_arn" {
   description = "KMS key ARN for the master user secret. Empty uses the AWS managed aws/secretsmanager key."
   type        = string
@@ -136,6 +142,12 @@ variable "preferred_maintenance_window" {
   description = "Weekly UTC maintenance window such as sun:06:00-sun:07:00. Null lets RDS choose."
   type        = string
   default     = null
+}
+
+variable "skip_final_snapshot" {
+  description = "Delete the cluster without a final snapshot. Only a disposable environment should set it. Each cluster otherwise writes its final snapshot under a name unique to that cluster, so a later cluster can be destroyed again."
+  type        = bool
+  default     = false
 }
 
 variable "deletion_protection" {

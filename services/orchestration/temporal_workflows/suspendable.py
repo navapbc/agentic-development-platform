@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import timedelta
 
 from temporalio import workflow
 
@@ -97,25 +96,4 @@ class SuspendableWorkflow:
             return ResumeOn(trigger)
         except ValueError:
             return None
-
-    async def wait_resume_or_timeout(
-        self, suspension: Suspension, *, timeout: timedelta | None
-    ) -> ResumeOn | None:
-        self._resume_requested = False
-        self._resume_trigger = ""
-        if timeout is None:
-            await workflow.wait_condition(lambda: self._resume_requested)
-        else:
-            try:
-                await workflow.wait_condition(lambda: self._resume_requested, timeout=timeout)
-            except TimeoutError:
-                return None
-        trigger = self._resume_trigger
-        self._resume_requested = False
-        self._resume_trigger = ""
-        if self._accepts_resume(suspension, trigger):
-            try:
-                return ResumeOn(trigger)
-            except ValueError:
-                return None
         return None

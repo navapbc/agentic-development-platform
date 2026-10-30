@@ -55,6 +55,7 @@ def _claim_activities(store: InMemoryWorkClaimStore, owners: list[str]):
     @activity.defn(name="claim_work_unit")
     async def fake_claim(req: ClaimRequest) -> ClaimResult:
         owner = req.owner_workflow_id or activity.info().workflow_id
+        assert owner is not None
         owners.append(owner)
         outcome = await store.try_claim(
             WorkUnit(
@@ -216,6 +217,7 @@ async def _reclaim(store: InMemoryWorkClaimStore):
 async def test_promoted_run_completes_the_claim():
     result, store, _owners, _parent = await _run()
 
+    assert result is not None
     assert result.status == PR_PROMOTED
     assert _claim_state(store) == COMPLETED
 
@@ -236,6 +238,7 @@ async def test_human_abandoned_repair_releases_the_claim():
         park_stage="repair",
     )
 
+    assert result is not None
     assert result.status == CI_FAILED
     assert result.terminal_reason == "human_abandoned"
     assert _claim_state(store) == RELEASED
@@ -247,6 +250,7 @@ async def test_a_cancelled_promotion_releases_the_claim():
         recheck_category="scope_changed",
     )
 
+    assert result is not None
     assert result.status == PROMOTION_CANCELLED
     assert _claim_state(store) == RELEASED
 
@@ -258,6 +262,7 @@ async def test_an_unmerged_pull_request_releases_the_claim():
         park_stage="pr_close",
     )
 
+    assert result is not None
     assert result.status == PR_CLOSED_UNMERGED
     assert _claim_state(store) == RELEASED
 
@@ -269,6 +274,7 @@ async def test_a_merged_pull_request_completes_the_claim():
         park_stage="pr_close",
     )
 
+    assert result is not None
     assert result.status == PR_MERGED
     assert _claim_state(store) == COMPLETED
 
@@ -336,6 +342,7 @@ async def test_a_raising_implementation_stage_releases_the_claim():
 async def test_a_failed_implementation_releases_the_claim():
     result, store, _owners, _parent = await _run(extra_activities=_stage_fails())
 
+    assert result is not None
     assert result.status == "impl_failed"
     assert _claim_state(store) == RELEASED
 
@@ -358,6 +365,7 @@ async def test_the_claim_is_held_while_a_human_decides_on_a_repair():
 
     assert held["state"] == CLAIMED
     assert held["rival_won"] is False
+    assert result is not None
     assert result.terminal_reason == "human_abandoned"
     assert _claim_state(store) == RELEASED
 
@@ -424,7 +432,7 @@ async def test_a_claim_that_cannot_be_settled_is_recorded_as_unsettled():
     settled = [e for e in events if e.event_type == "WORK_UNIT_SETTLED"]
     assert len(settled) == 1
     assert settled[0].decision == "not_settled"
-    assert "did not complete" in settled[0].reason
+    assert "did not complete" in (settled[0].reason or "")
 
 
 async def test_a_claim_no_longer_held_names_the_owner_and_the_work_unit():
@@ -443,5 +451,6 @@ async def test_a_claim_no_longer_held_names_the_owner_and_the_work_unit():
     settled = [e for e in events if e.event_type == "WORK_UNIT_SETTLED"]
     assert len(settled) == 1
     assert settled[0].decision == "not_settled"
-    assert parent in settled[0].reason
-    assert _WORK_UNIT in settled[0].reason
+    reason = settled[0].reason or ""
+    assert parent in reason
+    assert _WORK_UNIT in reason

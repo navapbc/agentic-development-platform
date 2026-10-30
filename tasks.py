@@ -197,6 +197,17 @@ def rebar_changes(c, new=False, field_changes=False, status_changes=False, local
     _run_scripted(c, f"python -m scripts.rebar_poll {' '.join(flags)}".strip(), local=local)
 
 
+@task(help={"local": "Run on the host instead of in the activity-worker container."})
+def rebar_store_remote(c, local=False):
+    """Point the rebar ticket store at its S3 bucket as the reader for fetch and writer for push."""
+    command = "python -m scripts.rebar_store_remote"
+    if local:
+        c.run(_on_host(command), pty=True)
+        return
+    # A one-off container, because the activity worker refuses to start while the remote is wrong.
+    c.run(f"{COMPOSE} {_compose_files()} run --rm --no-deps activity-worker {command}", pty=True)
+
+
 def _rebar_gate_env() -> dict[str, str]:
     """Name the tier config for rebar's LLM gates.
 
@@ -312,6 +323,25 @@ def evidence_bucket_bootstrap(c):
     c.run(f"{HOST_PYTHON} -m scripts.evidence_bucket_bootstrap", pty=True)
 
 
+@task(
+    help={
+        "function_name": "The role_bootstrap_function_name Terraform output.",
+        "region": "Function region. Defaults to AWS_REGION.",
+    }
+)
+def db_bootstrap_roles(c, function_name="", region=""):
+    """Create the per-service database roles and databases in a deployed Aurora cluster."""
+    if not function_name:
+        raise Exit("provide --function-name")
+    from scripts.config import get_settings
+
+    settings = get_settings()
+    flags = f" --function-name {shlex.quote(function_name)}"
+    flags += f" --region {shlex.quote(region)}" if region else ""
+    env = {"AWS_PROFILE": settings.aws_profile, "AWS_REGION": settings.aws_region}
+    c.run(f"{HOST_PYTHON} -m scripts.db_bootstrap_roles{flags}", pty=True, env=env)
+
+
 @task(help={"offline": "Use the deterministic offline fixture instead of the rebar kernel."})
 def review_eval(c, offline=False, out=""):
     """Score the rebar review kernel against the keyword baseline on the gold set."""
@@ -356,6 +386,20 @@ def ci(c):
     c.run(f"{HOST_PYTHON} -m basedpyright services", pty=True)
     c.run(f"{HOST_PYTHON} -m pytest -q tests/unit tests/end_to_end", pty=True)
     c.run(f"{HOST_PYTHON} -m scripts.eval_gate", pty=True)
+
+
+@task
+def terraform_test(c):
+    """Run terraform test in each module under infra/terraform that has a tests directory."""
+    root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "infra", "terraform")
+    modules = sorted(
+        os.path.join(root, name)
+        for name in os.listdir(root)
+        if os.path.isdir(os.path.join(root, name, "tests"))
+    )
+    for module in modules:
+        c.run(f"terraform -chdir={shlex.quote(module)} init -backend=false -input=false", pty=True)
+        c.run(f"terraform -chdir={shlex.quote(module)} test", pty=True)
 
 
 @task
@@ -743,14 +787,17 @@ for _t in (
     db_migrate,
     schedules_install,
     db_reset,
+    db_bootstrap_roles,
     seed,
     import_rebar_tickets,
     rebar_changes,
+    rebar_store_remote,
     rebar_review_plan,
     rebar_review_code,
     operator_done,
     smoke_test,
     prompts_seed,
+    evidence_bucket_bootstrap,
     review_eval,
     context_eval,
     cost_rollup,
@@ -761,6 +808,7 @@ for _t in (
     durability_proof,
     fetch_acli,
     sast,
+    terraform_test,
     cbm_build,
     publish_jumphost_image,
     reap,
