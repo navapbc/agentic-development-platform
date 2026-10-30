@@ -20,6 +20,8 @@
     "new_state": { "type": ["string", "null"], "maxLength": 64 },
     "decision": { "type": ["string", "null"], "maxLength": 64 },
     "reason": { "type": ["string", "null"] },
+    "remedy": { "type": ["string", "null"] },
+    "alert_channels": { "type": ["array", "null"], "items": { "type": "string" } },
     "prompt_version": { "type": ["string", "null"], "maxLength": 64 },
     "model_id": { "type": ["string", "null"], "maxLength": 128 },
     "policy_version": { "type": ["string", "null"], "maxLength": 64 },

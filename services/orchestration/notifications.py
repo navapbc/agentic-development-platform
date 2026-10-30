@@ -12,6 +12,8 @@ from urllib.parse import urlsplit
 import httpx
 from scripts.config import Settings, get_settings
 
+from services.operator_remedy import with_remedy
+
 log = logging.getLogger(__name__)
 
 
@@ -32,6 +34,7 @@ class HumanInterventionAlert:
     reason: str
     stage: str
     detail: str = ""
+    remedy: str = ""
 
 
 def _post_jira_comment(settings: Settings, message: AlertMessage) -> bool:
@@ -83,7 +86,38 @@ def deliver_alert(message: AlertMessage, settings: Settings | None = None) -> li
                 delivered.append(channel)
         except Exception:  # noqa: BLE001
             log.warning("alert delivery over %s failed", channel, exc_info=True)
+    if not delivered:
+        log.error(
+            "alert for %s reached no channel. Configure a Jira issue key, SLACK_WEBHOOK_URL, "
+            "or SMTP_HOST with ALERT_EMAIL_FROM and ALERT_EMAIL_TO, then re-run the alert.",
+            message.issue_key or "an unidentified ticket",
+        )
     return delivered
+
+
+DETAIL_LINE_LIMIT = 40
+DETAIL_CHAR_LIMIT = 4000
+
+
+def _bounded_detail(detail: str) -> str:
+    """Keep the tail of a long detail block so the ``Next step:`` line stays reachable.
+
+    A check stage can carry a whole CI log here. Rendered in full it pushes the remedy hundreds
+    of lines down a Jira comment, which defeats the point of attaching one. Both bounds are
+    needed because a log can be long in lines and a single line can hold a whole minified payload.
+    """
+    lines = detail.splitlines()
+    dropped_lines = max(len(lines) - DETAIL_LINE_LIMIT, 0)
+    kept = "\n".join(lines[-DETAIL_LINE_LIMIT:]) if dropped_lines else detail
+    notes: list[str] = []
+    if dropped_lines:
+        notes.append(f"{dropped_lines} earlier lines omitted")
+    if len(kept) > DETAIL_CHAR_LIMIT:
+        notes.append(f"{len(kept) - DETAIL_CHAR_LIMIT} earlier characters omitted")
+        kept = kept[-DETAIL_CHAR_LIMIT:]
+    if not notes:
+        return detail
+    return f"[{', '.join(notes)}]\n{kept}"
 
 
 def _intervention_message(alert: HumanInterventionAlert) -> AlertMessage:
@@ -91,11 +125,11 @@ def _intervention_message(alert: HumanInterventionAlert) -> AlertMessage:
         f"Human intervention required for {alert.task_id} on {alert.repo}.\n"
         f"The run stopped at the {alert.stage} stage with reason {alert.reason}.\n"
         f"Task {alert.task_id}, execution {alert.execution_id}, workflow {alert.workflow_id}.\n"
-        f"{alert.detail}"
+        f"{_bounded_detail(alert.detail)}"
     )
     return AlertMessage(
         subject=f"Human intervention needed on {alert.repo} for {alert.task_id}",
-        body=body,
+        body=with_remedy(body, alert.remedy),
         issue_key=alert.issue_key,
     )
 
@@ -107,18 +141,17 @@ def send_human_intervention_alert(
 
 
 def send_intake_unroutable_alert(
-    *, issue_key: str, project: str, reason: str, settings: Settings | None = None
+    *,
+    issue_key: str,
+    project: str,
+    reason: str,
+    remedy: str,
+    settings: Settings | None = None,
 ) -> list[str]:
-    body = (
-        f"Ticket intake could not resolve a target repository for {issue_key} "
-        f"in project {project}.\n"
-        f"{reason}.\n"
-        "Add a repos marker to the ticket description or set a default_repo for the project, "
-        "then intake retries on the next poll."
-    )
+    body = f"Ticket intake stopped on {issue_key} in project {project}.\n{reason}."
     message = AlertMessage(
-        subject=f"Ticket intake could not route {issue_key}",
-        body=body,
+        subject=f"Ticket intake stopped on {issue_key}",
+        body=with_remedy(body, remedy),
         issue_key=issue_key,
     )
     return deliver_alert(message, settings)

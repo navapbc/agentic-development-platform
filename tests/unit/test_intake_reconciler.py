@@ -9,6 +9,7 @@ from services.coordination.idempotency import InMemorySideEffectLedger, SideEffe
 from services.integration.jira import CLOUD
 from services.integration.jira.credentials import ComponentRepos
 from services.integration.jira.snapshot import TaskSnapshot, snapshot_id_for
+from services.orchestration import remedies
 from services.orchestration.checks.config import required_checks_repos
 from services.orchestration.intake_base import UnresolvableBaseBranch
 from services.orchestration.intake_reconciler import (
@@ -58,9 +59,11 @@ class _Starter:
 class _Alerter:
     def __init__(self) -> None:
         self.alerts: list[tuple[str, str, str]] = []
+        self.remedies: list[str] = []
 
-    async def unroutable(self, *, issue_key: str, project: str, reason: str) -> None:
+    async def unroutable(self, *, issue_key: str, project: str, reason: str, remedy: str) -> None:
         self.alerts.append((issue_key, project, reason))
+        self.remedies.append(remedy)
 
 
 class _Seeder:
@@ -565,6 +568,7 @@ async def test_unresolvable_declared_base_records_a_hold_naming_the_branch():
 
     assert [h.issue_key for h in report.held] == ["ADEV-1"]
     assert "gone" in report.held[0].reason
+    assert alerter.remedies == [remedies.unresolvable_base_remedy("ADEV-1")]
 
 
 async def test_a_held_ticket_does_not_stop_the_pass():
@@ -720,6 +724,7 @@ async def test_holds_a_repository_without_checks_when_ci_is_required():
     assert starter.starts == []
     assert [h.reason for h in report.held] == [checks_not_configured_reason(["repo-a"])]
     assert alerter.alerts == [("ADEV-1", "ADEV", checks_not_configured_reason(["repo-a"]))]
+    assert alerter.remedies == [remedies.checks_not_configured_remedy("ADEV-1", ["repo-a"])]
     assert report.deferred == ["ADEV-1"]
 
 
@@ -755,3 +760,35 @@ def test_required_checks_repos_lists_configured_repositories_under_github(monkey
     )
 
     assert required_checks_repos(hermetic_settings()) == frozenset({"repo-a"})
+
+
+async def test_a_base_label_conflict_sends_its_own_remedy_to_the_alerter():
+    """The remedy has to survive the trip through ``_hold`` to the alerter, not merely exist."""
+    read = _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV", labels=("base:x", "base:y"))]})
+    starter, alerter, ledger, store, resolver = _defaults()
+
+    await _run(read, starter, alerter, ledger, store, resolver)
+
+    assert alerter.remedies == [remedies.base_conflict_remedy("ADEV-1")]
+
+
+async def test_an_unroutable_ticket_sends_a_different_remedy_than_a_base_conflict():
+    read = _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV")]})
+    starter, alerter, ledger, store, resolver = _defaults(default_repo="")
+
+    await _run(read, starter, alerter, ledger, store, resolver)
+
+    assert alerter.remedies == [remedies.unroutable_remedy("ADEV-1", "ADEV")]
+    assert alerter.remedies != [remedies.base_conflict_remedy("ADEV-1")]
+
+
+async def test_a_ticket_naming_an_unlisted_repository_is_told_to_change_the_allowlist():
+    """The two unroutable causes need opposite advice, so the discriminator has to survive the
+    trip from ``resolve_targets`` through ``_hold`` to the alerter."""
+    read = _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV", description="repos: navapbc/unlisted")]})
+    starter, alerter, ledger, store, resolver = _defaults()
+
+    await _run(read, starter, alerter, ledger, store, resolver)
+
+    assert alerter.remedies == [remedies.unroutable_remedy("ADEV-1", "ADEV", ("navapbc/unlisted",))]
+    assert alerter.remedies != [remedies.unroutable_remedy("ADEV-1", "ADEV")]

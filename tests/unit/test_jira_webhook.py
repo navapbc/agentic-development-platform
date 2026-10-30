@@ -58,9 +58,11 @@ class _Starter:
 class _Alerter:
     def __init__(self) -> None:
         self.alerts: list[tuple[str, str, str]] = []
+        self.remedies: list[str] = []
 
-    async def unroutable(self, *, issue_key: str, project: str, reason: str) -> None:
+    async def unroutable(self, *, issue_key: str, project: str, reason: str, remedy: str) -> None:
         self.alerts.append((issue_key, project, reason))
+        self.remedies.append(remedy)
 
 
 class _Seeder:

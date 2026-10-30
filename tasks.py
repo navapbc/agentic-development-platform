@@ -381,8 +381,9 @@ def test(c):
 
 @task
 def ci(c):
-    """Run the portable CI checks: lint, the hermetic test tiers, and the evaluation gate."""
+    """Run the portable CI checks: lint, types, the hermetic test tiers, and the evaluation gate."""
     c.run(f"{HOST_PYTHON} -m ruff check", pty=True)
+    c.run(f"{HOST_PYTHON} -m basedpyright services", pty=True)
     c.run(f"{HOST_PYTHON} -m pytest -q tests/unit tests/end_to_end", pty=True)
     c.run(f"{HOST_PYTHON} -m scripts.eval_gate", pty=True)
 
@@ -511,7 +512,9 @@ def index_repo(c, repo, commit="", local=False):
     help={
         "issue": "Jira issue key parked for human repair, for example ADSER-24.",
         "retry": "Re-run CI and repair on the current branch head.",
-        "abandon": "Abandon the workflow so intake can relaunch a fresh execution.",
+        "abandon": (
+            "End the workflow. Run `inv restart --issue X` to have intake admit the ticket again."
+        ),
         "local": "Run on the host instead of the activity-worker container.",
     }
 )

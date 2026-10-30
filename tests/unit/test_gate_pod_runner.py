@@ -1,6 +1,7 @@
 import json
 
 import pytest
+from services.operator_remedy import NEXT_STEP_PREFIX
 from services.orchestration.gates.pod_runner import (
     CHECKS_POD_RESOURCES,
     DEFAULT_POD_RESOURCES,
@@ -312,12 +313,13 @@ def _unschedulable_status(message="0/1 nodes are available: 1 Insufficient cpu."
 
 
 def test_an_unschedulable_pod_is_described_as_a_resource_shortfall():
-    text = describe_pod_not_ready(_unschedulable_status())
+    text = describe_pod_not_ready(_unschedulable_status(), "p", "n")
 
     assert "Pending" in text
     assert "Unschedulable" in text
     assert "Insufficient cpu" in text
-    assert "lower the pod resource requests" in text
+    assert f"{NEXT_STEP_PREFIX} Give the cluster node more CPU" in text
+    assert "DEFAULT_POD_RESOURCES and CHECKS_POD_RESOURCES" in text
 
 
 def test_a_pod_whose_image_will_not_pull_names_the_registry_as_the_next_check():
@@ -335,16 +337,22 @@ def test_a_pod_whose_image_will_not_pull_names_the_registry_as_the_next_check():
                     }
                 }
             ],
-        }
+        },
+        "p",
+        "n",
     )
 
     assert "ImagePullBackOff" in text
     assert "quay.io/buildah/stable" in text
-    assert "access to the registry" in text
+    assert text.startswith("The pod is Pending and its container is waiting")
+    assert f"{NEXT_STEP_PREFIX} Check that GATE_ENGINE_BUILDER_IMAGE" in text
 
 
 def test_a_pod_with_no_explaining_condition_still_reports_its_phase():
-    assert "Running" in describe_pod_not_ready({"phase": "Running"})
+    text = describe_pod_not_ready({"phase": "Running"}, "runner-7", "gates")
+
+    assert "Running" in text
+    assert f"{NEXT_STEP_PREFIX} Run `kubectl describe pod -n gates runner-7`" in text
 
 
 class _CompletedProc:

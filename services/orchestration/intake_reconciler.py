@@ -33,6 +33,12 @@ from services.orchestration.intake_base import (
     declared_base,
     unresolvable_base_reason,
 )
+from services.orchestration.remedies import (
+    base_conflict_remedy,
+    checks_not_configured_remedy,
+    unresolvable_base_remedy,
+    unroutable_remedy,
+)
 
 _JIRA_SOURCES = frozenset({CLOUD, DATACENTER})
 
@@ -140,7 +146,9 @@ class IntakeRunCounter(Protocol):
 
 
 class IntakeAlerter(Protocol):
-    async def unroutable(self, *, issue_key: str, project: str, reason: str) -> None: ...
+    async def unroutable(
+        self, *, issue_key: str, project: str, reason: str, remedy: str
+    ) -> None: ...
 
 
 @dataclass
@@ -290,6 +298,7 @@ async def route_candidate(
             candidate.task_id,
             project,
             declaration.conflict,
+            base_conflict_remedy(candidate.task_id),
             digest,
             ctx.alerter,
             ctx.ledger,
@@ -305,7 +314,14 @@ async def route_candidate(
     )
     if not resolution.routable:
         await _hold(
-            candidate.task_id, project, resolution.reason, digest, ctx.alerter, ctx.ledger, report
+            candidate.task_id,
+            project,
+            resolution.reason,
+            unroutable_remedy(candidate.task_id, project, resolution.unlisted),
+            digest,
+            ctx.alerter,
+            ctx.ledger,
+            report,
         )
         return
     if ctx.checks_repos is not None:
@@ -313,7 +329,14 @@ async def route_candidate(
         if unchecked:
             reason = checks_not_configured_reason(unchecked)
             await _hold(
-                candidate.task_id, project, reason, digest, ctx.alerter, ctx.ledger, report
+                candidate.task_id,
+                project,
+                reason,
+                checks_not_configured_remedy(candidate.task_id, unchecked),
+                digest,
+                ctx.alerter,
+                ctx.ledger,
+                report,
             )
             # The fix lands in operator config rather than the ticket, so a watermark poll
             # must re-read the ticket on the next pass instead of treating it as settled.
@@ -335,6 +358,7 @@ async def _hold(
     issue_key: str,
     project: str,
     reason: str,
+    remedy: str,
     digest: str,
     alerter: IntakeAlerter,
     ledger: SideEffectLedger,
@@ -348,7 +372,9 @@ async def _hold(
     )
 
     async def _send() -> dict[str, str]:
-        await alerter.unroutable(issue_key=issue_key, project=project, reason=reason)
+        await alerter.unroutable(
+            issue_key=issue_key, project=project, reason=reason, remedy=remedy
+        )
         return {"issue_key": issue_key}
 
     outcome = await ledger.run_once(ref, _send)
@@ -398,6 +424,7 @@ async def _start(
             issue_key,
             project,
             unresolvable_base_reason(base, repo),
+            unresolvable_base_remedy(issue_key),
             digest,
             ctx.alerter,
             ctx.ledger,
@@ -454,7 +481,16 @@ async def _start(
     try:
         outcome = await ctx.ledger.run_once(ref, _launch)
     except UnresolvableBaseBranch as exc:
-        await _hold(issue_key, project, str(exc), digest, ctx.alerter, ctx.ledger, report)
+        await _hold(
+            issue_key,
+            project,
+            str(exc),
+            unresolvable_base_remedy(issue_key),
+            digest,
+            ctx.alerter,
+            ctx.ledger,
+            report,
+        )
         return
     result = outcome.result if isinstance(outcome.result, dict) else {}
     report.started.append(

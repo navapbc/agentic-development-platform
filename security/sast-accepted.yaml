@@ -20,6 +20,11 @@
   justification: PASS is the gate outcome constant that every gate and the gate runner compare against. Bandit matches the word pass in the value, which is an outcome name, not a credential.
 - tool: bandit
   rule: B105
+  path: services/orchestration/remedies.py
+  match: TOKEN_BUDGET_EXCEEDED = "token_budget_exceeded"
+  justification: ImplementationReason and RepairReason narrow the terminal reason token so each budget breach authors its own operator remedy. TOKEN_BUDGET_EXCEEDED is the stop reason recorded when a run exhausts its model token budget. It names a usage limit, not a credential.
+- tool: bandit
+  rule: B105
   path: services/orchestration/temporal_workflows/implementation.py
   match: TOKEN_BUDGET_EXCEEDED = "token_budget_exceeded"
   justification: TOKEN_BUDGET_EXCEEDED is the stop reason recorded when a run exhausts its model token budget. It names a usage limit, not a credential.

@@ -106,7 +106,7 @@ venvPath = "."
 venv = ".venv"
 include = ["services", "adapters", "schemas", "database", "scripts", "observability", "openhands", "tests", "infra/terraform/secret-store/functions"]
 exclude = ["services/review/eval/acceptance_cases"]
-extraPaths = [".venv/lib/python3.14/site-packages/rebar/_engine"]
+extraPaths = [".venv/lib/python3.12/site-packages/rebar/_engine"]
 
 [tool.rebar.verify]
 require_plan_review_for_close = true
