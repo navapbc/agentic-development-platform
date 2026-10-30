@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentic-dev-platform/schemas/audit_events/audit-event/v1.json",
+  "title": "Audit event",
+  "version": "1.0.0",
+  "description": "Durable audit-event record shape, keyed to the audit_events table.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["event_id", "task_id", "execution_id", "event_type"],
+  "properties": {
+    "event_id": { "type": "string", "maxLength": 64 },
+    "task_id": { "type": "string", "maxLength": 64 },
+    "execution_id": { "type": "string", "maxLength": 64 },
+    "workflow_id": { "type": ["string", "null"], "maxLength": 255 },
+    "event_type": { "type": "string", "maxLength": 64 },
+    "stage": { "type": ["string", "null"], "maxLength": 64 },
+    "actor_type": { "type": ["string", "null"], "maxLength": 32 },
+    "actor_id": { "type": ["string", "null"], "maxLength": 128 },
+    "prev_state": { "type": ["string", "null"], "maxLength": 64 },
+    "new_state": { "type": ["string", "null"], "maxLength": 64 },
+    "decision": { "type": ["string", "null"], "maxLength": 64 },
+    "reason": { "type": ["string", "null"] },
+    "prompt_version": { "type": ["string", "null"], "maxLength": 64 },
+    "model_id": { "type": ["string", "null"], "maxLength": 128 },
+    "policy_version": { "type": ["string", "null"], "maxLength": 64 },
+    "correlation_ids": { "type": ["object", "array", "null"] },
+    "artifact_hashes": { "type": ["object", "array", "null"] },
+    "created_at": { "type": ["string", "null"], "format": "date-time" }
+  }
+}

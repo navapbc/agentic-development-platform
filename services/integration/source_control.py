@@ -27,9 +27,7 @@ def source_control_repos(settings: Settings | None = None) -> set[str]:
 
 def _local_repos(settings: Settings) -> set[str]:
     declared = {
-        name.strip()
-        for name in settings.source_control_local_repos.split(",")
-        if name.strip()
+        name.strip() for name in settings.source_control_local_repos.split(",") if name.strip()
     }
     if declared:
         return declared

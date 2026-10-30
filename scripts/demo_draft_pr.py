@@ -6,13 +6,13 @@ import argparse
 import asyncio
 import contextlib
 import os
-import subprocess
 import uuid
 from datetime import timedelta
 from typing import Any
 
 from adapters.interfaces.git_host import agent_branch_name
 from adapters.real.git_host import RealGitHost
+from services import process
 from services.coordination import (
     InMemorySequenceGate,
     InMemorySideEffectLedger,
@@ -25,6 +25,7 @@ from services.integration.github.credentials import (
     allowed_repos,
     build_github_credential_resolver,
 )
+from services.integration.github.git_auth import GitAuth
 from services.integration.github.mediator import GitHubMediator
 from services.integration.jira import (
     CLOUD,
@@ -64,12 +65,14 @@ def _demo_status_flow(settings: Settings, issue_key: str) -> StatusFlow:
         return StatusFlow()
 
 
-def _remote_head(remote: str, branch: str) -> str:
-    proc = subprocess.run(
-        ["git", "ls-remote", remote, f"refs/heads/{branch}"],
+def _remote_head(remote: str, branch: str, auth: GitAuth) -> str:
+    proc = process.run(
+        ["git", *auth.config_args(), "ls-remote", "--", remote, f"refs/heads/{branch}"],
+        timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS,
         check=True,
         capture_output=True,
         text=True,
+        env={**os.environ, **auth.env()},
     )
     return proc.stdout.split()[0] if proc.stdout.strip() else ""
 
@@ -267,11 +270,11 @@ async def _run_via_temporal(
         DraftPullRequestInput,
         DraftPullRequestWorkflow,
     )
+    from services.orchestration.usage_rollup import BudgetCaps
     from temporalio.client import Client
 
-    stored_issue = normalize_issue(
-        raw_issue, acceptance_field=acceptance_field(settings)
-    ).to_dict()
+    caps = BudgetCaps.from_settings(settings)
+    stored_issue = normalize_issue(raw_issue, acceptance_field=acceptance_field(settings)).to_dict()
     execution_id = f"exec-{uuid.uuid4().hex[:8]}"
     workflow_id = f"draft-pr-{task_id}-{execution_id}"
     address = to_host_hostport(settings.temporal_host)
@@ -314,6 +317,9 @@ async def _run_via_temporal(
             await_pr_close=await_pr_close,
             jira_project=project_of(task_id),
             plan_approved=full_pipeline,
+            max_cost_usd=caps.max_cost_usd,
+            max_llm_calls=caps.max_llm_calls,
+            max_tokens=caps.max_tokens,
         ),
         id=workflow_id,
         task_queue=settings.temporal_task_queue,
@@ -415,7 +421,10 @@ async def main() -> int:
     def remote_url_for(name: str) -> str:
         return gh_resolver.git_remote_url(name)
 
-    base_sha = _remote_head(remote_url_for(repo), base)
+    def auth_for(name: str) -> GitAuth:
+        return gh_resolver.git_auth(name)
+
+    base_sha = _remote_head(remote_url_for(repo), base, auth_for(repo))
     if not base_sha:
         print(f"Could not read {base} on the remote. Confirm the repo exists and the token works.")
         return 2
@@ -427,10 +436,13 @@ async def main() -> int:
         backend=host, ledger=ledger, gate=gate, allowed_repos=frozenset(allowlist)
     )
     materializer = WorkspaceMaterializer.from_settings(
-        InMemoryOrphanRegistry(), remote_url_for=remote_url_for, settings=settings
+        InMemoryOrphanRegistry(),
+        remote_url_for=remote_url_for,
+        auth_for=auth_for,
+        settings=settings,
     )
     synchronizer = GitBranchSynchronizer.from_settings(
-        remote_url_for=remote_url_for, settings=settings
+        remote_url_for=remote_url_for, auth_for=auth_for, settings=settings
     )
     existing_pr = await mediator.find_open_pr(repo, task_id)
     if _jira_configured(settings, task_id):

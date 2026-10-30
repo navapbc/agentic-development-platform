@@ -143,12 +143,13 @@ async def check_dependency_cycle(
 async def capture_base_head(req: CaptureBaseHeadRequest) -> CaptureBaseHeadResult:
     from scripts.config import get_settings
 
-    from services.integration.github.factory import build_git_host
+    from services.integration.github.factory import build_git_auth_for, build_git_host
     from services.orchestration.intake_runtime import remote_head
 
     settings = get_settings()
     location = build_git_host(settings).source_location(req.repo)
-    return CaptureBaseHeadResult(base_sha=remote_head(location, req.base))
+    auth = build_git_auth_for(settings)(req.repo)
+    return CaptureBaseHeadResult(base_sha=remote_head(location, req.base, auth))
 
 
 @dataclass
@@ -189,9 +190,7 @@ async def signal_dependency_ready(
         return SignalDependencyReadyResult(0)
 
     settings = get_settings()
-    client = await Client.connect(
-        settings.temporal_host, namespace=settings.temporal_namespace
-    )
+    client = await Client.connect(settings.temporal_host, namespace=settings.temporal_namespace)
     signaled = 0
     for execution in await PostgresExecutionSeeder().list_active_executions():
         if execution.task_id in dependent_ids and execution.workflow_id:
@@ -199,4 +198,3 @@ async def signal_dependency_ready(
             await handle.signal(RESUME_SIGNAL, ResumeOn.DEPENDENCY_READY.value)
             signaled += 1
     return SignalDependencyReadyResult(signaled)
-

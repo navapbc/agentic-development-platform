@@ -1,11 +1,14 @@
 config_version: 1
 
 # Operational config for the rebar ticket backend. repo_root points at the
-# git-backed rebar store working tree. status_flow resolves the platform's
-# logical lifecycle stages to the store's own statuses. rebar's status
-# vocabulary is idea, open, in_progress, closed, blocked, cancelled, deleted.
+# git-backed rebar store working tree. It must be an absolute path that
+# resolves to the same store on the host and inside the worker container,
+# because operator commands run on the host while the poll runs in the worker.
+# status_flow resolves the platform's logical lifecycle stages to the store's
+# own statuses. rebar's status vocabulary is idea, open, in_progress, closed,
+# blocked, cancelled, deleted.
 backend:
-  repo_root: .agent-workspaces/rebar-tickets
+  repo_root: /srv/rebar-tickets
   project: ADSER
   default_repo: agentic-demo-service
   status_flow:
@@ -34,10 +37,14 @@ poll:
 
 # The rebar ticket store uses its own bucket or prefix, isolated from the
 # evidence and audit stores. The read-only polling role and the write role are
-# distinct, and neither reuses the evidence or audit writer role.
+# distinct, and neither reuses the evidence or audit writer role. The store's git
+# remote fetches under reader_profile and pushes under writer_profile, two AWS
+# profiles that assume the roles below. inv rebar-store-remote sets the remote.
 store:
   bucket: rebar-tickets
   prefix: tickets/
+  reader_profile: rebar-tickets-reader
+  writer_profile: rebar-tickets-writer
 
 roles:
   read_only: arn:aws:iam::000000000000:role/rebar-tickets-reader

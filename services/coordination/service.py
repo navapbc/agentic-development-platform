@@ -11,7 +11,7 @@ from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-from scripts.config import get_settings
+from scripts.config import configured_log_level, get_settings
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -32,10 +32,9 @@ from services.coordination.sequencing import (
     SequenceGate,
 )
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=configured_log_level())
 log = logging.getLogger("coordination-service")
 
-HOST = "0.0.0.0"  # noqa: S104
 PORT = 8130
 
 
@@ -180,6 +179,10 @@ def _temporal_owner_active() -> Callable[[str], Awaitable[bool]]:
 
 
 def main() -> None:
+    from database.schema_guard import wait_for_platform_schema
+
+    settings = get_settings()
+    asyncio.run(wait_for_platform_schema(settings.database_url))
     loop = asyncio.new_event_loop()
     threading.Thread(target=loop.run_forever, name="coordination-loop", daemon=True).start()
     handler = build_handler(
@@ -188,8 +191,8 @@ def main() -> None:
         PostgresWorkClaimStore(owner_active=_temporal_owner_active()),
         loop,
     )
-    log.info("coordination-service listening on %s:%d", HOST, PORT)
-    ThreadingHTTPServer((HOST, PORT), handler).serve_forever()
+    log.info("coordination-service listening on %s:%d", settings.bind_host, PORT)
+    ThreadingHTTPServer((settings.bind_host, PORT), handler).serve_forever()
 
 
 if __name__ == "__main__":

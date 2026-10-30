@@ -53,6 +53,7 @@ async def _reconcile_jira_pass() -> IntakeReconcileReport:
     from services.coordination.idempotency import PostgresSideEffectLedger
     from services.integration.jira.credentials import build_jira_credential_resolver
     from services.integration.jira.intake_read import JiraPollReadSource
+    from services.orchestration.checks.config import required_checks_repos
     from services.orchestration.intake_reconciler import reconcile_intake
     from services.orchestration.intake_runtime import (
         NotificationsAlerter,
@@ -64,10 +65,11 @@ async def _reconcile_jira_pass() -> IntakeReconcileReport:
     jira_resolver = build_jira_credential_resolver(settings)
     client = await Client.connect(settings.temporal_host, namespace=settings.temporal_namespace)
     execution_store = PostgresExecutionSeeder()
+    starter = TemporalStarter(client, settings)
     await _reclaim_orphaned_slots(client, execution_store, settings)
     report = await reconcile_intake(
         read_source=JiraPollReadSource(settings=settings, resolver=jira_resolver),
-        starter=TemporalStarter(client, settings),
+        starter=starter,
         alerter=NotificationsAlerter(settings),
         ledger=PostgresSideEffectLedger(),
         execution_seeder=execution_store,
@@ -75,6 +77,8 @@ async def _reconcile_jira_pass() -> IntakeReconcileReport:
         jira_resolver=jira_resolver,
         active_guard=execution_store,
         run_counter=execution_store,
+        base_resolver=starter,
+        checks_repos=required_checks_repos(settings),
     )
     return IntakeReconcileReport(
         started=sum(1 for record in report.started if not record.duplicate),
@@ -84,10 +88,7 @@ async def _reconcile_jira_pass() -> IntakeReconcileReport:
     )
 
 
-
 async def _reconcile_rebar_pass() -> IntakeReconcileReport:
-    from pathlib import Path
-
     import rebar
     from scripts.config import get_settings
     from scripts.rebar_poll import (
@@ -96,6 +97,7 @@ async def _reconcile_rebar_pass() -> IntakeReconcileReport:
         InMemoryIdempotencyGuard,
         RebarIdentityAccess,
         StructlogAuditSink,
+        watermark_path,
     )
     from temporalio.client import Client
 
@@ -106,6 +108,7 @@ async def _reconcile_rebar_pass() -> IntakeReconcileReport:
         load_poll_config,
         load_rebar_backend_config,
     )
+    from services.orchestration.checks.config import required_checks_repos
     from services.orchestration.intake_reconciler import IntakeContext, build_admission
     from services.orchestration.intake_runtime import (
         NotificationsAlerter,
@@ -120,10 +123,11 @@ async def _reconcile_rebar_pass() -> IntakeReconcileReport:
     repo_root = backend.repo_root
     client = await Client.connect(settings.temporal_host, namespace=settings.temporal_namespace)
     execution_store = PostgresExecutionSeeder()
+    starter = TemporalStarter(client, settings)
     await _reclaim_orphaned_slots(client, execution_store, settings)
 
     ctx = IntakeContext(
-        starter=TemporalStarter(client, settings),
+        starter=starter,
         alerter=NotificationsAlerter(settings),
         ledger=PostgresSideEffectLedger(),
         execution_seeder=execution_store,
@@ -133,13 +137,15 @@ async def _reconcile_rebar_pass() -> IntakeReconcileReport:
         settings=settings,
         active_guard=execution_store,
         admission=await build_admission(settings, execution_store),
+        base_resolver=starter,
+        checks_repos=required_checks_repos(settings),
     )
 
     ready_ids = {str(t.get("ticket_id") or "") for t in rebar.ready(repo_root=repo_root)}
 
     report = await reconcile_rebar_intake(
         reader=GitTicketStoreReader(repo_root),
-        watermark=FileWatermarkStore(Path(repo_root) / ".rebar-poll-watermark.json"),
+        watermark=FileWatermarkStore(watermark_path(repo_root)),
         audit=StructlogAuditSink(),
         access=RebarIdentityAccess(
             repo_root,

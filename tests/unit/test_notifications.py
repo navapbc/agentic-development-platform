@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import httpx
 from scripts.config import Settings
 from services.orchestration.notifications import (
     HumanInterventionAlert,
@@ -36,18 +37,11 @@ def test_no_channels_configured_delivers_nothing():
 def test_slack_channel_posts_webhook(monkeypatch):
     calls: list[object] = []
 
-    class _Resp:
-        def __enter__(self):
-            return self
+    def fake_post(url, *, json, timeout):
+        calls.append((url, json, timeout))
+        return httpx.Response(200, request=httpx.Request("POST", url))
 
-        def __exit__(self, *args):
-            return False
-
-    def fake_urlopen(req, timeout=0):
-        calls.append(req)
-        return _Resp()
-
-    monkeypatch.setattr("services.orchestration.notifications.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("services.orchestration.notifications.httpx.post", fake_post)
     settings = Settings(
         smtp_host="",
         alert_email_from="",
@@ -59,6 +53,23 @@ def test_slack_channel_posts_webhook(monkeypatch):
 
     assert delivered == ["slack"]
     assert len(calls) == 1
+
+
+def test_slack_channel_refuses_a_non_https_webhook(monkeypatch):
+    calls: list[object] = []
+    monkeypatch.setattr(
+        "services.orchestration.notifications.httpx.post",
+        lambda *args, **kwargs: calls.append(args),
+    )
+    settings = Settings(
+        smtp_host="",
+        alert_email_from="",
+        alert_email_to="",
+        slack_webhook_url="file:///etc/passwd",
+    )
+
+    assert send_human_intervention_alert(_alert(), settings) == []
+    assert calls == []
 
 
 def test_email_backup_sends_via_smtp(monkeypatch):

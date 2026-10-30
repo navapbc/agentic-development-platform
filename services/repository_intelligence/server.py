@@ -8,7 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from scripts.config import get_settings
+from scripts.config import configured_log_level, get_settings
 
 from services.integration.source_control import source_control_repos
 from services.repository_intelligence.context_builder.registry import (
@@ -18,10 +18,9 @@ from services.repository_intelligence.context_builder.registry import (
 from services.repository_intelligence.normalization.models import RepoRef
 from services.repository_intelligence.normalization.serialization import context_package_to_dict
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=configured_log_level())
 log = logging.getLogger("repository-intelligence")
 
-HOST = "0.0.0.0"  # noqa: S104
 PORT = 8120
 
 _registry: RepositoryIntelligenceRegistry | None = None
@@ -123,8 +122,9 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    log.info("repository-intelligence listening on %s:%d", HOST, PORT)
-    ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
+    host = get_settings().bind_host
+    log.info("repository-intelligence listening on %s:%d", host, PORT)
+    ThreadingHTTPServer((host, PORT), Handler).serve_forever()
 
 
 if __name__ == "__main__":

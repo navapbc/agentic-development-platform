@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -21,6 +20,7 @@ class ClaimRequest:
     work_unit: str
     agent_id: str
     file_impact: list[str] = field(default_factory=list)
+    owner_workflow_id: str = ""
 
 
 @dataclass
@@ -28,19 +28,33 @@ class ClaimResult:
     claim_id: str
     won: bool
     claim_version: int
+    owner_workflow_id: str = ""
 
 
 @dataclass
 class ResetCoordinationRequest:
     task_id: str
     work_unit: str
-    workflow_id: str
 
 
 @dataclass
 class ResetCoordinationResult:
-    released: bool
     sequence_reset: bool
+
+
+@dataclass
+class FinalizeClaimRequest:
+    task_id: str
+    work_unit: str
+    owner_workflow_id: str
+    completed: bool
+
+
+@dataclass
+class FinalizeClaimResult:
+    claim_id: str
+    finalized: bool
+    state: str
 
 
 @dataclass
@@ -77,14 +91,6 @@ class ImplementationResult:
     workspace_path: str = ""
     changed_files: list[str] = field(default_factory=list)
     summary: str = ""
-
-
-def _hash_changes(changes: dict[str, str]) -> str:
-    digest = hashlib.sha256()
-    for path in sorted(changes):
-        content_hash = hashlib.sha256(changes[path].encode("utf-8")).hexdigest()
-        digest.update(f"{path}\x1f{content_hash}\x1e".encode())
-    return f"sha256:{digest.hexdigest()}"
 
 
 def _build_coordination_client():
@@ -130,6 +136,9 @@ def _build_runtime():
 async def claim_work_unit(req: ClaimRequest) -> ClaimResult:
     from services.coordination.claims import WorkUnit
 
+    owner_workflow_id = req.owner_workflow_id or activity.info().workflow_id
+    if not owner_workflow_id:
+        raise RuntimeError("claim_work_unit runs only inside a workflow")
     client = _build_coordination_client()
     outcome = await client.try_claim(
         WorkUnit(
@@ -138,30 +147,44 @@ async def claim_work_unit(req: ClaimRequest) -> ClaimResult:
             execution_id=req.execution_id,
             agent_id=req.agent_id,
             file_impact=tuple(req.file_impact),
-            workflow_id=activity.info().workflow_id,
+            workflow_id=owner_workflow_id,
         )
     )
     return ClaimResult(
         claim_id=outcome.claim_id,
         won=outcome.won,
         claim_version=outcome.claim_version,
+        owner_workflow_id=owner_workflow_id if outcome.won else "",
     )
 
 
 @activity.defn
 async def reset_task_coordination(req: ResetCoordinationRequest) -> ResetCoordinationResult:
+    from services.coordination.sequencing import PostgresSequenceGate
+
+    await PostgresSequenceGate().reset(req.task_id)
+    return ResetCoordinationResult(sequence_reset=True)
+
+
+@activity.defn
+async def finalize_work_claim(req: FinalizeClaimRequest) -> FinalizeClaimResult:
     from services.coordination.claims import (
+        COMPLETED,
+        RELEASED,
         PostgresWorkClaimStore,
         claim_id_for,
     )
-    from services.coordination.sequencing import PostgresSequenceGate
 
     claim_id = claim_id_for(req.task_id, req.work_unit)
-    released = await PostgresWorkClaimStore().release(
-        claim_id, owner_workflow_id=req.workflow_id
-    )
-    await PostgresSequenceGate().reset(req.task_id)
-    return ResetCoordinationResult(released=released, sequence_reset=True)
+    state = COMPLETED if req.completed else RELEASED
+    if not req.owner_workflow_id:
+        return FinalizeClaimResult(claim_id=claim_id, finalized=False, state=state)
+    store = PostgresWorkClaimStore()
+    if req.completed:
+        finalized = await store.complete(claim_id, owner_workflow_id=req.owner_workflow_id)
+    else:
+        finalized = await store.release(claim_id, owner_workflow_id=req.owner_workflow_id)
+    return FinalizeClaimResult(claim_id=claim_id, finalized=finalized, state=state)
 
 
 @activity.defn
@@ -193,7 +216,7 @@ async def run_implementation_stage(req: ImplementationRequest) -> Implementation
         workspace_source=str(Path(workspace.path).resolve()),
         task_id=req.task_id,
     )
-    changes = await materializer.collect_changes(workspace)
+    staged = await materializer.stage(workspace)
     return ImplementationResult(
         status=outcome.status,
         terminal_reason=outcome.terminal_reason,
@@ -208,10 +231,10 @@ async def run_implementation_stage(req: ImplementationRequest) -> Implementation
         cache_write_tokens=outcome.cache_write_tokens,
         branch=workspace.branch,
         commit_sha=workspace.commit_sha,
-        diff_hash=_hash_changes(changes),
+        diff_hash=staged.tree,
         model_id=get_settings().coding_model,
         prompt_version=IMPLEMENTATION_PROMPT_VERSION,
         workspace_path=workspace.path,
-        changed_files=sorted(changes),
+        changed_files=await materializer.changed_paths(workspace),
         summary=outcome.summary,
     )

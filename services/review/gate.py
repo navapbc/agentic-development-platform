@@ -9,6 +9,10 @@ from typing import Any
 from scripts.config import Settings, get_settings
 
 from services.review.attestation import Attestor, HmacAttestor, ReviewAttestationError
+from services.review.classification import (
+    CLASSIFICATION_SECURITY,
+    CLASSIFICATION_STANDARD,
+)
 from services.review.evidence import EvidenceRecord, EvidenceSink
 from services.review.kernel import ReviewKernel
 from services.review.types import RawReview, ReviewInput, ReviewResult, ReviewStage
@@ -16,6 +20,12 @@ from services.review.types import RawReview, ReviewInput, ReviewResult, ReviewSt
 SOURCE_COMPONENT = "review-kernel"
 
 SIGNED_STAGES = frozenset(ReviewStage)
+
+
+def _classification_for_stage(stage: ReviewStage) -> str:
+    if stage is ReviewStage.SECURITY_REVIEW:
+        return CLASSIFICATION_SECURITY
+    return CLASSIFICATION_STANDARD
 
 
 class ReviewSigningNotConfigured(ReviewAttestationError):
@@ -32,17 +42,23 @@ def select_attestor(stage: ReviewStage, settings: Settings | None = None) -> Att
     """
     resolved = settings or get_settings()
     if resolved.review_signing_enabled and stage in SIGNED_STAGES:
-        if not resolved.review_signing_key_path or not resolved.review_trust_root_path:
+        has_key = bool(resolved.review_signing_key or resolved.review_signing_key_path)
+        if not has_key or not resolved.review_trust_root_path:
             raise ReviewSigningNotConfigured(
-                "review signing is enabled but review_signing_key_path or "
+                "review signing is enabled but the review signing key or "
                 f"review_trust_root_path is not set for stage {stage.value}"
             )
+        from services.orchestration.signing_keys import SigningKeyError, review_signing_key_path
         from services.review.attestation import SshsigAttestor
         from services.review.trust_root import load_trust_root
 
         trust_root = load_trust_root(resolved.review_trust_root_path)
+        try:
+            key_path = review_signing_key_path(resolved)
+        except SigningKeyError as exc:
+            raise ReviewSigningNotConfigured(str(exc)) from exc
         return SshsigAttestor(
-            key_path=resolved.review_signing_key_path,
+            key_path=key_path,
             principal=trust_root.principal,
             trust_root=trust_root.allowed_signers(),
         )
@@ -83,13 +99,11 @@ class ReviewGate:
         sink: EvidenceSink,
         attestor: Attestor | None = None,
         *,
-        classification: str = "final",
         retention: str | None = None,
     ) -> None:
         self._kernel = kernel
         self._sink = sink
         self._attestor = attestor or HmacAttestor(get_settings().review_attestation_secret)
-        self._classification = classification
         self._retention = retention
 
     async def review(self, review: ReviewInput, *, execution_id: str) -> ReviewResult:
@@ -105,7 +119,7 @@ class ReviewGate:
             execution_id=execution_id,
             content_hash=attestation.content_hash,
             source_component=SOURCE_COMPONENT,
-            classification=self._classification,
+            classification=_classification_for_stage(review.stage),
             retention=self._retention,
             location=None,
             metadata={

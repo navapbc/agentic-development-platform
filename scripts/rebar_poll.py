@@ -11,18 +11,29 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
+import os
 import sys
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
+from uuid import uuid4
 
+from services import process
 from services.integration.jira.snapshot import content_hash
 
 NEW = "new"
 FIELD_CHANGE = "field_change"
 STATUS_CHANGE = "status_change"
+
+WATERMARK_FILENAME = ".rebar-poll-watermark.json"
+RELEASES_DIRNAME = ".rebar-poll-releases"
+MARKER_SUFFIX = ".release"
+
+
+def watermark_path(repo_root: str) -> Path:
+    return Path(repo_root) / WATERMARK_FILENAME
 
 
 @dataclass
@@ -152,9 +163,7 @@ async def run_poll(
                 "role": decision.role,
             }
         )
-        return PollReport(
-            branch_commit="", authorized=False, audited=True, reason="unauthorized"
-        )
+        return PollReport(branch_commit="", authorized=False, audited=True, reason="unauthorized")
 
     branch_commit = reader.branch_head()
     cursor = watermark.load()
@@ -237,8 +246,9 @@ class GitTicketStoreReader:
         self._branch = branch
 
     def branch_head(self) -> str:
-        proc = subprocess.run(
+        proc = process.run(
             ["git", "rev-parse", self._branch],
+            timeout=process.SHORT_COMMAND_TIMEOUT_SECONDS,
             cwd=self._repo_root,
             capture_output=True,
             text=True,
@@ -253,10 +263,84 @@ class GitTicketStoreReader:
 
 
 class FileWatermarkStore:
-    def __init__(self, path: Path) -> None:
+    """A poll cursor on disk, with a pending release held as a marker file naming one ticket.
+
+    A release runs in a different process from the poll pass, against a shared mount whose
+    advisory locks cannot be relied on, so a release never edits the cursor. It records a marker
+    instead. Each release writes its own uniquely named marker, and a pass deletes only the
+    markers it read, so a release that lands while a pass is in flight survives that pass's save
+    and takes effect on the next one.
+    """
+
+    def __init__(self, path: Path, *, releases: Path | None = None) -> None:
         self._path = path
+        self._releases = releases if releases is not None else path.parent / RELEASES_DIRNAME
+        self._honoured: tuple[tuple[Path, str], ...] = ()
+
+    def exists(self) -> bool:
+        return self._path.exists()
 
     def load(self) -> PollCursor:
+        cursor = self._read()
+        honoured = self._pending()
+        for _, ticket_id in honoured:
+            cursor.revisions.pop(ticket_id, None)
+            cursor.statuses.pop(ticket_id, None)
+        self._honoured = honoured
+        return cursor
+
+    def save(self, cursor: PollCursor) -> None:
+        self._write(cursor)
+        for marker, ticket_id in self._honoured:
+            try:
+                marker.unlink(missing_ok=True)
+            except OSError as error:
+                # The cursor has already landed, so raising here would discard a release that is
+                # durably applied. A marker that never unlinks is honoured on every later pass.
+                self._log().warning(
+                    "rebar_poll_release_marker_stuck",
+                    ticket_id=ticket_id,
+                    marker=str(marker),
+                    error=str(error),
+                )
+        self._honoured = ()
+
+    @staticmethod
+    def _log() -> Any:
+        import structlog
+
+        return structlog.get_logger("rebar_poll")
+
+    def release(self, ticket_id: str) -> int:
+        """Mark a ticket for the next poll to forget, and report whether the cursor held it."""
+        cursor = self._read()
+        if ticket_id not in cursor.revisions and ticket_id not in cursor.statuses:
+            return 0
+        self._releases.mkdir(parents=True, exist_ok=True)
+        marker = self._releases / f"{uuid4().hex}{MARKER_SUFFIX}"
+        staged = marker.with_suffix(".staged")
+        try:
+            staged.write_text(ticket_id, encoding="utf-8")
+            os.replace(staged, marker)
+        except BaseException:
+            staged.unlink(missing_ok=True)
+            raise
+        return 1
+
+    def _pending(self) -> tuple[tuple[Path, str], ...]:
+        if not self._releases.is_dir():
+            return ()
+        found = []
+        for marker in sorted(self._releases.iterdir()):
+            if marker.suffix != MARKER_SUFFIX or not marker.is_file():
+                continue
+            with suppress(OSError):
+                ticket_id = marker.read_text(encoding="utf-8").strip()
+                if ticket_id:
+                    found.append((marker, ticket_id))
+        return tuple(found)
+
+    def _read(self) -> PollCursor:
         if not self._path.exists():
             return PollCursor()
         raw = json.loads(self._path.read_text(encoding="utf-8"))
@@ -266,20 +350,24 @@ class FileWatermarkStore:
             statuses=dict(raw.get("statuses", {})),
         )
 
-    def save(self, cursor: PollCursor) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._path.write_text(
-            json.dumps(
-                {
-                    "branch_commit": cursor.branch_commit,
-                    "revisions": cursor.revisions,
-                    "statuses": cursor.statuses,
-                },
-                indent=2,
-                sort_keys=True,
-            ),
-            encoding="utf-8",
+    def _write(self, cursor: PollCursor) -> None:
+        payload = json.dumps(
+            {
+                "branch_commit": cursor.branch_commit,
+                "revisions": cursor.revisions,
+                "statuses": cursor.statuses,
+            },
+            indent=2,
+            sort_keys=True,
         )
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        staged = self._path.parent / f"{self._path.name}.{os.getpid()}.tmp"
+        try:
+            staged.write_text(payload, encoding="utf-8")
+            os.replace(staged, self._path)
+        except BaseException:
+            staged.unlink(missing_ok=True)
+            raise
 
 
 class InMemoryIdempotencyGuard:
@@ -322,6 +410,19 @@ class RebarIdentityAccess:
         return AccessDecision(authorized=authorized, identity=email, role=role)
 
 
+class ReadOnlyWatermark:
+    """Reads the intake cursor and discards saves, so a change report never moves intake."""
+
+    def __init__(self, inner: WatermarkStore) -> None:
+        self._inner = inner
+
+    def load(self) -> PollCursor:
+        return self._inner.load()
+
+    def save(self, cursor: PollCursor) -> None:
+        return None
+
+
 def _build_flags(args: argparse.Namespace) -> PollFlags:
     selected = any((args.new, args.field_changes, args.status_changes))
     if not selected:
@@ -341,20 +442,22 @@ def main(argv: list[str] | None = None) -> int:
         load_rebar_backend_config,
     )
 
-    parser = argparse.ArgumentParser(description="Poll the rebar tickets branch for changes.")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Report rebar ticket changes since the last intake pass. The report never starts "
+            "work and never moves the intake cursor."
+        )
+    )
     parser.add_argument("--new", action="store_true", help="Report new tickets.")
     parser.add_argument("--field-changes", action="store_true", help="Report field changes.")
     parser.add_argument("--status-changes", action="store_true", help="Report status changes.")
-    parser.add_argument(
-        "--report-only", action="store_true", help="Do not drive intake side effects."
-    )
     args = parser.parse_args(argv if argv is not None else sys.argv[1:])
 
     backend = load_rebar_backend_config()
     poll_config = load_poll_config()
     repo_root = backend.repo_root
     reader = GitTicketStoreReader(repo_root)
-    watermark = FileWatermarkStore(Path(repo_root) / ".rebar-poll-watermark.json")
+    watermark = ReadOnlyWatermark(FileWatermarkStore(watermark_path(repo_root)))
     access = RebarIdentityAccess(
         repo_root,
         reader_roles=poll_config.reader_roles,
@@ -372,14 +475,14 @@ def main(argv: list[str] | None = None) -> int:
         )
     )
     if not report.authorized:
-        print("[rebar-poll] denied: unauthorized reader identity")
+        print("[rebar-changes] denied: unauthorized reader identity")
         return 1
     print(
-        f"[rebar-poll] branch {report.branch_commit[:12]} "
+        f"[rebar-changes] branch {report.branch_commit[:12]} "
         f"reported {len(report.events)} change(s)"
     )
     for event in report.events:
-        print(f"[rebar-poll] {event.kind}: {event.ticket_id} rev {event.revision[:12]}")
+        print(f"[rebar-changes] {event.kind}: {event.ticket_id} rev {event.revision[:12]}")
     return 0
 
 

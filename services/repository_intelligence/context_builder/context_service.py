@@ -9,12 +9,12 @@ candidate files, build targets, and config files) for the planning stage to cons
 
 from __future__ import annotations
 
-import subprocess
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, TypeVar
 
+from services import process
 from services.repository_intelligence.context_builder.focus import (
     extract_file_paths,
     extract_focus_terms,
@@ -264,7 +264,7 @@ class RepositoryIntelligenceService:
         return changes
 
     def _git_log(self, path: str) -> str:
-        completed = subprocess.run(
+        completed = process.run(
             [
                 "git",
                 "-C",
@@ -275,6 +275,7 @@ class RepositoryIntelligenceService:
                 "--",
                 path,
             ],
+            timeout=process.SHORT_COMMAND_TIMEOUT_SECONDS,
             capture_output=True,
             text=True,
             check=True,

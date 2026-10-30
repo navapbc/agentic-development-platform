@@ -249,9 +249,7 @@ def resolve_model(
     requested_serving = _serving_id(requested)
     for entry in catalog:
         if _serving_id(entry.model_id) == requested_serving:
-            return ModelResolution(
-                model_id=entry.model_id, requested=requested, substituted=False
-            )
+            return ModelResolution(model_id=entry.model_id, requested=requested, substituted=False)
 
     want = parse_model_ref(requested)
     if want is None:
@@ -285,9 +283,7 @@ def resolve_model(
         same_version = [e for e in candidates if e.ref.version == want.version]
         if same_version:
             best = min(same_version, key=lambda e: _date_key(e.ref.date))
-            return ModelResolution(
-                model_id=best.model_id, requested=requested, substituted=False
-            )
+            return ModelResolution(model_id=best.model_id, requested=requested, substituted=False)
 
     best = min(
         candidates,
@@ -303,9 +299,7 @@ def resolve_model(
     )
     if on_unavailable == ABORT:
         raise ModelUnavailableError(note + " (on_unavailable=abort)")
-    return ModelResolution(
-        model_id=best.model_id, requested=requested, substituted=True, note=note
-    )
+    return ModelResolution(model_id=best.model_id, requested=requested, substituted=True, note=note)
 
 
 def _same_major(ref: ModelRef, want_major: int | None) -> bool:

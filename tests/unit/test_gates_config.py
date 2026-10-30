@@ -74,9 +74,7 @@ def test_cyclic_after_fails_closed():
 
 def test_enabled_gate_absent_from_registry_fails_closed():
     with pytest.raises(ConfigError):
-        parse_gates_config(
-            {"profile": "private", "gates": [{"name": "snyk", "enabled": True}]}
-        )
+        parse_gates_config({"profile": "private", "gates": [{"name": "snyk", "enabled": True}]})
 
 
 def test_a_plugin_gate_resolves_against_a_supplied_registry():
@@ -132,4 +130,3 @@ def test_shipped_bundles_are_registered_gates():
 
 def test_empty_registry_reports_no_names():
     assert GateRegistry().names() == frozenset()
-

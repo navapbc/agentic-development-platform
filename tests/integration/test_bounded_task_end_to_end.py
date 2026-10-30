@@ -423,6 +423,79 @@ async def test_bounded_task_no_changes_terminates_cleanly(tmp_path, bare_remote)
     assert linkback_client.comments == []
 
 
+async def test_bounded_task_publishes_only_the_declared_paths(tmp_path, bare_remote) -> None:
+    settings = _settings()
+    base_sha = _remote_head(bare_remote)
+    transport, _ = _fake_ghes()
+    host = _host(bare_remote, transport)
+    mediator = GitHubMediator(
+        backend=host,
+        ledger=InMemorySideEffectLedger(),
+        gate=InMemorySequenceGate(),
+        allowed_repos=frozenset({REPO}),
+    )
+    materializer = WorkspaceMaterializer(
+        registry=InMemoryOrphanRegistry(),
+        allowed_repos=frozenset({REPO}),
+        workspace_root=tmp_path / "ws",
+        remote_url_for=lambda repo: bare_remote,
+    )
+    synchronizer = GitBranchSynchronizer(
+        allowed_repos=frozenset({REPO}),
+        remote_url_for=lambda repo: bare_remote,
+    )
+    code_step = _FakeCodeStep(
+        {"README.md": "hello\ndeclared change\n", "NOTES.md": "undeclared change\n"}
+    )
+
+    deps = PipelineDeps(
+        snapshot_store=_InMemorySnapshotStore(),
+        claim_store=InMemoryWorkClaimStore(),
+        materializer=materializer,
+        code_step=code_step,
+        synchronizer=synchronizer,
+        mediator=mediator,
+        jira_reader=_FakeReader(_dc_issue()),
+        linkback_client=_FakeLinkbackClient(DATACENTER),
+        settings=settings,
+    )
+    request = PipelineRequest(
+        task_id=TASK_ID,
+        execution_id=EXECUTION_ID,
+        repo=REPO,
+        base="main",
+        base_sha=base_sha,
+        task="Add retry to the client",
+        issue_key=TASK_ID,
+        raw_issue=_dc_issue(),
+        jira_source=DATACENTER,
+        file_impact=("README.md",),
+    )
+
+    result = await run_bounded_task(deps, request)
+
+    assert result.status == DRAFT_PR_OPEN
+    branch = agent_branch_name(TASK_ID)
+    branch_head = _remote_head(bare_remote, branch)
+    assert branch_head
+    published = subprocess.run(
+        ["git", f"--git-dir={bare_remote}", "ls-tree", "-r", "--name-only", branch_head],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.split()
+    assert "NOTES.md" in code_step.files
+    assert published == ["README.md"]
+
+    readme = subprocess.run(
+        ["git", f"--git-dir={bare_remote}", "show", f"{branch_head}:README.md"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert readme == "hello\ndeclared change\n"
+
+
 async def _run_with_status_flow(tmp_path, bare_remote, flow: StatusFlow) -> tuple:
     settings = _settings()
     base_sha = _remote_head(bare_remote)

@@ -10,13 +10,18 @@ from typing import Any
 from scripts.config import get_settings, to_host_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from services.orchestration.intake_cursor import (
+    IntakeCursorRelease,
+    build_intake_cursor_release,
+)
 from services.orchestration.intake_retry import (
     IntakeRetryResult,
     IntakeRetryStore,
     PostgresIntakeRetryStore,
-    WorkflowActive,
+    WorkflowLiveness,
+    WorkflowLivenessProbe,
     retry_intake,
-    temporal_workflow_active,
+    temporal_workflow_liveness,
 )
 from services.orchestration.repair_decision import (
     PostgresRepairDecisionStore,
@@ -44,6 +49,12 @@ class RestartResult:
         if self.retry.blocked_by:
             running = ", ".join(self.retry.blocked_by)
             return f"{self.issue_key} still has a running workflow ({running}), not restarted"
+        if self.retry.undetermined:
+            unreachable = ", ".join(self.retry.undetermined)
+            return (
+                f"{self.issue_key} could not determine whether {unreachable} is still "
+                "running, not restarted"
+            )
         head = (
             f"abandoned {', '.join(self.abandoned)}"
             if self.abandoned
@@ -60,7 +71,8 @@ async def restart_task(
     repair_store: RepairDecisionStore,
     repair_signaller: RepairSignaller,
     intake_store: IntakeRetryStore,
-    workflow_active: WorkflowActive,
+    liveness: WorkflowLivenessProbe,
+    cursor: IntakeCursorRelease | None = None,
     settle_attempts: int = 40,
     settle_delay: float = 0.5,
     sleep: Sleep = asyncio.sleep,
@@ -70,11 +82,11 @@ async def restart_task(
     )
     for workflow_id in decision.signalled:
         for _ in range(max(1, settle_attempts)):
-            if not await workflow_active(workflow_id):
+            if await liveness(workflow_id) is WorkflowLiveness.ENDED:
                 break
             await sleep(settle_delay)
     retry = await retry_intake(
-        issue_key, store=intake_store, workflow_active=workflow_active, repo=repo
+        issue_key, store=intake_store, liveness=liveness, repo=repo, cursor=cursor
     )
     return RestartResult(issue_key, abandoned=decision.signalled, retry=retry)
 
@@ -94,7 +106,8 @@ async def run_restart_task(
             repair_store=PostgresRepairDecisionStore(engine),
             repair_signaller=TemporalRepairSignaller(resolved),
             intake_store=PostgresIntakeRetryStore(engine),
-            workflow_active=temporal_workflow_active(resolved),
+            liveness=temporal_workflow_liveness(resolved),
+            cursor=build_intake_cursor_release(resolved),
         )
     finally:
         await engine.dispose()

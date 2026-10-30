@@ -10,10 +10,10 @@ from __future__ import annotations
 
 import json
 import shlex
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from services import process
 from services.repository_intelligence.normalization.models import (
     Location,
     Provenance,
@@ -123,13 +123,14 @@ class AstGrepProvider:
 
     def _run(self, pattern: str, language: str) -> str:
         try:
-            completed = subprocess.run(
+            completed = process.run(
                 [*shlex.split(self._ast_grep_cmd), "run", "-p", pattern, "-l", language, "--json"],
+                timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS,
                 cwd=self._root,
                 check=True,
                 capture_output=True,
                 text=True,
             )
-        except subprocess.CalledProcessError as error:
+        except process.CalledProcessError as error:
             raise AstGrepError(f"ast-grep failed: {error.stderr.strip()}") from error
         return completed.stdout

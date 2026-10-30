@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import os
-import subprocess
 import time
 import uuid
 from datetime import timedelta
 
-from database.models import SCHEMA
-from sqlalchemy import Engine, create_engine, text
+from database.models.schema import audit_events, executions
+from services import process
+from sqlalchemy import Engine, create_engine, select
 
 from scripts.config import get_settings, to_host_hostport
 from scripts.db_reset import _sync_url
@@ -29,8 +29,7 @@ def _compose_cmd() -> list[str]:
 def _execution_state(engine: Engine, execution_id: str) -> str | None:
     with engine.connect() as conn:
         row = conn.execute(
-            text(f'SELECT state FROM "{SCHEMA}".executions WHERE execution_id = :eid'),
-            {"eid": execution_id},
+            select(executions.c.state).where(executions.c.execution_id == execution_id)
         ).first()
     return row[0] if row else None
 
@@ -47,11 +46,9 @@ def _wait_for_state(engine: Engine, execution_id: str, target: str, timeout: flo
 def _audit_trail(engine: Engine, execution_id: str) -> list[tuple[str, str | None, str | None]]:
     with engine.connect() as conn:
         rows = conn.execute(
-            text(
-                f'SELECT event_type, new_state, model_id FROM "{SCHEMA}".audit_events '
-                "WHERE execution_id = :eid ORDER BY created_at"
-            ),
-            {"eid": execution_id},
+            select(audit_events.c.event_type, audit_events.c.new_state, audit_events.c.model_id)
+            .where(audit_events.c.execution_id == execution_id)
+            .order_by(audit_events.c.created_at)
         ).all()
     return [(r[0], r[1], r[2]) for r in rows]
 
@@ -95,7 +92,11 @@ async def main() -> int:
     print("[proof] TASK_RECEIVED persisted; workflow is running its long task")
 
     print(f"[proof] restarting '{WORKER_SERVICE}' to simulate a worker crash...")
-    subprocess.run([*_compose_cmd(), "restart", WORKER_SERVICE], check=True)
+    process.run(
+        [*_compose_cmd(), "restart", WORKER_SERVICE],
+        timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS,
+        check=True,
+    )
     print("[proof] worker restarted; waiting for the workflow to resume and complete")
 
     try:

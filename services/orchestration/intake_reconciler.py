@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -27,6 +28,11 @@ from services.integration.jira.snapshot import (
 )
 from services.integration.source_control import source_control_repos
 from services.integration.tickets.rebar_backend import rebar_stored_payload
+from services.orchestration.intake_base import (
+    UnresolvableBaseBranch,
+    declared_base,
+    unresolvable_base_reason,
+)
 
 _JIRA_SOURCES = frozenset({CLOUD, DATACENTER})
 
@@ -41,8 +47,9 @@ class IntakeStart:
     jira_project: str
     stored_issue: dict[str, Any]
     description: str = ""
-    base: str = "main"
+    base: str = ""
     snapshot_version: int = 0
+    file_impact: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -59,6 +66,7 @@ class IntakeCandidate:
     source_backend: str
     stored_payload: dict[str, Any]
     raw: dict[str, Any] = field(default_factory=dict)
+    file_impact: tuple[str, ...] = ()
 
 
 def candidate_from_jira(raw: dict[str, Any], *, cred: Any, field_id: str) -> IntakeCandidate:
@@ -74,6 +82,14 @@ def candidate_from_jira(raw: dict[str, Any], *, cred: Any, field_id: str) -> Int
         source_backend=cred.auth_mode,
         stored_payload=normalized.to_dict(),
         raw=raw,
+    )
+
+
+def declared_paths(ticket: dict[str, Any]) -> tuple[str, ...]:
+    """Paths a rebar ticket declares it will change, empty when its scope is undeclared."""
+    entries = ticket.get("file_impact") or []
+    return tuple(
+        str(entry["path"]) for entry in entries if isinstance(entry, dict) and entry.get("path")
     )
 
 
@@ -95,6 +111,7 @@ def candidate_from_rebar(
         source_backend="rebar",
         stored_payload=payload,
         raw=dict(ticket),
+        file_impact=declared_paths(ticket),
     )
 
 
@@ -104,6 +121,10 @@ class IntakeReadSource(Protocol):
 
 class IntakeWorkflowStarter(Protocol):
     async def start(self, start: IntakeStart) -> str: ...
+
+
+class IntakeBaseResolver(Protocol):
+    async def resolve_base(self, *, repo: str, branch: str) -> str: ...
 
 
 class IntakeExecutionSeeder(Protocol):
@@ -176,6 +197,12 @@ class IntakeContext:
     settings: Settings
     active_guard: IntakeActiveGuard | None = None
     admission: RunAdmission | None = None
+    base_resolver: IntakeBaseResolver | None = None
+    checks_repos: frozenset[str] | None = None
+
+
+def checks_not_configured_reason(repos: Sequence[str]) -> str:
+    return f"checks_not_configured: no project checks entry for {', '.join(sorted(repos))}"
 
 
 async def reconcile_intake(
@@ -190,6 +217,8 @@ async def reconcile_intake(
     snapshot_store: TaskSnapshotStore | None = None,
     active_guard: IntakeActiveGuard | None = None,
     run_counter: IntakeRunCounter | None = None,
+    base_resolver: IntakeBaseResolver | None = None,
+    checks_repos: frozenset[str] | None = None,
 ) -> IntakeReport:
     resolved = settings or get_settings()
     jira_resolver = jira_resolver or build_jira_credential_resolver(resolved)
@@ -204,6 +233,8 @@ async def reconcile_intake(
         settings=resolved,
         active_guard=active_guard,
         admission=await build_admission(resolved, run_counter),
+        base_resolver=base_resolver,
+        checks_repos=checks_repos,
     )
     report = IntakeReport()
 
@@ -253,6 +284,18 @@ async def route_candidate(
     report: IntakeReport,
 ) -> None:
     digest = content_hash(candidate.stored_payload)
+    declaration = declared_base(candidate.stored_payload.get("labels") or [])
+    if declaration.conflict:
+        await _hold(
+            candidate.task_id,
+            project,
+            declaration.conflict,
+            digest,
+            ctx.alerter,
+            ctx.ledger,
+            report,
+        )
+        return
     resolution = resolve_targets(
         candidate.description,
         default_repo=candidate.default_repo,
@@ -265,12 +308,24 @@ async def route_candidate(
             candidate.task_id, project, resolution.reason, digest, ctx.alerter, ctx.ledger, report
         )
         return
+    if ctx.checks_repos is not None:
+        unchecked = [repo for repo in resolution.repos if repo not in ctx.checks_repos]
+        if unchecked:
+            reason = checks_not_configured_reason(unchecked)
+            await _hold(
+                candidate.task_id, project, reason, digest, ctx.alerter, ctx.ledger, report
+            )
+            # The fix lands in operator config rather than the ticket, so a watermark poll
+            # must re-read the ticket on the next pass instead of treating it as settled.
+            report.deferred.append(candidate.task_id)
+            return
     for repo in resolution.repos:
         await _start(
             candidate=candidate,
             project=project,
             repo=repo,
             digest=digest,
+            base=declaration.branch,
             ctx=ctx,
             report=report,
         )
@@ -313,6 +368,7 @@ async def _start(
     project: str,
     repo: str,
     digest: str,
+    base: str = "",
     ctx: IntakeContext,
     report: IntakeReport,
 ) -> None:
@@ -331,6 +387,23 @@ async def _start(
                 )
             )
             return
+    # Resolved before the ledger effect because a raised effect leaves its key _PENDING,
+    # so validating inside _launch would re-seed an execution and snapshot on every pass.
+    if (
+        base
+        and ctx.base_resolver is not None
+        and not await ctx.base_resolver.resolve_base(repo=repo, branch=base)
+    ):
+        await _hold(
+            issue_key,
+            project,
+            unresolvable_base_reason(base, repo),
+            digest,
+            ctx.alerter,
+            ctx.ledger,
+            report,
+        )
+        return
     if ctx.admission is not None and not ctx.admission.try_reserve():
         report.deferred.append(issue_key)
         return
@@ -338,7 +411,7 @@ async def _start(
         task_id=issue_key,
         execution_id="",
         operation="intake_start",
-        target=f"{digest}:{repo}",
+        target=f"{issue_key}:{repo}",
     )
 
     async def _launch() -> dict[str, str]:
@@ -371,12 +444,18 @@ async def _start(
                 description=candidate.description,
                 jira_project=project,
                 stored_issue=candidate.stored_payload,
+                base=base,
                 snapshot_version=snapshot.version,
+                file_impact=candidate.file_impact,
             )
         )
         return {"workflow_id": workflow_id}
 
-    outcome = await ctx.ledger.run_once(ref, _launch)
+    try:
+        outcome = await ctx.ledger.run_once(ref, _launch)
+    except UnresolvableBaseBranch as exc:
+        await _hold(issue_key, project, str(exc), digest, ctx.alerter, ctx.ledger, report)
+        return
     result = outcome.result if isinstance(outcome.result, dict) else {}
     report.started.append(
         IntakeStartRecord(

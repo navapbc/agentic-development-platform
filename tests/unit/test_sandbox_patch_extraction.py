@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 
 from openhands.runtime.provisioner import (
@@ -9,6 +10,7 @@ from openhands.runtime.provisioner import (
     KubernetesSandboxProvisioner,
     SandboxHandle,
 )
+from services import process
 
 
 def _handle() -> SandboxHandle:
@@ -33,6 +35,8 @@ def test_copy_in_configures_identity_and_tags_the_base(monkeypatch):
         def wait(self):
             return 0
 
+    monkeypatch.setattr(process, "resolve_executable", lambda name, path=None: name)
+
     monkeypatch.setattr(subprocess, "Popen", _FakePopen)
     provisioner = KubernetesSandboxProvisioner(in_cluster=False)
 
@@ -44,12 +48,132 @@ def test_copy_in_configures_identity_and_tags_the_base(monkeypatch):
     assert f"git tag -f {_BASE_TAG} HEAD" in cmd
 
 
+def test_copy_in_commits_the_copied_tree_before_tagging_the_base(monkeypatch):
+    captured: dict[str, str] = {}
+
+    class _FakePopen:
+        def __init__(self, args, **kwargs):
+            if args and args[0] == "tar":
+                self.stdout = None
+            else:
+                captured["copy_cmd"] = args[-1]
+                self.stdout = None
+            self.returncode = 0
+
+        def communicate(self):
+            return b"", b""
+
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr(process, "resolve_executable", lambda name, path=None: name)
+
+    monkeypatch.setattr(subprocess, "Popen", _FakePopen)
+    provisioner = KubernetesSandboxProvisioner(in_cluster=False)
+
+    provisioner._copy_in_sync(_handle(), "/host/src", "/workspace/project")
+
+    cmd = captured["copy_cmd"]
+    assert "git add -A" in cmd
+    assert "commit --no-verify" in cmd
+    assert cmd.index("git add -A") < cmd.index("commit --no-verify")
+    assert cmd.index("commit --no-verify") < cmd.index(f"git tag -f {_BASE_TAG} HEAD")
+
+
+def test_copy_in_tolerates_a_workspace_that_was_copied_in_clean(monkeypatch):
+    captured: dict[str, str] = {}
+
+    class _FakePopen:
+        def __init__(self, args, **kwargs):
+            if args and args[0] == "tar":
+                self.stdout = None
+            else:
+                captured["copy_cmd"] = args[-1]
+                self.stdout = None
+            self.returncode = 0
+
+        def communicate(self):
+            return b"", b""
+
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr(process, "resolve_executable", lambda name, path=None: name)
+
+    monkeypatch.setattr(subprocess, "Popen", _FakePopen)
+    provisioner = KubernetesSandboxProvisioner(in_cluster=False)
+
+    provisioner._copy_in_sync(_handle(), "/host/src", "/workspace/project")
+
+    assert "--allow-empty" in captured["copy_cmd"]
+
+
+def test_copy_in_tags_the_base_despite_project_signing_config_and_hooks(tmp_path, monkeypatch):
+    source = tmp_path / "src"
+    source.mkdir()
+
+    def git(*args: str) -> None:
+        subprocess.run(["git", *args], cwd=source, check=True, capture_output=True)
+
+    git("init", "-q", "-b", "main", ".")
+    git("config", "user.email", "seed@example.com")
+    git("config", "user.name", "seed")
+    (source / "a.txt").write_text("a\n")
+    git("add", "-A")
+    git("commit", "-qm", "seed")
+    git("config", "commit.gpgsign", "true")
+    hook = source / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\nexit 1\n")
+    hook.chmod(0o755)
+    (source / "b.txt").write_text("b\n")
+
+    captured: dict[str, str] = {}
+
+    class _CapturePopen:
+        def __init__(self, args, **kwargs):
+            if args and args[0] != "tar":
+                captured["copy_cmd"] = args[-1]
+            self.stdout = None
+            self.returncode = 0
+
+        def communicate(self):
+            return b"", b""
+
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr(process, "resolve_executable", lambda name, path=None: name)
+
+    monkeypatch.setattr(subprocess, "Popen", _CapturePopen)
+    KubernetesSandboxProvisioner(in_cluster=False)._copy_in_sync(
+        _handle(), str(source), "/workspace/project"
+    )
+    monkeypatch.undo()
+
+    dest = tmp_path / "dest"
+    shutil.copytree(source, dest)
+    git_chain = captured["copy_cmd"].split("cd /workspace/project && ", 1)[1]
+    result = subprocess.run(["sh", "-c", git_chain], cwd=dest, capture_output=True)
+
+    assert result.returncode == 0, result.stderr.decode()
+    tagged = subprocess.run(
+        ["git", "show", "--stat", "--format=%s", _BASE_TAG],
+        cwd=dest,
+        capture_output=True,
+        text=True,
+    )
+    assert tagged.returncode == 0
+    assert "b.txt" in tagged.stdout
+
+
 def test_extract_patch_diffs_against_the_base_tag_with_a_fallback(monkeypatch):
     captured: dict[str, str] = {}
 
     def _fake_run(args, **kwargs):
         captured["extract_cmd"] = args[-1]
         return subprocess.CompletedProcess(args, 0, stdout="diff", stderr="")
+
+    monkeypatch.setattr(process, "resolve_executable", lambda name, path=None: name)
 
     monkeypatch.setattr(subprocess, "run", _fake_run)
     provisioner = KubernetesSandboxProvisioner(in_cluster=False)

@@ -89,7 +89,7 @@ async def test_gate_returns_normalized_verdict_and_persists_evidence():
     record = sink.records[0]
     assert record.execution_id == "exec-1"
     assert record.source_component == "review-kernel"
-    assert record.classification == "final"
+    assert record.classification == "standard"
     assert record.content_hash == result.attestation.content_hash
     assert record.metadata["verdict"] == "block"
     assert record.metadata["finding_count"] == 1
@@ -308,6 +308,17 @@ def test_select_attestor_signs_every_stage(tmp_path):
         assert isinstance(select_attestor(stage, settings), SshsigAttestor)
 
 
+def test_select_attestor_reports_an_unreadable_injected_key_as_not_configured(tmp_path):
+    from services.review.gate import ReviewSigningNotConfigured, select_attestor
+
+    settings = _signing_settings(tmp_path).model_copy(
+        update={"review_signing_key": "not a private key"}
+    )
+
+    with pytest.raises(ReviewSigningNotConfigured):
+        select_attestor(ReviewStage.CODE_REVIEW, settings)
+
+
 def test_select_attestor_uses_hmac_when_signing_disabled(tmp_path):
     from scripts.config import Settings
     from services.review.attestation import HmacAttestor
@@ -346,5 +357,3 @@ async def test_signed_gate_verifies_and_records_scheme(tmp_path):
     assert record.metadata["envelope"]
     payload = verdict_payload(_input(ReviewStage.CODE_REVIEW), _clean_raw())
     assert attestor.verify(result.attestation, payload) is True
-
-

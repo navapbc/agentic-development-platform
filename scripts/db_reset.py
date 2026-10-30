@@ -2,25 +2,23 @@
 
 from __future__ import annotations
 
-import os
-
 from database.models import SCHEMA
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine
+from sqlalchemy.schema import CreateSchema, DropSchema
+
+from scripts.config import alembic_database_url
 
 
 def _sync_url() -> str:
-    return os.environ.get(
-        "ALEMBIC_DATABASE_URL",
-        "postgresql+psycopg://platform:change-me-locally@localhost:5432/agent_platform",
-    )
+    return alembic_database_url()
 
 
 def main() -> int:
     engine = create_engine(_sync_url(), future=True)
     with engine.begin() as conn:
         print(f"[db-reset] dropping schema {SCHEMA} (CASCADE)")
-        conn.execute(text(f'DROP SCHEMA IF EXISTS "{SCHEMA}" CASCADE'))
-        conn.execute(text(f'CREATE SCHEMA "{SCHEMA}"'))
+        conn.execute(DropSchema(SCHEMA, cascade=True, if_exists=True))
+        conn.execute(CreateSchema(SCHEMA))
     print("[db-reset] schema recreated; run migrations next")
     return 0
 

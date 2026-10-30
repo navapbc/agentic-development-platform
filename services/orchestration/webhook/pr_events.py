@@ -134,35 +134,6 @@ class PostgresWorkflowResolver:
             row = (await conn.execute(stmt)).first()
         return row.workflow_id if row is not None else None
 
-    async def resolve_task(self, task_id: str) -> str | None:
-        if not task_id:
-            return None
-        stmt = (
-            select(executions.c.workflow_id)
-            .where(executions.c.task_id == task_id)
-            .where(executions.c.workflow_id.is_not(None))
-            .order_by(executions.c.updated_at.desc())
-            .limit(1)
-        )
-        engine = self._get_engine()
-        async with engine.connect() as conn:
-            row = (await conn.execute(stmt)).first()
-        return row.workflow_id if row is not None else None
-
-    async def resolve_execution(self, execution_id: str) -> str | None:
-        if not execution_id:
-            return None
-        stmt = (
-            select(executions.c.workflow_id)
-            .where(executions.c.execution_id == execution_id)
-            .where(executions.c.workflow_id.is_not(None))
-            .limit(1)
-        )
-        engine = self._get_engine()
-        async with engine.connect() as conn:
-            row = (await conn.execute(stmt)).first()
-        return row.workflow_id if row is not None else None
-
 
 class TemporalSignaller:
     def __init__(self, client: Any) -> None:

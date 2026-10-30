@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-import pytest
 from services.orchestration.gates import config as gates_config
 from services.orchestration.gates.config import parse_gates_config
 from services.orchestration.temporal_activities.gates import load_gate_plan
-
-pytestmark = pytest.mark.asyncio
 
 
 def _patch_config(monkeypatch, raw) -> None:

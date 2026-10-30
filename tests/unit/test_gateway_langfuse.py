@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -18,9 +19,10 @@ from observability import (
     token_cost_usd,
 )
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from tests.support import capture_evidence
 
 _LITELLM_CONFIG = (
-    Path(__file__).resolve().parents[2] / "config" / "local" / "litellm-config.yaml"
+    Path(__file__).resolve().parents[2] / "config" / "platform" / "litellm-config.yaml"
 )
 
 
@@ -48,14 +50,10 @@ def test_reconcile_usage_matches_and_reports_diffs() -> None:
         {"prompt_tokens": 10, "completion_tokens": 5, "cost_usd": 0.01},
         {"prompt_tokens": 20, "completion_tokens": 7, "cost_usd": 0.02},
     ]
-    ok = reconcile_usage(
-        generations, prompt_tokens=30, completion_tokens=12, cost_usd=0.03
-    )
+    ok = reconcile_usage(generations, prompt_tokens=30, completion_tokens=12, cost_usd=0.03)
     assert ok.ok is True
 
-    off = reconcile_usage(
-        generations, prompt_tokens=29, completion_tokens=12, cost_usd=0.03
-    )
+    off = reconcile_usage(generations, prompt_tokens=29, completion_tokens=12, cost_usd=0.03)
     assert off.ok is False
     assert off.prompt_token_diff == 1
 
@@ -66,11 +64,10 @@ def test_litellm_config_enables_the_langfuse_callback() -> None:
 
 
 class _FakeResponse:
-    def __init__(self, data: dict) -> None:
+    def __init__(self, data: dict, status_code: int = 200) -> None:
         self._data = data
-
-    def raise_for_status(self) -> None:
-        return None
+        self.status_code = status_code
+        self.text = ""
 
     def json(self) -> dict:
         return self._data
@@ -111,6 +108,7 @@ async def test_invoke_model_sends_metadata_and_stamps_the_span(monkeypatch) -> N
         "AsyncClient",
         lambda **_: _FakeClient(captured, response_data),
     )
+    capture_evidence(monkeypatch)
 
     result = await bedrock.invoke_model(
         bedrock.ModelRequest(
@@ -159,6 +157,7 @@ async def test_invoke_model_resolves_a_system_prompt(monkeypatch) -> None:
         "AsyncClient",
         lambda **_: _FakeClient(captured, response_data),
     )
+    capture_evidence(monkeypatch)
 
     await bedrock.invoke_model(
         bedrock.ModelRequest(
@@ -182,6 +181,37 @@ async def test_invoke_model_resolves_a_system_prompt(monkeypatch) -> None:
     assert span.attributes[attrs.PROMPT_VERSION] == "planning/v1"
     set_store(None)
     reset_for_testing()
+
+
+@pytest.mark.asyncio
+async def test_invoke_model_names_the_gateway_when_it_cannot_be_reached(monkeypatch) -> None:
+    """A bare ConnectError names a port, not the service the operator has to start."""
+    import httpx
+    from services.orchestration.temporal_activities import bedrock
+    from temporalio.exceptions import ApplicationError
+
+    class _RefusingClient(_FakeClient):
+        async def post(self, url: str, json: dict, headers: dict) -> _FakeResponse:
+            raise httpx.ConnectError("[Errno 61] Connection refused")
+
+    monkeypatch.setattr(bedrock.httpx, "AsyncClient", lambda **_: _RefusingClient({}, {}))
+    monkeypatch.setattr(
+        bedrock,
+        "get_settings",
+        lambda: SimpleNamespace(litellm_base_url="http://localhost:4000", litellm_master_key=""),
+    )
+
+    with pytest.raises(ApplicationError) as caught:
+        await bedrock.invoke_model(
+            bedrock.ModelRequest(logical_model="planning-model", prompt="hello")
+        )
+
+    message = str(caught.value)
+    assert "LiteLLM model gateway" in message
+    assert "http://localhost:4000" in message
+    assert "inv local-up" in message
+    assert "Connection refused" in message
+    assert caught.value.type == "LiteLLMUnreachable"
 
 
 def test_token_cost_discounts_cached_tokens():

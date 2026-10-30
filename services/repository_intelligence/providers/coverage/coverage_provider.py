@@ -11,12 +11,12 @@ from __future__ import annotations
 
 import ast
 import json
-import subprocess
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from services import process
 from services.repository_intelligence.normalization.models import (
     Location,
     Provenance,
@@ -285,21 +285,23 @@ class CoverageProvider:
                 encoding="utf-8",
             )
             try:
-                subprocess.run(
+                process.run(
                     [python, "-m", "coverage", "run", f"--rcfile={rcfile}", "-m", "pytest", "-q"],
+                    timeout=process.LONG_COMMAND_TIMEOUT_SECONDS,
                     cwd=self._root,
                     check=True,
                     capture_output=True,
                     text=True,
                 )
-                subprocess.run(
+                process.run(
                     [python, "-m", "coverage", "json", f"--rcfile={rcfile}", "-o", str(json_out)],
+                    timeout=process.LONG_COMMAND_TIMEOUT_SECONDS,
                     cwd=self._root,
                     check=True,
                     capture_output=True,
                     text=True,
                 )
-            except subprocess.CalledProcessError as error:
+            except process.CalledProcessError as error:
                 raise CoverageError(
                     f"coverage run failed: {error.stderr.strip().splitlines()[-1:]}"
                 ) from error

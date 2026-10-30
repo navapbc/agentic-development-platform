@@ -9,13 +9,13 @@ Generic, tool-agnostic working rules. These are personal preferences for how any
 - Commit message shape: ticket number alone on the first line, immediately followed on the next line (no blank line between them) by a markdown bulleted list where every bullet starts with `- ` and a short action verb (Add, Detect, Remove, Fix), one per task. Keep bullets terse and factual, no "so that" rationale. Each bullet must be self-contained and describe the change as it stands in the repo. Do not add a `Co-Authored-By` trailer. Example:
 
   ```
-  ADEVX-2
+  ADP-2
   - Add pluggable Bedrock connectivity providers
   - Remove jump-host constants from Python defaults
   ```
 
-- A ticket number identifies a unit of grouped work, like a Jira ticket, not a single commit. One ticket can span multiple commits, so reuse the same number for every commit that belongs to that unit of work. Increment to the next number only when starting a new unit of work. Numbers are sequential per repository and are never derived from research item, phase, or task numbers (research item R7 does not imply `ADEVX-7`).
-- Ticket number prefixes by repository: `agentic-dev-platform` uses `ADEVX-<number>`, `agentic-demo-service` uses `ADSERX-<number>`, `agentic-demo-greenfield` uses `ADGRX-<number>`.
+- A ticket number identifies a unit of grouped work, like a Jira ticket, not a single commit. One ticket can span multiple commits, so reuse the same number for every commit that belongs to that unit of work. Move to a new ticket number only when starting a new unit of work. Numbers are never derived from research item, phase, or task numbers (research item R7 does not imply `ADP-7`).
+- Ticket number prefixes by repository: `agentic-dev-platform` uses the Jira ticket key `ADP-<number>` from the ADP project, `agentic-demo-service` uses `ADSERX-<number>`, `agentic-demo-greenfield` uses `ADGRX-<number>`.
 
 ## Prose and punctuation
 
@@ -66,7 +66,7 @@ These rules apply to every piece of writing, prose, documentation, chat, on-scre
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **agentic-development-platform** (14610 symbols, 27523 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **agentic-development-platform** (17916 symbols, 33823 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
