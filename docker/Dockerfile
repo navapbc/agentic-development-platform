@@ -1,5 +1,5 @@
 # Python image with uv pre-installed. See https://docs.astral.sh/uv/guides/integration/docker/#available-images
-FROM ghcr.io/astral-sh/uv:python3.12-trixie@sha256:bbfd59ce8a3a58a621e7197fefe160e4ca6311c00a7837edb44446cd0491d451
+FROM ghcr.io/astral-sh/uv:python3.12-trixie-slim@sha256:bf889bda77474aa50c351caf1538b855ef2b7a30add45f26ca50dcb6ade06402
 
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 
@@ -32,7 +32,7 @@ RUN ARCH="$(dpkg --print-architecture)" \
 
 COPY pyproject.toml uv.lock README.md LICENSE NOTICE alembic.ini ./
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked --extra worker
+    uv sync --locked --extra worker --no-install-project
 
 COPY scripts/fetch_acli.py ./scripts/fetch_acli.py
 ARG TARGETOS
@@ -54,6 +54,9 @@ COPY scripts ./scripts
 COPY observability ./observability
 COPY openhands ./openhands
 COPY vendor ./vendor
+
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --locked --extra worker
 
 RUN useradd --create-home --uid 10001 appuser
 USER appuser
