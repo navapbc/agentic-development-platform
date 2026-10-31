@@ -76,6 +76,7 @@ AWS transition and FedRAMP Medium readiness. The platform documents its local-to
 - Thin `opa`, `otel-collector`, and `tempo` images that add a static Go loopback probe from `docker/healthprobe` and declare a `HEALTHCHECK`, because the upstream images carry no shell or HTTP client. The collector enables its `health_check` extension on loopback.
 - `inv temporal-upgrade` backs up the Temporal databases and moves them one minor release at a time to the server the checkout pins.
 - A `temporal-admin-tools` service under the `tasks` profile applies the Temporal schemas with `temporal-sql-tool` and registers the `default` namespace. `inv local-up` runs it before the server and the workers start.
+- An end-to-end exit proof that a local rebar ticket reaches a draft pull request. It seeds a git-backed store, polls it, routes the candidate through intake, and runs the bounded pipeline with the rebar ticket backend serving the pre-PR recheck, the lifecycle transitions, and the linkback, then asserts the store itself carries the resulting status and the linkback comment. A companion case edits the ticket after intake and asserts the recheck pauses before the pull request opens. The code step is a stub, so both run in CI without reaching a model. The live counterpart that drives the agent is gated behind `LOCAL_TICKET_LIVE_SMOKE`.
 
 ### Changed
 
@@ -122,6 +123,7 @@ AWS transition and FedRAMP Medium readiness. The platform documents its local-to
 
 ### Fixed
 
+- The bounded task pipeline snapshots a ticket from any source. It previously ran every raw issue through the Jira normalizer, which left a rebar ticket with an empty project and failed the snapshot with `AllowlistError` before the claim. Sources whose raw issue is not Jira-shaped now hand in their already-normalized payload, matching the dispatch intake has always performed, so the pre-PR recheck compares the snapshot against the same payload shape the backend reads back. The Jira path is unchanged, and the one rule that decides which sources need normalizing is now the shared `JIRA_SOURCES` constant rather than a copy in each caller.
 - `alembic_database_url` derives its fallback from `DATABASE_URL` in place of a literal that carried the example password, so a host-run `inv smoke-test` or `inv db-reset` authenticates with the configured credentials. The `database_url` default names the `postgres` service, which the host rewrite maps to the published port.
 - `inv workflow-status` resolves `TEMPORAL_HOST` through the host rewrite, so it reaches the published Temporal port in place of failing on the Compose service name.
 - `inv db-migrate`, `inv schedules-install`, and `inv db-reset` build their image before running. `inv local-up` builds only the services it starts, so the `tasks` profile previously reused whatever `db-migrate` image was left in the local cache.
