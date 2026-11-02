@@ -25,6 +25,7 @@ Generated secrets get a random value from Terraform on the first apply. Terrafor
 | `langfuse_public_key` | generated | `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_INIT_PROJECT_PUBLIC_KEY` | Manual, by generation |
 | `langfuse_secret_key` | generated | `LANGFUSE_SECRET_KEY`, `LANGFUSE_INIT_PROJECT_SECRET_KEY` | Manual, by generation |
 | `clickhouse_password` | generated | `CLICKHOUSE_PASSWORD` | Manual, by generation |
+| `coordination_shared_secret` | generated | `COORDINATION_SHARED_SECRET` | Manual, by generation |
 | `github_token` | external | `GITHUB_TOKEN` | At the issuer |
 | `github_webhook_secret` | external | `GITHUB_WEBHOOK_SECRET` | At the issuer |
 | `jira_api_token` | external | `JIRA_API_TOKEN` | At the issuer |
@@ -82,7 +83,7 @@ Each service reads its secrets once, when its task starts. `restart_services` ma
 | Secret | Procedure |
 |---|---|
 | Database and cache credentials | `aws secretsmanager rotate-secret --secret-id <arn>`. The restart rule redeploys the consumers when the rotation succeeds. |
-| Generated secrets | Increment the secret's entry in `generated_secret_versions` and apply. Terraform writes a new value as an operator update, so the restart rule redeploys the consumers. Rotating `review_attestation_secret` makes earlier HMAC attestations fail verification, so keep the old value with the evidence it verified. Rotating the Langfuse project keys requires the same keys in the Langfuse project. |
+| Generated secrets | Increment the secret's entry in `generated_secret_versions` and apply. Terraform writes a new value as an operator update, so the restart rule redeploys the consumers. Rotating `review_attestation_secret` makes earlier HMAC attestations fail verification, so keep the old value with the evidence it verified. Rotating the Langfuse project keys requires the same keys in the Langfuse project. Rotating `coordination_shared_secret` refuses every coordination call from a worker that has not restarted, so list the coordination service and the workers under that key in `restart_services`. |
 | External secrets | Issue the new token or webhook secret at GitHub, Jira, or Slack, then `aws secretsmanager put-secret-value`. Revoke the old one at the issuer after the consumers restart. |
 | Signing keys | Add the new public key to the trust root or identity, write the private key with `put-secret-value`, then revoke the old key. |
 | `langfuse_encryption_key` | Not rotated. Langfuse encrypts stored data with it and has no re-encryption path, so a new key makes stored data unreadable. |

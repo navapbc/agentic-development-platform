@@ -26,6 +26,11 @@ from tests.support import hermetic_settings
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "webhooks"
 _ALLOWED_PROJECTS = frozenset({"ADSER"})
 _ALLOWED_REPOS = frozenset({"agentic-demo-service"})
+_SECRET = "s3cr3t"
+
+
+def _signature(body: bytes, secret: str = _SECRET) -> str:
+    return "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
 
 
 def _fixture(name: str) -> bytes:
@@ -126,14 +131,14 @@ def _context(world: _World) -> IntakeContext:
     )
 
 
-def _handler(world: _World, *, secret: str = "") -> JiraIntakeHandler:
+def _handler(world: _World, *, secret: str = _SECRET) -> JiraIntakeHandler:
     return JiraIntakeHandler(secret=secret, jira_resolver=world.resolver, context=_context(world))
 
 
-async def _post(world: _World, *, body: bytes, mode: str, headers=None, secret: str = ""):
+async def _post(world: _World, *, body: bytes, mode: str, headers=None, secret: str = _SECRET):
     return await handle_inbound(
         body,
-        headers or {},
+        headers if headers is not None else {"X-Hub-Signature": _signature(body, secret)},
         handler=_handler(world, secret=secret),
         allowed=_ALLOWED_PROJECTS,
         ledger=world.ledger,
@@ -212,7 +217,6 @@ async def test_unverified_payload_is_refused():
         body=_fixture("jira_datacenter_issue_created.json"),
         mode=WEBHOOK,
         headers={"X-Hub-Signature": "sha256=deadbeef"},
-        secret="s3cr3t",
     )
     assert code == 401
     assert world.starter.starts == []
@@ -221,9 +225,8 @@ async def test_unverified_payload_is_refused():
 async def test_valid_signature_is_accepted():
     world = _world()
     body = _fixture("jira_datacenter_issue_created.json")
-    signature = "sha256=" + hmac.new(b"s3cr3t", body, hashlib.sha256).hexdigest()
     code, payload = await _post(
-        world, body=body, mode=WEBHOOK, headers={"X-Hub-Signature": signature}, secret="s3cr3t"
+        world, body=body, mode=WEBHOOK, headers={"X-Hub-Signature": _signature(body)}
     )
     assert code == 200
     assert payload["started"] == 1

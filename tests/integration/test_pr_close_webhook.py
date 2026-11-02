@@ -18,6 +18,7 @@ from services.orchestration.webhook.pr_events import (
 _ALLOWED = frozenset({"agentic-demo-service"})
 _SIGNATURE_HEADER = "X-Hub-Signature-256"
 _DELIVERY_HEADER = "X-GitHub-Delivery"
+_SECRET = "shh"
 
 
 class _FakeResolver:
@@ -61,7 +62,7 @@ def _sign(secret: str, body: bytes) -> str:
 
 
 def _handler(
-    *, secret: str = "", workflow_id: str | None = "wf-1"
+    *, secret: str = _SECRET, workflow_id: str | None = "wf-1"
 ) -> tuple[PrClosedHandler, _FakeResolver, _FakeSignaller]:
     resolver = _FakeResolver(workflow_id)
     signaller = _FakeSignaller()
@@ -73,12 +74,15 @@ async def _deliver(
     handler: PrClosedHandler,
     body: bytes,
     *,
-    signature: str = "",
+    signature: str | None = None,
     delivery: str = "d1",
     mode: str = WEBHOOK,
     ledger: InMemorySideEffectLedger | None = None,
 ):
-    headers = {_SIGNATURE_HEADER: signature, _DELIVERY_HEADER: delivery}
+    headers = {
+        _SIGNATURE_HEADER: signature if signature is not None else _sign(_SECRET, body),
+        _DELIVERY_HEADER: delivery,
+    }
     return await handle_inbound(
         body,
         headers,
@@ -116,17 +120,26 @@ async def test_closed_unmerged_event_signals_workflow_with_merged_false():
 
 
 async def test_valid_signature_is_accepted():
-    handler, _resolver, signaller = _handler(secret="shh")
+    handler, _resolver, signaller = _handler()
     body = _body(_payload())
-    code, _ = await _deliver(handler, body, signature=_sign("shh", body))
+    code, _ = await _deliver(handler, body, signature=_sign(_SECRET, body))
     assert code == 200
     assert signaller.calls == [("wf-1", True)]
 
 
 async def test_invalid_signature_is_rejected():
-    handler, _resolver, signaller = _handler(secret="shh")
+    handler, _resolver, signaller = _handler()
     body = _body(_payload())
     code, response = await _deliver(handler, body, signature="sha256=deadbeef")
+    assert code == 401
+    assert response == {"error": "invalid signature"}
+    assert signaller.calls == []
+
+
+async def test_empty_secret_refuses_the_delivery():
+    handler, _resolver, signaller = _handler(secret="")
+    body = _body(_payload())
+    code, response = await _deliver(handler, body, signature=_sign(_SECRET, body))
     assert code == 401
     assert response == {"error": "invalid signature"}
     assert signaller.calls == []

@@ -58,6 +58,9 @@ COPY vendor ./vendor
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --extra worker
 
+ARG AGENT_BUILD_ID=0.3.0
+ENV AGENT_BUILD_ID=${AGENT_BUILD_ID}
+
 RUN useradd --create-home --uid 10001 appuser
 USER appuser
 

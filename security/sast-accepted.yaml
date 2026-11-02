@@ -4,6 +4,11 @@
   match: '{"name": "agent-tmp", "mountPath": "/tmp"},'
   justification: The string is the mount path of an emptyDir volume inside the sandbox pod, which gives the agent a private writable /tmp under a read-only root filesystem. No host temporary file is created.
 - tool: bandit
+  rule: B105
+  path: services/coordination/auth.py
+  match: SHARED_SECRET_ENV_VAR = "COORDINATION_SHARED_SECRET"
+  justification: COORDINATION_SHARED_SECRET is the name of the environment variable the coordination service and its workers read the shared secret from. Bandit matches the word SECRET in the assignment, and the value is the variable name the process looks up, not the secret itself.
+- tool: bandit
   rule: B106
   path: services/integration/github/credentials.py
   match: identity = _Identity(host="default", owner=owner, token_ref="__token__") if token else None
