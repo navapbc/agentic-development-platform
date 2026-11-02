@@ -99,6 +99,8 @@ EXPECTED_TASKS = {
     "webhook-teardown",
     "image-exceptions-add",
     "image-exceptions-prune",
+    "worktree-new",
+    "worktree-check",
 }
 
 
