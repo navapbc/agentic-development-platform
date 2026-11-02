@@ -26,6 +26,17 @@ variable "trusted_principals" {
   default     = []
 }
 
+variable "writer_github_oidc_trust" {
+  description = "GitHub Actions OIDC trust for the writer role, which lets a workflow push the store without a stored AWS key. provider_arn names the account's token.actions.githubusercontent.com provider. subjects lists the fully qualified claims permitted to assume the role, such as repo:OWNER/NAME:ref:refs/heads/main. job_workflow_refs restricts which workflow file may do so. Leave it null and the writer trusts only trusted_principals."
+  type = object({
+    provider_arn      = string
+    subjects          = list(string)
+    job_workflow_refs = optional(list(string), [])
+    audience          = optional(string, "sts.amazonaws.com")
+  })
+  default = null
+}
+
 variable "existing_reader_role_arn" {
   description = "ARN of an existing role that fetches the store. Set it together with existing_writer_role_arn to supply both roles, and the module then creates none."
   type        = string

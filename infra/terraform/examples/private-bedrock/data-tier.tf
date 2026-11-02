@@ -92,6 +92,7 @@ module "rebar_ticket_store" {
   name_prefix               = var.name_prefix
   access_log_bucket         = var.access_log_bucket
   trusted_principals        = var.rebar_ticket_store_trusted_principals
+  writer_github_oidc_trust  = var.rebar_ticket_store_writer_oidc_trust
   admin_principals          = var.rebar_ticket_store_admin_principals
   existing_reader_role_arn  = var.rebar_ticket_store_existing_reader_role_arn
   existing_writer_role_arn  = var.rebar_ticket_store_existing_writer_role_arn

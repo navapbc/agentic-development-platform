@@ -43,6 +43,26 @@ resource "terraform_data" "inputs_guard" {
       condition     = !local.create_roles || length(var.trusted_principals) > 0
       error_message = "trusted_principals must name at least one principal when the module creates the reader and writer roles."
     }
+    precondition {
+      condition     = var.writer_github_oidc_trust == null || local.create_roles
+      error_message = "writer_github_oidc_trust applies to the writer role this module creates, so it cannot be set alongside existing_writer_role_arn."
+    }
+    precondition {
+      condition     = var.writer_github_oidc_trust == null || length(var.writer_github_oidc_trust.subjects) > 0
+      error_message = "writer_github_oidc_trust.subjects must name at least one claim, otherwise any workflow in any repository could assume the writer role."
+    }
+    precondition {
+      condition     = var.writer_github_oidc_trust == null || !contains(var.writer_github_oidc_trust.subjects, "*")
+      error_message = "writer_github_oidc_trust.subjects must not contain \"*\", which would let any workflow in any repository assume the writer role."
+    }
+    precondition {
+      condition     = var.writer_github_oidc_trust == null || try(trimspace(var.writer_github_oidc_trust.audience), "") != ""
+      error_message = "writer_github_oidc_trust.audience must be set so the trust is scoped to a token audience."
+    }
+    precondition {
+      condition     = var.writer_github_oidc_trust == null || try(trimspace(var.writer_github_oidc_trust.provider_arn), "") != ""
+      error_message = "writer_github_oidc_trust.provider_arn must name the account's GitHub OIDC provider."
+    }
   }
 }
 

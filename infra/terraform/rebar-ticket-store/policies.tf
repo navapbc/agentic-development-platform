@@ -109,15 +109,42 @@ locals {
     ]
   })
 
+  assume_statement = {
+    Effect    = "Allow"
+    Principal = { AWS = var.trusted_principals }
+    Action    = "sts:AssumeRole"
+  }
+
+  oidc_claim_prefix = "token.actions.githubusercontent.com"
+
+  writer_oidc_statements = var.writer_github_oidc_trust == null ? [] : [
+    {
+      Sid       = "ReconcileBridgeWorkflow"
+      Effect    = "Allow"
+      Principal = { Federated = var.writer_github_oidc_trust.provider_arn }
+      Action    = "sts:AssumeRoleWithWebIdentity"
+      Condition = {
+        StringEquals = merge(
+          {
+            "${local.oidc_claim_prefix}:aud" = var.writer_github_oidc_trust.audience
+            "${local.oidc_claim_prefix}:sub" = var.writer_github_oidc_trust.subjects
+          },
+          length(var.writer_github_oidc_trust.job_workflow_refs) == 0 ? {} : {
+            "${local.oidc_claim_prefix}:job_workflow_ref" = var.writer_github_oidc_trust.job_workflow_refs
+          },
+        )
+      }
+    },
+  ]
+
   assume_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect    = "Allow"
-        Principal = { AWS = var.trusted_principals }
-        Action    = "sts:AssumeRole"
-      },
-    ]
+    Version   = "2012-10-17"
+    Statement = [local.assume_statement]
+  })
+
+  writer_assume_policy = jsonencode({
+    Version   = "2012-10-17"
+    Statement = concat([local.assume_statement], local.writer_oidc_statements)
   })
 
   list_store_prefix = {
