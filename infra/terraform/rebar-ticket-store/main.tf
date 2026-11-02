@@ -44,35 +44,35 @@ resource "terraform_data" "inputs_guard" {
       error_message = "trusted_principals must name at least one principal when the module creates the reader and writer roles."
     }
     precondition {
-      condition     = var.writer_github_oidc_trust == null || local.create_roles
+      condition     = !local.oidc_enabled || local.create_roles
       error_message = "writer_github_oidc_trust applies to the writer role this module creates, so it cannot be set alongside existing_writer_role_arn."
     }
     precondition {
-      condition     = var.writer_github_oidc_trust == null || length(var.writer_github_oidc_trust.subjects) > 0
+      condition     = !local.oidc_enabled || length(local.oidc_subjects) > 0
       error_message = "writer_github_oidc_trust.subjects must name at least one claim, otherwise any workflow in any repository could assume the writer role."
     }
     precondition {
-      condition     = var.writer_github_oidc_trust == null || alltrue([for subject in var.writer_github_oidc_trust.subjects : try(trimspace(subject), "") != ""])
+      condition     = !local.oidc_enabled || alltrue([for subject in local.oidc_subjects : trimspace(subject) != ""])
       error_message = "writer_github_oidc_trust.subjects must not hold a blank entry, which renders into the trust policy as a claim no token carries."
     }
     precondition {
-      condition     = var.writer_github_oidc_trust == null || alltrue([for ref in var.writer_github_oidc_trust.job_workflow_refs : try(trimspace(ref), "") != ""])
+      condition     = !local.oidc_enabled || alltrue([for ref in local.oidc_workflow_refs : trimspace(ref) != ""])
       error_message = "writer_github_oidc_trust.job_workflow_refs must not hold a blank entry, which renders into the trust policy as a claim no token carries."
     }
     precondition {
-      condition     = var.writer_github_oidc_trust == null || alltrue([for subject in var.writer_github_oidc_trust.subjects : !strcontains(subject, "*")])
+      condition     = !local.oidc_enabled || alltrue([for subject in local.oidc_subjects : !strcontains(subject, "*")])
       error_message = "writer_github_oidc_trust.subjects are matched with StringEquals, which compares literally, so a subject holding \"*\" matches no token and leaves the role un-assumable. List each fully qualified subject instead."
     }
     precondition {
-      condition     = var.writer_github_oidc_trust == null || alltrue([for ref in var.writer_github_oidc_trust.job_workflow_refs : !strcontains(ref, "*")])
+      condition     = !local.oidc_enabled || alltrue([for ref in local.oidc_workflow_refs : !strcontains(ref, "*")])
       error_message = "writer_github_oidc_trust.job_workflow_refs are matched with StringEquals, which compares literally, so a ref holding \"*\" matches no token and leaves the role un-assumable. List each fully qualified workflow ref instead."
     }
     precondition {
-      condition     = var.writer_github_oidc_trust == null || try(trimspace(var.writer_github_oidc_trust.audience), "") != ""
+      condition     = !local.oidc_enabled || trimspace(local.oidc_audience) != ""
       error_message = "writer_github_oidc_trust.audience must be set so the trust is scoped to a token audience."
     }
     precondition {
-      condition     = var.writer_github_oidc_trust == null || local.oidc_issuer_host != ""
+      condition     = !local.oidc_enabled || local.oidc_issuer_host != ""
       error_message = "writer_github_oidc_trust.provider_arn must be an IAM OIDC provider ARN such as arn:aws:iam::<account>:oidc-provider/token.actions.githubusercontent.com, because the trust policy's condition keys are built from the issuer host it names."
     }
   }

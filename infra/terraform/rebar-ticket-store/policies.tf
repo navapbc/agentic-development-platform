@@ -115,27 +115,32 @@ locals {
     Action    = "sts:AssumeRole"
   }
 
-  oidc_issuer_host = var.writer_github_oidc_trust == null ? "" : try(regex("^arn:[^:]+:iam::[0-9]+:oidc-provider/(.+)$", var.writer_github_oidc_trust.provider_arn)[0], "")
+  oidc_enabled       = var.writer_github_oidc_trust != null
+  oidc_provider_arn  = try(var.writer_github_oidc_trust.provider_arn, "")
+  oidc_subjects      = try(var.writer_github_oidc_trust.subjects, [])
+  oidc_workflow_refs = try(var.writer_github_oidc_trust.job_workflow_refs, [])
+  oidc_audience      = try(var.writer_github_oidc_trust.audience, "")
+  oidc_issuer_host   = try(regex("^arn:[^:]+:iam::[0-9]+:oidc-provider/(.+)$", local.oidc_provider_arn)[0], "")
 
-  writer_oidc_statements = var.writer_github_oidc_trust == null ? [] : [
+  writer_oidc_statements = local.oidc_enabled ? [
     {
       Sid       = "ReconcileBridgeWorkflow"
       Effect    = "Allow"
-      Principal = { Federated = var.writer_github_oidc_trust.provider_arn }
+      Principal = { Federated = local.oidc_provider_arn }
       Action    = "sts:AssumeRoleWithWebIdentity"
       Condition = {
         StringEquals = merge(
           {
-            "${local.oidc_issuer_host}:aud" = var.writer_github_oidc_trust.audience
-            "${local.oidc_issuer_host}:sub" = var.writer_github_oidc_trust.subjects
+            "${local.oidc_issuer_host}:aud" = local.oidc_audience
+            "${local.oidc_issuer_host}:sub" = local.oidc_subjects
           },
-          length(var.writer_github_oidc_trust.job_workflow_refs) == 0 ? {} : {
-            "${local.oidc_issuer_host}:job_workflow_ref" = var.writer_github_oidc_trust.job_workflow_refs
+          length(local.oidc_workflow_refs) == 0 ? {} : {
+            "${local.oidc_issuer_host}:job_workflow_ref" = local.oidc_workflow_refs
           },
         )
       }
     },
-  ]
+  ] : []
 
   assume_policy = jsonencode({
     Version   = "2012-10-17"
