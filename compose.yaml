@@ -31,7 +31,10 @@ services:
       retries: 10
 
   temporal:
-    image: temporalio/auto-setup:1.29.7@sha256:f14912b699cf73015ad5c4fc18d522d4b014db90e794039214dfb7c022c2644f
+    build:
+      context: .
+      dockerfile: docker/temporal.Dockerfile
+      args: [TEMPORAL_SERVER_IMAGE]
     restart: unless-stopped
     depends_on:
       postgres:
@@ -44,15 +47,36 @@ services:
       POSTGRES_PWD: ${POSTGRES_PASSWORD:-change-me-locally}
       DBNAME: temporal
       VISIBILITY_DBNAME: temporal_visibility
+      BIND_ON_IP: 0.0.0.0
+      DYNAMIC_CONFIG_FILE_PATH: /etc/temporal/dynamicconfig.yaml
+    volumes:
+      - ./config/platform/temporal-dynamicconfig.yaml:/etc/temporal/dynamicconfig.yaml:ro
     ports: ["${TEMPORAL_HOST_PORT:-7233}:7233"]
-    healthcheck:
-      test: ["CMD", "tctl", "--address", "temporal:7233", "cluster", "health"]
-      interval: 15s
-      timeout: 10s
-      retries: 15
+
+  temporal-admin-tools:
+    image: ${TEMPORAL_ADMIN_TOOLS_IMAGE:-temporalio/admin-tools:1.32.1@sha256:9ef0dc5b063bf4ffd5c1512de72e0e73e225bd2c7006a18ce69bd592a8862a83}
+    entrypoint: ["/bin/sh", "/usr/local/libexec/temporal-admin-tools.sh"]
+    command: ["schema"]
+    restart: "no"
+    profiles: ["tasks"]
+    environment:
+      SQL_PLUGIN: postgres12
+      SQL_HOST: postgres
+      SQL_PORT: 5432
+      SQL_USER: ${POSTGRES_USER:-platform}
+      SQL_PASSWORD: ${POSTGRES_PASSWORD:-change-me-locally}
+      DBNAME: temporal
+      VISIBILITY_DBNAME: temporal_visibility
+      TEMPORAL_ADDRESS: temporal:7233
+      DEFAULT_NAMESPACE: default
+    volumes:
+      - ./docker/temporal-admin-tools.sh:/usr/local/libexec/temporal-admin-tools.sh:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   temporal-ui:
-    image: temporalio/ui:2.53.3@sha256:eef301146e60fad34b47adaecfae4149016e34b2d44ba94fca5fd8e5441f182a
+    image: temporalio/ui:2.57.0@sha256:d944f959d0923c35cd991a17a0edbe087770eff843724b181933e0cfdd563ab2
     depends_on: [temporal]
     environment:
       TEMPORAL_ADDRESS: temporal:7233
