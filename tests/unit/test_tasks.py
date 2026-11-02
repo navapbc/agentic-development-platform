@@ -45,6 +45,7 @@ EXPECTED_TASKS = {
     "terraform-test",
     "workflow-status",
     "durability-proof",
+    "prune-worker-versions",
     "fetch-acli",
     "cbm-build",
     "publish-jumphost-image",
