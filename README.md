@@ -480,6 +480,8 @@ Run `inv --list` for the full set. The common tasks are below.
 | `inv publish-jumphost-image [--tag TAG]` | Build and push the jumphost base image to the account ECR repository |
 | `inv approve-pr --workflow-id ID [--reject] [--pr-closed] [--merged]` | Release an approval or PR-close pause on a running workflow |
 | `inv gate --issue KEY --gate NAME [--approve\|--reject]` | Resolve a configured human-intervention gate parked at `AWAITING_HUMAN` |
+| `inv worktree-new --path DIR --branch BRANCH [--create]` | Add a git worktree and give it a virtualenv the worktree owns |
+| `inv worktree-check [--repair]` | Report worktrees that share or lack a virtualenv, and provision them with `--repair` |
 
 See [Recovering a stuck intake](#recovering-a-stuck-intake) for the retry, repair, and restart commands that drive a ticket after a failure.
 

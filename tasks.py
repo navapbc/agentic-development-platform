@@ -980,6 +980,30 @@ def webhook_teardown(c, repo=""):
     c.run(f"{HOST_PYTHON} -m scripts.webhook_forward {repo_flag} --remove".strip(), pty=True)
 
 
+@task(
+    help={
+        "path": "Directory to create the worktree in.",
+        "branch": "Branch to check out in the worktree.",
+        "create": "Create the branch instead of checking out an existing one.",
+    }
+)
+def worktree_new(c, path, branch, create=False):
+    """Add a git worktree and give it its own virtualenv."""
+    create_flag = " --create" if create else ""
+    c.run(
+        f"{HOST_PYTHON} -m scripts.worktree new {shlex.quote(path)} "
+        f"{shlex.quote(branch)}{create_flag}",
+        pty=True,
+    )
+
+
+@task(help={"repair": "Provision a virtualenv for each worktree that shares or lacks one."})
+def worktree_check(c, repair=False):
+    """Report worktrees whose virtualenv is shared with, or points at, another worktree."""
+    repair_flag = " --repair" if repair else ""
+    c.run(f"{HOST_PYTHON} -m scripts.worktree check{repair_flag}", pty=True)
+
+
 ns = Collection()
 for _t in (
     tunnel_start,
@@ -1038,5 +1062,7 @@ for _t in (
     k8s_delete,
     webhook_setup,
     webhook_teardown,
+    worktree_new,
+    worktree_check,
 ):
     ns.add_task(_t)

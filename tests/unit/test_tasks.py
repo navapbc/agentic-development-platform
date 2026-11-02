@@ -66,6 +66,8 @@ EXPECTED_TASKS = {
     "k8s-delete",
     "webhook-setup",
     "webhook-teardown",
+    "worktree-new",
+    "worktree-check",
 }
 
 
