@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from scripts import worktree as worktree_module
 from scripts.worktree import VenvState, inspect, provision
 
 
@@ -65,11 +66,36 @@ def test_a_worktree_without_a_virtualenv_is_missing(tmp_path):
     assert inspect(worktree).state == VenvState.MISSING
 
 
-def test_a_virtualenv_without_an_editable_install_is_missing(tmp_path):
+def test_a_virtualenv_without_an_editable_install_cannot_be_verified(tmp_path):
     worktree = _make_worktree(tmp_path, "adp-205")
     _make_venv(worktree, None)
 
-    assert inspect(worktree).state == VenvState.MISSING
+    status = inspect(worktree)
+
+    assert status.state == VenvState.UNVERIFIED
+    assert not status.healthy
+
+
+def test_an_unverifiable_virtualenv_is_not_repaired(tmp_path):
+    worktree = _make_worktree(tmp_path, "adp-209")
+    _make_venv(worktree, None)
+
+    assert inspect(worktree).state not in worktree_module._REPAIRABLE
+
+
+def test_a_mistargeted_virtualenv_reports_every_foreign_target(tmp_path):
+    worktree = _make_worktree(tmp_path, "adp-210")
+    venv = _make_venv(worktree, tmp_path / "adp-211")
+    other = tmp_path / "adp-212"
+    other.mkdir()
+    (other / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    site_packages = next(venv.glob("lib/python*/site-packages"))
+    (site_packages / "_editable_impl_second.pth").write_text(f"{other}\n", encoding="utf-8")
+
+    detail = inspect(worktree).detail
+
+    assert "adp-211" in detail
+    assert "adp-212" in detail
 
 
 def test_an_unrelated_editable_install_does_not_make_a_worktree_mistargeted(tmp_path):
@@ -113,10 +139,43 @@ def test_a_checkout_reached_through_a_symlinked_parent_is_not_mistargeted(tmp_pa
     assert inspect(tmp_path / "linked" / "adp-208").state == VenvState.OK
 
 
-def test_provisioning_a_directory_that_is_not_a_checkout_raises(tmp_path, monkeypatch):
+def test_provisioning_a_directory_that_is_not_a_checkout_raises(tmp_path):
     worktree = tmp_path / "not-a-checkout"
     worktree.mkdir()
+
+    with pytest.raises(RuntimeError, match="not a checkout of this project"):
+        provision(worktree)
+
+
+def test_provisioning_accepts_a_virtualenv_whose_owner_cannot_be_verified(tmp_path, monkeypatch):
+    worktree = _make_worktree(tmp_path, "adp-213")
+    _make_venv(worktree, None)
     monkeypatch.setattr("scripts.worktree.process.run", lambda *args, **kwargs: None)
 
-    with pytest.raises(RuntimeError, match="still unhealthy after sync"):
-        provision(worktree)
+    provision(worktree)
+
+
+def test_a_failed_provision_removes_the_worktree_it_just_added(tmp_path, monkeypatch, capsys):
+    added = tmp_path / "adp-214"
+    removed: list[list[str]] = []
+
+    def fake_git(args, *, cwd):
+        if args[:2] == ["worktree", "add"]:
+            added.mkdir()
+            return ""
+        if args[:2] == ["worktree", "remove"]:
+            removed.append(args)
+            return ""
+        return str(tmp_path)
+
+    monkeypatch.setattr("scripts.worktree._git", fake_git)
+    monkeypatch.setattr(
+        "scripts.worktree.provision",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("uv sync exploded")),
+    )
+
+    args = worktree_module.build_parser().parse_args(["new", str(added), "some-branch"])
+
+    assert args.handler(args) == 1
+    assert removed and str(added) in removed[0]
+    assert "uv sync exploded" in capsys.readouterr().err

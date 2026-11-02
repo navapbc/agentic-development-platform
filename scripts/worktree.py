@@ -29,8 +29,13 @@ class VenvState(StrEnum):
     SHARED = "shared"
     MISTARGETED = "mistargeted"
     SKIPPED = "skipped"
+    UNVERIFIED = "unverified"
 
 
+# UNVERIFIED is reported but never repaired. It means the virtualenv exists and records no
+# editable install this reader understands, which is what a change to the installer's editable
+# layout would look like. Re-syncing every worktree on that signal would be a destructive
+# response to a reader limitation, so the operator is told instead.
 _REPAIRABLE = frozenset({VenvState.MISSING, VenvState.SHARED, VenvState.MISTARGETED})
 _HEALTHY = frozenset({VenvState.OK, VenvState.SKIPPED})
 _SITE_PACKAGES_PATTERNS = ("lib/python*/site-packages", "Lib/site-packages")
@@ -104,19 +109,23 @@ def inspect(worktree: Path) -> VenvStatus:
     targets = _editable_targets(venv)
     if not targets:
         return VenvStatus(
-            worktree, VenvState.MISSING, "no editable install recorded in site-packages"
+            worktree,
+            VenvState.UNVERIFIED,
+            "no editable install recorded in site-packages, so the owner cannot be verified",
         )
     owner = worktree.resolve()
     foreign = sorted({target for target in targets if Path(target).resolve() != owner})
     if foreign:
         return VenvStatus(
-            worktree, VenvState.MISTARGETED, f"editable install points at {foreign[0]}"
+            worktree, VenvState.MISTARGETED, f"editable install points at {', '.join(foreign)}"
         )
     return VenvStatus(worktree, VenvState.OK, str(venv))
 
 
 def provision(worktree: Path, *, python_version: str = PYTHON_VERSION) -> None:
     """Give the worktree its own virtualenv, replacing a symlink that shares another one."""
+    if not (worktree / "pyproject.toml").is_file():
+        raise RuntimeError(f"{worktree}: not a checkout of this project")
     venv = worktree / ".venv"
     if venv.is_symlink():
         venv.unlink()
@@ -127,6 +136,9 @@ def provision(worktree: Path, *, python_version: str = PYTHON_VERSION) -> None:
         check=True,
     )
     status = inspect(worktree)
+    if status.state is VenvState.UNVERIFIED:
+        print(f"[worktree] {worktree}: {status.detail}", file=sys.stderr)
+        return
     if status.state is not VenvState.OK:
         raise RuntimeError(f"{worktree}: virtualenv still unhealthy after sync: {status.detail}")
 
@@ -134,6 +146,22 @@ def provision(worktree: Path, *, python_version: str = PYTHON_VERSION) -> None:
 def _add(root: Path, path: Path, branch: str, *, create: bool) -> None:
     spec = ["-b", branch] if create else [branch]
     _git(["worktree", "add", *spec, str(path)], cwd=root)
+
+
+def _remove(root: Path, path: Path) -> None:
+    """Undo a just-added worktree so a failed `new` leaves nothing half-created behind."""
+    try:
+        _git(["worktree", "remove", "--force", str(path)], cwd=root)
+        print(f"[worktree] removed {path}", file=sys.stderr)
+    except (OSError, process.CalledProcessError, process.TimeoutExpired) as error:
+        print(
+            f"[worktree] could not remove {path}: {error}. "
+            f"Remove it with: git worktree remove --force {path}",
+            file=sys.stderr,
+        )
+
+
+_PROVISION_ERRORS = (RuntimeError, OSError, process.CalledProcessError, process.TimeoutExpired)
 
 
 def command_new(args: argparse.Namespace) -> int:
@@ -144,7 +172,12 @@ def command_new(args: argparse.Namespace) -> int:
         return 1
     _add(root, path, args.branch, create=args.create)
     print(f"[worktree] added {path} on {args.branch}")
-    provision(path, python_version=args.python)
+    try:
+        provision(path, python_version=args.python)
+    except _PROVISION_ERRORS as error:
+        print(f"[worktree] provisioning {path} failed: {error}", file=sys.stderr)
+        _remove(root, path)
+        return 1
     print(f"[worktree] provisioned an independent virtualenv at {path}/.venv")
     return 0
 
@@ -158,12 +191,7 @@ def command_check(args: argparse.Namespace) -> int:
             print(f"[worktree] repairing {status.worktree}: {status.detail}")
             try:
                 provision(status.worktree, python_version=args.python)
-            except (
-                RuntimeError,
-                OSError,
-                process.CalledProcessError,
-                process.TimeoutExpired,
-            ) as error:
+            except _PROVISION_ERRORS as error:
                 failures.append(f"{status.worktree}: {error}")
         statuses = [inspect(worktree) for worktree in worktree_paths(root)]
     width = max((len(str(s.worktree)) for s in statuses), default=0)
