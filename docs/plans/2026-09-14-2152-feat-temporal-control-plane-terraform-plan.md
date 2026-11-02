@@ -1,11 +1,12 @@
 ---
 title: Temporal Control Plane Terraform - Plan
 type: feat
-date: 2026-09-14
-origin: docs/plans/2026-09-02-1801-feat-remaining-work-roadmap-plan.md
+date: 2026-11-02
+origin: .agent-context/roadmap-jira.md
+ticket: ADP-97
 artifact_contract: ce-unified-plan/v1
 artifact_readiness: implementation-ready
-product_contract_source: ce-brainstorm
+product_contract_source: roadmap
 execution: infra
 ---
 
@@ -13,85 +14,105 @@ execution: infra
 
 ## Goal Capsule
 
-Objective. The Temporal control plane the workers depend on is provisioned in the target VPC with TLS, private networking, and a scoped access path, or connected to a FedRAMP-eligible managed Temporal offering, so the control plane conforms to the platform-owned FedRAMP Medium controls.
+Objective. A deployed environment runs the OSS Temporal server and UI on the platform ECS cluster, persisting to Aurora over verified TLS, reachable only by the Temporal client security group over TLS, and every platform Temporal client connects to it over TLS.
 
-Means. Add a toggleable terraform module that provisions a self-hosted Temporal control plane on the container platform with TLS and private networking, or wires a managed Temporal connection with mutual TLS, and exposes the endpoint to the workers.
+Means. Build downstream server and admin-tools images that carry the RDS CA bundle and the platform server configuration, generate or accept the TLS certificates in three modes, add a toggleable `temporal-control-plane` module that runs the server, its schema task, and the UI behind an internal NLB and ALB, route every `Client.connect` call through one TLS helper, and wire the module into `private-bedrock`.
 
-Product authority. This plan enriches the FedRAMP readiness scope of the roadmap at [2026-09-02-1801-feat-remaining-work-roadmap-plan.md](2026-09-02-1801-feat-remaining-work-roadmap-plan.md). It provisions the Temporal control plane target the local-to-AWS mapping names.
+Product authority. ADP-97 in Jira, from the v0.3.0 section of `.agent-context/roadmap-jira.md`, with sub-tasks ADP-147, ADP-148, ADP-143, ADP-68, and ADP-50.
 
-Stop conditions. The control plane is provisioned in the VPC with TLS and private networking, or a managed connection with mutual TLS is configured, and `terraform validate` passes. The module is toggleable.
+Stop conditions. The module applies in the sandbox account in each certificate mode. The server persists to Aurora over TLS with host verification, a client outside the client security group cannot reach the frontend, and a worker polls as a Worker Deployment version over TLS. A rotation of the `temporal` role password redeploys the server. `temporal-ui` 2.58.0 runs locally and deployed. `terraform validate`, `inv terraform-test`, `inv ci`, and `inv sast` pass.
 
 ## Product Contract
 
 ### Summary
 
-Temporal runs in compose locally, and the local-to-AWS mapping records that the control plane runs on the container platform or a managed offering in a deployed environment, but no terraform provisions it. This plan provisions a self-hosted Temporal control plane on the container platform with TLS in transit, private subnet placement, a scoped access path, and its persistence on the managed data tier, or, when a managed Temporal offering is selected, configures the connection with mutual TLS and a scoped namespace. Either path exposes the endpoint the workers connect to.
+Compose runs `temporalio/server` 1.32.1 through `docker/temporal.Dockerfile`, and the one-shot `temporal-admin-tools` task applies the schemas and registers the `default` namespace. No Terraform provisions the control plane for a deployed environment. The 21 `Client.connect` calls in `services` and `scripts` pass only a host and namespace, so no client can open a TLS connection.
 
 ### Problem Frame
 
-The control plane schedules and stores workflow state, so it is a sensitive component. FedRAMP Medium expects SC-7 network isolation, SC-8 TLS, AC-3 scoped access, and CP durability for it. A self-hosted control plane inherits the AWS controls of the container platform and the data tier and requires the platform to configure TLS, isolation, and persistence. A managed offering shifts more control inheritance to the provider and requires the platform to configure a mutually authenticated connection.
+The control plane schedules and stores workflow state. FedRAMP Medium expects SC-7 boundary protection, SC-8 transmission confidentiality, SC-12 and SC-17 key and certificate management, SC-13 FIPS-validated cryptography, AC-3 access enforcement, and CP-9 and CP-10 durability. AWS provides the ECS, NLB, ACM, Secrets Manager, KMS, and Aurora controls as configuration. The platform owns the TLS configuration, the network admission, the certificate lifecycle, and the client behavior.
 
 ### Requirements
 
-- R1. A terraform module provisions the Temporal control plane, defaulting to a self-hosted deployment on the container platform.
-- R2. The self-hosted path enforces TLS in transit, private subnet placement, and a security group that admits the frontend port only from the worker security group.
-- R3. The self-hosted path persists state on the managed data tier rather than ephemeral storage.
-- R4. A managed-offering path is supported through configuration that establishes a mutually authenticated TLS connection and a scoped namespace.
-- R5. The module exposes the Temporal endpoint for the workers, and is toggleable so an account that runs Temporal elsewhere provisions nothing.
+- R1. The server and admin-tools images are built from the upstream digests the local stack pins, carry the RDS CA bundle, and are pushed to ECR.
+- R2. The server persists to the `temporal` and `temporal_visibility` databases over TLS with host verification, as the `temporal` role the secret store provisions.
+- R3. A one-shot admin-tools task applies the schemas and registers the namespace before the server starts.
+- R4. The frontend listener serves TLS, and the internode listeners require mutual TLS.
+- R5. Certificates come from one of three frontend modes, generated by a repository script, supplied by the organization's PKI, or issued by ACM. Internode certificates come from the script or the PKI.
+- R6. An internal NLB admits the frontend port only from a Temporal client security group the module creates and emits.
+- R7. The server runs on the platform ECS cluster in the application tier, and the UI runs in the management tier behind an internal HTTPS ALB.
+- R8. A rotation of the `temporal` role password redeploys the server through the secret store restart path.
+- R9. The deployed dynamic configuration comes from module input and carries no Worker Versioning V1 key.
+- R10. `temporal-ui` runs 2.58.0 pinned by digest locally and deployed.
+- R11. Every Temporal client connects through one helper that applies `TEMPORAL_TLS_CA` and `TEMPORAL_TLS_SERVER_NAME`, and connects without TLS when both are absent.
+- R12. The module is gated by a toggle, provisions nothing when off, and emits the endpoint, the namespace, the CA secret ARN, the server name, and the client security group.
 
 ### Scope Boundaries
 
-- This module provisions or connects the control plane. The workers that connect to it are provisioned by the container-platform services feature.
-- The persistence store is provisioned by the data tier feature and consumed here by reference.
-- This plan does not build a custom Temporal distribution. It deploys the standard server or connects a managed one.
+- The platform ECS cluster is ADP-145. This plan consumes its ARN.
+- The ECS services and the EKS workloads attach the client security group in ADP-136 and ADP-137.
+- The off-hours scale-down of the server and the database pause are ADP-146.
+- Server 1.32.2 is not published. The digests move to it in a later change.
 
 ### Sources
 
-- Roadmap and mapping: [2026-09-02-1801-feat-remaining-work-roadmap-plan.md](2026-09-02-1801-feat-remaining-work-roadmap-plan.md), [local-to-aws-mapping.md](../local-to-aws-mapping.md).
-- Worker connection: `services/orchestration/worker.py`, `scripts/config.py` (`temporal_host`, `temporal_namespace`).
-- Compute and data tier: the container-platform services and data-tier terraform features.
+- `common/config/config_template_embedded.yaml` at `temporalio/temporal` v1.32.1, which reads the TLS, SQL, and dynamic configuration settings from the environment and takes a configuration file through `--config-file`.
+- `temporalio/ui` v2.58.0 release notes. Trivy reports 16 HIGH and no CRITICAL findings for the 2.58.0 image, against 22 HIGH and one CRITICAL for 2.57.0, and the UI answers the namespace, workflow, and worker deployment endpoints against the local 1.32.1 server.
+- `infra/terraform/secret-store`, whose `restart_services` input redeploys ECS services after a rotation, and whose `database_roles` include `temporal`.
+- `docker/temporal.Dockerfile`, `docker/temporal-admin-tools.sh`, and `compose.yaml` for the local server, schema task, and pins.
 
 ## Planning Contract
 
 ### Key Technical Decisions
 
-- KTD1. Default to a self-hosted control plane on the container platform. Governs R1, R2, R3. Rationale. It reuses the same VPC, data tier, and inherited AWS controls the rest of the platform uses, so the posture is consistent.
-- KTD2. Persist state on the managed data tier. Governs R3. Rationale. Ephemeral persistence loses workflow state, and the managed data tier already carries the encryption and backup controls.
-- KTD3. Support a managed offering through configuration. Governs R4. Rationale. A deployment may prefer a managed Temporal, so the module offers a mutually authenticated connection path without forcing self-hosting.
+- KTD1. Build downstream images in place of running the upstream images directly. Governs R1, R2, R4. The upstream images carry no RDS CA bundle. The server image also carries a configuration file derived from the embedded template, because the embedded template drives frontend and internode client authentication from one `TEMPORAL_TLS_REQUIRE_CLIENT_AUTH` variable, and R4 needs client authentication on internode only.
+- KTD2. Inject certificates and keys as the `*_DATA` environment variables the template reads, from Secrets Manager through the execution role. No certificate is written to an image or a volume.
+- KTD3. Write certificate material to Secrets Manager through the write-only secret value argument, so no private key enters the Terraform state. The script and the organization's PKI feed the same inputs.
+- KTD4. In the ACM mode, the NLB TLS listener terminates client TLS with the ACM certificate under the `HTTP2Only` ALPN policy that gRPC needs, and a TLS target group re-encrypts to the server, which presents its generated or supplied frontend certificate. A client then trusts the ACM chain, and `TEMPORAL_TLS_CA` is empty for a public ACM certificate.
+- KTD5. Admit the frontend through a client security group the module owns, so the NLB and its rules exist before the ECS and EKS workloads, which attach the group.
+- KTD6. Write the dynamic configuration from a module input into a task-shared volume through a non-essential init container that the server container depends on, so the configuration changes with a plan and apply rather than an image build.
+- KTD7. The connection helper enables TLS when either setting is present. A CA path adds a private root, and a server name alone uses the system trust store.
 
 ### High-Level Design
 
-A `temporal-control-plane` module has two modes. In the self-hosted mode it provisions the Temporal server on the container platform in private subnets with TLS, a security group admitting the frontend port only from the worker security group, and persistence pointed at the managed data tier. In the managed mode it configures a connection with mutual TLS and a scoped namespace, provisioning the client certificates or references the workers use. The module emits the endpoint and is gated by a create toggle. The composition root gains optional wiring, and the worker configuration consumes the endpoint.
+`infra/terraform/temporal-control-plane` creates the ECR repositories, the Secrets Manager secrets for the certificates, the client security group, the server task definition and ECS service, the schema RunTask definition, the target group, the internal NLB, the UI task definition and service, the internal HTTPS ALB, the KMS-encrypted log groups, and the task and execution roles. `private-bedrock` passes the platform cluster, the subnets, the Aurora endpoint, the secret store outputs, and the certificate inputs, and adds the server service to `secret_restart_services`. `services/temporal_client.py` provides the connection helper.
 
-### Sequencing
+### Build order
 
-U1 provisions the self-hosted control plane. U2 adds the managed-connection mode. U3 wires the module into the composition root. The modes are independent, and U3 depends on U1 and U2.
+1. ADP-145 provisions the platform ECS cluster.
+2. U1 builds and pushes the server and admin-tools images.
+3. U2 generates or supplies the certificates, or issues the ACM certificate.
+4. U4 creates the client security group, the server service, and the target group, then the NLB with its listener admitting only that group.
+5. U5 wires the composition root and emits the outputs that ADP-136 and ADP-137 consume.
+
+U3 has no infrastructure dependency and lands at any point.
 
 ## Implementation Units
 
-### U1. Self-hosted Temporal control plane
+### U1. Downstream server and admin-tools images (ADP-147)
 
-Goal. Provision the control plane on the container platform with TLS, isolation, and managed persistence.
-Requirements. R1, R2, R3, R5.
-Files. `infra/terraform/temporal-control-plane/` (new module with versions, variables, main, outputs, README).
-Approach. Provision the Temporal server on the container platform in private subnets, enforce TLS, scope the security group to the worker source on the frontend port, and point persistence at the managed data tier. Gate on a create toggle. Emit the endpoint.
-Test scenarios. `terraform validate` passes. The server runs in private subnets with TLS. The security group admits only the worker source. Persistence targets the managed data tier. The module provisions nothing when disabled.
-Verification. `terraform validate`, module review.
+Add the RDS global CA bundle, pinned by SHA-256, and the platform server configuration file to the server image `docker/temporal.Dockerfile` builds. Add `docker/temporal-admin-tools.Dockerfile` from the admin-tools digest `compose.yaml` pins, with the same bundle. Add an `inv publish-temporal-images` task that builds both for `linux/arm64` and pushes them to ECR, tagged with the upstream version and the bundle digest. Keep the local stack on the same Dockerfile.
 
-### U2. Managed Temporal connection mode
+### U2. Certificates (ADP-148)
 
-Goal. Support connecting to a managed Temporal offering with mutual TLS and a scoped namespace.
-Requirements. R4, R5.
-Files. `infra/terraform/temporal-control-plane/` (managed-mode variables and resources), README.
-Approach. Add a mode that, instead of provisioning a server, configures the mutually authenticated connection and the scoped namespace the workers use, provisioning the client certificate references. Emit the endpoint.
-Test scenarios. `terraform validate` passes in managed mode. The connection declares mutual TLS and a scoped namespace. The endpoint surfaces.
-Verification. `terraform validate`, module review.
+Add `infra/bin/generate_temporal_certs.sh`, which runs `openssl` to write a CA, a frontend certificate with the server name and the NLB DNS name as SANs, and an internode certificate with server and client usage, with mode 0600, to a directory outside the repository, refusing to overwrite without `--force`. Add module inputs for the frontend and internode PEM material and for `frontend_acm_certificate_arn`, with a validation that requires exactly one frontend mode.
 
-### U3. Wire the control plane into the composition root
+### U3. Connection helper (ADP-143)
 
-Goal. Make the composition root provision or connect the control plane optionally.
-Requirements. R5.
-Files. `infra/terraform/examples/private-bedrock/` and its README.
-Approach. Add an optional temporal-control-plane module block gated by its toggle and mode, passing the private subnets, the worker security group, and the data tier endpoint, and surface the Temporal endpoint as an output for the workers.
-Test scenarios. `terraform validate` passes with the control plane enabled, disabled, and in each mode. The endpoint surfaces when enabled.
-Verification. `terraform validate`, composition review.
+Add `TEMPORAL_TLS_CA` and `TEMPORAL_TLS_SERVER_NAME` to the settings, add `services/temporal_client.py` with one `connect` function, and route every `Client.connect` call in `services` and `scripts` through it. Add a test that fails when a `Client.connect` call appears outside the helper.
+
+### U4. Server, schema task, and UI (ADP-68)
+
+Run the server on the platform cluster with the Aurora TLS settings, the certificate secrets, the init container for the dynamic configuration, and the client security group admission. Run the schema task before the service through a deploy step. Run `temporal-ui` 2.58.0 behind the internal HTTPS ALB in the management tier, connecting to the frontend over TLS. Move the `compose.yaml` UI pin to 2.58.0.
+
+### U5. Composition root and documents (ADP-50)
+
+Add the module block to `private-bedrock` behind `create_temporal_control_plane`, add the server service to `secret_restart_services`, surface the outputs, and extend the README Deploying to AWS section with the certificate modes and the schema step. Update the local-to-AWS mapping, the FedRAMP hardening design, and the control inheritance matrix.
+
+### U6. Sandbox verification
+
+Apply in the sandbox in each certificate mode, run a worker task as a Worker Deployment version over TLS, rotate the `temporal` role password, and record the results below.
+
+## Verification Record
+
+To be completed during U6.
