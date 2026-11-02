@@ -411,3 +411,34 @@ run "an_oidc_trust_without_a_provider_is_rejected" {
 
   expect_failures = [terraform_data.inputs_guard]
 }
+
+run "a_blank_oidc_subject_entry_is_rejected" {
+  command = plan
+
+  variables {
+    create_rebar_ticket_store = true
+    trusted_principals        = ["arn:aws:iam::111111111111:role/activity-worker"]
+    writer_github_oidc_trust = {
+      provider_arn = "arn:aws:iam::111111111111:oidc-provider/token.actions.githubusercontent.com"
+      subjects     = ["repo:navapbc/agentic-development-platform:ref:refs/heads/main", "  "]
+    }
+  }
+
+  expect_failures = [terraform_data.inputs_guard]
+}
+
+run "a_blank_oidc_workflow_ref_entry_is_rejected" {
+  command = plan
+
+  variables {
+    create_rebar_ticket_store = true
+    trusted_principals        = ["arn:aws:iam::111111111111:role/activity-worker"]
+    writer_github_oidc_trust = {
+      provider_arn      = "arn:aws:iam::111111111111:oidc-provider/token.actions.githubusercontent.com"
+      subjects          = ["repo:navapbc/agentic-development-platform:ref:refs/heads/main"]
+      job_workflow_refs = [""]
+    }
+  }
+
+  expect_failures = [terraform_data.inputs_guard]
+}
