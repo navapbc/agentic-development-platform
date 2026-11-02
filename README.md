@@ -76,15 +76,16 @@ These steps stand up the AWS infrastructure for one account from a workstation: 
 1. Create the state bucket and the access-log bucket once per account. Run `cd infra/terraform/bootstrap`, copy `terraform.tfvars.example` to `terraform.tfvars` only to override a default, then run `terraform init` and `AWS_PROFILE=agentic-platform terraform apply`. This root keeps its own state locally. See the [bootstrap README](infra/terraform/bootstrap/README.md).
 2. Write the backend settings for the composition root with `terraform output -raw backend_hcl > ../examples/private-bedrock/backend.hcl`, and record the access-log bucket name from `terraform output -raw access_log_bucket`. The file belongs in `infra/terraform/examples/private-bedrock`, next to the committed `backend.hcl.example` that shows its shape, so you can also copy the example and fill in the bucket by hand. Never commit `backend.hcl`.
 3. Choose the network shape. Run `cd ../examples/private-bedrock`, then copy `greenfield.tfvars.example` to `greenfield.tfvars` to create the VPC, or `existing-network.tfvars.example` to `existing-network.tfvars` to reuse one. Set `access_log_bucket`, `region`, and `name_prefix`. Never commit the tfvars files.
-4. Choose the services in the same tfvars file by setting each toggle to `true`. `create_aurora`, `create_cache`, `create_clickhouse_storage`, and `create_langfuse_bucket` add the data tier, and `create_secret_store` adds the secret store with the per-service database credentials and their rotation. The data tier and the secret store together cost a few dollars a day while they run. See the [composition root README](infra/terraform/examples/private-bedrock/README.md) for every toggle.
+4. Choose the services in the same tfvars file by setting each toggle to `true`. `create_aurora`, `create_cache`, `create_clickhouse_storage`, and `create_langfuse_bucket` add the data tier, and `create_secret_store` adds the secret store with the per-service database credentials and their rotation. `create_rebar_ticket_store` adds the bucket the rebar ticket store syncs to, with its reader and writer roles. Set `rebar_ticket_store_trusted_principals` to the principals that assume those roles and `rebar_ticket_store_admin_principals` to the operator that seeds and empties the bucket. The data tier and the secret store together cost a few dollars a day while they run. See the [composition root README](infra/terraform/examples/private-bedrock/README.md) for every toggle.
 5. Initialize the remote state with `terraform init -backend-config=backend.hcl`. A working directory that already holds a local `terraform.tfstate` from an earlier apply moves it into the bucket once with `terraform init -migrate-state -backend-config=backend.hcl`. Confirm with a plan that no changes are pending, then delete the local `terraform.tfstate` and `terraform.tfstate.backup`.
 6. Review the change set with `AWS_PROFILE=agentic-platform terraform plan -var-file=greenfield.tfvars`, then apply it with `AWS_PROFILE=agentic-platform terraform apply -var-file=greenfield.tfvars`. Use `existing-network.tfvars` in both commands for an existing network. With every service enabled the apply creates about 220 resources and takes 15 to 20 minutes, most of it Aurora and ElastiCache. A second plan reports no changes.
 7. Return to the repository root and push the jumphost image to the repository in the `jumphost_ecr_repository_url` output with `inv publish-jumphost-image --tag v1`. The tag must match `jumphost_image_tag`.
 8. Record the `bedrock_invoke_policy_arn` output. It grants `bedrock:InvokeModel` and is attached to the role of each platform service that calls Bedrock once those services run in AWS. A workstation keeps signing with the profile from the prerequisites, which already needs `bedrock:InvokeModel`, so nothing is attached at this step for local use.
 9. With the secret store and Aurora enabled, and with `.venv` active, create the per-service database roles and databases before anything connects to the cluster with `inv db-bootstrap-roles --function-name "$(AWS_PROFILE=agentic-platform terraform -chdir=infra/terraform/examples/private-bedrock output -raw role_bootstrap_function_name)"`. The task signs with `AWS_PROFILE` from `.env`. The first scheduled rotation fails until the roles exist.
 10. With the secret store enabled, set each external secret, for example `aws secretsmanager put-secret-value --profile agentic-platform --secret-id agentic-platform/external/github-token --secret-string file://github-token.txt`. The [secret-store README](infra/terraform/secret-store/README.md) lists every secret, which ones Terraform generates, and how each one rotates.
-11. Point the local stack at the deployed jumphost. Set `BEDROCK_CONNECTIVITY_PROVIDER=jumphost`, `JUMPHOST_NAME` to the `jumphost_name` variable, which defaults to `bedrock-jumphost`, and `AWS_PROFILE` and `AWS_REGION` to the target account in `.env`.
-12. Open the tunnel with `inv tunnel-start --detach` and confirm the private Bedrock path with `inv connectivity-check`.
+11. With the ticket store enabled, set `store.bucket`, `roles.read_only`, and `roles.write` in `config/local/tickets.yaml` from the `rebar_ticket_store_bucket`, `rebar_ticket_store_reader_role_arn`, and `rebar_ticket_store_writer_role_arn` outputs. Add the `rebar-tickets-reader` and `rebar-tickets-writer` profiles to `~/.aws/config` with those role ARNs, as the [rebar-ticket-store README](infra/terraform/rebar-ticket-store/README.md) shows. Point the store at the bucket with `inv rebar-store-remote`, adding `--local` when the store lives on this host, then seed it once with `git -C <store> push origin tickets`. Set `AWS_USE_FIPS_ENDPOINT=true` for that push when FIPS endpoints are required.
+12. Point the local stack at the deployed jumphost. Set `BEDROCK_CONNECTIVITY_PROVIDER=jumphost`, `JUMPHOST_NAME` to the `jumphost_name` variable, which defaults to `bedrock-jumphost`, and `AWS_PROFILE` and `AWS_REGION` to the target account in `.env`.
+13. Open the tunnel with `inv tunnel-start --detach` and confirm the private Bedrock path with `inv connectivity-check`.
 
 For a later change, run the plan and apply from step 6 again. Read the breaking changes in [CHANGELOG.md](CHANGELOG.md) before applying a new release, because some releases need a `terraform init -upgrade` or a one-time state step.
 
@@ -93,7 +94,7 @@ For a later change, run the plan and apply from step 6 again. Read the breaking 
 The composition root protects its data by default, so a destroy needs a preparation apply first. The bootstrap root stays, because it holds the state of every other root.
 
 1. Stop the tunnel with `inv tunnel-stop`, then stop any jumphost task that is still running with `aws ecs stop-task --cluster agentic-platform-bedrock-jumphost --task <task arn>`. A running task holds a network interface that blocks the subnet delete.
-2. Empty the Langfuse bucket, including every object version, when Langfuse has written to it. The bucket is versioned and refuses to delete while it holds objects.
+2. Empty the Langfuse bucket and the rebar ticket store bucket, including every object version, when anything has written to them. Empty the ticket store bucket as a principal in `rebar_ticket_store_admin_principals`, because its policy denies object access to everyone else. The bucket is versioned and refuses to delete while it holds objects.
 3. Set `aurora_deletion_protection = false` in the tfvars file. In a disposable environment also set `aurora_skip_final_snapshot = true` to delete the cluster without a final snapshot, and `secret_recovery_window_days = 0` so the secret names can be created again at once. Otherwise each name stays reserved for 30 days.
 4. Apply the change with `AWS_PROFILE=agentic-platform terraform apply -var-file=greenfield.tfvars`. Terraform reads these settings from state when it destroys, so this apply must come first.
 5. Destroy with `AWS_PROFILE=agentic-platform terraform destroy -var-file=greenfield.tfvars`.
@@ -245,6 +246,10 @@ Seed the store from an operator-provided Excel export with `inv import-rebar-tic
 
 The `rebar-intake` schedule starts a draft-PR execution for each ready ticket in the store. Install it with `inv intake --schedule` or `inv schedules-install`, or run one pass with `inv intake`. `inv rebar-changes` reports new tickets, field changes, and status changes since the last intake pass. It reads the intake cursor without saving it, so a report never hides a ticket from the next intake pass.
 
+The store can sync to S3 through the `git-remote-s3` helper, which the `review` extra installs. The `store` section of `tickets.yaml` names the bucket, the prefix, and two AWS profiles. `inv rebar-store-remote` points the store's git remote at the bucket so that it fetches under `reader_profile` and pushes under `writer_profile`. When the remote is an S3 URL, the activity worker validates the isolation rules in `tickets.yaml` and the remote at startup and refuses to start on a mismatch. A store with no remote stays local-only and skips the check.
+
+Locally the store syncs to the `rebar-tickets` bucket in MinIO. Copy `config/local/rebar-store-aws-config.example` to `config/local/rebar-store-aws-config`, which defines both profiles against MinIO with the `MINIO_ROOT_USER` and `MINIO_ROOT_PASSWORD` values, then run `inv rebar-store-remote` and push the store once with `docker compose exec activity-worker git -C <repo_root> push origin tickets`. Both local profiles use the MinIO root credentials, so the read and write split is enforced only in AWS.
+
 #### Local source-control backend
 
 Set `SOURCE_CONTROL_BACKEND=local` to deliver changes to a git folder on disk instead of GitHub. `SOURCE_CONTROL_LOCAL_ROOT` is the parent directory that holds the target repositories, and `SOURCE_CONTROL_LOCAL_REPOS` is an optional comma-separated allowlist where an empty value discovers every git repository under the root. The local backend commits the change to an `agent/<task_id>` branch in the repository, performs no push, and opens no pull request. It writes a `SUMMARY.md` and a `change.patch` per run under `SOURCE_CONTROL_LOCAL_ARTIFACTS_ROOT`, along with a done ledger, and an empty artifacts root defaults to `<root>/.agent-publish`.
@@ -313,7 +318,7 @@ Each record carries an evidence classification that selects its retention window
 
 ## Services and ports
 
-`inv local-up` builds the images, runs the `db-migrate` task, starts the services below, and waits up to ten minutes for every service to report healthy. It fails and names the service when one does not. Each long-running service declares a health check. The HTTP services answer `/health` or their own readiness endpoint, the Temporal workers and `repo-index-worker` refresh a heartbeat file that `python -m services.healthcheck heartbeat` checks for freshness, and `opa`, `otel-collector`, and `tempo` build from thin images that add a static loopback probe because their upstream images carry no shell or HTTP client. Run `docker compose ps` to see each service's health. The four backing databases `agent_platform`, `temporal`, `temporal_visibility`, and `langfuse` are created in the one Postgres container.
+`inv local-up` builds the images, runs the `db-migrate` task, applies the Temporal schemas and namespace, starts the services below, and waits up to ten minutes for every service to report healthy. It fails and names the service when one does not. Each long-running service declares a health check. The HTTP services answer `/health` or their own readiness endpoint, the Temporal workers and `repo-index-worker` refresh a heartbeat file that `python -m services.healthcheck heartbeat` checks for freshness, and `opa`, `otel-collector`, and `tempo` build from thin images that add a static loopback probe because their upstream images carry no shell or HTTP client. `temporal` builds the same way because its upstream image carries no Temporal CLI. Run `docker compose ps` to see each service's health. The four backing databases `agent_platform`, `temporal`, `temporal_visibility`, and `langfuse` are created in the one Postgres container.
 
 | Service | Host port | Role |
 | --- | --- | --- |
@@ -340,12 +345,31 @@ The one-shot services run under the `tasks` profile, so `up` never creates them.
 | --- | --- | --- |
 | `db-migrate` | `inv db-migrate`, `inv db-reset`, `inv local-up` | Applies the migrations |
 | `schedule-bootstrap` | `inv schedules-install` | Registers the reap schedule and the intake schedule for the configured ticket source |
+| `temporal-admin-tools` | `inv local-up`, `inv temporal-upgrade` | Applies the Temporal schemas and registers the `default` namespace |
 
 The workers and `coordination-service` check the schema revision at startup. While the database is behind the migrations their image carries, they wait and log `Run inv db-migrate` every 30 seconds. When the database holds a revision their image does not carry, as after a newer checkout migrated it, they exit.
 
 The `registry` service runs under the `registry` profile. It is the local stand-in for ECR that gate pods pull the engine image from in image mode. Start it with `docker compose --profile registry up -d registry`.
 
-Migrations only touch the platform's own `agent_platform` schema. Temporal and Langfuse manage their own schemas. Langfuse v4 runs as `langfuse-web` and `langfuse-worker` backed by ClickHouse, Valkey, and the shared MinIO object store, reusing the `langfuse` Postgres database.
+Migrations only touch the platform's own `agent_platform` schema. The `temporal-admin-tools` task applies the Temporal schemas, and Langfuse manages its own. Langfuse v4 runs as `langfuse-web` and `langfuse-worker` backed by ClickHouse, Valkey, and the shared MinIO object store, reusing the `langfuse` Postgres database.
+
+### Temporal server
+
+`compose.yaml` runs Temporal server 1.32.1 and Temporal UI 2.57.0, both pinned by digest. The server image builds from `docker/temporal.Dockerfile`, which takes the upstream image through the `TEMPORAL_SERVER_IMAGE` build argument and adds the loopback probe. The server reads its dynamic configuration from `config/platform/temporal-dynamicconfig.yaml`. The `temporal-admin-tools` task applies the schemas to the `temporal` and `temporal_visibility` databases and registers the `default` namespace with a 24-hour retention. `inv local-up` runs the schema step before the server starts and the namespace step before the workers start, and both steps leave a current database unchanged.
+
+Temporal upgrades only between consecutive minor releases, each from the highest patch of the current minor, and each server must run before the next schema change. A stack started before v0.3.0 runs server 1.29.7, and `inv local-up` refuses its database until it is upgraded. Upgrade it once, then start the stack.
+
+```
+inv temporal-upgrade && inv local-up
+```
+
+`inv temporal-upgrade` starts Postgres, reads the schema versions, and backs up both databases with `pg_dump` to `~/temporal-backup/<UTC time>`, or to `--backup-dir`. It then applies the 1.30.8 schema and starts server 1.30.8, does the same for 1.31.4, and finishes on 1.32.1, waiting for each server to report healthy before the next step. Executions in flight continue on the upgraded server. The schema change is one-way, so changing the image tags back does not restore a 1.29.7 server.
+
+Restoring means checking out the previous version, recreating both databases from the backup, and starting the stack. `pg_restore --clean` leaves behind the tables a newer schema added, so the command drops and recreates each database first. Run it from the previous checkout with `BACKUP` set to the backup directory.
+
+```
+docker compose stop temporal temporal-ui workflow-worker activity-worker review-worker && for db in temporal temporal_visibility; do docker compose exec -T postgres sh -c "dropdb -U \"\$POSTGRES_USER\" --force $db && createdb -U \"\$POSTGRES_USER\" $db && pg_restore -U \"\$POSTGRES_USER\" -d $db" < "$BACKUP/$db.dump"; done && docker compose up -d
+```
 
 ### Langfuse backing services
 
@@ -359,10 +383,10 @@ Moving an existing checkout to these versions takes a backup, a pull, a one-time
 mkdir -p "$HOME/langfuse-backup" && docker compose stop langfuse-web langfuse-worker redis clickhouse && docker run --rm -v agentic-dev-platform_langfuse-redis-data:/cache:ro -v agentic-dev-platform_langfuse-clickhouse-data:/clickhouse:ro -v "$HOME/langfuse-backup":/dst alpine:3.24 sh -c 'cp -p /cache/dump.rdb /dst/cache-dump.rdb && tar -czf /dst/clickhouse-data.tgz -C /clickhouse .' && docker compose exec -T postgres sh -c 'pg_dump -U "$POSTGRES_USER" -Fc langfuse' > "$HOME/langfuse-backup/langfuse.dump"
 ```
 
-Then pull, remove the exited one-shot containers an earlier `up` left behind, and start the stack:
+Then pull, remove the exited one-shot containers an earlier `up` left behind, upgrade the Temporal databases as [Temporal server](#temporal-server) describes, and start the stack.
 
 ```
-git pull && docker compose rm -f db-migrate schedule-bootstrap && inv local-up
+git pull && docker compose rm -f db-migrate schedule-bootstrap && inv temporal-upgrade && inv local-up
 ```
 
 No `.env` change is needed, because `REDIS_USERNAME` defaults in `compose.yaml` and `REDIS_AUTH` already exists. Valkey loads the Redis snapshot through `--rdb-version-check relaxed`, which stays in place through v0.3.x and is removed in v0.4.0.
@@ -414,16 +438,19 @@ Run `inv --list` for the full set. The common tasks are below.
 | `inv local-up`, `inv local-down` | Build, migrate, and start the stack, or stop it with volumes preserved |
 | `inv logs [--service NAME]` | Follow logs for the stack or one service |
 | `inv db-migrate`, `inv db-reset` | Apply migrations, or rebuild the schema then migrate |
+| `inv temporal-upgrade` | Back up the Temporal databases and upgrade them one minor release at a time |
 | `inv schedules-install` | Register the reap schedule and the intake schedule for the configured ticket source |
 | `inv seed` | Load allowlisted seed data |
 | `inv smoke-test`, `inv connectivity-check` | Health and Bedrock path checks |
 | `inv test` | Run the pytest suite |
 | `inv ci` | Run lint, the hermetic test tiers, and the evaluation gate as CI does |
 | `inv sast` | Run the SAST, secret, misconfiguration, and dependency scans against the accepted-findings register. Needs Docker |
+| `inv terraform-test` | Run `terraform test` in each Terraform module that has a `tests` directory, as CI does. Needs Terraform 1.11 or later |
 | `inv tunnel-start`, `inv tunnel-stop`, `inv tunnel-status` | Manage the Bedrock connectivity tunnel |
 | `inv fetch-acli` | Vendor the Atlassian `acli` binary |
 | `inv cbm-build [--source PATH] [--ref TAG]` | Build and vendor the `codebase-memory-mcp` binary, cloning upstream by default |
 | `inv reap [--apply]` | Reap expired orphan artifacts, dry-run by default |
+| `inv scrub-workspaces [--root PATH]` | Rewrite every execution workspace remote URL that carries a credential an earlier release persisted. Add `--local` to run on the host instead of the worker container |
 | `inv intake [--source jira\|rebar] [--schedule]` | Reconcile ticket intake into runs, single pass by default. `--source` defaults to `TICKET_BACKEND` and must match it. Add `--local` to run on the host instead of the worker container |
 | `inv rebar-changes [--new] [--field-changes] [--status-changes]` | Report rebar ticket changes since the last intake pass without starting work or moving the intake cursor |
 | `inv import-rebar-tickets --xlsx PATH [--reset] [--status S] [--limit N]` | Seed the rebar ticket store from a Jira xlsx export |

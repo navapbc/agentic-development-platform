@@ -18,22 +18,18 @@ def main() -> int:
         print("[evidence-bucket] set EVIDENCE_OBJECT_STORE_BUCKET first")
         return 1
 
-    from scripts.aws_clients import configure_aws_fips
+    from scripts.aws_clients import configure_aws_fips, s3_client
 
     configure_aws_fips(settings)
 
-    import boto3
     from botocore.exceptions import ClientError
 
-    kwargs: dict[str, object] = {
-        "region_name": settings.evidence_object_store_region or settings.aws_region
-    }
-    if settings.evidence_object_store_endpoint_url:
-        kwargs["endpoint_url"] = settings.evidence_object_store_endpoint_url
-    if settings.evidence_object_store_access_key and settings.evidence_object_store_secret_key:
-        kwargs["aws_access_key_id"] = settings.evidence_object_store_access_key
-        kwargs["aws_secret_access_key"] = settings.evidence_object_store_secret_key
-    client = boto3.client("s3", **kwargs)
+    client = s3_client(
+        region=settings.evidence_object_store_region or settings.aws_region,
+        endpoint_url=settings.evidence_object_store_endpoint_url,
+        access_key=settings.evidence_object_store_access_key,
+        secret_key=settings.evidence_object_store_secret_key,
+    )
 
     try:
         client.create_bucket(Bucket=bucket, ObjectLockEnabledForBucket=True)

@@ -1,8 +1,9 @@
 data "aws_caller_identity" "current" {}
 
 locals {
-  enabled   = var.create_cloudtrail
-  trail_arn = "arn:aws:cloudtrail:${var.region}:${data.aws_caller_identity.current.account_id}:trail/${var.trail_name}"
+  enabled            = var.create_cloudtrail
+  record_data_events = length(var.data_event_bucket_arns) > 0
+  trail_arn          = "arn:aws:cloudtrail:${var.region}:${data.aws_caller_identity.current.account_id}:trail/${var.trail_name}"
 }
 
 resource "aws_s3_bucket" "trail" {
@@ -206,6 +207,42 @@ resource "aws_cloudtrail" "this" {
   is_multi_region_trail         = var.is_multi_region_trail
   enable_log_file_validation    = true
   kms_key_id                    = aws_kms_key.trail[0].arn
+
+  # Advanced selectors replace the default management-event recording, so management events
+  # need their own selector once object-level events are recorded.
+  dynamic "advanced_event_selector" {
+    for_each = local.record_data_events ? [1] : []
+    content {
+      name = "Management events"
+
+      field_selector {
+        field  = "eventCategory"
+        equals = ["Management"]
+      }
+    }
+  }
+
+  dynamic "advanced_event_selector" {
+    for_each = local.record_data_events ? [1] : []
+    content {
+      name = "Object-level events on the listed buckets"
+
+      field_selector {
+        field  = "eventCategory"
+        equals = ["Data"]
+      }
+
+      field_selector {
+        field  = "resources.type"
+        equals = ["AWS::S3::Object"]
+      }
+
+      field_selector {
+        field       = "resources.ARN"
+        starts_with = [for arn in var.data_event_bucket_arns : "${arn}/"]
+      }
+    }
+  }
 
   depends_on = [aws_s3_bucket_policy.trail]
 

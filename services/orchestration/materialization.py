@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -13,6 +14,7 @@ from scripts.config import Settings, get_settings
 
 from services import process
 from services.coordination.orphans import BRANCH, STAGING, OrphanArtifact, OrphanRegistry
+from services.integration.github.git_auth import NO_AUTH, GitAuth, no_auth_for
 from services.integration.github.mediator import RepoNotAllowedError
 
 _SLUG = re.compile(r"[^A-Za-z0-9._-]+")
@@ -46,13 +48,14 @@ def _slug(value: str) -> str:
     return _SLUG.sub("-", value).strip("-") or "x"
 
 
-def _run_git(args: list[str], cwd: str | None) -> str:
+def _run_git(args: list[str], cwd: str | None, auth: GitAuth = NO_AUTH) -> str:
     proc = process.run(
-        ["git", "-c", "safe.directory=*", *args],
+        ["git", "-c", "safe.directory=*", *auth.config_args(), *args],
         timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS,
         cwd=cwd,
         capture_output=True,
         text=True,
+        env={**os.environ, **auth.env()},
     )
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout).strip()
@@ -60,8 +63,8 @@ def _run_git(args: list[str], cwd: str | None) -> str:
     return proc.stdout.rstrip()
 
 
-async def _git(*args: str, cwd: str | None = None) -> str:
-    return await asyncio.to_thread(_run_git, list(args), cwd)
+async def _git(*args: str, cwd: str | None = None, auth: GitAuth = NO_AUTH) -> str:
+    return await asyncio.to_thread(_run_git, list(args), cwd, auth)
 
 
 def _run_git_ok(args: list[str], cwd: str | None) -> bool:
@@ -85,6 +88,7 @@ class WorkspaceMaterializer:
     allowed_repos: frozenset[str]
     workspace_root: Path
     remote_url_for: Callable[[str], str]
+    auth_for: Callable[[str], GitAuth] = no_auth_for
 
     @classmethod
     def from_settings(
@@ -92,10 +96,11 @@ class WorkspaceMaterializer:
         registry: OrphanRegistry,
         *,
         remote_url_for: Callable[[str], str] | None = None,
+        auth_for: Callable[[str], GitAuth] | None = None,
         settings: Settings | None = None,
     ) -> WorkspaceMaterializer:
         resolved = settings or get_settings()
-        from services.integration.github.factory import build_git_host
+        from services.integration.github.factory import build_git_auth_for, build_git_host
         from services.integration.source_control import source_control_repos
 
         if remote_url_for is None:
@@ -105,6 +110,7 @@ class WorkspaceMaterializer:
             allowed_repos=frozenset(source_control_repos(resolved)),
             workspace_root=Path(resolved.execution_workspace_root),
             remote_url_for=remote_url_for,
+            auth_for=auth_for or build_git_auth_for(resolved),
         )
 
     def _guard(self, repo: str) -> None:
@@ -163,17 +169,19 @@ class WorkspaceMaterializer:
         branch: str,
         commit_sha: str,
     ) -> None:
+        auth = self.auth_for(repo)
         reused = (path / ".git").is_dir()
         if reused:
+            await self._drop_persisted_credential(repo, path)
             head = await _git("rev-parse", "HEAD", cwd=str(path))
             current = await _git("rev-parse", "--abbrev-ref", "HEAD", cwd=str(path))
             if head == commit_sha and current == branch:
                 return
             if not await _git_ok("cat-file", "-e", f"{commit_sha}^{{commit}}", cwd=str(path)):
-                await _git("fetch", "--quiet", "origin", branch, cwd=str(path))
+                await _git("fetch", "--quiet", "origin", branch, cwd=str(path), auth=auth)
         else:
             path.parent.mkdir(parents=True, exist_ok=True)
-            await _git("clone", "--quiet", "--", self.remote_url_for(repo), str(path))
+            await _git("clone", "--quiet", "--", self.remote_url_for(repo), str(path), auth=auth)
         await _git(
             "-c",
             "advice.detachedHead=false",
@@ -187,6 +195,18 @@ class WorkspaceMaterializer:
         if reused:
             await _git("reset", "--hard", commit_sha, cwd=str(path))
             await _git("clean", "-fd", cwd=str(path))
+
+    async def _drop_persisted_credential(self, repo: str, path: Path) -> None:
+        """Clear the credential an earlier release left in a workspace that is being reused.
+
+        That release cloned and fetched with the token inside the remote URL, so `.git/config`
+        of any workspace materialized then still holds it, and that file is archived into the
+        agent sandbox and the gate pods. Git strips the userinfo before it writes `FETCH_HEAD`,
+        which therefore never held the token, and every reader of `FETCH_HEAD` fetches in the
+        same call, so removing a stale one costs nothing.
+        """
+        await _git("remote", "set-url", "origin", self.remote_url_for(repo), cwd=str(path))
+        (path / ".git" / "FETCH_HEAD").unlink(missing_ok=True)
 
     async def changed_paths(self, workspace: MaterializedWorkspace) -> list[str]:
         """Repository-relative paths the workspace has changed, deletions included.

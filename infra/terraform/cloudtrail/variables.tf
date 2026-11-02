@@ -22,6 +22,12 @@ variable "is_multi_region_trail" {
   default     = true
 }
 
+variable "data_event_bucket_arns" {
+  description = "ARNs of buckets whose object-level reads and writes the trail records as data events, including denied requests. Empty records management events only."
+  type        = list(string)
+  default     = []
+}
+
 variable "name_prefix" {
   description = "Name prefix for created resources."
   type        = string
