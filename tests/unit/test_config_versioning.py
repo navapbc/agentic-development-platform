@@ -3,8 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from scripts.config_check import report_required_secrets
 from services.integration.credentials import (
     ConfigError,
+    EnvSecretResolver,
     config_status,
     current_config_version,
     require_current_config,
@@ -82,3 +84,23 @@ def test_non_integer_version_raises(tmp_path: Path) -> None:
 
     with pytest.raises(ConfigError, match="config_version must be an integer"):
         require_current_config("widgets", environment="local", root=tmp_path, current=1)
+
+
+def test_config_check_reports_a_missing_required_secret(tmp_path: Path, capsys) -> None:
+    resolver = EnvSecretResolver({}, env_file=tmp_path / ".env")
+
+    missing = report_required_secrets(resolver)
+
+    output = capsys.readouterr().out
+    assert missing == 1
+    assert "COORDINATION_SHARED_SECRET" in output
+    assert "inv local-up" in output
+
+
+def test_config_check_passes_a_present_required_secret(tmp_path: Path, capsys) -> None:
+    resolver = EnvSecretResolver(
+        {"COORDINATION_SHARED_SECRET": "set-locally"}, env_file=tmp_path / ".env"
+    )
+
+    assert report_required_secrets(resolver) == 0
+    assert "MISSING" not in capsys.readouterr().out

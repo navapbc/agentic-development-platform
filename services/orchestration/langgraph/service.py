@@ -8,6 +8,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from scripts.config import configured_log_level, get_settings
 
+from services.http_front_door import REQUEST_TIMEOUT_SECONDS
+
 logging.basicConfig(level=configured_log_level())
 log = logging.getLogger("langgraph-service")
 
@@ -15,6 +17,8 @@ PORT = 8100
 
 
 class Handler(BaseHTTPRequestHandler):
+    timeout = REQUEST_TIMEOUT_SECONDS
+
     def do_GET(self) -> None:
         if self.path in ("/health", "/healthz", "/"):
             body = json.dumps({"status": "ok", "service": "langgraph"}).encode()

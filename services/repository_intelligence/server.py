@@ -10,6 +10,11 @@ from typing import Any
 
 from scripts.config import configured_log_level, get_settings
 
+from services.http_front_door import (
+    REQUEST_TIMEOUT_SECONDS,
+    RequestRejected,
+    read_bounded_body,
+)
 from services.integration.source_control import source_control_repos
 from services.repository_intelligence.context_builder.registry import (
     RepositoryIntelligenceRegistry,
@@ -45,6 +50,8 @@ def build_registry() -> RepositoryIntelligenceRegistry | None:
 
 
 class Handler(BaseHTTPRequestHandler):
+    timeout = REQUEST_TIMEOUT_SECONDS
+
     def do_GET(self) -> None:
         if self.path in ("/health", "/healthz", "/"):
             self._respond(200, {"status": "ok", "service": "repository-intelligence"})
@@ -52,6 +59,13 @@ class Handler(BaseHTTPRequestHandler):
             self._respond(404, {"error": "not found"})
 
     def do_POST(self) -> None:
+        try:
+            self._route()
+        except RequestRejected as exc:
+            self.close_connection = True
+            self._respond(exc.status, {"error": exc.message})
+
+    def _route(self) -> None:
         if self.path == "/warm":
             self._warm()
             return
@@ -102,8 +116,7 @@ class Handler(BaseHTTPRequestHandler):
         self._respond(200, {"repo": repo, "commit": commit, "reindexed": reindexed})
 
     def _read_json(self) -> dict[str, Any] | None:
-        length = int(self.headers.get("Content-Length") or 0)
-        raw = self.rfile.read(length) if length else b""
+        raw = read_bounded_body(self.rfile, self.headers)
         try:
             return json.loads(raw or b"{}")
         except json.JSONDecodeError:

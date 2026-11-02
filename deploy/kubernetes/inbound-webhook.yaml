@@ -57,6 +57,12 @@ spec:
                 secretKeyRef:
                   name: agentic-platform
                   key: github_webhook_secret
+            - name: JIRA_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: agentic-platform
+                  key: jira_webhook_secret
+                  optional: true
           volumeMounts:
             - name: integration-config
               mountPath: /app/config/local

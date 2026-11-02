@@ -147,6 +147,7 @@ class Settings(BaseSettings):
     repo_intelligence_cbm_binary: str = ""
 
     coordination_url: str = "http://localhost:8130"
+    coordination_shared_secret: str = ""
     repo_intelligence_repos: str = ""
     repo_index_poll_interval_seconds: float = 30.0
     repo_index_worker_concurrency: int = 2
