@@ -33,6 +33,9 @@ config/*/rebar-store-aws-config
 compose.*.yaml
 !compose.override.yaml
 
+# Build identifier ledger written by inv local-up
+.build-id.json
+
 # AWS / credentials
 .aws/
 

@@ -35,7 +35,7 @@ class PrClosedEvent:
 
 def verify_signature(secret: str, body: bytes, header: str) -> bool:
     if not secret:
-        return True
+        return False
     if not header.startswith(_SIGNATURE_PREFIX):
         return False
     digest = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()

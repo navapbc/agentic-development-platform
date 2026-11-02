@@ -6,6 +6,7 @@ import io
 import json
 
 import pytest
+from services.http_front_door import MAX_REQUEST_BODY_BYTES
 from services.repository_intelligence import server
 from services.repository_intelligence.normalization.models import ContextPackage
 
@@ -170,3 +171,23 @@ def test_context_package_endpoint_unregistered_repo_returns_503(monkeypatch):
     recorder.do_POST()
 
     assert recorder._status == 503
+
+
+def test_over_cap_content_length_returns_413_leaving_the_body_unread():
+    recorder = _Recorder("/context_package")
+    recorder.headers = {"Content-Length": str(MAX_REQUEST_BODY_BYTES + 1)}
+    recorder.rfile = io.BytesIO(b"x" * 16)
+
+    recorder.do_POST()
+
+    assert recorder._status == 413
+    assert recorder.rfile.tell() == 0
+
+
+def test_non_numeric_content_length_returns_400():
+    recorder = _Recorder("/context_package")
+    recorder.headers = {"Content-Length": "banana"}
+
+    recorder.do_POST()
+
+    assert recorder._status == 400
