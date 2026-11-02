@@ -28,7 +28,7 @@ reasoning = [
     "langgraph>=1.2,<2",
 ]
 review = [
-    "nava-rebar[agents,jira-datacenter]==0.13.1",
+    "nava-rebar[agents,jira-datacenter,s3]==0.13.1",
     "openpyxl>=3.1,<4",
 ]
 sandbox = [

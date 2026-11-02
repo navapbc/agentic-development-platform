@@ -2,9 +2,9 @@
 
 This roadmap groups the remaining platform work into versions. The authoritative, code-verified feature list and per-feature detail live in the [remaining-work roadmap plan](docs/plans/2026-09-02-1801-feat-remaining-work-roadmap-plan.md). Each version below names its theme, its goal, and its features with an effort estimate in hours of uninterrupted work. Effort ranges carry the confidence the source plan recorded.
 
-Every v0.2.0 and v0.3.0 feature has a dedicated implementation plan. Later versions link to their entry in the roadmap plan until their plans are written.
+Every v0.2.0 feature and every v0.3.0 feature planned before the Jira board has a dedicated implementation plan. The v0.3.0 features added from the Jira board name their ticket. Later versions link to their entry in the roadmap plan until their plans are written.
 
-Total remaining scope is roughly 150 to 201 hours across 24 features.
+Total remaining scope is roughly 153 to 203 hours across 22 features.
 
 ## v0.1.0 Pluggable ticket and source-control backends
 
@@ -35,7 +35,7 @@ Sequencing. Native Bedrock review path first, since it settles the review path a
 
 ## v0.3.0 AWS transition and FedRAMP readiness
 
-Status. In progress. v0.3.0 is the FedRAMP Medium readiness release and does not ship until the platform-owned technical controls are met. The hosting account holds a FedRAMP Medium authorization, so the platform inherits the controls AWS owns and implements the configuration and provisioning controls on top. The scope was expanded from a design-only release to provision the production infrastructure the platform-owned controls require. The local-to-AWS mapping, the schema contracts, the WORM evidence and audit store, the full evidence artifact coverage, the hardening design, the data tier with its tiered network, egress path, and remote state, and the secret store with per-service database roles and credential rotation are delivered.
+Status. In progress. v0.3.0 is the FedRAMP Medium readiness release and does not ship until the platform-owned technical controls are met. The hosting account holds a FedRAMP Medium authorization, so the platform inherits the controls AWS owns and implements the configuration and provisioning controls on top. The scope was expanded from a design-only release to provision the production infrastructure the platform-owned controls require. The local-to-AWS mapping, the schema contracts, the WORM evidence and audit store, the full evidence artifact coverage, the hardening design, the data tier with its tiered network, egress path, and remote state, the secret store with per-service database roles and credential rotation, and the rebar ticket store bucket are delivered.
 Goal. The platform is technically FedRAMP Medium ready. It has documented local-to-AWS mappings, a control inheritance and shared-responsibility matrix, committed audit and evidence contracts, an S3-backed WORM evidence and audit store, and terraform that provisions the data tier, secret store, container-platform services, Temporal control plane, observability, and the rebar ticket bucket with encryption, least privilege, backups, and private networking, plus a hardened AWS security baseline. Organizational and operational control families remain the deploying organization's responsibility, recorded in the inheritance matrix.
 
 | Feature | Effort | Detail |
@@ -50,15 +50,20 @@ Goal. The platform is technically FedRAMP Medium ready. It has documented local-
 | AWS security baseline hardening | 4-6h | [plan](docs/plans/2026-09-14-2146-feat-aws-security-baseline-hardening-plan.md) |
 | Data and cache tier terraform | 24-32h | [plan](docs/plans/2026-09-14-2148-feat-data-cache-tier-terraform-plan.md) |
 | Secret store terraform | 8-13h | [plan](docs/plans/2026-09-14-2149-feat-secret-store-terraform-plan.md) |
-| Rebar ticket store bucket terraform | 3-4h | [plan](docs/plans/2026-09-14-2150-feat-rebar-ticket-store-bucket-terraform-plan.md) |
-| Container-platform services terraform | 26-38h | [plan](docs/plans/2026-09-14-2151-feat-container-platform-services-terraform-plan.md). Also extends the README section Deploying to AWS with the steps that build and push the platform images, run the migrations as the migrator role, start the services, and set `secret_readers` and `secret_restart_services` to the service roles and ECS services. |
-| Temporal control plane terraform | 10-16h | [plan](docs/plans/2026-09-14-2152-feat-temporal-control-plane-terraform-plan.md) |
-| Observability terraform | 8-12h | [plan](docs/plans/2026-09-14-2153-feat-observability-terraform-plan.md) |
-| Private-endpoint jump-host residual hardening | 3h | [plan](docs/plans/2026-09-14-1900-feat-jumphost-residual-hardening-plan.md) |
+| Rebar ticket store bucket terraform | 16-21h | [plan](docs/plans/2026-09-14-2150-feat-rebar-ticket-store-bucket-terraform-plan.md) |
+| ECS Fargate services for the platform containers | 20-30h (low) | Jira ADP-136, a sub-task of ADP-61. [plan](docs/plans/2026-09-14-2151-feat-container-platform-services-terraform-plan.md) |
+| EKS cluster for the pod-orchestrating workloads | 28-40h (low) | Jira ADP-137, a sub-task of ADP-61. [plan](docs/plans/2026-09-14-2151-feat-container-platform-services-terraform-plan.md) |
+| Local Temporal server upgrade to 1.32.1 | 6-10h | Jira ADP-138. [plan](docs/plans/2026-10-30-1330-feat-temporal-server-upgrade-plan.md) |
+| Temporal control plane terraform | 10-14h | Jira ADP-97. [plan](docs/plans/2026-09-14-2152-feat-temporal-control-plane-terraform-plan.md) |
+| Observability terraform | 6-10h | Jira ADP-95. [plan](docs/plans/2026-09-14-2153-feat-observability-terraform-plan.md) |
+| Activity worker, LiteLLM, and OPA in the local cluster | 8-12h | Jira ADP-139. Also removes `langgraph-service`. |
+| Private-endpoint jump-host residual hardening | 1-2h | Jira ADP-104. [plan](docs/plans/2026-09-14-1900-feat-jumphost-residual-hardening-plan.md) |
 | Full evidence artifact coverage | 4-6h | [plan](docs/plans/2026-09-14-1901-feat-full-evidence-artifact-coverage-plan.md) |
-| Remaining connectivity and sandbox confirmations | 3-6h (low) | [plan](docs/plans/2026-09-14-1902-feat-connectivity-sandbox-confirmations-plan.md) |
+| Remaining connectivity and sandbox confirmations | 3-6h (low) | Jira ADP-92. [plan](docs/plans/2026-09-14-1902-feat-connectivity-sandbox-confirmations-plan.md) |
+| MCP gateway client authentication | 3-5h | Jira ADP-140 |
+| Leaked OpenHands sandbox pods | 3-5h | Jira ADP-141 |
 
-Version effort. 121-173h.
+Version effort. 172-249h.
 
 ## v0.4.0 Production serving and demo readiness
 
@@ -73,10 +78,11 @@ Goal. The repository-intelligence service runs behind a production server bounda
 | Planner on the rebar runner | 6h | [roadmap](docs/plans/2026-09-02-1801-feat-remaining-work-roadmap-plan.md) |
 | Database seeds and reset | 5h | [roadmap](docs/plans/2026-09-02-1801-feat-remaining-work-roadmap-plan.md) |
 | JavaScript SCIP verification corpus | 6h | [roadmap](docs/plans/2026-09-02-1801-feat-remaining-work-roadmap-plan.md) |
-| Remove unwired feature code | 3h | Remove the functions that no runtime path calls, with their tests and docs: `load_tickets_store_config` in `services/integration/tickets/store_config.py`, `rotate_identity_key` in `services/orchestration/authorship.py`, `should_resume` and `select_resumable` in `services/orchestration/suspension.py`, `available_models_from_litellm` in `services/orchestration/gates/model_resolver.py`, `ensure_status` and `post_comment` in `services/integration/jira/writes.py`, `webhook_enabled` in `services/integration/integrations.py`, `admit_sequence` in `services/orchestration/coordination_client.py`, `active_key_ids` in `services/review/trust_root.py`, `repo_search_structural` in the ast-grep provider, and `suspend_for` in `services/orchestration/temporal_workflows/suspendable.py`. Correct `docs/tickets-store-credentials.md`, which states that a loader validates the tickets store configuration at load time, although no code path loads it. |
+| Remove unwired feature code | 3h | Remove the functions that no runtime path calls, with their tests and docs: `rotate_identity_key` in `services/orchestration/authorship.py`, `should_resume` and `select_resumable` in `services/orchestration/suspension.py`, `available_models_from_litellm` in `services/orchestration/gates/model_resolver.py`, `ensure_status` and `post_comment` in `services/integration/jira/writes.py`, `webhook_enabled` in `services/integration/integrations.py`, `admit_sequence` in `services/orchestration/coordination_client.py`, `active_key_ids` in `services/review/trust_root.py`, `repo_search_structural` in the ast-grep provider, and `suspend_for` in `services/orchestration/temporal_workflows/suspendable.py`. |
+| Raise the rebar floor for the split-remote repair | 1h | Once a rebar release resolves the multi-bundle repair remote with `git remote get-url --push` ([navapbc/rebar#145](https://github.com/navapbc/rebar/issues/145)), raise the `nava-rebar` pin to it and remove the manual repair steps from the `rebar-ticket-store` README. |
 | Remove the cache snapshot compatibility flag | 1h | Drop `--rdb-version-check relaxed` from the `redis` service in `compose.yaml`. It exists only so Valkey can load a Redis 7.4 snapshot on the first start after upgrading to v0.3.0, and every local cache volume is in the Valkey format after that start. Remove the matching README and CHANGELOG notes. |
 
-Version effort. 40h.
+Version effort. 41h.
 
 ## v0.5.0 Runtime robustness and interactivity
 

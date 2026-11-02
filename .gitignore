@@ -26,6 +26,8 @@ config/*/review-signing-key
 config/*/review-signing-key.pub
 config/*/authorship-signing-key
 config/*/authorship-signing-key.pub
+config/*/rebar-store-aws-config
+!config/*/rebar-store-aws-config.example
 
 # Project compose overlays (the platform's own compose files stay tracked)
 compose.*.yaml
