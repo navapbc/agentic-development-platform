@@ -481,3 +481,34 @@ run "a_provider_arn_that_is_not_an_oidc_provider_is_rejected" {
 
   expect_failures = [terraform_data.inputs_guard]
 }
+
+run "a_padded_oidc_audience_is_rejected" {
+  command = plan
+
+  variables {
+    create_rebar_ticket_store = true
+    trusted_principals        = ["arn:aws:iam::111111111111:role/activity-worker"]
+    writer_github_oidc_trust = {
+      provider_arn = "arn:aws:iam::111111111111:oidc-provider/token.actions.githubusercontent.com"
+      subjects     = ["repo:navapbc/agentic-development-platform:ref:refs/heads/main"]
+      audience     = " sts.amazonaws.com "
+    }
+  }
+
+  expect_failures = [terraform_data.inputs_guard]
+}
+
+run "a_padded_oidc_subject_entry_is_rejected" {
+  command = plan
+
+  variables {
+    create_rebar_ticket_store = true
+    trusted_principals        = ["arn:aws:iam::111111111111:role/activity-worker"]
+    writer_github_oidc_trust = {
+      provider_arn = "arn:aws:iam::111111111111:oidc-provider/token.actions.githubusercontent.com"
+      subjects     = [" repo:navapbc/agentic-development-platform:ref:refs/heads/main "]
+    }
+  }
+
+  expect_failures = [terraform_data.inputs_guard]
+}
