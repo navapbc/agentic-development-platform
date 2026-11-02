@@ -21,6 +21,12 @@ from services.integration.credentials import ConfigError
 class TicketsStore:
     bucket: str
     prefix: str
+    reader_profile: str = ""
+    writer_profile: str = ""
+
+    def remote_url(self, profile: str) -> str:
+        location = f"{self.bucket}/{self.prefix}" if self.prefix else self.bucket
+        return f"s3://{profile}@{location}"
 
 
 @dataclass(frozen=True)
@@ -80,7 +86,9 @@ def parse_tickets_store_config(raw: Mapping[str, Any]) -> TicketsStoreConfig:
 
     store = TicketsStore(
         bucket=_required_str(store_raw, "bucket", "store"),
-        prefix=str(store_raw.get("prefix", "")).strip(),
+        prefix=str(store_raw.get("prefix", "")).strip().strip("/"),
+        reader_profile=str(store_raw.get("reader_profile", "") or "").strip(),
+        writer_profile=str(store_raw.get("writer_profile", "") or "").strip(),
     )
     roles = TicketsRoles(
         read_only=_required_str(roles_raw, "read_only", "roles"),
@@ -109,6 +117,8 @@ def _validate(
 ) -> None:
     if roles.read_only == roles.write:
         raise ConfigError("tickets store read-only polling role must differ from the write role")
+    if store.reader_profile and store.reader_profile == store.writer_profile:
+        raise ConfigError("tickets store reader profile must differ from the writer profile")
     forbidden_roles = {isolation.evidence_writer_role, isolation.audit_writer_role}
     if roles.read_only in forbidden_roles or roles.write in forbidden_roles:
         raise ConfigError("tickets store roles must not equal the evidence or audit writer role")

@@ -11,8 +11,6 @@ from scripts.config import Settings, get_settings
 
 from services.coordination.idempotency import SideEffectLedger, SideEffectRef
 from services.integration.jira.credentials import (
-    CLOUD,
-    DATACENTER,
     JiraCredentialResolver,
     acceptance_field,
     build_jira_credential_resolver,
@@ -21,6 +19,7 @@ from services.integration.jira.credentials import allowed_projects as jira_allow
 from services.integration.jira.intake_targets import resolve_targets
 from services.integration.jira.normalize import normalize_issue
 from services.integration.jira.snapshot import (
+    JIRA_SOURCES,
     TaskSnapshotStore,
     capture_candidate_snapshot,
     capture_task_snapshot,
@@ -33,8 +32,6 @@ from services.orchestration.intake_base import (
     declared_base,
     unresolvable_base_reason,
 )
-
-_JIRA_SOURCES = frozenset({CLOUD, DATACENTER})
 
 
 @dataclass(frozen=True)
@@ -417,7 +414,7 @@ async def _start(
     async def _launch() -> dict[str, str]:
         execution_id = f"intake-{uuid.uuid4().hex[:8]}"
         await ctx.execution_seeder.seed(execution_id=execution_id, task_id=issue_key, repo=repo)
-        if candidate.source_backend in _JIRA_SOURCES:
+        if candidate.source_backend in JIRA_SOURCES:
             snapshot = await capture_task_snapshot(
                 candidate.raw,
                 execution_id=execution_id,

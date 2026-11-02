@@ -26,10 +26,15 @@ config/*/review-signing-key
 config/*/review-signing-key.pub
 config/*/authorship-signing-key
 config/*/authorship-signing-key.pub
+config/*/rebar-store-aws-config
+!config/*/rebar-store-aws-config.example
 
 # Project compose overlays (the platform's own compose files stay tracked)
 compose.*.yaml
 !compose.override.yaml
+
+# Build identifier ledger written by inv local-up
+.build-id.json
 
 # AWS / credentials
 .aws/
@@ -86,3 +91,6 @@ deploy/kubernetes/local/*.secret.env
 .context/compound-engineering/
 
 .sast/
+
+# Audit artifacts written by rebar bridge sync (snapshots, manifests, sync logs)
+bridge_state/

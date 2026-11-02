@@ -134,16 +134,15 @@ class ObjectStoreWriter:
 
     def _get_client(self) -> Any:
         if self._client is None:
-            import boto3
+            from scripts.aws_clients import s3_client
 
             s = self._settings
-            kwargs: dict[str, Any] = {"region_name": s.evidence_object_store_region or s.aws_region}
-            if s.evidence_object_store_endpoint_url:
-                kwargs["endpoint_url"] = s.evidence_object_store_endpoint_url
-            if s.evidence_object_store_access_key and s.evidence_object_store_secret_key:
-                kwargs["aws_access_key_id"] = s.evidence_object_store_access_key
-                kwargs["aws_secret_access_key"] = s.evidence_object_store_secret_key
-            self._client = boto3.client("s3", **kwargs)
+            self._client = s3_client(
+                region=s.evidence_object_store_region or s.aws_region,
+                endpoint_url=s.evidence_object_store_endpoint_url,
+                access_key=s.evidence_object_store_access_key,
+                secret_key=s.evidence_object_store_secret_key,
+            )
         return self._client
 
     def put_locked(self, key: str, body: bytes, *, retention_days: int) -> str:

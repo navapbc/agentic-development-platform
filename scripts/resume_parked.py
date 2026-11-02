@@ -12,6 +12,7 @@ import logging
 from services.orchestration.reconciler import reconcile
 from services.orchestration.suspension import RESUME_SIGNAL, ResumeOn
 from services.orchestration.suspension_store import PostgresSuspensionStore
+from services.orchestration.worker_versioning import move_to_current_version
 from temporalio.client import Client
 
 from scripts.config import get_settings, to_host_hostport
@@ -27,8 +28,14 @@ async def main() -> None:
 
     async def send_resume(workflow_id: str, trigger: ResumeOn) -> None:
         handle = client.get_workflow_handle(workflow_id)
+        await move_to_current_version(client, settings, workflow_id)
         await handle.signal(RESUME_SIGNAL, trigger.value)
-        log.info("resumed %s (trigger=%s)", workflow_id, trigger.value)
+        log.info(
+            "resumed %s on build %s (trigger=%s)",
+            workflow_id,
+            settings.agent_build_id,
+            trigger.value,
+        )
 
     plans = await reconcile(
         PostgresSuspensionStore(),

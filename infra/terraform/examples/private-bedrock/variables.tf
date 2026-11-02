@@ -294,3 +294,33 @@ variable "secret_recovery_window_days" {
   type        = number
   default     = 30
 }
+
+variable "create_rebar_ticket_store" {
+  description = "Create the S3 bucket, KMS key, and reader and writer roles for the rebar ticket store."
+  type        = bool
+  default     = false
+}
+
+variable "rebar_ticket_store_trusted_principals" {
+  description = "IAM principal ARNs allowed to assume the ticket store reader and writer roles the module creates."
+  type        = list(string)
+  default     = []
+}
+
+variable "rebar_ticket_store_admin_principals" {
+  description = "IAM principal ARNs allowed to seed the ticket store and to empty its bucket before a destroy."
+  type        = list(string)
+  default     = []
+}
+
+variable "rebar_ticket_store_existing_reader_role_arn" {
+  description = "Existing role that fetches the ticket store. Set it with the writer role to skip creating both."
+  type        = string
+  default     = ""
+}
+
+variable "rebar_ticket_store_existing_writer_role_arn" {
+  description = "Existing role that pushes the ticket store. Set it with the reader role to skip creating both."
+  type        = string
+  default     = ""
+}

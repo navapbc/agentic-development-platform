@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import shlex
 import sys
+from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from invoke import Collection, Exit, task
+from scripts.build_id import recorded_build_id, resolve_build_id
 from services import process
 
 COMPOSE = "docker compose"
@@ -92,12 +96,199 @@ def config_check(c):
     c.run(f"{HOST_PYTHON} -m scripts.config_check", pty=True)
 
 
-@task
-def local_up(c):
-    """Build the images, apply migrations, then start the stack and wait for it to be healthy."""
-    c.run(f"{COMPOSE} {_compose_files()} build")
+@task(
+    help={
+        "force": "Replace the workers even when running executions are pinned to the "
+        "outgoing build."
+    }
+)
+def local_up(c, force=False):
+    """Build the images, apply the schemas, then start the stack and wait for it to be healthy."""
+    outgoing = recorded_build_id()
+    build_id = resolve_build_id()
+    if build_id != outgoing and not force:
+        _refuse_to_strand(outgoing)
+    print(f"[local-up] build id {build_id}")
+    os.environ["AGENT_BUILD_ID"] = build_id
+    files = _compose_files()
+    c.run(f"{COMPOSE} {files} build --build-arg AGENT_BUILD_ID={shlex.quote(build_id)}")
     db_migrate(c)
-    c.run(f"{COMPOSE} {_compose_files()} up -d --wait --wait-timeout 600")
+    _require_temporal_schema_at_target(c)
+    _temporal_admin(c, "schema")
+    c.run(f"{COMPOSE} {files} up -d --wait --wait-timeout 600 temporal")
+    _temporal_admin(c, "namespace")
+    c.run(f"{COMPOSE} {files} up -d --wait --wait-timeout 600")
+
+
+@dataclass(frozen=True)
+class TemporalRelease:
+    version: str
+    schema: tuple[int, int]
+    visibility: tuple[int, int]
+    server_image: str = ""
+    admin_tools_image: str = ""
+
+    def image_env(self) -> dict[str, str]:
+        if not self.server_image:
+            return {}
+        return {
+            "TEMPORAL_SERVER_IMAGE": self.server_image,
+            "TEMPORAL_ADMIN_TOOLS_IMAGE": self.admin_tools_image,
+        }
+
+
+# Temporal upgrades only between consecutive minor releases, from the highest patch of each.
+# The schema versions are those in schema/postgresql/v12/version.go at each release tag.
+TEMPORAL_UPGRADE_PATH = (
+    TemporalRelease("1.29.7", (1, 18), (1, 9)),
+    TemporalRelease(
+        "1.30.8",
+        (1, 18),
+        (1, 13),
+        "temporalio/server:1.30.8@sha256:54c59485b185ad787061f9a2ed72bd31c8efeae2d4144c61f22873df52c3c781",
+        "temporalio/admin-tools:1.30.8@sha256:22d417fd0d541da6b18486912a546b3203f516f0bf9f8b2f27611506fca2507c",
+    ),
+    TemporalRelease(
+        "1.31.4",
+        (1, 19),
+        (1, 14),
+        "temporalio/server:1.31.4@sha256:1986d4554cc0da8cf09ddcaa10bc348f22f192972b4c2ec1f768f7307c5892e6",
+        "temporalio/admin-tools:1.31.4@sha256:c286fe515148587228d692806bc6f7652be5febc384a73dfd16379aed69f7d87",
+    ),
+)
+TEMPORAL_TARGET = TemporalRelease("1.32.1", (1, 19), (1, 14))
+TEMPORAL_DATABASES = ("temporal", "temporal_visibility")
+
+
+def _temporal_admin(c, action: str, env: dict[str, str] | None = None) -> None:
+    c.run(
+        f"{COMPOSE} {_compose_files()} run --rm temporal-admin-tools {action}",
+        pty=True,
+        env=env or {},
+    )
+
+
+def _psql(c, database: str, query: str) -> str:
+    sql = shlex.quote(f'psql -U "$POSTGRES_USER" -d {database} -Atc "{query}"')
+    return c.run(
+        f"{COMPOSE} {_compose_files()} exec -T postgres sh -c {sql}", hide=True
+    ).stdout.strip()
+
+
+def _temporal_schema_version(c, database: str) -> tuple[int, int] | None:
+    if not _psql(c, database, "select to_regclass('schema_version')"):
+        return None
+    major, _, minor = _psql(c, database, "select curr_version from schema_version").partition(".")
+    return int(major), int(minor)
+
+
+def _require_temporal_schema_at_target(c) -> None:
+    targets = (TEMPORAL_TARGET.schema, TEMPORAL_TARGET.visibility)
+    for database, target in zip(TEMPORAL_DATABASES, targets, strict=True):
+        current = _temporal_schema_version(c, database)
+        if current is None or current == target:
+            continue
+        version = ".".join(map(str, current))
+        if current < target:
+            raise Exit(
+                f"The {database} database is at schema {version}, older than server "
+                f"{TEMPORAL_TARGET.version} upgrades from. Run inv temporal-upgrade."
+            )
+        raise Exit(
+            f"The {database} database is at schema {version}, newer than server "
+            f"{TEMPORAL_TARGET.version} supports. Check out the release that wrote it."
+        )
+
+
+def _temporal_upgrade_steps(
+    schema: tuple[int, int], visibility: tuple[int, int]
+) -> list[TemporalRelease]:
+    for index, release in enumerate(TEMPORAL_UPGRADE_PATH):
+        if (release.schema, release.visibility) == (schema, visibility):
+            return [*TEMPORAL_UPGRADE_PATH[index + 1 :], TEMPORAL_TARGET]
+    raise Exit(
+        f"No upgrade path from schema {schema[0]}.{schema[1]} and visibility schema "
+        f"{visibility[0]}.{visibility[1]}. "
+        f"The path starts at server {TEMPORAL_UPGRADE_PATH[0].version}."
+    )
+
+
+def _backup_temporal_databases(c, directory: str) -> None:
+    os.makedirs(directory, exist_ok=True)
+    for database in TEMPORAL_DATABASES:
+        dump = shlex.quote(f'pg_dump -U "$POSTGRES_USER" -Fc {database}')
+        target = shlex.quote(os.path.join(directory, f"{database}.dump"))
+        c.run(f"{COMPOSE} {_compose_files()} exec -T postgres sh -c {dump} > {target}")
+    print(f"[temporal-upgrade] backed up {', '.join(TEMPORAL_DATABASES)} to {directory}")
+
+
+@task(
+    help={
+        "backup_dir": "Directory for the pg_dump backups (default ~/temporal-backup/<UTC time>).",
+        "skip_backup": "Skip the backup, for a stack whose Temporal data is disposable.",
+    }
+)
+def temporal_upgrade(c, backup_dir="", skip_backup=False):
+    """Back up the Temporal databases and upgrade them one minor release at a time."""
+    files = _compose_files()
+    c.run(f"{COMPOSE} {files} up -d --wait postgres")
+    schema, visibility = (_temporal_schema_version(c, database) for database in TEMPORAL_DATABASES)
+    if schema is None or visibility is None:
+        raise Exit("No Temporal schema to upgrade. Run inv local-up to set up a new database.")
+    steps = _temporal_upgrade_steps(schema, visibility)
+    if not skip_backup:
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        _backup_temporal_databases(
+            c, backup_dir or os.path.join(os.path.expanduser("~"), "temporal-backup", stamp)
+        )
+    for release in steps:
+        print(f"[temporal-upgrade] applying the schema and starting server {release.version}")
+        env = release.image_env()
+        _temporal_admin(c, "schema", env)
+        c.run(
+            f"{COMPOSE} {files} up -d --build --no-deps --wait --wait-timeout 600 temporal",
+            env=env,
+        )
+    _temporal_admin(c, "namespace")
+
+
+def _refuse_to_strand(outgoing: str) -> None:
+    """Abort when replacing the workers would leave running executions with nowhere to run.
+
+    A pinned execution only makes progress while workers on its own version poll, and this build
+    replaces them. Reaching the server is best effort, because the stack is down on a first run
+    and an unreachable server reports no executions to strand either way.
+    """
+    from scripts.config import get_settings, to_host_hostport
+
+    settings = get_settings()
+    if not settings.worker_versioning_enabled:
+        return
+
+    async def _stranded() -> list[str]:
+        from services.orchestration.worker_versioning import pinned_executions
+        from temporalio.client import Client
+
+        client = await Client.connect(
+            to_host_hostport(settings.temporal_host, settings),
+            namespace=settings.temporal_namespace,
+        )
+        return await pinned_executions(client, settings.worker_deployment_name, outgoing)
+
+    try:
+        stranded = asyncio.run(_stranded())
+    except Exception as exc:
+        print(f"[local-up] could not list executions pinned to build {outgoing}: {exc}")
+        return
+    if not stranded:
+        return
+    listed = "\n".join(f"  {workflow_id}" for workflow_id in stranded)
+    raise Exit(
+        f"{len(stranded)} running execution(s) are pinned to build {outgoing}, whose workers this "
+        f"build replaces. Each one stops until a worker on that build polls again.\n{listed}\n"
+        f"Let them finish, or resume the parked ones with `inv resume-parked`, which repins them "
+        f"to the current build. Run `inv local-up --force` to replace the workers anyway."
+    )
 
 
 @task
@@ -195,6 +386,17 @@ def rebar_changes(c, new=False, field_changes=False, status_changes=False, local
     if status_changes:
         flags.append("--status-changes")
     _run_scripted(c, f"python -m scripts.rebar_poll {' '.join(flags)}".strip(), local=local)
+
+
+@task(help={"local": "Run on the host instead of in the activity-worker container."})
+def rebar_store_remote(c, local=False):
+    """Point the rebar ticket store at its S3 bucket as the reader for fetch and writer for push."""
+    command = "python -m scripts.rebar_store_remote"
+    if local:
+        c.run(_on_host(command), pty=True)
+        return
+    # A one-off container, because the activity worker refuses to start while the remote is wrong.
+    c.run(f"{COMPOSE} {_compose_files()} run --rm --no-deps activity-worker {command}", pty=True)
 
 
 def _rebar_gate_env() -> dict[str, str]:
@@ -377,6 +579,20 @@ def ci(c):
 
 
 @task
+def terraform_test(c):
+    """Run terraform test in each module under infra/terraform that has a tests directory."""
+    root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "infra", "terraform")
+    modules = sorted(
+        os.path.join(root, name)
+        for name in os.listdir(root)
+        if os.path.isdir(os.path.join(root, name, "tests"))
+    )
+    for module in modules:
+        c.run(f"terraform -chdir={shlex.quote(module)} init -backend=false -input=false", pty=True)
+        c.run(f"terraform -chdir={shlex.quote(module)} test", pty=True)
+
+
+@task
 def sast(c):
     """Run the SAST, secret, misconfiguration, and dependency scans against the register."""
     c.run(f"{HOST_PYTHON} -m scripts.sast_scan", pty=True)
@@ -392,6 +608,12 @@ def workflow_status(c):
 def resume_parked(c):
     """Resume parked workflows a newer agent build can retry."""
     c.run(f"{HOST_PYTHON} -m scripts.resume_parked", pty=True)
+
+
+@task
+def prune_worker_versions(c):
+    """Delete the drained versions of the Temporal worker deployment."""
+    c.run(f"{HOST_PYTHON} -m scripts.prune_worker_versions", pty=True)
 
 
 @task
@@ -446,6 +668,18 @@ def publish_jumphost_image(c, tag="v1", arch="arm64", base_image="", repo="", re
 def reap(c, apply=False):
     """Reap expired platform orphan artifacts (dry-run by default)."""
     c.run(f"{HOST_PYTHON} -m scripts.reap {'--apply' if apply else ''}".strip(), pty=True)
+
+
+@task(
+    help={
+        "root": "Workspace root to scrub (empty uses EXECUTION_WORKSPACE_ROOT).",
+        "local": "Run on the host instead of the activity-worker container.",
+    }
+)
+def scrub_workspaces(c, root="", local=False):
+    """Clear the git credential earlier releases persisted into execution workspaces."""
+    root_flag = f" --root {root}" if root else ""
+    _run_scripted(c, f"python -m scripts.scrub_workspaces{root_flag}", local=local)
 
 
 @task(
@@ -690,9 +924,11 @@ def _write_k8s_secret_env() -> None:
     env = _read_env_file(".env")
     database_url = env.get("DATABASE_URL", "").replace("@postgres:", "@host.docker.internal:")
     github_webhook_secret = env.get("GITHUB_WEBHOOK_SECRET", "local-demo-secret")
+    jira_webhook_secret = env.get("JIRA_WEBHOOK_SECRET", "local-demo-secret")
     with open(_K8S_SECRET_ENV, "w", encoding="utf-8") as handle:
         handle.write(f"database_url={database_url}\n")
         handle.write(f"github_webhook_secret={github_webhook_secret}\n")
+        handle.write(f"jira_webhook_secret={jira_webhook_secret}\n")
 
 
 @task(help={"build": "Build and tag the image from docker/Dockerfile before deploying."})
@@ -752,6 +988,7 @@ for _t in (
     connectivity_check,
     config_check,
     local_up,
+    temporal_upgrade,
     local_down,
     local_stop,
     local_destroy,
@@ -763,6 +1000,7 @@ for _t in (
     seed,
     import_rebar_tickets,
     rebar_changes,
+    rebar_store_remote,
     rebar_review_plan,
     rebar_review_code,
     operator_done,
@@ -777,11 +1015,14 @@ for _t in (
     ci,
     workflow_status,
     durability_proof,
+    prune_worker_versions,
     fetch_acli,
     sast,
+    terraform_test,
     cbm_build,
     publish_jumphost_image,
     reap,
+    scrub_workspaces,
     intake,
     index_repo,
     repair,

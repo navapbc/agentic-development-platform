@@ -107,3 +107,18 @@ output "role_bootstrap_function_name" {
   description = "Function that inv db-bootstrap-roles invokes to create the per-service database roles and databases."
   value       = module.secret_store.role_bootstrap_function_name
 }
+
+output "rebar_ticket_store_bucket" {
+  description = "Ticket store bucket, set as store.bucket in tickets.yaml. Null when create_rebar_ticket_store is false."
+  value       = module.rebar_ticket_store.bucket
+}
+
+output "rebar_ticket_store_reader_role_arn" {
+  description = "Role the reader profile assumes, set as roles.read_only in tickets.yaml."
+  value       = module.rebar_ticket_store.reader_role_arn
+}
+
+output "rebar_ticket_store_writer_role_arn" {
+  description = "Role the writer profile assumes, set as roles.write in tickets.yaml."
+  value       = module.rebar_ticket_store.writer_role_arn
+}
