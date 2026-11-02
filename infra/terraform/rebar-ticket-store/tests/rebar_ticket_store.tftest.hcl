@@ -442,3 +442,42 @@ run "a_blank_oidc_workflow_ref_entry_is_rejected" {
 
   expect_failures = [terraform_data.inputs_guard]
 }
+
+run "the_oidc_condition_keys_follow_the_issuer_the_provider_arn_names" {
+  command = plan
+
+  variables {
+    create_rebar_ticket_store = true
+    trusted_principals        = ["arn:aws:iam::111111111111:role/activity-worker"]
+    writer_github_oidc_trust = {
+      provider_arn      = "arn:aws:iam::111111111111:oidc-provider/actions.ghes.example.com"
+      subjects          = ["repo:navapbc/agentic-development-platform:ref:refs/heads/main"]
+      job_workflow_refs = ["navapbc/agentic-development-platform/.github/workflows/reconcile-bridge.yml@refs/heads/main"]
+    }
+  }
+
+  assert {
+    condition     = alltrue([for key in keys(jsondecode(local.writer_assume_policy).Statement[1].Condition.StringEquals) : startswith(key, "actions.ghes.example.com:")])
+    error_message = "A condition key does not follow the issuer host named by provider_arn, so no token from that issuer can satisfy it."
+  }
+
+  assert {
+    condition     = length(keys(jsondecode(local.writer_assume_policy).Statement[1].Condition.StringEquals)) == 3
+    error_message = "The web identity statement does not carry exactly the audience, subject, and workflow ref conditions."
+  }
+}
+
+run "a_provider_arn_that_is_not_an_oidc_provider_is_rejected" {
+  command = plan
+
+  variables {
+    create_rebar_ticket_store = true
+    trusted_principals        = ["arn:aws:iam::111111111111:role/activity-worker"]
+    writer_github_oidc_trust = {
+      provider_arn = "arn:aws:iam::111111111111:role/not-a-provider"
+      subjects     = ["repo:navapbc/agentic-development-platform:ref:refs/heads/main"]
+    }
+  }
+
+  expect_failures = [terraform_data.inputs_guard]
+}

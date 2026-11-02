@@ -27,7 +27,7 @@ variable "trusted_principals" {
 }
 
 variable "writer_github_oidc_trust" {
-  description = "GitHub Actions OIDC trust for the writer role, which lets a workflow push the store without a stored AWS key. provider_arn names the account's token.actions.githubusercontent.com provider. subjects lists the fully qualified claims permitted to assume the role, such as repo:OWNER/NAME:ref:refs/heads/main. job_workflow_refs restricts which workflow file may do so. Both claims are matched with StringEquals, so a wildcard is compared literally and is rejected. Leave it null and the writer trusts only trusted_principals."
+  description = "GitHub Actions OIDC trust for the writer role, which lets a workflow push the store without a stored AWS key. provider_arn names the IAM OIDC provider, and the trust policy's condition keys follow the issuer host it carries, so a GitHub Enterprise Server provider works as well as token.actions.githubusercontent.com. subjects lists the fully qualified claims permitted to assume the role, such as repo:OWNER/NAME:ref:refs/heads/main. job_workflow_refs restricts which workflow file may do so. Both claims are matched with StringEquals, so a wildcard is compared literally and is rejected. Leave it null and the writer trusts only trusted_principals."
   type = object({
     provider_arn      = string
     subjects          = list(string)

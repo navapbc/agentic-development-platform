@@ -115,7 +115,7 @@ locals {
     Action    = "sts:AssumeRole"
   }
 
-  oidc_claim_prefix = "token.actions.githubusercontent.com"
+  oidc_issuer_host = var.writer_github_oidc_trust == null ? "" : try(regex("^arn:[^:]+:iam::[0-9]+:oidc-provider/(.+)$", var.writer_github_oidc_trust.provider_arn)[0], "")
 
   writer_oidc_statements = var.writer_github_oidc_trust == null ? [] : [
     {
@@ -126,11 +126,11 @@ locals {
       Condition = {
         StringEquals = merge(
           {
-            "${local.oidc_claim_prefix}:aud" = var.writer_github_oidc_trust.audience
-            "${local.oidc_claim_prefix}:sub" = var.writer_github_oidc_trust.subjects
+            "${local.oidc_issuer_host}:aud" = var.writer_github_oidc_trust.audience
+            "${local.oidc_issuer_host}:sub" = var.writer_github_oidc_trust.subjects
           },
           length(var.writer_github_oidc_trust.job_workflow_refs) == 0 ? {} : {
-            "${local.oidc_claim_prefix}:job_workflow_ref" = var.writer_github_oidc_trust.job_workflow_refs
+            "${local.oidc_issuer_host}:job_workflow_ref" = var.writer_github_oidc_trust.job_workflow_refs
           },
         )
       }

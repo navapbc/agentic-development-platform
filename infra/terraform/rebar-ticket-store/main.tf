@@ -72,8 +72,8 @@ resource "terraform_data" "inputs_guard" {
       error_message = "writer_github_oidc_trust.audience must be set so the trust is scoped to a token audience."
     }
     precondition {
-      condition     = var.writer_github_oidc_trust == null || try(trimspace(var.writer_github_oidc_trust.provider_arn), "") != ""
-      error_message = "writer_github_oidc_trust.provider_arn must name the account's GitHub OIDC provider."
+      condition     = var.writer_github_oidc_trust == null || local.oidc_issuer_host != ""
+      error_message = "writer_github_oidc_trust.provider_arn must be an IAM OIDC provider ARN such as arn:aws:iam::<account>:oidc-provider/token.actions.githubusercontent.com, because the trust policy's condition keys are built from the issuer host it names."
     }
   }
 }
