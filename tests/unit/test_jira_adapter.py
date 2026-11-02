@@ -1,4 +1,5 @@
 import sys
+from unittest.mock import Mock
 
 import pytest
 from services.integration.credentials import ConfigError, EnvSecretResolver
@@ -104,3 +105,14 @@ def test_construction_stays_git_free(fake_dc_jira):
     build_jira_adapter(project="AGENTDEV", resolver=_resolver("cloud"))
     loaded = sorted(m for m in sys.modules if any(marker in m for marker in _GIT_MARKERS))
     assert loaded == []
+
+
+@pytest.mark.parametrize("source", [CLOUD, DATACENTER])
+def test_list_comment_bodies_reads_only_the_requested_issue(source):
+    client = Mock()
+    client.get_comments.return_value = [{"body": "first"}, {"body": "second"}]
+    adapter = JiraAdapter(source=source, client=client, project="AGENTDEV")
+
+    assert adapter.list_comment_bodies("AGENTDEV-1") == ("first", "second")
+    client.get_comments.assert_called_once_with("AGENTDEV-1")
+    client.get_comment_map.assert_not_called()
