@@ -6,7 +6,7 @@ import json
 import os
 import re
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 import yaml
@@ -25,6 +25,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 COMPOSE_PATH = REPO_ROOT / "compose.yaml"
 ENV_EXAMPLE_PATH = REPO_ROOT / ".env.example"
 DOCKERFILE_PATH = REPO_ROOT / "docker" / "Dockerfile"
+
+# vendor/bin holds the acli binary the build fetches, and .gitignore keeps its contents out of
+# the tree, so digesting it would make the identifier depend on whether a host had run the fetch.
+BUILD_ARTIFACT_COPIES = {"vendor"}
 
 
 def test_a_later_build_of_one_release_outranks_an_earlier_one():
@@ -124,7 +128,17 @@ def test_the_digest_covers_every_path_the_image_copies():
             continue
         copied.update(line.split()[1:-1])
 
-    assert copied == set(IMAGE_SOURCE_PATHS) - {"docker/Dockerfile"}
+    digested = set(IMAGE_SOURCE_PATHS)
+    uncovered = {
+        path
+        for path in copied - BUILD_ARTIFACT_COPIES
+        if not digested.intersection(
+            {path, *(str(parent) for parent in PurePosixPath(path).parents)}
+        )
+    }
+
+    assert uncovered == set()
+    assert digested - {"docker/Dockerfile"} <= copied
 
 
 def test_the_image_bakes_the_identifier_and_defaults_to_the_release_version():
