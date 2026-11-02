@@ -225,6 +225,11 @@ run "the_writer_trust_matches_the_reader_trust_without_the_oidc_input" {
     condition     = length(jsondecode(local.writer_assume_policy).Statement) == 1
     error_message = "The writer trusts more than trusted_principals although no OIDC trust was configured."
   }
+
+  assert {
+    condition     = aws_iam_role.reader[0].assume_role_policy == local.assume_policy && aws_iam_role.writer[0].assume_role_policy == local.assume_policy
+    error_message = "A role does not carry the trust policy the module rendered before the OIDC input existed."
+  }
 }
 
 run "the_oidc_trust_reaches_the_writer_and_not_the_reader" {
@@ -314,6 +319,37 @@ run "an_unscoped_oidc_subject_is_rejected" {
   expect_failures = [terraform_data.inputs_guard]
 }
 
+run "an_oidc_subject_holding_an_embedded_wildcard_is_rejected" {
+  command = plan
+
+  variables {
+    create_rebar_ticket_store = true
+    trusted_principals        = ["arn:aws:iam::111111111111:role/activity-worker"]
+    writer_github_oidc_trust = {
+      provider_arn = "arn:aws:iam::111111111111:oidc-provider/token.actions.githubusercontent.com"
+      subjects     = ["repo:navapbc/agentic-development-platform:ref:refs/heads/*"]
+    }
+  }
+
+  expect_failures = [terraform_data.inputs_guard]
+}
+
+run "an_oidc_workflow_ref_holding_a_wildcard_is_rejected" {
+  command = plan
+
+  variables {
+    create_rebar_ticket_store = true
+    trusted_principals        = ["arn:aws:iam::111111111111:role/activity-worker"]
+    writer_github_oidc_trust = {
+      provider_arn      = "arn:aws:iam::111111111111:oidc-provider/token.actions.githubusercontent.com"
+      subjects          = ["repo:navapbc/agentic-development-platform:ref:refs/heads/main"]
+      job_workflow_refs = ["navapbc/agentic-development-platform/.github/workflows/*.yml@refs/heads/main"]
+    }
+  }
+
+  expect_failures = [terraform_data.inputs_guard]
+}
+
 run "an_oidc_trust_without_subjects_is_rejected" {
   command = plan
 
@@ -338,6 +374,37 @@ run "an_oidc_trust_alongside_a_supplied_writer_role_is_rejected" {
     existing_writer_role_arn  = "arn:aws:iam::111111111111:role/org-writer"
     writer_github_oidc_trust = {
       provider_arn = "arn:aws:iam::111111111111:oidc-provider/token.actions.githubusercontent.com"
+      subjects     = ["repo:navapbc/agentic-development-platform:ref:refs/heads/main"]
+    }
+  }
+
+  expect_failures = [terraform_data.inputs_guard]
+}
+
+run "an_oidc_trust_without_an_audience_is_rejected" {
+  command = plan
+
+  variables {
+    create_rebar_ticket_store = true
+    trusted_principals        = ["arn:aws:iam::111111111111:role/activity-worker"]
+    writer_github_oidc_trust = {
+      provider_arn = "arn:aws:iam::111111111111:oidc-provider/token.actions.githubusercontent.com"
+      subjects     = ["repo:navapbc/agentic-development-platform:ref:refs/heads/main"]
+      audience     = " "
+    }
+  }
+
+  expect_failures = [terraform_data.inputs_guard]
+}
+
+run "an_oidc_trust_without_a_provider_is_rejected" {
+  command = plan
+
+  variables {
+    create_rebar_ticket_store = true
+    trusted_principals        = ["arn:aws:iam::111111111111:role/activity-worker"]
+    writer_github_oidc_trust = {
+      provider_arn = ""
       subjects     = ["repo:navapbc/agentic-development-platform:ref:refs/heads/main"]
     }
   }

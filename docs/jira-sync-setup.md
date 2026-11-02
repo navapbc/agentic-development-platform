@@ -47,7 +47,7 @@ rebar_ticket_store_writer_oidc_trust = {
 }
 ```
 
-The module requires at least one subject and rejects `*`, so the role cannot be left assumable by any workflow in any repository. `audience` defaults to `sts.amazonaws.com`. Omitting `job_workflow_refs` drops that condition, which widens the trust to every workflow matching a listed subject, so prefer setting it. Update both the subjects and the workflow refs when the default branch changes. The permissions policy must cover the store prefix plus the bucket's KMS key. See `docs/rebar-s3-ticket-store.md`.
+The module requires at least one subject and rejects any subject or workflow ref holding `*`, so the role cannot be left assumable by any workflow in any repository. Both claims are matched with `StringEquals`, which compares literally, so a wildcard would match no token at all and leave the role un-assumable rather than over-permissive. List each ref you intend to trust. `audience` defaults to `sts.amazonaws.com`. Omitting `job_workflow_refs` drops that condition, which widens the trust to every workflow matching a listed subject, so prefer setting it. Update both the subjects and the workflow refs when the default branch changes. The permissions policy must cover the store prefix plus the bucket's KMS key. See `docs/rebar-s3-ticket-store.md`.
 
 ## Pinning acli
 

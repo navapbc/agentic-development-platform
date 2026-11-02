@@ -52,8 +52,12 @@ resource "terraform_data" "inputs_guard" {
       error_message = "writer_github_oidc_trust.subjects must name at least one claim, otherwise any workflow in any repository could assume the writer role."
     }
     precondition {
-      condition     = var.writer_github_oidc_trust == null || !contains(var.writer_github_oidc_trust.subjects, "*")
-      error_message = "writer_github_oidc_trust.subjects must not contain \"*\", which would let any workflow in any repository assume the writer role."
+      condition     = var.writer_github_oidc_trust == null || alltrue([for subject in var.writer_github_oidc_trust.subjects : !strcontains(subject, "*")])
+      error_message = "writer_github_oidc_trust.subjects are matched with StringEquals, which compares literally, so a subject holding \"*\" matches no token and leaves the role un-assumable. List each fully qualified subject instead."
+    }
+    precondition {
+      condition     = var.writer_github_oidc_trust == null || alltrue([for ref in var.writer_github_oidc_trust.job_workflow_refs : !strcontains(ref, "*")])
+      error_message = "writer_github_oidc_trust.job_workflow_refs are matched with StringEquals, which compares literally, so a ref holding \"*\" matches no token and leaves the role un-assumable. List each fully qualified workflow ref instead."
     }
     precondition {
       condition     = var.writer_github_oidc_trust == null || try(trimspace(var.writer_github_oidc_trust.audience), "") != ""
