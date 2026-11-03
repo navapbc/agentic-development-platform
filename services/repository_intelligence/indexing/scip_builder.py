@@ -96,6 +96,16 @@ SCIP_JAVA_INDEXER = ScipIndexer(
     command=DEFAULT_SCIP_JAVA_CMD,
     language_id="java",
     source_suffixes=(".java",),
+    extra_args=(
+        "--",
+        "--batch-mode",
+        "clean",
+        "test",
+        "-DskipTests=false",
+        "-DskipITs=true",
+        "-Dsurefire.excludes='**/*IT.java'",
+        "-Ddependency-check.skip=true",
+    ),
     version="0.13.1",
 )
 

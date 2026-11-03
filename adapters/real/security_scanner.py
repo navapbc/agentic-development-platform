@@ -159,7 +159,7 @@ class RealTrivyScanner:
         return cls(binary=resolved.trivy_binary, runner=runner)
 
     async def scan(self, target: ScanTarget) -> list[ScanFinding]:
-        args = [self._binary, "fs", "--format", "json", "--quiet", target.repo_root]
+        args = [self._binary, "fs", "--offline-scan", "--format", "json", "--quiet", target.repo_root]
         result = await self._runner(args, target.repo_root)
         if result.returncode not in self._ok_codes:
             raise ScannerError(self.name, result.returncode, result.stderr)

@@ -146,7 +146,7 @@ async def test_scanner_invocations_stay_on_the_documented_exit_code_contract():
     semgrep_args, semgrep_cwd = calls[0]
     trivy_args, trivy_cwd = calls[1]
     assert semgrep_args == ["semgrep", "scan", "--json", "--quiet", "/tmp/ws/agent-T-1"]
-    assert trivy_args == ["trivy", "fs", "--format", "json", "--quiet", "/tmp/ws/agent-T-1"]
+    assert trivy_args == ["trivy", "fs", "--offline-scan", "--format", "json", "--quiet", "/tmp/ws/agent-T-1"]
     assert semgrep_cwd == trivy_cwd == "/tmp/ws/agent-T-1"
     assert not any(a.startswith("--error") for a in semgrep_args)
     assert not any(a.startswith("--exit-code") for a in trivy_args)

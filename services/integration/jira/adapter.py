@@ -27,6 +27,8 @@ if TYPE_CHECKING:
 class _VendorJiraClient(Protocol):
     def get_issue(self, remote_id: str, /) -> dict[str, Any]: ...
 
+    def get_comments(self, remote_id: str, /) -> list[dict[str, Any]]: ...
+
     def add_comment(self, remote_id: str, body: str, /) -> dict[str, Any]: ...
 
     def transition_issue_by_name(self, remote_id: str, target_status: str, /) -> None: ...
@@ -96,11 +98,7 @@ class JiraAdapter:
         return self.client.add_comment(issue_key, body)
 
     def list_comment_bodies(self, issue_key: str) -> tuple[str, ...]:
-        if self.source == CLOUD:
-            raw = self.client.get_comments(issue_key)
-        else:
-            entry = self.client.get_comment_map(self.project).get(issue_key) or {}
-            raw = entry.get("comments") or []
+        raw = self.client.get_comments(issue_key)
         return tuple(_normalize_rich_text(item.get("body")) for item in raw)
 
     def render_comment(self, document: list[Block]) -> str:

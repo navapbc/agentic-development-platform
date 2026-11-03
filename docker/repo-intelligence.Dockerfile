@@ -72,7 +72,7 @@ RUN apt-get update \
  && echo "${sha}  scip-ruby" | sha256sum -c - \
  && install -m 0755 /tmp/scip-ruby /usr/local/bin/scip-ruby
 
-FROM maven:3.9.11-eclipse-temurin-21@sha256:6fdc855a6ed81d288ca7ca37ac6ff5e9308b612485c0801d70b25a858c83d237 AS java-tools
+FROM maven:3.8.8-eclipse-temurin-17@sha256:40fcff4c4043d6adc90286c2e38ec70950f34f6dd5784f7e524866c66520cc23 AS java-tools
 
 FROM node:24-trixie-slim@sha256:0711b541c1c33a8a530ac4f0d391baa9a15b3d804695b1b24a47daa5fb60e74d AS runtime
 LABEL org.opencontainers.image.licenses="Apache-2.0"
@@ -90,7 +90,7 @@ ENV PYTHONUNBUFFERED=1 \
     PATH=/opt/venv/bin:/opt/java/openjdk/bin:/opt/maven/bin:/usr/local/bin:$PATH
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends python3 git ca-certificates php-cli php-mbstring php-xml \
+ && apt-get install -y --no-install-recommends python3 git curl ca-certificates php-cli php-mbstring php-xml \
  && rm -rf /var/lib/apt/lists/*
 
 RUN npm install -g @ast-grep/cli@0.45.0 @sourcegraph/scip-python@0.6.6 @sourcegraph/scip-typescript@0.3.14
