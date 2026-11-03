@@ -155,10 +155,7 @@ def _allowlist_from_config(monkeypatch):
 async def test_two_tenants_reach_a_draft_pr_with_no_shared_credential(
     tmp_path, monkeypatch
 ) -> None:
-    from services.integration.jira._engine import ensure_engine_on_path
-
-    ensure_engine_on_path()
-    from rebar_reconciler.adapters.jira_datacenter import transport
+    from rebar.reconciler.adapters.jira_datacenter import transport
 
     class _FakeJira:
         def __init__(self, *args, **kwargs):
