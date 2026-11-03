@@ -152,3 +152,16 @@ output "temporal_admin_tools_repository_url" {
   description = "ECR repository that inv publish-temporal-images pushes the Temporal admin-tools image to."
   value       = module.temporal_control_plane.admin_tools_repository_url
 }
+
+output "temporal_tls" {
+  description = "Temporal TLS secrets and certificate sources that inv temporal-certs put reads."
+  value = {
+    frontend_certificate_source   = module.temporal_control_plane.frontend_certificate_source
+    ca_secret_arn                 = module.temporal_control_plane.tls_ca_secret_arn
+    internode_secret_arn          = module.temporal_control_plane.tls_internode_secret_arn
+    frontend_secret_arn           = module.temporal_control_plane.tls_frontend_secret_arn
+    frontend_acm_certificate_arn  = module.temporal_control_plane.frontend_acm_certificate_arn
+    internode_acm_certificate_arn = module.temporal_control_plane.internode_acm_certificate_arn
+    certificate_expiry_topic_arn  = module.temporal_control_plane.certificate_expiry_topic_arn
+  }
+}

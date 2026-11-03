@@ -50,6 +50,7 @@ EXPECTED_TASKS = {
     "cbm-build",
     "publish-jumphost-image",
     "publish-temporal-images",
+    "temporal-certs",
     "reap",
     "scrub-workspaces",
     "intake",
@@ -165,3 +166,55 @@ def test_rebar_store_remote_runs_in_a_one_off_worker_container(project):
         "python -m scripts.rebar_store_remote"
     ]
     assert host.commands == [f"{tasks_module.HOST_PYTHON} -m scripts.rebar_store_remote"]
+
+
+def test_temporal_certs_passes_each_name_and_switch_to_the_script(project):
+    context = _RecordingContext()
+
+    tasks_module.temporal_certs(
+        context,
+        "generate",
+        out="~/tls",
+        frontend_name="a.internal, b.internal",
+        no_frontend=True,
+        force=True,
+    )
+
+    assert context.commands == [
+        f"{tasks_module.HOST_PYTHON} -m scripts.temporal_certs generate --out '~/tls' --days 397"
+        " --frontend-name a.internal --frontend-name b.internal --no-frontend --force"
+    ]
+
+
+def test_temporal_certs_put_signs_with_the_configured_profile(project, monkeypatch):
+    recorded: list[tuple[str, dict]] = []
+
+    class _EnvContext(Context):
+        def run(self, command: str, **kwargs: object) -> None:  # pyright: ignore[reportIncompatibleMethodOverride]
+            recorded.append((command, kwargs["env"]))
+
+    monkeypatch.setenv("AWS_PROFILE", "sandbox")
+    from scripts.config import get_settings
+
+    get_settings.cache_clear()
+    tasks_module.temporal_certs(_EnvContext(), "put", dir="~/tls", import_to_acm=True)
+    get_settings.cache_clear()
+
+    [(command, env)] = recorded
+    assert command.endswith("-m scripts.temporal_certs put --dir '~/tls' --import-to-acm")
+    assert env["AWS_PROFILE"] == "sandbox"
+
+
+@pytest.mark.parametrize(
+    ("action", "options", "message"),
+    [
+        ("generate", {}, "provide --out"),
+        ("put", {}, "provide --dir"),
+        ("rotate", {}, "generate or put"),
+    ],
+)
+def test_temporal_certs_refuses_an_incomplete_request(project, action, options, message):
+    from invoke import Exit
+
+    with pytest.raises(Exit, match=message):
+        tasks_module.temporal_certs(_RecordingContext(), action, **options)

@@ -80,7 +80,7 @@ A created network also enables the Route 53 Resolver DNS Firewall, which resolve
 
 ## Temporal control plane
 
-`create_temporal_control_plane = true` provisions the [temporal-control-plane](../../temporal-control-plane) module. It creates the ECR repositories for the Temporal server and admin-tools images, which `inv publish-temporal-images` fills.
+`create_temporal_control_plane = true` provisions the [temporal-control-plane](../../temporal-control-plane) module. It creates the ECR repositories for the Temporal server and admin-tools images, which `inv publish-temporal-images` fills, and the TLS secrets, which `inv temporal-certs put` fills. `temporal_frontend_acm_certificate_arn` serves the frontend from an ACM certificate, and `temporal_internode_acm_certificate_arn` tracks the internode certificate in ACM. The `temporal_tls` output lists the secrets and the expiry topic.
 
 ## After apply
 

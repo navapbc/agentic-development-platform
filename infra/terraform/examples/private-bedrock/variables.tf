@@ -353,3 +353,15 @@ variable "create_temporal_control_plane" {
   type        = bool
   default     = false
 }
+
+variable "temporal_frontend_acm_certificate_arn" {
+  description = "ACM certificate the Temporal NLB presents to clients. Empty serves the frontend certificate inv temporal-certs put writes to Secrets Manager."
+  type        = string
+  default     = ""
+}
+
+variable "temporal_internode_acm_certificate_arn" {
+  description = "ACM certificate that tracks the Temporal internode certificate for expiry. The server reads the certificate from Secrets Manager."
+  type        = string
+  default     = ""
+}
