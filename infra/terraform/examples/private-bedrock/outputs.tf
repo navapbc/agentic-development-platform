@@ -122,3 +122,23 @@ output "rebar_ticket_store_writer_role_arn" {
   description = "Role the writer profile assumes, set as roles.write in tickets.yaml."
   value       = module.rebar_ticket_store.writer_role_arn
 }
+
+output "ecs_cluster_arn" {
+  description = "Platform ECS cluster ARN. Empty when create_ecs_cluster is false."
+  value       = module.ecs_cluster.cluster_arn
+}
+
+output "ecs_cluster_name" {
+  description = "Platform ECS cluster name."
+  value       = module.ecs_cluster.cluster_name
+}
+
+output "ecs_deployer_policy_arn" {
+  description = "Policy a team attaches to its deploy role to deploy services into the platform ECS cluster."
+  value       = module.ecs_cluster.deployer_policy_arn
+}
+
+output "ecs_exec_task_policy_arn" {
+  description = "Policy a task role attaches to accept ECS Exec sessions in the platform ECS cluster."
+  value       = module.ecs_cluster.exec_task_policy_arn
+}

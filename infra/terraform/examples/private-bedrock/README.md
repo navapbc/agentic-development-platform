@@ -74,6 +74,10 @@ A created network also enables the Route 53 Resolver DNS Firewall, which resolve
 
 `create_rebar_ticket_store = true` provisions the [rebar-ticket-store](../../rebar-ticket-store) module, the bucket the rebar ticket store syncs to through `git-remote-s3`. It creates a dedicated KMS key and a reader and a writer role, trusted by `rebar_ticket_store_trusted_principals`. Set `rebar_ticket_store_existing_reader_role_arn` and `rebar_ticket_store_existing_writer_role_arn` to use roles the organization issues instead. `rebar_ticket_store_admin_principals` names the principals that seed the store and empty the bucket before a destroy. The store reaches S3 through the S3 gateway endpoint, so it needs no interface endpoint. With the trail enabled, the root also records object-level CloudTrail data events on the bucket.
 
+## Platform ECS cluster
+
+`create_ecs_cluster = true` provisions the [ecs-cluster](../../ecs-cluster) module, the Fargate cluster the platform owns and shares with other teams. It encrypts ECS Exec sessions and Fargate ephemeral storage under dedicated KMS keys and logs Exec sessions and Container Insights to encrypted log groups. A team attaches the `ecs_deployer_policy_arn` output to its deploy role to deploy into this cluster and no other, and lists the task and execution roles that role may pass in `ecs_deployer_passable_role_arns`. A task role attaches `ecs_exec_task_policy_arn` to accept ECS Exec sessions.
+
 ## After apply
 
 1. Push the jumphost image to the repository shown in the `jumphost_ecr_repository_url` output with `inv publish-jumphost-image --tag v1`.

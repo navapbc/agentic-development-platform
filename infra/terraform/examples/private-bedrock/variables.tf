@@ -324,3 +324,15 @@ variable "rebar_ticket_store_existing_writer_role_arn" {
   type        = string
   default     = ""
 }
+
+variable "create_ecs_cluster" {
+  description = "Create the platform ECS cluster that the Temporal control plane, the platform services, and other teams' services run on."
+  type        = bool
+  default     = false
+}
+
+variable "ecs_deployer_passable_role_arns" {
+  description = "Task and execution role ARNs, wildcards allowed, that the ECS cluster deployer policy may pass to tasks."
+  type        = list(string)
+  default     = []
+}
