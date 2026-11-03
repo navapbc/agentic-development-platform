@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1
 
-ARG TEMPORAL_SERVER_IMAGE=temporalio/server:1.32.1@sha256:acecbab5b0b8ae9cf4012b508866ca97feda3709577bf157b537239f40029049
+ARG TEMPORAL_SERVER_IMAGE=docker.io/temporalio/server:1.32.1@sha256:acecbab5b0b8ae9cf4012b508866ca97feda3709577bf157b537239f40029049
 
-FROM golang:1.27-trixie@sha256:6212da3924947f4b6a939df02ea627c13f338f1a41d6c3fcb0dd9d076eef46c4 AS healthprobe
+FROM public.ecr.aws/docker/library/golang:1.27-trixie@sha256:6212da3924947f4b6a939df02ea627c13f338f1a41d6c3fcb0dd9d076eef46c4 AS healthprobe
 WORKDIR /src
 COPY docker/healthprobe/ ./
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/healthprobe .
