@@ -79,6 +79,18 @@ def test_the_tag_is_stable_for_unchanged_inputs(tmp_path) -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "reference",
+    [
+        "temporalio/server:1.32.1@sha256:" + "a" * 64,
+        "docker.io/temporalio/server:1.32.1@sha256:" + "a" * 64,
+        "mirror.example.com/temporalio/server:1.32.1@sha256:" + "a" * 64,
+    ],
+)
+def test_the_version_is_read_with_or_without_a_registry(reference) -> None:
+    assert publisher.upstream_version(f"ARG TEMPORAL_SERVER_IMAGE={reference}\n") == "1.32.1"
+
+
 def test_a_dockerfile_without_a_pinned_upstream_image_is_refused() -> None:
     with pytest.raises(ValueError, match="pins no temporalio image"):
         publisher.upstream_version("FROM temporalio/server:latest\n")

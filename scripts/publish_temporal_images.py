@@ -21,7 +21,9 @@ from services import process
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BUILD_TIMEOUT_SECONDS = process.LONG_COMMAND_TIMEOUT_SECONDS
 PLATFORMS = {"arm64": "linux/arm64", "amd64": "linux/amd64"}
-_UPSTREAM_VERSION = re.compile(r"^ARG TEMPORAL_\w+_IMAGE=temporalio/[\w-]+:([0-9.]+)@sha256:", re.M)
+_UPSTREAM_VERSION = re.compile(
+    r"^ARG TEMPORAL_\w+_IMAGE=(?:[\w.-]+/)?temporalio/[\w-]+:([0-9.]+)@sha256:", re.M
+)
 
 
 @dataclass(frozen=True)
