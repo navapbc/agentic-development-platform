@@ -307,6 +307,17 @@ variable "rebar_ticket_store_trusted_principals" {
   default     = []
 }
 
+variable "rebar_ticket_store_writer_oidc_trust" {
+  description = "GitHub Actions OIDC trust for the ticket store writer role, which lets the reconcile-bridge workflow push the store without a stored AWS key. See the rebar-ticket-store module for the shape."
+  type = object({
+    provider_arn      = string
+    subjects          = list(string)
+    job_workflow_refs = optional(list(string), [])
+    audience          = optional(string, "sts.amazonaws.com")
+  })
+  default = null
+}
+
 variable "rebar_ticket_store_admin_principals" {
   description = "IAM principal ARNs allowed to seed the ticket store and to empty its bucket before a destroy."
   type        = list(string)

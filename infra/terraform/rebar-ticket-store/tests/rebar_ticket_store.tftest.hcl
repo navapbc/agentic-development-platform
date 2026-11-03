@@ -207,3 +207,308 @@ run "created_roles_require_trusted_principals" {
 
   expect_failures = [terraform_data.inputs_guard]
 }
+
+run "the_writer_trust_matches_the_reader_trust_without_the_oidc_input" {
+  command = plan
+
+  variables {
+    create_rebar_ticket_store = true
+    trusted_principals        = ["arn:aws:iam::111111111111:role/activity-worker"]
+  }
+
+  assert {
+    condition     = local.writer_assume_policy == local.assume_policy
+    error_message = "Omitting writer_github_oidc_trust changed the writer trust policy the module used to render."
+  }
+
+  assert {
+    condition     = length(jsondecode(local.writer_assume_policy).Statement) == 1
+    error_message = "The writer trusts more than trusted_principals although no OIDC trust was configured."
+  }
+
+  assert {
+    condition     = aws_iam_role.reader[0].assume_role_policy == local.assume_policy && aws_iam_role.writer[0].assume_role_policy == local.assume_policy
+    error_message = "A role does not carry the trust policy the module rendered before the OIDC input existed."
+  }
+}
+
+run "the_oidc_trust_reaches_the_writer_and_not_the_reader" {
+  command = plan
+
+  variables {
+    create_rebar_ticket_store = true
+    trusted_principals        = ["arn:aws:iam::111111111111:role/activity-worker"]
+    writer_github_oidc_trust = {
+      provider_arn      = "arn:aws:iam::111111111111:oidc-provider/token.actions.githubusercontent.com"
+      subjects          = ["repo:navapbc/agentic-development-platform:ref:refs/heads/main"]
+      job_workflow_refs = ["navapbc/agentic-development-platform/.github/workflows/reconcile-bridge.yml@refs/heads/main"]
+    }
+  }
+
+  assert {
+    condition     = length(jsondecode(local.assume_policy).Statement) == 1
+    error_message = "The reader gained the OIDC trust, which only the writer needs."
+  }
+
+  assert {
+    condition     = aws_iam_role.reader[0].assume_role_policy == local.assume_policy && aws_iam_role.writer[0].assume_role_policy == local.writer_assume_policy
+    error_message = "A role does not carry the trust policy rendered for it."
+  }
+
+  assert {
+    condition     = jsondecode(local.writer_assume_policy).Statement[1].Action == "sts:AssumeRoleWithWebIdentity"
+    error_message = "The writer trust policy does not carry the web identity statement."
+  }
+
+  assert {
+    condition     = jsondecode(local.writer_assume_policy).Statement[1].Principal.Federated == "arn:aws:iam::111111111111:oidc-provider/token.actions.githubusercontent.com"
+    error_message = "The web identity statement does not name the GitHub OIDC provider."
+  }
+
+  assert {
+    condition     = jsondecode(local.writer_assume_policy).Statement[1].Condition.StringEquals["token.actions.githubusercontent.com:aud"] == "sts.amazonaws.com"
+    error_message = "The web identity statement is not scoped to a token audience."
+  }
+
+  assert {
+    condition     = jsondecode(local.writer_assume_policy).Statement[1].Condition.StringEquals["token.actions.githubusercontent.com:sub"] == ["repo:navapbc/agentic-development-platform:ref:refs/heads/main"]
+    error_message = "The web identity statement is not scoped to the configured subjects."
+  }
+
+  assert {
+    condition     = jsondecode(local.writer_assume_policy).Statement[1].Condition.StringEquals["token.actions.githubusercontent.com:job_workflow_ref"] == ["navapbc/agentic-development-platform/.github/workflows/reconcile-bridge.yml@refs/heads/main"]
+    error_message = "The web identity statement is not scoped to the configured workflow refs."
+  }
+}
+
+run "the_oidc_trust_omits_the_workflow_ref_condition_when_it_is_unset" {
+  command = plan
+
+  variables {
+    create_rebar_ticket_store = true
+    trusted_principals        = ["arn:aws:iam::111111111111:role/activity-worker"]
+    writer_github_oidc_trust = {
+      provider_arn = "arn:aws:iam::111111111111:oidc-provider/token.actions.githubusercontent.com"
+      subjects     = ["repo:navapbc/agentic-development-platform:ref:refs/heads/main"]
+    }
+  }
+
+  assert {
+    condition     = !can(jsondecode(local.writer_assume_policy).Statement[1].Condition.StringEquals["token.actions.githubusercontent.com:job_workflow_ref"])
+    error_message = "An empty job_workflow_refs rendered a condition that matches no token."
+  }
+
+  assert {
+    condition     = jsondecode(local.writer_assume_policy).Statement[1].Condition.StringEquals["token.actions.githubusercontent.com:aud"] == "sts.amazonaws.com"
+    error_message = "The audience condition is missing or is not the default."
+  }
+}
+
+run "an_unscoped_oidc_subject_is_rejected" {
+  command = plan
+
+  variables {
+    create_rebar_ticket_store = true
+    trusted_principals        = ["arn:aws:iam::111111111111:role/activity-worker"]
+    writer_github_oidc_trust = {
+      provider_arn = "arn:aws:iam::111111111111:oidc-provider/token.actions.githubusercontent.com"
+      subjects     = ["*"]
+    }
+  }
+
+  expect_failures = [terraform_data.inputs_guard]
+}
+
+run "an_oidc_subject_holding_an_embedded_wildcard_is_rejected" {
+  command = plan
+
+  variables {
+    create_rebar_ticket_store = true
+    trusted_principals        = ["arn:aws:iam::111111111111:role/activity-worker"]
+    writer_github_oidc_trust = {
+      provider_arn = "arn:aws:iam::111111111111:oidc-provider/token.actions.githubusercontent.com"
+      subjects     = ["repo:navapbc/agentic-development-platform:ref:refs/heads/*"]
+    }
+  }
+
+  expect_failures = [terraform_data.inputs_guard]
+}
+
+run "an_oidc_workflow_ref_holding_a_wildcard_is_rejected" {
+  command = plan
+
+  variables {
+    create_rebar_ticket_store = true
+    trusted_principals        = ["arn:aws:iam::111111111111:role/activity-worker"]
+    writer_github_oidc_trust = {
+      provider_arn      = "arn:aws:iam::111111111111:oidc-provider/token.actions.githubusercontent.com"
+      subjects          = ["repo:navapbc/agentic-development-platform:ref:refs/heads/main"]
+      job_workflow_refs = ["navapbc/agentic-development-platform/.github/workflows/*.yml@refs/heads/main"]
+    }
+  }
+
+  expect_failures = [terraform_data.inputs_guard]
+}
+
+run "an_oidc_trust_without_subjects_is_rejected" {
+  command = plan
+
+  variables {
+    create_rebar_ticket_store = true
+    trusted_principals        = ["arn:aws:iam::111111111111:role/activity-worker"]
+    writer_github_oidc_trust = {
+      provider_arn = "arn:aws:iam::111111111111:oidc-provider/token.actions.githubusercontent.com"
+      subjects     = []
+    }
+  }
+
+  expect_failures = [terraform_data.inputs_guard]
+}
+
+run "an_oidc_trust_alongside_a_supplied_writer_role_is_rejected" {
+  command = plan
+
+  variables {
+    create_rebar_ticket_store = true
+    existing_reader_role_arn  = "arn:aws:iam::111111111111:role/org-reader"
+    existing_writer_role_arn  = "arn:aws:iam::111111111111:role/org-writer"
+    writer_github_oidc_trust = {
+      provider_arn = "arn:aws:iam::111111111111:oidc-provider/token.actions.githubusercontent.com"
+      subjects     = ["repo:navapbc/agentic-development-platform:ref:refs/heads/main"]
+    }
+  }
+
+  expect_failures = [terraform_data.inputs_guard]
+}
+
+run "an_oidc_trust_without_an_audience_is_rejected" {
+  command = plan
+
+  variables {
+    create_rebar_ticket_store = true
+    trusted_principals        = ["arn:aws:iam::111111111111:role/activity-worker"]
+    writer_github_oidc_trust = {
+      provider_arn = "arn:aws:iam::111111111111:oidc-provider/token.actions.githubusercontent.com"
+      subjects     = ["repo:navapbc/agentic-development-platform:ref:refs/heads/main"]
+      audience     = " "
+    }
+  }
+
+  expect_failures = [terraform_data.inputs_guard]
+}
+
+run "an_oidc_trust_without_a_provider_is_rejected" {
+  command = plan
+
+  variables {
+    create_rebar_ticket_store = true
+    trusted_principals        = ["arn:aws:iam::111111111111:role/activity-worker"]
+    writer_github_oidc_trust = {
+      provider_arn = ""
+      subjects     = ["repo:navapbc/agentic-development-platform:ref:refs/heads/main"]
+    }
+  }
+
+  expect_failures = [terraform_data.inputs_guard]
+}
+
+run "a_blank_oidc_subject_entry_is_rejected" {
+  command = plan
+
+  variables {
+    create_rebar_ticket_store = true
+    trusted_principals        = ["arn:aws:iam::111111111111:role/activity-worker"]
+    writer_github_oidc_trust = {
+      provider_arn = "arn:aws:iam::111111111111:oidc-provider/token.actions.githubusercontent.com"
+      subjects     = ["repo:navapbc/agentic-development-platform:ref:refs/heads/main", "  "]
+    }
+  }
+
+  expect_failures = [terraform_data.inputs_guard]
+}
+
+run "a_blank_oidc_workflow_ref_entry_is_rejected" {
+  command = plan
+
+  variables {
+    create_rebar_ticket_store = true
+    trusted_principals        = ["arn:aws:iam::111111111111:role/activity-worker"]
+    writer_github_oidc_trust = {
+      provider_arn      = "arn:aws:iam::111111111111:oidc-provider/token.actions.githubusercontent.com"
+      subjects          = ["repo:navapbc/agentic-development-platform:ref:refs/heads/main"]
+      job_workflow_refs = [""]
+    }
+  }
+
+  expect_failures = [terraform_data.inputs_guard]
+}
+
+run "the_oidc_condition_keys_follow_the_issuer_the_provider_arn_names" {
+  command = plan
+
+  variables {
+    create_rebar_ticket_store = true
+    trusted_principals        = ["arn:aws:iam::111111111111:role/activity-worker"]
+    writer_github_oidc_trust = {
+      provider_arn      = "arn:aws:iam::111111111111:oidc-provider/actions.ghes.example.com"
+      subjects          = ["repo:navapbc/agentic-development-platform:ref:refs/heads/main"]
+      job_workflow_refs = ["navapbc/agentic-development-platform/.github/workflows/reconcile-bridge.yml@refs/heads/main"]
+    }
+  }
+
+  assert {
+    condition     = alltrue([for key in keys(jsondecode(local.writer_assume_policy).Statement[1].Condition.StringEquals) : startswith(key, "actions.ghes.example.com:")])
+    error_message = "A condition key does not follow the issuer host named by provider_arn, so no token from that issuer can satisfy it."
+  }
+
+  assert {
+    condition     = length(keys(jsondecode(local.writer_assume_policy).Statement[1].Condition.StringEquals)) == 3
+    error_message = "The web identity statement does not carry exactly the audience, subject, and workflow ref conditions."
+  }
+}
+
+run "a_provider_arn_that_is_not_an_oidc_provider_is_rejected" {
+  command = plan
+
+  variables {
+    create_rebar_ticket_store = true
+    trusted_principals        = ["arn:aws:iam::111111111111:role/activity-worker"]
+    writer_github_oidc_trust = {
+      provider_arn = "arn:aws:iam::111111111111:role/not-a-provider"
+      subjects     = ["repo:navapbc/agentic-development-platform:ref:refs/heads/main"]
+    }
+  }
+
+  expect_failures = [terraform_data.inputs_guard]
+}
+
+run "a_padded_oidc_audience_is_rejected" {
+  command = plan
+
+  variables {
+    create_rebar_ticket_store = true
+    trusted_principals        = ["arn:aws:iam::111111111111:role/activity-worker"]
+    writer_github_oidc_trust = {
+      provider_arn = "arn:aws:iam::111111111111:oidc-provider/token.actions.githubusercontent.com"
+      subjects     = ["repo:navapbc/agentic-development-platform:ref:refs/heads/main"]
+      audience     = " sts.amazonaws.com "
+    }
+  }
+
+  expect_failures = [terraform_data.inputs_guard]
+}
+
+run "a_padded_oidc_subject_entry_is_rejected" {
+  command = plan
+
+  variables {
+    create_rebar_ticket_store = true
+    trusted_principals        = ["arn:aws:iam::111111111111:role/activity-worker"]
+    writer_github_oidc_trust = {
+      provider_arn = "arn:aws:iam::111111111111:oidc-provider/token.actions.githubusercontent.com"
+      subjects     = [" repo:navapbc/agentic-development-platform:ref:refs/heads/main "]
+    }
+  }
+
+  expect_failures = [terraform_data.inputs_guard]
+}

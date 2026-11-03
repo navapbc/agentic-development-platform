@@ -51,7 +51,7 @@ The reconciler's pass lock and phase gate use `refs/reconciler/*`, which sit out
 
 ## CI
 
-The `Reconcile Bridge` workflow assumes the writer role through GitHub OIDC, so no long-lived access key is stored. The role's trust policy must scope to that workflow on the default branch through the `sub` and `job_workflow_ref` claims, since a condition on the repository alone lets any workflow on any branch that requests `id-token: write` assume the role. `docs/jira-sync-setup.md` carries the condition block. The workflow adds the `s3tickets` remote on every pass, because no clone carries `.git/config`. See `docs/jira-sync-setup.md` for the variables involved.
+The `Reconcile Bridge` workflow assumes the writer role through GitHub OIDC, so no long-lived access key is stored. The role's trust policy must scope to that workflow on the default branch through the `sub` and `job_workflow_ref` claims, since a condition on the repository alone lets any workflow on any branch that requests `id-token: write` assume the role. Terraform owns that statement through the module's `writer_github_oidc_trust` input, and `docs/jira-sync-setup.md` carries the values to set. The workflow adds the `s3tickets` remote on every pass, because no clone carries `.git/config`. See `docs/jira-sync-setup.md` for the variables involved.
 
 ## Verifying
 

@@ -43,6 +43,38 @@ resource "terraform_data" "inputs_guard" {
       condition     = !local.create_roles || length(var.trusted_principals) > 0
       error_message = "trusted_principals must name at least one principal when the module creates the reader and writer roles."
     }
+    precondition {
+      condition     = !local.oidc_enabled || local.create_roles
+      error_message = "writer_github_oidc_trust applies to the writer role this module creates, so it cannot be set alongside existing_writer_role_arn."
+    }
+    precondition {
+      condition     = !local.oidc_enabled || length(local.oidc_subjects) > 0
+      error_message = "writer_github_oidc_trust.subjects must name at least one claim, otherwise any workflow in any repository could assume the writer role."
+    }
+    precondition {
+      condition     = !local.oidc_enabled || alltrue([for subject in local.oidc_subjects : subject != "" && trimspace(subject) == subject])
+      error_message = "writer_github_oidc_trust.subjects must not hold an entry that is empty or carries surrounding whitespace, which renders into the trust policy as a claim no token carries."
+    }
+    precondition {
+      condition     = !local.oidc_enabled || alltrue([for ref in local.oidc_workflow_refs : ref != "" && trimspace(ref) == ref])
+      error_message = "writer_github_oidc_trust.job_workflow_refs must not hold an entry that is empty or carries surrounding whitespace, which renders into the trust policy as a claim no token carries."
+    }
+    precondition {
+      condition     = !local.oidc_enabled || alltrue([for subject in local.oidc_subjects : !strcontains(subject, "*")])
+      error_message = "writer_github_oidc_trust.subjects are matched with StringEquals, which compares literally, so a subject holding \"*\" matches no token and leaves the role un-assumable. List each fully qualified subject instead."
+    }
+    precondition {
+      condition     = !local.oidc_enabled || alltrue([for ref in local.oidc_workflow_refs : !strcontains(ref, "*")])
+      error_message = "writer_github_oidc_trust.job_workflow_refs are matched with StringEquals, which compares literally, so a ref holding \"*\" matches no token and leaves the role un-assumable. List each fully qualified workflow ref instead."
+    }
+    precondition {
+      condition     = !local.oidc_enabled || (local.oidc_audience != "" && trimspace(local.oidc_audience) == local.oidc_audience)
+      error_message = "writer_github_oidc_trust.audience must be set and must carry no surrounding whitespace, because it renders into the trust policy exactly as written and is compared against the token's aud claim."
+    }
+    precondition {
+      condition     = !local.oidc_enabled || local.oidc_issuer_host != ""
+      error_message = "writer_github_oidc_trust.provider_arn must be an IAM OIDC provider ARN such as arn:aws:iam::<account>:oidc-provider/token.actions.githubusercontent.com, because the trust policy's condition keys are built from the issuer host it names."
+    }
   }
 }
 
