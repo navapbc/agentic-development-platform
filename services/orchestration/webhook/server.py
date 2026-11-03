@@ -69,11 +69,9 @@ def require_webhook_secrets(settings: Settings) -> None:
 
 
 async def build_routes(settings: Settings) -> dict[str, Route]:
-    from temporalio.client import Client
+    from services import temporal_client
 
-    client = await Client.connect(
-        to_host_hostport(settings.temporal_host), namespace=settings.temporal_namespace
-    )
+    client = await temporal_client.connect(to_host_hostport(settings.temporal_host), settings)
     pr_closed = PrClosedHandler(
         secret=settings.github_webhook_secret,
         resolver=PostgresWorkflowResolver(),

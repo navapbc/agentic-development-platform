@@ -89,6 +89,7 @@ AWS transition and FedRAMP Medium readiness. The platform documents its local-to
 - A `temporal-control-plane` Terraform module and a `create_temporal_control_plane` toggle in `private-bedrock`, which create the ECR repositories for the Temporal server and admin-tools images.
 - `docker/temporal-admin-tools.Dockerfile`, which builds the admin-tools image with `docker/temporal-admin-tools.sh` as its entrypoint, and an `inv publish-temporal-images` task that pushes it and the server image to ECR under a tag derived from the upstream version and the build inputs.
 - `inv temporal-certs generate`, which issues a self-signed CA with the Temporal frontend and internode certificates outside the repository, and `inv temporal-certs put`, which checks a generated or supplied certificate directory and writes it to Secrets Manager, optionally importing the internode certificate into ACM to track its expiry. The `temporal-control-plane` module creates the TLS secrets under its own KMS key, serves the frontend from an ACM certificate through `frontend_acm_certificate_arn`, and routes the ACM expiry events of the tracked certificates to an SNS topic. No certificate or key passes through Terraform.
+- `TEMPORAL_TLS_CA` and `TEMPORAL_TLS_SERVER_NAME` settings. Every Temporal client connects through `services/temporal_client.py`, which turns TLS on when either is set, so the workers, the services, and the host tasks reach a TLS frontend with one configuration. A test fails when a `Client.connect` call appears outside the helper.
 
 ### Changed
 

@@ -116,7 +116,7 @@ Two binaries live under `vendor/bin` and are provisioned outside the Python inst
 | Group | Keys | What to set |
 | --- | --- | --- |
 | Postgres | `POSTGRES_*`, `DATABASE_URL`, `ALEMBIC_DATABASE_URL` | Defaults work locally. Both URLs target the `postgres` service, and a host-run task rewrites the address to the published port |
-| Temporal | `TEMPORAL_HOST`, `TEMPORAL_NAMESPACE`, `TEMPORAL_TASK_QUEUE` | Defaults work locally |
+| Temporal | `TEMPORAL_HOST`, `TEMPORAL_NAMESPACE`, `TEMPORAL_TASK_QUEUE`, `TEMPORAL_TLS_CA`, `TEMPORAL_TLS_SERVER_NAME` | Defaults work locally, without TLS. A deployed client sets `TEMPORAL_TLS_CA` to the CA bundle, inline or as a file path, and `TEMPORAL_TLS_SERVER_NAME` to the name on the frontend certificate. A server name alone verifies against the system trust store, as for a public ACM certificate |
 | Bedrock | `AWS_PROFILE`, `PLATFORM_AWS_PROFILE`, `AWS_REGION`, `BEDROCK_CONNECTIVITY_PROVIDER`, `BEDROCK_ENDPOINT_URL`, provider keys | Set your profile and provider. See [Bedrock connectivity](#bedrock-connectivity) |
 | LiteLLM | `LITELLM_BASE_URL`, `LITELLM_MASTER_KEY` | Set a local master key |
 | Review (rebar) | `REBAR_LLM_*`, `REVIEW_ATTESTATION_SECRET` | Point at LiteLLM, set an attestation secret for the HMAC fallback |

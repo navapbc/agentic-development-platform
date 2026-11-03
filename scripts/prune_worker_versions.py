@@ -9,8 +9,8 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from services import temporal_client
 from services.orchestration.worker_versioning import prune_drained_versions
-from temporalio.client import Client
 
 from scripts.config import get_settings, to_host_hostport
 
@@ -20,9 +20,7 @@ log = logging.getLogger("prune-worker-versions")
 
 async def main() -> None:
     settings = get_settings()
-    client = await Client.connect(
-        to_host_hostport(settings.temporal_host), namespace=settings.temporal_namespace
-    )
+    client = await temporal_client.connect(to_host_hostport(settings.temporal_host), settings)
     deleted, kept = await prune_drained_versions(client, settings)
     log.info("deleted %d drained version(s): %s", len(deleted), ", ".join(deleted) or "none")
     if kept:

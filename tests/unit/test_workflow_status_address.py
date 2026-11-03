@@ -31,11 +31,11 @@ async def test_workflow_status_connects_to_the_published_temporal_port(monkeypat
 
     class _Client:
         @staticmethod
-        async def connect(address: str, namespace: str = "") -> _FakeClient:
+        async def connect(address: str, namespace: str = "", tls: object = False) -> _FakeClient:
             recorded["address"] = address
             return _FakeClient()
 
-    monkeypatch.setattr("temporalio.client.Client", _Client)
+    monkeypatch.setattr("services.temporal_client.Client", _Client)
 
     assert await _list() == 0
     assert recorded["address"] == "localhost:17233"

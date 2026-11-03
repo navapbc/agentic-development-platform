@@ -61,9 +61,9 @@ async def _retry(source: str, ticket_key: str, repo: str | None) -> int:
 
 async def install_schedule(source: str, client: Any = None) -> int:
     """Register the intake schedule for a source and remove another source's schedule."""
+    from services import temporal_client
     from services.orchestration.temporal_workflows.intake import IntakeInput, IntakeWorkflow
     from temporalio.client import (
-        Client,
         Schedule,
         ScheduleActionStartWorkflow,
         ScheduleIntervalSpec,
@@ -73,7 +73,7 @@ async def install_schedule(source: str, client: Any = None) -> int:
 
     settings = get_settings()
     if client is None:
-        client = await Client.connect(settings.temporal_host, namespace=settings.temporal_namespace)
+        client = await temporal_client.connect(settings.temporal_host, settings)
     schedule_id = intake_schedule_id(settings, source)
     schedule = Schedule(
         action=ScheduleActionStartWorkflow(

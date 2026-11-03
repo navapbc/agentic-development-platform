@@ -130,4 +130,11 @@ Apply in the sandbox in each certificate mode, run a worker task as a Worker Dep
 - A non-certificate ARN failed variable validation, and `terraform state pull` holds no `PRIVATE KEY`.
 - The sandbox was returned to secrets mode with the generated certificates written, the imported certificates deleted, and a full plan reporting no changes.
 
+### U3 (ADP-143), 2026-11-03
+
+- All 21 `Client.connect` calls in `services` and `scripts` go through `services.temporal_client.connect`, and `test_no_client_connects_outside_the_helper` fails on a new one.
+- Against an isolated Temporal 1.32.1 server whose frontend served the sandbox certificate, the helper connected with `TEMPORAL_TLS_CA` as a file path and as the inline bundle, each with `TEMPORAL_TLS_SERVER_NAME=frontend.temporal.internal`. It was refused without TLS settings, with another server name, and with only the server name, which leaves the private CA untrusted.
+- The rebuilt local stack connects without TLS. `inv workflow-status`, `inv demo-durable-counter`, and `inv durability-proof` passed.
+- The Temporal CLI in the admin-tools image ignored `TEMPORAL_TLS_CA_PATH` from the environment and accepted `--tls-ca-path` and `--tls-server-name` as flags, so the namespace action in U4 passes TLS as flags.
+
 The remaining units are recorded during U6.
