@@ -49,6 +49,7 @@ EXPECTED_TASKS = {
     "fetch-acli",
     "cbm-build",
     "publish-jumphost-image",
+    "publish-temporal-images",
     "reap",
     "scrub-workspaces",
     "intake",

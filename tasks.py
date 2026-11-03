@@ -664,6 +664,25 @@ def publish_jumphost_image(c, tag="v1", arch="arm64", base_image="", repo="", re
     c.run(f"bash infra/bin/publish_jumphost_image.sh {flags}".strip(), pty=True, env=env)
 
 
+@task(
+    help={
+        "name_prefix": "Repository prefix (default agentic-platform).",
+        "arch": "Target architecture, arm64 or amd64 (default arm64).",
+        "region": "AWS region (empty uses AWS_REGION).",
+    }
+)
+def publish_temporal_images(c, name_prefix="", arch="arm64", region=""):
+    """Build and push the Temporal server and admin-tools images to the account ECR repositories."""
+    from scripts.config import get_settings
+
+    settings = get_settings()
+    flags = f" --arch {shlex.quote(arch)}"
+    flags += f" --name-prefix {shlex.quote(name_prefix)}" if name_prefix else ""
+    flags += f" --region {shlex.quote(region)}" if region else ""
+    env = {"AWS_PROFILE": settings.aws_profile, "AWS_REGION": settings.aws_region}
+    c.run(f"{HOST_PYTHON} -m scripts.publish_temporal_images{flags}", pty=True, env=env)
+
+
 @task(help={"apply": "Perform real deletions instead of a dry-run."})
 def reap(c, apply=False):
     """Reap expired platform orphan artifacts (dry-run by default)."""
@@ -1021,6 +1040,7 @@ for _t in (
     terraform_test,
     cbm_build,
     publish_jumphost_image,
+    publish_temporal_images,
     reap,
     scrub_workspaces,
     intake,

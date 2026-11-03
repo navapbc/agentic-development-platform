@@ -86,6 +86,8 @@ AWS transition and FedRAMP Medium readiness. The platform documents its local-to
 - `MCP_ALLOWED_HOSTS`, a comma-separated list of the `Host` header values the MCP gateway accepts. A non-empty value enables the FastMCP DNS rebinding protection with those hosts and an allowed `Origin` of `https://<entry>` for each one, which FastMCP otherwise enables only for a loopback bind host. The `mcp-gateway` base manifest carries a synthetic value for an environment overlay to replace, and the `local/` sandbox overlay clears it.
 - A `/webhook/jira` path on the `inbound-webhook` Ingress, which routes the Jira deliveries the service already serves, and `JIRA_WEBHOOK_SECRET` on its Deployment, read from the `agentic-platform` secret under the optional key `jira_webhook_secret`. A pod starts without the key, so an environment running `jira_intake` in polling mode needs no change, and `webhook` or `hybrid` mode requires it.
 - An `ecs-cluster` Terraform module and a `create_ecs_cluster` toggle in `private-bedrock` that provision the Fargate cluster the platform owns and shares with other teams, with ECS Exec sessions and Fargate ephemeral storage encrypted under customer-managed keys, encrypted Exec and Container Insights log groups, a deployer policy confined to the cluster, and an exec task policy.
+- A `temporal-control-plane` Terraform module and a `create_temporal_control_plane` toggle in `private-bedrock`, which create the ECR repositories for the Temporal server and admin-tools images.
+- `docker/temporal-admin-tools.Dockerfile`, which builds the admin-tools image with `docker/temporal-admin-tools.sh` as its entrypoint, and an `inv publish-temporal-images` task that pushes it and the server image to ECR under a tag derived from the upstream version and the build inputs.
 
 ### Changed
 
@@ -133,6 +135,7 @@ AWS transition and FedRAMP Medium readiness. The platform documents its local-to
 - An `inv prune-worker-versions` task that deletes every drained version of the Temporal worker deployment, freeing the versions they hold against the per-deployment ceiling.
 - A worker that leaves an outranking build current logs it at WARNING rather than INFO, naming both build identifiers and `inv local-up` as the way to route new executions to the code the worker is running. The INFO line read as routine startup noise while new executions went to another build.
 - `inv local-up` lists the running executions pinned to the outgoing build and refuses to replace the workers while any remain, because replacing them leaves each one with nowhere to run its next workflow task. `--force` replaces them anyway.
+- The Temporal server and admin-tools images carry the RDS global CA bundle at `/etc/ssl/rds-global-bundle.pem`, fetched at build time and checked against a pinned SHA-256, so both verify the Aurora certificate.
 
 ### Fixed
 

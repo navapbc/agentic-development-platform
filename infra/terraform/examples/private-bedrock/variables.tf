@@ -347,3 +347,9 @@ variable "ecs_deployer_passable_role_arns" {
   type        = list(string)
   default     = []
 }
+
+variable "create_temporal_control_plane" {
+  description = "Create the Temporal control plane on the platform ECS cluster, starting with the ECR repositories for its images."
+  type        = bool
+  default     = false
+}

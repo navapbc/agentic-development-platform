@@ -142,3 +142,13 @@ output "ecs_exec_task_policy_arn" {
   description = "Policy a task role attaches to accept ECS Exec sessions in the platform ECS cluster."
   value       = module.ecs_cluster.exec_task_policy_arn
 }
+
+output "temporal_server_repository_url" {
+  description = "ECR repository that inv publish-temporal-images pushes the Temporal server image to."
+  value       = module.temporal_control_plane.server_repository_url
+}
+
+output "temporal_admin_tools_repository_url" {
+  description = "ECR repository that inv publish-temporal-images pushes the Temporal admin-tools image to."
+  value       = module.temporal_control_plane.admin_tools_repository_url
+}

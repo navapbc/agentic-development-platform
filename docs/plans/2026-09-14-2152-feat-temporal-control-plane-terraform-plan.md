@@ -91,7 +91,7 @@ U3 has no infrastructure dependency and lands at any point.
 
 ### U1. Downstream server and admin-tools images (ADP-147)
 
-Add the RDS global CA bundle, pinned by SHA-256, and the platform server configuration file to the server image `docker/temporal.Dockerfile` builds. Add `docker/temporal-admin-tools.Dockerfile` from the admin-tools digest `compose.yaml` pins, with the same bundle. Add an `inv publish-temporal-images` task that builds both for `linux/arm64` and pushes them to ECR, tagged with the upstream version and the bundle digest. Keep the local stack on the same Dockerfile.
+Add the RDS global CA bundle, pinned by SHA-256, at `/etc/ssl/rds-global-bundle.pem` in the server image `docker/temporal.Dockerfile` builds. Add `docker/temporal-admin-tools.Dockerfile` from the admin-tools digest `compose.yaml` pins, with the same bundle and `docker/temporal-admin-tools.sh` as its entrypoint. Create the `temporal-control-plane` module with its two ECR repositories and wire it into `private-bedrock`. Add an `inv publish-temporal-images` task that builds both for `linux/arm64` and pushes them, tagged `<upstream version>-<content hash>-<arch>`, where the hash covers every build input, because the repositories reject a repeated tag and a script change alone must produce a new one. Keep the local stack on the same Dockerfile. The server configuration file depends on the TLS settings, so it moves to U4.
 
 ### U2. Certificates (ADP-148)
 
@@ -103,7 +103,7 @@ Add `TEMPORAL_TLS_CA` and `TEMPORAL_TLS_SERVER_NAME` to the settings, add `servi
 
 ### U4. Server, schema task, and UI (ADP-68)
 
-Run the server on the platform cluster with the Aurora TLS settings, the certificate secrets, the init container for the dynamic configuration, and the client security group admission. Run the schema task before the service through a deploy step. Run `temporal-ui` 2.58.0 behind the internal HTTPS ALB in the management tier, connecting to the frontend over TLS. Move the `compose.yaml` UI pin to 2.58.0.
+Add the platform server configuration file to the server image. Run the server on the platform cluster with the Aurora TLS settings, the certificate secrets, the init container for the dynamic configuration, and the client security group admission. Run the schema task before the service through a deploy step. Run `temporal-ui` 2.58.0 behind the internal HTTPS ALB in the management tier, connecting to the frontend over TLS. Move the `compose.yaml` UI pin to 2.58.0.
 
 ### U5. Composition root and documents (ADP-50)
 
@@ -115,4 +115,11 @@ Apply in the sandbox in each certificate mode, run a worker task as a Worker Dep
 
 ## Verification Record
 
-To be completed during U6.
+### U1 (ADP-147), 2026-11-03
+
+- `inv publish-temporal-images` pushed `agentic-platform/temporal-server:1.32.1-3b61f170c0c9-arm64` and `agentic-platform/temporal-admin-tools:1.32.1-4b9166505464-arm64`. A second run reported both as pushed and built nothing. Both repositories hold immutable tags with scan on push and KMS encryption, and both scans completed.
+- The admin-tools image ran as a Fargate task in `agentic-platform-ecs` against the sandbox Aurora cluster endpoint, with `SQL_TLS=true` and the credentials injected from the `database_temporal` secret. With `SQL_TLS_CA_FILE=/etc/ssl/rds-global-bundle.pem` it set up and updated both schemas. With the system CA bundle it failed with `x509: certificate signed by unknown authority`.
+- A build with a wrong `RDS_CA_BUNDLE_SHA256` fails on the digest mismatch.
+- The local stack rebuilt the server image and reported server 1.32.1 healthy.
+
+The remaining units are recorded during U6.

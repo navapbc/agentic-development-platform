@@ -84,6 +84,21 @@
   match: ''
   justification: The repository-intelligence image runs both the HTTP server and the indexing worker, which serves no endpoint, so one image-level HEALTHCHECK cannot be correct for both roles. Health is declared per service where the orchestrator runs it.
 - tool: trivy
+  rule: DS-0026
+  path: docker/temporal-admin-tools.Dockerfile
+  match: ''
+  justification: The admin-tools image runs one-shot tasks that apply the Temporal schemas or register the namespace and then exit. It serves nothing between start and exit, so it has no health to check, and ECS ignores a Dockerfile HEALTHCHECK.
+- tool: trivy
+  rule: DS-0005
+  path: docker/temporal-admin-tools.Dockerfile
+  match: ADD --checksum=sha256:${RDS_CA_BUNDLE_SHA256} --chmod=0444 ${RDS_CA_BUNDLE_URL} /etc/ssl/rds-global-bundle.pem
+  justification: ADD fetches the RDS CA bundle from its URL, which COPY cannot do, and --checksum fails the build unless the download matches the pinned SHA-256, so the image cannot carry a different bundle than the one reviewed.
+- tool: trivy
+  rule: DS-0005
+  path: docker/temporal.Dockerfile
+  match: ADD --checksum=sha256:${RDS_CA_BUNDLE_SHA256} --chmod=0444 ${RDS_CA_BUNDLE_URL} /etc/ssl/rds-global-bundle.pem
+  justification: ADD fetches the RDS CA bundle from its URL, which COPY cannot do, and --checksum fails the build unless the download matches the pinned SHA-256, so the image cannot carry a different bundle than the one reviewed.
+- tool: trivy
   rule: KSV-0125
   path: openhands/images/agent-server-pod.yaml
   match: '- name: agent-server'
