@@ -85,6 +85,7 @@ AWS transition and FedRAMP Medium readiness. The platform documents its local-to
 - `/health`, `/healthz`, and `/` on the MCP gateway, answering with the same payload the other platform HTTP services return. Its pod probes and its ALB target group health check both use `/health`.
 - `MCP_ALLOWED_HOSTS`, a comma-separated list of the `Host` header values the MCP gateway accepts. A non-empty value enables the FastMCP DNS rebinding protection with those hosts and an allowed `Origin` of `https://<entry>` for each one, which FastMCP otherwise enables only for a loopback bind host. The `mcp-gateway` base manifest carries a synthetic value for an environment overlay to replace, and the `local/` sandbox overlay clears it.
 - A `/webhook/jira` path on the `inbound-webhook` Ingress, which routes the Jira deliveries the service already serves, and `JIRA_WEBHOOK_SECRET` on its Deployment, read from the `agentic-platform` secret under the optional key `jira_webhook_secret`. A pod starts without the key, so an environment running `jira_intake` in polling mode needs no change, and `webhook` or `hybrid` mode requires it.
+- An `ecs-cluster` Terraform module and a `create_ecs_cluster` toggle in `private-bedrock` that provision the Fargate cluster the platform owns and shares with other teams, with ECS Exec sessions and Fargate ephemeral storage encrypted under customer-managed keys, encrypted Exec and Container Insights log groups, a deployer policy confined to the cluster, and an exec task policy.
 
 ### Changed
 

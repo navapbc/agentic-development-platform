@@ -43,6 +43,7 @@ These modules provision the shared AWS infrastructure the components above consu
 | Container registry | ECR repository with scan-on-push, immutable tags, and a lifecycle policy | [ecr](../infra/terraform/ecr) |
 | Audit trail | CloudTrail with its own S3 bucket | [cloudtrail](../infra/terraform/cloudtrail) |
 | Bedrock inference authorization | `bedrock:InvokeModel` IAM policy | [bedrock-iam](../infra/terraform/bedrock-iam) |
+| Container platform | Shared ECS cluster on Fargate that the platform owns, with encrypted Exec sessions and ephemeral storage | [ecs-cluster](../infra/terraform/ecs-cluster) |
 | Laptop Bedrock path for test accounts | Ephemeral ECS Fargate jump-host reached over ECS Exec, in the management tier | [bedrock-jumphost-fargate](../infra/terraform/bedrock-jumphost-fargate) |
 | Network tiers | Public, application, management, and data subnets with per-tier route tables and a data-tier network ACL | [private-bedrock](../infra/terraform/examples/private-bedrock) |
 | Outbound internet | NAT instance or NAT Gateway for the application and management tiers | [egress](../infra/terraform/egress) |
