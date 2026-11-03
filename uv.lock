@@ -132,7 +132,7 @@ requires-dist = [
     { name = "langfuse", marker = "extra == 'prompts'", specifier = ">=3,<5" },
     { name = "langgraph", marker = "extra == 'reasoning'", specifier = ">=1.2,<2" },
     { name = "mcp", marker = "extra == 'gateway'", specifier = ">=1.30,<2" },
-    { name = "nava-rebar", extras = ["agents", "jira-datacenter", "s3"], marker = "extra == 'review'", specifier = "==0.13.1" },
+    { name = "nava-rebar", extras = ["agents", "jira-datacenter", "s3"], marker = "extra == 'review'", specifier = "==0.14.0" },
     { name = "openhands-sdk", marker = "extra == 'sandbox'", specifier = ">=1.56,<2" },
     { name = "openhands-tools", marker = "extra == 'sandbox'", specifier = ">=1.56,<2" },
     { name = "openpyxl", marker = "extra == 'review'", specifier = ">=3.1,<4" },
@@ -3295,20 +3295,21 @@ wheels = [
 
 [[package]]
 name = "nava-rebar"
-version = "0.13.1"
+version = "0.14.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jsonschema" },
     { name = "pyyaml" },
     { name = "referencing" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/3a/63/bda1369ceb37fc9173fa42d9aefb98fd74a10627a6c7ae96f9229532e0a4/nava_rebar-0.13.1.tar.gz", hash = "sha256:1d7726a6f2e8f408672b120426b9158595e683d449682934c4afe1c86c9cf473", size = 8460964, upload-time = "2026-08-30T03:33:45.057Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/54/ca/3d9412d65e1f8325a2794ff9d704af0ebe6620a7f375b38a6994ae488fe5/nava_rebar-0.14.0.tar.gz", hash = "sha256:04787a7ca9f92f42dd78857085aa1cc1b52f59f976bd3fbe9060ef9259572f22", size = 8106004, upload-time = "2026-10-31T01:03:03.33Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/dc/99/1551eee9b498fd91057c2a49454e03894498a5351145ca4bede071d81b9b/nava_rebar-0.13.1-py3-none-any.whl", hash = "sha256:73fe7a95925deb249781fae0b19eb6e0a81bbaf2a1fa3145a2612d29ba828995", size = 3576896, upload-time = "2026-08-30T03:33:43.046Z" },
+    { url = "https://files.pythonhosted.org/packages/34/7c/287e1bf0538ad9f7331e686defebfe312929dacb9ff1414c861f0d501491/nava_rebar-0.14.0-py3-none-any.whl", hash = "sha256:ee21989db59c801e30b7f86887436e1afc18d949ae3543c82bf354750468b18a", size = 3059711, upload-time = "2026-10-31T01:03:01.303Z" },
 ]
 
 [package.optional-dependencies]
 agents = [
+    { name = "anthropic" },
     { name = "json-repair" },
     { name = "pydantic" },
     { name = "pydantic-ai-slim", extra = ["anthropic", "duckduckgo", "retries"] },

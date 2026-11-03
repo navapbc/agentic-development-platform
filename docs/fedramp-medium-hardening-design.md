@@ -18,6 +18,12 @@ Posture. The workflow control plane runs in-VPC with no public exposure, and wor
 
 Controls. SC-7 boundary protection through the in-VPC placement and the endpoint security group in [vpc-endpoints](../infra/terraform/vpc-endpoints). SC-8 transmission confidentiality over TLS. AC-3 and AC-4 through the network path that admits only in-VPC callers. CM-6 configuration settings through the pinned compose and image definitions.
 
+## Container platform
+
+Posture. The platform services and the services other teams deploy run on one ECS cluster on Fargate that the platform owns. Fargate removes host access, so no team administers an instance. Ephemeral task storage is encrypted under a customer-managed key that only Fargate tasks of this cluster can use. ECS Exec sessions are encrypted end to end under a customer-managed key and leave a transcript in an encrypted log group. A team deploys through a policy that registers only Fargate task definitions, acts only on services and tasks in this cluster, and passes only the roles the platform lists.
+
+Controls. SC-28 protection at rest and SC-12 key management through the storage key in [ecs-cluster](../infra/terraform/ecs-cluster), whose policy binds Fargate to the cluster's encryption context and limits its grants to decryption. SC-8 and SC-13 through the KMS-encrypted Exec data channel. AU-2, AU-9, and AU-12 through the Exec transcripts in a KMS-encrypted log group. AC-3, AC-5, and AC-6 through the deployer policy, which a team cannot use outside the cluster or to pass an unlisted role. CA-7 continuous monitoring through Container Insights.
+
 ## Edge endpoints
 
 Posture. The platform reaches AWS services through interface and gateway VPC endpoints rather than the public internet, so traffic to Bedrock, the object store, and the other consumed services stays on the AWS network. Bedrock inference is authorized by a dedicated IAM policy.

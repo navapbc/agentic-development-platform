@@ -307,6 +307,17 @@ variable "rebar_ticket_store_trusted_principals" {
   default     = []
 }
 
+variable "rebar_ticket_store_writer_oidc_trust" {
+  description = "GitHub Actions OIDC trust for the ticket store writer role, which lets the reconcile-bridge workflow push the store without a stored AWS key. See the rebar-ticket-store module for the shape."
+  type = object({
+    provider_arn      = string
+    subjects          = list(string)
+    job_workflow_refs = optional(list(string), [])
+    audience          = optional(string, "sts.amazonaws.com")
+  })
+  default = null
+}
+
 variable "rebar_ticket_store_admin_principals" {
   description = "IAM principal ARNs allowed to seed the ticket store and to empty its bucket before a destroy."
   type        = list(string)
@@ -323,4 +334,16 @@ variable "rebar_ticket_store_existing_writer_role_arn" {
   description = "Existing role that pushes the ticket store. Set it with the reader role to skip creating both."
   type        = string
   default     = ""
+}
+
+variable "create_ecs_cluster" {
+  description = "Create the platform ECS cluster that the Temporal control plane, the platform services, and other teams' services run on."
+  type        = bool
+  default     = false
+}
+
+variable "ecs_deployer_passable_role_arns" {
+  description = "Task and execution role ARNs, wildcards allowed, that the ECS cluster deployer policy may pass to tasks."
+  type        = list(string)
+  default     = []
 }
