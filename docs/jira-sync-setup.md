@@ -69,7 +69,7 @@ gh variable set ACLI_SHA256 --body "<digest from above>"
 The workflow installs rebar from `.github/reconcile-bridge-requirements.txt`, a hash-pinned file compiled from `.github/reconcile-bridge-requirements.in`, and installs it with `pip install --require-hashes`. Bumping the pinned release means editing the `.in` file and recompiling.
 
 ```sh
-uv pip compile --generate-hashes .github/reconcile-bridge-requirements.in -o .github/reconcile-bridge-requirements.txt
+uv pip compile --generate-hashes --python-version 3.12 .github/reconcile-bridge-requirements.in -o .github/reconcile-bridge-requirements.txt
 ```
 
 `--require-hashes` rejects any dependency that is not pinned with a hash, so the compiled file has to cover the full transitive closure. The reconciler does not need the `[agents]` extra.
