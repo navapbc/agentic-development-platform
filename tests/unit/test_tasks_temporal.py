@@ -83,8 +83,9 @@ def test_only_the_intermediate_releases_override_the_compose_images():
     for release in intermediate:
         env = release.image_env()
         pin = f":{release.version}@sha256:"
-        assert env["TEMPORAL_SERVER_IMAGE"].startswith(f"temporalio/server{pin}")
-        assert env["TEMPORAL_ADMIN_TOOLS_IMAGE"].startswith(f"temporalio/admin-tools{pin}")
+        repository = "docker.io/temporalio"
+        assert env["TEMPORAL_SERVER_IMAGE"].startswith(f"{repository}/server{pin}")
+        assert env["TEMPORAL_ADMIN_TOOLS_IMAGE"].startswith(f"{repository}/admin-tools{pin}")
 
 
 def test_the_target_matches_the_compose_pins():
@@ -93,8 +94,8 @@ def test_the_target_matches_the_compose_pins():
     dockerfile = (root / "docker" / "temporal.Dockerfile").read_text(encoding="utf-8")
     compose = (root / "compose.yaml").read_text(encoding="utf-8")
 
-    assert f"temporalio/server:{version}@sha256:" in dockerfile
-    assert f"temporalio/admin-tools:{version}@sha256:" in compose
+    assert f"docker.io/temporalio/server:{version}@sha256:" in dockerfile
+    assert f"docker.io/temporalio/admin-tools:{version}@sha256:" in compose
 
 
 def test_local_up_applies_the_schema_before_the_server_and_the_namespace_before_the_stack(project):
@@ -150,10 +151,10 @@ def test_temporal_upgrade_walks_each_release_with_its_images(project):
     ]
     server_images = [env.get("TEMPORAL_SERVER_IMAGE", "") for command, env in context.commands]
     assert [image.partition("@")[0] for image in server_images if image] == [
-        "temporalio/server:1.30.8",
-        "temporalio/server:1.30.8",
-        "temporalio/server:1.31.4",
-        "temporalio/server:1.31.4",
+        "docker.io/temporalio/server:1.30.8",
+        "docker.io/temporalio/server:1.30.8",
+        "docker.io/temporalio/server:1.31.4",
+        "docker.io/temporalio/server:1.31.4",
     ]
 
 
