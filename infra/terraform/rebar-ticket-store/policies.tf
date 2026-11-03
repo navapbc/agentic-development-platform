@@ -109,15 +109,47 @@ locals {
     ]
   })
 
+  assume_statement = {
+    Effect    = "Allow"
+    Principal = { AWS = var.trusted_principals }
+    Action    = "sts:AssumeRole"
+  }
+
+  oidc_enabled       = var.writer_github_oidc_trust != null
+  oidc_provider_arn  = try(var.writer_github_oidc_trust.provider_arn, "")
+  oidc_subjects      = try(var.writer_github_oidc_trust.subjects, [])
+  oidc_workflow_refs = try(var.writer_github_oidc_trust.job_workflow_refs, [])
+  oidc_audience      = try(var.writer_github_oidc_trust.audience, "")
+  oidc_issuer_host   = try(regex("^arn:[^:]+:iam::[0-9]+:oidc-provider/(.+)$", local.oidc_provider_arn)[0], "")
+
+  writer_oidc_statements = local.oidc_enabled ? [
+    {
+      Sid       = "ReconcileBridgeWorkflow"
+      Effect    = "Allow"
+      Principal = { Federated = local.oidc_provider_arn }
+      Action    = "sts:AssumeRoleWithWebIdentity"
+      Condition = {
+        StringEquals = merge(
+          {
+            "${local.oidc_issuer_host}:aud" = local.oidc_audience
+            "${local.oidc_issuer_host}:sub" = local.oidc_subjects
+          },
+          length(local.oidc_workflow_refs) == 0 ? {} : {
+            "${local.oidc_issuer_host}:job_workflow_ref" = local.oidc_workflow_refs
+          },
+        )
+      }
+    },
+  ] : []
+
   assume_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect    = "Allow"
-        Principal = { AWS = var.trusted_principals }
-        Action    = "sts:AssumeRole"
-      },
-    ]
+    Version   = "2012-10-17"
+    Statement = [local.assume_statement]
+  })
+
+  writer_assume_policy = jsonencode({
+    Version   = "2012-10-17"
+    Statement = concat([local.assume_statement], local.writer_oidc_statements)
   })
 
   list_store_prefix = {

@@ -35,19 +35,19 @@ Set these under Settings, then Secrets and variables, then Actions, on the Varia
 
 ## Ticket store access
 
-The reconciler writes to the S3 ticket store rather than to a branch in this repository, so the job needs `id-token: write` to mint an OIDC token and assume `AWS_BRIDGE_ROLE_ARN`. No long-lived AWS key is stored as a secret. The role's trust policy must scope to this workflow on the default branch, not to the repository, because any workflow on any branch that requests `id-token: write` can otherwise assume the role. Condition the `sts:AssumeRoleWithWebIdentity` statement on both claims:
+The reconciler writes to the S3 ticket store rather than to a branch in this repository, so the job needs `id-token: write` to mint an OIDC token and assume `AWS_BRIDGE_ROLE_ARN`. No long-lived AWS key is stored as a secret. The role's trust policy must scope to this workflow on the default branch, not to the repository, because any workflow on any branch that requests `id-token: write` can otherwise assume the role.
 
-```json
-"Condition": {
-  "StringEquals": {
-    "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
-    "token.actions.githubusercontent.com:sub": "repo:navapbc/agentic-development-platform:ref:refs/heads/main",
-    "token.actions.githubusercontent.com:job_workflow_ref": "navapbc/agentic-development-platform/.github/workflows/reconcile-bridge.yml@refs/heads/main"
-  }
+That trust is Terraform-owned. Set `writer_github_oidc_trust` on the `rebar-ticket-store` module, or `rebar_ticket_store_writer_oidc_trust` on the `private-bedrock` root, and the module renders the `sts:AssumeRoleWithWebIdentity` statement onto the writer role alongside the human operators it already trusts. Editing the trust policy in the console instead means the next `terraform apply` reverts it and the reconciler loses its access.
+
+```hcl
+rebar_ticket_store_writer_oidc_trust = {
+  provider_arn      = "arn:aws:iam::<account>:oidc-provider/token.actions.githubusercontent.com"
+  subjects          = ["repo:navapbc/agentic-development-platform:ref:refs/heads/main"]
+  job_workflow_refs = ["navapbc/agentic-development-platform/.github/workflows/reconcile-bridge.yml@refs/heads/main"]
 }
 ```
 
-Update both values when the default branch changes. The permissions policy must cover the store prefix plus the bucket's KMS key. See `docs/rebar-s3-ticket-store.md`.
+The module requires at least one subject and rejects any subject or workflow ref holding `*`, so the role cannot be left assumable by any workflow in any repository. Both claims are matched with `StringEquals`, which compares literally, so a wildcard would match no token at all and leave the role un-assumable rather than over-permissive. List each ref you intend to trust. The condition keys follow the issuer host carried by `provider_arn`, so a GitHub Enterprise Server provider works without further configuration. `audience` defaults to `sts.amazonaws.com`. Omitting `job_workflow_refs` drops that condition, which widens the trust to every workflow matching a listed subject, so prefer setting it. Update both the subjects and the workflow refs when the default branch changes. The permissions policy must cover the store prefix plus the bucket's KMS key. See `docs/rebar-s3-ticket-store.md`.
 
 ## Pinning acli
 
