@@ -1,12 +1,12 @@
 # syntax=docker/dockerfile:1
 
-FROM golang:1.27-trixie@sha256:6212da3924947f4b6a939df02ea627c13f338f1a41d6c3fcb0dd9d076eef46c4 AS go-tools
+FROM public.ecr.aws/docker/library/golang:1.27-trixie@sha256:6212da3924947f4b6a939df02ea627c13f338f1a41d6c3fcb0dd9d076eef46c4 AS go-tools
 ENV GOFLAGS=-mod=mod GOBIN=/out
 RUN mkdir -p /out \
  && go install github.com/sourcegraph/zoekt/cmd/zoekt@v0.0.0-20260729135938-2cb19912a407 \
  && go install github.com/sourcegraph/zoekt/cmd/zoekt-index@v0.0.0-20260729135938-2cb19912a407
 
-FROM debian:trixie-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258 AS scip-cli
+FROM public.ecr.aws/docker/library/debian:trixie-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258 AS scip-cli
 ARG TARGETARCH
 WORKDIR /tmp
 RUN apt-get update \
@@ -22,7 +22,7 @@ RUN apt-get update \
  && tar -xzf scip.tar.gz -C /tmp \
  && install -m 0755 /tmp/scip /usr/local/bin/scip
 
-FROM debian:trixie-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258 AS terraform-ls
+FROM public.ecr.aws/docker/library/debian:trixie-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258 AS terraform-ls
 ARG TARGETARCH
 WORKDIR /tmp
 RUN apt-get update \
@@ -39,7 +39,7 @@ RUN apt-get update \
  && unzip -q "$fname" -d /tmp \
  && install -m 0755 /tmp/terraform-ls /usr/local/bin/terraform-ls
 
-FROM debian:trixie-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258 AS scip-java
+FROM public.ecr.aws/docker/library/debian:trixie-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258 AS scip-java
 WORKDIR /tmp
 RUN apt-get update \
  && apt-get install -y --no-install-recommends curl ca-certificates \
@@ -50,7 +50,7 @@ RUN apt-get update \
  && echo "${sha}  scip-java" | sha256sum -c - \
  && install -m 0755 /tmp/scip-java /usr/local/bin/scip-java
 
-FROM debian:trixie-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258 AS phpactor-cli
+FROM public.ecr.aws/docker/library/debian:trixie-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258 AS phpactor-cli
 WORKDIR /tmp
 RUN apt-get update \
  && apt-get install -y --no-install-recommends curl ca-certificates \
@@ -61,7 +61,7 @@ RUN apt-get update \
  && echo "${sha}  phpactor.phar" | sha256sum -c - \
  && install -m 0755 /tmp/phpactor.phar /usr/local/bin/phpactor
 
-FROM debian:trixie-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258 AS scip-ruby
+FROM public.ecr.aws/docker/library/debian:trixie-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258 AS scip-ruby
 WORKDIR /tmp
 RUN apt-get update \
  && apt-get install -y --no-install-recommends curl ca-certificates \
@@ -72,9 +72,9 @@ RUN apt-get update \
  && echo "${sha}  scip-ruby" | sha256sum -c - \
  && install -m 0755 /tmp/scip-ruby /usr/local/bin/scip-ruby
 
-FROM maven:3.9.11-eclipse-temurin-21@sha256:6fdc855a6ed81d288ca7ca37ac6ff5e9308b612485c0801d70b25a858c83d237 AS java-tools
+FROM public.ecr.aws/docker/library/maven:3.9.11-eclipse-temurin-21@sha256:6fdc855a6ed81d288ca7ca37ac6ff5e9308b612485c0801d70b25a858c83d237 AS java-tools
 
-FROM node:24-trixie-slim@sha256:0711b541c1c33a8a530ac4f0d391baa9a15b3d804695b1b24a47daa5fb60e74d AS runtime
+FROM public.ecr.aws/docker/library/node:24-trixie-slim@sha256:0711b541c1c33a8a530ac4f0d391baa9a15b3d804695b1b24a47daa5fb60e74d AS runtime
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \

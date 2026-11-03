@@ -145,15 +145,15 @@ TEMPORAL_UPGRADE_PATH = (
         "1.30.8",
         (1, 18),
         (1, 13),
-        "temporalio/server:1.30.8@sha256:54c59485b185ad787061f9a2ed72bd31c8efeae2d4144c61f22873df52c3c781",
-        "temporalio/admin-tools:1.30.8@sha256:22d417fd0d541da6b18486912a546b3203f516f0bf9f8b2f27611506fca2507c",
+        "docker.io/temporalio/server:1.30.8@sha256:54c59485b185ad787061f9a2ed72bd31c8efeae2d4144c61f22873df52c3c781",
+        "docker.io/temporalio/admin-tools:1.30.8@sha256:22d417fd0d541da6b18486912a546b3203f516f0bf9f8b2f27611506fca2507c",
     ),
     TemporalRelease(
         "1.31.4",
         (1, 19),
         (1, 14),
-        "temporalio/server:1.31.4@sha256:1986d4554cc0da8cf09ddcaa10bc348f22f192972b4c2ec1f768f7307c5892e6",
-        "temporalio/admin-tools:1.31.4@sha256:c286fe515148587228d692806bc6f7652be5febc384a73dfd16379aed69f7d87",
+        "docker.io/temporalio/server:1.31.4@sha256:1986d4554cc0da8cf09ddcaa10bc348f22f192972b4c2ec1f768f7307c5892e6",
+        "docker.io/temporalio/admin-tools:1.31.4@sha256:c286fe515148587228d692806bc6f7652be5febc384a73dfd16379aed69f7d87",
     ),
 )
 TEMPORAL_TARGET = TemporalRelease("1.32.1", (1, 19), (1, 14))
