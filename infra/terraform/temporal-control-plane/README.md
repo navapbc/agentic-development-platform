@@ -21,13 +21,15 @@ The frontend presents a certificate to the workers and the UI, and the Temporal 
 | Your PKI | Your PEM files in a directory, under the file names below | Same |
 | ACM | Set `frontend_acm_certificate_arn`, and the NLB presents that certificate, issued by ACM or imported into it. No frontend secret is created | Import it with `inv temporal-certs put --import-to-acm`, or import it yourself, and set `internode_acm_certificate_arn` to track its expiry. The server still reads it from Secrets Manager |
 
+Switching the frontend between secrets and ACM replaces the NLB listener and target group and changes the server task definition, so the frontend is unavailable from the apply until `put` and `inv temporal-deploy` complete.
+
 ACM never returns the private key of an imported certificate, and the internode certificate must reach the server process, so ACM tracks the internode certificate and Secrets Manager serves it.
 
 `inv temporal-certs put --dir DIR` writes a directory to the secrets. The directory holds `ca.pem`, `internode.pem`, `internode-key.pem`, and, unless the frontend comes from ACM, `frontend.pem` and `frontend-key.pem`. `ca.pem` may hold the whole chain. Before it writes anything, `put` checks that each certificate verifies against `ca.pem`, that each key belongs to its certificate, that the internode certificate carries both the server and client authentication usages, and that no certificate has expired. It refuses frontend files when the frontend comes from ACM, and it refuses an internode certificate that differs from the one `internode_acm_certificate_arn` tracks. `--import-to-acm` re-imports into that ARN, or imports a new certificate and prints the ARN to set.
 
 `generate` refuses a directory inside the repository and refuses to replace existing files without `--force`. It writes P-256 keys and certificates with mode 0600. The frontend certificate names `frontend.temporal.internal`, and the internode certificate `internode.temporal.internal`, unless `--frontend-name` and `--internode-name` set others. The CA key stays in the directory so the operator can issue again. Keep it offline.
 
-Certificate material never passes through Terraform, so a plan or apply needs no key and the Terraform state holds none. A rotation is a `put` followed by a redeploy of the server.
+Certificate material never passes through Terraform, so a plan or apply needs no key and the Terraform state holds none. A rotation is a `put` followed by `inv temporal-deploy`. A rotation to a new CA briefly runs server tasks that trust different CAs side by side, so first `put` a `ca.pem` that holds the old and the new CA with the old leaf certificates and deploy, then `put` the new leaf certificates and deploy again.
 
 ## Server
 
@@ -50,7 +52,7 @@ Every task group reaches the VPC endpoints and S3 over 443, and the server and a
 
 ## Deploy
 
-Terraform registers the task definitions and creates the server service at a count of zero, and it leaves the service's task definition and count to `inv temporal-deploy`. The task runs the admin-tools `schema` action and stops unless it exits 0, moves the service to the task definition Terraform last registered at `server_count`, waits for it to settle, and runs the `namespace` action, which registers `namespace` with `namespace_retention`. A server version change therefore applies its schema before any server of that version starts. Run it after the first apply and after every apply that changes an image.
+Terraform registers the task definitions and creates the server service at a count of zero, and it leaves the service's task definition and count to `inv temporal-deploy`. The task runs the admin-tools `schema` action and stops unless it exits 0, replaces the server tasks with tasks of the task definition Terraform last registered at `server_count`, waits for them to settle, runs the `namespace` action, which registers `namespace` with `namespace_retention`, and replaces the UI tasks. A server version change therefore applies its schema before any server of that version starts. Run it after the first apply, after every apply that changes an image, and after `inv temporal-certs put`, because the server and the UI read the TLS secrets only when a task starts.
 
 The secret store redeploys the server after a rotation of the `temporal` role password when `server_service_arn` is in its `restart_services` for `database_temporal`, which the `private-bedrock` root sets.
 
@@ -87,7 +89,7 @@ The admin-tools task connects to Aurora with `SQL_TLS=true` and `SQL_TLS_CA_FILE
 | `client_security_group_id` | Security group a workload attaches to reach the frontend. Null until the images are set |
 | `server_service_arn` | Server ECS service, for `secret_restart_services`. Null until the images are set |
 | `execution_role_arns` | Execution role of each task, keyed by `server`, `admin_tools`, and `ui` |
-| `deploy` | Cluster, server service and count, task definitions, subnets, and security groups `inv temporal-deploy` reads. Null until the images are set |
+| `deploy` | Cluster, server service and count, task definitions, subnets, security groups, and UI service `inv temporal-deploy` reads. Null until the images are set |
 | `ui_url` | HTTPS address of the UI ALB. Null without the UI |
 | `server_repository_url`, `admin_tools_repository_url`, `ui_repository_url` | ECR repositories `inv publish-temporal-images` pushes to |
 | `server_repository_name`, `admin_tools_repository_name` | Names of the server and admin-tools repositories |

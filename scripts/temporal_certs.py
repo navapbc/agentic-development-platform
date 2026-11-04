@@ -408,7 +408,7 @@ def main(argv: list[str] | None = None) -> int:
             import_to_acm=args.import_to_acm,
         ):
             print(f"[temporal-certs] {action}")
-        print("[temporal-certs] redeploy the Temporal server to load the new certificates")
+        print("[temporal-certs] run inv temporal-deploy to load the new certificates")
         return 0
     except CertificateError as exc:
         print(f"[temporal-certs] {exc}")

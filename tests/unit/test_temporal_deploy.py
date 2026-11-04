@@ -82,6 +82,21 @@ def test_the_schema_runs_before_the_server_moves_and_the_namespace_after() -> No
         "service": "platform-temporal-server",
         "taskDefinition": SETTINGS["server_task_definition"],
         "desiredCount": 2,
+        "forceNewDeployment": True,
+    }
+
+
+def test_the_ui_restarts_after_the_namespace_to_load_the_current_ca() -> None:
+    ecs = _Ecs()
+
+    deployer.deploy(ecs, {**SETTINGS, "ui_service": "platform-temporal-ui"})
+
+    assert _steps(ecs)[-3:] == ["tasks_stopped", "update_service", "services_stable"]
+    restart = [call[1] for call in ecs.calls if call[0] == "update_service"][-1]
+    assert restart == {
+        "cluster": SETTINGS["cluster"],
+        "service": "platform-temporal-ui",
+        "forceNewDeployment": True,
     }
 
 

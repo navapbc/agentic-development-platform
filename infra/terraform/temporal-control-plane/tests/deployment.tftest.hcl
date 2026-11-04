@@ -195,7 +195,7 @@ run "the_frontend_admits_the_client_group_only" {
   }
 
   assert {
-    condition     = aws_lb.frontend[0].internal && aws_lb_listener.frontend[0].protocol == "TCP"
+    condition     = aws_lb.frontend[0].internal && aws_lb_listener.frontend[0].protocol == "TCP" && endswith(aws_lb_target_group.frontend[0].name, "-temporal-tcp")
     error_message = "The frontend NLB is public, or it terminates TLS without an ACM certificate."
   }
 }
@@ -260,6 +260,11 @@ run "an_acm_frontend_terminates_tls_at_the_nlb" {
       aws_lb_target_group.frontend[0].protocol == "TLS"
     )
     error_message = "The ACM frontend is not terminated under the FIPS policy with HTTP/2 and re-encrypted."
+  }
+
+  assert {
+    condition     = endswith(aws_lb_target_group.frontend[0].name, "-temporal-tls")
+    error_message = "The TLS target group shares its name with the TCP one, so a mode switch cannot create it before the other is deleted."
   }
 
   assert {

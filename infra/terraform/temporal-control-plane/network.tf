@@ -231,7 +231,7 @@ resource "aws_lb" "frontend" {
 resource "aws_lb_target_group" "frontend" {
   count = local.deploy ? 1 : 0
 
-  name                 = "${var.name_prefix}-temporal-grpc"
+  name                 = "${var.name_prefix}-temporal-${local.frontend_from_secrets ? "tcp" : "tls"}"
   port                 = local.frontend_port
   protocol             = local.frontend_from_secrets ? "TCP" : "TLS"
   target_type          = "ip"
@@ -247,6 +247,17 @@ resource "aws_lb_target_group" "frontend" {
   }
 
   tags = var.tags
+
+  # The listener and the server service move to the replacement before this one is deleted.
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+resource "terraform_data" "frontend_mode" {
+  count = local.deploy ? 1 : 0
+
+  input = local.frontend_from_secrets ? "tcp" : "tls"
 }
 
 resource "aws_lb_listener" "frontend" {
@@ -265,4 +276,9 @@ resource "aws_lb_listener" "frontend" {
   }
 
   tags = var.tags
+
+  # The provider keeps ssl_policy in a TLS to TCP update, which ELB rejects, so a mode switch replaces the listener.
+  lifecycle {
+    replace_triggered_by = [terraform_data.frontend_mode]
+  }
 }

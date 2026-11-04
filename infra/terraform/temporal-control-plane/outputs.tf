@@ -108,5 +108,6 @@ output "deploy" {
     admin_tools_task_definition = aws_ecs_task_definition.admin_tools[0].arn
     admin_tools_subnets         = var.management_subnet_ids
     admin_tools_security_groups = [aws_security_group.admin_tools[0].id, aws_security_group.client[0].id]
+    ui_service                  = local.ui ? aws_ecs_service.ui[0].name : null
   } : null
 }

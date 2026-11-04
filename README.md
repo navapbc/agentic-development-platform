@@ -479,7 +479,7 @@ Run `inv --list` for the full set. The common tasks are below.
 | `inv operator-done --workflow-id ID --repo REPO --branch BRANCH [--closed-unmerged]` | Complete a local source-control run by verifying artifacts and signaling the workflow |
 | `inv publish-jumphost-image [--tag TAG]` | Build and push the jumphost base image to the account ECR repository |
 | `inv temporal-certs generate --out DIR`, `inv temporal-certs put --dir DIR [--import-to-acm]` | Issue self-signed Temporal TLS certificates, or check a certificate directory and write it to Secrets Manager |
-| `inv temporal-deploy` | Apply the Temporal schema, roll the server to its current task definition, and register the namespace |
+| `inv temporal-deploy` | Apply the Temporal schema, replace the server tasks with its current task definition, register the namespace, and replace the UI tasks |
 | `inv temporal-ui` | Forward `localhost:8443`, or `--port`, to the Temporal UI load balancer through the jump-host |
 | `inv publish-temporal-images [--arch arm64\|amd64]` | Build and push the Temporal server and admin-tools images, skipping an image whose tag is already pushed |
 | `inv approve-pr --workflow-id ID [--reject] [--pr-closed] [--merged]` | Release an approval or PR-close pause on a running workflow |

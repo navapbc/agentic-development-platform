@@ -1,10 +1,12 @@
-"""Deploy the Temporal server: apply the schema, roll the server, then register the namespace.
+"""Deploy the Temporal control plane: schema, server, namespace, then UI.
 
 Terraform registers the task definitions and leaves the server service at its current task
-definition and count. This runs the admin-tools schema task to completion, moves the service to
-the task definition Terraform last registered at the configured count, waits for it to settle,
-and runs the namespace task. A schema task that does not exit 0 stops the deploy before the
-server changes, so a server never starts against a schema older than it needs.
+definition and count. This runs the admin-tools schema task to completion, replaces the server
+tasks with tasks of the task definition Terraform last registered at the configured count, waits
+for them to settle, runs the namespace task, and replaces the UI tasks. A schema task that does
+not exit 0 stops the deploy before the server changes, so a server never starts against a schema
+older than it needs. The server and the UI read the TLS secrets only when a task starts, so the
+replacement also loads certificates that `inv temporal-certs put` wrote.
 """
 
 from __future__ import annotations
@@ -66,6 +68,7 @@ def roll_server(ecs: Any, deploy: dict[str, Any]) -> None:
         service=deploy["server_service"],
         taskDefinition=deploy["server_task_definition"],
         desiredCount=deploy["server_count"],
+        forceNewDeployment=True,
     )
     print(
         f"[temporal-deploy] moved {deploy['server_service']} to "
@@ -73,6 +76,16 @@ def roll_server(ecs: Any, deploy: dict[str, Any]) -> None:
     )
     ecs.get_waiter("services_stable").wait(
         cluster=deploy["cluster"], services=[deploy["server_service"]], WaiterConfig=SERVICE_WAIT
+    )
+
+
+def restart_ui(ecs: Any, deploy: dict[str, Any]) -> None:
+    ecs.update_service(
+        cluster=deploy["cluster"], service=deploy["ui_service"], forceNewDeployment=True
+    )
+    print(f"[temporal-deploy] replacing the {deploy['ui_service']} tasks")
+    ecs.get_waiter("services_stable").wait(
+        cluster=deploy["cluster"], services=[deploy["ui_service"]], WaiterConfig=SERVICE_WAIT
     )
 
 
@@ -85,6 +98,8 @@ def deploy(ecs: Any, settings: dict[str, Any]) -> None:
     run_admin_tools(ecs, settings, "schema")
     roll_server(ecs, settings)
     run_admin_tools(ecs, settings, "namespace")
+    if settings.get("ui_service"):
+        restart_ui(ecs, settings)
 
 
 def _terraform_deploy(env: dict[str, str]) -> dict[str, Any]:

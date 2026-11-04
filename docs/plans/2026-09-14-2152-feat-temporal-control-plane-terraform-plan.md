@@ -20,7 +20,7 @@ Means. Build downstream server and admin-tools images that carry the RDS CA bund
 
 Product authority. ADP-97 in Jira, from the v0.3.0 section of `.agent-context/roadmap-jira.md`, with sub-tasks ADP-147, ADP-148, ADP-143, ADP-68, and ADP-50.
 
-Stop conditions. The module applies in the sandbox account in each certificate mode. The server persists to Aurora over TLS with host verification, a client outside the client security group cannot reach the frontend, and a worker polls as a Worker Deployment version over TLS. A rotation of the `temporal` role password redeploys the server. `temporal-ui` 2.58.0 runs locally and deployed. `terraform validate`, `inv terraform-test`, `inv ci`, and `inv sast` pass.
+Stop conditions. The module applies in the sandbox account in each certificate mode. The server persists to Aurora over TLS with host verification, and a client outside the client security group cannot reach the frontend. A rotation of the `temporal` role password redeploys the server. `temporal-ui` 2.58.0 runs locally and deployed. `terraform validate`, `inv terraform-test`, `inv ci`, and `inv sast` pass.
 
 ## Product Contract
 
@@ -51,6 +51,7 @@ The control plane schedules and stores workflow state. FedRAMP Medium expects SC
 
 - The platform ECS cluster is ADP-145. This plan consumes its ARN.
 - The ECS services and the EKS workloads attach the client security group in ADP-136 and ADP-137.
+- A worker polling the deployed server as a Worker Deployment version is verified in ADP-136, which first runs the workers in AWS.
 - The off-hours scale-down of the server and the database pause are ADP-146.
 - Server 1.32.2 is not published. The digests move to it in a later change.
 
@@ -111,7 +112,7 @@ Add the module block to `private-bedrock` behind `create_temporal_control_plane`
 
 ### U6. Sandbox verification
 
-Apply in the sandbox in each certificate mode, run a worker task as a Worker Deployment version over TLS, rotate the `temporal` role password, and record the results below.
+Apply in the sandbox in each certificate mode, connect a client over TLS in each mode, confirm that the internode listeners refuse a peer without a certificate from the configured CA, and record the results below.
 
 ## Verification Record
 
@@ -149,4 +150,11 @@ Apply in the sandbox in each certificate mode, run a worker task as a Worker Dep
 - With access logs enabled, both load balancers accepted the SSE-S3 log bucket at apply, the ALB wrote its `ELBAccessLogTestFile` under `ui/`, and the NLB created its prefix under `frontend/`. A full plan afterwards reported no changes.
 - In a local container, the custom template required client certificates on the internode listener (TLS alert `certificate required`) and none on the frontend, and the start script left no PEM value in the server process environment.
 
-The remaining units are recorded during U6.
+### U6, 2026-11-04
+
+- Internode refusal. From a task in the server security group, the internode ports 7234, 7235, and 7239 of the server task answered a client without a certificate with the TLS alert `certificate required` and a client with a certificate from another CA with `unknown ca`. The frontend port 7233 on the same address accepted a client without a certificate, and the server certificate verified against the CA bundle. The results held for the generated and the supplied certificates.
+- Generated certificates. The namespace task registered `default` through the NLB over TLS, verifying the frontend against the generated CA.
+- Supplied certificates. A root and an issuing CA outside `inv temporal-certs generate` issued RSA 3072 frontend and internode certificates, each with the issuing CA in its chain. The rotation from the generated CA ran in three `put` and `inv temporal-deploy` rounds. The first wrote a CA bundle holding both CAs with the generated leaves, the second wrote the supplied leaves under the same bundle, and the third wrote the supplied CA alone. Each namespace task connected over TLS, and the server then presented the supplied chain on the frontend and internode ports. The server log held no TLS, x509, or handshake error across the rollouts.
+- ACM frontend. With the supplied frontend certificate imported into ACM and set as `temporal_frontend_acm_certificate_arn`, the apply removed the frontend secret, replaced the target group with a TLS target group, and moved the listener to TLS. After `put` of the CA and internode pair and `inv temporal-deploy`, a client in the client security group received the ACM certificate with ALPN `h2` over TLS 1.3 and verified it against the CA bundle and the frontend name. The listener refused TLS 1.1 with `protocol version` and accepted TLS 1.2 with an ECDHE GCM cipher. The namespace task connected through it, and the UI listed the namespaces through the jumphost forward.
+- Return to secrets mode. The first apply failed because the provider kept `ssl_policy` in the TLS to TCP listener update, which ELB rejects. The listener is now replaced whenever the frontend mode changes, and a plan with the ACM certificate set reports that replacement. The target group name carries the protocol and the replacement group is created before the old one is deleted. The sandbox returned to the generated certificates in secrets mode through the same three rounds, and a full plan reported no changes.
+- `inv temporal-deploy` replaces the server and UI tasks on every run, because both read the TLS secrets only when a task starts and an update to the same task definition starts no new task.
