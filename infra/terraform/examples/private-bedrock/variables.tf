@@ -365,3 +365,45 @@ variable "temporal_internode_acm_certificate_arn" {
   type        = string
   default     = ""
 }
+
+variable "temporal_server_image" {
+  description = "Temporal server image reference with its digest, as inv publish-temporal-images prints it. Empty creates no server."
+  type        = string
+  default     = ""
+}
+
+variable "temporal_admin_tools_image" {
+  description = "Temporal admin-tools image reference with its digest."
+  type        = string
+  default     = ""
+}
+
+variable "temporal_ui_image" {
+  description = "Temporal UI image reference with its digest. Empty creates no UI."
+  type        = string
+  default     = ""
+}
+
+variable "temporal_server_count" {
+  description = "Temporal server tasks that inv temporal-deploy runs."
+  type        = number
+  default     = 1
+}
+
+variable "temporal_ui_acm_certificate_arn" {
+  description = "ACM certificate the Temporal UI load balancer presents. Empty creates no UI."
+  type        = string
+  default     = ""
+}
+
+variable "temporal_ui_allowed_cidr_blocks" {
+  description = "CIDRs, such as a VPN client range, allowed to reach the Temporal UI load balancer in addition to the jumphost task."
+  type        = list(string)
+  default     = []
+}
+
+variable "temporal_enable_execute_command" {
+  description = "Allow ECS Exec into the Temporal tasks."
+  type        = bool
+  default     = false
+}

@@ -65,8 +65,8 @@ module "secret_store" {
   create_secret_store = var.create_secret_store
   name_prefix         = var.name_prefix
   region              = var.region
-  secret_readers      = var.secret_readers
-  restart_services    = var.secret_restart_services
+  secret_readers      = local.secret_readers
+  restart_services    = local.secret_restart_services
 
   recovery_window_days = var.secret_recovery_window_days
 

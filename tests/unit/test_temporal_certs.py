@@ -265,3 +265,12 @@ def test_put_refuses_a_certificate_acm_does_not_track_and_writes_nothing(issued,
 def test_put_refuses_before_the_secrets_exist(issued) -> None:
     with pytest.raises(certs.CertificateError, match="create_temporal_control_plane"):
         certs.put(issued, {**SECRETS_TLS, "ca_secret_arn": None}, _SecretsManager(), _Acm())
+
+
+def test_generate_issues_a_ui_certificate_on_request(tmp_path) -> None:
+    out = tmp_path / "tls"
+    written = _generate(out, ui_names=["temporal-ui.example.internal"])
+
+    assert {certs.UI, certs.UI_KEY} <= {path.name for path in written}
+    text = certs._certificate_text(out / certs.UI)
+    assert "DNS:temporal-ui.example.internal" in text and certs.CLIENT_AUTH not in text

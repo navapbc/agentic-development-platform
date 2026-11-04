@@ -42,11 +42,31 @@ def test_both_images_pin_the_same_rds_ca_bundle() -> None:
         assert "/etc/ssl/rds-global-bundle.pem" in dockerfile
 
 
-@pytest.mark.parametrize("spec", publisher.IMAGES, ids=lambda spec: spec.name)
-def test_the_tag_carries_the_upstream_version_and_architecture(spec) -> None:
+@pytest.mark.parametrize(
+    ("spec", "version"),
+    list(zip(publisher.IMAGES, ["1.32.1", "1.32.1", "2.58.0"], strict=True)),
+    ids=lambda value: getattr(value, "name", value),
+)
+def test_the_tag_carries_the_upstream_version_and_architecture(spec, version) -> None:
     tag = publisher.image_tag(spec, REPO_ROOT, "arm64")
 
-    assert re.fullmatch(r"1\.32\.1-[0-9a-f]{12}-arm64", tag)
+    assert re.fullmatch(rf"{re.escape(version)}-[0-9a-f]{{12}}-arm64", tag)
+
+
+def test_the_ui_image_pins_the_digest_compose_runs() -> None:
+    compose = (REPO_ROOT / "compose.yaml").read_text(encoding="utf-8")
+    dockerfile = (REPO_ROOT / "docker/temporal-ui.Dockerfile").read_text(encoding="utf-8")
+
+    assert _digest_pin(dockerfile, "temporalio/ui") == _digest_pin(compose, "temporalio/ui")
+
+
+def test_the_server_config_template_matches_the_server_version() -> None:
+    dockerfile = (REPO_ROOT / "docker/temporal.Dockerfile").read_text(encoding="utf-8")
+    version = publisher.upstream_version(dockerfile)
+
+    assert (
+        f"/temporalio/temporal/v{version}/common/config/config_template_embedded.yaml" in dockerfile
+    )
 
 
 def _project(tmp_path: Path) -> Path:
@@ -121,7 +141,13 @@ class _FakeEcr:
 def test_publish_builds_only_the_images_not_yet_pushed(monkeypatch) -> None:
     server_tag = publisher.image_tag(publisher.IMAGES[0], REPO_ROOT, "arm64")
     admin_tag = publisher.image_tag(ADMIN_TOOLS, REPO_ROOT, "arm64")
-    ecr = _FakeEcr({("agentic-platform/temporal-server", server_tag): "sha256:server"})
+    ui_tag = publisher.image_tag(publisher.IMAGES[2], REPO_ROOT, "arm64")
+    ecr = _FakeEcr(
+        {
+            ("agentic-platform/temporal-server", server_tag): "sha256:server",
+            ("agentic-platform/temporal-ui", ui_tag): "sha256:ui",
+        }
+    )
     commands: list[tuple[list[str], dict]] = []
 
     def run(argv, *, timeout, **options):
@@ -136,6 +162,7 @@ def test_publish_builds_only_the_images_not_yet_pushed(monkeypatch) -> None:
     assert references == [
         f"{REGISTRY}/agentic-platform/temporal-server:{server_tag}@sha256:server",
         f"{REGISTRY}/agentic-platform/temporal-admin-tools:{admin_tag}@sha256:admin",
+        f"{REGISTRY}/agentic-platform/temporal-ui:{ui_tag}@sha256:ui",
     ]
     login, build = commands
     assert login[0] == ["docker", "login", "--username", "AWS", "--password-stdin", REGISTRY]

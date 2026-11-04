@@ -32,6 +32,8 @@ FRONTEND = "frontend.pem"
 FRONTEND_KEY = "frontend-key.pem"
 INTERNODE = "internode.pem"
 INTERNODE_KEY = "internode-key.pem"
+UI = "ui.pem"
+UI_KEY = "ui-key.pem"
 
 SERVER_AUTH = "TLS Web Server Authentication"
 CLIENT_AUTH = "TLS Web Client Authentication"
@@ -54,6 +56,14 @@ basicConstraints = critical,CA:FALSE
 keyUsage = critical,digitalSignature
 extendedKeyUsage = serverAuth
 subjectAltName = {frontend_sans}
+authorityKeyIdentifier = keyid
+subjectKeyIdentifier = hash
+
+[ui]
+basicConstraints = critical,CA:FALSE
+keyUsage = critical,digitalSignature
+extendedKeyUsage = serverAuth
+subjectAltName = {ui_sans}
 authorityKeyIdentifier = keyid
 subjectKeyIdentifier = hash
 
@@ -96,6 +106,7 @@ def generate(
     days: int = 397,
     ca_days: int = 3650,
     frontend: bool = True,
+    ui_names: list[str] | None = None,
     force: bool = False,
     repo_root: Path = REPO_ROOT,
 ) -> list[Path]:
@@ -109,6 +120,8 @@ def generate(
     leaves = [(INTERNODE, INTERNODE_KEY, "internode", internode_names)]
     if frontend:
         leaves.append((FRONTEND, FRONTEND_KEY, "frontend", frontend_names))
+    if ui_names:
+        leaves.append((UI, UI_KEY, "ui", ui_names))
     targets = [out / CA, out / CA_KEY] + [out / name for leaf in leaves for name in leaf[:2]]
     existing = [path.name for path in targets if path.exists()]
     if existing and not force:
@@ -119,7 +132,15 @@ def generate(
     out.mkdir(mode=0o700, parents=True, exist_ok=True)
     previous_umask = os.umask(0o077)
     try:
-        _issue(out, leaves, frontend_names, internode_names, days, ca_days)
+        _issue(
+            out,
+            leaves,
+            frontend_names,
+            internode_names,
+            ui_names or ["ui.temporal.internal"],
+            days,
+            ca_days,
+        )
     finally:
         os.umask(previous_umask)
     _openssl("verify", "-CAfile", str(out / CA), *(str(out / leaf[0]) for leaf in leaves))
@@ -131,6 +152,7 @@ def _issue(
     leaves: list[tuple[str, str, str, list[str]]],
     frontend_names: list[str],
     internode_names: list[str],
+    ui_names: list[str],
     days: int,
     ca_days: int,
 ) -> None:
@@ -140,6 +162,7 @@ def _issue(
             _EXTENSIONS.format(
                 frontend_sans=_sans(frontend_names),
                 internode_sans=_sans(internode_names),
+                ui_sans=_sans(ui_names),
             ),
             encoding="utf-8",
         )
@@ -338,6 +361,11 @@ def main(argv: list[str] | None = None) -> int:
     generate_parser.add_argument(
         "--internode-name", action="append", help="Internode SAN, repeatable. The first is the CN."
     )
+    generate_parser.add_argument(
+        "--ui-name",
+        action="append",
+        help="Also issue a UI load balancer certificate with this SAN, repeatable.",
+    )
     generate_parser.add_argument("--days", type=int, default=397)
     generate_parser.add_argument("--no-frontend", action="store_true")
     generate_parser.add_argument("--force", action="store_true")
@@ -356,6 +384,7 @@ def main(argv: list[str] | None = None) -> int:
                 internode_names=_names(args.internode_name, "internode.temporal.internal"),
                 days=args.days,
                 frontend=not args.no_frontend,
+                ui_names=args.ui_name,
                 force=args.force,
             )
             names = ", ".join(path.name for path in written)

@@ -66,11 +66,11 @@ The control plane schedules and stores workflow state. FedRAMP Medium expects SC
 ### Key Technical Decisions
 
 - KTD1. Build downstream images in place of running the upstream images directly. Governs R1, R2, R4. The upstream images carry no RDS CA bundle. The server image also carries a configuration file derived from the embedded template, because the embedded template drives frontend and internode client authentication from one `TEMPORAL_TLS_REQUIRE_CLIENT_AUTH` variable, and R4 needs client authentication on internode only.
-- KTD2. Inject certificates and keys as the `*_DATA` environment variables the template reads, from Secrets Manager through the execution role. No certificate is written to an image or a volume.
+- KTD2. Inject the certificates and keys from Secrets Manager through the execution role as environment values, which a start script in the server image writes to files in a task volume and removes from the environment before it execs the upstream entrypoint. The template's `*_DATA` variables take base64, not the PEM text the secrets hold. No certificate is written to an image.
 - KTD3. Terraform creates the TLS secrets empty, and `inv temporal-certs put` writes the certificate material into them. Write-only arguments were rejected. The AWS provider requires `secret_string_wo` on every later plan once it is set, so every plan of `private-bedrock` would need the private keys, and a sandbox probe confirmed it. A generated directory and one from the organization's PKI go through the same `put`.
 - KTD4. In the ACM mode, the NLB TLS listener terminates client TLS with the ACM certificate under the `HTTP2Only` ALPN policy that gRPC needs, and a TLS target group re-encrypts to the server, which presents the internode certificate, because the NLB does not verify target certificates and no frontend secret exists in this mode. A client then trusts the ACM chain, and `TEMPORAL_TLS_CA` is empty for a public ACM certificate.
 - KTD5. Admit the frontend through a client security group the module owns, so the NLB and its rules exist before the ECS and EKS workloads, which attach the group.
-- KTD6. Write the dynamic configuration from a module input into a task-shared volume through a non-essential init container that the server container depends on, so the configuration changes with a plan and apply rather than an image build.
+- KTD6. Pass the dynamic configuration from a module input as an environment value, which the same start script writes to the task volume, so the configuration changes with a plan and apply rather than an image build. A short root container opens the volume to the unprivileged image user, because Fargate creates it owned by root and the root filesystem is read-only.
 - KTD7. The connection helper enables TLS when either setting is present. A CA path adds a private root, and a server name alone uses the system trust store.
 
 ### High-Level Design
@@ -136,5 +136,17 @@ Apply in the sandbox in each certificate mode, run a worker task as a Worker Dep
 - Against an isolated Temporal 1.32.1 server whose frontend served the sandbox certificate, the helper connected with `TEMPORAL_TLS_CA` as a file path and as the inline bundle, each with `TEMPORAL_TLS_SERVER_NAME=frontend.temporal.internal`. It was refused without TLS settings, with another server name, and with only the server name, which leaves the private CA untrusted.
 - The rebuilt local stack connects without TLS. `inv workflow-status`, `inv demo-durable-counter`, and `inv durability-proof` passed.
 - The Temporal CLI in the admin-tools image ignored `TEMPORAL_TLS_CA_PATH` from the environment and accepted `--tls-ca-path` and `--tls-server-name` as flags, so the namespace action in U4 passes TLS as flags.
+
+### U4 (ADP-68), 2026-11-03
+
+- The apply created the server service at a count of zero, the internal NLB, the admin-tools task definition, the roles, the security groups, and the log groups. `inv temporal-deploy` ran the schema task to exit 0, moved the server to its current task definition, and ran the namespace task, which registered `default` through the NLB over TLS as a member of the client group. The server task and the NLB target report healthy through the HTTPS probe.
+- The namespace task run without the client group could not reach the frontend and exited 1.
+- A rotation of the `temporal` role password redeployed the server through the secret store restart rule, after the rule's EventBridge role was granted the document and execution resources SSM authorizes the call against.
+- With a second management subnet and an imported UI certificate, the UI service came up behind its internal ALB. From a task in the management tier, the UI answered the settings, namespaces, workflows, and worker deployments endpoints with 200, listing the namespaces it read from the server.
+- With a workflow started and a Worker Deployment created through the admin-tools CLI over TLS, the UI listed the `default` namespace, the running workflow, and the Worker Deployment through the ALB. Both were removed afterwards.
+- After the rotation, the server deployment completed with one healthy task, and its log held no database authentication or certificate error.
+- With the jumphost task group admitted to the UI ALB and the management CIDRs removed, `inv temporal-ui` forwarded `localhost:8443` through a jumphost task, and the UI answered the page, namespaces, and worker deployments requests with 200 to a client that verified the ALB certificate against the UI CA.
+- With access logs enabled, both load balancers accepted the SSE-S3 log bucket at apply, the ALB wrote its `ELBAccessLogTestFile` under `ui/`, and the NLB created its prefix under `frontend/`. A full plan afterwards reported no changes.
+- In a local container, the custom template required client certificates on the internode listener (TLS alert `certificate required`) and none on the frontend, and the start script left no PEM value in the server process environment.
 
 The remaining units are recorded during U6.

@@ -144,7 +144,7 @@ run "only_the_listed_readers_may_read_the_secrets" {
   }
 
   assert {
-    condition = jsondecode(local.secret_policy).Statement == [
+    condition = jsondecode(local.secret_policies["internode"]).Statement == [
       {
         Sid       = "AllowReaders"
         Effect    = "Allow"
@@ -173,7 +173,7 @@ run "no_reader_means_nobody_reads" {
   }
 
   assert {
-    condition     = length(jsondecode(local.secret_policy).Statement) == 1 && !can(jsondecode(local.secret_policy).Statement[0].Condition)
+    condition     = alltrue([for policy in values(local.secret_policies) : length(jsondecode(policy).Statement) == 1 && !can(jsondecode(policy).Statement[0].Condition)])
     error_message = "The secret policy admits a reader although none is listed."
   }
 }

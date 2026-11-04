@@ -1,4 +1,4 @@
-"""Build the Temporal server and admin-tools images and push them to ECR.
+"""Build the Temporal server, admin-tools, and UI images and push them to ECR.
 
 Each image is tagged `<upstream version>-<content hash>-<arch>`. The upstream version comes
 from the digest the Dockerfile pins. The content hash covers the Dockerfile and every file it
@@ -34,12 +34,17 @@ class ImageSpec:
 
 
 IMAGES = (
-    ImageSpec("temporal-server", "docker/temporal.Dockerfile", ("docker/healthprobe",)),
+    ImageSpec(
+        "temporal-server",
+        "docker/temporal.Dockerfile",
+        ("docker/healthprobe", "docker/temporal-server-start.sh"),
+    ),
     ImageSpec(
         "temporal-admin-tools",
         "docker/temporal-admin-tools.Dockerfile",
         ("docker/temporal-admin-tools.sh",),
     ),
+    ImageSpec("temporal-ui", "docker/temporal-ui.Dockerfile", ("docker/temporal-ui-start.sh",)),
 )
 
 

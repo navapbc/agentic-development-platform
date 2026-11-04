@@ -237,6 +237,30 @@ def status_tunnel() -> int:
     return 1
 
 
+class JumphostConfigError(Exception):
+    """The jump-host settings cannot start a port-forward."""
+
+
+def jumphost_command(settings: Settings, forwarding: str) -> list[str]:
+    """Connect-script command forwarding `<localport>:<host>:<remoteport>` through the jump-host."""
+    if not settings.jumphost_name:
+        raise JumphostConfigError("JUMPHOST_NAME must be set for the jumphost provider.")
+    script = _resolve_connect_script(settings.jumphost_connect_script)
+    if script is None:
+        raise JumphostConfigError(
+            "connect script not found.\n"
+            "Set JUMPHOST_CONNECT_SCRIPT to the path of the connect script."
+        )
+    cmd = [str(script), "-n", settings.jumphost_name]
+    if settings.jumphost_env:
+        cmd += ["-e", settings.jumphost_env]
+    if settings.jumphost_session_duration_seconds > 0:
+        cmd += ["-d", str(settings.jumphost_session_duration_seconds)]
+    if settings.jumphost_keepalive_seconds > 0:
+        cmd += ["-k", str(settings.jumphost_keepalive_seconds)]
+    return [*cmd, "-p", forwarding]
+
+
 class JumphostConnectivity:
     """SSM port-forward through a config-driven jump-host."""
 
@@ -250,30 +274,15 @@ class JumphostConnectivity:
         )
 
     def start(self, settings: Settings, *, detach: bool = False) -> int:
-        script = _resolve_connect_script(settings.jumphost_connect_script)
-        if not settings.jumphost_name:
-            print(
-                "[tunnel] FAIL: JUMPHOST_NAME must be set for the jumphost provider.",
-                file=sys.stderr,
-            )
-            return 2
-        if script is None:
-            print("[tunnel] FAIL: connect script not found.", file=sys.stderr)
-            print(
-                "[tunnel] Set JUMPHOST_CONNECT_SCRIPT to the path of the connect script.",
-                file=sys.stderr,
-            )
-            return 2
-
         forwarding = f"{settings.bedrock_tunnel_local_port}:{settings.bedrock_runtime_host}:443"
-        cmd = [str(script), "-n", settings.jumphost_name]
-        if settings.jumphost_env:
-            cmd += ["-e", settings.jumphost_env]
-        if settings.jumphost_session_duration_seconds > 0:
-            cmd += ["-d", str(settings.jumphost_session_duration_seconds)]
-        if settings.jumphost_keepalive_seconds > 0:
-            cmd += ["-k", str(settings.jumphost_keepalive_seconds)]
-        cmd += ["-p", forwarding]
+        try:
+            cmd = jumphost_command(settings, forwarding)
+        except JumphostConfigError as exc:
+            problem, *hints = str(exc).splitlines()
+            print(f"[tunnel] FAIL: {problem}", file=sys.stderr)
+            for hint in hints:
+                print(f"[tunnel] {hint}", file=sys.stderr)
+            return 2
         env = {
             **os.environ,
             "AWS_PROFILE": settings.aws_profile,

@@ -51,6 +51,8 @@ EXPECTED_TASKS = {
     "publish-jumphost-image",
     "publish-temporal-images",
     "temporal-certs",
+    "temporal-deploy",
+    "temporal-ui",
     "reap",
     "scrub-workspaces",
     "intake",

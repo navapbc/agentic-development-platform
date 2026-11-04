@@ -16,7 +16,7 @@ A working directory that was applied before the backend existed migrates its loc
 
 ## Usage
 
-Copy an example tfvars file, fill in the placeholders, then apply under the platform profile. `access_log_bucket` is required and names the bucket that receives S3 server access logs from the CloudTrail, jumphost exec-log, and Langfuse buckets. The bootstrap root creates it and prints it with `terraform output -raw access_log_bucket`.
+Copy an example tfvars file, fill in the placeholders, then apply under the platform profile. `access_log_bucket` is required and names the bucket that receives S3 server access logs from the CloudTrail, jumphost exec-log, Langfuse, and Temporal load balancer log buckets. The bootstrap root creates it and prints it with `terraform output -raw access_log_bucket`.
 
 Greenfield, create everything:
 
@@ -80,7 +80,7 @@ A created network also enables the Route 53 Resolver DNS Firewall, which resolve
 
 ## Temporal control plane
 
-`create_temporal_control_plane = true` provisions the [temporal-control-plane](../../temporal-control-plane) module. It creates the ECR repositories for the Temporal server and admin-tools images, which `inv publish-temporal-images` fills, and the TLS secrets, which `inv temporal-certs put` fills. `temporal_frontend_acm_certificate_arn` serves the frontend from an ACM certificate, and `temporal_internode_acm_certificate_arn` tracks the internode certificate in ACM. The `temporal_tls` output lists the secrets and the expiry topic.
+`create_temporal_control_plane = true` provisions the [temporal-control-plane](../../temporal-control-plane) module. It creates the ECR repositories for the Temporal server and admin-tools images, which `inv publish-temporal-images` fills, and the TLS secrets, which `inv temporal-certs put` fills. `temporal_frontend_acm_certificate_arn` serves the frontend from an ACM certificate, and `temporal_internode_acm_certificate_arn` tracks the internode certificate in ACM. The `temporal_tls` output lists the secrets and the expiry topic. Setting `temporal_server_image` and `temporal_admin_tools_image` to the references `inv publish-temporal-images` prints deploys the server on the platform ECS cluster, and `temporal_ui_image` with `temporal_ui_acm_certificate_arn` deploys the UI, which needs two `management_subnet_cidrs`. The root adds the server and admin-tools execution roles to the `database_temporal` readers and the server service to its restart list. Run `inv temporal-deploy` after each apply that changes an image. The `temporal_client` output holds the endpoint, namespace, server name, CA secret, and security group a worker uses, and `temporal_ui_url` the UI address. The UI load balancer admits the jumphost task group, which `inv temporal-ui` forwards through, and any CIDRs in `temporal_ui_allowed_cidr_blocks`.
 
 ## After apply
 

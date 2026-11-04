@@ -52,3 +52,61 @@ output "certificate_expiry_topic_arn" {
   description = "SNS topic that receives the ACM expiry events of the tracked certificates. Subscribe the operators to it. Null when no ACM certificate is tracked."
   value       = try(aws_sns_topic.certificate_expiry[0].arn, null)
 }
+
+output "ui_repository_url" {
+  description = "ECR repository for the UI image that docker/temporal-ui.Dockerfile builds, or null when disabled."
+  value       = module.ui_repository.repository_url
+}
+
+output "endpoint" {
+  description = "host:port the Temporal clients dial, the frontend NLB. Empty until the images are set."
+  value       = local.endpoint
+}
+
+output "namespace" {
+  description = "Namespace the workers use."
+  value       = var.namespace
+}
+
+output "frontend_server_name" {
+  description = "Name clients verify the frontend certificate against, their TEMPORAL_TLS_SERVER_NAME."
+  value       = var.frontend_server_name
+}
+
+output "client_ca_secret_arn" {
+  description = "Secret clients inject as TEMPORAL_TLS_CA. Null when the frontend chains to a public root."
+  value       = local.client_ca ? try(aws_secretsmanager_secret.tls["ca"].arn, null) : null
+}
+
+output "client_security_group_id" {
+  description = "Security group a workload attaches to reach the frontend. Null until the images are set."
+  value       = try(aws_security_group.client[0].id, null)
+}
+
+output "server_service_arn" {
+  description = "Server ECS service, for secret_restart_services after a temporal role rotation. Null until the images are set."
+  value       = try(aws_ecs_service.server[0].id, null)
+}
+
+output "execution_role_arns" {
+  description = "Execution role of each task, keyed by server, admin_tools, and ui."
+  value       = { for name, role in aws_iam_role.execution : name => role.arn }
+}
+
+output "ui_url" {
+  description = "HTTPS address of the UI load balancer. Null without the UI."
+  value       = try("https://${aws_lb.ui[0].dns_name}", null)
+}
+
+output "deploy" {
+  description = "What inv temporal-deploy runs. Null until the images are set."
+  value = local.deploy ? {
+    cluster                     = var.cluster_arn
+    server_service              = aws_ecs_service.server[0].name
+    server_task_definition      = aws_ecs_task_definition.server[0].arn
+    server_count                = var.server_count
+    admin_tools_task_definition = aws_ecs_task_definition.admin_tools[0].arn
+    admin_tools_subnets         = var.management_subnet_ids
+    admin_tools_security_groups = [aws_security_group.admin_tools[0].id, aws_security_group.client[0].id]
+  } : null
+}

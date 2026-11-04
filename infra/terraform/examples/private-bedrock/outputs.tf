@@ -165,3 +165,29 @@ output "temporal_tls" {
     certificate_expiry_topic_arn  = module.temporal_control_plane.certificate_expiry_topic_arn
   }
 }
+
+output "temporal_ui_repository_url" {
+  description = "ECR repository that inv publish-temporal-images pushes the Temporal UI image to."
+  value       = module.temporal_control_plane.ui_repository_url
+}
+
+output "temporal_client" {
+  description = "Settings a Temporal client uses: TEMPORAL_HOST, TEMPORAL_NAMESPACE, TEMPORAL_TLS_SERVER_NAME, the secret to inject as TEMPORAL_TLS_CA, and the security group to attach."
+  value = {
+    endpoint          = module.temporal_control_plane.endpoint
+    namespace         = module.temporal_control_plane.namespace
+    server_name       = module.temporal_control_plane.frontend_server_name
+    ca_secret_arn     = module.temporal_control_plane.client_ca_secret_arn
+    security_group_id = module.temporal_control_plane.client_security_group_id
+  }
+}
+
+output "temporal_ui_url" {
+  description = "HTTPS address of the Temporal UI load balancer, reachable from the management tier."
+  value       = module.temporal_control_plane.ui_url
+}
+
+output "temporal_deploy" {
+  description = "What inv temporal-deploy runs."
+  value       = module.temporal_control_plane.deploy
+}

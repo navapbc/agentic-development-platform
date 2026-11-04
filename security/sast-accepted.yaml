@@ -138,3 +138,23 @@
   path: services/orchestration/workspace_scrub.py
   match: 'log.error("workspace credential scrub failed for %s: %s", workspace, exc)'
   justification: The rule fires on the word credential in the format string. The arguments are a workspace directory path and an OSError or RuntimeError raised by git config. The RuntimeError carries git stderr, which reports the config file and line number rather than the line content, and the only value the scrub passes on the git command line is the URL it already stripped the userinfo from.
+- tool: semgrep
+  rule: terraform.aws.security.insecure-load-balancer-tls-version.insecure-load-balancer-tls-version
+  path: infra/terraform/temporal-control-plane/network.tf
+  match: 'ssl_policy = local.frontend_from_secrets ? null : "ELBSecurityPolicy-TLS13-1-2-FIPS-2023-04"'
+  justification: The rule accepts a fixed list of policy names and does not list the FIPS policies. ELBSecurityPolicy-TLS13-1-2-FIPS-2023-04 negotiates TLS 1.3 and TLS 1.2 only, with FIPS 140-3 validated cryptography, which FedRAMP requires. When the frontend certificate comes from secrets, the listener is TCP and the Temporal server terminates TLS 1.2 or later itself.
+- tool: semgrep
+  rule: terraform.aws.security.insecure-load-balancer-tls-version.insecure-load-balancer-tls-version
+  path: infra/terraform/temporal-control-plane/ui.tf
+  match: ssl_policy = "ELBSecurityPolicy-TLS13-1-2-FIPS-2023-04"
+  justification: The rule accepts a fixed list of policy names and does not list the FIPS policies. ELBSecurityPolicy-TLS13-1-2-FIPS-2023-04 negotiates TLS 1.3 and TLS 1.2 only, with FIPS 140-3 validated cryptography, which FedRAMP requires.
+- tool: trivy
+  rule: DS-0026
+  path: docker/temporal-ui.Dockerfile
+  match: ''
+  justification: The UI serves HTTPS with a certificate the start script issues when the task starts, so a build-time HEALTHCHECK has no certificate to verify against. ECS ignores a Dockerfile HEALTHCHECK, and the ALB target group checks the UI over HTTPS.
+- tool: trivy
+  rule: DS-0005
+  path: docker/temporal.Dockerfile
+  match: ADD --checksum=sha256:${TEMPORAL_CONFIG_TEMPLATE_SHA256} ${TEMPORAL_CONFIG_TEMPLATE_URL} /tmp/template.yaml
+  justification: ADD fetches the Temporal server configuration template from its release tag URL, which COPY cannot do, and --checksum fails the build unless the download matches the pinned SHA-256, so the image cannot carry a different template than the one reviewed.

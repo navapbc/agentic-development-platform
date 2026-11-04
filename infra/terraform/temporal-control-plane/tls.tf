@@ -14,6 +14,16 @@ locals {
   partition  = data.aws_partition.current.partition
   region     = data.aws_region.current.region
 
+  # Clients verify the frontend against the CA secret unless an ACM frontend chains to a public root.
+  client_ca = local.enabled && (local.frontend_from_secrets || !var.frontend_certificate_publicly_trusted)
+  # Only the server reads the internode and frontend keys. Every task reads the CA.
+  tls_readers = {
+    for key in keys(local.tls_secrets) : key => distinct(concat(
+      var.tls_secret_readers,
+      [for name, role in aws_iam_role.execution : role.arn if key == "ca" || name == "server"],
+    ))
+  }
+
   tls_secrets = local.enabled ? merge(
     {
       ca        = "PEM bundle of the CA that issues the internode certificate, and the frontend certificate when it comes from Secrets Manager."
@@ -24,34 +34,36 @@ locals {
     } : {},
   ) : {}
 
-  secret_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = concat(
-      length(var.tls_secret_readers) == 0 ? [] : [
-        {
-          Sid       = "AllowReaders"
-          Effect    = "Allow"
-          Principal = { AWS = var.tls_secret_readers }
-          Action    = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
-          Resource  = "*"
-        },
-      ],
-      [
-        merge(
+  secret_policies = {
+    for key, readers in local.tls_readers : key => jsonencode({
+      Version = "2012-10-17"
+      Statement = concat(
+        length(readers) == 0 ? [] : [
           {
-            Sid       = "DenyOtherReaders"
-            Effect    = "Deny"
-            Principal = { AWS = "*" }
-            Action    = "secretsmanager:GetSecretValue"
+            Sid       = "AllowReaders"
+            Effect    = "Allow"
+            Principal = { AWS = readers }
+            Action    = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
             Resource  = "*"
           },
-          length(var.tls_secret_readers) == 0 ? {} : {
-            Condition = { ArnNotEquals = { "aws:PrincipalArn" = var.tls_secret_readers } }
-          },
-        ),
-      ],
-    )
-  })
+        ],
+        [
+          merge(
+            {
+              Sid       = "DenyOtherReaders"
+              Effect    = "Deny"
+              Principal = { AWS = "*" }
+              Action    = "secretsmanager:GetSecretValue"
+              Resource  = "*"
+            },
+            length(readers) == 0 ? {} : {
+              Condition = { ArnNotEquals = { "aws:PrincipalArn" = readers } }
+            },
+          ),
+        ],
+      )
+    })
+  }
 
   key_policy = jsonencode({
     Version = "2012-10-17"
@@ -62,6 +74,16 @@ locals {
         Principal = { AWS = "arn:${local.partition}:iam::${local.account_id}:root" }
         Action    = "kms:*"
         Resource  = "*"
+      },
+      {
+        Sid       = "AllowCloudWatchLogsForTheTaskLogGroups"
+        Effect    = "Allow"
+        Principal = { Service = "logs.${local.region}.amazonaws.com" }
+        Action    = ["kms:Encrypt*", "kms:Decrypt*", "kms:ReEncrypt*", "kms:GenerateDataKey*", "kms:Describe*"]
+        Resource  = "*"
+        Condition = {
+          ArnLike = { "kms:EncryptionContext:aws:logs:arn" = "arn:${local.partition}:logs:${local.region}:${local.account_id}:log-group:/aws/ecs/${var.name_prefix}-temporal/*" }
+        }
       },
       {
         Sid       = "AllowEventBridgeToPublishExpiryNotices"
@@ -109,7 +131,7 @@ resource "aws_secretsmanager_secret_policy" "tls" {
   for_each = local.tls_secrets
 
   secret_arn          = aws_secretsmanager_secret.tls[each.key].arn
-  policy              = local.secret_policy
+  policy              = local.secret_policies[each.key]
   block_public_policy = true
 }
 

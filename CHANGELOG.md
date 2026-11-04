@@ -90,6 +90,7 @@ AWS transition and FedRAMP Medium readiness. The platform documents its local-to
 - `docker/temporal-admin-tools.Dockerfile`, which builds the admin-tools image with `docker/temporal-admin-tools.sh` as its entrypoint, and an `inv publish-temporal-images` task that pushes it and the server image to ECR under a tag derived from the upstream version and the build inputs.
 - `inv temporal-certs generate`, which issues a self-signed CA with the Temporal frontend and internode certificates outside the repository, and `inv temporal-certs put`, which checks a generated or supplied certificate directory and writes it to Secrets Manager, optionally importing the internode certificate into ACM to track its expiry. The `temporal-control-plane` module creates the TLS secrets under its own KMS key, serves the frontend from an ACM certificate through `frontend_acm_certificate_arn`, and routes the ACM expiry events of the tracked certificates to an SNS topic. No certificate or key passes through Terraform.
 - `TEMPORAL_TLS_CA` and `TEMPORAL_TLS_SERVER_NAME` settings. Every Temporal client connects through `services/temporal_client.py`, which turns TLS on when either is set, so the workers, the services, and the host tasks reach a TLS frontend with one configuration. A test fails when a `Client.connect` call appears outside the helper.
+- The `temporal-control-plane` module runs the Temporal server on the platform ECS cluster behind an internal NLB that admits a client security group only, with mutual TLS between the server tasks, TLS to the frontend, and TLS with host verification to Aurora, and runs Temporal UI 2.58.0 behind an internal HTTPS ALB in the management tier. Both load balancers write access logs to an SSE-S3 bucket the module creates. `inv temporal-ui` forwards a local port to the UI through the jumphost, whose task group the UI load balancer admits. `inv temporal-deploy` applies the schema before it rolls the server and then registers the namespace. The `private-bedrock` root wires the database credentials, the rotation restart, and the `temporal_client` output.
 
 ### Changed
 
@@ -138,6 +139,8 @@ AWS transition and FedRAMP Medium readiness. The platform documents its local-to
 - A worker that leaves an outranking build current logs it at WARNING rather than INFO, naming both build identifiers and `inv local-up` as the way to route new executions to the code the worker is running. The INFO line read as routine startup noise while new executions went to another build.
 - `inv local-up` lists the running executions pinned to the outgoing build and refuses to replace the workers while any remain, because replacing them leaves each one with nowhere to run its next workflow task. `--force` replaces them anyway.
 - The Temporal server and admin-tools images carry the RDS global CA bundle at `/etc/ssl/rds-global-bundle.pem`, fetched at build time and checked against a pinned SHA-256, so both verify the Aurora certificate.
+- Temporal UI moves from 2.57.0 to 2.58.0, pinned by digest. The 2.58.0 image clears the CRITICAL and six of the HIGH findings the 2.57.0 image carries.
+- The health probe in `docker/healthprobe` checks an `https` URL against the CA bundle in `HEALTHPROBE_CA_FILE`, under the name in `HEALTHPROBE_SERVER_NAME`, and refuses an `https` URL without one.
 
 ### Fixed
 
@@ -174,6 +177,7 @@ AWS transition and FedRAMP Medium readiness. The platform documents its local-to
 ## 0.2.0 (2026-09-14)
 
 rebar review integration. The review gates run on the native Bedrock path with per-leg failover, every review verdict is signed with an asymmetric signature verified against a public trust root, and each authoring agent signs its plan and code change under its own rebar identity for a merge gate to verify.
+- The secret store's restart rule redeploys the listed ECS services after a rotation. Its EventBridge role allowed `ssm:StartAutomationExecution` on the automation definition only, and SSM also authorizes the call against the document and the execution, so every restart was denied.
 
 ### Added
 

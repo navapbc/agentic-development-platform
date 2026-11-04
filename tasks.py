@@ -683,6 +683,23 @@ def publish_temporal_images(c, name_prefix="", arch="arm64", region=""):
     c.run(f"{HOST_PYTHON} -m scripts.publish_temporal_images{flags}", pty=True, env=env)
 
 
+@task(help={"region": "AWS region (empty uses AWS_REGION)."})
+def temporal_deploy(c, region=""):
+    """Apply the Temporal schema, roll the server, and register the namespace."""
+    from scripts.config import get_settings
+
+    settings = get_settings()
+    flags = f" --region {shlex.quote(region)}" if region else ""
+    env = {"AWS_PROFILE": settings.aws_profile, "AWS_REGION": settings.aws_region}
+    c.run(f"{HOST_PYTHON} -m scripts.temporal_deploy{flags}", pty=True, env=env)
+
+
+@task(help={"port": "Local port forwarded to the UI load balancer (default 8443)."})
+def temporal_ui(c, port=8443):
+    """Forward a local port to the Temporal UI load balancer through the jump-host."""
+    c.run(f"{HOST_PYTHON} -m scripts.temporal_ui --port {int(port)}", pty=True)
+
+
 @task(
     help={
         "action": "generate to issue self-signed certificates, or put to store a directory.",
@@ -690,6 +707,7 @@ def publish_temporal_images(c, name_prefix="", arch="arm64", region=""):
         "dir": "put: directory holding ca.pem and the internode and frontend pairs.",
         "frontend_name": "generate: frontend SAN, comma-separated. The first is the CN.",
         "internode_name": "generate: internode SAN, comma-separated. The first is the CN.",
+        "ui_name": "generate: also issue a UI load balancer certificate with this SAN list.",
         "days": "generate: leaf certificate validity in days (default 397).",
         "no_frontend": "generate: skip the frontend pair, for a frontend served from ACM.",
         "force": "generate: replace certificates already in the directory.",
@@ -703,6 +721,7 @@ def temporal_certs(
     dir="",  # noqa: A002
     frontend_name="",
     internode_name="",
+    ui_name="",
     days=397,
     no_frontend=False,
     force=False,
@@ -719,6 +738,8 @@ def temporal_certs(
             flags += f" --frontend-name {shlex.quote(name.strip())}"
         for name in filter(None, internode_name.split(",")):
             flags += f" --internode-name {shlex.quote(name.strip())}"
+        for name in filter(None, ui_name.split(",")):
+            flags += f" --ui-name {shlex.quote(name.strip())}"
         flags += " --no-frontend" if no_frontend else ""
         flags += " --force" if force else ""
         c.run(f"{HOST_PYTHON} -m scripts.temporal_certs generate{flags}", pty=True)
@@ -1093,6 +1114,8 @@ for _t in (
     publish_jumphost_image,
     publish_temporal_images,
     temporal_certs,
+    temporal_deploy,
+    temporal_ui,
     reap,
     scrub_workspaces,
     intake,
