@@ -52,8 +52,8 @@ def test_http_ready_false_when_nothing_listens() -> None:
 def test_pod_pins_agent_server_image_and_hardens_the_container() -> None:
     pod = _load(POD)
     container = pod["spec"]["containers"][0]
-    assert container["image"] == "ghcr.io/openhands/agent-server:latest-python"
-    assert ":" in container["image"].split("/")[-1]
+    assert container["image"].startswith("ghcr.io/openhands/agent-server:1.56.0-python@sha256:")
+    assert container["securityContext"]["readOnlyRootFilesystem"] is True
     assert container["ports"][0]["containerPort"] == 8000
     assert pod["metadata"]["labels"]["app"] == "openhands-sandbox"
     assert container["securityContext"]["runAsNonRoot"] is True
@@ -88,12 +88,24 @@ def test_builder_swaps_runtime_class_without_touching_the_pod_shape() -> None:
     assert hardened["spec"]["runtimeClassName"] == "gvisor"
 
 
-def test_pod_without_workspace_binding_declares_no_volumes() -> None:
+def test_pod_without_workspace_binding_writes_only_to_scratch_volumes() -> None:
     built = build_pod_manifest(SandboxSpec(execution_id="exec-1", image="img"))
     container = built["spec"]["containers"][0]
-    assert "volumes" not in built["spec"]
-    assert "volumeMounts" not in container
-    assert "workingDir" not in container
+    assert container["securityContext"]["readOnlyRootFilesystem"] is True
+    assert {volume["name"] for volume in built["spec"]["volumes"]} == {"agent-tmp", "agent-home"}
+    assert {mount["mountPath"] for mount in container["volumeMounts"]} == {"/tmp", "/home/sandbox"}
+    assert container["workingDir"] == "/home/sandbox"
+    assert {"name": "HOME", "value": "/home/sandbox"} in container["env"]
+
+
+def test_pod_builder_mounts_match_the_declarative_manifest() -> None:
+    pod = _load(POD)
+    built = build_pod_manifest(SandboxSpec(execution_id="exec-1", image="img"))
+    assert built["spec"]["volumes"] == pod["spec"]["volumes"]
+    assert (
+        built["spec"]["containers"][0]["volumeMounts"]
+        == pod["spec"]["containers"][0]["volumeMounts"]
+    )
 
 
 def test_pod_binds_an_ephemeral_workspace_volume() -> None:
@@ -105,8 +117,8 @@ def test_pod_binds_an_ephemeral_workspace_volume() -> None:
         )
     )
     container = built["spec"]["containers"][0]
-    volume = built["spec"]["volumes"][0]
-    mount = container["volumeMounts"][0]
+    volume = built["spec"]["volumes"][-1]
+    mount = container["volumeMounts"][-1]
     assert volume["emptyDir"] == {}
     assert volume["name"] == mount["name"] == "agent-workspace"
     assert mount["mountPath"] == "/workspace"
@@ -124,9 +136,9 @@ def test_pod_workspace_honours_a_custom_mount_path() -> None:
         )
     )
     container = built["spec"]["containers"][0]
-    volume = built["spec"]["volumes"][0]
+    volume = built["spec"]["volumes"][-1]
     assert volume["emptyDir"] == {}
-    assert container["volumeMounts"][0]["mountPath"] == "/repo"
+    assert container["volumeMounts"][-1]["mountPath"] == "/repo"
     assert container["workingDir"] == "/repo"
 
 

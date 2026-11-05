@@ -17,7 +17,7 @@ Objective. Close the verified remaining work on the agentic SDLC platform, prese
 
 Product authority. Status is established by code verification against the committed repository, not by the annotations in `.agent-context/agentic_plan_v2.md`, which are stale for the later work. This is a flat feature list with no priority order, no phase numbering, no bucketing, and no ticket prefix. Grouping features into versions and setting a release tempo is a separate document.
 
-Open blockers. Two items are blocked on an external rebar 0.13 release and are held rather than listed as features. Two rebar-adoption decisions remain open. Each feature carries an effort in hours of uninterrupted work.
+Open blockers. Two rebar-adoption decisions remain open. Each feature carries an effort in hours of uninterrupted work.
 
 ## Product Contract
 
@@ -404,6 +404,43 @@ Reference.
 |---|---|---|
 | `services/review/kernel.py` | Not started. A single-turn path exists, selected only by presence of a repository-intelligence root; no A/B result or recorded decision. | 641d605 |
 
+#### Native rebar request headers
+
+Current state. Not started. `install_litellm_header_propagation` in `observability/generation.py` replaces `httpx.AsyncHTTPTransport` process-wide so every model request carries the execution attribution headers to LiteLLM. rebar 0.13.1 adds `LLMConfig.headers`, which resolves `${run:...}` references per run and sends the result on each gate model request.
+Target. Review and gate model calls carry their attribution headers through `LLMConfig.headers`, and the process-wide transport replacement is removed.
+
+Subtasks.
+- Build the attribution header map in `llm_config_for` and `review_llm_config` from the execution baggage.
+- Remove `install_litellm_header_propagation` and its worker startup call.
+- Confirm Langfuse still groups each generation under its execution.
+
+Effort. 3h
+
+Reference.
+
+| Inspected locations | Verification result | Revision |
+|---|---|---|
+| `observability/generation.py`, rebar 0.13.1 `rebar/llm/config.py` | Not started. The transport replacement is in place. A configured header reached a stub `/v1/chat/completions` through rebar 0.13.1. | e22ff71 |
+
+#### Planner on the rebar runner
+
+Current state. Not started. The planner calls LiteLLM through its own `httpx.AsyncClient` in `services/orchestration/temporal_activities/bedrock.py`. rebar 0.13.1 reports per-run usage on the OpenAI-compatible Chat path, and its run result carries `_usage` with input and output token counts.
+Target. The planner runs through the rebar runner, and the budget path reads token counts from the run result with no loss against the raw client.
+
+Subtasks.
+- Move the planning call onto the rebar runner with the planning tier's `LLMConfig`.
+- Feed the run result's `_usage` into the token and cost budget path.
+- Confirm that a multi-step run reports usage per request where the budget path reads it during the run, not only at completion.
+- Remove the raw planner client.
+
+Effort. 6h
+
+Reference.
+
+| Inspected locations | Verification result | Revision |
+|---|---|---|
+| `services/orchestration/temporal_activities/bedrock.py`, rebar 0.13.1 `rebar/llm/runner.py` | Not started. A stub OpenAI-compatible server run through rebar 0.13.1 reported `input_tokens=123` and `output_tokens=45`. Usage during a multi-step run is unverified. | e22ff71 |
+
 ### Feature Relationships
 
 <!-- ce-section: work-relationships -->
@@ -414,12 +451,14 @@ Order is not implied by this list. These are the factual dependencies a version-
 - The rebar ticket backend and the S3-backed WORM evidence and audit store share the same S3 and MinIO object store, so standing up that store serves both.
 - The audit and evidence schema contracts and the S3-backed WORM evidence and audit store underpin the production and FedRAMP work.
 - Snapshot-drift handling reuses the webhook front door, the human-gate park machinery, and the plan, budget, and repository-intelligence pinning already delivered.
+- The planner on the rebar runner and prompt centralization both change how the planner builds and sends its model call, so they land together.
+- Streaming inference and interactive surfaces builds on the rebar runner path once the planner runs through it.
 
 ### Dependencies and Assumptions
 
 - The rebar ticket store from rebar v0.12.0 is available and is the rebar ticket backend in the pluggable ticket-tracker and source-control backends feature.
 - The S3 and MinIO object store introduced for the observability stack is the shared store for the rebar ticket backend, the WORM evidence and audit store, and the audit and evidence path.
-- rebar 0.13 is the external dependency for the two held items and its timing is not controlled here.
+- rebar 0.13.1 carries the request-header seam and reports usage on the OpenAI-compatible Chat path, which the native rebar request headers and planner on the rebar runner features build on.
 - The ticket-source seam behind the Jira adapter factory and the `remote_url_for` seam behind `RealGitHost` are the extension points for the pluggable ticket-tracker and source-control backends feature.
 
 ### Outstanding Questions
@@ -428,13 +467,6 @@ Deferred to planning.
 - rebar ticket-update detection. rebar emits no webhook, so detecting a ticket status change means polling the tickets branch through an `inv` command. Confirm the polling cadence and how it integrates with the webhook front door during planning.
 - Multi-project convergence. Whether to converge the per-project credential and board resolvers onto rebar's multi-project support, keep the platform resolvers, or bridge the two. Flagged by the maintainer for discussion.
 - Reconciler and store roadmap. Which previously declined maintainer roadmap items the platform now adopts. Partly resolved by the pluggable ticket-tracker and source-control backends feature adopting the rebar ticket store.
-
-### Held, blocked on external rebar 0.13
-
-- Dropping the process-wide httpx transport header workaround in favor of a native rebar request-header seam. The workaround is in place and attribution is intact.
-- Migrating the planner from its raw httpx LiteLLM client onto the rebar runner. This zeroes the in-flight token counts the budget path needs until the rebar usage fix ships. The hermetic auth-header consolidation slice is already delivered.
-
-Unblock rule. Before converting either held item into a feature, verify that rebar 0.13 ships the request-header seam and the OpenAI-path usage fix.
 
 ### Not goals
 

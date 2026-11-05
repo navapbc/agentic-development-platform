@@ -11,6 +11,5 @@ def test_candidate_jql_without_label_admits_all_open_issues():
 def test_candidate_jql_with_label_gates_on_the_label():
     jql = _candidate_jql("ADEV", "adp")
     assert (
-        jql
-        == 'project = "ADEV" AND statusCategory != Done AND labels = "adp" ORDER BY created ASC'
+        jql == 'project = "ADEV" AND statusCategory != Done AND labels = "adp" ORDER BY created ASC'
     )

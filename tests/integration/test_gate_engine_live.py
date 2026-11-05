@@ -19,9 +19,7 @@ from services.orchestration.gates.gate_engine import AiReviewScanner
 
 _enabled = os.environ.get("GATE_ENGINE_LIVE_SMOKE") == "1"
 _have_claude = shutil.which("claude") is not None
-_engine_path = Path(
-    os.environ.get("GATE_ENGINE_LOCAL_PATH", "../ai-common-workflows")
-).expanduser()
+_engine_path = Path(os.environ.get("GATE_ENGINE_LOCAL_PATH", "../ai-common-workflows")).expanduser()
 _have_engine = _engine_path.is_dir()
 
 pytestmark = pytest.mark.skipif(
@@ -38,16 +36,14 @@ _VULNERABLE_SOURCE = (
     'DB_PASSWORD = "hunter2-super-secret"\n'
     "\n"
     "def find_user(conn, name):\n"
-    "    return conn.execute(\"SELECT * FROM users WHERE name = '\" + name + \"'\")\n"
+    '    return conn.execute("SELECT * FROM users WHERE name = \'" + name + "\'")\n'
     "def run(cmd):\n"
     "    return subprocess.run(cmd, shell=True)\n"
 )
 
 
 def _git(cwd: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", *args], cwd=cwd, check=True, capture_output=True, text=True
-    )
+    result = subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
     return result.stdout.strip()
 
 

@@ -16,16 +16,14 @@ down_revision: str | None = "0008_review_state"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-SCHEMA = "agent_platform"
-
 
 def upgrade() -> None:
     op.execute(
-        f"ALTER TYPE {SCHEMA}.execution_state RENAME VALUE 'CI_RUNNING' TO 'CHECKS_RUNNING'"
+        "ALTER TYPE agent_platform.execution_state RENAME VALUE 'CI_RUNNING' TO 'CHECKS_RUNNING'"
     )
 
 
 def downgrade() -> None:
     op.execute(
-        f"ALTER TYPE {SCHEMA}.execution_state RENAME VALUE 'CHECKS_RUNNING' TO 'CI_RUNNING'"
+        "ALTER TYPE agent_platform.execution_state RENAME VALUE 'CHECKS_RUNNING' TO 'CI_RUNNING'"
     )

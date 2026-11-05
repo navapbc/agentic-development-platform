@@ -16,12 +16,10 @@ down_revision: str | None = "0006_usage_metrics"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-SCHEMA = "agent_platform"
-
 
 def upgrade() -> None:
     op.execute(
-        f"ALTER TYPE {SCHEMA}.execution_state ADD VALUE IF NOT EXISTS 'AWAITING_HUMAN' "
+        "ALTER TYPE agent_platform.execution_state ADD VALUE IF NOT EXISTS 'AWAITING_HUMAN' "
         "AFTER 'REPAIRING'"
     )
 

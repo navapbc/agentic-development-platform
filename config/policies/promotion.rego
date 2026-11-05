@@ -32,9 +32,14 @@ reasons contains "repository_not_allowlisted" if {
 	not effective_repos[input.repository]
 }
 
+reasons contains "ci_skipped" if {
+	ci_required
+	input.ci_status == "skipped"
+}
+
 reasons contains "ci_not_successful" if {
 	ci_required
-	input.ci_status != "success"
+	not input.ci_status in {"success", "skipped"}
 }
 
 reasons contains "repair_attempts_exceeded" if {

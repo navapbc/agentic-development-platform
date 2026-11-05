@@ -92,7 +92,8 @@ def configure_logging(
     if _configured:
         return True
     try:
-        from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+        from opentelemetry.instrumentation.logging.handler import LoggingHandler
+        from opentelemetry.sdk._logs import LoggerProvider
         from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 
         log_exporter = exporter if exporter is not None else _build_log_exporter()
@@ -100,7 +101,7 @@ def configure_logging(
             return False
         provider = LoggerProvider(resource=Resource.create({"service.name": service_name}))
         provider.add_log_record_processor(BatchLogRecordProcessor(log_exporter))
-        handler = LoggingHandler(level=level, logger_provider=provider)
+        handler = LoggingHandler(level=level, logger_provider=provider, log_code_attributes=True)
         _redact_handler(handler)
         logging.getLogger().addHandler(handler)
         _provider = provider

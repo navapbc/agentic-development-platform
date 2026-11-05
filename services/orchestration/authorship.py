@@ -15,6 +15,8 @@ from typing import Any, Protocol
 
 from scripts.config import Settings, get_settings
 
+from services.orchestration.signing_keys import SigningKeyError, authorship_signing_key_path
+
 log = logging.getLogger(__name__)
 
 AUTHORSHIP_PLAN_KIND = "plan"
@@ -94,7 +96,10 @@ def public_key_line(key_path: str) -> str:
 
 def signing_key_path(settings: Settings | None = None) -> str:
     resolved = settings or get_settings()
-    key_path = resolved.authorship_signing_key_path
+    try:
+        key_path = authorship_signing_key_path(resolved)
+    except SigningKeyError as exc:
+        raise AuthorshipConfigError(str(exc)) from exc
     if not key_path or not Path(key_path).is_file():
         raise AuthorshipConfigError(
             f"authorship signing key not found at {key_path!r}. Provision the key or set "
@@ -119,9 +124,7 @@ def seed_genesis_key(identity_id: str, public_key: str, *, repo_root: str) -> bo
     return True
 
 
-def create_authoring_identity(
-    name: str, email: str, public_key: str, *, repo_root: str
-) -> str:
+def create_authoring_identity(name: str, email: str, public_key: str, *, repo_root: str) -> str:
     """Mint a rebar identity and seed its genesis key, returning the identity id."""
     import rebar
     from rebar.attest.authorship import resolve_trust_root
@@ -293,9 +296,7 @@ def verify_authorship_at_merge(
     present = {record.kind for record in records}
     missing = [kind for kind in AUTHORSHIP_KINDS if kind not in present]
     if missing:
-        raise AuthorshipVerificationError(
-            f"missing authorship signatures for {', '.join(missing)}"
-        )
+        raise AuthorshipVerificationError(f"missing authorship signatures for {', '.join(missing)}")
     for record in records:
         if not verify_authorship_record(record, repo_root=repo_root):
             raise AuthorshipVerificationError(

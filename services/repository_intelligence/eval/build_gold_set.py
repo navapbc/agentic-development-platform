@@ -6,11 +6,11 @@ import argparse
 import json
 import platform
 import re
-import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
+from services import process
 from services.repository_intelligence.eval.coverage_oracle import (
     coverage_version,
     run_coverage,
@@ -45,8 +45,9 @@ _CALLER_TARGET_KINDS = {"function", "method"}
 
 
 def _resolve_commit(repo_root: Path) -> str:
-    completed = subprocess.run(
+    completed = process.run(
         ["git", "rev-parse", "HEAD"],
+        timeout=process.SHORT_COMMAND_TIMEOUT_SECONDS,
         cwd=repo_root,
         check=True,
         capture_output=True,
@@ -56,8 +57,9 @@ def _resolve_commit(repo_root: Path) -> str:
 
 
 def _read_scip_json(scip_cli: str, index_path: Path) -> dict:
-    completed = subprocess.run(
+    completed = process.run(
         [scip_cli, "print", "--json", str(index_path)],
+        timeout=process.LONG_COMMAND_TIMEOUT_SECONDS,
         check=True,
         capture_output=True,
         text=True,
@@ -282,8 +284,14 @@ def _resolve_test_location(
 
 def _tool_version(command: list[str]) -> str:
     try:
-        completed = subprocess.run(command, check=True, capture_output=True, text=True)
-    except (subprocess.CalledProcessError, FileNotFoundError):
+        completed = process.run(
+            command,
+            timeout=process.SHORT_COMMAND_TIMEOUT_SECONDS,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (process.CalledProcessError, FileNotFoundError):
         return "unknown"
     return (completed.stdout or completed.stderr).strip().splitlines()[0]
 
@@ -409,7 +417,7 @@ def main(argv: list[str] | None = None) -> int:
     if is_python and not args.no_coverage and Path(venv_python).exists():
         try:
             coverage_map = run_coverage(repo_root, venv_python)
-        except subprocess.CalledProcessError as error:
+        except process.CalledProcessError as error:
             coverage_note = f"coverage failed: {error.stderr.strip().splitlines()[-1:]}"
     elif is_python and not args.no_coverage:
         coverage_note = "coverage skipped: no venv python found"

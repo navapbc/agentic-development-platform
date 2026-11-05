@@ -63,6 +63,12 @@ def parse_rebar_backend_config(raw: Mapping[str, Any]) -> RebarBackendConfig:
     repo_root = backend.get("repo_root")
     if not isinstance(repo_root, str) or not repo_root.strip():
         raise ConfigError("tickets backend.repo_root is required")
+    if not Path(repo_root.strip()).is_absolute():
+        raise ConfigError(
+            "tickets backend.repo_root must be an absolute path and ~ is not expanded, because "
+            "operator commands resolve it on the host while the intake poll resolves it inside "
+            f"the worker container, so {repo_root.strip()!r} names a different store in each"
+        )
     return RebarBackendConfig(
         repo_root=repo_root.strip(),
         status_flow=_parse_status_flow(backend.get("status_flow")),
@@ -88,9 +94,7 @@ def parse_poll_config(raw: Mapping[str, Any]) -> PollConfig:
     identity_roles_raw = poll.get("identity_roles") or {}
     if not isinstance(identity_roles_raw, Mapping):
         raise ConfigError("tickets poll.identity_roles must be a mapping")
-    identity_roles = tuple(
-        (str(name), str(role)) for name, role in identity_roles_raw.items()
-    )
+    identity_roles = tuple((str(name), str(role)) for name, role in identity_roles_raw.items())
     return PollConfig(
         reader_roles=_str_tuple(poll.get("reader_roles"), "poll.reader_roles"),
         allowed_fields=_str_tuple(poll.get("allowed_fields"), "poll.allowed_fields"),

@@ -12,6 +12,7 @@ resource "aws_cloudwatch_log_group" "exec" {
 
   name              = local.log_group_name
   retention_in_days = var.log_retention_days
+  kms_key_id        = aws_kms_key.ecs_exec[0].arn
 
   tags = merge(var.tags, { Name = "${var.name_prefix}-jumphost-exec-logs" })
 }
@@ -21,16 +22,22 @@ resource "aws_ecs_cluster" "this" {
 
   name = local.task_label
 
+  setting {
+    name  = "containerInsights"
+    value = "enabled"
+  }
+
   configuration {
     execute_command_configuration {
       kms_key_id = aws_kms_key.ecs_exec[0].arn
       logging    = "OVERRIDE"
 
       log_configuration {
-        cloud_watch_log_group_name   = aws_cloudwatch_log_group.exec[0].name
-        s3_bucket_name               = aws_s3_bucket.exec_logs[0].id
-        s3_key_prefix                = "exec-output"
-        s3_bucket_encryption_enabled = true
+        cloud_watch_log_group_name     = aws_cloudwatch_log_group.exec[0].name
+        cloud_watch_encryption_enabled = true
+        s3_bucket_name                 = aws_s3_bucket.exec_logs[0].id
+        s3_key_prefix                  = "exec-output"
+        s3_bucket_encryption_enabled   = true
       }
     }
   }

@@ -37,6 +37,29 @@ def local_repo(tmp_path: Path) -> tuple[Path, Path]:
     return root, tmp_path / "artifacts"
 
 
+def _staged_request(
+    root: Path, tmp_path: Path, *, branch: str, task_id: str, execution_id: str, files: dict
+) -> CommitRequest:
+    """A request whose workspace holds the change, as the materializer produces one."""
+    workspace = tmp_path / "workspaces" / execution_id
+    _git(tmp_path, "clone", "-q", str(root / "demo"), str(workspace))
+    for name, text in files.items():
+        target = workspace / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+    _git(workspace, "add", "-A")
+    return CommitRequest(
+        repo="demo",
+        branch=branch,
+        base="main",
+        message="add feature",
+        workspace=str(workspace),
+        tree=_git(workspace, "write-tree"),
+        task_id=task_id,
+        execution_id=execution_id,
+    )
+
+
 def test_default_settings_resolve_github() -> None:
     assert resolve_source_control_backend_name(hermetic_settings()) == GITHUB
 
@@ -82,26 +105,26 @@ def test_local_host_conforms_to_git_host(local_repo) -> None:
 
 
 @pytest.mark.asyncio
-async def test_commit_lands_on_local_branch_without_push(local_repo) -> None:
+async def test_commit_lands_on_local_branch_without_push(local_repo, tmp_path: Path) -> None:
     root, artifacts = local_repo
     repo = root / "demo"
     host = LocalGitHost(root, artifacts_root=artifacts)
 
     await host.ensure_branch("demo", "agent/T-1", "main")
-    result = await host.commit_and_push(
-        CommitRequest(
-            repo="demo",
-            branch="agent/T-1",
-            base="main",
-            message="add feature",
-            files={"feature.txt": "hello\n"},
-            task_id="T-1",
-            execution_id="E-1",
-        )
+    request = _staged_request(
+        root,
+        tmp_path,
+        branch="agent/T-1",
+        task_id="T-1",
+        execution_id="E-1",
+        files={"feature.txt": "hello\n"},
     )
+
+    result = await host.commit_and_push(request)
 
     assert result.pushed is False
     assert result.replayed is False
+    assert result.published_tree == request.tree
     committed = _git(repo, "show", "agent/T-1:feature.txt")
     assert committed == "hello"
     assert _git(repo, "remote").strip() == ""
@@ -109,17 +132,16 @@ async def test_commit_lands_on_local_branch_without_push(local_repo) -> None:
 
 
 @pytest.mark.asyncio
-async def test_commit_is_idempotent_on_replay(local_repo) -> None:
+async def test_commit_is_idempotent_on_replay(local_repo, tmp_path: Path) -> None:
     root, artifacts = local_repo
     host = LocalGitHost(root, artifacts_root=artifacts)
-    request = CommitRequest(
-        repo="demo",
+    request = _staged_request(
+        root,
+        tmp_path,
         branch="agent/T-2",
-        base="main",
-        message="add feature",
-        files={"feature.txt": "hello\n"},
         task_id="T-2",
         execution_id="E-2",
+        files={"feature.txt": "hello\n"},
     )
     first = await host.commit_and_push(request)
     second = await host.commit_and_push(request)
@@ -128,19 +150,18 @@ async def test_commit_is_idempotent_on_replay(local_repo) -> None:
 
 
 @pytest.mark.asyncio
-async def test_publish_writes_artifacts_and_opens_no_remote_pr(local_repo) -> None:
+async def test_publish_writes_artifacts_and_opens_no_remote_pr(local_repo, tmp_path: Path) -> None:
     root, artifacts = local_repo
     repo = root / "demo"
     host = LocalGitHost(root, artifacts_root=artifacts)
     await host.commit_and_push(
-        CommitRequest(
-            repo="demo",
+        _staged_request(
+            root,
+            tmp_path,
             branch="agent/T-3",
-            base="main",
-            message="add feature",
-            files={"feature.txt": "hello\n"},
             task_id="T-3",
             execution_id="E-3",
+            files={"feature.txt": "hello\n"},
         )
     )
 
@@ -166,18 +187,17 @@ async def test_publish_writes_artifacts_and_opens_no_remote_pr(local_repo) -> No
 
 
 @pytest.mark.asyncio
-async def test_local_publish_fills_result_with_branch_and_patch(local_repo) -> None:
+async def test_local_publish_fills_result_with_branch_and_patch(local_repo, tmp_path: Path) -> None:
     root, artifacts = local_repo
     host = LocalGitHost(root, artifacts_root=artifacts)
     await host.commit_and_push(
-        CommitRequest(
-            repo="demo",
+        _staged_request(
+            root,
+            tmp_path,
             branch="agent/T-4",
-            base="main",
-            message="add feature",
-            files={"feature.txt": "hello\n"},
             task_id="T-4",
             execution_id="E-4",
+            files={"feature.txt": "hello\n"},
         )
     )
 
@@ -191,18 +211,19 @@ async def test_local_publish_fills_result_with_branch_and_patch(local_repo) -> N
 
 
 @pytest.mark.asyncio
-async def test_local_discovery_finds_open_branch_then_none_after_close(local_repo) -> None:
+async def test_local_discovery_finds_open_branch_then_none_after_close(
+    local_repo, tmp_path: Path
+) -> None:
     root, artifacts = local_repo
     host = LocalGitHost(root, artifacts_root=artifacts)
     await host.commit_and_push(
-        CommitRequest(
-            repo="demo",
+        _staged_request(
+            root,
+            tmp_path,
             branch="agent/T-5",
-            base="main",
-            message="add feature",
-            files={"feature.txt": "hello\n"},
             task_id="T-5",
             execution_id="E-5",
+            files={"feature.txt": "hello\n"},
         )
     )
     pr = await host.publish("demo", "agent/T-5", "main", "Add feature", "body")
@@ -286,3 +307,115 @@ def test_publish_result_carries_no_approval_or_status_field() -> None:
         "created",
         "reused",
     }
+
+
+async def test_publish_after_the_base_moved_keeps_the_patch_to_the_change(
+    local_repo, tmp_path: Path
+) -> None:
+    root, artifacts = local_repo
+    repo = root / "demo"
+    host = LocalGitHost(root, artifacts_root=artifacts)
+    await host.commit_and_push(
+        _staged_request(
+            root,
+            tmp_path,
+            branch="agent/T-6",
+            task_id="T-6",
+            execution_id="E-6a",
+            files={"feature.txt": "first run\n"},
+        )
+    )
+    (repo / "notes.md").write_text("landed on main\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "advance base")
+
+    await host.commit_and_push(
+        _staged_request(
+            root,
+            tmp_path,
+            branch="agent/T-6",
+            task_id="T-6",
+            execution_id="E-6b",
+            files={"feature.txt": "second run\n"},
+        )
+    )
+    result = await host.publish("demo", "agent/T-6", "main", "Add feature", "body")
+
+    patch = Path(result.patch_path).read_text(encoding="utf-8")
+    assert "feature.txt" in patch
+    assert "notes.md" not in patch
+
+
+async def test_rerun_on_an_unchanged_base_keeps_a_single_parent(local_repo, tmp_path: Path) -> None:
+    root, artifacts = local_repo
+    repo = root / "demo"
+    host = LocalGitHost(root, artifacts_root=artifacts)
+    first = await host.commit_and_push(
+        _staged_request(
+            root,
+            tmp_path,
+            branch="agent/T-7",
+            task_id="T-7",
+            execution_id="E-7a",
+            files={"feature.txt": "first run\n"},
+        )
+    )
+
+    second = await host.commit_and_push(
+        _staged_request(
+            root,
+            tmp_path,
+            branch="agent/T-7",
+            task_id="T-7",
+            execution_id="E-7b",
+            files={"feature.txt": "second run\n"},
+        )
+    )
+
+    parents = _git(repo, "rev-list", "--parents", "-n", "1", second.commit_sha).split()[1:]
+    assert parents == [first.commit_sha]
+
+
+def test_the_git_host_falls_back_to_no_credential_for_an_unconfigured_repository() -> None:
+    from services.integration.github.credentials import build_single_identity_resolver
+    from services.integration.github.git_auth import NO_AUTH
+
+    host = RealGitHost(
+        build_single_identity_resolver(
+            api_url="https://ghe.invalid/api/v3",
+            owner="acme",
+            git_base_url="https://ghe.invalid",
+            token="",
+            repos={"demo"},
+        ),
+        remote_url_for=lambda repo: "/srv/git/demo.git",
+    )
+
+    assert host._auth("demo") == NO_AUTH
+
+
+def test_the_git_host_still_reports_a_configured_repository_whose_token_is_missing() -> None:
+    from services.integration.credentials import EnvSecretResolver, SecretNotFoundError
+    from services.integration.github.credentials import (
+        GitHubCredentialResolver,
+        parse_github_config,
+    )
+
+    config = parse_github_config(
+        {
+            "hosts": {
+                "acme": {
+                    "api_url": "https://ghe.invalid/api/v3",
+                    "git_base_url": "https://ghe.invalid",
+                }
+            },
+            "default": {"host": "acme", "owner": "acme", "token_ref": "ACME_TOKEN"},
+        }
+    )
+    host = RealGitHost(
+        GitHubCredentialResolver(config, {"demo"}, EnvSecretResolver({})),
+        remote_url_for=lambda repo: "/srv/git/demo.git",
+    )
+
+    with pytest.raises(SecretNotFoundError):
+        host._auth("demo")

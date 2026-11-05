@@ -122,9 +122,7 @@ def test_cost_breach_reported():
 
 
 def test_llm_calls_breach_takes_precedence_over_cost():
-    rollup = build_rollup(
-        _rows(), caps=BudgetCaps(max_cost_usd=1.0, max_llm_calls=1, max_tokens=1)
-    )
+    rollup = build_rollup(_rows(), caps=BudgetCaps(max_cost_usd=1.0, max_llm_calls=1, max_tokens=1))
     assert rollup.budget.breach_reason == LLM_CALLS_EXCEEDED
 
 
@@ -198,12 +196,27 @@ def test_backfill_refills_zeroed_review_stage():
         ),
     ]
     generations = [
-        {"stage": "code-review", "model_id": "review-model",
-         "prompt_tokens": 1200, "completion_tokens": 300, "cost_usd": 0.45},
-        {"stage": "code-review", "model_id": "review-model",
-         "prompt_tokens": 800, "completion_tokens": 100, "cost_usd": 0.25},
-        {"stage": "implementing", "model_id": "impl-model",
-         "prompt_tokens": 9999, "completion_tokens": 9999, "cost_usd": 99.0},
+        {
+            "stage": "code-review",
+            "model_id": "review-model",
+            "prompt_tokens": 1200,
+            "completion_tokens": 300,
+            "cost_usd": 0.45,
+        },
+        {
+            "stage": "code-review",
+            "model_id": "review-model",
+            "prompt_tokens": 800,
+            "completion_tokens": 100,
+            "cost_usd": 0.25,
+        },
+        {
+            "stage": "implementing",
+            "model_id": "impl-model",
+            "prompt_tokens": 9999,
+            "completion_tokens": 9999,
+            "cost_usd": 99.0,
+        },
     ]
 
     merged = {row.stage: row for row in backfill_zeroed_stages(rows, generations)}
@@ -225,8 +238,14 @@ def test_backfill_leaves_rows_without_matching_generations():
     from services.orchestration.usage_rollup import backfill_zeroed_stages
 
     rows = [
-        UsageRow(execution_id=EXECUTION, stage="SECURITY_REVIEW", prompt_tokens=0,
-                 completion_tokens=0, total_tokens=0, cost_usd=0.0),
+        UsageRow(
+            execution_id=EXECUTION,
+            stage="SECURITY_REVIEW",
+            prompt_tokens=0,
+            completion_tokens=0,
+            total_tokens=0,
+            cost_usd=0.0,
+        ),
     ]
     merged = backfill_zeroed_stages(rows, [])
     assert merged[0].prompt_tokens == 0

@@ -11,6 +11,7 @@ from temporalio.common import RetryPolicy
 
 with workflow.unsafe.imports_passed_through():
     from services.orchestration.temporal_activities.bedrock import (
+        MODEL_RETRY_POLICY,
         ModelRequest,
         ModelResponse,
         invoke_model,
@@ -118,7 +119,7 @@ class DurableTaskWorkflow:
             invoke_model,
             ModelRequest(logical_model="classification-summary", prompt=prompt),
             start_to_close_timeout=model_timeout,
-            retry_policy=retry,
+            retry_policy=MODEL_RETRY_POLICY,
         )
 
         await workflow.execute_activity(

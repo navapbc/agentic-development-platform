@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
 from observability import (
@@ -15,11 +16,12 @@ from observability import (
     instrument_llm_tracing,
     temporal_interceptors,
 )
-from scripts.config import get_settings
+from scripts.config import configured_log_level, get_settings
 from temporalio.client import Client
 from temporalio.worker import Worker
 from temporalio.worker.workflow_sandbox import SandboxedWorkflowRunner, SandboxRestrictions
 
+from services import temporal_client
 from services.orchestration.temporal_activities import (
     alert_human_intervention,
     analyze_ci_failure,
@@ -36,6 +38,7 @@ from services.orchestration.temporal_activities import (
     detect_dependency,
     evaluate_gate,
     evaluate_promotion,
+    finalize_work_claim,
     find_open_pr,
     gather_repo_context,
     invoke_model,
@@ -51,6 +54,7 @@ from services.orchestration.temporal_activities import (
     record_audit_event,
     record_dependency_link,
     record_manifest,
+    record_plan_evidence,
     record_pr_approval,
     record_suspension,
     record_usage_metrics,
@@ -80,8 +84,9 @@ from services.orchestration.temporal_workflows import (
     PullRequestWorkflow,
     ReapWorkflow,
 )
+from services.orchestration.worker_versioning import deployment_config, set_current_version
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=configured_log_level())
 log = logging.getLogger("workflow-worker")
 
 WORKER_ROLE_ALL = "all"
@@ -118,9 +123,11 @@ _ACTIVITIES = [
     record_audit_event,
     record_usage_metrics,
     gather_repo_context,
+    record_plan_evidence,
     count_tick,
     evaluate_gate,
     claim_work_unit,
+    finalize_work_claim,
     run_implementation_stage,
     synchronize_branch,
     resolve_conflicts,
@@ -185,10 +192,7 @@ def build_worker(client: Client, task_queue: str, role: str) -> Worker:
     settings = get_settings()
     versioning: dict[str, Any] = {}
     if settings.worker_versioning_enabled:
-        versioning = {
-            "build_id": settings.agent_build_id,
-            "use_worker_versioning": True,
-        }
+        versioning = {"deployment_config": deployment_config(settings)}
     if role == WORKER_ROLE_WORKFLOW:
         return Worker(
             client,
@@ -239,6 +243,30 @@ def _warm_acli_auth(settings) -> None:
         log.warning("acli startup authentication skipped: %s", exc)
 
 
+async def _scrub_workspace_credentials(workspace_root: str) -> None:
+    """Clear the credential releases before the per-invocation helper left in every checkout.
+
+    A workspace is keyed by execution id and nothing deletes it, so the scrub that runs when a
+    workspace is materialized again never reaches most of them.
+    """
+    from services.orchestration.workspace_scrub import scrub_workspace_credentials
+
+    receipt = await asyncio.to_thread(scrub_workspace_credentials, Path(workspace_root))
+    if receipt.rewritten:
+        log.warning(
+            "cleared a persisted git credential from %d of %d workspace checkouts under %s",
+            len(receipt.rewritten),
+            receipt.scanned,
+            workspace_root,
+        )
+    if receipt.failed:
+        log.error(
+            "could not clear a persisted git credential from %d workspace checkouts: %s",
+            len(receipt.failed),
+            ", ".join(receipt.failed),
+        )
+
+
 async def main() -> None:
     settings = get_settings()
     role = _resolve_role()
@@ -249,14 +277,20 @@ async def main() -> None:
     instrument_llm_tracing()
     install_litellm_header_propagation(settings.rebar_llm_base_url)
     _warm_acli_auth(settings)
+    from scripts.aws_clients import configure_aws_fips
+
+    configure_aws_fips(settings)
+    from database.schema_guard import wait_for_platform_schema
+
+    await wait_for_platform_schema(settings.database_url)
     log.info(
         "connecting to Temporal at %s (ns=%s)",
         settings.temporal_host,
         settings.temporal_namespace,
     )
-    client = await Client.connect(
+    client = await temporal_client.connect(
         settings.temporal_host,
-        namespace=settings.temporal_namespace,
+        settings,
         interceptors=temporal_interceptors(),
     )
 
@@ -277,9 +311,17 @@ async def main() -> None:
             log.info("recorded review trust-root change: %s", change)
 
     if role in (WORKER_ROLE_ACTIVITY, WORKER_ROLE_ALL):
+        from services.integration.tickets.store_remote import tickets_store_preflight
         from services.orchestration.authorship import authorship_signing_preflight
 
+        tickets_store_preflight(settings)
         authorship_signing_preflight(settings)
+        await _scrub_workspace_credentials(settings.execution_workspace_root)
+
+    if role in (WORKER_ROLE_ACTIVITY, WORKER_ROLE_REVIEW, WORKER_ROLE_ALL):
+        from services.review.evidence import evidence_object_store_preflight
+
+        evidence_object_store_preflight(settings)
 
     workers = [build_worker(client, task_queue, role)]
     queues = [task_queue]
@@ -293,7 +335,25 @@ async def main() -> None:
         role,
         settings.agent_build_id,
     )
-    await asyncio.gather(*(worker.run() for worker in workers))
+    heartbeat_task = None
+    if settings.health_heartbeat_file:
+        from services.healthcheck import heartbeat
+
+        heartbeat_task = asyncio.create_task(
+            heartbeat(
+                Path(settings.health_heartbeat_file),
+                interval=settings.health_heartbeat_interval_seconds,
+                alive=lambda: all(worker.is_running for worker in workers),
+            )
+        )
+    runners = [worker.run() for worker in workers]
+    if settings.worker_versioning_enabled:
+        runners.append(set_current_version(client, settings, queues))
+    try:
+        await asyncio.gather(*runners)
+    finally:
+        if heartbeat_task is not None:
+            heartbeat_task.cancel()
 
 
 if __name__ == "__main__":

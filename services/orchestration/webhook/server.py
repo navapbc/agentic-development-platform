@@ -6,13 +6,19 @@ import asyncio
 import json
 import logging
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, cast
 
-from scripts.config import Settings, get_settings, to_host_hostport
+from scripts.config import Settings, configured_log_level, get_settings, to_host_hostport
 
 from services.coordination.idempotency import PostgresSideEffectLedger, SideEffectLedger
+from services.http_front_door import (
+    REQUEST_TIMEOUT_SECONDS,
+    RequestRejected,
+    read_bounded_body,
+)
 from services.integration.github.credentials import (
     allowed_repos,
     build_github_credential_resolver,
@@ -31,10 +37,9 @@ from services.orchestration.webhook.pr_events import (
     TemporalSignaller,
 )
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=configured_log_level())
 log = logging.getLogger("inbound-webhook")
 
-HOST = "0.0.0.0"  # noqa: S104
 PORT = 8140
 _SERVICE = "inbound-webhook"
 
@@ -45,12 +50,28 @@ class Route:
     allowed: frozenset[str]
 
 
-async def build_routes(settings: Settings) -> dict[str, Route]:
-    from temporalio.client import Client
+_INBOUND_SECRETS: dict[str, tuple[str, Callable[[Settings], str]]] = {
+    "pr_closed": ("GITHUB_WEBHOOK_SECRET", lambda settings: settings.github_webhook_secret),
+    "jira_intake": ("JIRA_WEBHOOK_SECRET", lambda settings: settings.jira_webhook_secret),
+}
 
-    client = await Client.connect(
-        to_host_hostport(settings.temporal_host), namespace=settings.temporal_namespace
+
+def require_webhook_secrets(settings: Settings) -> None:
+    """Refuse to serve an integration whose inbound mode has no signing secret configured."""
+    integrations = load_integrations_config(settings)
+    missing = sorted(
+        env_var
+        for name, (env_var, read_secret) in _INBOUND_SECRETS.items()
+        if integrations.webhook_enabled(name) and not read_secret(settings)
     )
+    if missing:
+        raise SystemExit(f"set {' and '.join(missing)} to accept inbound deliveries")
+
+
+async def build_routes(settings: Settings) -> dict[str, Route]:
+    from services import temporal_client
+
+    client = await temporal_client.connect(to_host_hostport(settings.temporal_host), settings)
     pr_closed = PrClosedHandler(
         secret=settings.github_webhook_secret,
         resolver=PostgresWorkflowResolver(),
@@ -65,9 +86,7 @@ async def build_routes(settings: Settings) -> dict[str, Route]:
     )
     return {
         "/webhook/pr": Route(handler=pr_closed, allowed=frozenset(allowed_repos(settings))),
-        "/webhook/jira": Route(
-            handler=jira_intake, allowed=frozenset(allowed_projects(settings))
-        ),
+        "/webhook/jira": Route(handler=jira_intake, allowed=frozenset(allowed_projects(settings))),
     }
 
 
@@ -78,6 +97,8 @@ def build_handler(
     loop: asyncio.AbstractEventLoop,
 ) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
+        timeout = REQUEST_TIMEOUT_SECONDS
+
         def do_GET(self) -> None:
             if self.path in ("/health", "/healthz", "/"):
                 self._respond(200, {"status": "ok", "service": _SERVICE})
@@ -89,8 +110,12 @@ def build_handler(
             if route is None:
                 self._respond(404, {"error": "not found"})
                 return
-            length = int(self.headers.get("Content-Length") or 0)
-            body = self.rfile.read(length) if length else b""
+            try:
+                body = read_bounded_body(self.rfile, self.headers)
+            except RequestRejected as exc:
+                self.close_connection = True
+                self._respond(exc.status, {"error": exc.message})
+                return
             mode = load_integrations_config(settings).mode(route.handler.name)
             code, payload = asyncio.run_coroutine_threadsafe(
                 handle_inbound(
@@ -121,13 +146,20 @@ def build_handler(
 
 def main() -> None:
     settings = get_settings()
+    require_webhook_secrets(settings)
     loop = asyncio.new_event_loop()
     threading.Thread(target=loop.run_forever, name="inbound-webhook-loop", daemon=True).start()
     routes = asyncio.run_coroutine_threadsafe(build_routes(settings), loop).result()
     ledger = PostgresSideEffectLedger()
     handler = build_handler(routes, ledger, settings, loop)
-    log.info("%s listening on %s:%d for %s", _SERVICE, HOST, PORT, ", ".join(sorted(routes)))
-    ThreadingHTTPServer((HOST, PORT), handler).serve_forever()
+    log.info(
+        "%s listening on %s:%d for %s",
+        _SERVICE,
+        settings.bind_host,
+        PORT,
+        ", ".join(sorted(routes)),
+    )
+    ThreadingHTTPServer((settings.bind_host, PORT), handler).serve_forever()
 
 
 if __name__ == "__main__":

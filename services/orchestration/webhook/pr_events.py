@@ -35,7 +35,7 @@ class PrClosedEvent:
 
 def verify_signature(secret: str, body: bytes, header: str) -> bool:
     if not secret:
-        return True
+        return False
     if not header.startswith(_SIGNATURE_PREFIX):
         return False
     digest = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
@@ -134,35 +134,6 @@ class PostgresWorkflowResolver:
             row = (await conn.execute(stmt)).first()
         return row.workflow_id if row is not None else None
 
-    async def resolve_task(self, task_id: str) -> str | None:
-        if not task_id:
-            return None
-        stmt = (
-            select(executions.c.workflow_id)
-            .where(executions.c.task_id == task_id)
-            .where(executions.c.workflow_id.is_not(None))
-            .order_by(executions.c.updated_at.desc())
-            .limit(1)
-        )
-        engine = self._get_engine()
-        async with engine.connect() as conn:
-            row = (await conn.execute(stmt)).first()
-        return row.workflow_id if row is not None else None
-
-    async def resolve_execution(self, execution_id: str) -> str | None:
-        if not execution_id:
-            return None
-        stmt = (
-            select(executions.c.workflow_id)
-            .where(executions.c.execution_id == execution_id)
-            .where(executions.c.workflow_id.is_not(None))
-            .limit(1)
-        )
-        engine = self._get_engine()
-        async with engine.connect() as conn:
-            row = (await conn.execute(stmt)).first()
-        return row.workflow_id if row is not None else None
-
 
 class TemporalSignaller:
     def __init__(self, client: Any) -> None:
@@ -170,12 +141,10 @@ class TemporalSignaller:
 
     @classmethod
     async def connect(cls, settings: Settings | None = None) -> TemporalSignaller:
-        from temporalio.client import Client
+        from services import temporal_client
 
         resolved = settings or get_settings()
-        client = await Client.connect(
-            to_host_hostport(resolved.temporal_host), namespace=resolved.temporal_namespace
-        )
+        client = await temporal_client.connect(to_host_hostport(resolved.temporal_host), resolved)
         return cls(client)
 
     async def signal_pr_closed(self, workflow_id: str, *, merged: bool) -> None:

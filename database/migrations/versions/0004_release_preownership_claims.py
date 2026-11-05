@@ -16,12 +16,10 @@ down_revision: str | None = "0003_work_claim_owner"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-SCHEMA = "agent_platform"
-
 
 def upgrade() -> None:
     op.execute(
-        f"UPDATE {SCHEMA}.work_claims "
+        "UPDATE agent_platform.work_claims "
         "SET state = 'released', released_at = now() "
         "WHERE state = 'claimed' AND owner_workflow_id IS NULL"
     )

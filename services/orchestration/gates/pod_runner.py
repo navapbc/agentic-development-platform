@@ -14,6 +14,7 @@ import json
 import re
 import shlex
 from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
@@ -25,7 +26,10 @@ _OUTPUT_PATH = "/workspace/.gate-engine-out.json"
 _BUILD_TAG = "gate-tool"
 _HOST_GATEWAY_ALIAS = "host.docker.internal"
 
-DEFAULT_BUILDER_IMAGE = "quay.io/buildah/stable:v1.43.2"
+DEFAULT_BUILDER_IMAGE = (
+    "quay.io/buildah/stable:v1.43.5"
+    "@sha256:7c2b605262748ace2c5c57c5550942d0adad57aec82ede3070927722306c0ffb"
+)
 DEFAULT_NAMESPACE = "agent-sandbox"
 
 
@@ -53,12 +57,38 @@ class PodEngineSpec:
     env: Mapping[str, str] = field(default_factory=dict)
 
 
-def pod_name_for(name: str, execution_id: str) -> str:
+def pod_name_for(name: str, execution_id: str, prefix: str = "gate-engine") -> str:
     slug = _NAME_SANITISE.sub("-", f"{name}-{execution_id}".lower()).strip("-")
-    return f"gate-engine-{slug or 'run'}"[:63].rstrip("-")
+    return f"{prefix}-{slug or 'run'}"[:63].rstrip("-")
 
 
-def build_pod_manifest(pod: str, namespace: str, builder_image: str) -> dict:
+DEFAULT_POD_RESOURCES: dict[str, dict[str, str]] = {
+    "requests": {"cpu": "500m", "memory": "1Gi"},
+    "limits": {"cpu": "2", "memory": "4Gi"},
+}
+
+# A project's test suite runs under the same wall-clock assertions its authors wrote on a developer
+# machine. Helpers such as testing-library's waitFor budget a fixed 1000ms that no jest flag
+# overrides, so a CPU-starved pod fails tests that are not defective. Two CPUs reproduces those
+# failures and six clears them.
+CHECKS_POD_RESOURCES: dict[str, dict[str, str]] = {
+    "requests": {"cpu": "2", "memory": "2Gi"},
+    "limits": {"cpu": "6", "memory": "8Gi"},
+}
+
+
+def build_pod_manifest(
+    pod: str,
+    namespace: str,
+    builder_image: str,
+    privileged: bool = False,
+    resources: dict[str, dict[str, str]] | None = None,
+) -> dict:
+    # Unpacking an image layer remounts the container root MS_PRIVATE|MS_REC, which some clusters
+    # (k3s, Colima) deny to an unprivileged pod even with CAP_SYS_ADMIN and seccomp unconfined.
+    security_context: dict[str, Any] = {"runAsUser": 0}
+    if privileged:
+        security_context["privileged"] = True
     return {
         "apiVersion": "v1",
         "kind": "Pod",
@@ -82,15 +112,48 @@ def build_pod_manifest(pod: str, namespace: str, builder_image: str) -> dict:
                         {"name": "STORAGE_DRIVER", "value": "vfs"},
                         {"name": "BUILDAH_ISOLATION", "value": "chroot"},
                     ],
-                    "securityContext": {"runAsUser": 0},
-                    "resources": {
-                        "requests": {"cpu": "500m", "memory": "1Gi"},
-                        "limits": {"cpu": "2", "memory": "4Gi"},
-                    },
+                    "securityContext": security_context,
+                    "resources": deepcopy(resources or DEFAULT_POD_RESOURCES),
                 }
             ],
         },
     }
+
+
+_IMAGE_WAIT_REASONS = frozenset({"ErrImagePull", "ImagePullBackOff", "InvalidImageName"})
+
+
+def describe_pod_not_ready(status: Mapping[str, Any]) -> str:
+    """Explain why a pod has not become Ready, from its phase, conditions, and container state.
+
+    `kubectl wait` reports only that the condition was not met, so an unschedulable pod and a pod
+    whose image will not pull are indistinguishable from its output alone.
+    """
+    phase = str(status.get("phase") or "unknown")
+    for condition in status.get("conditions") or []:
+        if condition.get("type") != "PodScheduled" or condition.get("status") == "True":
+            continue
+        reason = str(condition.get("reason") or "Unschedulable").strip()
+        message = str(condition.get("message") or "").strip().rstrip(".")
+        scheduler = f" The scheduler reported {message}." if message else ""
+        return (
+            f"The pod is {phase} and the scheduler has not placed it, reason {reason}.{scheduler}"
+            " Give the cluster node more CPU or memory, or lower the pod resource requests."
+        )
+    for container in status.get("containerStatuses") or []:
+        waiting = (container.get("state") or {}).get("waiting") or {}
+        reason = str(waiting.get("reason") or "").strip()
+        if not reason:
+            continue
+        message = str(waiting.get("message") or "").strip().rstrip(".")
+        kubelet = f" The kubelet reported {message}." if message else ""
+        action = (
+            " Check the image reference and the cluster's access to the registry."
+            if reason in _IMAGE_WAIT_REASONS
+            else ""
+        )
+        return f"The pod is {phase} and its container is waiting, reason {reason}.{kubelet}{action}"
+    return f"The pod is {phase} and no scheduling or container condition explains it."
 
 
 def _run_script(spec: PodEngineSpec) -> str:
@@ -105,9 +168,7 @@ def _run_script(spec: PodEngineSpec) -> str:
         f"-e {shlex.quote(f'{key}={value}')}" for key, value in sorted(spec.env.items())
     )
     ownership_flags = (
-        "-e GIT_CONFIG_COUNT=1 "
-        "-e GIT_CONFIG_KEY_0=safe.directory "
-        "-e GIT_CONFIG_VALUE_0=*"
+        "-e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=*"
     )
     entrypoint = f"{_ENGINE_MOUNT}/{spec.entrypoint.lstrip('/')}"
     invoke = (
@@ -128,8 +189,7 @@ def _run_script(spec: PodEngineSpec) -> str:
         acquire = f"img={shlex.quote(spec.image)}"
     else:
         acquire = (
-            f"buildah bud -t {_BUILD_TAG} {shlex.quote(_ENGINE_MOUNT)} >&2 && "
-            f"img={_BUILD_TAG}"
+            f"buildah bud -t {_BUILD_TAG} {shlex.quote(_ENGINE_MOUNT)} >&2 && img={_BUILD_TAG}"
         )
     # TLS verification is only relevant to the registry pull in image mode. Disabling it lets the
     # gate pod pull from a plain-HTTP local registry. The build path never touches a registry.
@@ -138,7 +198,7 @@ def _run_script(spec: PodEngineSpec) -> str:
         "set -e\n"
         f"{acquire}\n"
         'hostflag=""\n'
-        f'gw=$(getent hosts {_HOST_GATEWAY_ALIAS} 2>/dev/null | awk \'{{print $1}}\' | head -1)\n'
+        f"gw=$(getent hosts {_HOST_GATEWAY_ALIAS} 2>/dev/null | awk '{{print $1}}' | head -1)\n"
         f'if [ -n "$gw" ]; then hostflag="--add-host {_HOST_GATEWAY_ALIAS}:$gw"; fi\n'
         f'ctr=$(buildah from {tls_flag}$hostflag "$img")\n'
         # The checkout is copied in as root, but the engine image runs as a non-root user, so make
@@ -147,11 +207,11 @@ def _run_script(spec: PodEngineSpec) -> str:
         "set +e\n"
         f"buildah run --user root -v {_WORKSPACE_MOUNT}:{_WORKSPACE_MOUNT} {ownership_flags} "
         f'"$ctr" -- sh -c {shlex.quote(snapshot)} >&2\n'
-        f'buildah run --net host -v {_ENGINE_MOUNT}:{_ENGINE_MOUNT} '
+        f"buildah run --net host -v {_ENGINE_MOUNT}:{_ENGINE_MOUNT} "
         f"-v {_WORKSPACE_MOUNT}:{_WORKSPACE_MOUNT} {ownership_flags} {env_flags} "
         f'"$ctr" -- {invoke} >&2\n'
         "rc=$?\n"
-        f"if [ $rc -ne 0 ] && [ $rc -ne 1 ]; then echo \"engine exited $rc\" >&2; exit $rc; fi\n"
+        f'if [ $rc -ne 0 ] && [ $rc -ne 1 ]; then echo "engine exited $rc" >&2; exit $rc; fi\n'
         f"cat {shlex.quote(_OUTPUT_PATH)}\n"
     )
 
@@ -163,6 +223,10 @@ class PodOps(Protocol):
     async def wait_ready(self, pod: str, namespace: str) -> None: ...
 
     async def copy_in(self, pod: str, namespace: str, source_dir: str, dest_dir: str) -> None: ...
+
+    async def copy_out(
+        self, pod: str, namespace: str, source_dir: str, dest_dir: str, manifest_path: str
+    ) -> None: ...
 
     async def exec_capture(self, pod: str, namespace: str, script: str) -> tuple[int, str, str]: ...
 
@@ -176,14 +240,16 @@ class PodEngineRunner:
         *,
         namespace: str = DEFAULT_NAMESPACE,
         builder_image: str = DEFAULT_BUILDER_IMAGE,
+        privileged: bool = False,
     ) -> None:
         self._ops = ops
         self._namespace = namespace
         self._builder_image = builder_image
+        self._privileged = privileged
 
     async def run_engine(self, spec: PodEngineSpec) -> dict[str, Any]:
         pod = pod_name_for(spec.name, spec.execution_id)
-        manifest = build_pod_manifest(pod, self._namespace, self._builder_image)
+        manifest = build_pod_manifest(pod, self._namespace, self._builder_image, self._privileged)
         await self._ops.create(manifest)
         try:
             await self._ops.wait_ready(pod, self._namespace)
@@ -220,10 +286,11 @@ class KubectlPodOps:
         await asyncio.to_thread(self._create_sync, manifest)
 
     def _create_sync(self, manifest: dict) -> None:
-        import subprocess
+        from services import process
 
-        proc = subprocess.run(
+        proc = process.run(
             [self._kubectl, "apply", "-f", "-"],
+            timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS,
             input=json.dumps(manifest),
             capture_output=True,
             text=True,
@@ -237,9 +304,9 @@ class KubectlPodOps:
         await asyncio.to_thread(self._wait_ready_sync, pod, namespace)
 
     def _wait_ready_sync(self, pod: str, namespace: str) -> None:
-        import subprocess
+        from services import process
 
-        proc = subprocess.run(
+        proc = process.run(
             [
                 self._kubectl,
                 "wait",
@@ -249,11 +316,37 @@ class KubectlPodOps:
                 "--for=condition=Ready",
                 f"--timeout={int(self._ready_timeout)}s",
             ],
+            timeout=self._ready_timeout + process.SHORT_COMMAND_TIMEOUT_SECONDS,
             capture_output=True,
             text=True,
         )
         if proc.returncode:
-            raise PodEngineError(f"pod {pod} not ready: {proc.stderr.strip()}")
+            raise PodEngineError(
+                f"pod {pod} in namespace {namespace} was not Ready within "
+                f"{int(self._ready_timeout)}s. {self._not_ready_reason(pod, namespace)} "
+                f"kubectl reported {proc.stderr.strip() or 'nothing'}"
+            )
+
+    def _not_ready_reason(self, pod: str, namespace: str) -> str:
+        from services import process
+
+        try:
+            proc = process.run(
+                [self._kubectl, "get", "pod", pod, "-n", namespace, "-o", "json"],
+                timeout=process.SHORT_COMMAND_TIMEOUT_SECONDS,
+                capture_output=True,
+                text=True,
+            )
+        except (OSError, process.SubprocessError) as exc:
+            return f"The pod status could not be read because {exc}."
+        if proc.returncode:
+            kubectl_error = proc.stderr.strip()
+            return f"The pod status could not be read because kubectl reported {kubectl_error}."
+        try:
+            status = json.loads(proc.stdout).get("status") or {}
+        except (json.JSONDecodeError, AttributeError):
+            return "The pod status could not be parsed."
+        return describe_pod_not_ready(status)
 
     async def copy_in(self, pod: str, namespace: str, source_dir: str, dest_dir: str) -> None:
         import asyncio
@@ -261,15 +354,15 @@ class KubectlPodOps:
         await asyncio.to_thread(self._copy_in_sync, pod, namespace, source_dir, dest_dir)
 
     def _copy_in_sync(self, pod: str, namespace: str, source_dir: str, dest_dir: str) -> None:
-        import subprocess
+        from services import process
 
         quoted = shlex.quote(dest_dir)
         script = f"mkdir -p {quoted} && tar xmf - --no-same-owner -C {quoted}"
-        tar = subprocess.Popen(["tar", "-C", source_dir, "-cf", "-", "."], stdout=subprocess.PIPE)
-        exec_proc = subprocess.Popen(
+        tar = process.popen(["tar", "-C", source_dir, "-cf", "-", "."], stdout=process.PIPE)
+        exec_proc = process.popen(
             [self._kubectl, "exec", "-i", "-n", namespace, pod, "--", "sh", "-c", script],
             stdin=tar.stdout,
-            stderr=subprocess.PIPE,
+            stderr=process.PIPE,
         )
         if tar.stdout is not None:
             tar.stdout.close()
@@ -278,18 +371,50 @@ class KubectlPodOps:
         if exec_proc.returncode:
             raise PodEngineError((stderr or b"").decode().strip() or "copy_in failed")
 
-    async def exec_capture(
-        self, pod: str, namespace: str, script: str
-    ) -> tuple[int, str, str]:
+    async def copy_out(
+        self, pod: str, namespace: str, source_dir: str, dest_dir: str, manifest_path: str
+    ) -> None:
+        import asyncio
+
+        await asyncio.to_thread(
+            self._copy_out_sync, pod, namespace, source_dir, dest_dir, manifest_path
+        )
+
+    def _copy_out_sync(
+        self, pod: str, namespace: str, source_dir: str, dest_dir: str, manifest_path: str
+    ) -> None:
+        from services import process
+
+        script = (
+            f"tar cf - --ignore-failed-read -C {shlex.quote(source_dir)} "
+            f"-T {shlex.quote(manifest_path)}"
+        )
+        exec_proc = process.popen(
+            [self._kubectl, "exec", "-i", "-n", namespace, pod, "--", "sh", "-c", script],
+            stdout=process.PIPE,
+            stderr=process.PIPE,
+        )
+        untar = process.popen(
+            ["tar", "xmf", "-", "--no-same-owner", "-C", dest_dir], stdin=exec_proc.stdout
+        )
+        if exec_proc.stdout is not None:
+            exec_proc.stdout.close()
+        untar.wait()
+        _, stderr = exec_proc.communicate()
+        if untar.returncode or exec_proc.returncode:
+            raise PodEngineError((stderr or b"").decode().strip() or "copy_out failed")
+
+    async def exec_capture(self, pod: str, namespace: str, script: str) -> tuple[int, str, str]:
         import asyncio
 
         return await asyncio.to_thread(self._exec_capture_sync, pod, namespace, script)
 
     def _exec_capture_sync(self, pod: str, namespace: str, script: str) -> tuple[int, str, str]:
-        import subprocess
+        from services import process
 
-        proc = subprocess.run(
+        proc = process.run(
             [self._kubectl, "exec", "-i", "-n", namespace, pod, "--", "sh", "-c", script],
+            timeout=process.LONG_COMMAND_TIMEOUT_SECONDS,
             capture_output=True,
             text=True,
         )
@@ -301,9 +426,9 @@ class KubectlPodOps:
         await asyncio.to_thread(self._delete_sync, pod, namespace)
 
     def _delete_sync(self, pod: str, namespace: str) -> None:
-        import subprocess
+        from services import process
 
-        subprocess.run(
+        process.run(
             [
                 self._kubectl,
                 "delete",
@@ -314,6 +439,7 @@ class KubectlPodOps:
                 "--grace-period=0",
                 "--ignore-not-found",
             ],
+            timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS,
             capture_output=True,
             text=True,
         )

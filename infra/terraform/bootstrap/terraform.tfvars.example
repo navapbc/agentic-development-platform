@@ -1,0 +1,9 @@
+region      = "us-east-1"
+name_prefix = "agentic-platform"
+
+# Name the created access-log bucket. Empty derives <name_prefix>-access-logs-<account id>.
+access_log_bucket = ""
+
+# Set false and name an existing bucket above, such as an organization logging bucket,
+# to send S3 server access logs there instead of creating a bucket.
+create_access_log_bucket = true

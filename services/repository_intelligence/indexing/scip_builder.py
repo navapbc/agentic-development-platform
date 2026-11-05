@@ -5,10 +5,10 @@ from __future__ import annotations
 import json
 import os
 import shlex
-import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from services import process
 from services.repository_intelligence.indexing.scip_index import ScipIndex
 from services.repository_intelligence.languages import Language
 
@@ -128,8 +128,9 @@ def default_index_root() -> Path:
 
 def resolve_commit(repo_root: Path) -> str:
     """Return the current commit SHA of the repository at repo_root."""
-    completed = subprocess.run(
+    completed = process.run(
         ["git", "rev-parse", "HEAD"],
+        timeout=process.SHORT_COMMAND_TIMEOUT_SECONDS,
         cwd=repo_root,
         check=True,
         capture_output=True,
@@ -175,26 +176,28 @@ def _generate_scip(
     repo_root: Path, project: str, version: str, indexer: ScipIndexer, output: Path
 ) -> None:
     try:
-        subprocess.run(
+        process.run(
             indexer.index_argv(project, version, output, repo_root),
+            timeout=process.LONG_COMMAND_TIMEOUT_SECONDS,
             cwd=repo_root,
             check=True,
             capture_output=True,
             text=True,
             env=indexer.index_env(repo_root),
         )
-    except subprocess.CalledProcessError as error:
+    except process.CalledProcessError as error:
         raise ScipBuildError(f"scip index failed: {error.stderr.strip()}") from error
 
 
 def _print_scip_json(scip_cli: str, scip_path: Path, json_path: Path) -> None:
     try:
-        completed = subprocess.run(
+        completed = process.run(
             [scip_cli, "print", "--json", str(scip_path)],
+            timeout=process.LONG_COMMAND_TIMEOUT_SECONDS,
             check=True,
             capture_output=True,
             text=True,
         )
-    except subprocess.CalledProcessError as error:
+    except process.CalledProcessError as error:
         raise ScipBuildError(f"scip print failed: {error.stderr.strip()}") from error
     json_path.write_text(completed.stdout, encoding="utf-8")

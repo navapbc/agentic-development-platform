@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import argparse
 import os
-import subprocess
 import tempfile
 from pathlib import Path
+
+from services import process
 
 DEFAULT_URL = os.environ.get(
     "CBM_SOURCE_URL", "https://github.com/DeusData/codebase-memory-mcp.git"
@@ -22,7 +23,7 @@ _DOCKERFILE = "docker/cbm-build.Dockerfile"
 
 
 def clone_command(url: str, ref: str, into: str) -> list[str]:
-    return ["git", "clone", "--depth", "1", "--branch", ref, url, into]
+    return ["git", "clone", "--depth", "1", "--branch", ref, "--", url, into]
 
 
 def build_command(source: str, dest: str) -> list[str]:
@@ -40,7 +41,7 @@ def build_command(source: str, dest: str) -> list[str]:
 
 
 def _run(cmd: list[str]) -> None:
-    subprocess.run(cmd, check=True)
+    process.run(cmd, timeout=process.LONG_COMMAND_TIMEOUT_SECONDS, check=True)
 
 
 def build(

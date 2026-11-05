@@ -1,6 +1,6 @@
 # bedrock-jumphost-fargate
 
-Optional, toggleable Terraform module that provisions an ephemeral ECS Fargate jumphost for reaching the private `bedrock-runtime` interface endpoint from a laptop during local testing. It is scoped to Bedrock port-forwarding only. Nothing is created unless `create_jumphost = true`.
+Optional, toggleable Terraform module that provisions an ephemeral ECS Fargate jumphost for reaching the private `bedrock-runtime` interface endpoint from a laptop during local testing. It is scoped to port-forwarding to the Bedrock endpoint and, when the `temporal-control-plane` module admits its task group, to the Temporal UI load balancer. Nothing is created unless `create_jumphost = true`.
 
 There is no standing host and no SSH. A per-session task runs a minimal image that sleeps for a TTL, and access is ECS Exec over an SSM data channel. The connect script starts a task, waits for it, and opens a port-forward to the Bedrock endpoint.
 
@@ -23,6 +23,7 @@ module "bedrock_jumphost" {
   endpoints_security_group_id = module.vpc_endpoints.security_group_id
   image_uri                   = "${module.jumphost_ecr.repository_url}:v1"
   ecr_repository_arn          = module.jumphost_ecr.repository_arn
+  access_log_bucket           = var.access_log_bucket
 
   tags = { project = "agentic-dev-platform" }
 }
@@ -40,9 +41,11 @@ To pin a scanned image for production, set `image_uri` to a `repo@sha256` digest
 
 ## Security summary
 
-- Task security group has no ingress. Egress is 443 to the shared endpoint security group only.
+- Task security group has no ingress. Egress is 443 to the shared endpoint security group, to S3 through the gateway endpoint prefix list when `attach_s3_egress` is true, to `additional_egress_cidrs`, and to the destinations other modules admit the group to, such as the Temporal UI load balancer.
 - Task role holds only the ECS Exec channel actions and `kms:Decrypt` on the exec key. The execution role holds ECR pull scoped to `ecr_repository_arn`, log write, and secret reads scoped to injected ARNs.
 - The ECS Exec data channel is KMS-encrypted and every session is logged to CloudWatch and to a hardened S3 bucket with versioning, encryption, a public-access block, a TLS-only policy, and read access restricted to an allowlist.
+- The CloudWatch log group is encrypted with the same customer-managed key, whose policy admits the CloudWatch Logs service for this log group only. The cluster has Container Insights enabled.
+- The exec-log bucket sends S3 server access logs to the required `access_log_bucket`.
 - Private reachability for the task depends on the `vpc-endpoints` module providing `ssmmessages`, `ecr.api`, `ecr.dkr`, `logs`, `kms`, and the S3 gateway. The `logs` and `kms` endpoints are required because the task ships container logs to CloudWatch and the ECS Exec channel is KMS-encrypted.
 - The `secrets` input injects Secrets Manager values by ARN when a future jumphost needs a credential. A Bedrock port-forward needs none, so the default is empty.
 

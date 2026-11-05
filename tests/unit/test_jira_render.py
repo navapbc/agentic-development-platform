@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-from services.integration.jira._engine import ensure_engine_on_path
 from services.integration.jira.render import (
     bullet_list,
     code,
@@ -83,9 +82,8 @@ def test_render_rejects_unknown_source():
 
 
 def test_adf_round_trips_to_readable_text():
-    ensure_engine_on_path()
-    from rebar_reconciler.adapters.jira.adf import adf_to_text
-    from rebar_reconciler.inbound_fields import normalize_rich_text
+    from rebar.reconciler.adapters.jira.adf import adf_to_text
+    from rebar.reconciler.inbound_fields import normalize_rich_text
 
     doc = render_adf(_document())
     recovered = adf_to_text(doc)
@@ -98,16 +96,14 @@ def test_adf_round_trips_to_readable_text():
 
 
 def test_wiki_passes_through_the_inbound_normalizer():
-    ensure_engine_on_path()
-    from rebar_reconciler.inbound_fields import normalize_rich_text
+    from rebar.reconciler.inbound_fields import normalize_rich_text
 
     markup = render_wiki(_document())
     assert normalize_rich_text(markup) == markup
 
 
 def test_plain_text_to_adf_reuses_the_rebar_baseline():
-    ensure_engine_on_path()
-    from rebar_reconciler.adapters.jira.adf import adf_to_text, text_to_adf
+    from rebar.reconciler.adapters.jira.adf import adf_to_text, text_to_adf
 
     body = "line one\n\nline two"
     assert plain_text_to_adf(body) == text_to_adf(body)

@@ -93,3 +93,25 @@ async def test_reset_clears_the_gate_high_water():
     )
 
     assert decision.outcome == ADMITTED
+
+
+async def test_reentrant_action_is_admitted_at_the_sequence_it_already_holds():
+    gate = InMemorySequenceGate()
+    await gate.admit(_action(10))
+
+    decision = await gate.admit(_action(10, reentrant=True))
+
+    assert decision.outcome == ADMITTED
+    assert decision.current_sequence == 10
+
+
+async def test_reentrant_action_is_discarded_once_a_newer_run_advances_the_gate():
+    gate = InMemorySequenceGate()
+    await gate.admit(_action(10))
+    await gate.admit(_action(20, execution_id="e2"))
+
+    decision = await gate.admit(_action(10, reentrant=True))
+
+    assert decision.outcome == DISCARDED
+    assert decision.current_sequence == 20
+    assert decision.receipt == STALE_REVIEW_DISCARDED

@@ -30,9 +30,7 @@ def test_versions_cover_the_enabled_builtin_gates():
 
 
 def test_disabled_gate_drops_from_the_versions():
-    config = _config(
-        {"profile": "government", "gates": [{"name": "semgrep", "enabled": False}]}
-    )
+    config = _config({"profile": "government", "gates": [{"name": "semgrep", "enabled": False}]})
 
     assert "semgrep" not in gate_versions(config)
 

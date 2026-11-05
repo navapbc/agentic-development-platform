@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import structlog
 from temporalio import activity
@@ -153,6 +153,7 @@ class CommitPushRequest:
     commit: str
     message: str
     sequence: int = 2
+    file_impact: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -161,6 +162,9 @@ class CommitPushResult:
     commit_sha: str
     pushed: bool
     replayed: bool
+    pr_template: str = ""
+    excluded_paths: list[str] = field(default_factory=list)
+    changed: bool = True
 
 
 @dataclass
@@ -170,6 +174,7 @@ class PromotePrRequest:
     execution_id: str
     number: int
     sequence: int
+    summary: str = ""
 
 
 @dataclass
@@ -278,6 +283,7 @@ async def find_open_pr(req: FindOpenPrRequest) -> FindOpenPrResult:
 @activity.defn
 async def commit_and_push(req: CommitPushRequest) -> CommitPushResult:
     from services.coordination.orphans import PostgresOrphanRegistry
+    from services.orchestration.change_narrative import read_pull_request_template
     from services.orchestration.materialization import WorkspaceMaterializer
 
     materializer = WorkspaceMaterializer.from_settings(PostgresOrphanRegistry())
@@ -288,7 +294,10 @@ async def commit_and_push(req: CommitPushRequest) -> CommitPushResult:
         base=req.base,
         commit_sha=req.commit,
     )
-    commit_request = await materializer.build_commit_request(workspace, message=req.message)
+    staged = await materializer.stage(workspace, allowed_paths=req.file_impact)
+    commit_request = await materializer.build_commit_request(
+        workspace, message=req.message, staged=staged
+    )
     mediator = _build_mediator()
     result = await mediator.commit_and_push(commit_request, sequence=req.sequence)
     return CommitPushResult(
@@ -296,6 +305,9 @@ async def commit_and_push(req: CommitPushRequest) -> CommitPushResult:
         commit_sha=result.commit_sha,
         pushed=result.pushed,
         replayed=result.replayed,
+        pr_template=read_pull_request_template(workspace.path),
+        excluded_paths=list(staged.excluded),
+        changed=staged.changed,
     )
 
 
@@ -425,6 +437,34 @@ async def read_ticket_status(req: ReadStatusRequest) -> ReadStatusResult:
     return ReadStatusResult(status=status, is_terminal=is_terminal)
 
 
+async def _persist_approval_evidence(
+    req: RecordApprovalRequest, *, approved: bool, approver: str
+) -> None:
+    from services.review.classification import CLASSIFICATION_AUDIT
+    from services.review.evidence import APPROVAL_COMPONENT, persist_artifact_evidence
+
+    await persist_artifact_evidence(
+        execution_id=req.execution_id,
+        source_component=APPROVAL_COMPONENT,
+        body={
+            "execution_id": req.execution_id,
+            "repo": req.repo,
+            "number": req.number,
+            "approved": approved,
+            "approver": approver,
+        },
+        classification=CLASSIFICATION_AUDIT,
+        metadata={
+            "task_id": req.task_id,
+            "repo": req.repo,
+            "number": req.number,
+            "approved": approved,
+            "approver": approver,
+            "issue_key": req.issue_key,
+        },
+    )
+
+
 @activity.defn
 async def record_pr_approval(req: RecordApprovalRequest) -> RecordApprovalResult:
     mediator = _build_mediator()
@@ -439,6 +479,7 @@ async def record_pr_approval(req: RecordApprovalRequest) -> RecordApprovalResult
     )
     approved = bool(outcome.get("approved", req.approved))
     approver = str(outcome.get("approver", req.approver))
+    await _persist_approval_evidence(req, approved=approved, approver=approver)
     if req.issue_key:
         from services.integration.jira.adapter import project_of
         from services.integration.tickets import resolve_ticket_backend_name
@@ -476,6 +517,29 @@ async def promote_pr(req: PromotePrRequest) -> PromotePrResult:
         req.number,
         sequence=req.sequence,
     )
+    if req.summary:
+        from services.review.evidence import (
+            PULL_REQUEST_SUMMARY_COMPONENT,
+            persist_artifact_evidence,
+        )
+
+        await persist_artifact_evidence(
+            execution_id=req.execution_id,
+            source_component=PULL_REQUEST_SUMMARY_COMPONENT,
+            body={
+                "execution_id": req.execution_id,
+                "repo": req.repo,
+                "number": pr.number,
+                "summary": req.summary,
+            },
+            metadata={
+                "task_id": req.task_id,
+                "repo": req.repo,
+                "number": pr.number,
+                "url": pr.url,
+                "summary_characters": len(req.summary),
+            },
+        )
     return PromotePrResult(
         number=pr.number,
         url=pr.url,

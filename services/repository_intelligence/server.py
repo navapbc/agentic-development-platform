@@ -8,8 +8,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from scripts.config import get_settings
+from scripts.config import configured_log_level, get_settings
 
+from services.http_front_door import (
+    REQUEST_TIMEOUT_SECONDS,
+    RequestRejected,
+    read_bounded_body,
+)
 from services.integration.source_control import source_control_repos
 from services.repository_intelligence.context_builder.registry import (
     RepositoryIntelligenceRegistry,
@@ -18,10 +23,9 @@ from services.repository_intelligence.context_builder.registry import (
 from services.repository_intelligence.normalization.models import RepoRef
 from services.repository_intelligence.normalization.serialization import context_package_to_dict
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=configured_log_level())
 log = logging.getLogger("repository-intelligence")
 
-HOST = "0.0.0.0"  # noqa: S104
 PORT = 8120
 
 _registry: RepositoryIntelligenceRegistry | None = None
@@ -46,6 +50,8 @@ def build_registry() -> RepositoryIntelligenceRegistry | None:
 
 
 class Handler(BaseHTTPRequestHandler):
+    timeout = REQUEST_TIMEOUT_SECONDS
+
     def do_GET(self) -> None:
         if self.path in ("/health", "/healthz", "/"):
             self._respond(200, {"status": "ok", "service": "repository-intelligence"})
@@ -53,6 +59,13 @@ class Handler(BaseHTTPRequestHandler):
             self._respond(404, {"error": "not found"})
 
     def do_POST(self) -> None:
+        try:
+            self._route()
+        except RequestRejected as exc:
+            self.close_connection = True
+            self._respond(exc.status, {"error": exc.message})
+
+    def _route(self) -> None:
         if self.path == "/warm":
             self._warm()
             return
@@ -103,8 +116,7 @@ class Handler(BaseHTTPRequestHandler):
         self._respond(200, {"repo": repo, "commit": commit, "reindexed": reindexed})
 
     def _read_json(self) -> dict[str, Any] | None:
-        length = int(self.headers.get("Content-Length") or 0)
-        raw = self.rfile.read(length) if length else b""
+        raw = read_bounded_body(self.rfile, self.headers)
         try:
             return json.loads(raw or b"{}")
         except json.JSONDecodeError:
@@ -123,8 +135,9 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    log.info("repository-intelligence listening on %s:%d", HOST, PORT)
-    ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
+    host = get_settings().bind_host
+    log.info("repository-intelligence listening on %s:%d", host, PORT)
+    ThreadingHTTPServer((host, PORT), Handler).serve_forever()
 
 
 if __name__ == "__main__":

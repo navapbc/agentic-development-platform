@@ -7,9 +7,9 @@ import os
 import re
 import shlex
 import shutil
-import subprocess
 from pathlib import Path
 
+from services import process
 from services.repository_intelligence.normalization.models import (
     CallEdge,
     ChangeImpact,
@@ -89,7 +89,7 @@ class CBMProvider:
         if not Path(self._binary).exists() and shutil.which(self._binary) is None:
             return False
         try:
-            completed = subprocess.run(
+            completed = process.run(
                 [self._binary, "--version"],
                 env=self._env(),
                 capture_output=True,
@@ -97,7 +97,7 @@ class CBMProvider:
                 timeout=self._timeout,
                 check=False,
             )
-        except (OSError, subprocess.SubprocessError):
+        except (OSError, process.SubprocessError):
             return False
         return completed.returncode == 0
 
@@ -120,7 +120,8 @@ class CBMProvider:
     def _ensure_project(self) -> str:
         if self._project is None:
             self.index()
-        assert self._project is not None
+        if self._project is None:
+            raise RuntimeError("codebase-memory-mcp indexing did not register a project")
         return self._project
 
     def _env(self) -> dict[str, str]:
@@ -138,7 +139,7 @@ class CBMProvider:
             cmd.append("--" + key.replace("_", "-"))
             cmd.append(str(value))
         try:
-            completed = subprocess.run(
+            completed = process.run(
                 cmd,
                 env=self._env(),
                 capture_output=True,
@@ -146,7 +147,7 @@ class CBMProvider:
                 timeout=self._timeout,
                 check=False,
             )
-        except subprocess.TimeoutExpired as error:
+        except process.TimeoutExpired as error:
             raise CBMError(f"{tool} timed out after {self._timeout}s") from error
         if completed.returncode != 0:
             raise CBMError(

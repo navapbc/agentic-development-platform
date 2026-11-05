@@ -3,9 +3,10 @@
 The proxied path routes through the LiteLLM gateway. The native path points rebar
 at Bedrock directly, with the model set to the tier's provider-qualified primary so
 rebar builds its own model object. That object carries a ``BedrockModelProfile``,
-which is what enables Anthropic prompt caching. The Claude-to-Nova fallback chain is
-supplied through rebar's model-class config (``REBAR_LLM_CONFIG_FILE``), so rebar
-builds the ``FallbackModel`` natively and caching survives the wrap.
+which is what enables Anthropic prompt caching. The model-class config
+(``REBAR_LLM_CONFIG_FILE``) declares no fallback leg, so a tier that cannot reach
+Claude fails once rebar exhausts its retry budget rather than answering from a
+different model family.
 """
 
 from __future__ import annotations

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+
+from services import process
 
 LOCAL = "local"
 TAG = "tag"
@@ -72,18 +73,13 @@ class ResolvedEngineSource:
 
 
 async def run_git(args: Sequence[str], cwd: str) -> CommandResult:
-    proc = await asyncio.create_subprocess_exec(
-        "git",
-        *args,
-        cwd=cwd or None,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+    result = await process.run_async(
+        ["git", *args], timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS, cwd=cwd or None
     )
-    out, err = await proc.communicate()
     return CommandResult(
-        returncode=proc.returncode or 0,
-        stdout=out.decode("utf-8", "replace"),
-        stderr=err.decode("utf-8", "replace"),
+        returncode=result.returncode,
+        stdout=result.stdout.decode("utf-8", "replace"),
+        stderr=result.stderr.decode("utf-8", "replace"),
     )
 
 
@@ -103,7 +99,7 @@ def _repo_slug(repo_url: str) -> str:
 
 async def _remote_tag_commit(runner: GitRunner, repo_url: str, tag: str) -> str:
     refs = [f"refs/tags/{tag}^{{}}", f"refs/tags/{tag}"]
-    out = await _git(runner, ["ls-remote", repo_url, *refs], "")
+    out = await _git(runner, ["ls-remote", "--", repo_url, *refs], "")
     if not out:
         raise EngineSourceError(f"engine tag {tag!r} not found at {repo_url}")
     lines = {line.split("\t")[1]: line.split("\t")[0] for line in out.splitlines() if "\t" in line}
@@ -137,7 +133,16 @@ async def _resolve_tag(config: GateEngineConfig, runner: GitRunner) -> ResolvedE
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         await _git(
             runner,
-            ["clone", "--depth", "1", "--branch", config.tag, config.repo_url, str(cache_path)],
+            [
+                "clone",
+                "--depth",
+                "1",
+                "--branch",
+                config.tag,
+                "--",
+                config.repo_url,
+                str(cache_path),
+            ],
             "",
         )
     commit = await _git(runner, ["rev-parse", "HEAD"], str(cache_path))
@@ -176,9 +181,7 @@ async def _resolve_zip(config: GateEngineConfig) -> ResolvedEngineSource:
 async def _resolve_image(config: GateEngineConfig) -> ResolvedEngineSource:
     if not config.image:
         raise EngineSourceError("engine image mode needs an image reference")
-    return ResolvedEngineSource(
-        path="", mode=IMAGE, version=config.image, image=config.image
-    )
+    return ResolvedEngineSource(path="", mode=IMAGE, version=config.image, image=config.image)
 
 
 async def resolve_engine_source(
@@ -187,9 +190,7 @@ async def resolve_engine_source(
     if not config.enabled:
         return None
     if config.mode not in _MODES:
-        raise EngineSourceError(
-            f"engine mode must be one of {sorted(_MODES)}, got {config.mode!r}"
-        )
+        raise EngineSourceError(f"engine mode must be one of {sorted(_MODES)}, got {config.mode!r}")
     if config.mode == LOCAL:
         return await _resolve_local(config, runner)
     if config.mode == TAG:
@@ -237,9 +238,7 @@ def parse_gate_engine_config(raw: dict) -> GateEngineConfig:
         on_unavailable=on_unavailable,
         max_output_tokens=int(raw.get("max_output_tokens", 8192)),
         output_format=output_format,
-        review_entrypoint=str(
-            raw.get("review_entrypoint", GateEngineConfig.review_entrypoint)
-        ),
+        review_entrypoint=str(raw.get("review_entrypoint", GateEngineConfig.review_entrypoint)),
         classifier_entrypoint=str(
             raw.get("classifier_entrypoint", GateEngineConfig.classifier_entrypoint)
         ),
@@ -293,4 +292,3 @@ def load_gate_engine_configs(
         return ()
     require_current_config("gate_engine", environment=env)
     return parse_gate_engine_configs(load_env_config("gate_engine", environment=env))
-

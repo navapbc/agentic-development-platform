@@ -51,7 +51,7 @@ def current_trace_id() -> str:
         if context.is_valid:
             return format(context.trace_id, "032x")
     except Exception:  # noqa: BLE001 - trace lookup must not break a request
-        pass
+        log.debug("current trace id lookup failed", exc_info=True)
     return ""
 
 
@@ -104,7 +104,7 @@ def install_litellm_header_propagation(base_url: str | None) -> bool:
                         if header not in request.headers:
                             request.headers[header] = value
             except Exception:  # noqa: BLE001 - header enrichment must not break a request
-                pass
+                log.debug("model request header enrichment failed", exc_info=True)
             return await super().handle_async_request(request)
 
     httpx.AsyncHTTPTransport = _HeaderInjectingAsyncHTTPTransport

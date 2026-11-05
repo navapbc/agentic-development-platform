@@ -1,5 +1,6 @@
 import contextlib
 
+import pytest
 import services.integration.jira.acli_auth as acli_auth
 from services.integration.jira.credentials import JiraProjectCredential
 
@@ -55,3 +56,8 @@ def test_cached_auth_does_not_cache_on_failure(monkeypatch):
         with contextlib.suppress(RuntimeError):
             acli_auth.ensure_acli_authenticated_cached(_cred(), acli_path="acli")
     assert acli_auth._last_ensured == {}
+
+
+def test_a_missing_acli_binary_names_the_install_switch(tmp_path):
+    with pytest.raises(acli_auth.AcliNotInstalledError, match="INSTALL_ACLI=true"):
+        acli_auth.acli_is_authenticated(acli_path=str(tmp_path / "acli"))

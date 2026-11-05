@@ -1,11 +1,9 @@
 import pytest
-from services.integration.jira._engine import ensure_engine_on_path
 from services.integration.jira.markdown_adf import markdown_to_adf
 
 
 def _adf_to_text():
-    ensure_engine_on_path()
-    from rebar_reconciler.adapters.jira.adf import adf_to_text
+    from rebar.reconciler.adapters.jira.adf import adf_to_text
 
     return adf_to_text
 

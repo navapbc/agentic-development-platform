@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
-import subprocess
 import tempfile
 from pathlib import Path
+
+from services import process
 
 
 def _normalize_context(context: str) -> str | None:
@@ -41,15 +42,17 @@ def run_coverage(
             ),
             encoding="utf-8",
         )
-        subprocess.run(
+        process.run(
             [python, "-m", "coverage", "run", f"--rcfile={rcfile}", "-m", "pytest", "-q"],
+            timeout=process.LONG_COMMAND_TIMEOUT_SECONDS,
             cwd=root,
             check=True,
             capture_output=True,
             text=True,
         )
-        subprocess.run(
+        process.run(
             [python, "-m", "coverage", "json", f"--rcfile={rcfile}", "-o", str(json_out)],
+            timeout=process.LONG_COMMAND_TIMEOUT_SECONDS,
             cwd=root,
             check=True,
             capture_output=True,
@@ -75,8 +78,9 @@ def run_coverage(
 
 
 def coverage_version(venv_python: str | Path) -> str:
-    completed = subprocess.run(
+    completed = process.run(
         [str(venv_python), "-c", "import coverage; print(coverage.__version__)"],
+        timeout=process.SHORT_COMMAND_TIMEOUT_SECONDS,
         check=True,
         capture_output=True,
         text=True,

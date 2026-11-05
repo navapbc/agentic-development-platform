@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import httpx
-from database.models import SCHEMA
-from sqlalchemy import create_engine, text
+from database.models.schema import executions
+from sqlalchemy import create_engine, literal, select
 
 from scripts.config import get_settings, to_host_url
 from scripts.db_reset import _sync_url
@@ -45,8 +45,8 @@ def main() -> int:
     def db_check() -> None:
         engine = create_engine(_sync_url(), future=True)
         with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
-            conn.execute(text(f'SELECT 1 FROM "{SCHEMA}".executions LIMIT 1'))
+            conn.execute(select(literal(1)))
+            conn.execute(select(executions.c.execution_id).limit(1))
 
     def http_check(url: str) -> None:
         httpx.get(url, timeout=5.0)

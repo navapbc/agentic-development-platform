@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
-import json
+import logging
 import smtplib
-import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
 from email.message import EmailMessage
+from urllib.parse import urlsplit
 
+import httpx
 from scripts.config import Settings, get_settings
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -45,15 +48,12 @@ def _post_jira_comment(settings: Settings, message: AlertMessage) -> bool:
 def _post_slack(settings: Settings, message: AlertMessage) -> bool:
     if not settings.slack_webhook_url:
         return False
-    payload = json.dumps({"text": message.body}).encode("utf-8")
-    request = urllib.request.Request(
-        settings.slack_webhook_url,
-        data=payload,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(request, timeout=10):
-        return True
+    if urlsplit(settings.slack_webhook_url).scheme != "https":
+        raise ValueError("SLACK_WEBHOOK_URL must be an https URL")
+    httpx.post(
+        settings.slack_webhook_url, json={"text": message.body}, timeout=10
+    ).raise_for_status()
+    return True
 
 
 def _send_email(settings: Settings, message: AlertMessage) -> bool:
@@ -82,7 +82,7 @@ def deliver_alert(message: AlertMessage, settings: Settings | None = None) -> li
             if sender():
                 delivered.append(channel)
         except Exception:  # noqa: BLE001
-            continue
+            log.warning("alert delivery over %s failed", channel, exc_info=True)
     return delivered
 
 

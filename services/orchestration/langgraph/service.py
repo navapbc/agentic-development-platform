@@ -6,14 +6,19 @@ import json
 import logging
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-logging.basicConfig(level=logging.INFO)
+from scripts.config import configured_log_level, get_settings
+
+from services.http_front_door import REQUEST_TIMEOUT_SECONDS
+
+logging.basicConfig(level=configured_log_level())
 log = logging.getLogger("langgraph-service")
 
-HOST = "0.0.0.0"  # noqa: S104
 PORT = 8100
 
 
 class Handler(BaseHTTPRequestHandler):
+    timeout = REQUEST_TIMEOUT_SECONDS
+
     def do_GET(self) -> None:
         if self.path in ("/health", "/healthz", "/"):
             body = json.dumps({"status": "ok", "service": "langgraph"}).encode()
@@ -31,8 +36,9 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    log.info("langgraph-service listening on %s:%d", HOST, PORT)
-    ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
+    host = get_settings().bind_host
+    log.info("langgraph-service listening on %s:%d", host, PORT)
+    ThreadingHTTPServer((host, PORT), Handler).serve_forever()
 
 
 if __name__ == "__main__":

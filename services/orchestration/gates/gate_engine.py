@@ -54,10 +54,7 @@ def map_review_findings(review: dict, *, scanner: str) -> list[ScanFinding]:
                 severity=severity,
                 title=str(comment.get("title") or comment.get("message") or "AI review finding"),
                 detail=str(
-                    comment.get("detail")
-                    or comment.get("description")
-                    or comment.get("body")
-                    or ""
+                    comment.get("detail") or comment.get("description") or comment.get("body") or ""
                 ),
                 location=location,
                 rule_id=str(comment.get("perspective") or comment.get("category") or ""),
@@ -67,21 +64,20 @@ def map_review_findings(review: dict, *, scanner: str) -> list[ScanFinding]:
 
 
 async def _default_runner(args: Sequence[str], cwd: str, env: dict[str, str]) -> CommandResult:
-    import asyncio
     import os
 
-    proc = await asyncio.create_subprocess_exec(
-        *args,
+    from services import process
+
+    result = await process.run_async(
+        args,
+        timeout=process.LONG_COMMAND_TIMEOUT_SECONDS,
         cwd=cwd or None,
         env={**os.environ, **env},
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
     )
-    out, err = await proc.communicate()
     return CommandResult(
-        returncode=proc.returncode or 0,
-        stdout=out.decode("utf-8", "replace"),
-        stderr=err.decode("utf-8", "replace"),
+        returncode=result.returncode,
+        stdout=result.stdout.decode("utf-8", "replace"),
+        stderr=result.stderr.decode("utf-8", "replace"),
     )
 
 
@@ -231,9 +227,7 @@ class AiReviewScanner:
         else:
             document = await _run_engine_json(
                 name=self._name,
-                entrypoint=Path(source.path).joinpath(
-                    *self._config.review_entrypoint.split("/")
-                ),
+                entrypoint=Path(source.path).joinpath(*self._config.review_entrypoint.split("/")),
                 repo_root=target.repo_root,
                 base_ref=against,
                 env=env,
@@ -348,9 +342,7 @@ def map_classifications(payload: dict) -> FailureTriage:
             )
         )
     should_patch = any(item.verdict in _PATCHABLE and item.in_scope for item in classifications)
-    has_environment_issue = any(
-        item.verdict == ENVIRONMENT_ISSUE for item in classifications
-    )
+    has_environment_issue = any(item.verdict == ENVIRONMENT_ISSUE for item in classifications)
     non_patchable = [item for item in classifications if item.verdict not in _PATCHABLE]
     flaky_only = (
         not should_patch

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import subprocess
+import os
 import uuid
 from datetime import UTC, datetime
 
@@ -15,6 +15,7 @@ from database.models.schema import (
     task_snapshots,
     work_claims,
 )
+from services import process
 from services.coordination import (
     ADMITTED,
     DISCARDED,
@@ -29,13 +30,14 @@ from services.coordination import (
     partition_by_file_impact,
 )
 from services.integration.github.credentials import build_github_credential_resolver
+from services.integration.github.git_auth import GitAuth
 from services.integration.jira.adapter import build_jira_adapter_for_issue
 from services.integration.jira.snapshot import (
     AllowlistError,
     PostgresTaskSnapshotStore,
     capture_task_snapshot,
 )
-from sqlalchemy import Select, select, text
+from sqlalchemy import Select, func, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
@@ -50,12 +52,14 @@ def _clock(value: datetime | None = None) -> str:
     return (value or datetime.now(UTC)).strftime("%H:%M:%S.%f")[:-3]
 
 
-def _head_sha(remote: str) -> str:
-    proc = subprocess.run(
-        ["git", "ls-remote", remote, "HEAD"],
+def _head_sha(remote: str, auth: GitAuth) -> str:
+    proc = process.run(
+        ["git", *auth.config_args(), "ls-remote", "--", remote, "HEAD"],
+        timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS,
         check=True,
         capture_output=True,
         text=True,
+        env={**os.environ, **auth.env()},
     )
     return proc.stdout.split()[0] if proc.stdout.strip() else ""
 
@@ -94,7 +98,8 @@ async def _seed_execution(engine: AsyncEngine, execution_id: str, task_id: str, 
 
 async def _count(engine: AsyncEngine, stmt: Select) -> int:
     async with engine.begin() as conn:
-        return len((await conn.execute(stmt)).all())
+        counted = await conn.execute(select(func.count()).select_from(stmt.subquery()))
+        return counted.scalar_one()
 
 
 def _action(gate_scope: str, execution_id: str, agent_id: str, sequence: int) -> SequencedAction:
@@ -138,7 +143,9 @@ async def main() -> int:
 
     gh_resolver = build_github_credential_resolver(settings)
     try:
-        repository_sha = _head_sha(gh_resolver.git_remote_url(args.repo))
+        repository_sha = _head_sha(
+            gh_resolver.git_remote_url(args.repo), gh_resolver.git_auth(args.repo)
+        )
     except Exception as exc:  # noqa: BLE001
         print(f"[demo] could not read the head commit of {args.repo} because {exc}")
         await engine.dispose()

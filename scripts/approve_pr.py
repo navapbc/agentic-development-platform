@@ -11,7 +11,7 @@ import argparse
 import asyncio
 import logging
 
-from temporalio.client import Client
+from services import temporal_client
 
 from scripts.config import get_settings, to_host_hostport
 
@@ -49,7 +49,7 @@ async def main() -> int:
     args = _parse_args()
     settings = get_settings()
     address = to_host_hostport(settings.temporal_host)
-    client = await Client.connect(address, namespace=settings.temporal_namespace)
+    client = await temporal_client.connect(address, settings)
     handle = client.get_workflow_handle(args.workflow_id)
 
     if args.pr_closed:
