@@ -170,14 +170,20 @@ def test_rebar_store_remote_runs_in_a_one_off_worker_container(project):
 
 
 class _TerraformContext(Context):
-    def __init__(self, version: str) -> None:
+    def __init__(self, version: str, *, exited: int = 0, stderr: str = "") -> None:
         super().__init__()
         self.version = version
+        self.exited = exited
+        self.stderr = stderr
         self.commands: list[str] = []
 
     def run(self, command: str, **_: object) -> Result:
         self.commands.append(command)
-        return Result(stdout=json.dumps({"terraform_version": self.version}))
+        return Result(
+            stdout=json.dumps({"terraform_version": self.version}),
+            stderr=self.stderr,
+            exited=self.exited,
+        )
 
 
 def _pinned_terraform_version() -> str:
@@ -196,13 +202,45 @@ def test_terraform_modules_finds_a_composition_root_below_the_top_level(tmp_path
     ]
 
 
-def test_terraform_test_refuses_a_version_other_than_the_pin():
+def test_terraform_test_refuses_a_version_other_than_the_pin(monkeypatch):
+    monkeypatch.delenv("TFENV_TERRAFORM_VERSION", raising=False)
     context = _TerraformContext("0.0.0")
 
     with pytest.raises(Exit, match=_pinned_terraform_version()):
         tasks_module.terraform_test(context)
 
     assert context.commands == ["terraform version -json"]
+
+
+def test_terraform_test_reports_a_terraform_it_could_not_run():
+    context = _TerraformContext("", exited=127, stderr="bash: terraform: command not found")
+
+    with pytest.raises(Exit, match="command not found"):
+        tasks_module.terraform_test(context)
+
+    assert context.commands == ["terraform version -json"]
+
+
+def test_terraform_test_names_the_tfenv_override_that_selects_the_wrong_version(monkeypatch):
+    monkeypatch.setenv("TFENV_TERRAFORM_VERSION", "1.14.3")
+
+    with pytest.raises(Exit, match="Unset TFENV_TERRAFORM_VERSION, which selects 1.14.3"):
+        tasks_module.terraform_test(_TerraformContext("1.14.3"))
+
+
+def test_terraform_test_points_past_a_shadowing_binary_when_no_override_is_set(monkeypatch):
+    monkeypatch.delenv("TFENV_TERRAFORM_VERSION", raising=False)
+
+    with pytest.raises(Exit, match="ahead of any other terraform on PATH"):
+        tasks_module.terraform_test(_TerraformContext("0.0.0"))
+
+
+def test_ci_installs_the_pinned_terraform_version():
+    workflow = Path(tasks_module.__file__).parent / ".github" / "workflows" / "ci.yml"
+
+    assert f'terraform_version: "{_pinned_terraform_version()}"' in workflow.read_text(
+        encoding="utf-8"
+    )
 
 
 def test_terraform_test_runs_every_module_on_the_pinned_version():
