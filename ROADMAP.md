@@ -51,7 +51,7 @@ Goal. The platform is technically FedRAMP Medium ready. It has documented local-
 | Data and cache tier terraform | 24-32h | [plan](docs/plans/2026-09-14-2148-feat-data-cache-tier-terraform-plan.md) |
 | Secret store terraform | 8-13h | [plan](docs/plans/2026-09-14-2149-feat-secret-store-terraform-plan.md) |
 | Rebar ticket store bucket terraform | 16-21h | [plan](docs/plans/2026-09-14-2150-feat-rebar-ticket-store-bucket-terraform-plan.md) |
-| ECS Fargate services for the platform containers | 20-30h (low) | Jira ADP-136, a sub-task of ADP-61. [plan](docs/plans/2026-09-14-2151-feat-container-platform-services-terraform-plan.md) |
+| ECS Fargate services for the platform containers | 28-41h (low) | Jira ADP-136, a sub-task of ADP-61, delivered through ADP-154 to ADP-159. [plan](docs/plans/2026-09-14-2151-feat-container-platform-services-terraform-plan.md) |
 | EKS cluster for the pod-orchestrating workloads | 28-40h (low) | Jira ADP-137, a sub-task of ADP-61. [plan](docs/plans/2026-09-14-2151-feat-container-platform-services-terraform-plan.md) |
 | Local Temporal server upgrade to 1.32.1 | 6-10h | Jira ADP-138. [plan](docs/plans/2026-10-30-1330-feat-temporal-server-upgrade-plan.md) |
 | Platform ECS cluster | 3-5h | Jira ADP-145. The shared cluster the platform owns for the Temporal control plane, the ECS services, and other teams. |
