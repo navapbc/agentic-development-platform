@@ -286,6 +286,38 @@ run "the_ui_needs_two_management_subnets" {
   expect_failures = [terraform_data.inputs_guard]
 }
 
+run "fips_mode_is_off_unless_requested" {
+  command = apply
+
+  assert {
+    condition = alltrue([
+      for definition in [aws_ecs_task_definition.server[0], aws_ecs_task_definition.admin_tools[0], aws_ecs_task_definition.ui[0]] :
+      alltrue([for container in jsondecode(definition.container_definitions) : !contains([for variable in try(container.environment, []) : variable.name], "GODEBUG")])
+    ])
+    error_message = "A Temporal container sets GODEBUG without fips_140_mode."
+  }
+}
+
+run "fips_mode_reaches_every_temporal_process" {
+  command = apply
+
+  variables {
+    fips_140_mode = true
+  }
+
+  assert {
+    condition = alltrue([
+      for definition in [aws_ecs_task_definition.server[0], aws_ecs_task_definition.admin_tools[0], aws_ecs_task_definition.ui[0]] :
+      alltrue([
+        for container in jsondecode(definition.container_definitions) :
+        contains([for variable in try(container.environment, []) : "${variable.name}=${variable.value}"], "GODEBUG=fips140=on")
+        if container.name != "volume-permissions"
+      ])
+    ])
+    error_message = "The server, admin-tools, or UI process does not run in FIPS 140-3 mode."
+  }
+}
+
 run "worker_versioning_v1_keys_are_refused" {
   command = plan
 

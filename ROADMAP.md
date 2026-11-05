@@ -57,6 +57,7 @@ Goal. The platform is technically FedRAMP Medium ready. It has documented local-
 | Platform ECS cluster | 3-5h | Jira ADP-145. The shared cluster the platform owns for the Temporal control plane, the ECS services, and other teams. |
 | Temporal control plane terraform | 15-21h | Jira ADP-97. [plan](docs/plans/2026-09-14-2152-feat-temporal-control-plane-terraform-plan.md) |
 | Off-hours Temporal scale-down and database pause | 5-8h | Jira ADP-146 |
+| Validated Go FIPS 140-3 module for the Temporal server and UI | 8-12h, low confidence | Jira ADP-153. Builds the server, admin-tools, and UI binaries from source with `GOFIPS140` set to a CMVP-validated module version. |
 | Observability terraform | 6-10h | Jira ADP-95. [plan](docs/plans/2026-09-14-2153-feat-observability-terraform-plan.md) |
 | Activity worker, LiteLLM, and OPA in the local cluster | 8-12h | Jira ADP-139. Also removes `langgraph-service`. |
 | Private-endpoint jump-host residual hardening | 1-2h | Jira ADP-104. [plan](docs/plans/2026-09-14-1900-feat-jumphost-residual-hardening-plan.md) |

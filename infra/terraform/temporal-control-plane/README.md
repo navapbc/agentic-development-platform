@@ -23,9 +23,11 @@ The frontend presents a certificate to the workers and the UI, and the Temporal 
 
 Switching the frontend between secrets and ACM replaces the NLB listener and target group and changes the server task definition, so the frontend is unavailable from the apply until `put` and `inv temporal-deploy` complete.
 
+`frontend_server_name` and `internode_server_name` default to the names `generate` issues. Set them to the names on certificates from your PKI or ACM. Clients verify the frontend against `frontend_server_name`, the server tasks verify each other against `internode_server_name`, and `put` refuses a certificate that does not carry its name. Behind an ACM frontend the server reaches its own frontend over the internode certificate.
+
 ACM never returns the private key of an imported certificate, and the internode certificate must reach the server process, so ACM tracks the internode certificate and Secrets Manager serves it.
 
-`inv temporal-certs put --dir DIR` writes a directory to the secrets. The directory holds `ca.pem`, `internode.pem`, `internode-key.pem`, and, unless the frontend comes from ACM, `frontend.pem` and `frontend-key.pem`. `ca.pem` may hold the whole chain. Before it writes anything, `put` checks that each certificate verifies against `ca.pem`, that each key belongs to its certificate, that the internode certificate carries both the server and client authentication usages, and that no certificate has expired. It refuses frontend files when the frontend comes from ACM, and it refuses an internode certificate that differs from the one `internode_acm_certificate_arn` tracks. `--import-to-acm` re-imports into that ARN, or imports a new certificate and prints the ARN to set.
+`inv temporal-certs put --dir DIR` writes a directory to the secrets. The directory holds `ca.pem`, `internode.pem`, `internode-key.pem`, and, unless the frontend comes from ACM, `frontend.pem` and `frontend-key.pem`. `ca.pem` may hold the whole chain. Before it writes anything, `put` checks that each certificate verifies against `ca.pem`, that each key belongs to its certificate, that the internode certificate carries both the server and client authentication usages, that each certificate carries its configured server name, and that no certificate has expired. It refuses frontend files when the frontend comes from ACM, and it refuses an internode certificate that differs from the one `internode_acm_certificate_arn` tracks. `--import-to-acm` re-imports into that ARN, or imports a new certificate and prints the ARN to set.
 
 `generate` refuses a directory inside the repository and refuses to replace existing files without `--force`. It writes P-256 keys and certificates with mode 0600. The frontend certificate names `frontend.temporal.internal`, and the internode certificate `internode.temporal.internal`, unless `--frontend-name` and `--internode-name` set others. The CA key stays in the directory so the operator can issue again. Keep it offline.
 
@@ -49,6 +51,10 @@ Security groups:
 | UI | Port 8080 from its load balancer |
 
 Every task group reaches the VPC endpoints and S3 over 443, and the server and admin-tools groups reach the database CIDRs on 5432.
+
+## FIPS 140-3 mode
+
+`fips_140_mode = true` sets `GODEBUG=fips140=on` in the server, admin-tools, and UI containers. Go then restricts their TLS and other cryptography to FIPS-approved algorithms, so the frontend and internode listeners refuse a client that offers only ChaCha20-Poly1305 or only X25519. The load balancers enforce FIPS policies in either setting. The upstream binaries carry the in-tree Go Cryptographic Module rather than a CMVP-validated snapshot, because they are compiled without a `GOFIPS140` setting. Changing the setting registers new task definitions, so run `inv temporal-deploy` after the apply.
 
 ## Deploy
 
@@ -85,6 +91,7 @@ The admin-tools task connects to Aurora with `SQL_TLS=true` and `SQL_TLS_CA_FILE
 | `endpoint` | `host:port` of the frontend NLB that clients dial. Empty until the images are set |
 | `namespace` | Namespace the workers use |
 | `frontend_server_name` | Name clients verify the frontend certificate against, their `TEMPORAL_TLS_SERVER_NAME` |
+| `internode_server_name` | Name on the internode certificate, which the server tasks verify each other against |
 | `client_ca_secret_arn` | Secret clients inject as `TEMPORAL_TLS_CA`. Null when the frontend chains to a public root |
 | `client_security_group_id` | Security group a workload attaches to reach the frontend. Null until the images are set |
 | `server_service_arn` | Server ECS service, for `secret_restart_services`. Null until the images are set |

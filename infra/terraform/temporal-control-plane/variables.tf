@@ -192,6 +192,12 @@ variable "frontend_certificate_publicly_trusted" {
   default     = false
 }
 
+variable "fips_140_mode" {
+  description = "Run the server, admin-tools, and UI processes in Go's FIPS 140-3 mode, which restricts their TLS and other cryptography to FIPS-approved algorithms. Set true in a FedRAMP environment."
+  type        = bool
+  default     = false
+}
+
 variable "dynamic_config" {
   description = "Temporal dynamic configuration, keyed by setting name, each a list of value and constraints entries as Temporal's file format takes them. Worker Versioning V1 keys are refused."
   type        = any

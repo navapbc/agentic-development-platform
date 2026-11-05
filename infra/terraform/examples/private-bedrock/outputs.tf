@@ -163,6 +163,8 @@ output "temporal_tls" {
     frontend_acm_certificate_arn  = module.temporal_control_plane.frontend_acm_certificate_arn
     internode_acm_certificate_arn = module.temporal_control_plane.internode_acm_certificate_arn
     certificate_expiry_topic_arn  = module.temporal_control_plane.certificate_expiry_topic_arn
+    frontend_server_name          = module.temporal_control_plane.frontend_server_name
+    internode_server_name         = module.temporal_control_plane.internode_server_name
   }
 }
 

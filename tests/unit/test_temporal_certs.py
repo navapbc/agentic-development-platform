@@ -23,6 +23,8 @@ SECRETS_TLS = {
     "frontend_secret_arn": "arn:frontend",
     "frontend_acm_certificate_arn": "",
     "internode_acm_certificate_arn": "",
+    "frontend_server_name": FRONTEND_NAMES[0],
+    "internode_server_name": INTERNODE_NAMES[0],
 }
 ACM_FRONTEND_TLS = {
     **SECRETS_TLS,
@@ -210,6 +212,18 @@ def test_put_writes_no_frontend_secret_when_acm_serves_the_frontend(issued, tmp_
     certs.put(_copy(issued, tmp_path, frontend=False), ACM_FRONTEND_TLS, secretsmanager, _Acm())
 
     assert set(secretsmanager.values) == {"arn:ca", "arn:internode"}
+
+
+@pytest.mark.parametrize("setting", ["frontend_server_name", "internode_server_name"])
+def test_put_refuses_a_certificate_without_the_configured_name_and_writes_nothing(
+    issued, setting
+) -> None:
+    secretsmanager = _SecretsManager()
+
+    with pytest.raises(certs.CertificateError, match="does not name temporal.example.gov"):
+        certs.put(issued, {**SECRETS_TLS, setting: "temporal.example.gov"}, secretsmanager, _Acm())
+
+    assert secretsmanager.values == {}
 
 
 def test_put_imports_a_new_certificate_and_names_the_variable(issued) -> None:

@@ -206,7 +206,9 @@ def _certificate_text(path: Path) -> str:
     return _openssl("x509", "-in", str(path), "-noout", "-text")
 
 
-def _check_leaf(directory: Path, cert: str, key: str, usages: tuple[str, ...]) -> None:
+def _check_leaf(
+    directory: Path, cert: str, key: str, usages: tuple[str, ...], name: str = ""
+) -> None:
     cert_path, key_path = directory / cert, directory / key
     _openssl("verify", "-CAfile", str(directory / CA), "-untrusted", str(cert_path), str(cert_path))
     certificate_key = _openssl("x509", "-in", str(cert_path), "-noout", "-pubkey")
@@ -217,6 +219,18 @@ def _check_leaf(directory: Path, cert: str, key: str, usages: tuple[str, ...]) -
     missing = [usage for usage in usages if usage not in text]
     if missing:
         raise CertificateError(f"{cert} lacks the extended key usage {', '.join(missing)}.")
+    if name:
+        named = process.run(
+            ["openssl", "x509", "-in", str(cert_path), "-noout", "-checkhost", name],
+            timeout=OPENSSL_TIMEOUT_SECONDS,
+            capture_output=True,
+            text=True,
+        )
+        if named.returncode != 0:
+            raise CertificateError(
+                f"{cert} does not name {name}, the server name private-bedrock configures. Issue "
+                "it for that name, or set the matching temporal_*_server_name and apply first."
+            )
     result = process.run(
         ["openssl", "x509", "-in", str(cert_path), "-noout", "-checkend", "0"],
         timeout=OPENSSL_TIMEOUT_SECONDS,
@@ -227,8 +241,13 @@ def _check_leaf(directory: Path, cert: str, key: str, usages: tuple[str, ...]) -
         raise CertificateError(f"{cert} has expired.")
 
 
-def load(directory: Path, *, frontend: bool) -> Material:
-    """Read and check a certificate directory, refusing a file the frontend source excludes."""
+def load(
+    directory: Path, *, frontend: bool, frontend_name: str = "", internode_name: str = ""
+) -> Material:
+    """Read and check a certificate directory, refusing a file the frontend source excludes.
+
+    A non-empty name must be on the matching certificate.
+    """
     directory = directory.expanduser().resolve()
     present = {name for name in (FRONTEND, FRONTEND_KEY) if (directory / name).exists()}
     if not frontend and present:
@@ -242,9 +261,9 @@ def load(directory: Path, *, frontend: bool) -> Material:
     if missing:
         raise CertificateError(f"{directory} is missing {', '.join(missing)}.")
 
-    _check_leaf(directory, INTERNODE, INTERNODE_KEY, (SERVER_AUTH, CLIENT_AUTH))
+    _check_leaf(directory, INTERNODE, INTERNODE_KEY, (SERVER_AUTH, CLIENT_AUTH), internode_name)
     if frontend:
-        _check_leaf(directory, FRONTEND, FRONTEND_KEY, (SERVER_AUTH,))
+        _check_leaf(directory, FRONTEND, FRONTEND_KEY, (SERVER_AUTH,), frontend_name)
 
     def read(name: str) -> str:
         return (directory / name).read_text(encoding="utf-8")
@@ -283,7 +302,12 @@ def put(
             "apply private-bedrock first."
         )
     frontend = tls["frontend_certificate_source"] == "secrets"
-    material = load(directory, frontend=frontend)
+    material = load(
+        directory,
+        frontend=frontend,
+        frontend_name=tls.get("frontend_server_name") or "",
+        internode_name=tls.get("internode_server_name") or "",
+    )
     actions: list[str] = []
 
     tracked = tls.get("internode_acm_certificate_arn") or ""

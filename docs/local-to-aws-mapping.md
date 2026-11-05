@@ -15,7 +15,9 @@ Workloads sign Bedrock inference with a role that carries the `bedrock:InvokeMod
 | Local component | AWS target | Provisioning |
 |---|---|---|
 | `postgres` | Aurora PostgreSQL 16 with Serverless v2 capacity in the data tier | [aurora-postgresql](../infra/terraform/aurora-postgresql). Per-service roles planned, see the [roadmap](../ROADMAP.md) |
-| `temporal`, `temporal-ui` | Temporal control plane on the container platform, or Temporal Cloud | Planned, see the [roadmap](../ROADMAP.md) |
+| `temporal` | Temporal server 1.32.1 service on the platform ECS cluster in the application tier, persisting to Aurora PostgreSQL and reached through an internal NLB that admits only the Temporal client security group | [temporal-control-plane](../infra/terraform/temporal-control-plane), wired by [private-bedrock](../infra/terraform/examples/private-bedrock) |
+| `temporal-admin-tools` | One-shot admin-tools task in the management tier that applies the schemas and registers the namespace, run by `inv temporal-deploy` | [temporal-control-plane](../infra/terraform/temporal-control-plane) |
+| `temporal-ui` | Temporal UI 2.58.0 service in the management tier behind an internal HTTPS load balancer, reached by operators through `inv temporal-ui` | [temporal-control-plane](../infra/terraform/temporal-control-plane) |
 | `db-migrate` | One-shot migration task on the container platform | Planned, see the [roadmap](../ROADMAP.md) |
 | `workflow-worker`, `activity-worker`, `review-worker` | Worker services on the container platform | Images via [ecr](../infra/terraform/ecr). Services planned, see the [roadmap](../ROADMAP.md) |
 | `schedule-bootstrap` | One-shot bootstrap task on the container platform | Planned, see the [roadmap](../ROADMAP.md) |
@@ -52,5 +54,7 @@ These modules provision the shared AWS infrastructure the components above consu
 | Bucket access logging | S3 bucket receiving server access logs from every platform bucket | [access-logs](../infra/terraform/access-logs) through [bootstrap](../infra/terraform/bootstrap) |
 
 ## Secret material
+
+The Temporal clients read `TEMPORAL_HOST`, `TEMPORAL_NAMESPACE`, `TEMPORAL_TLS_SERVER_NAME`, and `TEMPORAL_TLS_CA` from the `temporal_client` output of the [private-bedrock](../infra/terraform/examples/private-bedrock) root. Locally the last two are empty and the clients connect without TLS. The Temporal TLS certificates and keys live in Secrets Manager under a key the [temporal-control-plane](../infra/terraform/temporal-control-plane) module creates, and `inv temporal-certs put` writes them.
 
 Local secrets live in `.env` and the `config/local/*.yaml` operator files. In a deployed environment they live in AWS Secrets Manager, provisioned by the [secret-store](../infra/terraform/secret-store) module and injected into each task as environment values. The review and authorship signing keys arrive as `REVIEW_SIGNING_KEY` and `AUTHORSHIP_SIGNING_KEY` in place of the local key files. The LiteLLM master key, the Langfuse keys, the ClickHouse password, the GitHub and Jira tokens and webhook secrets, and the per-service database and cache credentials are the other secret values. The module README lists each one with its rotation. The trust-root bundle at `REVIEW_TRUST_ROOT_PATH` holds only public keys and ships as a non-secret configuration artifact.

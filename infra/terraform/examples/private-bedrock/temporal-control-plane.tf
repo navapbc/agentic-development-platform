@@ -23,7 +23,12 @@ module "temporal_control_plane" {
   name_prefix                   = var.name_prefix
   frontend_acm_certificate_arn  = var.temporal_frontend_acm_certificate_arn
   internode_acm_certificate_arn = var.temporal_internode_acm_certificate_arn
-  secret_recovery_window_days   = var.secret_recovery_window_days
+  frontend_server_name          = var.temporal_frontend_server_name
+  internode_server_name         = var.temporal_internode_server_name
+
+  frontend_certificate_publicly_trusted = var.temporal_frontend_certificate_publicly_trusted
+  fips_140_mode                         = var.temporal_fips_140_mode
+  secret_recovery_window_days           = var.secret_recovery_window_days
 
   cluster_arn                 = module.ecs_cluster.cluster_arn
   vpc_id                      = local.vpc_id

@@ -366,6 +366,30 @@ variable "temporal_internode_acm_certificate_arn" {
   default     = ""
 }
 
+variable "temporal_frontend_server_name" {
+  description = "Name on the Temporal frontend certificate, which clients verify the frontend against. With temporal_frontend_acm_certificate_arn, the name on that certificate."
+  type        = string
+  default     = "frontend.temporal.internal"
+}
+
+variable "temporal_internode_server_name" {
+  description = "Name on the Temporal internode certificate."
+  type        = string
+  default     = "internode.temporal.internal"
+}
+
+variable "temporal_frontend_certificate_publicly_trusted" {
+  description = "The certificate in temporal_frontend_acm_certificate_arn chains to a public root, so clients verify it against the system trust store instead of the Temporal CA secret."
+  type        = bool
+  default     = false
+}
+
+variable "temporal_fips_140_mode" {
+  description = "Run the Temporal server, admin-tools, and UI processes in Go's FIPS 140-3 mode. Set true in a FedRAMP environment."
+  type        = bool
+  default     = false
+}
+
 variable "temporal_server_image" {
   description = "Temporal server image reference with its digest, as inv publish-temporal-images prints it. Empty creates no server."
   type        = string

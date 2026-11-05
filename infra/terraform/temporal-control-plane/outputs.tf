@@ -73,6 +73,11 @@ output "frontend_server_name" {
   value       = var.frontend_server_name
 }
 
+output "internode_server_name" {
+  description = "Name on the internode certificate, which the server tasks verify each other against."
+  value       = var.internode_server_name
+}
+
 output "client_ca_secret_arn" {
   description = "Secret clients inject as TEMPORAL_TLS_CA. Null when the frontend chains to a public root."
   value       = local.client_ca ? try(aws_secretsmanager_secret.tls["ca"].arn, null) : null

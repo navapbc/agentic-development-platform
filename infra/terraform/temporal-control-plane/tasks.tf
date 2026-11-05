@@ -34,6 +34,8 @@ locals {
     }
   }
 
+  fips_environment = var.fips_140_mode ? [{ name = "GODEBUG", value = "fips140=on" }] : []
+
   client_secrets = local.client_ca ? [
     { name = "TEMPORAL_TLS_CA_PEM", valueFrom = try(aws_secretsmanager_secret.tls["ca"].arn, "") },
   ] : []
@@ -55,7 +57,7 @@ locals {
     ] : [],
   )
 
-  server_environment = [
+  server_environment = concat(local.fips_environment, [
     { name = "DB", value = "postgres12" },
     { name = "DB_PORT", value = tostring(var.database_port) },
     { name = "POSTGRES_SEEDS", value = var.database_host },
@@ -71,9 +73,9 @@ locals {
     { name = "TEMPORAL_TLS_FRONTEND_SERVER_NAME", value = local.server_frontend_name },
     { name = "HEALTHPROBE_CA_FILE", value = "/tmp/temporal-runtime/ca.pem" },
     { name = "HEALTHPROBE_SERVER_NAME", value = local.server_frontend_name },
-  ]
+  ])
 
-  admin_tools_environment = [
+  admin_tools_environment = concat(local.fips_environment, [
     { name = "SQL_PLUGIN", value = "postgres12" },
     { name = "SQL_HOST", value = var.database_host },
     { name = "SQL_PORT", value = tostring(var.database_port) },
@@ -86,16 +88,16 @@ locals {
     { name = "DEFAULT_NAMESPACE", value = var.namespace },
     { name = "DEFAULT_NAMESPACE_RETENTION", value = var.namespace_retention },
     { name = "TMPDIR", value = "/tmp" },
-  ]
+  ])
 
-  ui_environment = [
+  ui_environment = concat(local.fips_environment, [
     { name = "TEMPORAL_ADDRESS", value = local.endpoint },
     { name = "TEMPORAL_TLS_SERVER_NAME", value = var.frontend_server_name },
     { name = "TEMPORAL_TLS_ENABLE_HOST_VERIFICATION", value = "true" },
     { name = "TEMPORAL_UI_PORT", value = tostring(local.ui_port) },
     { name = "TEMPORAL_UI_RUNTIME_DIR", value = "/tmp/ui" },
     { name = "TEMPORAL_DEFAULT_NAMESPACE", value = var.namespace },
-  ]
+  ])
 }
 
 resource "aws_cloudwatch_log_group" "task" {
