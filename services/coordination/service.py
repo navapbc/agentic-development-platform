@@ -214,8 +214,13 @@ def main() -> None:
         loop,
         shared_secret=settings.coordination_shared_secret,
     )
-    log.info("coordination-service listening on %s:%d", settings.bind_host, PORT)
-    ThreadingHTTPServer((settings.bind_host, PORT), handler).serve_forever()
+    from services.server_tls import wrap
+
+    server = ThreadingHTTPServer((settings.bind_host, PORT), handler)
+    wrap(server, enabled=settings.server_tls, configured_dir=settings.server_tls_dir)
+    scheme = "https" if settings.server_tls else "http"
+    log.info("coordination-service listening on %s://%s:%d", scheme, settings.bind_host, PORT)
+    server.serve_forever()
 
 
 if __name__ == "__main__":

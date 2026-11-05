@@ -44,6 +44,7 @@ IMAGE_SOURCE_PATHS = (
     "observability",
     "openhands",
     "docker/Dockerfile",
+    "docker/platform-entrypoint.sh",
 )
 
 

@@ -163,3 +163,18 @@
   path: docker/Dockerfile
   match: ADD --checksum=sha256:${RDS_CA_BUNDLE_SHA256} --chmod=0444 ${RDS_CA_BUNDLE_URL} /etc/ssl/rds-global-bundle.pem
   justification: ADD fetches the RDS CA bundle from its URL, which COPY cannot do, and --checksum fails the build unless the download matches the pinned SHA-256, so the image cannot carry a different bundle than the one reviewed.
+- tool: semgrep
+  rule: terraform.aws.security.insecure-load-balancer-tls-version.insecure-load-balancer-tls-version
+  path: infra/terraform/container-services/internal_lb.tf
+  match: ssl_policy = "ELBSecurityPolicy-TLS13-1-2-FIPS-2023-04"
+  justification: The rule accepts a fixed list of policy names and does not list the FIPS policies. ELBSecurityPolicy-TLS13-1-2-FIPS-2023-04 negotiates TLS 1.3 and TLS 1.2 only, with FIPS 140-3 validated cryptography, which FedRAMP requires.
+- tool: semgrep
+  rule: python.lang.security.audit.httpsconnection-detected.httpsconnection-detected
+  path: services/healthcheck.py
+  match: connection = http.client.HTTPSConnection(LOOPBACK, port, timeout=timeout, context=context)
+  justification: The probe passes an explicit context from services.server_tls.probe_context, which verifies the loopback certificate against the certificate the service issued itself and checks the host name. The rule flags any HTTPSConnection because older Python versions did not verify by default, and the images run Python 3.12 or later.
+- tool: trivy
+  rule: DS-0026
+  path: docker/tls-sidecar.Dockerfile
+  match: ''
+  justification: The image runs as a proxy sidecar or as an init container that issues a certificate and exits, so no single image-level HEALTHCHECK fits both. ECS ignores a Dockerfile HEALTHCHECK, and the task definition probes the proxy with the bundled healthprobe binary.

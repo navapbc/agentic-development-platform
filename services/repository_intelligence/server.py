@@ -135,9 +135,14 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    host = get_settings().bind_host
-    log.info("repository-intelligence listening on %s:%d", host, PORT)
-    ThreadingHTTPServer((host, PORT), Handler).serve_forever()
+    from services.server_tls import wrap
+
+    settings = get_settings()
+    server = ThreadingHTTPServer((settings.bind_host, PORT), Handler)
+    wrap(server, enabled=settings.server_tls, configured_dir=settings.server_tls_dir)
+    scheme = "https" if settings.server_tls else "http"
+    log.info("repository-intelligence listening on %s://%s:%d", scheme, settings.bind_host, PORT)
+    server.serve_forever()
 
 
 if __name__ == "__main__":

@@ -148,6 +148,11 @@ output "container_repository_urls" {
   value       = module.container_services.repository_urls
 }
 
+output "container_internal_endpoints" {
+  description = "The internal load balancer's client security group, each service's target security group and target group, and each service's HTTPS URL."
+  value       = module.container_services.internal_endpoints
+}
+
 output "temporal_server_repository_url" {
   description = "ECR repository that inv publish-temporal-images pushes the Temporal server image to."
   value       = module.temporal_control_plane.server_repository_url

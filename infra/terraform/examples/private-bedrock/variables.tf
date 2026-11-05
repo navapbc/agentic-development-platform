@@ -354,6 +354,24 @@ variable "create_container_services" {
   default     = false
 }
 
+variable "container_internal_acm_certificate_arn" {
+  description = "ACM certificate the internal load balancer presents, naming coordination, repo-intelligence, otel-collector, and langfuse under container_internal_domain. Empty creates no internal load balancer."
+  type        = string
+  default     = ""
+}
+
+variable "container_internal_domain" {
+  description = "Private hosted zone that names the platform services behind the internal load balancer."
+  type        = string
+  default     = "platform.internal"
+}
+
+variable "container_internal_allowed_cidr_blocks" {
+  description = "CIDRs allowed to reach the internal load balancer in addition to the members of its client security group."
+  type        = list(string)
+  default     = []
+}
+
 variable "create_temporal_control_plane" {
   description = "Create the Temporal control plane on the platform ECS cluster, starting with the ECR repositories for its images."
   type        = bool

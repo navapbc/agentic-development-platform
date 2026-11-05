@@ -6,7 +6,8 @@ The ECS tasks pull only from ECR, because DNS Firewall resolves no public regist
   UTC timestamp that `scripts.build_id` orders. Its tag is `<build id>-<source hash>-<arch>`,
   so a build whose sources are already in the repository reuses that image and its build ID
   instead of minting a new Worker Deployment version.
-- The repository-intelligence and collector images are tagged `<version>-<content hash>-<arch>`.
+- The repository-intelligence, collector, and TLS sidecar images are tagged
+  `<version>-<content hash>-<arch>`.
 - Langfuse web, Langfuse worker, and ClickHouse are copied by the digest `compose.yaml` pins
   and tagged with their upstream version, and the copy must keep that digest.
 
@@ -60,6 +61,9 @@ REPO_INTELLIGENCE = ImageSpec(
     ),
 )
 COLLECTOR = ImageSpec("otel-collector", "docker/otel-collector.Dockerfile", ("docker/healthprobe",))
+TLS_SIDECAR = ImageSpec(
+    "tls-sidecar", "docker/tls-sidecar.Dockerfile", ("docker/tls-sidecar", "docker/healthprobe")
+)
 MIRRORED_SERVICES = {
     "langfuse-web": "langfuse-web",
     "langfuse-worker": "langfuse-worker",
@@ -259,6 +263,7 @@ def publish(publisher: Publisher, acli: AcliBuild, root: Path = REPO_ROOT) -> li
                 context,
                 collector_version((context / COLLECTOR.dockerfile).read_text(encoding="utf-8")),
             ),
+            publisher.built(TLS_SIDECAR, context, release_version()),
         ]
     compose = (root / "compose.yaml").read_text(encoding="utf-8")
     references += [publisher.mirror(mirror) for mirror in mirrors(compose)]

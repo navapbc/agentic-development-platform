@@ -67,7 +67,10 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 ARG AGENT_BUILD_ID=0.3.0
 ENV AGENT_BUILD_ID=${AGENT_BUILD_ID}
 
+COPY --chmod=0555 docker/platform-entrypoint.sh /usr/local/bin/platform-entrypoint
+
 RUN useradd --create-home --uid 10001 appuser
 USER appuser
 
+ENTRYPOINT ["/usr/local/bin/platform-entrypoint"]
 CMD ["python", "-m", "services.orchestration.worker"]

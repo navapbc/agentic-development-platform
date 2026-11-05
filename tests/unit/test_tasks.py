@@ -182,13 +182,15 @@ def test_temporal_certs_passes_each_name_and_switch_to_the_script(project):
         "generate",
         out="~/tls",
         frontend_name="a.internal, b.internal",
+        internal_name="coordination.platform.internal",
         no_frontend=True,
         force=True,
     )
 
     assert context.commands == [
         f"{tasks_module.HOST_PYTHON} -m scripts.temporal_certs generate --out '~/tls' --days 397"
-        " --frontend-name a.internal --frontend-name b.internal --no-frontend --force"
+        " --frontend-name a.internal --frontend-name b.internal"
+        " --internal-name coordination.platform.internal --no-frontend --force"
     ]
 
 

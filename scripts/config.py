@@ -35,6 +35,8 @@ class Settings(BaseSettings):
     workflow_execution_timeout_seconds: float = 3600.0
     draft_pr_execution_timeout_seconds: float = 86400.0
     bind_host: str = "127.0.0.1"
+    server_tls: bool = False
+    server_tls_dir: str = ""
     health_heartbeat_file: str = ""
     health_heartbeat_interval_seconds: float = 15.0
 

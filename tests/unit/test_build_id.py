@@ -126,7 +126,7 @@ def test_the_digest_covers_every_path_the_image_copies():
     for line in DOCKERFILE_PATH.read_text().splitlines():
         if not line.startswith("COPY ") or "--from=" in line:
             continue
-        copied.update(line.split()[1:-1])
+        copied.update(part for part in line.split()[1:-1] if not part.startswith("--"))
 
     digested = set(IMAGE_SOURCE_PATHS)
     uncovered = {

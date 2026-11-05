@@ -7,6 +7,7 @@ locals {
     "langfuse-web",
     "langfuse-worker",
     "clickhouse",
+    "tls-sidecar",
   ])
 }
 

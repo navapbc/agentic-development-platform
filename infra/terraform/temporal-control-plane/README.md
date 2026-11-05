@@ -64,7 +64,7 @@ The secret store redeploys the server after a rotation of the `temporal` role pa
 
 ## UI
 
-The UI runs Temporal UI 2.58.0. It connects to the frontend through the NLB over TLS with host verification and serves HTTPS on port 8080 with a certificate it issues at start. The load balancer does not verify that certificate, and the UI key never leaves the task. The load balancer presents `ui_acm_certificate_arn` under the TLS 1.3 FIPS policy. `inv temporal-certs generate --ui-name NAME` issues a certificate for it from the generated CA, which `aws acm import-certificate` imports.
+The UI runs Temporal UI 2.58.0. It connects to the frontend through the NLB over TLS with host verification and serves HTTPS on port 8080 with a certificate it issues at start. The load balancer does not verify that certificate, and the UI key never leaves the task. The load balancer presents `ui_acm_certificate_arn` under the TLS 1.3 FIPS policy. `inv temporal-certs generate --ui-name NAME` issues a certificate for it from the generated CA, which `aws acm import-certificate` imports. `--internal-name` issues the certificate of the container services' internal load balancer the same way.
 
 Operators reach the ALB from a security group in `ui_operator_security_group_ids`, to which the module adds egress on 443 to the ALB, or from a network in `ui_allowed_cidr_blocks`, such as a VPN client range. The `private-bedrock` root passes the jumphost task group. `inv temporal-ui` starts a jumphost task and forwards `localhost:8443`, or `--port`, to the ALB until it is interrupted. The browser verifies the ALB certificate against the name it was issued for, so map that name to `127.0.0.1` in `/etc/hosts`, trust the CA that issued it, and open `https://<certificate name>:8443`.
 

@@ -177,7 +177,7 @@ module "dns_firewall" {
   name_prefix                = var.name_prefix
   vpc_id                     = local.vpc_id
   default_action             = var.dns_firewall_default_action
-  additional_allowed_domains = var.dns_firewall_additional_domains
+  additional_allowed_domains = distinct(concat(var.dns_firewall_additional_domains, local.container_internal_domains))
   kms_key_arn                = var.kms_key_arn
   tags                       = var.tags
 }

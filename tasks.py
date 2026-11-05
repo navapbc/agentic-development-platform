@@ -764,6 +764,7 @@ def temporal_ui(c, port=8443):
         "frontend_name": "generate: frontend SAN, comma-separated. The first is the CN.",
         "internode_name": "generate: internode SAN, comma-separated. The first is the CN.",
         "ui_name": "generate: also issue a UI load balancer certificate with this SAN list.",
+        "internal_name": "generate: also issue an internal load balancer certificate, SAN list.",
         "days": "generate: leaf certificate validity in days (default 397).",
         "no_frontend": "generate: skip the frontend pair, for a frontend served from ACM.",
         "force": "generate: replace certificates already in the directory.",
@@ -778,6 +779,7 @@ def temporal_certs(
     frontend_name="",
     internode_name="",
     ui_name="",
+    internal_name="",
     days=397,
     no_frontend=False,
     force=False,
@@ -796,6 +798,8 @@ def temporal_certs(
             flags += f" --internode-name {shlex.quote(name.strip())}"
         for name in filter(None, ui_name.split(",")):
             flags += f" --ui-name {shlex.quote(name.strip())}"
+        for name in filter(None, internal_name.split(",")):
+            flags += f" --internal-name {shlex.quote(name.strip())}"
         flags += " --no-frontend" if no_frontend else ""
         flags += " --force" if force else ""
         c.run(f"{HOST_PYTHON} -m scripts.temporal_certs generate{flags}", pty=True)
