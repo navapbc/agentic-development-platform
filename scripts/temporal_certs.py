@@ -226,7 +226,8 @@ def _check_leaf(
             capture_output=True,
             text=True,
         )
-        if named.returncode != 0:
+        # OpenSSL 3.0 exits 0 from -checkhost on a mismatch, so the verdict is read from stdout.
+        if named.returncode != 0 or "does match certificate" not in named.stdout:
             raise CertificateError(
                 f"{cert} does not name {name}, the server name private-bedrock configures. Issue "
                 "it for that name, or set the matching temporal_*_server_name and apply first."

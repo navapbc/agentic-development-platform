@@ -10,7 +10,7 @@ This README gets a new developer from a fresh clone to a running stack. Contribu
 
 ## What you will be running
 
-The stack runs under Docker Compose and talks to Amazon Bedrock over a connectivity provider you choose. The pieces are described in [System components](#system-components) below. Inference always passes through the LiteLLM container, which is the single path to Bedrock.
+The stack runs under Docker Compose and talks to Amazon Bedrock over a connectivity provider you choose. The pieces are described in [System components](#system-components) below, and [docs/architecture.md](docs/architecture.md) diagrams the local and AWS deployments with the connections between components. Inference always passes through the LiteLLM container, which is the single path to Bedrock.
 
 ## Prerequisites
 
@@ -71,7 +71,7 @@ Run these once from the repository root.
 
 ## Deploying to AWS
 
-These steps stand up the AWS infrastructure for one account from a workstation: the tiered network, the private Bedrock path, the Fargate jumphost, the data tier, the secret store, the platform ECS cluster, and the Temporal control plane. Run them from the repository root unless a step changes directory, and pass the `agentic-platform` profile, or your own, to every AWS command. The platform services do not run in AWS yet. The container-platform services feature on the [roadmap](ROADMAP.md) adds them, together with the deployment steps that migrate the database and start the services.
+These steps stand up the AWS infrastructure for one account from a workstation: the tiered network, the private Bedrock path, the Fargate jumphost, the data tier, the secret store, the platform ECS cluster, and the Temporal control plane. Run them from the repository root unless a step changes directory, and pass the `agentic-platform` profile, or your own, to every AWS command. The platform services do not run in AWS yet. The [AWS diagrams](docs/architecture.md#aws-environment) show what this composition provisions and how the pieces connect. The container-platform services feature on the [roadmap](ROADMAP.md) adds them, together with the deployment steps that migrate the database and start the services.
 
 1. Create the state bucket and the access-log bucket once per account. Run `cd infra/terraform/bootstrap`, copy `terraform.tfvars.example` to `terraform.tfvars` only to override a default, then run `terraform init` and `AWS_PROFILE=agentic-platform terraform apply`. This root keeps its own state locally. See the [bootstrap README](infra/terraform/bootstrap/README.md).
 2. Write the backend settings for the composition root with `terraform output -raw backend_hcl > ../examples/private-bedrock/backend.hcl`, and record the access-log bucket name from `terraform output -raw access_log_bucket`. The file belongs in `infra/terraform/examples/private-bedrock`, next to the committed `backend.hcl.example` that shows its shape, so you can also copy the example and fill in the bucket by hand. Never commit `backend.hcl`.
@@ -546,6 +546,8 @@ The demo tasks walk the platform in four acts. Each is an `inv` task with its ow
 | `inv demo-draft-pr` | Opening a draft PR through the full stack |
 
 ## System components
+
+The [architecture diagrams](docs/architecture.md) show how these components connect locally and in AWS.
 
 | Component | Backed by | Built here |
 | --- | --- | --- |
