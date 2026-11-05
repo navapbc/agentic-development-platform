@@ -281,6 +281,36 @@ def test_put_refuses_before_the_secrets_exist(issued) -> None:
         certs.put(issued, {**SECRETS_TLS, "ca_secret_arn": None}, _SecretsManager(), _Acm())
 
 
+class _FailingSecretsManager(_SecretsManager):
+    def __init__(self, fails_on: str) -> None:
+        super().__init__()
+        self.fails_on = fails_on
+
+    def put_secret_value(self, SecretId: str, SecretString: str) -> None:
+        if SecretId == self.fails_on:
+            raise RuntimeError("Secrets Manager throttled the request.")
+        super().put_secret_value(SecretId=SecretId, SecretString=SecretString)
+
+
+@pytest.mark.parametrize("fails_on", ["arn:internode", "arn:frontend"])
+def test_a_failed_leaf_write_leaves_the_ca_unrotated(issued, fails_on) -> None:
+    secretsmanager = _FailingSecretsManager(fails_on)
+
+    with pytest.raises(RuntimeError):
+        certs.put(issued, SECRETS_TLS, secretsmanager, _Acm())
+
+    assert "arn:ca" not in secretsmanager.values
+
+
+def test_put_checks_every_secret_arn_before_the_first_write(issued) -> None:
+    secretsmanager = _SecretsManager()
+
+    with pytest.raises(certs.CertificateError):
+        certs.put(issued, {**SECRETS_TLS, "internode_secret_arn": None}, secretsmanager, _Acm())
+
+    assert secretsmanager.values == {}
+
+
 def test_generate_issues_a_ui_certificate_on_request(tmp_path) -> None:
     out = tmp_path / "tls"
     written = _generate(out, ui_names=["temporal-ui.example.internal"])

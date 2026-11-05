@@ -100,3 +100,19 @@ def test_no_client_connects_outside_the_helper() -> None:
     ]
 
     assert offenders == []
+
+
+SKIPPED_DIRECTORIES = {".git", ".venv", ".mypy_cache", ".ruff_cache", "__pycache__", "node_modules"}
+
+
+def test_no_client_connects_outside_the_helper_anywhere_in_the_repository() -> None:
+    helper = REPO_ROOT / "services" / "temporal_client.py"
+    offenders = [
+        f"{path.relative_to(REPO_ROOT)}:{number}"
+        for path in sorted(REPO_ROOT.rglob("*.py"))
+        if path != helper and not SKIPPED_DIRECTORIES & set(path.relative_to(REPO_ROOT).parts)
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1)
+        if re.search(r"\bClient\.connect\(", line)
+    ]
+
+    assert offenders == []

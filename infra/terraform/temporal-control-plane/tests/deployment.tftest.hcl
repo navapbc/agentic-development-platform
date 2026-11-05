@@ -327,3 +327,21 @@ run "worker_versioning_v1_keys_are_refused" {
 
   expect_failures = [var.dynamic_config]
 }
+
+run "a_publicly_trusted_acm_frontend_still_renders_an_appliable_ui_policy" {
+  command = plan
+
+  variables {
+    frontend_acm_certificate_arn          = "arn:aws:acm:us-east-1:111111111111:certificate/11111111-2222-3333-4444-555555555555"
+    frontend_certificate_publicly_trusted = true
+  }
+
+  assert {
+    condition = alltrue(flatten([
+      for policy in values(local.execution_policies) : [
+        for statement in jsondecode(policy).Statement : length(statement.Resource) > 0
+      ]
+    ]))
+    error_message = "An execution policy statement renders an empty Resource, which IAM refuses with MalformedPolicyDocument."
+  }
+}
