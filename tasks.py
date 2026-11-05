@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shlex
 import sys
@@ -578,16 +579,29 @@ def ci(c):
     c.run(f"{HOST_PYTHON} -m scripts.eval_gate", pty=True)
 
 
+def _terraform_modules(root: str) -> list[str]:
+    modules = []
+    for directory, subdirectories, _ in os.walk(root):
+        subdirectories[:] = [name for name in subdirectories if name != ".terraform"]
+        if "tests" in subdirectories:
+            modules.append(directory)
+    return sorted(modules)
+
+
 @task
 def terraform_test(c):
     """Run terraform test in each module under infra/terraform that has a tests directory."""
-    root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "infra", "terraform")
-    modules = sorted(
-        os.path.join(root, name)
-        for name in os.listdir(root)
-        if os.path.isdir(os.path.join(root, name, "tests"))
-    )
-    for module in modules:
+    repo_root = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(repo_root, ".terraform-version"), encoding="utf-8") as handle:
+        pinned = handle.read().strip()
+    installed = json.loads(c.run("terraform version -json", hide=True).stdout)["terraform_version"]
+    if installed != pinned:
+        raise Exit(
+            f"Terraform {installed} is on PATH and .terraform-version pins {pinned}. "
+            f"Run tfenv install {pinned} to match the pin."
+        )
+
+    for module in _terraform_modules(os.path.join(repo_root, "infra", "terraform")):
         c.run(f"terraform -chdir={shlex.quote(module)} init -backend=false -input=false", pty=True)
         c.run(f"terraform -chdir={shlex.quote(module)} test", pty=True)
 
