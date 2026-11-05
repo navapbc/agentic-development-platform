@@ -124,4 +124,11 @@ The EKS units are planned when ADP-137 starts, after ADP-136, ADP-139, and ADP-1
 
 ## Verification Record
 
-The units are recorded here as they complete.
+### U1 (ADP-154), 2026-11-05
+
+- The apply created the six repositories, each with immutable tags, scan on push, and KMS encryption.
+- `inv publish-platform-images` built the platform image as `0.3.0.20261105210216-4e99adf5d34c-arm64`, built the repository-intelligence and collector images, and copied Langfuse web 4.59.0, Langfuse worker 4.59.0, and ClickHouse 26.9.19.9. Each copy in ECR carries the index digest `compose.yaml` pins.
+- A second run reported every image as pushed and built nothing, and the platform image kept its build ID. After a change to `uv.lock`, the next run minted build ID `0.3.0.20261105213111`, rebuilt the platform and repository-intelligence images, and reused the collector image.
+- The platform image runs as `appuser` with `AGENT_BUILD_ID` set to its build ID, which the settings report, carries the RDS CA bundle with the pinned SHA-256 at mode 0444, and holds none of the local binaries under `vendor/bin`. A build with a wrong `RDS_CA_BUNDLE_SHA256` failed with `digest mismatch`, and the local compose build still carries the bundle.
+- `put-image` of another manifest under an existing tag was refused with `ImageTagAlreadyExistsException`.
+- Basic scanning completed for the platform and repository-intelligence images and for the arm64 image of each copy. It reports `UnsupportedImageError` for the distroless collector image. The repository-intelligence image reports four critical findings in its Debian packages, in `php8.4`, `brotli`, and `glibc`.

@@ -53,6 +53,7 @@ EXPECTED_TASKS = {
     "cbm-build",
     "publish-jumphost-image",
     "publish-temporal-images",
+    "publish-platform-images",
     "temporal-certs",
     "temporal-deploy",
     "temporal-ui",

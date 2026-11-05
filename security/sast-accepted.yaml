@@ -158,3 +158,8 @@
   path: docker/temporal.Dockerfile
   match: ADD --checksum=sha256:${TEMPORAL_CONFIG_TEMPLATE_SHA256} ${TEMPORAL_CONFIG_TEMPLATE_URL} /tmp/template.yaml
   justification: ADD fetches the Temporal server configuration template from its release tag URL, which COPY cannot do, and --checksum fails the build unless the download matches the pinned SHA-256, so the image cannot carry a different template than the one reviewed.
+- tool: trivy
+  rule: DS-0005
+  path: docker/Dockerfile
+  match: ADD --checksum=sha256:${RDS_CA_BUNDLE_SHA256} --chmod=0444 ${RDS_CA_BUNDLE_URL} /etc/ssl/rds-global-bundle.pem
+  justification: ADD fetches the RDS CA bundle from its URL, which COPY cannot do, and --checksum fails the build unless the download matches the pinned SHA-256, so the image cannot carry a different bundle than the one reviewed.

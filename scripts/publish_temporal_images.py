@@ -78,7 +78,18 @@ def image_tag(spec: ImageSpec, root: Path, arch: str) -> str:
     return f"{version}-{content_hash(spec, root)}-{arch}"
 
 
-def build_command(spec: ImageSpec, root: Path, image: str, arch: str) -> list[str]:
+def build_command(
+    spec: ImageSpec,
+    root: Path,
+    image: str,
+    arch: str,
+    build_args: dict[str, str] | None = None,
+) -> list[str]:
+    arguments = [
+        part
+        for name, value in (build_args or {}).items()
+        for part in ("--build-arg", f"{name}={value}")
+    ]
     return [
         "docker",
         "buildx",
@@ -87,6 +98,7 @@ def build_command(spec: ImageSpec, root: Path, image: str, arch: str) -> list[st
         PLATFORMS[arch],
         "--provenance=false",
         "--sbom=false",
+        *arguments,
         "--file",
         str(root / spec.dockerfile),
         "--tag",

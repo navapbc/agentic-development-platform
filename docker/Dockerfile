@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1
+
 # Python image with uv pre-installed. See https://docs.astral.sh/uv/guides/integration/docker/#available-images
 FROM ghcr.io/astral-sh/uv:python3.12-trixie-slim@sha256:bf889bda77474aa50c351caf1538b855ef2b7a30add45f26ca50dcb6ade06402
 
@@ -19,6 +21,10 @@ WORKDIR /app
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git curl ca-certificates openssh-client \
     && rm -rf /var/lib/apt/lists/*
+
+ARG RDS_CA_BUNDLE_URL=https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
+ARG RDS_CA_BUNDLE_SHA256=90a6f1a7978a1b1b096dca6c57511ca48d3b8cf052f8e704baf358f34ea2f21b
+ADD --checksum=sha256:${RDS_CA_BUNDLE_SHA256} --chmod=0444 ${RDS_CA_BUNDLE_URL} /etc/ssl/rds-global-bundle.pem
 
 RUN ARCH="$(dpkg --print-architecture)" \
     && case "${ARCH}" in \

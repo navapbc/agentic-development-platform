@@ -143,6 +143,11 @@ output "ecs_exec_task_policy_arn" {
   value       = module.ecs_cluster.exec_task_policy_arn
 }
 
+output "container_repository_urls" {
+  description = "ECR repository of each platform container image, keyed by the name inv publish-platform-images uses."
+  value       = module.container_services.repository_urls
+}
+
 output "temporal_server_repository_url" {
   description = "ECR repository that inv publish-temporal-images pushes the Temporal server image to."
   value       = module.temporal_control_plane.server_repository_url

@@ -39,6 +39,7 @@ create_rebar_ticket_store = false
 
 create_ecs_cluster            = false
 create_temporal_control_plane = false
+create_container_services     = false
 
 tags = {
   project = "agentic-dev-platform"

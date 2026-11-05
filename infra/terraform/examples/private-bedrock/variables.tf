@@ -348,6 +348,12 @@ variable "ecs_deployer_passable_role_arns" {
   default     = []
 }
 
+variable "create_container_services" {
+  description = "Create the platform container services on the platform ECS cluster, starting with the ECR repositories for their images."
+  type        = bool
+  default     = false
+}
+
 variable "create_temporal_control_plane" {
   description = "Create the Temporal control plane on the platform ECS cluster, starting with the ECR repositories for its images."
   type        = bool

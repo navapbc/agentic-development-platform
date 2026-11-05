@@ -712,6 +712,33 @@ def publish_temporal_images(c, name_prefix="", arch="arm64", region=""):
     c.run(f"{HOST_PYTHON} -m scripts.publish_temporal_images{flags}", pty=True, env=env)
 
 
+@task(
+    help={
+        "name_prefix": "Repository prefix (default agentic-platform).",
+        "arch": "Target architecture, arm64 or amd64 (default arm64).",
+        "region": "AWS region (empty uses AWS_REGION).",
+        "install_acli": "Install acli in the platform image, as INSTALL_ACLI does locally.",
+        "acli_version": "acli version (empty uses the version scripts/fetch_acli.py pins).",
+        "acli_sha256": "SHA-256 of that acli version, required with --acli-version.",
+    }
+)
+def publish_platform_images(
+    c, name_prefix="", arch="arm64", region="", install_acli=False, acli_version="", acli_sha256=""
+):
+    """Build the platform images, mirror Langfuse and ClickHouse, and push them all to ECR."""
+    from scripts.config import get_settings
+
+    settings = get_settings()
+    flags = f" --arch {shlex.quote(arch)}"
+    flags += f" --name-prefix {shlex.quote(name_prefix)}" if name_prefix else ""
+    flags += f" --region {shlex.quote(region)}" if region else ""
+    flags += " --install-acli" if install_acli else ""
+    flags += f" --acli-version {shlex.quote(acli_version)}" if acli_version else ""
+    flags += f" --acli-sha256 {shlex.quote(acli_sha256)}" if acli_sha256 else ""
+    env = {"AWS_PROFILE": settings.aws_profile, "AWS_REGION": settings.aws_region}
+    c.run(f"{HOST_PYTHON} -m scripts.publish_platform_images{flags}", pty=True, env=env)
+
+
 @task(help={"region": "AWS region (empty uses AWS_REGION)."})
 def temporal_deploy(c, region=""):
     """Apply the Temporal schema, roll the server, and register the namespace."""
@@ -1142,6 +1169,7 @@ for _t in (
     cbm_build,
     publish_jumphost_image,
     publish_temporal_images,
+    publish_platform_images,
     temporal_certs,
     temporal_deploy,
     temporal_ui,
