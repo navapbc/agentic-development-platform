@@ -21,6 +21,7 @@ from temporalio.client import Client
 from temporalio.worker import Worker
 from temporalio.worker.workflow_sandbox import SandboxedWorkflowRunner, SandboxRestrictions
 
+from services import temporal_client
 from services.orchestration.temporal_activities import (
     alert_human_intervention,
     analyze_ci_failure,
@@ -287,9 +288,9 @@ async def main() -> None:
         settings.temporal_host,
         settings.temporal_namespace,
     )
-    client = await Client.connect(
+    client = await temporal_client.connect(
         settings.temporal_host,
-        namespace=settings.temporal_namespace,
+        settings,
         interceptors=temporal_interceptors(),
     )
 

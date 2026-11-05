@@ -207,12 +207,14 @@ class PostgresIntakeRetryStore:
 
 def temporal_workflow_liveness(settings: Settings) -> WorkflowLivenessProbe:
     async def _probe(workflow_id: str) -> WorkflowLiveness:
-        from temporalio.client import Client, WorkflowExecutionStatus
+        from temporalio.client import WorkflowExecutionStatus
         from temporalio.service import RPCError, RPCStatusCode
 
+        from services import temporal_client
+
         try:
-            client = await Client.connect(
-                to_host_hostport(settings.temporal_host), namespace=settings.temporal_namespace
+            client = await temporal_client.connect(
+                to_host_hostport(settings.temporal_host), settings
             )
             description = await client.get_workflow_handle(workflow_id).describe()
         except RPCError as exc:

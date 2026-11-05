@@ -128,9 +128,15 @@ data "aws_iam_policy_document" "events" {
   count = local.restart_enabled ? 1 : 0
 
   statement {
-    sid       = "StartRestartAutomation"
-    actions   = ["ssm:StartAutomationExecution"]
-    resources = ["arn:${local.partition}:ssm:${var.region}:${local.account_id}:automation-definition/${local.restart_document_name}:*"]
+    sid     = "StartRestartAutomation"
+    actions = ["ssm:StartAutomationExecution"]
+    # SSM authorizes the call against the automation definition, the document, and the
+    # execution it creates.
+    resources = [
+      "arn:${local.partition}:ssm:${var.region}:${local.account_id}:automation-definition/${local.restart_document_name}:*",
+      "arn:${local.partition}:ssm:${var.region}:${local.account_id}:document/${local.restart_document_name}",
+      "arn:${local.partition}:ssm:${var.region}:${local.account_id}:automation-execution/*",
+    ]
   }
 
   statement {

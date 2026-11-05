@@ -267,12 +267,11 @@ def _refuse_to_strand(outgoing: str) -> None:
         return
 
     async def _stranded() -> list[str]:
+        from services import temporal_client
         from services.orchestration.worker_versioning import pinned_executions
-        from temporalio.client import Client
 
-        client = await Client.connect(
-            to_host_hostport(settings.temporal_host, settings),
-            namespace=settings.temporal_namespace,
+        client = await temporal_client.connect(
+            to_host_hostport(settings.temporal_host, settings), settings
         )
         return await pinned_executions(client, settings.worker_deployment_name, outgoing)
 
@@ -694,6 +693,97 @@ def publish_jumphost_image(c, tag="v1", arch="arm64", base_image="", repo="", re
     c.run(f"bash infra/bin/publish_jumphost_image.sh {flags}".strip(), pty=True, env=env)
 
 
+@task(
+    help={
+        "name_prefix": "Repository prefix (default agentic-platform).",
+        "arch": "Target architecture, arm64 or amd64 (default arm64).",
+        "region": "AWS region (empty uses AWS_REGION).",
+    }
+)
+def publish_temporal_images(c, name_prefix="", arch="arm64", region=""):
+    """Build and push the Temporal server and admin-tools images to the account ECR repositories."""
+    from scripts.config import get_settings
+
+    settings = get_settings()
+    flags = f" --arch {shlex.quote(arch)}"
+    flags += f" --name-prefix {shlex.quote(name_prefix)}" if name_prefix else ""
+    flags += f" --region {shlex.quote(region)}" if region else ""
+    env = {"AWS_PROFILE": settings.aws_profile, "AWS_REGION": settings.aws_region}
+    c.run(f"{HOST_PYTHON} -m scripts.publish_temporal_images{flags}", pty=True, env=env)
+
+
+@task(help={"region": "AWS region (empty uses AWS_REGION)."})
+def temporal_deploy(c, region=""):
+    """Apply the Temporal schema, roll the server, and register the namespace."""
+    from scripts.config import get_settings
+
+    settings = get_settings()
+    flags = f" --region {shlex.quote(region)}" if region else ""
+    env = {"AWS_PROFILE": settings.aws_profile, "AWS_REGION": settings.aws_region}
+    c.run(f"{HOST_PYTHON} -m scripts.temporal_deploy{flags}", pty=True, env=env)
+
+
+@task(help={"port": "Local port forwarded to the UI load balancer (default 8443)."})
+def temporal_ui(c, port=8443):
+    """Forward a local port to the Temporal UI load balancer through the jump-host."""
+    c.run(f"{HOST_PYTHON} -m scripts.temporal_ui --port {int(port)}", pty=True)
+
+
+@task(
+    help={
+        "action": "generate to issue self-signed certificates, or put to store a directory.",
+        "out": "generate: directory outside the repository to write the certificates to.",
+        "dir": "put: directory holding ca.pem and the internode and frontend pairs.",
+        "frontend_name": "generate: frontend SAN, comma-separated. The first is the CN.",
+        "internode_name": "generate: internode SAN, comma-separated. The first is the CN.",
+        "ui_name": "generate: also issue a UI load balancer certificate with this SAN list.",
+        "days": "generate: leaf certificate validity in days (default 397).",
+        "no_frontend": "generate: skip the frontend pair, for a frontend served from ACM.",
+        "force": "generate: replace certificates already in the directory.",
+        "import_to_acm": "put: also import the internode certificate into ACM to track its expiry.",
+    }
+)
+def temporal_certs(
+    c,
+    action,
+    out="",
+    dir="",  # noqa: A002
+    frontend_name="",
+    internode_name="",
+    ui_name="",
+    days=397,
+    no_frontend=False,
+    force=False,
+    import_to_acm=False,
+):
+    """Generate the Temporal TLS certificates, or check and store a certificate directory."""
+    from scripts.config import get_settings
+
+    if action == "generate":
+        if not out:
+            raise Exit("provide --out")
+        flags = f" --out {shlex.quote(out)} --days {int(days)}"
+        for name in filter(None, frontend_name.split(",")):
+            flags += f" --frontend-name {shlex.quote(name.strip())}"
+        for name in filter(None, internode_name.split(",")):
+            flags += f" --internode-name {shlex.quote(name.strip())}"
+        for name in filter(None, ui_name.split(",")):
+            flags += f" --ui-name {shlex.quote(name.strip())}"
+        flags += " --no-frontend" if no_frontend else ""
+        flags += " --force" if force else ""
+        c.run(f"{HOST_PYTHON} -m scripts.temporal_certs generate{flags}", pty=True)
+        return
+    if action != "put":
+        raise Exit("action must be generate or put")
+    if not dir:
+        raise Exit("provide --dir")
+    settings = get_settings()
+    flags = f" --dir {shlex.quote(dir)}"
+    flags += " --import-to-acm" if import_to_acm else ""
+    env = {"AWS_PROFILE": settings.aws_profile, "AWS_REGION": settings.aws_region}
+    c.run(f"{HOST_PYTHON} -m scripts.temporal_certs put{flags}", pty=True, env=env)
+
+
 @task(help={"apply": "Perform real deletions instead of a dry-run."})
 def reap(c, apply=False):
     """Reap expired platform orphan artifacts (dry-run by default)."""
@@ -1051,6 +1141,10 @@ for _t in (
     terraform_test,
     cbm_build,
     publish_jumphost_image,
+    publish_temporal_images,
+    temporal_certs,
+    temporal_deploy,
+    temporal_ui,
     reap,
     scrub_workspaces,
     intake,

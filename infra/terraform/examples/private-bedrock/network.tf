@@ -15,7 +15,7 @@ locals {
   management_cidrs = var.create_network ? aws_subnet.management[*].cidr_block : var.management_cidr_blocks
 
   data_subnet_ids = var.create_network ? aws_subnet.data[*].id : var.data_subnet_ids
-  data_cidrs      = var.create_network ? aws_subnet.data[*].cidr_block : []
+  data_cidrs      = var.create_network ? aws_subnet.data[*].cidr_block : [for subnet in data.aws_subnet.data : subnet.cidr_block]
 
   data_tier_sources = distinct(concat(local.app_cidrs, local.management_cidrs))
   data_tier_ports   = [5432, 6379, 2049]

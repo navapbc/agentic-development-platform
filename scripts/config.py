@@ -25,6 +25,8 @@ class Settings(BaseSettings):
 
     temporal_host: str = "localhost:7233"
     temporal_namespace: str = "default"
+    temporal_tls_ca: str = ""
+    temporal_tls_server_name: str = ""
     temporal_task_queue: str = "agent-platform"
     review_task_queue: str = "agent-platform-review"
     agent_build_id: str = recorded_build_id()

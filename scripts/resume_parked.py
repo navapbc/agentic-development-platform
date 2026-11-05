@@ -9,11 +9,11 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from services import temporal_client
 from services.orchestration.reconciler import reconcile
 from services.orchestration.suspension import RESUME_SIGNAL, ResumeOn
 from services.orchestration.suspension_store import PostgresSuspensionStore
 from services.orchestration.worker_versioning import move_to_current_version
-from temporalio.client import Client
 
 from scripts.config import get_settings, to_host_hostport
 
@@ -24,7 +24,7 @@ log = logging.getLogger("resume-parked")
 async def main() -> None:
     settings = get_settings()
     address = to_host_hostport(settings.temporal_host)
-    client = await Client.connect(address, namespace=settings.temporal_namespace)
+    client = await temporal_client.connect(address, settings)
 
     async def send_resume(workflow_id: str, trigger: ResumeOn) -> None:
         handle = client.get_workflow_handle(workflow_id)

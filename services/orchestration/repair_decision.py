@@ -80,12 +80,12 @@ class TemporalRepairSignaller:
         self._settings = settings
 
     async def signal_repair_decision(self, workflow_id: str, *, retry: bool, actor: str) -> None:
-        from temporalio.client import Client
         from temporalio.service import RPCError, RPCStatusCode
 
-        client = await Client.connect(
-            to_host_hostport(self._settings.temporal_host),
-            namespace=self._settings.temporal_namespace,
+        from services import temporal_client
+
+        client = await temporal_client.connect(
+            to_host_hostport(self._settings.temporal_host), self._settings
         )
         handle = client.get_workflow_handle(workflow_id)
         try:

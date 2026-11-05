@@ -3,6 +3,12 @@ data "aws_availability_zones" "available" {
   state = "available"
 }
 
+data "aws_subnet" "data" {
+  for_each = var.create_network ? toset([]) : toset(var.data_subnet_ids)
+
+  id = each.value
+}
+
 locals {
   azs = length(var.availability_zones) > 0 ? var.availability_zones : (
     var.create_network ? slice(data.aws_availability_zones.available[0].names, 0, length(var.new_subnet_cidrs)) : []

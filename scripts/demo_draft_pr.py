@@ -262,6 +262,7 @@ async def _run_via_temporal(
     full_pipeline: bool = False,
     await_pr_close: bool = False,
 ) -> int:
+    from services import temporal_client
     from services.orchestration.temporal_workflows.draft_pull_request import (
         DRAFT_PR_OPEN,
         EXISTING_PR_REUSED,
@@ -271,7 +272,6 @@ async def _run_via_temporal(
         DraftPullRequestWorkflow,
     )
     from services.orchestration.usage_rollup import BudgetCaps
-    from temporalio.client import Client
 
     caps = BudgetCaps.from_settings(settings)
     stored_issue = normalize_issue(raw_issue, acceptance_field=acceptance_field(settings)).to_dict()
@@ -279,7 +279,7 @@ async def _run_via_temporal(
     workflow_id = f"draft-pr-{task_id}-{execution_id}"
     address = to_host_hostport(settings.temporal_host)
     print(f"[demo] connecting to Temporal at {address}")
-    client = await Client.connect(address, namespace=settings.temporal_namespace)
+    client = await temporal_client.connect(address, settings)
     print(f"[demo] starting {workflow_id} on task queue {settings.temporal_task_queue}")
     if full_pipeline:
         print(

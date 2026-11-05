@@ -169,13 +169,13 @@ def _temporal_owner_active() -> Callable[[str], Awaitable[bool]]:
     lock = asyncio.Lock()
 
     async def _client() -> Any:
-        from temporalio.client import Client
+        from services import temporal_client
 
         if cache["client"] is None:
             async with lock:
                 if cache["client"] is None:
-                    cache["client"] = await Client.connect(
-                        settings.temporal_host, namespace=settings.temporal_namespace
+                    cache["client"] = await temporal_client.connect(
+                        settings.temporal_host, settings
                     )
         return cache["client"]
 

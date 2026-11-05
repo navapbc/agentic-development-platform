@@ -161,7 +161,7 @@ variable "management_cidr_blocks" {
 }
 
 variable "data_subnet_ids" {
-  description = "Existing data tier subnets spanning at least two Availability Zones, required when create_network is false and a data tier service is enabled."
+  description = "Existing data tier subnets spanning at least two Availability Zones, required when create_network is false and a data tier service is enabled. The Temporal server and admin-tools tasks may reach their CIDRs on the database port."
   type        = list(string)
   default     = []
 }
@@ -346,4 +346,88 @@ variable "ecs_deployer_passable_role_arns" {
   description = "Task and execution role ARNs, wildcards allowed, that the ECS cluster deployer policy may pass to tasks."
   type        = list(string)
   default     = []
+}
+
+variable "create_temporal_control_plane" {
+  description = "Create the Temporal control plane on the platform ECS cluster, starting with the ECR repositories for its images."
+  type        = bool
+  default     = false
+}
+
+variable "temporal_frontend_acm_certificate_arn" {
+  description = "ACM certificate the Temporal NLB presents to clients. Empty serves the frontend certificate inv temporal-certs put writes to Secrets Manager."
+  type        = string
+  default     = ""
+}
+
+variable "temporal_internode_acm_certificate_arn" {
+  description = "ACM certificate that tracks the Temporal internode certificate for expiry. The server reads the certificate from Secrets Manager."
+  type        = string
+  default     = ""
+}
+
+variable "temporal_frontend_server_name" {
+  description = "Name on the Temporal frontend certificate, which clients verify the frontend against. With temporal_frontend_acm_certificate_arn, the name on that certificate."
+  type        = string
+  default     = "frontend.temporal.internal"
+}
+
+variable "temporal_internode_server_name" {
+  description = "Name on the Temporal internode certificate."
+  type        = string
+  default     = "internode.temporal.internal"
+}
+
+variable "temporal_frontend_certificate_publicly_trusted" {
+  description = "The certificate in temporal_frontend_acm_certificate_arn chains to a public root, so clients verify it against the system trust store instead of the Temporal CA secret."
+  type        = bool
+  default     = false
+}
+
+variable "temporal_fips_140_mode" {
+  description = "Run the Temporal server, admin-tools, and UI processes in Go's FIPS 140-3 mode. Set true in a FedRAMP environment."
+  type        = bool
+  default     = false
+}
+
+variable "temporal_server_image" {
+  description = "Temporal server image reference with its digest, as inv publish-temporal-images prints it. Empty creates no server."
+  type        = string
+  default     = ""
+}
+
+variable "temporal_admin_tools_image" {
+  description = "Temporal admin-tools image reference with its digest."
+  type        = string
+  default     = ""
+}
+
+variable "temporal_ui_image" {
+  description = "Temporal UI image reference with its digest. Empty creates no UI."
+  type        = string
+  default     = ""
+}
+
+variable "temporal_server_count" {
+  description = "Temporal server tasks that inv temporal-deploy runs."
+  type        = number
+  default     = 1
+}
+
+variable "temporal_ui_acm_certificate_arn" {
+  description = "ACM certificate the Temporal UI load balancer presents. Empty creates no UI."
+  type        = string
+  default     = ""
+}
+
+variable "temporal_ui_allowed_cidr_blocks" {
+  description = "CIDRs, such as a VPN client range, allowed to reach the Temporal UI load balancer in addition to the jumphost task."
+  type        = list(string)
+  default     = []
+}
+
+variable "temporal_enable_execute_command" {
+  description = "Allow ECS Exec into the Temporal tasks."
+  type        = bool
+  default     = false
 }

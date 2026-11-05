@@ -142,3 +142,54 @@ output "ecs_exec_task_policy_arn" {
   description = "Policy a task role attaches to accept ECS Exec sessions in the platform ECS cluster."
   value       = module.ecs_cluster.exec_task_policy_arn
 }
+
+output "temporal_server_repository_url" {
+  description = "ECR repository that inv publish-temporal-images pushes the Temporal server image to."
+  value       = module.temporal_control_plane.server_repository_url
+}
+
+output "temporal_admin_tools_repository_url" {
+  description = "ECR repository that inv publish-temporal-images pushes the Temporal admin-tools image to."
+  value       = module.temporal_control_plane.admin_tools_repository_url
+}
+
+output "temporal_tls" {
+  description = "Temporal TLS secrets and certificate sources that inv temporal-certs put reads."
+  value = {
+    frontend_certificate_source   = module.temporal_control_plane.frontend_certificate_source
+    ca_secret_arn                 = module.temporal_control_plane.tls_ca_secret_arn
+    internode_secret_arn          = module.temporal_control_plane.tls_internode_secret_arn
+    frontend_secret_arn           = module.temporal_control_plane.tls_frontend_secret_arn
+    frontend_acm_certificate_arn  = module.temporal_control_plane.frontend_acm_certificate_arn
+    internode_acm_certificate_arn = module.temporal_control_plane.internode_acm_certificate_arn
+    certificate_expiry_topic_arn  = module.temporal_control_plane.certificate_expiry_topic_arn
+    frontend_server_name          = module.temporal_control_plane.frontend_server_name
+    internode_server_name         = module.temporal_control_plane.internode_server_name
+  }
+}
+
+output "temporal_ui_repository_url" {
+  description = "ECR repository that inv publish-temporal-images pushes the Temporal UI image to."
+  value       = module.temporal_control_plane.ui_repository_url
+}
+
+output "temporal_client" {
+  description = "Settings a Temporal client uses: TEMPORAL_HOST, TEMPORAL_NAMESPACE, TEMPORAL_TLS_SERVER_NAME, the secret to inject as TEMPORAL_TLS_CA, and the security group to attach."
+  value = {
+    endpoint          = module.temporal_control_plane.endpoint
+    namespace         = module.temporal_control_plane.namespace
+    server_name       = module.temporal_control_plane.frontend_server_name
+    ca_secret_arn     = module.temporal_control_plane.client_ca_secret_arn
+    security_group_id = module.temporal_control_plane.client_security_group_id
+  }
+}
+
+output "temporal_ui_url" {
+  description = "HTTPS address of the Temporal UI load balancer, reachable from the management tier."
+  value       = module.temporal_control_plane.ui_url
+}
+
+output "temporal_deploy" {
+  description = "What inv temporal-deploy runs."
+  value       = module.temporal_control_plane.deploy
+}

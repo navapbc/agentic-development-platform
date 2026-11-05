@@ -42,9 +42,9 @@ async def _run_once(apply: bool) -> int:
 
 
 async def _install_schedule() -> int:
+    from services import temporal_client
     from services.orchestration.temporal_workflows.reap import ReapInput, ReapWorkflow
     from temporalio.client import (
-        Client,
         Schedule,
         ScheduleActionStartWorkflow,
         ScheduleIntervalSpec,
@@ -52,7 +52,7 @@ async def _install_schedule() -> int:
     )
 
     settings = get_settings()
-    client = await Client.connect(settings.temporal_host, namespace=settings.temporal_namespace)
+    client = await temporal_client.connect(settings.temporal_host, settings)
     schedule = Schedule(
         action=ScheduleActionStartWorkflow(
             ReapWorkflow.run,

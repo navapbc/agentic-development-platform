@@ -63,7 +63,7 @@ The RDS-managed master secret rotates every seven days through RDS itself and is
 
 ## Role bootstrap
 
-The PostgreSQL function also creates the service roles and databases when it is invoked with `{"action": "bootstrap"}`. Run it with `inv db-bootstrap-roles --function-name <role_bootstrap_function_name>` once after the first apply, before the first migration and before the first scheduled rotation. The bootstrap is idempotent and sets every role password to the current value of its secret, so it also repairs a role after a database restore.
+The PostgreSQL function also creates the service roles and databases when it is invoked with `{"action": "bootstrap"}`. Run it with `inv db-bootstrap-roles --function-name <role_bootstrap_function_name>` once after the first apply, before the first migration and before the first scheduled rotation. The bootstrap is idempotent and sets every role password to the current value of its secret, so it also repairs a role after a database restore. Run it again whenever the cluster is created anew, as after a destroy and apply, because the new cluster has none of the roles and every service login fails with `password authentication failed` until it runs.
 
 | Role | Gets |
 |---|---|

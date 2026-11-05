@@ -4,7 +4,7 @@ This roadmap groups the remaining platform work into versions. The authoritative
 
 Every v0.2.0 feature and every v0.3.0 feature planned before the Jira board has a dedicated implementation plan. The v0.3.0 features added from the Jira board name their ticket. Later versions link to their entry in the roadmap plan until their plans are written.
 
-Total remaining scope is roughly 153 to 203 hours across 22 features.
+Total remaining scope is roughly 160 to 213 hours across 23 features.
 
 ## v0.1.0 Pluggable ticket and source-control backends
 
@@ -54,7 +54,10 @@ Goal. The platform is technically FedRAMP Medium ready. It has documented local-
 | ECS Fargate services for the platform containers | 20-30h (low) | Jira ADP-136, a sub-task of ADP-61. [plan](docs/plans/2026-09-14-2151-feat-container-platform-services-terraform-plan.md) |
 | EKS cluster for the pod-orchestrating workloads | 28-40h (low) | Jira ADP-137, a sub-task of ADP-61. [plan](docs/plans/2026-09-14-2151-feat-container-platform-services-terraform-plan.md) |
 | Local Temporal server upgrade to 1.32.1 | 6-10h | Jira ADP-138. [plan](docs/plans/2026-10-30-1330-feat-temporal-server-upgrade-plan.md) |
-| Temporal control plane terraform | 10-14h | Jira ADP-97. [plan](docs/plans/2026-09-14-2152-feat-temporal-control-plane-terraform-plan.md) |
+| Platform ECS cluster | 3-5h | Jira ADP-145. The shared cluster the platform owns for the Temporal control plane, the ECS services, and other teams. |
+| Temporal control plane terraform | 15-21h | Jira ADP-97. [plan](docs/plans/2026-09-14-2152-feat-temporal-control-plane-terraform-plan.md) |
+| Off-hours Temporal scale-down and database pause | 5-8h | Jira ADP-146 |
+| Validated Go FIPS 140-3 module for the Temporal server and UI | 8-12h, low confidence | Jira ADP-153. Builds the server, admin-tools, and UI binaries from source with `GOFIPS140` set to a CMVP-validated module version. |
 | Observability terraform | 6-10h | Jira ADP-95. [plan](docs/plans/2026-09-14-2153-feat-observability-terraform-plan.md) |
 | Activity worker, LiteLLM, and OPA in the local cluster | 8-12h | Jira ADP-139. Also removes `langgraph-service`. |
 | Private-endpoint jump-host residual hardening | 1-2h | Jira ADP-104. [plan](docs/plans/2026-09-14-1900-feat-jumphost-residual-hardening-plan.md) |
@@ -63,7 +66,7 @@ Goal. The platform is technically FedRAMP Medium ready. It has documented local-
 | MCP gateway client authentication | 3-5h | Jira ADP-140 |
 | Leaked OpenHands sandbox pods | 3-5h | Jira ADP-141 |
 
-Version effort. 172-249h.
+Version effort. 185-269h.
 
 ## v0.4.0 Production serving and demo readiness
 

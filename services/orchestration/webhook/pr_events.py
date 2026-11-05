@@ -141,12 +141,10 @@ class TemporalSignaller:
 
     @classmethod
     async def connect(cls, settings: Settings | None = None) -> TemporalSignaller:
-        from temporalio.client import Client
+        from services import temporal_client
 
         resolved = settings or get_settings()
-        client = await Client.connect(
-            to_host_hostport(resolved.temporal_host), namespace=resolved.temporal_namespace
-        )
+        client = await temporal_client.connect(to_host_hostport(resolved.temporal_host), resolved)
         return cls(client)
 
     async def signal_pr_closed(self, workflow_id: str, *, merged: bool) -> None:
