@@ -213,6 +213,8 @@ def _pin_builds(monkeypatch, outgoing: str, incoming: str, stranded: list[str]) 
         temporal_host = "temporal:7233"
         temporal_host_port = 7233
         temporal_namespace = "default"
+        temporal_tls_ca = ""
+        temporal_tls_server_name = ""
 
     async def _connect(*args, **kwargs):
         return object()

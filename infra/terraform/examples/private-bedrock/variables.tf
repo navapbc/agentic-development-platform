@@ -161,7 +161,7 @@ variable "management_cidr_blocks" {
 }
 
 variable "data_subnet_ids" {
-  description = "Existing data tier subnets spanning at least two Availability Zones, required when create_network is false and a data tier service is enabled."
+  description = "Existing data tier subnets spanning at least two Availability Zones, required when create_network is false and a data tier service is enabled. The Temporal server and admin-tools tasks may reach their CIDRs on the database port."
   type        = list(string)
   default     = []
 }

@@ -296,13 +296,21 @@ def put(
     *,
     import_to_acm: bool = False,
 ) -> list[str]:
-    """Check the directory, sync ACM, then write the secrets. Nothing is written on a failure."""
-    if not tls.get("ca_secret_arn"):
+    """Check the directory, sync ACM, then write the secrets with the CA bundle last.
+
+    A failed check writes nothing. A failed write leaves the CA bundle as it was, and the error
+    names the secrets already written.
+    """
+    frontend = tls.get("frontend_certificate_source") == "secrets"
+    required = ["ca_secret_arn", "internode_secret_arn"] + (
+        ["frontend_secret_arn"] if frontend else []
+    )
+    missing = [name for name in required if not tls.get(name)]
+    if missing:
         raise CertificateError(
-            "The Temporal TLS secrets do not exist. Set create_temporal_control_plane = true and "
-            "apply private-bedrock first."
+            f"The temporal_tls output has no {', '.join(missing)}. Set "
+            "create_temporal_control_plane = true and apply private-bedrock first."
         )
-    frontend = tls["frontend_certificate_source"] == "secrets"
     material = load(
         directory,
         frontend=frontend,
@@ -336,22 +344,39 @@ def put(
                 "--import-to-acm to re-import it there, or put the certificate ACM holds."
             )
 
-    secretsmanager.put_secret_value(SecretId=tls["ca_secret_arn"], SecretString=material.ca)
-    secretsmanager.put_secret_value(
-        SecretId=tls["internode_secret_arn"],
-        SecretString=json.dumps(
-            {"certificate": material.internode_certificate, "private_key": material.internode_key}
+    writes = [
+        (
+            "the internode certificate and key",
+            tls["internode_secret_arn"],
+            {"certificate": material.internode_certificate, "private_key": material.internode_key},
         ),
-    )
-    actions += ["wrote the CA bundle", "wrote the internode certificate and key"]
+    ]
     if frontend:
-        secretsmanager.put_secret_value(
-            SecretId=tls["frontend_secret_arn"],
-            SecretString=json.dumps(
-                {"certificate": material.frontend_certificate, "private_key": material.frontend_key}
-            ),
+        writes.append(
+            (
+                "the frontend certificate and key",
+                tls["frontend_secret_arn"],
+                {
+                    "certificate": material.frontend_certificate,
+                    "private_key": material.frontend_key,
+                },
+            )
         )
-        actions.append("wrote the frontend certificate and key")
+    written: list[str] = []
+    for label, secret_arn, value in [*writes, ("the CA bundle", tls["ca_secret_arn"], material.ca)]:
+        try:
+            secretsmanager.put_secret_value(
+                SecretId=secret_arn,
+                SecretString=value if isinstance(value, str) else json.dumps(value),
+            )
+        except Exception as exc:
+            exc.add_note(
+                f"temporal-certs put wrote {', '.join(written) or 'nothing'} before the failure, "
+                "and the CA bundle is unchanged. Run put again before inv temporal-deploy."
+            )
+            raise
+        written.append(label)
+        actions.append(f"wrote {label}")
     return actions
 
 

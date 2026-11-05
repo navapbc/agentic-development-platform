@@ -302,6 +302,15 @@ def test_a_failed_leaf_write_leaves_the_ca_unrotated(issued, fails_on) -> None:
     assert "arn:ca" not in secretsmanager.values
 
 
+def test_a_failed_write_names_the_secrets_already_written(issued) -> None:
+    with pytest.raises(RuntimeError) as failure:
+        certs.put(issued, SECRETS_TLS, _FailingSecretsManager("arn:frontend"), _Acm())
+
+    assert "wrote the internode certificate and key before the failure" in " ".join(
+        failure.value.__notes__
+    )
+
+
 def test_put_checks_every_secret_arn_before_the_first_write(issued) -> None:
     secretsmanager = _SecretsManager()
 

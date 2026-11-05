@@ -266,12 +266,11 @@ def _refuse_to_strand(outgoing: str) -> None:
         return
 
     async def _stranded() -> list[str]:
+        from services import temporal_client
         from services.orchestration.worker_versioning import pinned_executions
-        from temporalio.client import Client
 
-        client = await Client.connect(
-            to_host_hostport(settings.temporal_host, settings),
-            namespace=settings.temporal_namespace,
+        client = await temporal_client.connect(
+            to_host_hostport(settings.temporal_host, settings), settings
         )
         return await pinned_executions(client, settings.worker_deployment_name, outgoing)
 

@@ -12,11 +12,13 @@ locals {
           try(aws_secretsmanager_secret.tls["internode"].arn, ""),
           try(aws_secretsmanager_secret.tls["frontend"].arn, ""),
         ])
+        keys      = [aws_kms_key.temporal[0].arn, var.database_secret_kms_key_arn]
         log_group = "server"
       }
       admin_tools = {
         repository = module.admin_tools_repository.repository_arn
         secrets    = compact([var.database_secret_arn, local.client_ca ? aws_secretsmanager_secret.tls["ca"].arn : ""])
+        keys       = compact([var.database_secret_kms_key_arn, local.client_ca ? aws_kms_key.temporal[0].arn : ""])
         log_group  = "admin-tools"
       }
     },
@@ -24,6 +26,7 @@ locals {
       ui = {
         repository = module.ui_repository.repository_arn
         secrets    = compact([local.client_ca ? aws_secretsmanager_secret.tls["ca"].arn : ""])
+        keys       = compact([local.client_ca ? aws_kms_key.temporal[0].arn : ""])
         log_group  = "ui"
       }
     } : {},
@@ -47,7 +50,7 @@ locals {
   execution_policies = {
     for name, role in local.roles : name => jsonencode({
       Version = "2012-10-17"
-      Statement = [
+      Statement = concat([
         {
           Sid      = "AuthenticateToEcr"
           Effect   = "Allow"
@@ -66,6 +69,7 @@ locals {
           Action   = ["logs:CreateLogStream", "logs:PutLogEvents"]
           Resource = "${aws_cloudwatch_log_group.task[role.log_group].arn}:*"
         },
+        ], length(role.secrets) == 0 ? [] : [
         {
           Sid      = "ReadTheInjectedSecrets"
           Effect   = "Allow"
@@ -76,9 +80,9 @@ locals {
           Sid      = "DecryptTheInjectedSecrets"
           Effect   = "Allow"
           Action   = "kms:Decrypt"
-          Resource = distinct([aws_kms_key.temporal[0].arn, var.database_secret_kms_key_arn])
+          Resource = distinct(role.keys)
         },
-      ]
+      ])
     })
   }
 }
