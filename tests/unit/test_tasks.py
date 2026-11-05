@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 import tasks as tasks_module
 from invoke.collection import Collection
 from invoke.context import Context
+from invoke.exceptions import Exit
+from invoke.runners import Result
 
 EXPECTED_TASKS = {
     "tunnel-start",
@@ -164,3 +167,58 @@ def test_rebar_store_remote_runs_in_a_one_off_worker_container(project):
         "python -m scripts.rebar_store_remote"
     ]
     assert host.commands == [f"{tasks_module.HOST_PYTHON} -m scripts.rebar_store_remote"]
+
+
+class _TerraformContext(Context):
+    def __init__(self, version: str) -> None:
+        super().__init__()
+        self.version = version
+        self.commands: list[str] = []
+
+    def run(self, command: str, **_: object) -> Result:
+        self.commands.append(command)
+        return Result(stdout=json.dumps({"terraform_version": self.version}))
+
+
+def _pinned_terraform_version() -> str:
+    path = Path(tasks_module.__file__).parent / ".terraform-version"
+    return path.read_text(encoding="utf-8").strip()
+
+
+def test_terraform_modules_finds_a_composition_root_below_the_top_level(tmp_path):
+    (tmp_path / "ecs-cluster" / "tests").mkdir(parents=True)
+    (tmp_path / "examples" / "private-bedrock" / "tests").mkdir(parents=True)
+    (tmp_path / "ecs-cluster" / ".terraform" / "modules" / "vendored" / "tests").mkdir(parents=True)
+
+    assert tasks_module._terraform_modules(str(tmp_path)) == [
+        str(tmp_path / "ecs-cluster"),
+        str(tmp_path / "examples" / "private-bedrock"),
+    ]
+
+
+def test_terraform_test_refuses_a_version_other_than_the_pin():
+    context = _TerraformContext("0.0.0")
+
+    with pytest.raises(Exit, match=_pinned_terraform_version()):
+        tasks_module.terraform_test(context)
+
+    assert context.commands == ["terraform version -json"]
+
+
+def test_terraform_test_runs_every_module_on_the_pinned_version():
+    context = _TerraformContext(_pinned_terraform_version())
+
+    tasks_module.terraform_test(context)
+
+    modules = tasks_module._terraform_modules(
+        str(Path(tasks_module.__file__).parent / "infra" / "terraform")
+    )
+    assert context.commands[0] == "terraform version -json"
+    assert context.commands[1:] == [
+        command
+        for module in modules
+        for command in (
+            f"terraform -chdir={module} init -backend=false -input=false",
+            f"terraform -chdir={module} test",
+        )
+    ]
