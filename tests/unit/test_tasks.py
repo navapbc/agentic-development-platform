@@ -57,6 +57,8 @@ EXPECTED_TASKS = {
     "publish-platform-images",
     "go-test",
     "temporal-certs",
+    "clickhouse-certs",
+    "langfuse-ui",
     "temporal-deploy",
     "platform-deploy",
     "temporal-ui",

@@ -158,6 +158,16 @@ output "container_workspace" {
   value       = module.container_services.workspace
 }
 
+output "container_clickhouse" {
+  description = "The ClickHouse TLS secret inv clickhouse-certs put writes, and the name its certificate must carry."
+  value       = module.container_services.clickhouse
+}
+
+output "container_langfuse" {
+  description = "The internal Langfuse URL the platform services export to, and the URL inv langfuse-ui forwards."
+  value       = module.container_services.langfuse
+}
+
 output "container_internal_endpoints" {
   description = "The internal load balancer's client security group, each service's target security group and target group, and each service's HTTPS URL."
   value       = module.container_services.internal_endpoints

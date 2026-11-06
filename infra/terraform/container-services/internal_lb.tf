@@ -218,3 +218,25 @@ resource "aws_route53_record" "internal" {
     evaluate_target_health = false
   }
 }
+
+resource "aws_vpc_security_group_ingress_rule" "internal_lb_from_operators" {
+  count = local.internal_lb ? length(var.internal_operator_security_group_ids) : 0
+
+  security_group_id            = aws_security_group.internal_lb[0].id
+  description                  = "HTTPS from an operator group, such as the jumphost"
+  from_port                    = 443
+  to_port                      = 443
+  ip_protocol                  = "tcp"
+  referenced_security_group_id = var.internal_operator_security_group_ids[count.index]
+}
+
+resource "aws_vpc_security_group_egress_rule" "operators_to_internal_lb" {
+  count = local.internal_lb ? length(var.internal_operator_security_group_ids) : 0
+
+  security_group_id            = var.internal_operator_security_group_ids[count.index]
+  description                  = "HTTPS to the internal load balancer"
+  from_port                    = 443
+  to_port                      = 443
+  ip_protocol                  = "tcp"
+  referenced_security_group_id = aws_security_group.internal_lb[0].id
+}

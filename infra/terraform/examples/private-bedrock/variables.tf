@@ -278,7 +278,7 @@ variable "create_secret_store" {
 }
 
 variable "secret_readers" {
-  description = "IAM role ARNs allowed to read each secret, keyed by secret key. See the secret-store module README."
+  description = "IAM role or user ARNs allowed to read each secret, keyed by secret key. See the secret-store module README."
   type        = map(list(string))
   default     = {}
 }
@@ -436,6 +436,48 @@ variable "container_enable_execute_command" {
   description = "Allow ECS Exec into the platform tasks."
   type        = bool
   default     = false
+}
+
+variable "container_langfuse_web_image" {
+  description = "Langfuse web image reference with its digest, as inv publish-platform-images prints it. Empty with any other Langfuse image empty runs no Langfuse or ClickHouse."
+  type        = string
+  default     = ""
+}
+
+variable "container_langfuse_worker_image" {
+  description = "Langfuse worker image reference with its digest."
+  type        = string
+  default     = ""
+}
+
+variable "container_clickhouse_image" {
+  description = "ClickHouse image reference with its digest."
+  type        = string
+  default     = ""
+}
+
+variable "container_tls_sidecar_image" {
+  description = "TLS sidecar image reference with its digest, which fronts Langfuse web."
+  type        = string
+  default     = ""
+}
+
+variable "container_langfuse_admin_email" {
+  description = "Email of the Langfuse administrator created on the first start, whose password is the langfuse_admin_password secret."
+  type        = string
+  default     = ""
+}
+
+variable "container_langfuse_public_url" {
+  description = "URL operators open Langfuse under through inv langfuse-ui, set as NEXTAUTH_URL. Empty uses https://langfuse.<container_internal_domain>:8444."
+  type        = string
+  default     = ""
+}
+
+variable "container_langfuse_task_sizes" {
+  description = "CPU units and memory in MiB of the clickhouse, langfuse-web, and langfuse-worker tasks. Null keeps the module defaults."
+  type        = map(object({ cpu = number, memory = number }))
+  default     = null
 }
 
 variable "create_temporal_control_plane" {

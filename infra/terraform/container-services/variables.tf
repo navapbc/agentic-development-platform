@@ -284,3 +284,74 @@ variable "otel_collector_enabled" {
   type        = bool
   default     = false
 }
+
+variable "langfuse" {
+  description = "Langfuse and ClickHouse images, the cache, the ClickHouse file system, the blob bucket, the URL operators open, and the administrator. Null runs neither."
+  type = object({
+    web_image         = string
+    worker_image      = string
+    clickhouse_image  = string
+    tls_sidecar_image = string
+    public_url        = string
+    admin_email       = string
+    cache = object({
+      endpoint          = string
+      port              = number
+      username          = string
+      security_group_id = string
+    })
+    clickhouse_storage = object({
+      file_system_id    = string
+      file_system_arn   = string
+      access_point_id   = string
+      access_point_arn  = string
+      security_group_id = string
+    })
+    bucket = object({
+      name        = string
+      arn         = string
+      kms_key_arn = string
+    })
+  })
+  default = null
+}
+
+variable "langfuse_cache_secret_arn" {
+  description = "Secret of the cache RBAC user Langfuse authenticates as, whose password field becomes REDIS_AUTH. A separate input from langfuse, because the secret store key policy that encrypts it lists the roles this module creates."
+  type        = string
+  default     = ""
+}
+
+variable "langfuse_task_sizes" {
+  description = "CPU units and memory in MiB of each Langfuse and ClickHouse task."
+  type        = map(object({ cpu = number, memory = number }))
+  nullable    = false
+  default = {
+    clickhouse      = { cpu = 2048, memory = 8192 }
+    langfuse-web    = { cpu = 1024, memory = 2048 }
+    langfuse-worker = { cpu = 1024, memory = 2048 }
+  }
+}
+
+variable "clickhouse_namespace" {
+  description = "Cloud Map private DNS namespace that names the ClickHouse task. Empty uses data.<internal_domain>."
+  type        = string
+  default     = ""
+}
+
+variable "secret_recovery_window_days" {
+  description = "Days the deleted ClickHouse TLS secret stays recoverable. Set 0 in a disposable environment that is destroyed and applied again."
+  type        = number
+  default     = 30
+
+  validation {
+    condition     = var.secret_recovery_window_days == 0 || (var.secret_recovery_window_days >= 7 && var.secret_recovery_window_days <= 30)
+    error_message = "secret_recovery_window_days must be 0 or between 7 and 30."
+  }
+}
+
+variable "internal_operator_security_group_ids" {
+  description = "Security groups, such as the jumphost task group, allowed to reach the internal load balancer on 443. The module adds the matching egress rule to each group."
+  type        = list(string)
+  default     = []
+}

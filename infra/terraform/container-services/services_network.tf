@@ -12,7 +12,7 @@ locals {
   }
 
   workload_security_groups = {
-    for name, spec in local.workloads : name => concat(
+    for name, spec in local.all_workloads : name => concat(
       [aws_security_group.workload[name].id],
       spec.temporal ? [var.temporal.client_security_group_id] : [],
       spec.internal_client ? [aws_security_group.internal_client[0].id] : [],
@@ -22,10 +22,10 @@ locals {
 }
 
 resource "aws_security_group" "workload" {
-  for_each = local.workloads
+  for_each = local.all_workloads
 
   name_prefix = "${var.name_prefix}-${local.role_labels[each.key]}-"
-  description = "${each.key} tasks. No ingress of its own. Egress to the endpoints, S3, and what the task declares."
+  description = each.key == "clickhouse" ? "ClickHouse task. Ingress over TLS from the Langfuse tasks only. Egress to the endpoints, S3, and its file system." : "${each.key} tasks. No ingress of its own. Egress to the endpoints, S3, and what the task declares."
   vpc_id      = var.vpc_id
 
   tags = merge(var.tags, { Name = "${var.name_prefix}-${each.key}" })
@@ -36,7 +36,7 @@ resource "aws_security_group" "workload" {
 }
 
 resource "aws_vpc_security_group_egress_rule" "workload_to_endpoints" {
-  for_each = local.workloads
+  for_each = local.all_workloads
 
   security_group_id            = aws_security_group.workload[each.key].id
   description                  = "HTTPS to the shared VPC endpoints"
@@ -47,7 +47,7 @@ resource "aws_vpc_security_group_egress_rule" "workload_to_endpoints" {
 }
 
 resource "aws_vpc_security_group_egress_rule" "workload_to_s3" {
-  for_each = local.workloads
+  for_each = local.all_workloads
 
   security_group_id = aws_security_group.workload[each.key].id
   description       = "HTTPS to S3 through the gateway endpoint, for image layers"

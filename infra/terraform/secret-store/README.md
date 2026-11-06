@@ -24,6 +24,7 @@ Generated secrets get a random value from Terraform on the first apply. Terrafor
 | `langfuse_encryption_key` | generated | `ENCRYPTION_KEY` | None, see below |
 | `langfuse_public_key` | generated | `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_INIT_PROJECT_PUBLIC_KEY` | Manual, by generation |
 | `langfuse_secret_key` | generated | `LANGFUSE_SECRET_KEY`, `LANGFUSE_INIT_PROJECT_SECRET_KEY` | Manual, by generation |
+| `langfuse_admin_password` | generated | `LANGFUSE_INIT_USER_PASSWORD` | In the Langfuse UI, see below |
 | `clickhouse_password` | generated | `CLICKHOUSE_PASSWORD` | Manual, by generation |
 | `coordination_shared_secret` | generated | `COORDINATION_SHARED_SECRET` | Manual, by generation |
 | `github_token` | external | `GITHUB_TOKEN` | At the issuer |
@@ -46,7 +47,7 @@ The trust-root bundle holds only public keys and stays in configuration. The Min
 
 ## Access
 
-`secret_readers` maps a secret key to the role ARNs that read it. For a secret that ECS injects into a task, pass the task execution role, because ECS reads the value when the task starts. The key policy lets those roles decrypt only through Secrets Manager. A secret with no readers denies `GetSecretValue` to everyone except its rotation function, which suits an external secret before its consumer exists. An operator still writes a value with `PutSecretValue`.
+`secret_readers` maps a secret key to the role or user ARNs that read it. For a secret that ECS injects into a task, pass the task execution role, because ECS reads the value when the task starts. The key policy lets those roles decrypt only through Secrets Manager. A secret with no readers denies `GetSecretValue` to everyone except its rotation function, which suits an external secret before its consumer exists. An operator still writes a value with `PutSecretValue`.
 
 ## Automatic rotation
 
@@ -87,6 +88,7 @@ Each service reads its secrets once, when its task starts. `restart_services` ma
 | External secrets | Issue the new token or webhook secret at GitHub, Jira, or Slack, then `aws secretsmanager put-secret-value`. Revoke the old one at the issuer after the consumers restart. |
 | Signing keys | Add the new public key to the trust root or identity, write the private key with `put-secret-value`, then revoke the old key. |
 | `langfuse_encryption_key` | Not rotated. Langfuse encrypts stored data with it and has no re-encryption path, so a new key makes stored data unreadable. |
+| `langfuse_admin_password` | Langfuse reads it only to create the administrator on its first start against an empty database. Change the administrator password in the Langfuse UI, then write the new value with `aws secretsmanager put-secret-value` so the secret records it. A new generation alone does not change the password Langfuse holds. |
 
 Rotate a credential at once, outside the schedule, when it may be exposed, when a person with access to it leaves or changes role, and when the membership of a group that shares it changes.
 

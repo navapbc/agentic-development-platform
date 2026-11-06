@@ -2,8 +2,10 @@
 
 Terraform registers the task definitions and leaves each service at its current task definition
 and count. This runs db-migrate as the migrator role and stops unless it exits 0, so no service
-starts against a schema older than its build. It then moves each service to the task definition
-Terraform last registered and waits for every service to settle.
+starts against a schema older than its build. With Langfuse, it then moves ClickHouse to its task
+definition, waits for it to settle, and runs the Langfuse ClickHouse migrations with certificate
+verification. It then moves each other service to the task definition Terraform last registered
+and waits for every service to settle.
 
 A Temporal worker runs in a blue and a green slot. A new build starts in the idle slot and makes
 itself the current version, so new executions start on it, while the old slot keeps serving the
@@ -29,6 +31,7 @@ from scripts.temporal_certs import COMPOSITION_ROOT
 TASK_WAIT = {"Delay": 10, "MaxAttempts": 120}
 SERVICE_WAIT = {"Delay": 15, "MaxAttempts": 80}
 PRUNE_COMMAND = ["python", "-m", "scripts.prune_worker_versions"]
+DATA_SERVICES = ("clickhouse",)
 LOG = "[platform-deploy]"
 
 
@@ -116,11 +119,27 @@ def _slot_states(ecs: Any, cluster: str, slots: dict[str, str]) -> dict[str, dic
     }
 
 
-def plan_versioned(ecs: Any, deploy: dict[str, Any], name: str) -> tuple[str, str | None]:
+def _pinned(ecs: Any, deploy: dict[str, Any], build: str, checked: dict[str, int]) -> bool:
+    """Report whether running executions are pinned to `build`, once per build per deploy."""
+    if build not in checked:
+        checked[build] = run_task(
+            ecs,
+            deploy,
+            "schedule-bootstrap",
+            ["python", "-m", "scripts.pinned_executions", build],
+            accept=(0, PINNED_EXIT_CODE),
+        )
+    return checked[build] == PINNED_EXIT_CODE
+
+
+def plan_versioned(
+    ecs: Any, deploy: dict[str, Any], name: str, checked: dict[str, int]
+) -> tuple[str, str | None]:
     """Choose the slot of `name` that takes the new task definition and the slot left to drain.
 
     A slot running the target build takes the new revision in place. Otherwise the idle slot
-    takes the new build and the running slot, if any, is left to drain.
+    takes the new build and the running slot, if any, is left to drain. With both slots running
+    older builds, a slot whose build no running execution is pinned to takes the new build.
     """
     worker = deploy["versioned_services"][name]
     states = _slot_states(ecs, deploy["cluster"], worker["slots"])
@@ -130,10 +149,18 @@ def plan_versioned(ecs: Any, deploy: dict[str, Any], name: str) -> tuple[str, st
         if _build_of(ecs, states[slot]["task_definition"]) == target_build:
             return slot, next((other for other in running if other != slot), None)
     if len(running) == len(states):
-        raise DeployError(
-            f"both {name} slots still run older builds, so the new build has no slot. Let the "
-            "executions pinned to them finish, or resume the parked ones, and deploy again."
-        )
+        free = [
+            slot
+            for slot in running
+            if not _pinned(ecs, deploy, _build_of(ecs, states[slot]["task_definition"]), checked)
+        ]
+        if not free:
+            raise DeployError(
+                f"both {name} slots still run older builds with pinned executions, so the new "
+                "build has no slot. Let those executions finish, or resume the parked ones, and "
+                "deploy again."
+            )
+        return free[0], next(slot for slot in running if slot != free[0])
     idle = next(slot for slot in states if slot not in running)
     return idle, running[0] if running else None
 
@@ -146,15 +173,7 @@ def drain(ecs: Any, deploy: dict[str, Any], name: str, slot: str, checked: dict[
     cluster = deploy["cluster"]
     state = _slot_states(ecs, cluster, deploy["versioned_services"][name]["slots"])[slot]
     build = _build_of(ecs, state["task_definition"])
-    if build not in checked:
-        checked[build] = run_task(
-            ecs,
-            deploy,
-            "schedule-bootstrap",
-            ["python", "-m", "scripts.pinned_executions", build],
-            accept=(0, PINNED_EXIT_CODE),
-        )
-    if checked[build] == PINNED_EXIT_CODE:
+    if _pinned(ecs, deploy, build, checked):
         print(
             f"{LOG} {state['service']} keeps build {build}, which running executions are pinned "
             "to. A later deploy scales it to zero once they finish."
@@ -164,17 +183,56 @@ def drain(ecs: Any, deploy: dict[str, Any], name: str, slot: str, checked: dict[
     print(f"{LOG} scaled {state['service']} to zero, as no execution is pinned to build {build}")
 
 
-def roll_services(ecs: Any, deploy: dict[str, Any]) -> dict[str, str]:
+def _single_services(deploy: dict[str, Any]) -> list[dict[str, Any]]:
+    langfuse = deploy.get("langfuse_services", {})
+    return list(deploy["services"].values()) + [
+        service for name, service in langfuse.items() if name not in DATA_SERVICES
+    ]
+
+
+def roll_data_services(ecs: Any, deploy: dict[str, Any]) -> None:
+    """Move ClickHouse to its task definition, wait for it, and migrate its Langfuse schema."""
+    data = [
+        service
+        for name, service in deploy.get("langfuse_services", {}).items()
+        if name in DATA_SERVICES
+    ]
+    if not data:
+        return
+    for service in data:
+        _move(
+            ecs, deploy["cluster"], service["service"], service["task_definition"], service["count"]
+        )
+    ecs.get_waiter("services_stable").wait(
+        cluster=deploy["cluster"],
+        services=[service["service"] for service in data],
+        WaiterConfig=SERVICE_WAIT,
+    )
+    run_task(ecs, deploy, "clickhouse-migrate")
+
+
+def plan_slots(
+    ecs: Any, deploy: dict[str, Any], checked: dict[str, int]
+) -> dict[str, tuple[str, str | None]]:
+    return {
+        name: plan_versioned(ecs, deploy, name, checked)
+        for name in deploy.get("versioned_services", {})
+    }
+
+
+def roll_services(
+    ecs: Any, deploy: dict[str, Any], plans: dict[str, tuple[str, str | None]]
+) -> dict[str, str]:
     """Move every service to its current task definition, returning the slots left to drain."""
     versioned = deploy.get("versioned_services", {})
-    plans = {name: plan_versioned(ecs, deploy, name) for name in versioned}
     cluster = deploy["cluster"]
-    for service in deploy["services"].values():
+    single = _single_services(deploy)
+    for service in single:
         _move(ecs, cluster, service["service"], service["task_definition"], service["count"])
     for name, (slot, _) in plans.items():
         worker = versioned[name]
         _move(ecs, cluster, worker["slots"][slot], worker["task_definition"], worker["count"])
-    services = [service["service"] for service in deploy["services"].values()] + [
+    services = [service["service"] for service in single] + [
         service for worker in versioned.values() for service in worker["slots"].values()
     ]
     ecs.get_waiter("services_stable").wait(
@@ -192,7 +250,9 @@ def deploy(ecs: Any, settings: dict[str, Any]) -> None:
         )
     run_task(ecs, settings, "db-migrate")
     checked: dict[str, int] = {}
-    for name, slot in roll_services(ecs, settings).items():
+    plans = plan_slots(ecs, settings, checked)
+    roll_data_services(ecs, settings)
+    for name, slot in roll_services(ecs, settings, plans).items():
         drain(ecs, settings, name, slot, checked)
     run_task(ecs, settings, "schedule-bootstrap")
     run_task(ecs, settings, "schedule-bootstrap", PRUNE_COMMAND)

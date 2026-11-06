@@ -19,9 +19,17 @@ output "execution_role_arns" {
   value       = { for name, role in aws_iam_role.workload_execution : name => role.arn }
 }
 
+output "temporal_client_role_arns" {
+  description = "Execution roles of the workloads that connect to Temporal, which inject the Temporal CA."
+  value       = [for name, spec in local.all_workloads : aws_iam_role.workload_execution[name].arn if spec.temporal]
+}
+
 output "service_arns" {
   description = "ECS service of each platform service and worker slot, for secret_restart_services."
-  value       = { for name, service in aws_ecs_service.platform : name => service.id }
+  value = merge(
+    { for name, service in aws_ecs_service.platform : name => service.id },
+    { for name, service in aws_ecs_service.langfuse : name => service.id },
+  )
 }
 
 output "workspace" {
@@ -45,6 +53,13 @@ output "deploy" {
         count           = lookup(var.service_counts, name, 1)
       } if !contains(local.versioned_workers, name)
     }
+    langfuse_services = {
+      for name in keys(local.langfuse_services) : name => {
+        service         = aws_ecs_service.langfuse[name].name
+        task_definition = aws_ecs_task_definition.langfuse[name].arn
+        count           = lookup(var.service_counts, name, 1)
+      }
+    }
     versioned_services = {
       for name in keys(local.services) : name => {
         slots           = { for slot in local.slots : slot => aws_ecs_service.platform["${name}-${slot}"].name }
@@ -52,24 +67,62 @@ output "deploy" {
         count           = lookup(var.service_counts, name, 1)
       } if contains(local.versioned_workers, name)
     }
-    tasks = {
-      for name in keys(local.tasks) : name => {
-        task_definition = aws_ecs_task_definition.workload[name].arn
-        container       = name
-        security_groups = local.workload_security_groups[name]
-      }
-    }
+    tasks = merge(
+      {
+        for name in keys(local.tasks) : name => {
+          task_definition = aws_ecs_task_definition.workload[name].arn
+          container       = name
+          security_groups = local.workload_security_groups[name]
+        }
+      },
+      {
+        for name, spec in local.langfuse_workloads : name => {
+          task_definition = aws_ecs_task_definition.langfuse[name].arn
+          container       = name
+          security_groups = local.workload_security_groups[name]
+        } if spec.one_shot
+      },
+    )
     task_subnets = var.management_subnet_ids
   } : null
 }
 
 output "secret_readers" {
   description = "Execution roles that inject each secret, keyed by its secret store key, for the secret store's secret_readers. Empty without the services."
-  value = local.services_enabled ? {
-    database_platform_app      = [for name, spec in local.workloads : aws_iam_role.workload_execution[name].arn if spec.database && name != "db-migrate"]
-    database_platform_migrator = [aws_iam_role.workload_execution["db-migrate"].arn]
-    coordination_shared_secret = [aws_iam_role.workload_execution["coordination"].arn]
-    review_signing_key         = [aws_iam_role.workload_execution["review-worker"].arn]
-    review_attestation_secret  = [aws_iam_role.workload_execution["review-worker"].arn]
-  } : {}
+  value = local.services_enabled ? merge(
+    {
+      for key in local.store_secret_keys : key => [
+        for name in keys(local.all_workloads) : aws_iam_role.workload_execution[name].arn if contains(local.workload_secret_names[name], key)
+      ]
+    },
+    {
+      database_platform_app      = [for name, spec in local.workloads : aws_iam_role.workload_execution[name].arn if spec.database && name != "db-migrate"]
+      database_platform_migrator = [aws_iam_role.workload_execution["db-migrate"].arn]
+    },
+  ) : {}
+}
+
+output "secret_restart_services" {
+  description = "ECS services of the Langfuse and ClickHouse tasks that read each secret, keyed by its secret store key, for the secret store's restart_services."
+  value = {
+    for key in local.store_secret_keys : key => [
+      for name in keys(local.langfuse_services) : aws_ecs_service.langfuse[name].id if contains(local.workload_secret_names[name], key)
+    ] if length([for name in keys(local.langfuse_services) : name if contains(local.workload_secret_names[name], key)]) > 0
+  }
+}
+
+output "clickhouse" {
+  description = "The ClickHouse TLS secret inv clickhouse-certs put writes, and the name its certificate must carry. Null without Langfuse."
+  value = local.langfuse_enabled ? {
+    tls_secret_arn = aws_secretsmanager_secret.clickhouse_tls[0].arn
+    server_name    = local.clickhouse_host
+  } : null
+}
+
+output "langfuse" {
+  description = "The internal Langfuse URL the platform services export to, and the URL operators open through the jumphost. Null without Langfuse."
+  value = local.langfuse_enabled ? {
+    url        = "https://langfuse.${var.internal_domain}"
+    public_url = local.lf.public_url
+  } : null
 }

@@ -7,6 +7,7 @@ Module that runs the platform containers on the platform ECS cluster. Nothing is
 - ECR repositories `<name_prefix>/platform`, `<name_prefix>/repo-intelligence`, `<name_prefix>/otel-collector`, `<name_prefix>/langfuse-web`, `<name_prefix>/langfuse-worker`, and `<name_prefix>/clickhouse` through the [ecr](../ecr) module, each with immutable tags, scan on push, KMS encryption, and a lifecycle policy that expires untagged images. `kms_key_arn` sets one key for all of them, and empty creates one key per repository. The `tls-sidecar` repository holds the TLS image described below.
 - With `internal_acm_certificate_arn` set, the internal load balancer described below, its private hosted zone, and the `<name_prefix>-internal-lb-logs-<account>` bucket, which receives its access logs under `internal/`. Load balancer log delivery requires S3-managed encryption, so the bucket uses SSE-S3, denies requests without TLS, expires logs after `load_balancer_log_retention_days`, and sends its own server access logs to `access_log_bucket`.
 - With `platform_image`, `repo_intelligence_image`, and `temporal` set as well, the platform services, the one-shot tasks, their task and execution roles, security groups, and log groups, a KMS key for the logs and the workspace, and the workspace file system, all described below.
+- With `langfuse` set as well, ClickHouse, Langfuse web, Langfuse worker, and the ClickHouse migration task, the Cloud Map namespace that names ClickHouse, and the ClickHouse TLS secret, described under Langfuse and ClickHouse.
 
 ## Images
 
@@ -45,7 +46,7 @@ The load balancer re-encrypts to every task, and each task serves TLS with a cer
 - Langfuse web serves plain HTTP, so the `tls-sidecar` image fronts it with `tls-sidecar proxy -listen :3443 -upstream http://127.0.0.1:3000`, which forwards the original `Host` and sets `X-Forwarded-Proto: https`.
 - The collector reads its certificate from files, so an init container runs `tls-sidecar issue -out DIR -owner 10001:10001` as root into a task volume, and the collector's OTLP receivers serve TLS with `cert.pem` and `key.pem` from it.
 
-The ALB admits port 443 from the `client_security_group_id` group, which callers attach, and from `internal_allowed_cidr_blocks`. Each service's target group admits only its port from the ALB, and its tasks attach the matching `target_security_group_ids` group.
+The ALB admits port 443 from the `client_security_group_id` group, which callers attach, from `internal_allowed_cidr_blocks`, and from each group in `internal_operator_security_group_ids`, such as the jumphost task group, which gains the matching egress rule. Each service's target group admits only its port from the ALB, and its tasks attach the matching `target_security_group_ids` group.
 
 Clients verify the ALB certificate against the CA that issued it. The platform image's entrypoint reads that CA from `PLATFORM_CA_PEM`, writes it with the system roots to one bundle, and points `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, and `OTEL_EXPORTER_OTLP_CERTIFICATE` at it, so httpx, requests, and the gRPC OTLP exporter verify both the internal names and public hosts such as GitHub. A CA certificate is public, so it travels as a plain environment value.
 
@@ -57,7 +58,7 @@ ACM cannot issue a public certificate for a private name, so the ALB certificate
 
 ## Platform services
 
-Every service runs on Fargate in the management subnets without a public address, and starts at zero tasks. `inv platform-deploy` sets each count from `service_counts`.
+Every service runs on Fargate in the application subnets without a public address, and starts at zero tasks. The one-shot tasks run in the management subnets. `inv platform-deploy` sets each count from `service_counts`.
 
 | Service | Image | Command | Reaches |
 |---|---|---|---|
@@ -71,7 +72,7 @@ Every service runs on Fargate in the management subnets without a public address
 
 Each workload has its own task role, execution role, and security group. The security group has no ingress and admits egress to the VPC endpoints, S3, and only the database, workspace, Temporal, or load balancer the workload reaches. Each execution role reads only the secrets its task injects. The task definitions carry secret ARNs, never values. A workload that reaches the database receives `PGUSER` and `PGPASSWORD` from the `platform_app` secret, or the `platform_migrator` secret for `db-migrate`, and connects with `PGSSLMODE=verify-full` against the RDS CA bundle in the image. A workload that reaches Temporal receives the Temporal CA as `TEMPORAL_TLS_CA` and attaches the Temporal client group. The root file systems are read-only, and a task volume mounted at `/tmp` holds what a task writes.
 
-`use_fips_endpoints` sets `AWS_USE_FIPS_ENDPOINT=true`, which sends every boto3 call to the `-fips` endpoint of its service, `bedrock-runtime-fips` included. `https_proxy` sets `HTTPS_PROXY` and a `NO_PROXY` that keeps the internal domain, AWS, and the task metadata endpoint off the proxy. `otel_collector_enabled` points the OTLP exporters at `otel-collector.<internal_domain>`. Without it, `OTEL_SDK_DISABLED=true` stops span recording.
+`use_fips_endpoints` sets `AWS_USE_FIPS_ENDPOINT=true`, which sends every boto3 call to the `-fips` endpoint of its service, `bedrock-runtime-fips` included. `https_proxy` sets `HTTPS_PROXY` and a `NO_PROXY` that keeps the internal domain, AWS, and the task metadata endpoint off the proxy. `otel_collector_enabled` points the OTLP exporters at `otel-collector.<internal_domain>`. Without it, `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER`, and `OTEL_LOGS_EXPORTER` are `none`, and `OTEL_SDK_DISABLED=true` stops span recording unless Langfuse runs. With Langfuse, the review worker receives `LANGFUSE_HOST=https://langfuse.<internal_domain>` and the project keys, and exports its generation spans to Langfuse through the internal load balancer.
 
 ### Temporal worker slots
 
@@ -89,6 +90,23 @@ Each SQLAlchemy engine holds its own pool of `DATABASE_POOL_SIZE` connections an
 
 An encrypted EFS file system with elastic throughput holds the repository checkouts and the repository index, through the access points `checkouts` at `/checkouts` and `index` at `/repository-indexes`, both owned by uid 10001, the `appuser` of both images. Its policy admits only TLS connections through an access point. The services mount `checkouts` read-only at `/repositories`, and the index writers mount `index` at `/app/repository_indexes`. `repo_intelligence_repos` sets `REPO_INTELLIGENCE_REPOS`, the checkout paths under `/repositories` to index.
 
+## Langfuse and ClickHouse
+
+`langfuse` takes the Langfuse web, Langfuse worker, ClickHouse, and TLS sidecar images, the URL operators open, the administrator email, the ElastiCache endpoint and group, the `clickhouse-storage` file system and access point, and the `langfuse-blob-store` bucket. `langfuse_cache_secret_arn` names the cache user secret, a separate input because the secret store key that encrypts it lists the roles this module creates. The tasks run the upstream images with read-only root file systems. A `setup` container from the platform image runs first as root and prepares the task volumes those images read.
+
+| Service | Reaches | Secrets |
+|---|---|---|
+| `clickhouse` | Its file system over NFS with TLS through the access point, as uid 101 | `clickhouse_password`, and the certificate and key in the module's ClickHouse TLS secret, which only its execution role reads |
+| `langfuse-web` | Aurora as the `langfuse` role, the cache, ClickHouse, the bucket, behind the internal load balancer through the TLS sidecar | `database_langfuse`, the cache user, `clickhouse_password`, `langfuse_salt`, `langfuse_encryption_key`, `langfuse_nextauth_secret`, `langfuse_public_key`, `langfuse_secret_key`, `langfuse_admin_password` |
+| `langfuse-worker` | Aurora as the `langfuse` role, the cache, ClickHouse, the bucket | `database_langfuse`, the cache user, `clickhouse_password`, `langfuse_salt`, `langfuse_encryption_key` |
+| `clickhouse-migrate` | ClickHouse, once per deploy | `clickhouse_password` |
+
+ClickHouse serves only HTTPS on 8443 and the native protocol over TLS on 9440, and its group admits those ports from the three Langfuse groups only. Cloud Map registers the task as `clickhouse.<clickhouse_namespace>`, which defaults to `clickhouse.data.<internal_domain>`. A deployment stops the running task before it starts the next, so two servers never open the same data directory, and the data survives a task replacement on the file system. The certificate comes from the CA the clients already trust. Issue it with `inv clickhouse-certs issue --dir DIR`, where `DIR` holds the `ca.pem` and `ca-key.pem` that `inv temporal-certs generate --internal-name` wrote, and store it with `inv clickhouse-certs put --dir DIR`, which checks the CA, the key, the name, and the expiry. It names the Cloud Map name and 127.0.0.1, so the task's health check verifies it on loopback.
+
+Langfuse verifies every connection. The setup container writes the platform CA and a bundle of the system roots, the RDS roots, and the platform CA to a task volume. Node trusts the platform CA through `NODE_EXTRA_CA_CERTS` for ClickHouse, ElastiCache presents an Amazon certificate Node already trusts, and Prisma verifies Aurora with `sslaccept=strict` through `SSL_CERT_FILE`, because Prisma reads only the first certificate of an `sslcert` file. The Langfuse web entrypoint migrates ClickHouse with certificate verification off, so `LANGFUSE_AUTO_CLICKHOUSE_MIGRATION_DISABLED=true` stops it, and `inv platform-deploy` runs the same migrations from `clickhouse-migrate` with verification on before it moves Langfuse. Langfuse web still migrates its Postgres schema at start. The task role reads and writes the bucket objects, and with a bucket key, encrypts them.
+
+Langfuse web creates the organization, the `agentic-dev-platform` project with the generated project keys, and the administrator from `admin_email` and `langfuse_admin_password` on its first start, and refuses sign-up. The administrator reads the password after the operator role or user is listed under `langfuse_admin_password` in the secret store readers. `NEXTAUTH_URL` is `public_url`, the URL `inv langfuse-ui` forwards through the jumphost. Langfuse's FIPS mode needs a Government license and hosts booted in FIPS mode, which Fargate in a commercial region does not offer, so Langfuse uses the image's OpenSSL without the FIPS provider.
+
 ## Outputs
 
 | Output | Value |
@@ -99,8 +117,12 @@ An encrypted EFS file system with elastic throughput holds the repository checko
 | `secret_readers` | Execution roles that inject each secret, keyed by its secret store key, for the secret store |
 | `service_arns` | ECS service of each service and worker slot |
 | `workspace` | The workspace file system, its access points, and its security group, for the workloads outside the module that write the checkouts |
-| `deploy` | The cluster, services, worker slots, one-shot tasks, and subnets `inv platform-deploy` reads |
+| `deploy` | The cluster, services, worker slots, Langfuse and ClickHouse services, one-shot tasks, and subnets `inv platform-deploy` reads |
+| `temporal_client_role_arns` | Execution roles of the workloads that connect to Temporal, which read the Temporal CA |
+| `secret_restart_services` | The Langfuse and ClickHouse services that read each secret, for the secret store's restart rules |
+| `clickhouse` | The ClickHouse TLS secret and the name its certificate carries. Null without Langfuse |
+| `langfuse` | The internal Langfuse URL and the public URL. Null without Langfuse |
 
 ## Tests
 
-`tests/container_services.tftest.hcl`, `tests/internal_lb.tftest.hcl`, and `tests/services.tftest.hcl` run the module against a mocked provider. They assert that the disabled module creates nothing, that the enabled module creates a repository for every image, that the internal listener terminates TLS under the FIPS policy with access logs, that every target group re-encrypts and each host rule forwards to its own service, that each target admits only the load balancer, that the tasks inject secrets by ARN and each execution role reads only its own, that only the review worker calls Bedrock, that each service joins only the groups it needs, that each Temporal worker has two slots, that the workspace admits only TLS through an access point, and the input checks. Run it with `inv terraform-test`, which CI also runs.
+`tests/container_services.tftest.hcl`, `tests/internal_lb.tftest.hcl`, `tests/services.tftest.hcl`, and `tests/langfuse.tftest.hcl` run the module against a mocked provider. They assert that the disabled module creates nothing, that the enabled module creates a repository for every image, that the internal listener terminates TLS under the FIPS policy with access logs, that every target group re-encrypts and each host rule forwards to its own service, that each target admits only the load balancer, that the tasks inject secrets by ARN and each execution role reads only its own, that only the review worker calls Bedrock, that each service joins only the groups it needs, that each Temporal worker has two slots, that the workspace admits only TLS through an access point, that Langfuse and ClickHouse inject their secrets by ARN and JSON field with read-only root file systems, that only the ClickHouse execution role reads its key, that ClickHouse serves only TLS, admits only the Langfuse groups, and never runs two tasks, that Langfuse web sits behind the load balancer through its sidecar, that the secret store restarts the Langfuse services after a rotation, that the review worker exports to Langfuse, and the input checks. Run it with `inv terraform-test`, which CI also runs.

@@ -172,6 +172,21 @@ def test_build_langfuse_exporter_requires_credentials(monkeypatch: pytest.Monkey
     assert isinstance(exporter, _GenAISpanExporter)
 
 
+def test_exporter_none_skips_the_collector_exporters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from observability.logs import _build_log_exporter
+    from observability.metrics import _build_metric_reader
+    from observability.telemetry import _build_exporter
+
+    for signal in ("TRACES", "METRICS", "LOGS"):
+        monkeypatch.setenv(f"OTEL_{signal}_EXPORTER", "none")
+
+    assert _build_exporter() is None
+    assert _build_metric_reader() is None
+    assert _build_log_exporter() is None
+
+
 def test_instrument_llm_tracing_is_idempotent() -> None:
     from observability import instrument_llm_tracing
 

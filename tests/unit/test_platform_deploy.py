@@ -231,13 +231,31 @@ def test_a_new_revision_of_the_running_build_replaces_the_active_slot_in_place()
     assert not any(step.startswith("python -m scripts.pinned_executions") for step in _steps(ecs))
 
 
-def test_a_third_build_with_both_slots_busy_stops_before_any_service_moves() -> None:
-    ecs = _Ecs(slots={"blue": ("workflow:1", 2), "green": ("workflow:2", 2)})
+def test_a_third_build_with_both_slots_pinned_stops_before_any_service_moves() -> None:
+    ecs = _Ecs(
+        exit_codes={
+            PINNED_CHECK.format("0.3.0.0"): deployer.PINNED_EXIT_CODE,
+            PINNED_CHECK.format("0.3.0.1"): deployer.PINNED_EXIT_CODE,
+        },
+        slots={"blue": ("workflow:1", 2), "green": ("workflow:2", 2)},
+    )
 
     with pytest.raises(deployer.DeployError, match="both workflow-worker slots"):
         deployer.deploy(ecs, SETTINGS)
 
     assert not any(call[0] == "update_service" for call in ecs.calls)
+
+
+def test_a_third_build_takes_the_busy_slot_nothing_is_pinned_to() -> None:
+    ecs = _Ecs(
+        exit_codes={PINNED_CHECK.format("0.3.0.1"): deployer.PINNED_EXIT_CODE},
+        slots={"blue": ("workflow:1", 2), "green": ("workflow:2", 2)},
+    )
+
+    deployer.deploy(ecs, SETTINGS)
+
+    assert _counts(ecs) == {"blue": ("workflow:4", 2), "green": ("workflow:2", 2)}
+    assert _steps(ecs).count(PINNED_CHECK.format("0.3.0.1")) == 1
 
 
 def test_workers_on_the_same_old_build_share_one_pinned_check() -> None:
@@ -263,3 +281,51 @@ def test_workers_on_the_same_old_build_share_one_pinned_check() -> None:
 
     assert _steps(ecs).count(PINNED_CHECK.format("0.3.0.1")) == 1
     assert ecs.services[REVIEW_SLOT.format("blue")]["desiredCount"] == 0
+
+
+LANGFUSE_SETTINGS = {
+    **SETTINGS,
+    "langfuse_services": {
+        name: {
+            "service": f"platform-{name}",
+            "task_definition": TASK_DEFINITION.format(f"{name}:2"),
+            "count": 1,
+        }
+        for name in ("clickhouse", "langfuse-web", "langfuse-worker")
+    },
+    "tasks": {
+        **SETTINGS["tasks"],
+        "clickhouse-migrate": {
+            "task_definition": TASK_DEFINITION.format("clickhouse-migrate:1"),
+            "container": "clickhouse-migrate",
+            "security_groups": ["sg-clickhouse-migrate"],
+        },
+    },
+}
+
+
+def test_clickhouse_settles_and_migrates_before_langfuse_moves() -> None:
+    ecs = _Ecs()
+
+    deployer.deploy(ecs, LANGFUSE_SETTINGS)
+
+    steps = _steps(ecs)
+    assert steps[:6] == [
+        "db-migrate",
+        "tasks_stopped",
+        "platform-clickhouse",
+        "services_stable",
+        "clickhouse-migrate",
+        "tasks_stopped",
+    ]
+    assert steps.index("clickhouse-migrate") < steps.index("platform-langfuse-web")
+    assert steps.count("platform-clickhouse") == 1
+
+
+def test_a_failed_clickhouse_migration_leaves_langfuse_untouched() -> None:
+    ecs = _Ecs(exit_codes={"clickhouse-migrate": 1})
+
+    with pytest.raises(deployer.DeployError, match="clickhouse-migrate exited with 1"):
+        deployer.deploy(ecs, LANGFUSE_SETTINGS)
+
+    assert "platform-langfuse-web" not in _steps(ecs)

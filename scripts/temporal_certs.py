@@ -185,6 +185,61 @@ def _issue(
             )  # fmt: skip
 
 
+def issue_server_certificate(
+    directory: Path,
+    cert: str,
+    key: str,
+    names: list[str],
+    *,
+    ip_addresses: tuple[str, ...] = (),
+    days: int = 397,
+    force: bool = False,
+    repo_root: Path = REPO_ROOT,
+) -> list[Path]:
+    """Issue one server certificate for `names` and `ip_addresses` from the CA in `directory`."""
+    directory = directory.expanduser().resolve()
+    if _inside(directory, repo_root.resolve()):
+        raise CertificateError(f"{directory} is inside the repository. Use a directory outside it.")
+    missing = [name for name in (CA, CA_KEY) if not (directory / name).exists()]
+    if missing:
+        raise CertificateError(
+            f"{directory} is missing {', '.join(missing)}. Issue from the directory that "
+            "inv temporal-certs generate --internal-name wrote, whose CA the clients trust."
+        )
+    targets = [directory / cert, directory / key]
+    existing = [path.name for path in targets if path.exists()]
+    if existing and not force:
+        raise CertificateError(
+            f"{', '.join(existing)} already exist in {directory}. Pass --force to replace them."
+        )
+    sans = {
+        f"{section}_sans": "DNS:unused.invalid"
+        for section in ("frontend", "internode", "ui", "internal")
+    }
+    sans["internal_sans"] = ",".join([_sans(names), *(f"IP:{address}" for address in ip_addresses)])
+    previous_umask = os.umask(0o077)
+    try:
+        with tempfile.TemporaryDirectory() as scratch:
+            config = Path(scratch) / "extensions.cnf"
+            config.write_text(_EXTENSIONS.format(**sans), encoding="utf-8")
+            _new_key(directory / key)
+            request = Path(scratch) / "server.csr"
+            _openssl(
+                "req", "-new", "-config", str(config), "-key", str(directory / key),
+                "-subj", f"/CN={names[0]}", "-out", str(request),
+            )  # fmt: skip
+            _openssl(
+                "x509", "-req", "-in", str(request), "-CA", str(directory / CA),
+                "-CAkey", str(directory / CA_KEY), "-set_serial", f"0x{secrets.token_hex(16)}",
+                "-days", str(days), "-sha256", "-extfile", str(config),
+                "-extensions", "internal", "-out", str(directory / cert),
+            )  # fmt: skip
+    finally:
+        os.umask(previous_umask)
+    _openssl("verify", "-CAfile", str(directory / CA), str(directory / cert))
+    return targets
+
+
 def _new_key(path: Path) -> None:
     _openssl(
         "genpkey", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256", "-out", str(path)

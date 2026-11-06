@@ -51,6 +51,11 @@ locals {
       prefix      = "sk-lf-"
       hex         = false
     }
+    langfuse_admin_password = {
+      description = "Password of the Langfuse administrator that LANGFUSE_INIT_USER_PASSWORD creates on the first start."
+      prefix      = ""
+      hex         = false
+    }
     clickhouse_password = {
       description = "ClickHouse user password, set as CLICKHOUSE_PASSWORD."
       prefix      = ""

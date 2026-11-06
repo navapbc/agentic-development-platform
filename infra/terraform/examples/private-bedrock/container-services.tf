@@ -13,10 +13,17 @@ locals {
     for key in distinct(flatten([for readers in local.reader_sets : keys(readers)])) :
     key => distinct(flatten([for readers in local.reader_sets : lookup(readers, key, [])]))
   }
-  restart_sets = [var.secret_restart_services, local.temporal_restart_services_by_secret]
+  restart_sets = [var.secret_restart_services, local.temporal_restart_services_by_secret, module.container_services.secret_restart_services]
+
+  container_langfuse = (
+    var.container_langfuse_web_image != "" && var.container_langfuse_worker_image != "" && var.container_clickhouse_image != "" &&
+    var.container_tls_sidecar_image != "" && var.create_cache && var.create_clickhouse_storage && var.create_langfuse_bucket && var.create_secret_store
+  )
+  # The services of each set differ, and distinct() over service IDs not yet known has no known
+  # length, which the secret store needs for its restart target keys.
   secret_restart_services = {
     for key in distinct(flatten([for services in local.restart_sets : keys(services)])) :
-    key => distinct(flatten([for services in local.restart_sets : lookup(services, key, [])]))
+    key => flatten([for services in local.restart_sets : lookup(services, key, [])])
   }
 }
 
@@ -62,6 +69,37 @@ module "container_services" {
     ca_kms_key_arn           = module.temporal_control_plane.tls_kms_key_arn
     client_security_group_id = module.temporal_control_plane.client_security_group_id
   } : null
+
+  langfuse = local.container_langfuse ? {
+    web_image         = var.container_langfuse_web_image
+    worker_image      = var.container_langfuse_worker_image
+    clickhouse_image  = var.container_clickhouse_image
+    tls_sidecar_image = var.container_tls_sidecar_image
+    public_url        = var.container_langfuse_public_url != "" ? var.container_langfuse_public_url : "https://langfuse.${var.container_internal_domain}:8444"
+    admin_email       = var.container_langfuse_admin_email
+    cache = {
+      endpoint          = module.elasticache.primary_endpoint_address
+      port              = module.elasticache.port
+      username          = module.elasticache.username
+      security_group_id = module.elasticache.security_group_id
+    }
+    clickhouse_storage = {
+      file_system_id    = module.clickhouse_storage.file_system_id
+      file_system_arn   = module.clickhouse_storage.file_system_arn
+      access_point_id   = module.clickhouse_storage.access_point_id
+      access_point_arn  = module.clickhouse_storage.access_point_arn
+      security_group_id = module.clickhouse_storage.security_group_id
+    }
+    bucket = {
+      name        = module.langfuse_blob_store.bucket_id
+      arn         = module.langfuse_blob_store.bucket_arn
+      kms_key_arn = var.kms_key_arn
+    }
+  } : null
+  langfuse_cache_secret_arn            = local.container_langfuse ? module.elasticache.user_secret_arn : ""
+  langfuse_task_sizes                  = var.container_langfuse_task_sizes
+  internal_operator_security_group_ids = compact([module.bedrock_jumphost.task_security_group_id])
+  secret_recovery_window_days          = var.secret_recovery_window_days
 
   bedrock_invoke_policy_arn = module.bedrock_iam.invoke_policy_arn
   enable_execute_command    = var.container_enable_execute_command

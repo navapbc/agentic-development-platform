@@ -65,8 +65,9 @@ Goal. The platform is technically FedRAMP Medium ready. It has documented local-
 | Remaining connectivity and sandbox confirmations | 3-6h (low) | Jira ADP-92. [plan](docs/plans/2026-09-14-1902-feat-connectivity-sandbox-confirmations-plan.md) |
 | MCP gateway client authentication | 3-5h | Jira ADP-140 |
 | Leaked OpenHands sandbox pods | 3-5h | Jira ADP-141 |
+| Slack escalation channel with approve, reject, retry, and abandon actions | 28-42h (low) | Jira ADP-160. [plan](docs/plans/2026-11-06-1000-feat-slack-escalation-channel-plan.md) |
 
-Version effort. 185-269h.
+Version effort. 229-334h.
 
 ## v0.4.0 Production serving and demo readiness
 

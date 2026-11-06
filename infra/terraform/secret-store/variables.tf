@@ -15,7 +15,7 @@ variable "region" {
 }
 
 variable "secret_readers" {
-  description = "IAM role ARNs allowed to read each secret, keyed by the secret keys the README lists. Pass the ECS task execution role for a secret that ECS injects. A secret with no readers denies GetSecretValue to every principal except its rotation function."
+  description = "IAM role or user ARNs allowed to read each secret, keyed by the secret keys the README lists. Pass the ECS task execution role for a secret that ECS injects. A secret with no readers denies GetSecretValue to every principal except its rotation function."
   type        = map(list(string))
   default     = {}
 }

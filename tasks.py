@@ -764,6 +764,12 @@ def publish_platform_images(
     c.run(f"{HOST_PYTHON} -m scripts.publish_platform_images{flags}", pty=True, env=env)
 
 
+@task
+def langfuse_ui(c):
+    """Forward the local port of the Langfuse public URL to Langfuse through the jump-host."""
+    c.run(f"{HOST_PYTHON} -m scripts.langfuse_ui", pty=True)
+
+
 @task(help={"region": "AWS region (empty uses AWS_REGION)."})
 def temporal_deploy(c, region=""):
     """Apply the Temporal schema, roll the server, and register the namespace."""
@@ -849,6 +855,34 @@ def temporal_certs(
     flags += " --import-to-acm" if import_to_acm else ""
     env = {"AWS_PROFILE": settings.aws_profile, "AWS_REGION": settings.aws_region}
     c.run(f"{HOST_PYTHON} -m scripts.temporal_certs put{flags}", pty=True, env=env)
+
+
+@task(
+    help={
+        "action": "issue to sign the certificate with an existing CA, or put to store it.",
+        "dir": "Directory holding ca.pem and ca-key.pem from temporal-certs --internal-name.",
+        "name": "issue: the ClickHouse name (default clickhouse.data.platform.internal).",
+        "days": "issue: validity in days (default 397).",
+        "force": "issue: replace a ClickHouse certificate already in the directory.",
+    }
+)
+def clickhouse_certs(c, action, dir, name="", days=397, force=False):  # noqa: A002
+    """Issue the ClickHouse server certificate, or check it and store it in its secret."""
+    from scripts.config import get_settings
+
+    if action == "issue":
+        flags = f" --dir {shlex.quote(dir)} --days {int(days)}"
+        flags += f" --name {shlex.quote(name)}" if name else ""
+        flags += " --force" if force else ""
+        c.run(f"{HOST_PYTHON} -m scripts.clickhouse_certs issue{flags}", pty=True)
+        return
+    if action != "put":
+        raise Exit("action must be issue or put")
+    settings = get_settings()
+    env = {"AWS_PROFILE": settings.aws_profile, "AWS_REGION": settings.aws_region}
+    c.run(
+        f"{HOST_PYTHON} -m scripts.clickhouse_certs put --dir {shlex.quote(dir)}", pty=True, env=env
+    )
 
 
 @task(help={"apply": "Perform real deletions instead of a dry-run."})
@@ -1212,6 +1246,8 @@ for _t in (
     publish_temporal_images,
     publish_platform_images,
     temporal_certs,
+    clickhouse_certs,
+    langfuse_ui,
     temporal_deploy,
     platform_deploy,
     temporal_ui,

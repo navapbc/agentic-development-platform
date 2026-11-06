@@ -37,7 +37,10 @@ locals {
       internal_client = true
       target          = ""
       mounts          = [{ volume = "checkouts", path = local.checkouts_path, read_only = true }]
-      secrets         = { REVIEW_SIGNING_KEY = "review_signing_key", REVIEW_ATTESTATION_SECRET = "review_attestation_secret" }
+      secrets = merge(
+        { REVIEW_SIGNING_KEY = "review_signing_key", REVIEW_ATTESTATION_SECRET = "review_attestation_secret" },
+        local.langfuse_enabled ? { LANGFUSE_PUBLIC_KEY = "langfuse_public_key", LANGFUSE_SECRET_KEY = "langfuse_secret_key" } : {},
+      )
       environment = {
         WORKER_ROLE                   = "review"
         HEALTH_HEARTBEAT_FILE         = "/tmp/worker.heartbeat"
@@ -47,6 +50,7 @@ locals {
         EVIDENCE_OBJECT_STORE_BUCKET  = var.evidence_bucket_arn != "" ? element(split(":", var.evidence_bucket_arn), 5) : ""
         EVIDENCE_OBJECT_STORE_REGION  = local.region
         REVIEW_TRUST_ROOT_PATH        = contains(keys(var.environment_config), "review-trust-root.yaml") ? "${local.env_config_dir}/review-trust-root.yaml" : ""
+        LANGFUSE_HOST                 = local.langfuse_enabled ? "https://langfuse.${var.internal_domain}" : ""
       }
       health = ["CMD", "python", "-m", "services.healthcheck", "heartbeat", "/tmp/worker.heartbeat", "--max-age", "60"]
     }
@@ -175,7 +179,10 @@ locals {
       TEMPORAL_NAMESPACE            = try(var.temporal.namespace, "")
       TEMPORAL_TLS_SERVER_NAME      = try(var.temporal.server_name, "")
       OTEL_EXPORTER_OTLP_ENDPOINT   = var.otel_collector_enabled ? "https://otel-collector.${var.internal_domain}:443" : ""
-      OTEL_SDK_DISABLED             = var.otel_collector_enabled ? "false" : "true"
+      OTEL_SDK_DISABLED             = var.otel_collector_enabled || local.langfuse_enabled ? "false" : "true"
+      OTEL_TRACES_EXPORTER          = var.otel_collector_enabled ? "" : "none"
+      OTEL_METRICS_EXPORTER         = var.otel_collector_enabled ? "" : "none"
+      OTEL_LOGS_EXPORTER            = var.otel_collector_enabled ? "" : "none"
     },
     var.https_proxy == "" ? {} : {
       HTTPS_PROXY = var.https_proxy
@@ -184,6 +191,30 @@ locals {
   )
 
   ca_secret = try(var.temporal.ca_secret_arn, null)
+
+  all_workloads = merge(local.workloads, local.langfuse_workloads)
+  # Secrets the module owns are not in the secret store, so the store lists no readers for them.
+  store_secret_keys = distinct(flatten([for name in keys(local.all_workloads) : [for key in local.workload_secret_names[name] : key if key != "clickhouse_tls"]]))
+
+  # A task secret names a secret key, or a key and a JSON field as key:field.
+  secret_arn_lookup = merge(var.secret_arns, local.langfuse_secret_arns)
+  secret_references = distinct(flatten([for spec in values(local.all_workloads) : concat(values(spec.secrets), values(try(spec.setup_secrets, {})))]))
+  secret_value_from = {
+    for reference in local.secret_references : reference => (
+      length(split(":", reference)) == 1
+      ? lookup(local.secret_arn_lookup, reference, "")
+      : "${lookup(local.secret_arn_lookup, split(":", reference)[0], "")}:${split(":", reference)[1]}::"
+    )
+  }
+  secret_kms_keys = merge(
+    { for key in keys(local.secret_arn_lookup) : key => var.secret_kms_key_arn },
+    local.langfuse_secret_kms_keys,
+  )
+
+  workload_repositories = merge(
+    { for name, spec in local.workloads : name => [spec.image == var.platform_image ? "platform" : "repo-intelligence"] },
+    { for name, spec in local.langfuse_workloads : name => spec.repositories },
+  )
 }
 
 resource "terraform_data" "services_guard" {
@@ -244,7 +275,7 @@ locals {
   })
 
   log_settings = {
-    for name in keys(local.workloads) : name => {
+    for name in keys(local.all_workloads) : name => {
       logDriver = "awslogs"
       options = {
         awslogs-group         = "/aws/ecs/${var.name_prefix}-platform/${name}"
@@ -255,13 +286,13 @@ locals {
   }
 
   workload_secrets = {
-    for name, spec in local.workloads : name => concat(
+    for name, spec in local.all_workloads : name => concat(
       spec.database ? [
         { name = "PGUSER", valueFrom = "${name == "db-migrate" ? var.database_migrator_secret_arn : var.database_app_secret_arn}:username::" },
         { name = "PGPASSWORD", valueFrom = "${name == "db-migrate" ? var.database_migrator_secret_arn : var.database_app_secret_arn}:password::" },
       ] : [],
       spec.temporal && local.ca_secret != null ? [{ name = "TEMPORAL_TLS_CA", valueFrom = local.ca_secret }] : [],
-      [for variable, key in spec.secrets : { name = variable, valueFrom = lookup(var.secret_arns, key, "") }],
+      [for variable, reference in spec.secrets : { name = variable, valueFrom = local.secret_value_from[reference] }],
     )
   }
 
@@ -295,7 +326,7 @@ locals {
 }
 
 resource "aws_cloudwatch_log_group" "workload" {
-  for_each = local.workloads
+  for_each = local.all_workloads
 
   name              = "/aws/ecs/${var.name_prefix}-platform/${each.key}"
   retention_in_days = var.log_retention_days
