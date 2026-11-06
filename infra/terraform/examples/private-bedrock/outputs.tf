@@ -163,6 +163,11 @@ output "container_clickhouse" {
   value       = module.container_services.clickhouse
 }
 
+output "container_telemetry" {
+  description = "The Prometheus workspace the collector writes to, the X-Ray encryption key the module set, and the collector URL."
+  value       = module.container_services.telemetry
+}
+
 output "container_langfuse" {
   description = "The internal Langfuse URL the platform services export to, and the URL inv langfuse-ui forwards."
   value       = module.container_services.langfuse

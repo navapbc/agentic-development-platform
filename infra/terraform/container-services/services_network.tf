@@ -15,7 +15,7 @@ locals {
     for name, spec in local.all_workloads : name => concat(
       [aws_security_group.workload[name].id],
       spec.temporal ? [var.temporal.client_security_group_id] : [],
-      spec.internal_client ? [aws_security_group.internal_client[0].id] : [],
+      spec.internal_client || (local.collector_enabled && contains(keys(local.workloads), name) && try(spec.image == var.platform_image, false)) ? [aws_security_group.internal_client[0].id] : [],
       spec.target != "" ? [aws_security_group.internal_target[spec.target].id] : [],
     )
   }

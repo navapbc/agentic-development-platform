@@ -457,9 +457,27 @@ variable "container_clickhouse_image" {
 }
 
 variable "container_tls_sidecar_image" {
-  description = "TLS sidecar image reference with its digest, which fronts Langfuse web."
+  description = "TLS sidecar image reference with its digest, which fronts Langfuse web and issues the collector's certificate."
   type        = string
   default     = ""
+}
+
+variable "container_collector_image" {
+  description = "Collector image reference with its digest, as inv publish-platform-images prints it. Set with container_tls_sidecar_image, it runs the collector and points the platform tasks at it."
+  type        = string
+  default     = ""
+}
+
+variable "container_collector_exports_enabled" {
+  description = "Export the collector's traces to X-Ray, its metrics to a Prometheus workspace, and its generation spans to Langfuse, and add the xray and aps-workspaces interface endpoints. False runs the collector with only the debug exporter."
+  type        = bool
+  default     = true
+}
+
+variable "container_xray_encryption_enabled" {
+  description = "Set the region's X-Ray encryption to the telemetry KMS key. It is one setting per account and region, so it changes X-Ray encryption for every X-Ray user in the region."
+  type        = bool
+  default     = false
 }
 
 variable "container_langfuse_admin_email" {

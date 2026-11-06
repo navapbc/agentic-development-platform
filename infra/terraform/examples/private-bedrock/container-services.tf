@@ -15,6 +15,8 @@ locals {
   }
   restart_sets = [var.secret_restart_services, local.temporal_restart_services_by_secret, module.container_services.secret_restart_services]
 
+  container_telemetry_exports = var.create_container_services && var.container_collector_image != "" && var.container_collector_exports_enabled
+
   container_langfuse = (
     var.container_langfuse_web_image != "" && var.container_langfuse_worker_image != "" && var.container_clickhouse_image != "" &&
     var.container_tls_sidecar_image != "" && var.create_cache && var.create_clickhouse_storage && var.create_langfuse_bucket && var.create_secret_store
@@ -71,12 +73,11 @@ module "container_services" {
   } : null
 
   langfuse = local.container_langfuse ? {
-    web_image         = var.container_langfuse_web_image
-    worker_image      = var.container_langfuse_worker_image
-    clickhouse_image  = var.container_clickhouse_image
-    tls_sidecar_image = var.container_tls_sidecar_image
-    public_url        = var.container_langfuse_public_url != "" ? var.container_langfuse_public_url : "https://langfuse.${var.container_internal_domain}:8444"
-    admin_email       = var.container_langfuse_admin_email
+    web_image        = var.container_langfuse_web_image
+    worker_image     = var.container_langfuse_worker_image
+    clickhouse_image = var.container_clickhouse_image
+    public_url       = var.container_langfuse_public_url != "" ? var.container_langfuse_public_url : "https://langfuse.${var.container_internal_domain}:8444"
+    admin_email      = var.container_langfuse_admin_email
     cache = {
       endpoint          = module.elasticache.primary_endpoint_address
       port              = module.elasticache.port
@@ -97,6 +98,10 @@ module "container_services" {
     }
   } : null
   langfuse_cache_secret_arn            = local.container_langfuse ? module.elasticache.user_secret_arn : ""
+  tls_sidecar_image                    = var.container_tls_sidecar_image
+  collector_image                      = var.container_collector_image
+  collector_exports_enabled            = var.container_collector_exports_enabled
+  xray_encryption_enabled              = var.container_xray_encryption_enabled
   langfuse_task_sizes                  = var.container_langfuse_task_sizes
   internal_operator_security_group_ids = compact([module.bedrock_jumphost.task_security_group_id])
   secret_recovery_window_days          = var.secret_recovery_window_days

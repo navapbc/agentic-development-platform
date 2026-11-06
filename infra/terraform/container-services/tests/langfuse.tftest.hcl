@@ -112,14 +112,14 @@ variables {
     langfuse_secret_key        = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/langfuse-secret-key-n"
     langfuse_admin_password    = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/langfuse-admin-password-o"
   }
+  tls_sidecar_image         = "111111111111.dkr.ecr.us-east-1.amazonaws.com/agentic-platform/tls-sidecar:0.3.0-abc-arm64@sha256:6"
   langfuse_cache_secret_arn = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/elasticache/langfuse-p"
   langfuse = {
-    web_image         = "111111111111.dkr.ecr.us-east-1.amazonaws.com/agentic-platform/langfuse-web:4.59.0@sha256:3"
-    worker_image      = "111111111111.dkr.ecr.us-east-1.amazonaws.com/agentic-platform/langfuse-worker:4.59.0@sha256:4"
-    clickhouse_image  = "111111111111.dkr.ecr.us-east-1.amazonaws.com/agentic-platform/clickhouse:26.9.19.9@sha256:5"
-    tls_sidecar_image = "111111111111.dkr.ecr.us-east-1.amazonaws.com/agentic-platform/tls-sidecar:0.3.0-abc-arm64@sha256:6"
-    public_url        = "https://langfuse.platform.internal:8444"
-    admin_email       = "operator@example.com"
+    web_image        = "111111111111.dkr.ecr.us-east-1.amazonaws.com/agentic-platform/langfuse-web:4.59.0@sha256:3"
+    worker_image     = "111111111111.dkr.ecr.us-east-1.amazonaws.com/agentic-platform/langfuse-worker:4.59.0@sha256:4"
+    clickhouse_image = "111111111111.dkr.ecr.us-east-1.amazonaws.com/agentic-platform/clickhouse:26.9.19.9@sha256:5"
+    public_url       = "https://langfuse.platform.internal:8444"
+    admin_email      = "operator@example.com"
     cache = {
       endpoint          = "master.agentic-platform-cache.abc.use1.cache.amazonaws.com"
       port              = 6379

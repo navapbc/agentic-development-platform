@@ -279,21 +279,38 @@ variable "use_fips_endpoints" {
   default     = true
 }
 
-variable "otel_collector_enabled" {
-  description = "Export the tasks' traces and metrics to the collector behind the internal load balancer. False disables the OpenTelemetry SDK in the tasks."
+variable "collector_image" {
+  description = "Collector image reference with its digest. Set, it runs the collector behind the internal load balancer and points every platform task's OTLP exporters at it."
+  type        = string
+  default     = ""
+}
+
+variable "collector_exports_enabled" {
+  description = "Export the collector's traces to X-Ray, its metrics to a Prometheus workspace the module creates, and its generation spans to Langfuse. False runs the collector with only the debug exporter, for a deployment that sends telemetry elsewhere."
+  type        = bool
+  default     = true
+}
+
+variable "xray_encryption_enabled" {
+  description = "Set the region's X-Ray encryption to the telemetry KMS key. X-Ray encryption is one setting per account and region, so this changes it for every X-Ray user in the region."
   type        = bool
   default     = false
+}
+
+variable "tls_sidecar_image" {
+  description = "TLS sidecar image reference with its digest, which fronts Langfuse web and issues the collector's certificate."
+  type        = string
+  default     = ""
 }
 
 variable "langfuse" {
   description = "Langfuse and ClickHouse images, the cache, the ClickHouse file system, the blob bucket, the URL operators open, and the administrator. Null runs neither."
   type = object({
-    web_image         = string
-    worker_image      = string
-    clickhouse_image  = string
-    tls_sidecar_image = string
-    public_url        = string
-    admin_email       = string
+    web_image        = string
+    worker_image     = string
+    clickhouse_image = string
+    public_url       = string
+    admin_email      = string
     cache = object({
       endpoint          = string
       port              = number

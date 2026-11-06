@@ -29,6 +29,7 @@ output "service_arns" {
   value = merge(
     { for name, service in aws_ecs_service.platform : name => service.id },
     { for name, service in aws_ecs_service.langfuse : name => service.id },
+    { for name, service in aws_ecs_service.collector : name => service.id },
   )
 }
 
@@ -46,13 +47,22 @@ output "deploy" {
   description = "What inv platform-deploy runs. Null until the images are set."
   value = local.services_enabled ? {
     cluster = var.cluster_arn
-    services = {
-      for name in keys(local.services) : name => {
-        service         = aws_ecs_service.platform[name].name
-        task_definition = aws_ecs_task_definition.workload[name].arn
-        count           = lookup(var.service_counts, name, 1)
-      } if !contains(local.versioned_workers, name)
-    }
+    services = merge(
+      {
+        for name in keys(local.services) : name => {
+          service         = aws_ecs_service.platform[name].name
+          task_definition = aws_ecs_task_definition.workload[name].arn
+          count           = lookup(var.service_counts, name, 1)
+        } if !contains(local.versioned_workers, name)
+      },
+      {
+        for name in keys(local.collector_workloads) : name => {
+          service         = aws_ecs_service.collector[name].name
+          task_definition = aws_ecs_task_definition.collector[name].arn
+          count           = lookup(var.service_counts, name, 1)
+        }
+      },
+    )
     langfuse_services = {
       for name in keys(local.langfuse_services) : name => {
         service         = aws_ecs_service.langfuse[name].name
@@ -103,12 +113,22 @@ output "secret_readers" {
 }
 
 output "secret_restart_services" {
-  description = "ECS services of the Langfuse and ClickHouse tasks that read each secret, keyed by its secret store key, for the secret store's restart_services."
+  description = "ECS services of the Langfuse, ClickHouse, and collector tasks that read each secret, keyed by its secret store key, for the secret store's restart_services."
   value = {
     for key in local.store_secret_keys : key => [
-      for name in keys(local.langfuse_services) : aws_ecs_service.langfuse[name].id if contains(local.workload_secret_names[name], key)
-    ] if length([for name in keys(local.langfuse_services) : name if contains(local.workload_secret_names[name], key)]) > 0
+      for name, service in local.restartable_services : service if contains(local.workload_secret_names[name], key)
+    ] if length([for name in keys(local.restartable_services) : name if contains(local.workload_secret_names[name], key)]) > 0
   }
+}
+
+output "telemetry" {
+  description = "The Prometheus workspace the collector writes to, and whether the module sets the region's X-Ray encryption. Null without collector exports."
+  value = local.collector_exports ? {
+    prometheus_workspace_id = aws_prometheus_workspace.telemetry[0].id
+    prometheus_endpoint     = aws_prometheus_workspace.telemetry[0].prometheus_endpoint
+    xray_encryption_key_arn = var.xray_encryption_enabled ? aws_kms_key.telemetry[0].arn : null
+    collector_url           = local.collector_url
+  } : null
 }
 
 output "clickhouse" {

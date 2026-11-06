@@ -11,6 +11,7 @@ locals {
     clickhouse-migrate = "ch-migrate"
     langfuse-web       = "lf-web"
     langfuse-worker    = "lf-worker"
+    otel-collector     = "otel"
   }
 
   workload_trust = jsonencode({
@@ -116,7 +117,7 @@ locals {
             Resource = var.evidence_kms_key_arn
           },
         ] : [],
-        lookup(local.langfuse_task_statements, name, []),
+        lookup(local.extra_task_statements, name, []),
       )
     })
   }
@@ -153,7 +154,7 @@ resource "aws_iam_role" "workload_task" {
 resource "aws_iam_role_policy" "workload_task" {
   for_each = {
     for name, spec in local.all_workloads : name => spec
-    if length(spec.mounts) > 0 || (name == "review-worker" && var.evidence_bucket_arn != "") || length(lookup(local.langfuse_task_statements, name, [])) > 0
+    if length(spec.mounts) > 0 || (name == "review-worker" && var.evidence_bucket_arn != "") || length(lookup(local.extra_task_statements, name, [])) > 0
   }
 
   name   = "task"

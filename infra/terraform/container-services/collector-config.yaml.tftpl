@@ -1,0 +1,82 @@
+extensions:
+  health_check:
+    endpoint: 127.0.0.1:13133
+%{ if exports ~}
+  sigv4auth:
+    region: ${region}
+    service: aps
+%{ endif ~}
+%{ if langfuse ~}
+  basicauth/langfuse:
+    client_auth:
+      username: $${env:LANGFUSE_PUBLIC_KEY}
+      password: $${env:LANGFUSE_SECRET_KEY}
+%{ endif ~}
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:${port}
+        tls:
+          cert_file: /collector-tls/cert.pem
+          key_file: /collector-tls/key.pem
+          min_version: "1.2"
+
+processors:
+  ${indent(2, shared_processors)}
+%{ if langfuse ~}
+  filter/genai:
+    error_mode: ignore
+    traces:
+      span:
+        - '${genai_drop_condition}'
+%{ endif ~}
+
+exporters:
+  debug:
+    verbosity: basic
+%{ if exports ~}
+  awsxray:
+    region: ${region}
+    endpoint: ${xray_endpoint}
+  prometheusremotewrite:
+    endpoint: ${remote_write_endpoint}
+    auth:
+      authenticator: sigv4auth
+    resource_to_telemetry_conversion:
+      enabled: true
+%{ endif ~}
+%{ if langfuse ~}
+  otlphttp/langfuse:
+    endpoint: ${langfuse_endpoint}
+    auth:
+      authenticator: basicauth/langfuse
+    tls:
+      ca_pem: $${env:PLATFORM_CA_PEM}
+%{ endif ~}
+
+service:
+  extensions: [${join(", ", concat(["health_check"], exports ? ["sigv4auth"] : [], langfuse ? ["basicauth/langfuse"] : []))}]
+  telemetry:
+    metrics:
+      level: none
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, attributes/redact, batch]
+      exporters: [${exports ? "awsxray" : "debug"}]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [${exports ? "prometheusremotewrite" : "debug"}]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, attributes/redact, batch]
+      exporters: [debug]
+%{ if langfuse ~}
+    traces/langfuse:
+      receivers: [otlp]
+      processors: [memory_limiter, attributes/redact, filter/genai, batch]
+      exporters: [otlphttp/langfuse]
+%{ endif ~}

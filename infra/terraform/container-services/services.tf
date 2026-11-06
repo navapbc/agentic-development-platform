@@ -50,7 +50,7 @@ locals {
         EVIDENCE_OBJECT_STORE_BUCKET  = var.evidence_bucket_arn != "" ? element(split(":", var.evidence_bucket_arn), 5) : ""
         EVIDENCE_OBJECT_STORE_REGION  = local.region
         REVIEW_TRUST_ROOT_PATH        = contains(keys(var.environment_config), "review-trust-root.yaml") ? "${local.env_config_dir}/review-trust-root.yaml" : ""
-        LANGFUSE_HOST                 = local.langfuse_enabled ? "https://langfuse.${var.internal_domain}" : ""
+        LANGFUSE_HOST                 = local.review_exports_to_langfuse ? "https://langfuse.${var.internal_domain}" : ""
       }
       health = ["CMD", "python", "-m", "services.healthcheck", "heartbeat", "/tmp/worker.heartbeat", "--max-age", "60"]
     }
@@ -178,11 +178,11 @@ locals {
       TEMPORAL_HOST                 = try(var.temporal.endpoint, "")
       TEMPORAL_NAMESPACE            = try(var.temporal.namespace, "")
       TEMPORAL_TLS_SERVER_NAME      = try(var.temporal.server_name, "")
-      OTEL_EXPORTER_OTLP_ENDPOINT   = var.otel_collector_enabled ? "https://otel-collector.${var.internal_domain}:443" : ""
-      OTEL_SDK_DISABLED             = var.otel_collector_enabled || local.langfuse_enabled ? "false" : "true"
-      OTEL_TRACES_EXPORTER          = var.otel_collector_enabled ? "" : "none"
-      OTEL_METRICS_EXPORTER         = var.otel_collector_enabled ? "" : "none"
-      OTEL_LOGS_EXPORTER            = var.otel_collector_enabled ? "" : "none"
+      OTEL_EXPORTER_OTLP_ENDPOINT   = local.collector_enabled ? local.collector_url : ""
+      OTEL_SDK_DISABLED             = local.collector_enabled || local.langfuse_enabled ? "false" : "true"
+      OTEL_TRACES_EXPORTER          = local.collector_enabled ? "" : "none"
+      OTEL_METRICS_EXPORTER         = local.collector_enabled ? "" : "none"
+      OTEL_LOGS_EXPORTER            = local.collector_enabled ? "" : "none"
     },
     var.https_proxy == "" ? {} : {
       HTTPS_PROXY = var.https_proxy
@@ -192,7 +192,17 @@ locals {
 
   ca_secret = try(var.temporal.ca_secret_arn, null)
 
-  all_workloads = merge(local.workloads, local.langfuse_workloads)
+  all_workloads = merge(local.workloads, local.langfuse_workloads, local.collector_workloads)
+
+  # With the collector running, the review worker's generation spans reach Langfuse through it.
+  # The review worker keeps reading the Langfuse keys either way, because a draining worker slot
+  # runs an older revision that may still inject them, and the secret store admits only the
+  # roles the current revisions name.
+  review_exports_to_langfuse = local.langfuse_enabled && !local.collector_enabled
+  extra_task_statements = merge(
+    local.langfuse_task_statements,
+    { for name in keys(local.collector_workloads) : name => local.collector_statements if length(local.collector_statements) > 0 },
+  )
   # Secrets the module owns are not in the secret store, so the store lists no readers for them.
   store_secret_keys = distinct(flatten([for name in keys(local.all_workloads) : [for key in local.workload_secret_names[name] : key if key != "clickhouse_tls"]]))
 
@@ -214,6 +224,7 @@ locals {
   workload_repositories = merge(
     { for name, spec in local.workloads : name => [spec.image == var.platform_image ? "platform" : "repo-intelligence"] },
     { for name, spec in local.langfuse_workloads : name => spec.repositories },
+    { for name, spec in local.collector_workloads : name => spec.repositories },
   )
 }
 

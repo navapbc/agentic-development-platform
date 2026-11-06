@@ -119,6 +119,7 @@ module "vpc_endpoints" {
     local.secret_store_database ? ["rds-data"] : [],
     local.secret_store_cache ? ["elasticache"] : [],
     var.create_container_services && var.container_use_fips_endpoints ? ["bedrock-runtime-fips"] : [],
+    local.container_telemetry_exports ? [var.container_use_fips_endpoints ? "xray-fips" : "xray", "aps-workspaces"] : [],
   )
 
   name_prefix = var.name_prefix

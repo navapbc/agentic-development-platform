@@ -4,7 +4,6 @@ locals {
     web_image          = ""
     worker_image       = ""
     clickhouse_image   = ""
-    tls_sidecar_image  = ""
     public_url         = ""
     admin_email        = ""
     cache              = { endpoint = "", port = 6379, username = "", security_group_id = "" }
@@ -288,10 +287,10 @@ resource "terraform_data" "langfuse_guard" {
   lifecycle {
     precondition {
       condition = (
-        local.lf.admin_email != "" && local.lf.public_url != "" && var.platform_ca_pem != "" && var.langfuse_cache_secret_arn != "" &&
+        local.lf.admin_email != "" && local.lf.public_url != "" && var.platform_ca_pem != "" && var.langfuse_cache_secret_arn != "" && var.tls_sidecar_image != "" &&
         alltrue([for key in ["database_langfuse", "clickhouse_password", "langfuse_salt", "langfuse_encryption_key", "langfuse_nextauth_secret", "langfuse_public_key", "langfuse_secret_key", "langfuse_admin_password"] : lookup(var.secret_arns, key, "") != ""])
       )
-      error_message = "Langfuse needs admin_email, public_url, platform_ca_pem, langfuse_cache_secret_arn, and the database_langfuse, clickhouse_password, and Langfuse secret store secrets."
+      error_message = "Langfuse needs admin_email, public_url, platform_ca_pem, langfuse_cache_secret_arn, tls_sidecar_image, and the database_langfuse, clickhouse_password, and Langfuse secret store secrets."
     }
   }
 }
@@ -458,7 +457,7 @@ resource "aws_ecs_task_definition" "langfuse" {
       {
         name                   = "tls-sidecar"
         dependsOn              = [{ containerName = "setup", condition = "SUCCESS" }]
-        image                  = local.lf.tls_sidecar_image
+        image                  = var.tls_sidecar_image
         essential              = true
         readonlyRootFilesystem = true
         command                = ["proxy", "-listen", ":${local.internal_services.langfuse.port}", "-upstream", "http://127.0.0.1:3000", "-cert-dir", "/tmp/tls-sidecar"]
