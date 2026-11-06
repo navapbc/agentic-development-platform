@@ -7,10 +7,10 @@ import asyncio
 import json
 import os
 
+from database.engine import create_platform_engine
 from observability import reconcile_usage
 from observability.langfuse_read import fetch_session_generations
 from services.orchestration.usage_rollup import BudgetCaps, build_rollup, read_usage_rows
-from sqlalchemy.ext.asyncio import create_async_engine
 
 from scripts.config import get_settings, to_host_url
 
@@ -19,9 +19,7 @@ _COST_TOLERANCE = 0.01
 
 async def _run(execution_id: str) -> int:
     settings = get_settings()
-    engine = create_async_engine(
-        to_host_url(settings.database_url), future=True, pool_pre_ping=True
-    )
+    engine = create_platform_engine(to_host_url(settings.database_url))
     try:
         rows = await read_usage_rows(engine, execution_id)
     finally:

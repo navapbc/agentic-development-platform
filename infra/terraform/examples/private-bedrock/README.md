@@ -84,10 +84,12 @@ A created network also enables the Route 53 Resolver DNS Firewall, which resolve
 
 `create_container_services = true` provisions the [container-services](../../container-services) module. It creates the ECR repositories for the platform, repository-intelligence, collector, Langfuse web, Langfuse worker, and ClickHouse images, which `inv publish-platform-images` fills. The `container_repository_urls` output lists them. `container_internal_acm_certificate_arn` adds the internal load balancer that names coordination, repo-intelligence, the collector, and Langfuse under `container_internal_domain`, which needs two `new_subnet_cidrs`. `container_internal_allowed_cidr_blocks` admits networks beyond the client security group, and the `container_internal_endpoints` output lists the groups, target groups, and URLs.
 
+With the internal load balancer, `container_platform_image`, `container_repo_intelligence_image`, and the Temporal control plane, the module also runs the platform services on the cluster: the workflow and review workers, each in a blue and a green slot, coordination, repository intelligence, and the index worker, with the `db-migrate` and `schedule-bootstrap` one-shot tasks. `container_config_dir` names the directory of the environment's config files, which the tasks receive as `PLATFORM_ENV_CONFIG`, and `container_platform_ca_file` the CA the clients trust for the internal names. The composition lists each execution role as a reader of the secrets it injects and of the Temporal CA, attaches `bedrock_invoke_policy_arn` to the review worker, and adds the `bedrock-runtime-fips` interface endpoint when `container_use_fips_endpoints` is true. `inv platform-deploy` reads the `container_deploy` output, and the `container_workspace` output lists the workspace file system and its access points.
+
 ## After apply
 
 1. Push the jumphost image to the repository shown in the `jumphost_ecr_repository_url` output with `inv publish-jumphost-image --tag v1`.
-2. Attach the `bedrock_invoke_policy_arn` output to the workload role that signs Bedrock inference.
+2. Attach the `bedrock_invoke_policy_arn` output to any workload role outside the composition that signs Bedrock inference. The composition attaches it to the review worker.
 3. Bring up the platform and open the tunnel with `inv tunnel-start --detach`.
 4. With the secret store and Aurora enabled, create the per-service database roles before the first migration with `inv db-bootstrap-roles --function-name "$(terraform output -raw role_bootstrap_function_name)"`. Then set each external secret, such as `github_token`, with `aws secretsmanager put-secret-value`.
 
@@ -96,7 +98,7 @@ A created network also enables the Route 53 Resolver DNS Firewall, which resolve
 | Variable | Set false when |
 |----------|----------------|
 | `create_network` | A VPC and private subnets already exist. Then set `vpc_id`, `subnet_ids`, and `endpoint_allowed_cidrs`, plus `management_subnet_ids`, `management_cidr_blocks`, and `data_subnet_ids` for the tiers. |
-| `create_endpoints` | The account already has the bedrock-runtime, ssmmessages, ECR, logs, and kms endpoints, plus secretsmanager, rds-data, and elasticache when the secret store is enabled. Then set `existing_endpoints_security_group_id`. |
+| `create_endpoints` | The account already has the bedrock-runtime, ssmmessages, ECR, logs, and kms endpoints, plus secretsmanager, rds-data, and elasticache when the secret store is enabled, and bedrock-runtime-fips when the platform services run with `container_use_fips_endpoints`. Then set `existing_endpoints_security_group_id`. |
 | `create_ecr_repository` | A registry already holds the jumphost image. Then set `jumphost_repository_name`. |
 | `create_cloudtrail` | An organization CloudTrail already covers this account. |
 | `create_dns_firewall` | The organization already filters DNS for the VPC. |

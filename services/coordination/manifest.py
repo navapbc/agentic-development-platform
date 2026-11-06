@@ -6,11 +6,12 @@ import hashlib
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from database.engine import create_platform_engine
 from database.models.schema import audit_events, executions
 from scripts.config import get_settings
 from sqlalchemy import update
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 MANIFEST_EVENT_TYPE = "determinism_manifest"
 
@@ -68,9 +69,7 @@ class PostgresManifestStore:
 
     def _get_engine(self) -> AsyncEngine:
         if self._engine is None:
-            self._engine = create_async_engine(
-                get_settings().database_url, future=True, pool_pre_ping=True
-            )
+            self._engine = create_platform_engine(get_settings().database_url)
         return self._engine
 
     async def record(self, manifest: DeterminismManifest) -> ManifestRecord:

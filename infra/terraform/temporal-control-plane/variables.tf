@@ -49,6 +49,12 @@ variable "tls_secret_readers" {
   default     = []
 }
 
+variable "ca_secret_readers" {
+  description = "IAM role ARNs, such as the execution roles of the Temporal clients, allowed to read the CA secret only."
+  type        = list(string)
+  default     = []
+}
+
 variable "secret_recovery_window_days" {
   description = "Days a deleted TLS secret stays recoverable. Set 0 in a disposable environment that is destroyed and applied again."
   type        = number

@@ -118,6 +118,7 @@ module "vpc_endpoints" {
     var.create_secret_store ? ["secretsmanager"] : [],
     local.secret_store_database ? ["rds-data"] : [],
     local.secret_store_cache ? ["elasticache"] : [],
+    var.create_container_services && var.container_use_fips_endpoints ? ["bedrock-runtime-fips"] : [],
   )
 
   name_prefix = var.name_prefix

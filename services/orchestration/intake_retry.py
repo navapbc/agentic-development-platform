@@ -7,10 +7,11 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Protocol
 
+from database.engine import create_platform_engine
 from database.models.schema import executions, sequence_gate, side_effects, work_claims
 from scripts.config import Settings, get_settings, to_host_hostport, to_host_url
 from sqlalchemy import delete, select, update
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from services.coordination.idempotency import intake_start_target_repo
 from services.orchestration.intake_cursor import (
@@ -234,9 +235,7 @@ async def run_intake_retry(
     issue_key: str, *, repo: str | None = None, settings: Any = None
 ) -> IntakeRetryResult:
     resolved = settings or get_settings()
-    engine = create_async_engine(
-        to_host_url(resolved.database_url), future=True, pool_pre_ping=True
-    )
+    engine = create_platform_engine(to_host_url(resolved.database_url))
     try:
         return await retry_intake(
             issue_key,

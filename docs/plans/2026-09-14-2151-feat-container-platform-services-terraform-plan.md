@@ -74,6 +74,8 @@ The compute layer runs the platform code and holds the credentials that reach Be
 - KTD6. Upstream images are mirrored to ECR by digest, because DNS Firewall resolves only AWS, GitHub, Atlassian, and Slack names. Governs R1.
 - KTD7. `inv platform-deploy` orders db-migrate, the service rollout, schedule-bootstrap, and the drained-version prune, as `inv temporal-deploy` orders the Temporal schema and server. Governs R8, R6. Terraform registers the task definitions and leaves each service's task definition to the deploy step.
 - KTD8. The collector exporters to X-Ray and Amazon Managed Service for Prometheus sit behind a toggle, and the debug exporter runs when it is off. Governs R10.
+- KTD9. Each Temporal worker runs as a blue and a green ECS service. Governs R8. The workers use PINNED versioning, so an execution runs only on workers of the build that started it, and a rolling update of one service would stop those workers before the execution finishes. The deploy starts a new build in the idle slot and scales the old slot to zero once a one-shot task reports that no running execution is pinned to its build.
+- KTD10. Per-environment config files reach the tasks as the JSON environment value `PLATFORM_ENV_CONFIG`, which the image entrypoint writes under `PLATFORM_ENV_CONFIG_DIR`. The files hold settings and no credential, the root file system is read-only, and the task definition records which config a revision ran with.
 
 ### High-Level Design
 
@@ -100,7 +102,7 @@ Add optional TLS to `coordination-service` and `repo-intelligence`, enabled by a
 
 ### U3. Workers, services, one-shot tasks, and the deploy step (ADP-156)
 
-Add the module with the five services, their roles and groups, the EFS access points, the db-migrate and schedule-bootstrap task definitions, and `inv platform-deploy`. Size the pools through settings, set `sslmode=verify-full` with the RDS CA path, and set the `TEMPORAL_*`, `SSL_CERT_FILE`, service URL, FIPS, and connectivity settings on every task.
+Add the module with the five services, the worker slots, their roles and groups, the EFS access points, the db-migrate and schedule-bootstrap task definitions, and `inv platform-deploy`. Size the pools through settings, set `sslmode=verify-full` with the RDS CA path, and set the `TEMPORAL_*`, `SSL_CERT_FILE`, service URL, FIPS, and connectivity settings on every task.
 
 ### U4. Langfuse and ClickHouse (ADP-157)
 
@@ -142,3 +144,13 @@ The EKS units are planned when ADP-137 starts, after ADP-136, ADP-139, and ADP-1
 - A span exported over OTLP gRPC to `otel-collector.platform.internal:443` with the bundle returned `SUCCESS` and appeared in the collector log, and the same export trusting only the system roots failed.
 - The rebuilt local coordination-service and repo-intelligence containers stayed healthy over plain HTTP with the TLS settings unset.
 - The temporary tasks, task definitions, execution role, log group, and security group were removed afterwards.
+
+### U3 (ADP-156), 2026-11-06
+
+- The apply created the five services, with the workflow and review workers in blue and green slots, the two one-shot task definitions, the per-workload roles, security groups, and log groups, the services KMS key, the EFS workspace with its two access points, and the `bedrock-runtime-fips` interface endpoint. A full plan afterwards reported no changes.
+- `inv platform-deploy` ran `db-migrate` as `platform_migrator` to exit 0, moved coordination, repo-intelligence, and the index worker to their task definitions, started both workers in their blue slots, and ran `schedule-bootstrap` and the prune to exit 0. Every service reached a steady state with passing health checks, coordination and repo-intelligence over HTTPS behind the internal load balancer.
+- The workers passed the schema check against Aurora with `PGSSLMODE=verify-full`, connected to Temporal over TLS, and registered build `0.3.0.20261105235720` as the current version of the Worker Deployment. The review worker passed the review signing preflight with the injected key and the trust root from `PLATFORM_ENV_CONFIG`.
+- A CountingWorkflow started on build A, `0.3.0.20261105235720`, and was pinned to it. After build B, `0.3.0.20261106001649`, was published and applied, the deploy started B in the green slots, the pinned-execution task reported the execution on A, and both blue slots kept running. A new execution started on B. A temporary activity worker on build A then let the first execution complete on A with result 3. The next deploy found nothing pinned to A and scaled both blue slots to zero.
+- A temporary task with write access seeded a git checkout on the checkouts access point. The review worker's task definition, with a command override, read the checkout and its history from `/repositories`, was refused a write as a read-only file system, and signed a verdict with `SshsigAttestor` that verified, while a tampered payload failed verification.
+- The one-shot commands exited 133 on SIGTRAP during Python finalization after they had succeeded, the Temporal Python SDK issue temporalio/sdk-python#300. They now exit without finalization, and the prune exits 0.
+- The temporary task definitions, the seed role, and the seeded checkout were removed afterwards.

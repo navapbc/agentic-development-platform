@@ -234,7 +234,7 @@ async def test_every_artifact_write_shares_one_database_engine(monkeypatch):
         built.append(args)
         return object()
 
-    monkeypatch.setattr(evidence, "create_async_engine", _record_engine)
+    monkeypatch.setattr(evidence, "create_platform_engine", _record_engine)
 
     first = evidence.PostgresEvidenceSink()._get_engine()
     second = evidence.PostgresEvidenceSink()._get_engine()

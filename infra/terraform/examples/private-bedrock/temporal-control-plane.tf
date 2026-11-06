@@ -8,12 +8,8 @@ locals {
   ] : []
   temporal_restart_services = local.temporal_deployed ? [module.temporal_control_plane.server_service_arn] : []
 
-  secret_readers = merge(var.secret_readers, length(local.temporal_database_readers) == 0 ? {} : {
-    database_temporal = distinct(concat(lookup(var.secret_readers, "database_temporal", []), local.temporal_database_readers))
-  })
-  secret_restart_services = merge(var.secret_restart_services, length(local.temporal_restart_services) == 0 ? {} : {
-    database_temporal = concat(lookup(var.secret_restart_services, "database_temporal", []), local.temporal_restart_services)
-  })
+  temporal_secret_readers             = length(local.temporal_database_readers) == 0 ? {} : { database_temporal = local.temporal_database_readers }
+  temporal_restart_services_by_secret = length(local.temporal_restart_services) == 0 ? {} : { database_temporal = local.temporal_restart_services }
 }
 
 module "temporal_control_plane" {
@@ -27,6 +23,7 @@ module "temporal_control_plane" {
   internode_server_name         = var.temporal_internode_server_name
 
   frontend_certificate_publicly_trusted = var.temporal_frontend_certificate_publicly_trusted
+  ca_secret_readers                     = values(module.container_services.execution_role_arns)
   fips_140_mode                         = var.temporal_fips_140_mode
   secret_recovery_window_days           = var.secret_recovery_window_days
 

@@ -372,6 +372,72 @@ variable "container_internal_allowed_cidr_blocks" {
   default     = []
 }
 
+variable "container_platform_image" {
+  description = "Platform image reference with its digest, as inv publish-platform-images prints it. Empty creates no platform service."
+  type        = string
+  default     = ""
+}
+
+variable "container_repo_intelligence_image" {
+  description = "Repository-intelligence image reference with its digest. Empty creates no platform service."
+  type        = string
+  default     = ""
+}
+
+variable "container_environment" {
+  description = "ENVIRONMENT the platform tasks report, which names their config/<environment> files."
+  type        = string
+  default     = "aws"
+}
+
+variable "container_config_dir" {
+  description = "Directory outside the repository holding the environment's config files, such as tickets.yaml, which the tasks receive. Empty sends none."
+  type        = string
+  default     = ""
+}
+
+variable "container_platform_ca_file" {
+  description = "PEM file of the CA that issued container_internal_acm_certificate_arn, which the platform clients trust beside the system roots."
+  type        = string
+  default     = ""
+}
+
+variable "container_repo_intelligence_repos" {
+  description = "REPO_INTELLIGENCE_REPOS, name=path pairs under /repositories, the repository checkout mount."
+  type        = string
+  default     = ""
+}
+
+variable "container_service_counts" {
+  description = "Tasks inv platform-deploy runs per platform service."
+  type        = map(number)
+  default = {
+    workflow-worker   = 1
+    review-worker     = 1
+    coordination      = 1
+    repo-intelligence = 1
+    repo-index-worker = 1
+  }
+}
+
+variable "container_use_fips_endpoints" {
+  description = "Run the platform tasks with AWS_USE_FIPS_ENDPOINT=true and add the bedrock-runtime-fips interface endpoint they call."
+  type        = bool
+  default     = true
+}
+
+variable "container_https_proxy" {
+  description = "HTTPS_PROXY for the platform tasks on networks whose organization supplies egress."
+  type        = string
+  default     = ""
+}
+
+variable "container_enable_execute_command" {
+  description = "Allow ECS Exec into the platform tasks."
+  type        = bool
+  default     = false
+}
+
 variable "create_temporal_control_plane" {
   description = "Create the Temporal control plane on the platform ECS cluster, starting with the ECR repositories for its images."
   type        = bool

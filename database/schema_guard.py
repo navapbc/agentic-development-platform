@@ -17,8 +17,8 @@ from alembic.script import ScriptDirectory
 from alembic.script.revision import RevisionError
 from alembic.util import CommandError
 from sqlalchemy import column, select, table, text
-from sqlalchemy.ext.asyncio import create_async_engine
 
+from database.engine import create_platform_engine
 from database.models import SCHEMA
 
 MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
@@ -60,7 +60,7 @@ def classify(applied: Iterable[str], script: ScriptDirectory) -> SchemaState:
 
 async def applied_revisions(database_url: str) -> set[str]:
     """Read the applied revisions, treating a missing version table as an empty schema."""
-    engine = create_async_engine(database_url, future=True)
+    engine = create_platform_engine(database_url)
     try:
         async with engine.connect() as conn:
             table = await conn.scalar(

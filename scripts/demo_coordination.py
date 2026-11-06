@@ -8,6 +8,7 @@ import os
 import uuid
 from datetime import UTC, datetime
 
+from database.engine import create_platform_engine
 from database.models.schema import (
     audit_events,
     executions,
@@ -39,7 +40,7 @@ from services.integration.jira.snapshot import (
 )
 from sqlalchemy import Select, func, select, text
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from scripts.config import Settings, get_settings, to_host_url
 
@@ -123,9 +124,7 @@ async def main() -> int:
     settings = get_settings()
     task_id = args.task
     execution_id = f"exec-{uuid.uuid4().hex[:8]}"
-    engine = create_async_engine(
-        to_host_url(settings.database_url), future=True, pool_pre_ping=True
-    )
+    engine = create_platform_engine(to_host_url(settings.database_url))
 
     print(f"[demo] run id {execution_id}  ticket {task_id}  {_clock()}")
 

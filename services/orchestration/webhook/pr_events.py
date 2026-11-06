@@ -8,10 +8,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from database.engine import create_platform_engine
 from database.models.schema import executions
 from scripts.config import Settings, get_settings, to_host_hostport
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from services.orchestration.webhook.inbound import DispatchNotReady
 
@@ -109,9 +110,7 @@ class PostgresWorkflowResolver:
 
     def _get_engine(self) -> AsyncEngine:
         if self._engine is None:
-            self._engine = create_async_engine(
-                get_settings().database_url, future=True, pool_pre_ping=True
-            )
+            self._engine = create_platform_engine(get_settings().database_url)
         return self._engine
 
     async def resolve(self, event: PrClosedEvent) -> str | None:

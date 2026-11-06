@@ -73,14 +73,14 @@ def load_checks_configs(
     from scripts.config import get_settings
 
     from services.integration.credentials import (
-        _REPO_ROOT,
+        env_config_dir,
         load_env_config,
         require_current_config,
     )
 
     resolved = settings or get_settings()
     env = environment or resolved.environment
-    if not (_REPO_ROOT / "config" / env / "checks.yaml").exists():
+    if not (env_config_dir(env) / "checks.yaml").exists():
         return {}
     require_current_config("checks", environment=env)
     return parse_checks_configs(load_env_config("checks", environment=env))

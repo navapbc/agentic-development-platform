@@ -7,11 +7,12 @@ from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from typing import Protocol
 
+from database.engine import create_platform_engine
 from database.models.schema import work_claims
 from scripts.config import get_settings
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 CLAIMED = "claimed"
 RELEASED = "released"
@@ -99,9 +100,7 @@ class PostgresWorkClaimStore:
 
     def _get_engine(self) -> AsyncEngine:
         if self._engine is None:
-            self._engine = create_async_engine(
-                get_settings().database_url, future=True, pool_pre_ping=True
-            )
+            self._engine = create_platform_engine(get_settings().database_url)
         return self._engine
 
     async def try_claim(self, unit: WorkUnit) -> ClaimOutcome:

@@ -83,6 +83,11 @@ output "client_ca_secret_arn" {
   value       = local.client_ca ? try(aws_secretsmanager_secret.tls["ca"].arn, null) : null
 }
 
+output "tls_kms_key_arn" {
+  description = "KMS key that encrypts the TLS secrets, which a client decrypts to read the CA secret. Null when disabled."
+  value       = try(aws_kms_key.temporal[0].arn, null)
+}
+
 output "client_security_group_id" {
   description = "Security group a workload attaches to reach the frontend. Null until the images are set."
   value       = try(aws_security_group.client[0].id, null)

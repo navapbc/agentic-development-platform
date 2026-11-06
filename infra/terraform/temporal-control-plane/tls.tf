@@ -16,10 +16,11 @@ locals {
 
   # Clients verify the frontend against the CA secret unless an ACM frontend chains to a public root.
   client_ca = local.enabled && (local.frontend_from_secrets || !var.frontend_certificate_publicly_trusted)
-  # Only the server reads the internode and frontend keys. Every task reads the CA.
+  # Only the server reads the internode and frontend keys. Every task and every client reads the CA.
   tls_readers = {
     for key in keys(local.tls_secrets) : key => distinct(concat(
       var.tls_secret_readers,
+      key == "ca" ? var.ca_secret_readers : [],
       [for name, role in aws_iam_role.execution : role.arn if key == "ca" || name == "server"],
     ))
   }

@@ -60,6 +60,7 @@ COPY scripts ./scripts
 COPY observability ./observability
 COPY openhands ./openhands
 COPY vendor ./vendor
+COPY config/platform ./config/platform
 
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --extra worker

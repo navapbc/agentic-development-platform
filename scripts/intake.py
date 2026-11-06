@@ -148,4 +148,6 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    from services.temporal_client import exit_without_finalization
+
+    exit_without_finalization(main())

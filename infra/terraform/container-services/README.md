@@ -6,6 +6,7 @@ Module that runs the platform containers on the platform ECS cluster. Nothing is
 
 - ECR repositories `<name_prefix>/platform`, `<name_prefix>/repo-intelligence`, `<name_prefix>/otel-collector`, `<name_prefix>/langfuse-web`, `<name_prefix>/langfuse-worker`, and `<name_prefix>/clickhouse` through the [ecr](../ecr) module, each with immutable tags, scan on push, KMS encryption, and a lifecycle policy that expires untagged images. `kms_key_arn` sets one key for all of them, and empty creates one key per repository. The `tls-sidecar` repository holds the TLS image described below.
 - With `internal_acm_certificate_arn` set, the internal load balancer described below, its private hosted zone, and the `<name_prefix>-internal-lb-logs-<account>` bucket, which receives its access logs under `internal/`. Load balancer log delivery requires S3-managed encryption, so the bucket uses SSE-S3, denies requests without TLS, expires logs after `load_balancer_log_retention_days`, and sends its own server access logs to `access_log_bucket`.
+- With `platform_image`, `repo_intelligence_image`, and `temporal` set as well, the platform services, the one-shot tasks, their task and execution roles, security groups, and log groups, a KMS key for the logs and the workspace, and the workspace file system, all described below.
 
 ## Images
 
@@ -54,13 +55,52 @@ The private zone names fall under `*.internal`, which DNS Firewall already resol
 
 ACM cannot issue a public certificate for a private name, so the ALB certificate is imported. Issue it from the generated CA with `inv temporal-certs generate --out DIR --internal-name coordination.platform.internal,repo-intelligence.platform.internal,otel-collector.platform.internal,langfuse.platform.internal`, or have the organization's PKI issue a server certificate with those names, and import it with `aws acm import-certificate --certificate fileb://DIR/internal.pem --private-key fileb://DIR/internal-key.pem --certificate-chain fileb://DIR/ca.pem`. The CA PEM becomes `PLATFORM_CA_PEM` for the clients.
 
+## Platform services
+
+Every service runs on Fargate in the management subnets without a public address, and starts at zero tasks. `inv platform-deploy` sets each count from `service_counts`.
+
+| Service | Image | Command | Reaches |
+|---|---|---|---|
+| `workflow-worker` | platform | `services.orchestration.worker` with `WORKER_ROLE=workflow` | Database, Temporal |
+| `review-worker` | platform | `services.orchestration.worker` with `WORKER_ROLE=review` | Database, Temporal, Bedrock, the evidence bucket, the internal load balancer, the checkouts read-only |
+| `coordination` | platform | `services.coordination.service` over HTTPS on 8130 | Database, Temporal, behind the internal load balancer |
+| `repo-intelligence` | repo-intelligence | `services.repository_intelligence.server` over HTTPS on 8120 | The checkouts read-only and the index, behind the internal load balancer |
+| `repo-index-worker` | repo-intelligence | `services.repository_intelligence.indexing.worker` | The checkouts read-only and the index |
+| `db-migrate` | platform | `alembic upgrade head`, once per deploy | Database as `platform_migrator` |
+| `schedule-bootstrap` | platform | `reap --schedule && intake --schedule`, once per deploy | Database, Temporal |
+
+Each workload has its own task role, execution role, and security group. The security group has no ingress and admits egress to the VPC endpoints, S3, and only the database, workspace, Temporal, or load balancer the workload reaches. Each execution role reads only the secrets its task injects. The task definitions carry secret ARNs, never values. A workload that reaches the database receives `PGUSER` and `PGPASSWORD` from the `platform_app` secret, or the `platform_migrator` secret for `db-migrate`, and connects with `PGSSLMODE=verify-full` against the RDS CA bundle in the image. A workload that reaches Temporal receives the Temporal CA as `TEMPORAL_TLS_CA` and attaches the Temporal client group. The root file systems are read-only, and a task volume mounted at `/tmp` holds what a task writes.
+
+`use_fips_endpoints` sets `AWS_USE_FIPS_ENDPOINT=true`, which sends every boto3 call to the `-fips` endpoint of its service, `bedrock-runtime-fips` included. `https_proxy` sets `HTTPS_PROXY` and a `NO_PROXY` that keeps the internal domain, AWS, and the task metadata endpoint off the proxy. `otel_collector_enabled` points the OTLP exporters at `otel-collector.<internal_domain>`. Without it, `OTEL_SDK_DISABLED=true` stops span recording.
+
+### Temporal worker slots
+
+A Temporal worker runs as two services, `<name>-blue` and `<name>-green`. The workers register their build as a version of the Worker Deployment with PINNED versioning, so a running execution stays on the build that started it. `inv platform-deploy` starts a new build in the idle slot, where the workers make it the current version, so new executions start on it while the old slot serves the executions pinned to the old build. The deploy runs `python -m scripts.pinned_executions <build>` as a one-shot task and scales the old slot to zero when it exits 0, which means no running execution is pinned to that build. Exit 3 lists the pinned executions and leaves the slot running, and a later deploy scales it to zero once they finish. A deploy whose build already runs in a slot replaces that slot's tasks in place. A deploy of a third build while both slots still run older builds stops before it moves any service.
+
+### Configuration
+
+`environment_config` maps a file name to its content, such as `github.yaml` and `review-trust-root.yaml`, and reaches every platform task as the JSON value of `PLATFORM_ENV_CONFIG`. The platform image's entrypoint writes each `.yaml` or `.yml` file under `${TMPDIR}/platform-config` and exports `PLATFORM_ENV_CONFIG_DIR` there, which the services read in place of `config/<environment>`. The `config/platform` files are in the image. `service_environment` adds or overrides environment values per workload.
+
+### Database connections
+
+Each SQLAlchemy engine holds its own pool of `DATABASE_POOL_SIZE` connections and opens up to `DATABASE_POOL_MAX_OVERFLOW` more under load, set from `database_pool_size` and `database_pool_max_overflow`. A process opens one engine per store it uses, and coordination opens six, so the peak per task is about the engine count times the sum of the two. Size the Aurora maximum connections for the sum over every running task, both worker slots included.
+
+### Workspace
+
+An encrypted EFS file system with elastic throughput holds the repository checkouts and the repository index, through the access points `checkouts` at `/checkouts` and `index` at `/repository-indexes`, both owned by uid 10001, the `appuser` of both images. Its policy admits only TLS connections through an access point. The services mount `checkouts` read-only at `/repositories`, and the index writers mount `index` at `/app/repository_indexes`. `repo_intelligence_repos` sets `REPO_INTELLIGENCE_REPOS`, the checkout paths under `/repositories` to index.
+
 ## Outputs
 
 | Output | Value |
 |---|---|
 | `repository_urls` | ECR repository of each image, keyed by the name `inv publish-platform-images` uses. Empty when disabled |
 | `internal_endpoints` | The client security group, each service's target security group and target group, each service's HTTPS URL, and the domain. Null without the internal load balancer |
+| `execution_role_arns` | Execution role of each workload |
+| `secret_readers` | Execution roles that inject each secret, keyed by its secret store key, for the secret store |
+| `service_arns` | ECS service of each service and worker slot |
+| `workspace` | The workspace file system, its access points, and its security group, for the workloads outside the module that write the checkouts |
+| `deploy` | The cluster, services, worker slots, one-shot tasks, and subnets `inv platform-deploy` reads |
 
 ## Tests
 
-`tests/container_services.tftest.hcl` and `tests/internal_lb.tftest.hcl` run the module against a mocked provider. They assert that the disabled module creates nothing, that the enabled module creates a repository for every image, that the internal listener terminates TLS under the FIPS policy with access logs, that every target group re-encrypts and each host rule forwards to its own service, that each target admits only the load balancer, and the input check. Run it with `inv terraform-test`, which CI also runs.
+`tests/container_services.tftest.hcl`, `tests/internal_lb.tftest.hcl`, and `tests/services.tftest.hcl` run the module against a mocked provider. They assert that the disabled module creates nothing, that the enabled module creates a repository for every image, that the internal listener terminates TLS under the FIPS policy with access logs, that every target group re-encrypts and each host rule forwards to its own service, that each target admits only the load balancer, that the tasks inject secrets by ARN and each execution role reads only its own, that only the review worker calls Bedrock, that each service joins only the groups it needs, that each Temporal worker has two slots, that the workspace admits only TLS through an access point, and the input checks. Run it with `inv terraform-test`, which CI also runs.

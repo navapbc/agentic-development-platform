@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -54,8 +55,10 @@ EXPECTED_TASKS = {
     "publish-jumphost-image",
     "publish-temporal-images",
     "publish-platform-images",
+    "go-test",
     "temporal-certs",
     "temporal-deploy",
+    "platform-deploy",
     "temporal-ui",
     "reap",
     "scrub-workspaces",
@@ -319,3 +322,55 @@ def test_terraform_test_runs_every_module_on_the_pinned_version():
             f"terraform -chdir={module} test",
         )
     ]
+
+
+def test_go_modules_finds_each_module_and_skips_vendored_copies(tmp_path):
+    for module in ("healthprobe", "tls-sidecar", "tls-sidecar/vendor/example.com/lib"):
+        (tmp_path / module).mkdir(parents=True)
+        (tmp_path / module / "go.mod").write_text("module example\n", encoding="utf-8")
+
+    assert tasks_module._go_modules(str(tmp_path)) == [
+        str(tmp_path / "healthprobe"),
+        str(tmp_path / "tls-sidecar"),
+    ]
+
+
+def test_ci_tests_go_with_the_version_the_images_build_with():
+    root = Path(tasks_module.__file__).parent
+    workflow = (root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    pinned = re.search(r'go-version: "(\d+\.\d+)\.\d+"', workflow).group(1)
+    builders = {
+        match.group(1)
+        for dockerfile in (root / "docker").glob("*Dockerfile")
+        for match in re.finditer(r"/golang:(\d+\.\d+)-", dockerfile.read_text(encoding="utf-8"))
+    }
+
+    assert builders == {pinned}
+
+
+class _GoContext(Context):
+    def __init__(self, *, unformatted: str = "") -> None:
+        super().__init__()
+        self.unformatted = unformatted
+        self.commands: list[str] = []
+
+    def run(self, command: str, **_: object) -> Result:
+        self.commands.append(command)
+        return Result(stdout=self.unformatted if command.startswith("gofmt") else "go version")
+
+
+def test_go_test_vets_and_tests_every_module():
+    context = _GoContext()
+
+    tasks_module.go_test(context)
+
+    modules = tasks_module._go_modules(str(Path(tasks_module.__file__).parent / "docker"))
+    assert modules and context.commands[0] == "go version"
+    assert [command for command in context.commands if "go test" in command] == [
+        f"cd {module} && go vet ./... && go test ./..." for module in modules
+    ]
+
+
+def test_go_test_refuses_unformatted_code():
+    with pytest.raises(Exit, match="gofmt would rewrite"):
+        tasks_module.go_test(_GoContext(unformatted="docker/tls-sidecar/main.go"))

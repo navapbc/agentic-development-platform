@@ -9,10 +9,11 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol, runtime_checkable
 
+from database.engine import create_platform_engine
 from database.models.schema import evidence_artifacts
 from scripts.config import Settings, get_settings
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from services.review.attestation import content_hash
 from services.review.classification import (
@@ -79,9 +80,7 @@ def _shared_evidence_engine() -> AsyncEngine:
     """
     global _shared_engine
     if _shared_engine is None:
-        _shared_engine = create_async_engine(
-            get_settings().database_url, future=True, pool_pre_ping=True
-        )
+        _shared_engine = create_platform_engine(get_settings().database_url)
     return _shared_engine
 
 

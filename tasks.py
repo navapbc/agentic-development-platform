@@ -578,6 +578,31 @@ def ci(c):
     c.run(f"{HOST_PYTHON} -m scripts.eval_gate", pty=True)
 
 
+_GO_SKIPPED_DIRECTORIES = {".git", ".venv", "node_modules", "vendor", ".terraform"}
+
+
+def _go_modules(root: str) -> list[str]:
+    modules = []
+    for directory, subdirectories, files in os.walk(root):
+        subdirectories[:] = [name for name in subdirectories if name not in _GO_SKIPPED_DIRECTORIES]
+        if "go.mod" in files:
+            modules.append(directory)
+    return sorted(modules)
+
+
+@task
+def go_test(c):
+    """Check formatting, vet, and test every Go module under docker/."""
+    repo_root = os.path.dirname(os.path.abspath(__file__))
+    if not c.run("go version", hide=True, warn=True).ok:
+        raise Exit("go is not on PATH. Install the Go version .github/workflows/ci.yml pins.")
+    for module in _go_modules(os.path.join(repo_root, "docker")):
+        unformatted = c.run(f"gofmt -l {shlex.quote(module)}", hide=True).stdout.strip()
+        if unformatted:
+            raise Exit(f"gofmt would rewrite these files. Run gofmt -w on them.\n{unformatted}")
+        c.run(f"cd {shlex.quote(module)} && go vet ./... && go test ./...", pty=True)
+
+
 def _terraform_version_remedy(pinned: str) -> str:
     override = os.environ.get("TFENV_TERRAFORM_VERSION")
     if override:
@@ -748,6 +773,17 @@ def temporal_deploy(c, region=""):
     flags = f" --region {shlex.quote(region)}" if region else ""
     env = {"AWS_PROFILE": settings.aws_profile, "AWS_REGION": settings.aws_region}
     c.run(f"{HOST_PYTHON} -m scripts.temporal_deploy{flags}", pty=True, env=env)
+
+
+@task(help={"region": "AWS region (empty uses AWS_REGION)."})
+def platform_deploy(c, region=""):
+    """Migrate the database, roll the platform services, register the schedules, and prune."""
+    from scripts.config import get_settings
+
+    settings = get_settings()
+    flags = f" --region {shlex.quote(region)}" if region else ""
+    env = {"AWS_PROFILE": settings.aws_profile, "AWS_REGION": settings.aws_region}
+    c.run(f"{HOST_PYTHON} -m scripts.platform_deploy{flags}", pty=True, env=env)
 
 
 @task(help={"port": "Local port forwarded to the UI load balancer (default 8443)."})
@@ -1170,12 +1206,14 @@ for _t in (
     fetch_acli,
     sast,
     terraform_test,
+    go_test,
     cbm_build,
     publish_jumphost_image,
     publish_temporal_images,
     publish_platform_images,
     temporal_certs,
     temporal_deploy,
+    platform_deploy,
     temporal_ui,
     reap,
     scrub_workspaces,

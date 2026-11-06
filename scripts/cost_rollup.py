@@ -8,6 +8,7 @@ import json
 import os
 import sys
 
+from database.engine import create_platform_engine
 from observability.gateway import langfuse_session_url
 from observability.langfuse_read import fetch_session_generation_rows
 from services.orchestration.usage_rollup import (
@@ -17,7 +18,6 @@ from services.orchestration.usage_rollup import (
     read_usage_rows,
     rollup_to_dict,
 )
-from sqlalchemy.ext.asyncio import create_async_engine
 
 from scripts.config import get_settings, to_host_url
 
@@ -46,9 +46,7 @@ def _backfilled(settings, execution_id, rows):
 
 async def _run(execution_id: str) -> int:
     settings = get_settings()
-    engine = create_async_engine(
-        to_host_url(settings.database_url), future=True, pool_pre_ping=True
-    )
+    engine = create_platform_engine(to_host_url(settings.database_url))
     try:
         rows = await read_usage_rows(engine, execution_id)
     finally:

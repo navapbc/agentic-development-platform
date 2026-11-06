@@ -89,10 +89,22 @@ class EnvSecretResolver:
         return merged
 
 
+def env_config_dir(environment: str, *, root: Path | None = None) -> Path:
+    """Return config/<environment>, or the directory PLATFORM_ENV_CONFIG_DIR names.
+
+    A deployed task has no repository checkout, so its entrypoint writes the environment's
+    config files to PLATFORM_ENV_CONFIG_DIR. An explicit root still selects the checkout layout.
+    """
+    configured = os.environ.get("PLATFORM_ENV_CONFIG_DIR", "")
+    if root is None and configured:
+        return Path(configured)
+    base = root if root is not None else _REPO_ROOT
+    return base / "config" / environment
+
+
 def load_env_config(name: str, *, environment: str, root: Path | None = None) -> dict[str, Any]:
     """Load config/<environment>/<name>.yaml as a mapping."""
-    base = root if root is not None else _REPO_ROOT
-    path = base / "config" / environment / f"{name}.yaml"
+    path = env_config_dir(environment, root=root) / f"{name}.yaml"
     if not path.exists():
         raise ConfigError(f"config file missing: {path}; copy {path.name}.example to create it")
     parsed = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -120,8 +132,7 @@ def load_platform_config(name: str, *, root: Path | None = None) -> dict[str, An
 def _read_config_file(
     name: str, *, environment: str, root: Path | None, suffix: str
 ) -> dict[str, Any] | None:
-    base = root if root is not None else _REPO_ROOT
-    path = base / "config" / environment / f"{name}.yaml{suffix}"
+    path = env_config_dir(environment, root=root) / f"{name}.yaml{suffix}"
     if not path.exists():
         return None
     parsed = yaml.safe_load(path.read_text(encoding="utf-8"))

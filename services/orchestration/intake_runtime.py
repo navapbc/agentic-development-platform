@@ -134,12 +134,10 @@ class PostgresExecutionSeeder:
 
     def _get_engine(self) -> Any:
         if self._engine is None:
+            from database.engine import create_platform_engine
             from scripts.config import get_settings
-            from sqlalchemy.ext.asyncio import create_async_engine
 
-            self._engine = create_async_engine(
-                get_settings().database_url, future=True, pool_pre_ping=True
-            )
+            self._engine = create_platform_engine(get_settings().database_url)
         return self._engine
 
     async def seed(self, *, execution_id: str, task_id: str, repo: str) -> None:

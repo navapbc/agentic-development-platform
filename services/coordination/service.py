@@ -11,9 +11,9 @@ from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from database.engine import create_platform_engine
 from scripts.config import configured_log_level, get_settings
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine
 
 from services.coordination.auth import SHARED_SECRET_ENV_VAR, SHARED_SECRET_REMEDY
 from services.coordination.claims import (
@@ -46,7 +46,7 @@ PORT = 8130
 
 
 async def _ping(database_url: str) -> None:
-    engine = create_async_engine(database_url, future=True)
+    engine = create_platform_engine(database_url)
     try:
         async with engine.connect() as conn:
             await conn.execute(text("SELECT 1"))

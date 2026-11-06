@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     database_url: str = (
         "postgresql+asyncpg://platform:change-me-locally@postgres:5432/agent_platform"
     )
+    database_pool_size: int = 5
+    database_pool_max_overflow: int = 10
 
     temporal_host: str = "localhost:7233"
     temporal_namespace: str = "default"

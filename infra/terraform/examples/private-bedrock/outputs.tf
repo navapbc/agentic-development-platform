@@ -148,6 +148,16 @@ output "container_repository_urls" {
   value       = module.container_services.repository_urls
 }
 
+output "container_deploy" {
+  description = "What inv platform-deploy runs."
+  value       = module.container_services.deploy
+}
+
+output "container_workspace" {
+  description = "Workspace file system and its checkouts and index access points."
+  value       = module.container_services.workspace
+}
+
 output "container_internal_endpoints" {
   description = "The internal load balancer's client security group, each service's target security group and target group, and each service's HTTPS URL."
   value       = module.container_services.internal_endpoints

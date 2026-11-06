@@ -5,10 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from database.engine import create_platform_engine
 from database.models.schema import executions
 from scripts.config import Settings, get_settings, to_host_hostport, to_host_url
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 _GATE_DECISION_SIGNAL = "submit_gate_decision"
 _AWAITING_HUMAN = "AWAITING_HUMAN"
@@ -109,9 +110,7 @@ async def run_gate_decision(
     settings: Any = None,
 ) -> GateDecisionResult:
     resolved = settings or get_settings()
-    engine = create_async_engine(
-        to_host_url(resolved.database_url), future=True, pool_pre_ping=True
-    )
+    engine = create_platform_engine(to_host_url(resolved.database_url))
     try:
         return await resume_gate(
             issue_key,
