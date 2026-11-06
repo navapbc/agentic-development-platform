@@ -279,3 +279,18 @@ run "a_collector_without_the_sidecar_image_is_refused" {
 
   expect_failures = [terraform_data.collector_guard]
 }
+
+run "each_service_restarts_after_a_rotation_of_a_credential_it_reads" {
+  command = apply
+
+  assert {
+    condition = (
+      toset(output.secret_restart_services.database_platform_app) == toset([
+        for name in ["workflow-worker-blue", "workflow-worker-green", "review-worker-blue", "review-worker-green", "coordination"] : aws_ecs_service.platform[name].id
+      ]) &&
+      output.secret_restart_services.coordination_shared_secret == [aws_ecs_service.platform["coordination"].id] &&
+      alltrue([for services in values(output.secret_restart_services) : length(services) <= 5])
+    )
+    error_message = "A rotated credential would not restart every service that reads it, or a secret lists more than the five services the secret store allows."
+  }
+}

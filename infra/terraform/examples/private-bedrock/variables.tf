@@ -581,3 +581,27 @@ variable "temporal_enable_execute_command" {
   type        = bool
   default     = false
 }
+
+variable "off_hours_enabled" {
+  description = "Scale the platform and Temporal ECS services to zero at off_hours_sleep_schedule and restore them at off_hours_wake_schedule, so the Aurora cluster pauses overnight."
+  type        = bool
+  default     = false
+}
+
+variable "off_hours_timezone" {
+  description = "IANA time zone of the off-hours schedules."
+  type        = string
+  default     = "America/Chicago"
+}
+
+variable "off_hours_sleep_schedule" {
+  description = "EventBridge Scheduler expression that scales the services to zero."
+  type        = string
+  default     = "cron(0 20 ? * * *)"
+}
+
+variable "off_hours_wake_schedule" {
+  description = "EventBridge Scheduler expression that restores the services. It must not wake on a weekend while the secret store rotates on a Sunday."
+  type        = string
+  default     = "cron(0 7 ? * MON-FRI *)"
+}

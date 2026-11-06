@@ -67,6 +67,7 @@ async def install_schedule(source: str, client: Any = None) -> int:
         Schedule,
         ScheduleActionStartWorkflow,
         ScheduleIntervalSpec,
+        SchedulePolicy,
         ScheduleSpec,
     )
     from temporalio.service import RPCError, RPCStatusCode
@@ -88,6 +89,11 @@ async def install_schedule(source: str, client: Any = None) -> int:
                     every=timedelta(seconds=settings.intake_schedule_interval_seconds)
                 )
             ]
+        ),
+        # A run missed while Temporal was down, as the off-hours schedule leaves it, starts at
+        # most once on wake instead of once for every missed interval.
+        policy=SchedulePolicy(
+            catchup_window=timedelta(seconds=settings.intake_schedule_interval_seconds)
         ),
     )
     handle = client.get_schedule_handle(schedule_id)

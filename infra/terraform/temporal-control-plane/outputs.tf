@@ -121,3 +121,8 @@ output "deploy" {
     ui_service                  = local.ui ? aws_ecs_service.ui[0].name : null
   } : null
 }
+
+output "ui_service_arn" {
+  description = "UI ECS service, for the off-hours schedule. Null without the UI."
+  value       = try(aws_ecs_service.ui[0].id, null)
+}

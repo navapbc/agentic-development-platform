@@ -113,11 +113,11 @@ output "secret_readers" {
 }
 
 output "secret_restart_services" {
-  description = "ECS services of the Langfuse, ClickHouse, and collector tasks that read each secret, keyed by its secret store key, for the secret store's restart_services."
+  description = "ECS services and worker slots that read each secret, keyed by its secret store key, for the secret store's restart_services."
   value = {
-    for key in local.store_secret_keys : key => [
-      for name, service in local.restartable_services : service if contains(local.workload_secret_names[name], key)
-    ] if length([for name in keys(local.restartable_services) : name if contains(local.workload_secret_names[name], key)]) > 0
+    for key in local.restart_secret_keys : key => [
+      for instance in local.restart_instances : instance.id if contains(local.workload_restart_keys[instance.workload], key)
+    ] if anytrue([for instance in local.restart_instances : contains(local.workload_restart_keys[instance.workload], key)])
   }
 }
 

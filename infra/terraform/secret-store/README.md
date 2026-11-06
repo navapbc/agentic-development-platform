@@ -60,6 +60,8 @@ The rotation functions run in the management tier. They have no ingress, and the
 | PostgreSQL service roles | The function runs `ALTER ROLE ... PASSWORD` through the Data API as the RDS-managed master user. It sends a SCRAM-SHA-256 verifier, so the statement that `log_statement = ddl` writes to the cluster log carries no password. | Open connections stay open. A consumer that opens a new connection with the old password is refused until its restart. |
 | ElastiCache user | The function calls `ModifyUser` with the current and the new password. The next rotation drops the older one. | Consumers keep connecting with either password until their restart. |
 
+The [off-hours](../off-hours) module scales the consumers to zero across the default rotation window, so a scheduled rotation finds no running consumer and none of its connections is refused. A rotation started while the consumers run refuses their new connections until the restart rule replaces their tasks, so put them to sleep first with the off-hours sleep document.
+
 The RDS-managed master secret rotates every seven days through RDS itself and is used only by the bootstrap and the rotation function.
 
 ## Role bootstrap
@@ -84,7 +86,7 @@ Each service reads its secrets once, when its task starts. `restart_services` ma
 | Secret | Procedure |
 |---|---|
 | Database and cache credentials | `aws secretsmanager rotate-secret --secret-id <arn>`. The restart rule redeploys the consumers when the rotation succeeds. |
-| Generated secrets | Increment the secret's entry in `generated_secret_versions` and apply. Terraform writes a new value as an operator update, so the restart rule redeploys the consumers. Rotating `review_attestation_secret` makes earlier HMAC attestations fail verification, so keep the old value with the evidence it verified. Rotating the Langfuse project keys requires the same keys in the Langfuse project. Rotating `coordination_shared_secret` refuses every coordination call from a worker that has not restarted, so list the coordination service and the workers under that key in `restart_services`. |
+| Generated secrets | Increment the secret's entry in `generated_secret_versions` and apply. Terraform writes a new value as an operator update, so the restart rule redeploys the consumers. Rotating `review_attestation_secret` makes earlier HMAC attestations fail verification, so keep the old value with the evidence it verified. Rotating the Langfuse project keys requires the same keys in the Langfuse project. Rotating `coordination_shared_secret` refuses every coordination call from a client that has not restarted, so every service that reads it belongs under that key in `restart_services`, which the `private-bedrock` root fills from the `container-services` module. |
 | External secrets | Issue the new token or webhook secret at GitHub, Jira, or Slack, then `aws secretsmanager put-secret-value`. Revoke the old one at the issuer after the consumers restart. |
 | Signing keys | Add the new public key to the trust root or identity, write the private key with `put-secret-value`, then revoke the old key. |
 | `langfuse_encryption_key` | Not rotated. Langfuse encrypts stored data with it and has no re-encryption path, so a new key makes stored data unreadable. |

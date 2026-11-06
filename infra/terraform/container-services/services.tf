@@ -203,6 +203,20 @@ locals {
     local.langfuse_task_statements,
     { for name in keys(local.collector_workloads) : name => local.collector_statements if length(local.collector_statements) > 0 },
   )
+  # A service restarts after a rotation of any credential it reads, the platform_app login included.
+  workload_restart_keys = {
+    for name, spec in local.all_workloads : name => concat(
+      local.workload_secret_names[name],
+      spec.database && name != "db-migrate" ? ["database_platform_app"] : [],
+    )
+  }
+  restart_secret_keys = distinct(concat(local.store_secret_keys, ["database_platform_app"]))
+  restart_instances = concat(
+    [for instance, service in aws_ecs_service.platform : { id = service.id, workload = local.service_instances[instance].workload }],
+    [for name, service in aws_ecs_service.langfuse : { id = service.id, workload = name }],
+    [for name, service in aws_ecs_service.collector : { id = service.id, workload = name }],
+  )
+
   # Secrets the module owns are not in the secret store, so the store lists no readers for them.
   store_secret_keys = distinct(flatten([for name in keys(local.all_workloads) : [for key in local.workload_secret_names[name] : key if key != "clickhouse_tls"]]))
 

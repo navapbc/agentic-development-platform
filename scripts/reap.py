@@ -48,6 +48,7 @@ async def _install_schedule() -> int:
         Schedule,
         ScheduleActionStartWorkflow,
         ScheduleIntervalSpec,
+        SchedulePolicy,
         ScheduleSpec,
     )
 
@@ -66,6 +67,11 @@ async def _install_schedule() -> int:
                     every=timedelta(minutes=settings.reap_schedule_interval_minutes)
                 )
             ]
+        ),
+        # A run missed while Temporal was down, as the off-hours schedule leaves it, starts at
+        # most once on wake instead of once for every missed interval.
+        policy=SchedulePolicy(
+            catchup_window=timedelta(minutes=settings.reap_schedule_interval_minutes)
         ),
     )
     handle = client.get_schedule_handle(settings.reap_schedule_id)

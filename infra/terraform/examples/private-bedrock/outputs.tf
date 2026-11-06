@@ -228,3 +228,12 @@ output "temporal_deploy" {
   description = "What inv temporal-deploy runs."
   value       = module.temporal_control_plane.deploy
 }
+
+output "off_hours" {
+  description = "The automation documents that put the services to sleep and wake them, the role they assume, and the parameter holding the counts the wake restores."
+  value = {
+    documents             = module.off_hours.documents
+    automation_role_arn   = module.off_hours.automation_role_arn
+    wake_counts_parameter = module.off_hours.wake_counts_parameter
+  }
+}

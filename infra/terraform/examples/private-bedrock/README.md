@@ -90,6 +90,8 @@ With `create_cache`, `create_clickhouse_storage`, `create_langfuse_bucket`, the 
 
 `container_collector_image` with `container_tls_sidecar_image` runs the collector, and every platform task exports to it. With `container_collector_exports_enabled`, the default, the composition adds the `xray-fips` or `xray` and the `aps-workspaces` interface endpoints, the collector exports to X-Ray and to a Prometheus workspace, and with Langfuse it forwards the generation spans to Langfuse. `container_xray_encryption_enabled` sets the region's X-Ray encryption to the telemetry key, which changes it for every X-Ray user in the region. The `container_telemetry` output names the workspace and its endpoint.
 
+`off_hours_enabled` provisions the [off-hours](../../off-hours) module for the platform and Temporal ECS services. The Temporal server and UI, ClickHouse, and the collector stop last and start first. `off_hours_timezone`, `off_hours_sleep_schedule`, and `off_hours_wake_schedule` set the window, and the `off_hours` output names the documents for a run outside the schedule. The composition also lists every service and worker slot under each secret it reads in the secret store restart rules, so a rotation redeploys all of its consumers.
+
 ## After apply
 
 1. Push the jumphost image to the repository shown in the `jumphost_ecr_repository_url` output with `inv publish-jumphost-image --tag v1`.

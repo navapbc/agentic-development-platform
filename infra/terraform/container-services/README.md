@@ -134,7 +134,7 @@ The telemetry KMS key encrypts the workspace. X-Ray encryption is one setting pe
 | `workspace` | The workspace file system, its access points, and its security group, for the workloads outside the module that write the checkouts |
 | `deploy` | The cluster, services, worker slots, Langfuse and ClickHouse services, one-shot tasks, and subnets `inv platform-deploy` reads |
 | `temporal_client_role_arns` | Execution roles of the workloads that connect to Temporal, which read the Temporal CA |
-| `secret_restart_services` | The Langfuse and ClickHouse services that read each secret, for the secret store's restart rules |
+| `secret_restart_services` | The services and worker slots that read each secret, the `platform_app` login included, for the secret store's restart rules |
 | `clickhouse` | The ClickHouse TLS secret and the name its certificate carries. Null without Langfuse |
 | `langfuse` | The internal Langfuse URL and the public URL. Null without Langfuse |
 | `telemetry` | The Prometheus workspace and its endpoint, the X-Ray encryption key the module set, and the collector URL. Null without collector exports |

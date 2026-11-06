@@ -50,10 +50,7 @@ locals {
   }
   collector_workloads = { for name, spec in local.collector_specs : name => spec if local.collector_enabled }
 
-  restartable_services = merge(
-    { for name, service in aws_ecs_service.langfuse : name => service.id },
-    { for name, service in aws_ecs_service.collector : name => service.id },
-  )
+
 
   collector_statements = [
     for statement in [

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 import scripts.intake as intake
 from scripts.intake import (
@@ -33,6 +35,7 @@ class _Client:
         self.schedules = set(existing)
         self.failing = set(failing)
         self.created: list[tuple[str, str]] = []
+        self.policies: list = []
         self.deleted: list[str] = []
 
     def get_schedule_handle(self, schedule_id: str) -> _Handle:
@@ -43,6 +46,7 @@ class _Client:
             raise RuntimeError("schedule already exists")
         self.schedules.add(schedule_id)
         self.created.append((schedule_id, schedule.action.id))
+        self.policies.append(schedule.policy)
 
 
 @pytest.fixture
@@ -83,6 +87,13 @@ async def test_install_creates_the_source_schedule(rebar_settings):
     assert await install_schedule("rebar", client=client) == 0
     assert client.created == [("rebar-intake", "rebar-intake-run")]
     assert client.schedules == {"rebar-intake"}
+
+
+async def test_a_missed_run_starts_at_most_once_after_temporal_returns(rebar_settings):
+    client = _Client()
+    await install_schedule("rebar", client=client)
+    interval = timedelta(seconds=rebar_settings.intake_schedule_interval_seconds)
+    assert client.policies[0].catchup_window == interval
 
 
 async def test_install_replaces_an_existing_source_schedule(rebar_settings):
