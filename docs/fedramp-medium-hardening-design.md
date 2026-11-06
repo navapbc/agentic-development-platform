@@ -26,6 +26,27 @@ Posture. The platform services and the services other teams deploy run on one EC
 
 Controls. SC-28 protection at rest and SC-12 key management through the storage key in [ecs-cluster](../infra/terraform/ecs-cluster), whose policy binds Fargate to the cluster's encryption context and limits its grants to decryption. SC-8 and SC-13 through the KMS-encrypted Exec data channel. AU-2, AU-9, and AU-12 through the Exec transcripts in a KMS-encrypted log group. AC-3, AC-5, and AC-6 through the deployer policy, which a team cannot use outside the cluster or to pass an unlisted role. CA-7 continuous monitoring through Container Insights.
 
+## Platform services
+
+Posture. The workflow and review workers, coordination, repository intelligence and its index worker, Langfuse web and worker, ClickHouse, and the collector run as Fargate services on the platform ECS cluster in the application tier with no public address, and the `db-migrate` and `schedule-bootstrap` one-shot tasks run in the management tier. Nothing runs in the data tier. Each workload has its own task role, execution role, security group, and KMS-encrypted log group. A task role grants only the actions its workload calls, so only the review worker holds `bedrock:InvokeModel`, only the collector writes to X-Ray and the Prometheus workspace, and only the index writers write the repository index. Each execution role reads only the secrets its task injects, and the task definitions carry secret ARNs and no secret values. Every container runs on a read-only root file system, and only a setup or init container runs as root, prepares a task volume, and exits. The images are pinned by digest in KMS-encrypted ECR repositories with immutable tags and scan on push. Every AWS SDK call goes to the service's FIPS endpoint where one exists, Bedrock included through its `bedrock-runtime-fips` interface endpoint.
+
+Service-to-service traffic is encrypted on every hop, which is how the platform meets SC-8 inside the VPC.
+
+| Hop | Protection |
+|---|---|
+| Client to the internal load balancer | TLS 1.2 or 1.3 under `ELBSecurityPolicy-TLS13-1-2-FIPS-2023-04`, with a certificate the clients verify against the platform CA |
+| Internal load balancer to a task | TLS to a certificate each task issues itself at start. The load balancer does not verify it, and the task's group admits only the load balancer |
+| Worker to the Temporal frontend | TLS with host verification against the Temporal CA, through the Temporal client group |
+| Service to Aurora | TLS with host verification against the RDS CA bundle, `verify-full` for the Python clients and `sslaccept=strict` for Langfuse |
+| Langfuse to Valkey | TLS to the ElastiCache endpoint, which requires it |
+| Langfuse to ClickHouse | HTTPS and the native protocol over TLS, verified against the platform CA. ClickHouse serves no plain port, and the deploy runs the ClickHouse migrations with verification |
+| Task to EFS | NFS over TLS through an access point with IAM authorization, which the file system policies require |
+| Collector to X-Ray, the Prometheus workspace, and Langfuse | TLS to the `xray-fips` and `aps-workspaces` interface endpoints with SigV4, and to Langfuse through the internal load balancer with basic auth |
+
+Controls. SC-7 boundary protection through the tier placement, the per-workload groups that admit only declared ports from declared sources, and the internal load balancer in [container-services](../infra/terraform/container-services). SC-8 and SC-8(1) through the hops above. SC-13 through the FIPS policy on the load balancer and the FIPS service endpoints. SC-12 through the platform CA, which issues the load balancer and ClickHouse certificates outside the repository, and the module's KMS keys for the logs, the workspace file system, the ClickHouse certificate secret, and the telemetry workspace. SC-28 through those keys and the encrypted file systems. AC-3, AC-4, and AC-6 through the per-workload task roles, the per-secret reader policies, and the groups. IA-5 through the scheduled credential rotation, the restart of every service that reads a rotated credential, and the [off-hours](../infra/terraform/off-hours) schedule, which keeps the services at zero across the rotation window so no connection is refused. AU-2 and AU-12 through the task logs, the load balancer access logs, and the traces in X-Ray. CA-7 through the collector's traces and metrics. CM-2, CM-6, and CM-7 through the pinned images and the read-only root file systems.
+
+Open items. The TLS a task terminates and the TLS its clients open run in the Python, Node, and Go runtimes of the images, which do not run a CMVP-validated module in FIPS mode, because Fargate offers FIPS mode only in AWS GovCloud. Langfuse's FIPS mode also needs a Government license. The load balancer hop and the AWS endpoints do run validated modules. Amazon Managed Service for Prometheus offers no FIPS endpoint for remote write. The load balancer does not authenticate the task certificate, so the hop to a task relies on the target group's security group for its peer. The [control inheritance matrix](fedramp-control-inheritance.md) tracks these items.
+
 ## Edge endpoints
 
 Posture. The platform reaches AWS services through interface and gateway VPC endpoints rather than the public internet, so traffic to Bedrock, the object store, and the other consumed services stays on the AWS network. Bedrock inference is authorized by a dedicated IAM policy.

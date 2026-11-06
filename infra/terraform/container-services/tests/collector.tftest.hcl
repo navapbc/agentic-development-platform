@@ -202,6 +202,7 @@ run "the_collector_receives_every_platform_task_behind_the_load_balancer" {
     condition = (
       !contains([for variable in jsondecode(aws_ecs_task_definition.workload["review-worker"].container_definitions)[1].environment : variable.name], "LANGFUSE_HOST") &&
       contains(output.secret_readers.langfuse_secret_key, aws_iam_role.workload_execution["review-worker"].arn) &&
+      !contains([for secret in jsondecode(aws_ecs_task_definition.workload["review-worker"].container_definitions)[1].secrets : secret.name], "LANGFUSE_SECRET_KEY") &&
       toset([for secret in jsondecode(aws_ecs_task_definition.collector["otel-collector"].container_definitions)[1].secrets : secret.name]) == toset(["LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY"])
     )
     error_message = "The review worker still exports to Langfuse itself, which would record each generation twice."

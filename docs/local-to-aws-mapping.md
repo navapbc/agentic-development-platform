@@ -18,22 +18,23 @@ Workloads sign Bedrock inference with a role that carries the `bedrock:InvokeMod
 | `temporal` | Temporal server 1.32.1 service on the platform ECS cluster in the application tier, persisting to Aurora PostgreSQL and reached through an internal NLB that admits only the Temporal client security group | [temporal-control-plane](../infra/terraform/temporal-control-plane), wired by [private-bedrock](../infra/terraform/examples/private-bedrock) |
 | `temporal-admin-tools` | One-shot admin-tools task in the management tier that applies the schemas and registers the namespace, run by `inv temporal-deploy` | [temporal-control-plane](../infra/terraform/temporal-control-plane) |
 | `temporal-ui` | Temporal UI 2.58.0 service in the management tier behind an internal HTTPS load balancer, reached by operators through `inv temporal-ui` | [temporal-control-plane](../infra/terraform/temporal-control-plane) |
-| `db-migrate` | One-shot migration task on the container platform | Planned, see the [roadmap](../ROADMAP.md) |
-| `workflow-worker`, `activity-worker`, `review-worker` | Worker services on the container platform | Images via [ecr](../infra/terraform/ecr). Services planned, see the [roadmap](../ROADMAP.md) |
-| `schedule-bootstrap` | One-shot bootstrap task on the container platform | Planned, see the [roadmap](../ROADMAP.md) |
-| `coordination-service` | Service on the container platform | Planned, see the [roadmap](../ROADMAP.md) |
-| `langgraph-service` | Service on the container platform | Planned, see the [roadmap](../ROADMAP.md) |
+| `db-migrate` | One-shot `alembic upgrade head` task in the management tier as the `platform_migrator` role, run by `inv platform-deploy` | [container-services](../infra/terraform/container-services) |
+| `workflow-worker`, `review-worker` | Fargate services in the application tier, each in a blue and a green slot so a new build starts beside the executions pinned to the old one | [container-services](../infra/terraform/container-services) |
+| `activity-worker` | Worker on the EKS cluster, which also runs the agent pods | Planned, see the [roadmap](../ROADMAP.md) |
+| `schedule-bootstrap` | One-shot task in the management tier that registers the reap and intake schedules, run by `inv platform-deploy` | [container-services](../infra/terraform/container-services) |
+| `coordination-service` | Fargate service in the application tier, reached over HTTPS through the internal load balancer at `coordination.<internal_domain>` | [container-services](../infra/terraform/container-services) |
+| `langgraph-service` | Not deployed. It serves only a health endpoint, and the LangGraph graphs run inside the activity worker | None |
 | `litellm` | Model-proxy service on the container platform, reaching Bedrock through the private endpoint | Bedrock access via [bedrock-iam](../infra/terraform/bedrock-iam) and [vpc-endpoints](../infra/terraform/vpc-endpoints). Service planned, see the [roadmap](../ROADMAP.md) |
 | `opa` | Policy service on the container platform | Planned, see the [roadmap](../ROADMAP.md) |
 | `minio` | Amazon S3 for the evidence and audit object store, the Langfuse uploads, and the rebar ticket store | Evidence bucket via [evidence-store](../infra/terraform/evidence-store), Langfuse bucket via [langfuse-blob-store](../infra/terraform/langfuse-blob-store), trail bucket via [cloudtrail](../infra/terraform/cloudtrail), and rebar ticket store bucket via [rebar-ticket-store](../infra/terraform/rebar-ticket-store). The ticket store syncs through `git-remote-s3`, fetching under a reader role and pushing under a writer role |
 | `redis` | ElastiCache for Valkey 9.1 with TLS required and an RBAC user, in the data tier | [elasticache](../infra/terraform/elasticache) |
-| `clickhouse` | ClickHouse task on the container platform, backed by an encrypted EFS file system in the data tier | Storage via [clickhouse-storage](../infra/terraform/clickhouse-storage). Task planned, see the [roadmap](../ROADMAP.md) |
-| `langfuse-worker`, `langfuse-web` | Langfuse on the container platform, or Langfuse Cloud | Planned, see the [roadmap](../ROADMAP.md) |
-| `otel-collector` | OpenTelemetry collector on the container platform | Planned, see the [roadmap](../ROADMAP.md) |
-| `prometheus` | Amazon Managed Service for Prometheus | Planned, see the [roadmap](../ROADMAP.md) |
-| `tempo` | Trace store backing the observability stack | Planned, see the [roadmap](../ROADMAP.md) |
+| `clickhouse` | ClickHouse task in the application tier on an encrypted EFS file system in the data tier, serving only TLS under a Cloud Map name | Storage via [clickhouse-storage](../infra/terraform/clickhouse-storage), task via [container-services](../infra/terraform/container-services) |
+| `langfuse-worker`, `langfuse-web` | Fargate services in the application tier against Aurora, ElastiCache, ClickHouse, and the Langfuse bucket. Langfuse web sits behind the internal load balancer, and operators reach it through `inv langfuse-ui` | [container-services](../infra/terraform/container-services) |
+| `otel-collector` | Fargate service behind the internal load balancer as the OTLP gateway for the ECS and EKS workloads, exporting traces to AWS X-Ray, metrics to Amazon Managed Service for Prometheus, and generation spans to Langfuse | [container-services](../infra/terraform/container-services) |
+| `prometheus` | Amazon Managed Service for Prometheus workspace the collector writes to through SigV4 remote write | [container-services](../infra/terraform/container-services) |
+| `tempo` | AWS X-Ray, which the collector writes the traces to | [container-services](../infra/terraform/container-services) |
 | `grafana` | Amazon Managed Grafana | Planned, see the [roadmap](../ROADMAP.md) |
-| `repo-intelligence`, `repo-index-worker` | Repository-intelligence services on the container platform | Images via [ecr](../infra/terraform/ecr). Services planned, see the [roadmap](../ROADMAP.md) |
+| `repo-intelligence`, `repo-index-worker` | Fargate services in the application tier sharing the repository checkouts and index on an encrypted EFS file system. `repo-intelligence` sits behind the internal load balancer | [container-services](../infra/terraform/container-services) |
 
 ## Cross-cutting infrastructure
 
@@ -46,6 +47,8 @@ These modules provision the shared AWS infrastructure the components above consu
 | Audit trail | CloudTrail with its own S3 bucket | [cloudtrail](../infra/terraform/cloudtrail) |
 | Bedrock inference authorization | `bedrock:InvokeModel` IAM policy | [bedrock-iam](../infra/terraform/bedrock-iam) |
 | Container platform | Shared ECS cluster on Fargate that the platform owns, with encrypted Exec sessions and ephemeral storage | [ecs-cluster](../infra/terraform/ecs-cluster) |
+| Service-to-service HTTPS | One internal ALB under the FIPS TLS policy with host routing to each service, re-encrypting to every task, and a private hosted zone | [container-services](../infra/terraform/container-services) |
+| Off-hours schedule | EventBridge Scheduler and SSM Automation that scale the ECS services to zero overnight so Aurora pauses | [off-hours](../infra/terraform/off-hours) |
 | Laptop Bedrock path for test accounts | Ephemeral ECS Fargate jump-host reached over ECS Exec, in the management tier | [bedrock-jumphost-fargate](../infra/terraform/bedrock-jumphost-fargate) |
 | Network tiers | Public, application, management, and data subnets with per-tier route tables and a data-tier network ACL | [private-bedrock](../infra/terraform/examples/private-bedrock) |
 | Outbound internet | NAT instance or NAT Gateway for the application and management tiers | [egress](../infra/terraform/egress) |

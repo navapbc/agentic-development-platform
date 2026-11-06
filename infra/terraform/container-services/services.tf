@@ -39,7 +39,7 @@ locals {
       mounts          = [{ volume = "checkouts", path = local.checkouts_path, read_only = true }]
       secrets = merge(
         { REVIEW_SIGNING_KEY = "review_signing_key", REVIEW_ATTESTATION_SECRET = "review_attestation_secret" },
-        local.langfuse_enabled ? { LANGFUSE_PUBLIC_KEY = "langfuse_public_key", LANGFUSE_SECRET_KEY = "langfuse_secret_key" } : {},
+        local.review_exports_to_langfuse ? { LANGFUSE_PUBLIC_KEY = "langfuse_public_key", LANGFUSE_SECRET_KEY = "langfuse_secret_key" } : {},
       )
       environment = {
         WORKER_ROLE                   = "review"
@@ -165,6 +165,7 @@ locals {
       AWS_REGION                    = local.region
       AWS_USE_FIPS_ENDPOINT         = var.use_fips_endpoints ? "true" : "false"
       BEDROCK_CONNECTIVITY_PROVIDER = "direct"
+      LITELLM_LOCAL_MODEL_COST_MAP  = "True"
       DATABASE_URL                  = local.database_url
       DATABASE_POOL_SIZE            = tostring(var.database_pool_size)
       DATABASE_POOL_MAX_OVERFLOW    = tostring(var.database_pool_max_overflow)
@@ -195,10 +196,14 @@ locals {
   all_workloads = merge(local.workloads, local.langfuse_workloads, local.collector_workloads)
 
   # With the collector running, the review worker's generation spans reach Langfuse through it.
-  # The review worker keeps reading the Langfuse keys either way, because a draining worker slot
-  # runs an older revision that may still inject them, and the secret store admits only the
-  # roles the current revisions name.
+  # Its execution role stays a reader of the Langfuse keys, because a draining worker slot runs
+  # an older revision that may still inject them, and the secret store admits only the roles
+  # listed here. A task receives the keys only with LANGFUSE_HOST, because a tracing library
+  # given the keys without a host sends to Langfuse Cloud.
   review_exports_to_langfuse = local.langfuse_enabled && !local.collector_enabled
+  extra_secret_reads = {
+    for name, keys in { review-worker = ["langfuse_public_key", "langfuse_secret_key"] } : name => keys if local.langfuse_enabled
+  }
   extra_task_statements = merge(
     local.langfuse_task_statements,
     { for name in keys(local.collector_workloads) : name => local.collector_statements if length(local.collector_statements) > 0 },

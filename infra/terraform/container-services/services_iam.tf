@@ -30,9 +30,10 @@ locals {
   })
 
   workload_secret_names = {
-    for name, spec in local.all_workloads : name => distinct([
-      for reference in concat(values(spec.secrets), values(try(spec.setup_secrets, {}))) : split(":", reference)[0]
-    ])
+    for name, spec in local.all_workloads : name => distinct(concat(
+      [for reference in concat(values(spec.secrets), values(try(spec.setup_secrets, {}))) : split(":", reference)[0]],
+      lookup(local.extra_secret_reads, name, []),
+    ))
   }
   workload_secret_arns = {
     for name, spec in local.all_workloads : name => distinct(concat(
