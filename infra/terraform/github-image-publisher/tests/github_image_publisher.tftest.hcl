@@ -55,6 +55,25 @@ run "the_role_trusts_only_this_repository_on_main_and_release_tags" {
   }
 }
 
+run "immutable_ids_trust_the_immutable_subject_only" {
+  command = apply
+
+  variables {
+    github_repository_ids = { owner_id = 11320847, repository_id = 1339837798 }
+  }
+
+  assert {
+    condition = (
+      jsondecode(aws_iam_role.publisher[0].assume_role_policy).Statement[0].Condition.StringLike["token.actions.githubusercontent.com:sub"] ==
+      [
+        "repo:navapbc@11320847/agentic-development-platform@1339837798:ref:refs/heads/main",
+        "repo:navapbc@11320847/agentic-development-platform@1339837798:ref:refs/tags/v*",
+      ]
+    )
+    error_message = "The trust policy does not match the immutable subject of the repository."
+  }
+}
+
 run "the_role_pushes_only_to_the_platform_repositories" {
   command = apply
 

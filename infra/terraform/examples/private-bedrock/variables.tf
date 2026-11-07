@@ -618,6 +618,15 @@ variable "github_repository" {
   default     = "navapbc/agentic-development-platform"
 }
 
+variable "github_repository_ids" {
+  description = "Numeric owner and repository IDs of github_repository when its OIDC tokens carry GitHub's immutable subject. Null matches the name form."
+  type = object({
+    owner_id      = number
+    repository_id = number
+  })
+  default = null
+}
+
 variable "github_publish_refs" {
   description = "The refs whose workflow runs may assume the publisher role."
   type        = list(string)

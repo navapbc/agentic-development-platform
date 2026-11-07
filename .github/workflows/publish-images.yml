@@ -81,3 +81,4 @@ jobs:
           subject-name: ${{ matrix.image.repository }}
           subject-digest: ${{ matrix.image.digest }}
           push-to-registry: true
+          create-storage-record: false

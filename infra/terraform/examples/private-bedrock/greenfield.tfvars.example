@@ -45,6 +45,7 @@ create_container_services     = false
 # one exists, or leave it empty to create one.
 create_github_image_publisher = false
 github_oidc_provider_arn      = ""
+# github_repository_ids       = { owner_id = 11320847, repository_id = 1339837798 }
 
 tags = {
   project = "agentic-dev-platform"

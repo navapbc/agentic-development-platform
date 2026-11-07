@@ -3,7 +3,14 @@ locals {
   create_provider = local.enabled && var.oidc_provider_arn == ""
   issuer          = "token.actions.githubusercontent.com"
   provider_arn    = local.create_provider ? aws_iam_openid_connect_provider.github[0].arn : var.oidc_provider_arn
-  subjects        = [for ref in var.allowed_refs : "repo:${var.github_repository}:ref:${ref}"]
+  owner           = split("/", var.github_repository)[0]
+  repository_name = split("/", var.github_repository)[1]
+  subject_prefix = (
+    var.github_repository_ids == null
+    ? "repo:${var.github_repository}"
+    : "repo:${local.owner}@${var.github_repository_ids.owner_id}/${local.repository_name}@${var.github_repository_ids.repository_id}"
+  )
+  subjects = [for ref in var.allowed_refs : "${local.subject_prefix}:ref:${ref}"]
 }
 
 resource "aws_iam_openid_connect_provider" "github" {

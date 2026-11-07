@@ -114,7 +114,7 @@ The `publish-images` workflow in `.github/workflows` builds and pushes every pla
 
 The workflow signs in to AWS through the account's GitHub OIDC provider, so GitHub holds no AWS key.
 
-1. Set `create_github_image_publisher = true` in the tfvars file, and `github_oidc_provider_arn` to the account's provider for `token.actions.githubusercontent.com` when one already exists, then apply. The `github_image_publisher_role_arn` output is the role. It trusts only this repository's workflows on `main` and on `v*` tags, through `github_repository` and `github_publish_refs`, and can push only to the platform repositories.
+1. Set `create_github_image_publisher = true` in the tfvars file, and `github_oidc_provider_arn` to the account's provider for `token.actions.githubusercontent.com` when one already exists, then apply. The `github_image_publisher_role_arn` output is the role. It trusts only this repository's workflows on `main` and on `v*` tags, through `github_repository` and `github_publish_refs`, and can push only to the platform repositories. This repository's tokens carry GitHub's immutable subject, so also set `github_repository_ids = { owner_id = 11320847, repository_id = 1339837798 }`.
 2. Set the repository variables with `gh variable set AWS_PUBLISH_ROLE_ARN --body <role arn>` and `gh variable set AWS_PUBLISH_REGION --body <region>`.
 3. Push a `v*` tag, or run `gh workflow run publish-images.yml` once the workflow is on `main`.
 4. Download the artifact into the composition root with `gh run download <run id> --name images-arm64 --dir infra/terraform/examples/private-bedrock`, then run `inv aws-release`, which plans the root, applies after confirmation, and runs `inv platform-deploy`.

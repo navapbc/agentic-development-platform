@@ -27,6 +27,15 @@ variable "github_repository" {
   }
 }
 
+variable "github_repository_ids" {
+  description = "The numeric owner and repository IDs, for a repository whose OIDC tokens carry GitHub's immutable subject, repo:<owner>@<owner_id>/<name>@<repository_id>:ref:<ref>. Null matches the name form, repo:<owner>/<name>:ref:<ref>. Read the form a repository uses with gh api repos/<owner>/<name>/actions/oidc/customization/sub."
+  type = object({
+    owner_id      = number
+    repository_id = number
+  })
+  default = null
+}
+
 variable "allowed_refs" {
   description = "The git refs whose workflow runs may assume the role, as full ref names. A trailing * matches a prefix, so refs/tags/v* admits every v tag."
   type        = list(string)
