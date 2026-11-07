@@ -599,3 +599,27 @@ variable "off_hours_wake_schedule" {
   type        = string
   default     = "cron(0 7 ? * MON-FRI *)"
 }
+
+variable "create_github_image_publisher" {
+  description = "Create the role the publish-images GitHub Actions workflow assumes to push the platform images. Needs create_container_services."
+  type        = bool
+  default     = false
+}
+
+variable "github_oidc_provider_arn" {
+  description = "ARN of the account's existing GitHub OIDC provider. Empty creates one, which fails when the account already holds a provider for token.actions.githubusercontent.com."
+  type        = string
+  default     = ""
+}
+
+variable "github_repository" {
+  description = "The owner/name of the repository whose publish-images workflow may assume the role."
+  type        = string
+  default     = "navapbc/agentic-development-platform"
+}
+
+variable "github_publish_refs" {
+  description = "The refs whose workflow runs may assume the publisher role."
+  type        = list(string)
+  default     = ["refs/heads/main", "refs/tags/v*"]
+}

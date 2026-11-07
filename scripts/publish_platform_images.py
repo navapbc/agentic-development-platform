@@ -13,12 +13,17 @@ The ECS tasks pull only from ECR, because DNS Firewall resolves no public regist
 
 The images are built from the files git tracks or would track, so ignored local artifacts such
 as the binaries under `vendor/bin` never reach an image.
+
+The references are written to `images.auto.tfvars.json` in the `private-bedrock` composition
+root, which Terraform loads with no flag, and optionally to a manifest that marks the images
+this run pushed.
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import re
 import shutil
 import tempfile
@@ -43,6 +48,18 @@ from scripts.publish_temporal_images import (
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LOG = "[publish-platform-images]"
+IMAGES_FILE = (
+    REPO_ROOT / "infra" / "terraform" / "examples" / "private-bedrock" / "images.auto.tfvars.json"
+)
+TFVARS_KEYS = {
+    "platform": "container_platform_image",
+    "repo-intelligence": "container_repo_intelligence_image",
+    "otel-collector": "container_collector_image",
+    "tls-sidecar": "container_tls_sidecar_image",
+    "langfuse-web": "container_langfuse_web_image",
+    "langfuse-worker": "container_langfuse_worker_image",
+    "clickhouse": "container_clickhouse_image",
+}
 PLATFORM = ImageSpec("platform", "docker/Dockerfile", ())
 REPO_INTELLIGENCE = ImageSpec(
     "repo-intelligence",
@@ -180,6 +197,7 @@ class Publisher:
         self.name_prefix = name_prefix
         self.arch = arch
         self._logged_in = False
+        self.pushed: list[str] = []
 
     def _repository(self, name: str) -> str:
         return f"{self.name_prefix}/{name}"
@@ -206,6 +224,7 @@ class Publisher:
                 check=True,
             )
             digest = _pushed_digest(self.ecr, repository, tag)
+            self.pushed.append(f"{image}@{digest}")
         return f"{image}@{digest}"
 
     def platform(self, context: Path, acli: AcliBuild) -> str:
@@ -246,6 +265,7 @@ class Publisher:
                 check=True,
             )
             digest = _pushed_digest(self.ecr, repository, mirror.tag)
+            self.pushed.append(f"{image}@{digest}")
         if digest != mirror.digest:
             raise PublishError(
                 f"{image} has digest {digest}, and compose.yaml pins {mirror.digest}. "
@@ -272,6 +292,60 @@ def publish(publisher: Publisher, acli: AcliBuild, root: Path = REPO_ROOT) -> li
     return references
 
 
+def build_locally(
+    images: list[tuple[ImageSpec, str, dict[str, str]]],
+    arch: str,
+    root: Path = REPO_ROOT,
+    run=None,
+) -> None:
+    """Build each (spec, image, build args) into the local image store with the publish command.
+
+    The build context and the build command are the ones a publish uses, so a cluster that runs
+    these images runs what the registry would receive.
+    """
+    run = run or process.run
+    with build_context(root) as context:
+        for spec, image, build_args in images:
+            print(f"{LOG} building {image} for {PLATFORMS[arch]} into the local image store")
+            run(
+                build_command(spec, context, image, arch, build_args, output="--load"),
+                timeout=BUILD_TIMEOUT_SECONDS,
+                check=True,
+            )
+
+
+def image_name(reference: str) -> str:
+    """Return the repository suffix of a registry/prefix/name:tag@digest reference."""
+    return reference.split("@", 1)[0].rsplit(":", 1)[0].rsplit("/", 1)[1]
+
+
+def tfvars(references: list[str]) -> dict[str, str]:
+    """Map each reference to the composition-root variable that takes it."""
+    return {TFVARS_KEYS[image_name(reference)]: reference for reference in references}
+
+
+def manifest(references: list[str], pushed: list[str]) -> list[dict[str, object]]:
+    """Describe each reference by repository and digest, and whether this run pushed it."""
+    entries = []
+    for reference in references:
+        image, digest = reference.split("@", 1)
+        entries.append(
+            {
+                "name": image_name(reference),
+                "repository": image.rsplit(":", 1)[0],
+                "digest": digest,
+                "reference": reference,
+                "pushed": reference in pushed,
+            }
+        )
+    return entries
+
+
+def write_json(path: Path, value: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--name-prefix", default="agentic-platform", help="Repository prefix.")
@@ -280,6 +354,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--install-acli", action="store_true", help="Install acli in the image.")
     parser.add_argument("--acli-version", default="")
     parser.add_argument("--acli-sha256", default="")
+    parser.add_argument(
+        "--images-file", type=Path, default=IMAGES_FILE, help="Where to write the tfvars JSON."
+    )
+    parser.add_argument(
+        "--manifest",
+        type=Path,
+        default=None,
+        help="Also describe each image and whether it was pushed.",
+    )
     args = parser.parse_args(argv)
 
     from scripts.aws_clients import configure_aws_fips
@@ -303,6 +386,10 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     for reference in references:
         print(reference)
+    write_json(args.images_file, tfvars(references))
+    print(f"{LOG} wrote {args.images_file}")
+    if args.manifest is not None:
+        write_json(args.manifest, manifest(references, publisher.pushed))
     return 0
 
 

@@ -48,6 +48,7 @@ AWS transition and FedRAMP Medium readiness. The platform documents its local-to
 - `OPA_HOST_PORT` and `LANGGRAPH_HOST_PORT` are removed and OPA has no host port. `inv smoke-test` checks OPA through `kubectl exec`. The `docker compose` commands that named `activity-worker` run against the cluster instead, through `kubectl exec` on the deployment.
 - The MCP gateway requires `Authorization: Bearer <MCP_GATEWAY_TOKEN>` on every `/mcp` request and answers any other request with 401, and it refuses to start while `MCP_GATEWAY_TOKEN` is empty. Set `MCP_GATEWAY_TOKEN` in `.env`, run `inv k8s-deploy`, and give each MCP client the same value. The health paths answer without it.
 - The `mcp-gateway` Ingress sets `alb.ingress.kubernetes.io/inbound-cidrs` to the documentation range `192.0.2.0/24`, which admits no client. Patch it to the client subnets in the environment overlay.
+- `inv publish-platform-images` writes the image references to `images.auto.tfvars.json` in the `private-bedrock` composition root, which Terraform reads with no flag. Remove the seven `container_*_image` variables from the tfvars file, because a `-var-file` value overrides the file and would keep the old references.
 
 ### Added
 
@@ -131,6 +132,10 @@ AWS transition and FedRAMP Medium readiness. The platform documents its local-to
 - Base Kubernetes manifests for the activity worker with an OPA loopback sidecar, the review worker, LiteLLM, the activity worker's sandbox Role, and the gate pod egress policy.
 - The `K8S_CONTEXT`, `K8S_NAMESPACE`, `K8S_COMPOSE_ADDRESS`, `K8S_IMAGE_LOAD`, and `K8S_IMAGE_LOAD_TARGET` settings, and the coordination service port 8130 published on the host.
 - The `secret-store` module generates `mcp_gateway_token`, the gateway's bearer token, and `inv config-check` reports `MCP_GATEWAY_TOKEN`.
+- The `publish-images` GitHub Actions workflow builds and pushes the platform images through `inv publish-platform-images` on each `v*` tag and on manual dispatch, signs in through the GitHub OIDC provider with no stored AWS key, uploads the image references as an artifact, and attaches a build provenance attestation to each image it pushes.
+- The `github-image-publisher` module and the `create_github_image_publisher` toggle in `private-bedrock` add the role that workflow assumes, which trusts only this repository on `main` and `v*` tags and pushes only to the platform repositories.
+- `inv aws-release` plans the composition root with the published images, applies after confirmation, and runs `inv platform-deploy`.
+- `inv k8s-reload` builds the cluster images through the build function `inv publish-platform-images` uses, with a local target.
 
 ### Changed
 

@@ -819,12 +819,21 @@ def publish_temporal_images(c, name_prefix="", arch="arm64", region=""):
         "install_acli": "Install acli in the platform image, as INSTALL_ACLI does locally.",
         "acli_version": "acli version (empty uses the version scripts/fetch_acli.py pins).",
         "acli_sha256": "SHA-256 of that acli version, required with --acli-version.",
+        "manifest": "Also write each image's repository, digest, and whether this run pushed it.",
     }
 )
 def publish_platform_images(
-    c, name_prefix="", arch="arm64", region="", install_acli=False, acli_version="", acli_sha256=""
+    c,
+    name_prefix="",
+    arch="arm64",
+    region="",
+    install_acli=False,
+    acli_version="",
+    acli_sha256="",
+    manifest="",
 ):
-    """Build the platform images, mirror Langfuse and ClickHouse, and push them all to ECR."""
+    """Build the platform images, mirror Langfuse and ClickHouse, push them all to ECR, and
+    write their references to images.auto.tfvars.json in the composition root."""
     from scripts.config import get_settings
 
     settings = get_settings()
@@ -834,8 +843,42 @@ def publish_platform_images(
     flags += " --install-acli" if install_acli else ""
     flags += f" --acli-version {shlex.quote(acli_version)}" if acli_version else ""
     flags += f" --acli-sha256 {shlex.quote(acli_sha256)}" if acli_sha256 else ""
-    env = {"AWS_PROFILE": settings.aws_profile, "AWS_REGION": settings.aws_region}
-    c.run(f"{HOST_PYTHON} -m scripts.publish_platform_images{flags}", pty=True, env=env)
+    flags += f" --manifest {shlex.quote(manifest)}" if manifest else ""
+    c.run(
+        f"{HOST_PYTHON} -m scripts.publish_platform_images{flags}", pty=True, env=_aws_env(settings)
+    )
+
+
+def _aws_env(settings) -> dict[str, str]:
+    """Sign with the configured profile, unless the environment already holds credentials.
+
+    A CI job receives role credentials in the environment, and naming a profile the runner
+    does not define would make the SDK refuse to start.
+    """
+    env = {"AWS_REGION": settings.aws_region}
+    if not any(os.environ.get(name) for name in _AWS_CREDENTIAL_VARIABLES):
+        env["AWS_PROFILE"] = settings.aws_profile
+    return env
+
+
+_AWS_CREDENTIAL_VARIABLES = ("AWS_ACCESS_KEY_ID", "AWS_WEB_IDENTITY_TOKEN_FILE")
+
+
+@task(
+    help={
+        "var_file": "Var file in the composition root (default greenfield.tfvars).",
+        "region": "AWS region for the deploy (empty uses AWS_REGION).",
+        "yes": "Apply the plan without asking.",
+    }
+)
+def aws_release(c, var_file="greenfield.tfvars", region="", yes=False):
+    """Plan and apply the composition root with the published images, then run platform-deploy."""
+    from scripts.config import get_settings
+
+    flags = f" --var-file {shlex.quote(var_file)}"
+    flags += f" --region {shlex.quote(region)}" if region else ""
+    flags += " --yes" if yes else ""
+    c.run(f"{HOST_PYTHON} -m scripts.aws_release{flags}", pty=True, env=_aws_env(get_settings()))
 
 
 @task
@@ -1252,6 +1295,7 @@ for _t in (
     publish_jumphost_image,
     publish_temporal_images,
     publish_platform_images,
+    aws_release,
     temporal_certs,
     clickhouse_certs,
     langfuse_ui,

@@ -193,3 +193,8 @@
   path: deploy/kubernetes/sandbox.yaml
   match: '- apiGroups: [""]'
   justification: The activity worker copies the execution checkout into each sandbox and gate pod and reads the patch back through pods/exec, the same tar-over-exec transport the pod runner uses. The grant is limited to the agent-sandbox namespace and the activity-worker ServiceAccount, and the pods it reaches are the ephemeral ones that worker created.
+- tool: semgrep
+  rule: terraform.lang.security.iam.no-iam-creds-exposure.no-iam-creds-exposure
+  path: infra/terraform/github-image-publisher/main.tf
+  match: Action = "ecr:GetAuthorizationToken"
+  justification: Docker signs in to ECR with the token this action returns, so a role that pushes an image needs it, and the action supports no resource-level scoping. The token authorizes only the repository actions the role's other statement grants, which are limited to the platform repositories, and the role is assumable only by this repository's workflows on main and v tags.

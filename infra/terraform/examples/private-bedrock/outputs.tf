@@ -237,3 +237,8 @@ output "off_hours" {
     wake_counts_parameter = module.off_hours.wake_counts_parameter
   }
 }
+
+output "github_image_publisher_role_arn" {
+  description = "The role the publish-images workflow assumes. Set it as the AWS_PUBLISH_ROLE_ARN repository variable. Null when disabled."
+  value       = module.github_image_publisher.role_arn
+}

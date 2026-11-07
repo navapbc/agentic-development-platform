@@ -41,6 +41,11 @@ create_ecs_cluster            = false
 create_temporal_control_plane = false
 create_container_services     = false
 
+# The role the publish-images workflow assumes. Name the account's GitHub OIDC provider when
+# one exists, or leave it empty to create one.
+create_github_image_publisher = false
+github_oidc_provider_arn      = ""
+
 tags = {
   project = "agentic-dev-platform"
 }

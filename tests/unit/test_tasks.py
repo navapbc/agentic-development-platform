@@ -58,6 +58,7 @@ EXPECTED_TASKS = {
     "publish-jumphost-image",
     "publish-temporal-images",
     "publish-platform-images",
+    "aws-release",
     "go-test",
     "temporal-certs",
     "clickhouse-certs",

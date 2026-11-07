@@ -12,7 +12,7 @@ Module that runs the platform containers on the platform ECS cluster. Nothing is
 
 ## Images
 
-The ECS tasks pull only from these repositories, because DNS Firewall resolves no public registry. `inv publish-platform-images` builds or copies every image for `linux/arm64`, or `--arch amd64`, and prints each reference with its digest.
+The ECS tasks pull only from these repositories, because DNS Firewall resolves no public registry. `inv publish-platform-images` builds or copies every image for `linux/arm64`, or `--arch amd64`, prints each reference with its digest, and writes the references to `images.auto.tfvars.json` in the composition root.
 
 | Repository | Source | Tag |
 |---|---|---|
@@ -127,6 +127,7 @@ The telemetry KMS key encrypts the workspace. X-Ray encryption is one setting pe
 | Output | Value |
 |---|---|
 | `repository_urls` | ECR repository of each image, keyed by the name `inv publish-platform-images` uses. Empty when disabled |
+| `repository_arns` | ARN of each image's repository, keyed as `repository_urls`. Empty when disabled |
 | `internal_endpoints` | The client security group, each service's target security group and target group, each service's HTTPS URL, and the domain. Null without the internal load balancer |
 | `execution_role_arns` | Execution role of each workload |
 | `secret_readers` | Execution roles that inject each secret, keyed by its secret store key, for the secret store |

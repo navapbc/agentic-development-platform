@@ -134,6 +134,7 @@ def test_sources_already_published_reuse_their_image_and_build_id(commands) -> N
 
     assert reference == f"{REGISTRY}/agentic-platform/platform:{tag}@{DIGEST}"
     assert commands == []
+    assert platform.pushed == []
 
 
 def test_new_sources_mint_a_build_id_and_bake_it_into_the_image(commands, monkeypatch) -> None:
@@ -159,6 +160,7 @@ def test_new_sources_mint_a_build_id_and_bake_it_into_the_image(commands, monkey
         "ACLI_VERSION=1.2.3",
         f"ACLI_SHA256={'b' * 64}",
     ]
+    assert platform.pushed == [reference]
     tag = reference.split(":")[1].split("@")[0]
     assert publisher.build_id_of(tag) == "0.3.0.20261105120000"
     assert re.fullmatch(r"0\.3\.0\.20261105120000-[0-9a-f]{12}-arm64", tag)
@@ -214,3 +216,65 @@ def test_the_build_context_holds_no_ignored_file(tmp_path) -> None:
         )
 
     assert files == [".gitignore", "tracked.py", "untracked.py", "vendor/bin/.gitkeep"]
+
+
+PUSHED = f"{REGISTRY}/agentic-platform/platform:0.3.0.20261105120000-abc-arm64@{DIGEST}"
+REUSED = f"{REGISTRY}/agentic-platform/clickhouse:26.9@sha256:{'c' * 64}"
+
+
+def test_the_references_map_to_the_composition_root_variables() -> None:
+    assert publisher.tfvars([PUSHED, REUSED]) == {
+        "container_platform_image": PUSHED,
+        "container_clickhouse_image": REUSED,
+    }
+
+
+def test_every_published_image_has_a_composition_root_variable() -> None:
+    from scripts.publish_temporal_images import ImageSpec
+
+    published = {
+        spec.name
+        for spec in vars(publisher).values()
+        if isinstance(spec, ImageSpec) and spec is not publisher.OPA
+    } | set(publisher.MIRRORED_SERVICES.values())
+
+    assert published == set(publisher.TFVARS_KEYS)
+    variables = (REPO_ROOT / "infra/terraform/examples/private-bedrock/variables.tf").read_text()
+    assert all(f'variable "{key}"' in variables for key in publisher.TFVARS_KEYS.values())
+
+
+def test_the_manifest_marks_only_the_images_this_run_pushed() -> None:
+    entries = publisher.manifest([PUSHED, REUSED], [PUSHED])
+
+    assert entries == [
+        {
+            "name": "platform",
+            "repository": f"{REGISTRY}/agentic-platform/platform",
+            "digest": DIGEST,
+            "reference": PUSHED,
+            "pushed": True,
+        },
+        {
+            "name": "clickhouse",
+            "repository": f"{REGISTRY}/agentic-platform/clickhouse",
+            "digest": f"sha256:{'c' * 64}",
+            "reference": REUSED,
+            "pushed": False,
+        },
+    ]
+
+
+def test_a_local_build_loads_each_image_with_the_publish_command(commands) -> None:
+    publisher.build_locally([(publisher.OPA, "agentic-dev-platform-opa:1", {})], "arm64", REPO_ROOT)
+
+    assert commands[-1][:3] == ["docker", "buildx", "build"]
+    assert "--load" in commands[-1] and "--push" not in commands[-1]
+    assert commands[-1][commands[-1].index("--tag") + 1] == "agentic-dev-platform-opa:1"
+
+
+def test_the_images_file_is_ignored_by_git() -> None:
+    ignored = subprocess.run(
+        ["git", "check-ignore", "-q", str(publisher.IMAGES_FILE)], cwd=REPO_ROOT, check=False
+    )
+
+    assert ignored.returncode == 0

@@ -3,6 +3,11 @@ output "repository_urls" {
   value       = var.create_container_services ? { for name, repository in module.repository : name => repository.repository_url } : {}
 }
 
+output "repository_arns" {
+  description = "ARN of each image's ECR repository, keyed as repository_urls. Empty when disabled."
+  value       = var.create_container_services ? { for name, repository in module.repository : name => repository.repository_arn } : {}
+}
+
 output "internal_endpoints" {
   description = "The internal load balancer's client security group, the target security group and target group of each service, and each service's HTTPS URL. Null without the internal load balancer."
   value = local.internal_lb ? {

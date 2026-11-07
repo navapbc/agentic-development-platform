@@ -110,30 +110,23 @@ def build_images(
 ) -> list[str]:
     """Build the platform and OPA images into the local image store, returning their refs."""
     from scripts.k8s_render import OPA_IMAGE, PLATFORM_IMAGE
-    from scripts.publish_platform_images import OPA, PLATFORM, AcliBuild, build_context
-    from scripts.publish_temporal_images import BUILD_TIMEOUT_SECONDS, build_command
+    from scripts.publish_platform_images import OPA, PLATFORM, AcliBuild, build_locally
 
     acli = AcliBuild(
         (env.get("INSTALL_ACLI") or "false").lower() == "true",
         env.get("ACLI_VERSION") or "",
         env.get("ACLI_SHA256") or "",
     )
-    arch = local_arch()
-    built = []
-    with build_context(REPO_ROOT) as context:
-        for spec, name, args in (
-            (PLATFORM, PLATFORM_IMAGE, {"AGENT_BUILD_ID": build_id, **acli.build_args()}),
-            (OPA, OPA_IMAGE, {}),
-        ):
-            image = image_ref(settings, name, build_id)
-            print(f"{LOG} building {image}")
-            run(
-                build_command(spec, context, image, arch, args, output="--load"),
-                timeout=BUILD_TIMEOUT_SECONDS,
-                check=True,
-            )
-            built.append(image)
-    return built
+    images = [
+        (
+            PLATFORM,
+            image_ref(settings, PLATFORM_IMAGE, build_id),
+            {"AGENT_BUILD_ID": build_id, **acli.build_args()},
+        ),
+        (OPA, image_ref(settings, OPA_IMAGE, build_id), {}),
+    ]
+    build_locally(images, local_arch(), REPO_ROOT, run)
+    return [image for _, image, _ in images]
 
 
 def load_images(settings: Settings, images: Sequence[str], run: Runner = process.run) -> None:
