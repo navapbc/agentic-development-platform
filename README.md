@@ -423,7 +423,7 @@ The `inv` tasks that operate on the worker's state, such as `inv intake`, `inv r
 
 Under the `jumphost` and `ssh-bastion` providers, LiteLLM and the review worker each run a relay sidecar that forwards `bedrock-runtime.<region>.amazonaws.com:443` from the pod's loopback to the tunnel on the host, so TLS still verifies against the Bedrock certificate. Under `direct` no relay runs.
 
-The `agent-sandbox` network policies admit sandbox egress only to DNS and LiteLLM, and gate pod egress to DNS, LiteLLM, and addresses outside the cluster. The Docker Desktop cluster's CNI does not enforce network policy, which `inv smoke-test` reports, so they take effect only on a cluster that enforces them, such as EKS.
+The `agent-sandbox` network policies admit sandbox egress only to DNS and LiteLLM, and gate pod egress to DNS, LiteLLM, and addresses outside the cluster. The Docker Desktop cluster enforces them through the network policy controller built into its kindnet CNI, which `inv smoke-test` confirms from a probe pod. That controller fails open, so a pod's traffic passes for the first two seconds or so after the pod starts, until its address reaches the controller, and passes whenever the controller itself is down. The activity worker sends a sandbox its first command only after the pod reports ready and the checkout is copied in.
 
 Migrations only touch the platform's own `agent_platform` schema. The `temporal-admin-tools` task applies the Temporal schemas, and Langfuse manages its own. Langfuse v4 runs as `langfuse-web` and `langfuse-worker` backed by ClickHouse, Valkey, and the shared MinIO object store, reusing the `langfuse` Postgres database.
 

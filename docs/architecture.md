@@ -427,7 +427,7 @@ Notes on the local diagram:
 - `BEDROCK_CONNECTIVITY_PROVIDER` selects the Bedrock path. The diagram shows the default `jumphost` provider. The `ssh-bastion` provider replaces the SSM session with an SSH tunnel, and the `direct` provider removes the tunnel and the relays.
 - MinIO holds the Langfuse and Tempo buckets. The worker paths to MinIO are the rebar ticket store, used when `TICKET_BACKEND=rebar`, and the evidence Object Lock bucket, used when `EVIDENCE_OBJECT_STORE_ENABLED=true`. The cluster reaches MinIO on its published port 9090.
 - The External Review Gate path is inactive until `config/local/gate_engine.yaml` enables an engine. The Container Registry runs only under the `registry` Compose profile.
-- The `agent-sandbox` network policies limit sandbox egress to DNS and LiteLLM. The Docker Desktop cluster does not enforce network policy, which `inv smoke-test` reports.
+- The `agent-sandbox` network policies limit sandbox egress to DNS and LiteLLM. The Docker Desktop cluster enforces them through its kindnet CNI, which `inv smoke-test` confirms.
 - The MCP Gateway has no client in this repository.
 
 ## AWS environment

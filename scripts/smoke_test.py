@@ -92,27 +92,35 @@ def _credentials(settings: Settings) -> str:
 
 
 _POLICY_PROBE = """
-import socket
+import socket, time
 def reach(host, port):
     try:
-        socket.create_connection((host, port), timeout=5).close()
+        socket.create_connection((host, port), timeout=2).close()
         return True
     except OSError:
         return False
 service = "{{}}.{platform}.svc.cluster.local"
+deadline = time.monotonic() + {settle}
+while reach(service.format("mcp-gateway"), 80) and time.monotonic() < deadline:
+    time.sleep(1)
 print(reach(service.format("litellm"), 4000), reach(service.format("mcp-gateway"), 80))
 """
+
+# A new pod's address reaches the policy enforcer a few seconds after the pod starts, and the
+# enforcer admits traffic until then, so the probe waits this long before it reports the
+# policy as not enforced.
+_POLICY_SETTLE_SECONDS = 20
 
 
 def sandbox_policy_status(settings: Settings, image: str) -> str:
     """Probe from a pod the sandbox egress policy selects whether the cluster enforces it.
 
     The policy admits LiteLLM and refuses the MCP gateway. A cluster whose CNI lacks network
-    policy support admits both.
+    policy support admits both for as long as the probe waits.
     """
     from scripts.k8s_cluster import kubectl
 
-    probe = _POLICY_PROBE.format(platform=settings.k8s_namespace)
+    probe = _POLICY_PROBE.format(platform=settings.k8s_namespace, settle=_POLICY_SETTLE_SECONDS)
     output = _kubectl_output(
         kubectl(
             settings,
