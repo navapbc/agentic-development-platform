@@ -151,14 +151,11 @@ class Settings(BaseSettings):
     otel_metrics_host_port: int = 8889
 
     repo_intelligence_url: str = "http://localhost:8120"
-    repo_intelligence_repo_root: str = ""
-    repo_intelligence_commit: str = ""
     repo_intelligence_cbm_binary: str = ""
 
     coordination_url: str = "http://localhost:8130"
     mcp_allowed_hosts: str = ""
     coordination_shared_secret: str = ""
-    repo_intelligence_repos: str = ""
     repo_index_poll_interval_seconds: float = 30.0
     repo_index_worker_concurrency: int = 2
 
@@ -166,13 +163,10 @@ class Settings(BaseSettings):
     jira_parked_status: str = ""
 
     ticket_backend: str = "jira"
-    source_control_backend: str = "github"
-    source_control_local_root: str = ""
+    repository_root: str = "/repos"
     source_control_local_artifacts_root: str = ""
     source_control_local_operators: str = ""
-    source_control_local_repos: str = ""
 
-    github_default_base_branch: str = "main"
     github_webhook_secret: str = ""
     jira_webhook_secret: str = ""
 
@@ -233,32 +227,59 @@ class Settings(BaseSettings):
     dependency_detection_enabled: bool = False
     dependency_replan_attempts: int = 3
 
-    def repo_intelligence_registry(self) -> dict[str, tuple[str, str | None]]:
-        """Parse configured repositories into a name to (root, commit) mapping."""
-        registry: dict[str, tuple[str, str | None]] = {}
-        raw = self.repo_intelligence_repos.replace("\n", ",").replace(";", ",")
-        for item in raw.split(","):
-            entry = item.strip()
-            if not entry or "=" not in entry:
-                continue
-            name, _, location = entry.partition("=")
-            path, _, commit = location.strip().partition("@")
-            name, path = name.strip(), path.strip()
-            if name and path:
-                registry[name] = (path, commit.strip() or None)
-        if not registry and self.repo_intelligence_repo_root:
-            root = self.repo_intelligence_repo_root
-            registry[Path(root).name] = (root, self.repo_intelligence_commit or None)
-        return registry
-
     def mcp_allowed_host_values(self) -> tuple[str, ...]:
         """Parse the Host header values the MCP gateway accepts, empty when unconfigured."""
         raw = self.mcp_allowed_hosts.replace("\n", ",").replace(";", ",")
         return tuple(entry.strip() for entry in raw.split(",") if entry.strip())
 
+    def local_artifacts_root(self) -> str:
+        """Return where the local backend writes its artifacts and done ledger.
+
+        The default sits under the execution workspace root, which the workers and the host
+        share through a mount, so operator-done reads what a worker wrote.
+        """
+        configured = self.source_control_local_artifacts_root.strip()
+        return configured or f"{self.execution_workspace_root.rstrip('/')}/.agent-publish"
+
+
+# Each setting names the repositories.yaml field that replaced it.
+REMOVED_SETTINGS = {
+    "SOURCE_CONTROL_BACKEND": "each repository's backend",
+    "SOURCE_CONTROL_LOCAL_REPOS": "the repositories with backend local",
+    "SOURCE_CONTROL_LOCAL_ROOT": "REPOSITORY_ROOT and each local repository's path",
+    "REPO_INTELLIGENCE_REPOS": "each repository's index flag",
+    "REPO_INTELLIGENCE_REPO_ROOT": "each repository's index flag",
+    "REPO_INTELLIGENCE_COMMIT": "each repository's index_ref",
+    "GITHUB_DEFAULT_BASE_BRANCH": "defaults.default_branch and each repository's default_branch",
+}
+
+
+class RemovedSettingError(RuntimeError):
+    """Raised when the environment still sets a setting that repositories.yaml replaced."""
+
+
+def refuse_removed_settings(env_file: str | Path | None = ".env") -> None:
+    """Fail when the process environment or the env file still sets a removed setting."""
+    present: dict[str, str] = {}
+    if env_file is not None and Path(env_file).exists():
+        from dotenv import dotenv_values
+
+        present.update({key.upper(): key for key in dotenv_values(env_file)})
+    present.update({key.upper(): key for key in os.environ})
+    found = sorted(name for name in REMOVED_SETTINGS if name in present)
+    if found:
+        replacements = "; ".join(f"{name} by {REMOVED_SETTINGS[name]}" for name in found)
+        raise RemovedSettingError(
+            f"{', '.join(found)} {'is' if len(found) == 1 else 'are'} no longer read. "
+            f"config/<env>/repositories.yaml replaces {replacements}. Remove them from the "
+            "environment and .env, and copy repositories.yaml.example to configure the "
+            "repositories."
+        )
+
 
 @lru_cache
 def get_settings() -> Settings:
+    refuse_removed_settings()
     return Settings()
 
 
@@ -284,6 +305,11 @@ _COMPOSE_PUBLISHED_PORTS: dict[str, dict[int, str]] = {
 _COMPOSE_SERVICE_HOSTS = frozenset(_COMPOSE_PUBLISHED_PORTS)
 
 _SYNC_DRIVERS = {"postgresql+asyncpg": "postgresql+psycopg", "postgresql": "postgresql+psycopg"}
+
+
+def in_platform_image() -> bool:
+    """Report whether this process runs inside the platform image rather than on the host."""
+    return _in_platform_image()
 
 
 def _in_platform_image() -> bool:

@@ -7,15 +7,9 @@ from adapters.interfaces.git_host import CommitRequest, GitHost, PublishResult
 from adapters.mock.git_host import MockGitHost
 from adapters.real.git_host import RealGitHost
 from adapters.real.local_git_host import LocalGitHost
-from scripts.config import Settings
-from services.integration.credentials import ConfigError
-from services.integration.github.factory import (
-    GITHUB,
-    LOCAL,
-    build_git_host,
-    resolve_source_control_backend_name,
-)
-from tests.support import hermetic_settings
+from adapters.real.routing_git_host import RoutingGitHost
+from services.integration.github.factory import GITHUB, LOCAL, backend_for, build_git_host
+from tests.support import configure_repositories, hermetic_settings
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -60,42 +54,42 @@ def _staged_request(
     )
 
 
-def test_default_settings_resolve_github() -> None:
-    assert resolve_source_control_backend_name(hermetic_settings()) == GITHUB
+def test_each_repository_resolves_its_configured_backend(monkeypatch, tmp_path) -> None:
+    configure_repositories(
+        monkeypatch,
+        tmp_path / "config",
+        "defaults:\n  backend: local\nrepositories:\n  demo:\n    path: /srv/demo\n"
+        "  svc:\n    backend: github\n",
+    )
+    settings = hermetic_settings()
+
+    assert backend_for("demo", settings) == LOCAL
+    assert backend_for("svc", settings) == GITHUB
 
 
-def test_unset_backend_resolves_github() -> None:
-    assert resolve_source_control_backend_name(Settings(source_control_backend="")) == GITHUB
-
-
-def test_backend_name_is_case_insensitive() -> None:
-    assert resolve_source_control_backend_name(Settings(source_control_backend="Local")) == LOCAL
-
-
-def test_unknown_backend_fails_closed() -> None:
-    with pytest.raises(ConfigError, match="unknown source_control_backend"):
-        resolve_source_control_backend_name(Settings(source_control_backend="gitlab"))
-
-
-def test_default_build_resolves_real_git_host(monkeypatch) -> None:
+def test_the_git_host_routes_each_repository_to_its_backend(
+    monkeypatch, tmp_path, local_repo
+) -> None:
+    root, artifacts = local_repo
+    configure_repositories(
+        monkeypatch,
+        tmp_path / "config",
+        f"repositories:\n  demo:\n    backend: local\n    path: {root / 'demo'}\n  svc: {{}}\n",
+    )
     sentinel = object()
     monkeypatch.setattr(
         "adapters.real.git_host.RealGitHost.from_settings",
         classmethod(lambda cls, settings=None: sentinel),
     )
-    assert build_git_host(hermetic_settings()) is sentinel
-
-
-def test_local_build_resolves_local_git_host(local_repo) -> None:
-    root, artifacts = local_repo
     host = build_git_host(
-        Settings(
-            source_control_backend="local",
-            source_control_local_root=str(root),
-            source_control_local_artifacts_root=str(artifacts),
+        hermetic_settings(
+            repository_root=str(root), source_control_local_artifacts_root=str(artifacts)
         )
     )
-    assert isinstance(host, LocalGitHost)
+
+    assert isinstance(host, RoutingGitHost)
+    assert isinstance(host.host_for("demo"), LocalGitHost)
+    assert host.host_for("svc") is sentinel
 
 
 def test_local_host_conforms_to_git_host(local_repo) -> None:

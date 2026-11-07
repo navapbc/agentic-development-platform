@@ -22,7 +22,6 @@ from services.coordination.orphans import InMemoryOrphanRegistry
 from services.integration.credentials import ConfigError, SecretNotFoundError
 from services.integration.github.credentials import (
     UnconfiguredRepositoryError,
-    allowed_repos,
     build_github_credential_resolver,
 )
 from services.integration.github.git_auth import GitAuth
@@ -42,6 +41,7 @@ from services.integration.jira.credentials import (
 from services.integration.jira.linkback import post_pr_linkback
 from services.integration.jira.normalize import normalize_issue
 from services.integration.jira.snapshot import SnapshotCandidate, snapshot_id_for
+from services.integration.repositories import load_repository_registry
 from services.orchestration.bounded_task_pipeline import (
     DRAFT_PR_OPEN,
     EXISTING_PR_REUSED,
@@ -167,7 +167,7 @@ def _missing(settings: Settings) -> list[str]:
         resolver = build_github_credential_resolver(settings)
         repos = sorted(resolver.repos())
         if not repos:
-            return ["config/<env>/github.yaml has no allowlisted repository with an identity"]
+            return ["config/<env>/repositories.yaml lists no repository with backend github"]
         resolver.resolve(repos[0])
     except (ConfigError, SecretNotFoundError, UnconfiguredRepositoryError) as exc:
         return [str(exc)]
@@ -387,14 +387,17 @@ async def main() -> int:
     missing = _missing(settings)
     if missing:
         print("Configure GitHub before running the demo.")
-        print("Set the host, owner, and token_ref in config/<env>/github.yaml.")
+        print("Set the host, owner, and token_ref in config/<env>/github.yaml or for the")
+        print("repository in config/<env>/repositories.yaml.")
         print("Export the token named by token_ref, for example GITHUB_TOKEN, in .env.")
         print(f"Blocked: {', '.join(missing)}")
         return 2
 
     args = _parse_args()
     repo = args.repo
-    base = args.base or settings.github_default_base_branch or "main"
+    registry = load_repository_registry(settings)
+    configured = registry.get(repo)
+    base = args.base or (configured.default_branch if configured else "main")
     task_id = args.task
     execution_id = f"exec-{uuid.uuid4().hex[:8]}"
 
@@ -407,7 +410,7 @@ async def main() -> int:
             print("[demo]   `inv connectivity-check`, then retry.")
             return 2
 
-    allowlist = sorted(allowed_repos(settings))
+    allowlist = sorted(registry.names())
     if repo not in allowlist:
         print(f"Repo '{repo}' is not allowlisted. Choose one of: {', '.join(allowlist)}")
         return 2

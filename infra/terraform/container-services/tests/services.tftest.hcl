@@ -139,6 +139,20 @@ run "every_task_injects_secrets_by_arn_and_holds_none" {
   }
 }
 
+run "every_task_reads_the_repository_list_at_the_checkouts_path" {
+  command = apply
+
+  assert {
+    condition = alltrue([
+      for name, definition in aws_ecs_task_definition.workload : alltrue([
+        contains([for variable in jsondecode(definition.container_definitions)[1].environment : "${variable.name}=${variable.value}"], "REPOSITORY_ROOT=/repositories"),
+        contains([for variable in jsondecode(definition.container_definitions)[1].environment : variable.name], "PLATFORM_ENV_CONFIG"),
+      ])
+    ])
+    error_message = "A task does not find the repositories at the checkouts path, or does not receive the environment config."
+  }
+}
+
 run "each_execution_role_reads_only_its_secrets" {
   command = apply
 

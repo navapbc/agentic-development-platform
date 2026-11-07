@@ -12,7 +12,7 @@ from services.integration.credentials import ConfigError
 from services.integration.github import factory
 from services.integration.github.credentials import GitHubRepoCredential
 from services.integration.github.git_auth import CREDENTIAL_ENV, NO_AUTH, GitAuth
-from tests.support import hermetic_settings
+from tests.support import configure_repositories, hermetic_settings
 
 TOKEN = "ghs-helper-secret"
 BASE_URL = "https://acme.ghe"
@@ -78,15 +78,40 @@ def test_without_a_token_git_gets_no_helper_but_still_refuses_to_prompt() -> Non
     assert NO_AUTH.env() == {"GIT_TERMINAL_PROMPT": "0"}
 
 
-def test_the_local_backend_resolves_every_repository_to_no_credential() -> None:
-    auth_for = factory.build_git_auth_for(hermetic_settings(source_control_backend="local"))
+def test_a_local_repository_resolves_to_no_credential_beside_a_github_one(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    configure_repositories(
+        monkeypatch,
+        tmp_path,
+        "repositories:\n  agentic-demo-service: {}\n  notes:\n    backend: local\n"
+        "    path: /srv/notes\n",
+    )
 
-    assert auth_for("agentic-demo-service") == NO_AUTH
+    class _Resolver:
+        def resolve(self, repo: str) -> GitHubRepoCredential:
+            return GitHubRepoCredential(
+                api_url="https://acme.ghe/api/v3",
+                owner="acme-org",
+                git_base_url="https://acme.ghe",
+                token=TOKEN,
+            )
+
+    monkeypatch.setattr(
+        "services.integration.github.credentials.build_github_credential_resolver",
+        lambda settings: _Resolver(),
+    )
+    auth_for = factory.build_git_auth_for(hermetic_settings())
+
+    assert auth_for("notes") == NO_AUTH
+    assert auth_for("agentic-demo-service").env()[CREDENTIAL_ENV] == TOKEN
 
 
 def test_the_github_backend_resolves_a_repository_to_its_own_token(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    configure_repositories(monkeypatch, tmp_path, "repositories:\n  agentic-demo-service: {}\n")
+
     class _Resolver:
         def resolve(self, repo: str) -> GitHubRepoCredential | None:
             if repo != "agentic-demo-service":
@@ -102,22 +127,24 @@ def test_the_github_backend_resolves_a_repository_to_its_own_token(
         "services.integration.github.credentials.build_github_credential_resolver",
         lambda settings: _Resolver(),
     )
-    auth_for = factory.build_git_auth_for(hermetic_settings(source_control_backend="github"))
+    auth_for = factory.build_git_auth_for(hermetic_settings())
 
     assert auth_for("agentic-demo-service").env()[CREDENTIAL_ENV] == TOKEN
     assert auth_for("not-allowlisted") == NO_AUTH
 
 
 def test_an_unreadable_github_config_resolves_to_no_credential(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    configure_repositories(monkeypatch, tmp_path, "repositories:\n  agentic-demo-service: {}\n")
+
     def _unreadable(settings: Settings) -> None:
         raise ConfigError("no github config for this environment")
 
     monkeypatch.setattr(
         "services.integration.github.credentials.build_github_credential_resolver", _unreadable
     )
-    auth_for = factory.build_git_auth_for(hermetic_settings(source_control_backend="github"))
+    auth_for = factory.build_git_auth_for(hermetic_settings())
 
     assert auth_for("agentic-demo-service") == NO_AUTH
 

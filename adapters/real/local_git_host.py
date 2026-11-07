@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -43,23 +44,34 @@ class LocalGitHost:
     local branch state that discovery and promotion read back.
     """
 
-    def __init__(self, root: Path, *, artifacts_root: Path | None = None) -> None:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        artifacts_root: Path | None = None,
+        path_for: Callable[[str], Path] | None = None,
+    ) -> None:
         self._root = root
         self._artifacts_root = artifacts_root or (root / ".agent-publish")
+        self._path_for = path_for
 
     @classmethod
     def from_settings(cls, settings: Settings | None = None) -> LocalGitHost:
+        from services.integration.repositories import load_repository_registry
+
         resolved = settings or get_settings()
-        root = resolved.source_control_local_root.strip()
+        root = resolved.repository_root.strip()
         if not root:
-            raise ValueError(
-                "source_control_local_root is required when source_control_backend is local"
-            )
-        artifacts = resolved.source_control_local_artifacts_root.strip()
-        return cls(Path(root), artifacts_root=Path(artifacts) if artifacts else None)
+            raise ValueError("repository_root is required for a repository with backend local")
+        registry = load_repository_registry(resolved)
+        return cls(
+            Path(root),
+            artifacts_root=Path(resolved.local_artifacts_root()),
+            path_for=lambda repo: Path(registry.location(repo)),
+        )
 
     def _repo_path(self, repo: str) -> Path:
-        return self._root / repo
+        return self._path_for(repo) if self._path_for is not None else self._root / repo
 
     def source_location(self, repo: str) -> str:
         return str(self._repo_path(repo))

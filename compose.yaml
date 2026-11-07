@@ -521,6 +521,7 @@ services:
     env_file: [.env]
     volumes:
       - repo-index-data:/app/repository_indexes
+      - ./config/local:/app/config/local:ro
     restart: unless-stopped
 
   # Local stand-in for ECR that gate pods pull the engine image from in image mode. It serves

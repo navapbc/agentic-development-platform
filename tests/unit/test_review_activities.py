@@ -20,6 +20,7 @@ from services.review.types import (
     ReviewStage,
     Verdict,
 )
+from tests.support import configure_repositories
 
 
 class _CapturingKernel:
@@ -141,22 +142,21 @@ def test_resolve_repo_root_prefers_explicit_existing_root(tmp_path):
 
 
 def test_resolve_repo_root_maps_repo_to_ris_path(tmp_path, monkeypatch):
-    class _Settings:
-        def repo_intelligence_registry(self):
-            return {"demo": (str(tmp_path), None)}
-
-    monkeypatch.setattr(review, "get_settings", lambda: _Settings(), raising=False)
-    monkeypatch.setattr("scripts.config.get_settings", lambda: _Settings(), raising=False)
+    configure_repositories(
+        monkeypatch,
+        tmp_path / "config",
+        f"repositories:\n  demo:\n    index: true\n    path: {tmp_path}\n",
+    )
     req = ReviewRequest(task_id="T", execution_id="E", subject="s", repo="demo")
     assert review._resolve_repo_root(req) == str(tmp_path)
 
 
-def test_resolve_repo_root_returns_none_for_missing_path(monkeypatch):
-    class _Settings:
-        def repo_intelligence_registry(self):
-            return {"demo": ("/nonexistent/path/xyz", None)}
-
-    monkeypatch.setattr("scripts.config.get_settings", lambda: _Settings(), raising=False)
+def test_resolve_repo_root_returns_none_for_missing_path(tmp_path, monkeypatch):
+    configure_repositories(
+        monkeypatch,
+        tmp_path / "config",
+        "repositories:\n  demo:\n    index: true\n    path: /nonexistent/path/xyz\n",
+    )
     req = ReviewRequest(task_id="T", execution_id="E", subject="s", repo="demo")
     assert review._resolve_repo_root(req) is None
 

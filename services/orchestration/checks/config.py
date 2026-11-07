@@ -95,12 +95,18 @@ def checks_for_repo(
 def required_checks_repos(
     settings=None, *, environment: str | None = None
 ) -> frozenset[str] | None:
-    """Repositories with a checks entry when the backend requires CI, or None when it does not."""
+    """Repositories that satisfy the CI requirement, or None when no repository requires CI.
+
+    A GitHub repository requires a checks entry. A local repository has no CI to wait on, so it
+    always satisfies the requirement.
+    """
     from scripts.config import get_settings
 
-    from services.integration.github.factory import GITHUB, resolve_source_control_backend_name
+    from services.integration.repositories import GITHUB, LOCAL, load_repository_registry
 
     resolved = settings or get_settings()
-    if resolve_source_control_backend_name(resolved) != GITHUB:
+    registry = load_repository_registry(resolved, environment=environment)
+    if not registry.names(GITHUB):
         return None
-    return frozenset(load_checks_configs(resolved, environment=environment))
+    checked = frozenset(load_checks_configs(resolved, environment=environment))
+    return checked | frozenset(registry.names(LOCAL))

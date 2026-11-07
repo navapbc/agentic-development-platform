@@ -91,3 +91,26 @@ _DEFAULT_TICKETS: list[dict] = [
         "tags": ["enhancement", "api"],
     },
 ]
+
+
+def configure_repositories(
+    monkeypatch: pytest.MonkeyPatch,
+    directory: Path,
+    repositories: str,
+    *,
+    github: str | None = None,
+) -> Path:
+    """Write repositories.yaml, and github.yaml when given, as the environment config.
+
+    The config loaders read PLATFORM_ENV_CONFIG_DIR before config/<env>, so a test that calls a
+    settings-driven factory sees these files and not the operator's own.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "repositories.yaml").write_text(
+        "config_version: 1\n" + repositories, encoding="utf-8"
+    )
+    if github is not None:
+        (directory / "github.yaml").write_text("config_version: 2\n" + github, encoding="utf-8")
+    monkeypatch.setenv("PLATFORM_ENV_CONFIG_DIR", str(directory))
+    return directory
+

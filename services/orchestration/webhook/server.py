@@ -19,15 +19,13 @@ from services.http_front_door import (
     RequestRejected,
     read_bounded_body,
 )
-from services.integration.github.credentials import (
-    allowed_repos,
-    build_github_credential_resolver,
-)
+from services.integration.github.credentials import build_github_credential_resolver
 from services.integration.integrations import load_integrations_config
 from services.integration.jira.credentials import (
     allowed_projects,
     build_jira_credential_resolver,
 )
+from services.integration.repositories import GITHUB, load_repository_registry
 from services.orchestration.intake_runtime import build_intake_context
 from services.orchestration.webhook.inbound import IntegrationHandler, handle_inbound
 from services.orchestration.webhook.jira_events import JiraIntakeHandler
@@ -85,7 +83,9 @@ async def build_routes(settings: Settings) -> dict[str, Route]:
         context=build_intake_context(settings, client=client, gh_resolver=gh_resolver),
     )
     return {
-        "/webhook/pr": Route(handler=pr_closed, allowed=frozenset(allowed_repos(settings))),
+        "/webhook/pr": Route(
+            handler=pr_closed, allowed=frozenset(load_repository_registry(settings).names(GITHUB))
+        ),
         "/webhook/jira": Route(handler=jira_intake, allowed=frozenset(allowed_projects(settings))),
     }
 

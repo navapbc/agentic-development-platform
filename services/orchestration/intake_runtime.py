@@ -47,12 +47,8 @@ class TemporalStarter:
         )
 
     async def start(self, start: IntakeStart) -> str:
-        from services.integration.github.factory import (
-            LOCAL,
-            build_git_auth_for,
-            build_git_host,
-            resolve_source_control_backend_name,
-        )
+        from services.integration.github.factory import build_git_auth_for, build_git_host
+        from services.integration.repositories import LOCAL, load_repository_registry
         from services.orchestration.gates.engine_source import (
             load_gate_engine_configs,
             triage_engine,
@@ -63,14 +59,15 @@ class TemporalStarter:
         )
         from services.orchestration.usage_rollup import BudgetCaps
 
-        base = start.base or self._settings.github_default_base_branch
+        repository = load_repository_registry(self._settings).require(start.repo)
+        base = start.base or repository.default_branch
         source_location = build_git_host(self._settings).source_location(start.repo)
         base_auth = build_git_auth_for(self._settings)(start.repo)
         base_sha = remote_head(source_location, base, base_auth)
         if start.base and not base_sha:
             raise UnresolvableBaseBranch(base, start.repo)
         run_test_triage = triage_engine(load_gate_engine_configs(self._settings)) is not None
-        await_pr_close = resolve_source_control_backend_name(self._settings) == LOCAL
+        await_pr_close = repository.backend == LOCAL
         caps = BudgetCaps.from_settings(self._settings)
         workflow_id = f"draft-pr-{start.issue_key}-{start.execution_id}"
         await self._client.start_workflow(

@@ -173,7 +173,7 @@ locals {
       PGSSLROOTCERT                 = "/etc/ssl/rds-global-bundle.pem"
       COORDINATION_URL              = "https://coordination.${var.internal_domain}"
       REPO_INTELLIGENCE_URL         = "https://repo-intelligence.${var.internal_domain}"
-      REPO_INTELLIGENCE_REPOS       = var.repo_intelligence_repos
+      REPOSITORY_ROOT               = local.checkouts_path
       PLATFORM_CA_PEM               = var.platform_ca_pem
       PLATFORM_ENV_CONFIG           = length(var.environment_config) == 0 ? "" : jsonencode(var.environment_config)
       TEMPORAL_HOST                 = try(var.temporal.endpoint, "")
@@ -330,9 +330,11 @@ locals {
     for name, spec in local.workloads : name => [
       for key, value in merge(
         spec.image == var.platform_image ? local.platform_environment : {
-          LOG_LEVEL               = var.log_level
-          TMPDIR                  = "/tmp"
-          REPO_INTELLIGENCE_REPOS = var.repo_intelligence_repos
+          ENVIRONMENT         = var.environment
+          LOG_LEVEL           = var.log_level
+          TMPDIR              = "/tmp"
+          REPOSITORY_ROOT     = local.checkouts_path
+          PLATFORM_ENV_CONFIG = local.platform_environment.PLATFORM_ENV_CONFIG
         },
         spec.environment,
         lookup(var.service_environment, name, {}),

@@ -15,7 +15,7 @@ REPOSITORY = Path(__file__).resolve().parents[2]
 MANIFESTS = REPOSITORY / "deploy" / "kubernetes"
 LOCAL_OVERLAY = MANIFESTS / "local"
 CONFIG_LOCAL = REPOSITORY / "config" / "local"
-GENERATED_CONFIG = ("github.yaml", "jira.yaml", "integrations.yaml")
+GENERATED_CONFIG = ("github.yaml", "jira.yaml", "integrations.yaml", "repositories.yaml")
 
 
 def _container_env(documents: Iterable[dict[str, Any] | None], name: str) -> dict[str, Any]:
@@ -45,7 +45,7 @@ def _overlay_patch_env(kind: str, name: str) -> dict[str, Any]:
 def _hermetic_overlay(root: Path) -> Path:
     """Reproduce the tree the overlay walks up to, from tracked files only.
 
-    Its generators read an operator secret and three `config/local` files that the
+    Its generators read an operator secret and four `config/local` files that the
     repository does not track, so a checkout renders in place only on a machine that
     already runs the sandbox. The copy skips any secret file an operator holds, so the
     render reads the same inputs everywhere.

@@ -17,7 +17,7 @@ from services.orchestration.intake_reconciler import (
     checks_not_configured_reason,
     reconcile_intake,
 )
-from tests.support import hermetic_settings
+from tests.support import configure_repositories, hermetic_settings
 
 _ALLOW = frozenset({"repo-a", "repo-b", "repo-c"})
 _PROJECTS = {"ADEV", "ADSER"}
@@ -723,10 +723,13 @@ async def test_holds_a_repository_without_checks_when_ci_is_required():
     assert report.deferred == ["ADEV-1"]
 
 
-async def test_starts_a_repository_without_checks_when_ci_is_not_required():
+async def test_starts_a_repository_without_checks_when_ci_is_not_required(monkeypatch, tmp_path):
+    configure_repositories(
+        monkeypatch, tmp_path, "repositories:\n  repo-a:\n    backend: local\n    path: /srv/a\n"
+    )
     read = _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV")]})
     starter, alerter, ledger, store, resolver = _defaults()
-    local = hermetic_settings(source_control_backend="local")
+    local = hermetic_settings()
 
     report = await _run(
         read, starter, alerter, ledger, store, resolver, checks_repos=required_checks_repos(local)
@@ -748,10 +751,27 @@ async def test_starts_a_repository_with_checks_when_ci_is_required():
     assert report.held == []
 
 
-def test_required_checks_repos_lists_configured_repositories_under_github(monkeypatch):
+def test_required_checks_repos_lists_configured_repositories_under_github(monkeypatch, tmp_path):
+    configure_repositories(monkeypatch, tmp_path, "repositories:\n  repo-a: {}\n  repo-b: {}\n")
     monkeypatch.setattr(
         "services.orchestration.checks.config.load_checks_configs",
         lambda settings=None, *, environment=None: {"repo-a": object()},
     )
 
     assert required_checks_repos(hermetic_settings()) == frozenset({"repo-a"})
+
+
+def test_a_local_repository_satisfies_the_checks_requirement_beside_a_github_one(
+    monkeypatch, tmp_path
+):
+    configure_repositories(
+        monkeypatch,
+        tmp_path,
+        "repositories:\n  repo-a: {}\n  notes:\n    backend: local\n    path: /srv/notes\n",
+    )
+    monkeypatch.setattr(
+        "services.orchestration.checks.config.load_checks_configs",
+        lambda settings=None, *, environment=None: {},
+    )
+
+    assert required_checks_repos(hermetic_settings()) == frozenset({"notes"})

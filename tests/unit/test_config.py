@@ -1,11 +1,10 @@
-"""Unit tests for settings and allowlist parsing."""
+"""Unit tests for settings and the Jira allowlist."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 from scripts.config import Settings, to_host_hostport, to_host_url
-from services.integration.github.credentials import allowed_repos
 from services.integration.jira.credentials import acceptance_field, allowed_projects
 from tests.support import hermetic_settings
 
@@ -16,44 +15,17 @@ def _write(root: Path, name: str, body: str) -> None:
     (directory / f"{name}.yaml").write_text(body, encoding="utf-8")
 
 
-def test_allowlists_are_read_from_the_config_files(tmp_path: Path) -> None:
-    _write(tmp_path, "github", "config_version: 1\nallowlist:\n  - repo-a\n  - repo-b\n")
+def test_jira_allowlist_and_acceptance_field_are_read_from_the_config(tmp_path: Path) -> None:
     _write(
         tmp_path,
         "jira",
-        "config_version: 1\nallowlist:\n  - AGENTDEV\nacceptance_field: customfield_10\n",
+        "config_version: 1\nallowlist:\n  - ' AGENTDEV '\n  - ''\n"
+        "acceptance_field: customfield_10\n",
     )
     settings = hermetic_settings()
 
-    assert allowed_repos(settings, environment="local", root=tmp_path) == {"repo-a", "repo-b"}
     assert allowed_projects(settings, environment="local", root=tmp_path) == {"AGENTDEV"}
     assert acceptance_field(settings, environment="local", root=tmp_path) == "customfield_10"
-
-
-def test_allowlist_parsing_trims_whitespace_and_drops_blanks(tmp_path: Path) -> None:
-    body = "config_version: 1\nallowlist:\n  - ' repo-a '\n  - ''\n  - repo-b\n"
-    _write(tmp_path, "github", body)
-    settings = hermetic_settings()
-
-    assert allowed_repos(settings, environment="local", root=tmp_path) == {"repo-a", "repo-b"}
-
-
-def test_repo_intelligence_registry_parses_entries():
-    s = Settings(repo_intelligence_repos="svc=/repos/svc@abc123, green=/repos/green")
-    assert s.repo_intelligence_registry() == {
-        "svc": ("/repos/svc", "abc123"),
-        "green": ("/repos/green", None),
-    }
-
-
-def test_repo_intelligence_registry_falls_back_to_single_root():
-    s = Settings(
-        repo_intelligence_repo_root="/repos/agentic-demo-service",
-        repo_intelligence_commit="0744a6e",
-    )
-    assert s.repo_intelligence_registry() == {
-        "agentic-demo-service": ("/repos/agentic-demo-service", "0744a6e")
-    }
 
 
 def test_region_and_profile_defaults_are_fedramp_aligned():
@@ -138,3 +110,15 @@ def test_host_rewrite_is_inert_inside_the_platform_image(monkeypatch):
     dsn = "postgresql+psycopg://platform:pw@postgres:5432/agent_platform"
     assert to_host_url(dsn) == dsn
     assert to_host_hostport("temporal:7233") == "temporal:7233"
+
+
+def test_the_local_artifacts_default_sits_under_the_shared_workspace_root():
+    settings = hermetic_settings(execution_workspace_root="/workspaces/")
+
+    assert settings.local_artifacts_root() == "/workspaces/.agent-publish"
+
+
+def test_a_configured_local_artifacts_root_is_used_as_given():
+    settings = hermetic_settings(source_control_local_artifacts_root="/srv/artifacts")
+
+    assert settings.local_artifacts_root() == "/srv/artifacts"

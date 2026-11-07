@@ -9,7 +9,16 @@ from services.orchestration.intake_base import UnresolvableBaseBranch
 from services.orchestration.intake_reconciler import IntakeStart
 from services.orchestration.intake_runtime import TemporalStarter
 from services.orchestration.usage_rollup import BudgetCaps
-from tests.support import hermetic_settings
+from tests.support import configure_repositories, hermetic_settings
+
+
+@pytest.fixture(autouse=True)
+def _repositories(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    configure_repositories(
+        monkeypatch,
+        tmp_path / "config",
+        "defaults:\n  default_branch: trunk\nrepositories:\n  agentic-demo-service: {}\n",
+    )
 
 
 class _Client:
@@ -68,12 +77,14 @@ async def test_start_awaits_pr_close_for_local_backend(
 ) -> None:
     monkeypatch.setattr(intake_runtime, "remote_head", lambda remote, branch, auth=None: "abc123")
     (tmp_path / "agentic-demo-service").mkdir()
-    client = _Client()
-    settings = hermetic_settings(
-        source_control_backend="local",
-        source_control_local_root=str(tmp_path),
-        source_control_local_repos="agentic-demo-service",
+    configure_repositories(
+        monkeypatch,
+        tmp_path / "config",
+        f"repositories:\n  agentic-demo-service:\n    backend: local\n"
+        f"    path: {tmp_path / 'agentic-demo-service'}\n",
     )
+    client = _Client()
+    settings = hermetic_settings(repository_root=str(tmp_path))
     starter = TemporalStarter(client, settings, _Gh())
 
     await starter.start(
@@ -164,7 +175,7 @@ async def test_start_falls_back_to_the_default_base_branch(
     await starter.start(_intake_start())
 
     (_, arg, _) = client.started[0]
-    assert arg.base == settings.github_default_base_branch
+    assert arg.base == "trunk"
     assert arg.base_sha == "main-sha"
 
 

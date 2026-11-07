@@ -36,8 +36,10 @@ def build_registry() -> RepositoryIntelligenceRegistry | None:
     global _registry
     if _registry is not None:
         return _registry
+    from services.integration.repositories import load_repository_registry
+
     settings = get_settings()
-    configured = settings.repo_intelligence_registry()
+    configured = load_repository_registry(settings).indexed()
     if not configured:
         return None
     cbm_binary = settings.repo_intelligence_cbm_binary or None

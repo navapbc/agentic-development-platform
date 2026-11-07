@@ -15,13 +15,14 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_VERSION_KEY = "config_version"
 
 _CURRENT_CONFIG_VERSIONS: dict[str, int] = {
-    "github": 1,
+    "github": 2,
     "jira": 1,
     "integrations": 1,
     "gates": 1,
     "gate_engine": 1,
     "checks": 1,
     "tickets": 1,
+    "repositories": 1,
 }
 
 

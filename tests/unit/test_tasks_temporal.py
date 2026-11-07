@@ -104,6 +104,7 @@ def test_local_up_applies_the_schema_before_the_server_and_the_namespace_before_
     tasks_module.local_up(context)
 
     assert [command for command, _ in context.commands] == [
+        f"{tasks_module.HOST_PYTHON} -m scripts.repositories_compose",
         f"{COMPOSE} build --build-arg AGENT_BUILD_ID={BUILD_ID}",
         f"{COMPOSE} run --rm --build db-migrate",
         f"{COMPOSE} run --rm temporal-admin-tools schema",

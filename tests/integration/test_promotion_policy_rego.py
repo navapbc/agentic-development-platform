@@ -70,6 +70,7 @@ def _compliant(**overrides) -> dict:
     document = {
         "jira_project": "AGENTDEV",
         "repository": "agentic-demo-service",
+        "allowed_repos": ["agentic-demo-service"],
         "ci_status": "success",
         "repair_attempts": 0,
         "max_repair_attempts": 2,
@@ -90,7 +91,7 @@ def test_compliant_change_is_allowed():
     assert decision["allow"] is True
     assert decision["reasons"] == []
     assert decision["human_review"] == []
-    assert decision["bundle_version"] == "0.4.0"
+    assert decision["bundle_version"] == "0.5.0"
     assert decision["next_action"] == "proceed"
 
 
@@ -141,6 +142,20 @@ def test_a_deployment_invariant_still_denies():
     decision = _decision(_compliant(ci_status="failed"))
     assert decision["allow"] is False
     assert "ci_not_successful" in decision["reasons"]
+
+
+def test_a_repository_outside_the_passed_list_is_denied():
+    decision = _decision(_compliant(repository="other-service"))
+    assert decision["allow"] is False
+    assert "repository_not_allowlisted" in decision["reasons"]
+
+
+def test_no_repository_list_allows_no_repository():
+    document = _compliant()
+    del document["allowed_repos"]
+    decision = _decision(document)
+    assert decision["allow"] is False
+    assert "repository_not_allowlisted" in decision["reasons"]
 
 
 def test_input_allowlists_admit_a_backend_the_defaults_omit():

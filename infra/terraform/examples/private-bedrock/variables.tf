@@ -402,12 +402,6 @@ variable "container_platform_ca_file" {
   default     = ""
 }
 
-variable "container_repo_intelligence_repos" {
-  description = "REPO_INTELLIGENCE_REPOS, name=path pairs under /repositories, the repository checkout mount."
-  type        = string
-  default     = ""
-}
-
 variable "container_service_counts" {
   description = "Tasks inv platform-deploy runs per platform service."
   type        = map(number)

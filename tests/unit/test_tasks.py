@@ -12,6 +12,7 @@ from invoke.collection import Collection
 from invoke.context import Context
 from invoke.exceptions import Exit
 from invoke.runners import Result
+from tests.support import hermetic_settings
 
 EXPECTED_TASKS = {
     "tunnel-start",
@@ -19,6 +20,7 @@ EXPECTED_TASKS = {
     "tunnel-status",
     "connectivity-check",
     "config-check",
+    "repos-compose",
     "local-up",
     "temporal-upgrade",
     "local-down",
@@ -376,3 +378,17 @@ def test_go_test_vets_and_tests_every_module():
 def test_go_test_refuses_unformatted_code():
     with pytest.raises(Exit, match="gofmt would rewrite"):
         tasks_module.go_test(_GoContext(unformatted="docker/tls-sidecar/main.go"))
+
+
+def test_operator_done_reads_the_workspace_artifacts_at_their_host_directory(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        "scripts.config.get_settings",
+        lambda: hermetic_settings(source_control_local_artifacts_root="/workspaces/.agent-publish"),
+    )
+
+    assert tasks_module._host_source_control_env() == {
+        "SOURCE_CONTROL_LOCAL_ARTIFACTS_ROOT": str(
+            tmp_path / ".agent-workspaces" / ".agent-publish"
+        )
+    }

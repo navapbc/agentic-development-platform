@@ -11,6 +11,7 @@ from services.integration.github.credentials import (
     UnconfiguredRepositoryError,
     parse_github_config,
 )
+from services.integration.repositories import parse_repositories
 
 RAW = {
     "hosts": {
@@ -18,15 +19,21 @@ RAW = {
         "globex": {"api_url": "https://globex.ghe/api/v3", "git_base_url": "https://globex.ghe"},
     },
     "default": {"host": "acme", "owner": "acme-org", "token_ref": "ACME_TOKEN"},
-    "repositories": {
-        "repo-b": {"host": "globex", "owner": "globex-org", "token_ref": "GLOBEX_TOKEN"},
-    },
 }
+REGISTRY = parse_repositories(
+    {
+        "repositories": {
+            "repo-a": {},
+            "repo-b": {"host": "globex", "owner": "globex-org", "token_ref": "GLOBEX_TOKEN"},
+        }
+    },
+    root="/repos",
+)
 
 
 def _resolver() -> GitHubCredentialResolver:
     return GitHubCredentialResolver(
-        parse_github_config(RAW),
+        parse_github_config(RAW, REGISTRY),
         {"repo-a", "repo-b"},
         EnvSecretResolver({"ACME_TOKEN": "tok-a", "GLOBEX_TOKEN": "tok-b"}),
     )

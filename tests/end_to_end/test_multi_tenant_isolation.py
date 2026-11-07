@@ -29,6 +29,7 @@ from services.integration.github.mediator import GitHubMediator
 from services.integration.jira import DATACENTER
 from services.integration.jira.adapter import build_jira_adapter_for_issue
 from services.integration.jira.credentials import JiraCredentialResolver, parse_jira_config
+from services.integration.repositories import parse_repositories
 from services.orchestration.bounded_task_pipeline import (
     DRAFT_PR_OPEN,
     PipelineDeps,
@@ -51,8 +52,11 @@ _GH_RAW = {
         "gh": {"api_url": "https://ghes.invalid/api/v3", "git_base_url": "https://ghes.invalid"}
     },
     "default": {"host": "gh", "owner": "org-a", "token_ref": "TOK_A"},
-    "repositories": {"repo-b": {"owner": "org-b", "token_ref": "TOK_B"}},
 }
+_REGISTRY = parse_repositories(
+    {"repositories": {"repo-a": {}, "repo-b": {"owner": "org-b", "token_ref": "TOK_B"}}},
+    root="/repos",
+)
 
 _JIRA_RAW = {
     "sites": {
@@ -176,7 +180,7 @@ async def test_two_tenants_reach_a_draft_pr_with_no_shared_credential(
     calls: list[tuple[str, str | None]] = []
     host = RealGitHost(
         GitHubCredentialResolver(
-            parse_github_config(_GH_RAW),
+            parse_github_config(_GH_RAW, _REGISTRY),
             {"repo-a", "repo-b"},
             EnvSecretResolver({"TOK_A": "tok-a", "TOK_B": "tok-b"}),
         ),
@@ -279,7 +283,7 @@ def test_live_two_sources_resolve_distinct_credentials() -> None:
     gh = build_github_credential_resolver()
     repos = sorted(gh.repos())
     if len(repos) < 2:
-        pytest.skip("configure at least two allowlisted repositories in github.yaml")
+        pytest.skip("configure at least two GitHub repositories in repositories.yaml")
     cred_a = gh.resolve(repos[0])
     cred_b = gh.resolve(repos[1])
     assert cred_a is not None and cred_b is not None

@@ -47,9 +47,19 @@ def _compose_files() -> str:
     if os.environ.get("COMPOSE_FILE") or _env_file_value("COMPOSE_FILE"):
         return ""
     files = ["-f", "compose.yaml"]
-    if os.path.exists("compose.override.yaml"):
-        files += ["-f", "compose.override.yaml"]
+    for overlay in ("compose.override.yaml", _REPOSITORIES_COMPOSE):
+        if os.path.exists(overlay):
+            files += ["-f", overlay]
     return " ".join(files)
+
+
+_REPOSITORIES_COMPOSE = "compose.repositories.yaml"
+
+
+@task
+def repos_compose(c):
+    """Write compose.repositories.yaml, which mounts each repository in repositories.yaml."""
+    c.run(f"{HOST_PYTHON} -m scripts.repositories_compose", pty=True)
 
 
 def _on_host(command: str) -> str:
@@ -111,6 +121,7 @@ def local_up(c, force=False):
         _refuse_to_strand(outgoing)
     print(f"[local-up] build id {build_id}")
     os.environ["AGENT_BUILD_ID"] = build_id
+    repos_compose(c)
     files = _compose_files()
     c.run(f"{COMPOSE} {files} build --build-arg AGENT_BUILD_ID={shlex.quote(build_id)}")
     db_migrate(c)
@@ -442,35 +453,21 @@ def rebar_review_code(c, base, head):
 
 
 def _host_source_control_env() -> dict[str, str]:
-    """Rewrite the container mount roots used by the workers to their host directories.
+    """Rewrite the container workspace root in the local artifacts setting to its host directory.
 
-    operator-done runs on the host against the same checkouts the workers mount, so the
-    container-relative SOURCE_CONTROL_LOCAL paths from .env must resolve to the host
-    directories that back those compose mounts.
+    operator-done runs on the host against the same artifacts the workers write, so the
+    container-relative SOURCE_CONTROL_LOCAL_ARTIFACTS_ROOT from .env must resolve to the host
+    directory that backs the workspace mount. Outside the platform image, the repository
+    registry already locates each local repository at its host path.
     """
     from scripts.config import get_settings
 
     settings = get_settings()
-    platform_root = os.path.abspath(os.getcwd())
-    mounts = {
-        "/repos": os.path.dirname(platform_root),
-        "/workspaces": os.path.join(platform_root, ".agent-workspaces"),
-    }
-
-    def to_host(container_path: str) -> str:
-        for prefix, host_root in mounts.items():
-            if container_path == prefix:
-                return host_root
-            if container_path.startswith(prefix + "/"):
-                return host_root + container_path[len(prefix) :]
-        return container_path
-
-    local_root = settings.source_control_local_root or "/repos"
-    artifacts_root = settings.source_control_local_artifacts_root or f"{local_root}/.agent-publish"
-    return {
-        "SOURCE_CONTROL_LOCAL_ROOT": to_host(local_root),
-        "SOURCE_CONTROL_LOCAL_ARTIFACTS_ROOT": to_host(artifacts_root),
-    }
+    workspaces = os.path.join(os.path.abspath(os.getcwd()), ".agent-workspaces")
+    artifacts_root = settings.local_artifacts_root()
+    if artifacts_root == "/workspaces" or artifacts_root.startswith("/workspaces/"):
+        artifacts_root = workspaces + artifacts_root[len("/workspaces") :]
+    return {"SOURCE_CONTROL_LOCAL_ARTIFACTS_ROOT": os.path.abspath(artifacts_root)}
 
 
 @task(
@@ -1208,6 +1205,7 @@ for _t in (
     tunnel_status,
     connectivity_check,
     config_check,
+    repos_compose,
     local_up,
     temporal_upgrade,
     local_down,

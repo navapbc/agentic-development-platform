@@ -78,6 +78,7 @@ FROM public.ecr.aws/docker/library/node:24-trixie-slim@sha256:0711b541c1c33a8a53
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
+    PLATFORM_IN_CONTAINER=1 \
     BIND_HOST=0.0.0.0 \
     VIRTUAL_ENV=/opt/venv \
     UV_PROJECT_ENVIRONMENT=/opt/venv \
@@ -122,6 +123,8 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 RUN useradd --create-home --uid 10001 appuser
 RUN mkdir -p /app/repository_indexes && chown -R 10001:10001 /app/repository_indexes
+COPY --chmod=0555 docker/platform-entrypoint.sh /usr/local/bin/platform-entrypoint
 USER appuser
 
+ENTRYPOINT ["/usr/local/bin/platform-entrypoint"]
 CMD ["python", "-m", "services.repository_intelligence.server"]

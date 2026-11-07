@@ -1,58 +1,38 @@
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 
+import pytest
+from services.integration.credentials import ConfigError
 from services.integration.source_control import source_control_repos
-from tests.support import hermetic_settings
+from tests.support import configure_repositories, hermetic_settings
 
 
-def _git(cwd: Path, *args: str) -> None:
-    subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=True)
-
-
-def _make_repo(root: Path, name: str) -> None:
-    repo = root / name
-    repo.mkdir(parents=True)
-    _git(repo, "init", "-q")
-
-
-def test_local_backend_reads_declared_repos() -> None:
-    settings = hermetic_settings(
-        source_control_backend="local",
-        source_control_local_repos="agentic-demo-service, agentic-demo-greenfield",
+def test_every_configured_repository_is_reachable_whatever_its_backend(
+    monkeypatch, tmp_path: Path
+) -> None:
+    configure_repositories(
+        monkeypatch,
+        tmp_path,
+        "repositories:\n  svc: {}\n  notes:\n    backend: local\n    path: /srv/notes\n",
     )
-    assert source_control_repos(settings) == {
-        "agentic-demo-service",
-        "agentic-demo-greenfield",
-    }
+
+    assert source_control_repos(hermetic_settings()) == {"svc", "notes"}
 
 
-def test_local_backend_discovers_repos_under_root(tmp_path: Path) -> None:
-    _make_repo(tmp_path, "svc")
-    _make_repo(tmp_path, "web")
-    (tmp_path / "not-a-repo").mkdir()
-    settings = hermetic_settings(
-        source_control_backend="local",
-        source_control_local_root=str(tmp_path),
+def test_a_local_repository_needs_no_github_config(monkeypatch, tmp_path: Path) -> None:
+    configure_repositories(
+        monkeypatch, tmp_path, "repositories:\n  notes:\n    backend: local\n    path: /srv/notes\n"
     )
-    assert source_control_repos(settings) == {"svc", "web"}
+
+    assert not (tmp_path / "github.yaml").exists()
+    assert source_control_repos(hermetic_settings()) == {"notes"}
 
 
-def test_local_backend_declared_overrides_discovery(tmp_path: Path) -> None:
-    _make_repo(tmp_path, "svc")
-    settings = hermetic_settings(
-        source_control_backend="local",
-        source_control_local_root=str(tmp_path),
-        source_control_local_repos="only-this",
-    )
-    assert source_control_repos(settings) == {"only-this"}
+def test_an_environment_without_repositories_yaml_names_the_file(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("PLATFORM_ENV_CONFIG_DIR", str(tmp_path))
 
-
-def test_local_backend_needs_no_github_config(tmp_path: Path) -> None:
-    settings = hermetic_settings(
-        source_control_backend="local",
-        source_control_local_repos="svc",
-        environment="nonexistent-env",
-    )
-    assert source_control_repos(settings) == {"svc"}
+    with pytest.raises(ConfigError, match=r"repositories\.yaml"):
+        source_control_repos(hermetic_settings())

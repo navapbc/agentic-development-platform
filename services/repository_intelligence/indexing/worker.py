@@ -117,8 +117,10 @@ class RepoIndexWorker:
 
 
 def build_worker() -> RepoIndexWorker | None:
+    from services.integration.repositories import load_repository_registry
+
     settings = get_settings()
-    configured = settings.repo_intelligence_registry()
+    configured = load_repository_registry(settings).indexed()
     if not configured:
         return None
     targets = [

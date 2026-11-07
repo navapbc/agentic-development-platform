@@ -58,6 +58,7 @@ REPO_INTELLIGENCE = ImageSpec(
         "schemas",
         "database",
         "scripts",
+        "docker/platform-entrypoint.sh",
     ),
 )
 COLLECTOR = ImageSpec("otel-collector", "docker/otel-collector.Dockerfile", ("docker/healthprobe",))

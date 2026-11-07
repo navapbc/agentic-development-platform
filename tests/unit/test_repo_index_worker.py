@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 from services.repository_intelligence.indexing import worker as worker_module
 from services.repository_intelligence.indexing.worker import (
     RepoIndexWorker,
@@ -12,6 +11,7 @@ from services.repository_intelligence.indexing.worker import (
     build_worker,
 )
 from services.repository_intelligence.normalization.models import RepoRef
+from tests.support import configure_repositories, hermetic_settings
 
 
 class _Recorder:
@@ -108,24 +108,20 @@ def test_failed_reindex_is_retried_on_next_poll() -> None:
     assert attempts == ["aaaaaaa", "aaaaaaa"]
 
 
-def test_build_worker_returns_none_when_unconfigured(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(worker_module, "get_settings", lambda: _Settings(registry={}))
+def test_build_worker_returns_none_when_unconfigured(monkeypatch, tmp_path) -> None:
+    configure_repositories(monkeypatch, tmp_path, "repositories:\n  svc:\n    index: false\n")
+    monkeypatch.setattr(worker_module, "get_settings", hermetic_settings)
     assert build_worker() is None
 
 
-def test_build_worker_builds_targets_from_registry(monkeypatch: pytest.MonkeyPatch) -> None:
-    registry = {"svc": ("/repos/svc", "abc1234"), "green": ("/repos/green", None)}
-    monkeypatch.setattr(worker_module, "get_settings", lambda: _Settings(registry=registry))
+def test_build_worker_builds_targets_from_registry(monkeypatch, tmp_path) -> None:
+    configure_repositories(
+        monkeypatch,
+        tmp_path,
+        "defaults:\n  index: true\nrepositories:\n  svc:\n    index_ref: abc1234\n  green: {}\n"
+        "  other:\n    index: false\n",
+    )
+    monkeypatch.setattr(worker_module, "get_settings", hermetic_settings)
     worker = build_worker()
     assert worker is not None
     assert worker.repos() == {"svc", "green"}
-
-
-class _Settings:
-    repo_index_worker_concurrency = 2
-
-    def __init__(self, *, registry: dict[str, tuple[str, str | None]]) -> None:
-        self._registry = registry
-
-    def repo_intelligence_registry(self) -> dict[str, tuple[str, str | None]]:
-        return self._registry

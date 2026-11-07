@@ -6,7 +6,7 @@ import argparse
 import asyncio
 from datetime import UTC, datetime, timedelta
 
-from services.integration.github.credentials import allowed_repos
+from services.integration.source_control import source_control_repos
 
 from scripts.config import get_settings
 
@@ -33,7 +33,7 @@ async def _run_once(apply: bool) -> int:
     receipt = await reap(
         registry=PostgresOrphanRegistry(),
         backend=RealGitHost.from_settings(),
-        allowed_repos=frozenset(allowed_repos(settings)),
+        allowed_repos=frozenset(source_control_repos(settings)),
         now=datetime.now(UTC),
         dry_run=not apply,
     )

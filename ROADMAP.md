@@ -52,6 +52,7 @@ Goal. The platform is technically FedRAMP Medium ready. It has documented local-
 | Secret store terraform | 8-13h | [plan](docs/plans/2026-09-14-2149-feat-secret-store-terraform-plan.md) |
 | Rebar ticket store bucket terraform | 16-21h | [plan](docs/plans/2026-09-14-2150-feat-rebar-ticket-store-bucket-terraform-plan.md) |
 | ECS Fargate services for the platform containers | 28-41h (low) | Jira ADP-136, a sub-task of ADP-61, delivered through ADP-154 to ADP-159. [plan](docs/plans/2026-09-14-2151-feat-container-platform-services-terraform-plan.md) |
+| Platform image builds in CI | 6-10h | Jira ADP-162, a sub-task of ADP-61. Builds and publishes the images in GitHub Actions through the same `inv` tasks a developer runs. |
 | EKS cluster for the pod-orchestrating workloads | 28-40h (low) | Jira ADP-137, a sub-task of ADP-61. [plan](docs/plans/2026-09-14-2151-feat-container-platform-services-terraform-plan.md) |
 | Local Temporal server upgrade to 1.32.1 | 6-10h | Jira ADP-138. [plan](docs/plans/2026-10-30-1330-feat-temporal-server-upgrade-plan.md) |
 | Platform ECS cluster | 3-5h | Jira ADP-145. The shared cluster the platform owns for the Temporal control plane, the ECS services, and other teams. |
@@ -59,7 +60,8 @@ Goal. The platform is technically FedRAMP Medium ready. It has documented local-
 | Off-hours Temporal scale-down and database pause | 5-8h | Jira ADP-146 |
 | Validated Go FIPS 140-3 module for the Temporal server and UI | 8-12h, low confidence | Jira ADP-153. Builds the server, admin-tools, and UI binaries from source with `GOFIPS140` set to a CMVP-validated module version. |
 | Observability terraform | 6-10h | Jira ADP-95. [plan](docs/plans/2026-09-14-2153-feat-observability-terraform-plan.md) |
-| Activity worker, LiteLLM, and OPA in the local cluster | 8-12h | Jira ADP-139. Also removes `langgraph-service`. |
+| Source control repositories in one per-environment file | 8-12h | Jira ADP-161. Moves the repository list into `config/<env>/repositories.yaml` and selects GitHub or a local repository per repository. |
+| Activity worker, review worker, LiteLLM, and OPA in the local cluster | 16-24h | Jira ADP-139, after ADP-161. Moves data in and out of the cluster through `inv` tasks over the Kubernetes API with no host mounts, and refreshes AWS credentials in place through `inv aws-login`. Also removes `langgraph-service`. |
 | Private-endpoint jump-host residual hardening | 1-2h | Jira ADP-104. [plan](docs/plans/2026-09-14-1900-feat-jumphost-residual-hardening-plan.md) |
 | Full evidence artifact coverage | 4-6h | [plan](docs/plans/2026-09-14-1901-feat-full-evidence-artifact-coverage-plan.md) |
 | Remaining connectivity and sandbox confirmations | 3-6h (low) | Jira ADP-92. [plan](docs/plans/2026-09-14-1902-feat-connectivity-sandbox-confirmations-plan.md) |
@@ -67,7 +69,7 @@ Goal. The platform is technically FedRAMP Medium ready. It has documented local-
 | Leaked OpenHands sandbox pods | 3-5h | Jira ADP-141 |
 | Slack escalation channel with approve, reject, retry, and abandon actions | 28-42h (low) | Jira ADP-160. [plan](docs/plans/2026-11-06-1000-feat-slack-escalation-channel-plan.md) |
 
-Version effort. 229-334h.
+Version effort. 251-368h.
 
 ## v0.4.0 Production serving and demo readiness
 

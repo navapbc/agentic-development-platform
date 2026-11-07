@@ -37,11 +37,6 @@ spec:
                 secretKeyRef:
                   name: agentic-platform
                   key: database_url
-            - name: ALLOWED_REPOS
-              valueFrom:
-                configMapKeyRef:
-                  name: agentic-platform
-                  key: allowed_repos
             - name: REPO_INTELLIGENCE_URL
               valueFrom:
                 configMapKeyRef:

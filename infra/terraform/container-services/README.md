@@ -81,7 +81,7 @@ A Temporal worker runs as two services, `<name>-blue` and `<name>-green`. The wo
 
 ### Configuration
 
-`environment_config` maps a file name to its content, such as `github.yaml` and `review-trust-root.yaml`, and reaches every platform task as the JSON value of `PLATFORM_ENV_CONFIG`. The platform image's entrypoint writes each `.yaml` or `.yml` file under `${TMPDIR}/platform-config` and exports `PLATFORM_ENV_CONFIG_DIR` there, which the services read in place of `config/<environment>`. The `config/platform` files are in the image. `service_environment` adds or overrides environment values per workload.
+`environment_config` maps a file name to its content, such as `github.yaml` and `review-trust-root.yaml`, and reaches every platform and repository-intelligence task as the JSON value of `PLATFORM_ENV_CONFIG`. The platform image's entrypoint writes each `.yaml` or `.yml` file under `${TMPDIR}/platform-config` and exports `PLATFORM_ENV_CONFIG_DIR` there, which the services read in place of `config/<environment>`. The `config/platform` files are in the image. `service_environment` adds or overrides environment values per workload.
 
 ### Database connections
 
@@ -89,7 +89,7 @@ Each SQLAlchemy engine holds its own pool of `DATABASE_POOL_SIZE` connections an
 
 ### Workspace
 
-An encrypted EFS file system with elastic throughput holds the repository checkouts and the repository index, through the access points `checkouts` at `/checkouts` and `index` at `/repository-indexes`, both owned by uid 10001, the `appuser` of both images. Its policy admits only TLS connections through an access point. The services mount `checkouts` read-only at `/repositories`, and the index writers mount `index` at `/app/repository_indexes`. `repo_intelligence_repos` sets `REPO_INTELLIGENCE_REPOS`, the checkout paths under `/repositories` to index.
+An encrypted EFS file system with elastic throughput holds the repository checkouts and the repository index, through the access points `checkouts` at `/checkouts` and `index` at `/repository-indexes`, both owned by uid 10001, the `appuser` of both images. Its policy admits only TLS connections through an access point. The services mount `checkouts` read-only at `/repositories`, and the index writers mount `index` at `/app/repository_indexes`. Every platform and repository-intelligence task sets `REPOSITORY_ROOT` to `/repositories`, so each repository in the environment's `repositories.yaml` is read at `/repositories/<name>`, and repository intelligence indexes those with `index: true`. `environment_config` carries `repositories.yaml` into the tasks with the other config files.
 
 ## Langfuse and ClickHouse
 

@@ -1,0 +1,33 @@
+config_version: 1
+
+# The source-control repositories this environment works on. backend is github or local.
+# A github repository reaches its remote through the identity in github.yaml, and may
+# override host, owner, or token_ref for itself. A local repository names its checkout on
+# the host in path, absolute or relative to this platform's checkout, and the platform
+# reads it and pushes branches into it. index makes repository intelligence index the
+# repository's checkout, and index_ref pins the ref it indexes. Inside a container each
+# checkout appears at REPOSITORY_ROOT/<name>, so a repository that is indexed or uses the
+# local backend needs a path for the local stack to mount.
+
+defaults:
+  backend: github
+  default_branch: main
+  index: false
+
+repositories:
+  agentic-demo-service:
+    path: ../agentic-demo-service
+    index: true
+  agentic-demo-greenfield:
+    path: ../agentic-demo-greenfield
+    index: true
+  # partner-app:                 # a different owner on the github.yaml default host
+  #   owner: partner-org
+  # legacy-core:                 # an enterprise host and its own token
+  #   host: enterprise
+  #   owner: platform
+  #   token_ref: LEGACY_CORE_TOKEN
+  # local-demo:                  # a checkout on this machine, with no remote
+  #   backend: local
+  #   path: ~/src/local-demo
+  #   default_branch: trunk

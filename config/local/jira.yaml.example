@@ -7,7 +7,7 @@
 # status must appear in statuses or the config fails closed at load. Leave a flow stage unset
 # to skip it. A board with no review status keeps the ticket in its work_started status and
 # relies on the pull request linkback as the review signal. default_repo is the intake target
-# when a ticket names no repository, and must be in the github allowlist. intake_label, when set,
+# when a ticket names no repository, and must be listed in repositories.yaml. intake_label, when set,
 # gates intake so only issues carrying that Jira label enter the platform, and leaving it unset
 # admits every not-Done issue in the project. It resolves per project with the default as the
 # fallback, the same as board and default_repo. component_repos maps a ticket's Jira component

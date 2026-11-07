@@ -20,7 +20,8 @@ def _write(root: Path, name: str, suffix: str, body: str) -> None:
 
 
 def test_current_config_version_reads_the_code_constant() -> None:
-    assert current_config_version("github") == 1
+    assert current_config_version("github") == 2
+    assert current_config_version("repositories") == 1
     assert current_config_version("jira") == 1
     assert current_config_version("integrations") == 1
 

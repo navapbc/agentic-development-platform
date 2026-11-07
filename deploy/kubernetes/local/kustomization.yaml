@@ -21,7 +21,6 @@ generatorOptions:
 configMapGenerator:
   - name: agentic-platform
     literals:
-      - allowed_repos=agentic-demo-service
       - repo_intelligence_url=http://host.docker.internal:8130
       - jira_acceptance_field=customfield_10040
       - temporal_host=host.docker.internal:7233
@@ -31,6 +30,7 @@ configMapGenerator:
       - github.yaml=../../../config/local/github.yaml
       - jira.yaml=../../../config/local/jira.yaml
       - integrations.yaml=../../../config/local/integrations.yaml
+      - repositories.yaml=../../../config/local/repositories.yaml
 
 secretGenerator:
   - name: agentic-platform

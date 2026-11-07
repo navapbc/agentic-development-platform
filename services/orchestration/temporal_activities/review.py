@@ -122,17 +122,17 @@ _REPO_GROUNDED_STAGES = frozenset(
 def _resolve_repo_root(req: ReviewRequest) -> str | None:
     """Resolve a read-only repository root for the reviewer, reusing the RIS checkout.
 
-    Prefers an explicit root on the request. Otherwise maps the repository name to
-    its configured repository-intelligence path, so the reviewer reads the same
-    read-only checkout the intelligence service indexes rather than a second copy.
+    Prefers an explicit root on the request. Otherwise maps an indexed repository to
+    its checkout, so the reviewer reads the same read-only checkout the intelligence
+    service indexes rather than a second copy.
     Returns ``None`` when no path resolves or the resolved path is not present, so
     the reviewer falls back to the context summary rather than a missing directory.
     """
     candidate = req.repo_root
     if not candidate and req.repo:
-        from scripts.config import get_settings
+        from services.integration.repositories import load_repository_registry
 
-        entry = get_settings().repo_intelligence_registry().get(req.repo)
+        entry = load_repository_registry().indexed().get(req.repo)
         candidate = entry[0] if entry else None
     if candidate and Path(candidate).is_dir():
         return candidate

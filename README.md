@@ -56,14 +56,14 @@ Two host tools are optional and only needed for specific paths.
 Run these once from the repository root.
 
 1. Copy the environment file with `cp .env.example .env`, then fill in the placeholders. See [Configuration](#configuration). Never commit `.env`.
-2. Copy the integration source configs with `cp config/local/github.yaml.example config/local/github.yaml`, `cp config/local/jira.yaml.example config/local/jira.yaml`, and `cp config/local/integrations.yaml.example config/local/integrations.yaml`, then edit the copies. See [Integration credentials](#integration-credentials). Never commit the `config/local/*.yaml` operator files. If you set `TICKET_BACKEND=rebar`, also copy `config/local/tickets.yaml.example` to `config/local/tickets.yaml`. See [Ticket and source-control backends](#ticket-and-source-control-backends).
+2. Copy the integration source configs with `cp config/local/repositories.yaml.example config/local/repositories.yaml`, `cp config/local/github.yaml.example config/local/github.yaml`, `cp config/local/jira.yaml.example config/local/jira.yaml`, and `cp config/local/integrations.yaml.example config/local/integrations.yaml`, then edit the copies. See [Integration credentials](#integration-credentials). Never commit the `config/local/*.yaml` operator files. If you set `TICKET_BACKEND=rebar`, also copy `config/local/tickets.yaml.example` to `config/local/tickets.yaml`. See [Ticket and source-control backends](#ticket-and-source-control-backends).
 3. Copy the gate selection config with `cp config/local/gates.yaml.example config/local/gates.yaml`. It is required for any run that evaluates gates. Copying `config/local/gate_engine.yaml.example` to `config/local/gate_engine.yaml` is optional and adds an external gate engine. See [Configurable gates](#configurable-gates).
 4. Provision review-verdict signing, which is on by default. Generate a key and trust root and set the signing variables in `.env` by following the local setup in [docs/review-verdict-signing.md](docs/review-verdict-signing.md). Without this the review worker fails closed at startup. To skip signing, set `REVIEW_SIGNING_ENABLED=false`.
 5. Install the locked dependencies into `.venv` with `uv sync --locked --all-extras`, then activate it with `source .venv/bin/activate`. `uv.lock` pins every package with its hashes, and `--locked` refuses a lock that no longer matches `pyproject.toml`. See [CONTRIBUTING.md](CONTRIBUTING.md) for changing a dependency.
 6. Confirm the toolchain with `inv ci`, which runs the lint, the hermetic tests, and the evaluation gate.
 7. Choose a Bedrock connectivity provider in `.env` and open the path with `inv tunnel-start`. See [Bedrock connectivity](#bedrock-connectivity).
 8. Validate the Bedrock path and local reachability with `inv connectivity-check`.
-9. Build the images, apply database migrations, and start the stack with `inv local-up`.
+9. Build the images, apply database migrations, and start the stack with `inv local-up`. It first runs `inv repos-compose`, which writes the git-ignored `compose.repositories.yaml` that mounts each repository in `repositories.yaml` with a `path`. Run `inv repos-compose` again after editing `repositories.yaml`, then recreate the services.
 10. Register the Temporal reap and intake schedules with `inv schedules-install`. They persist in Temporal's database, so run it again only after the volumes are wiped or a schedule setting changes.
 11. Publish the prompt library to Langfuse with `inv prompts-seed`. Without it each stage falls back to the static text in `services/prompts/library.py` and logs a prompt fetch warning on every run.
 12. Confirm everything is healthy with `inv smoke-test`.
@@ -96,8 +96,8 @@ These steps stand up the AWS infrastructure for one account from a workstation: 
 11. With the secret store enabled, set each external secret, for example `aws secretsmanager put-secret-value --profile agentic-platform --secret-id agentic-platform/external/github-token --secret-string file://github-token.txt`. The [secret-store README](infra/terraform/secret-store/README.md) lists every secret, which ones Terraform generates, and how each one rotates.
 12. With `create_container_services`, the internal load balancer from step 7, and the Temporal control plane from step 10, run the platform services. They need the `review-signing-key` external secret from step 11.
     1. Set `container_platform_image` and `container_repo_intelligence_image` to the references `inv publish-platform-images` printed, and `container_platform_ca_file` to the `ca.pem` that issued the internal load balancer certificate.
-    2. Place the environment's config files, such as `github.yaml`, `tickets.yaml`, and `review-trust-root.yaml`, in a directory outside the repository and set `container_config_dir` to it. The tasks receive them through the task definitions, so a file holds settings and never a credential.
-    3. Set `container_repo_intelligence_repos` to the checkouts to index, and adjust `container_service_counts`. To run the collector, set `container_collector_image` and `container_tls_sidecar_image` to the references `inv publish-platform-images` printed. It exports traces to X-Ray and metrics to a Prometheus workspace unless `container_collector_exports_enabled = false`, and `container_xray_encryption_enabled = true` sets the region's X-Ray encryption to a customer managed key.
+    2. Place the environment's config files, such as `repositories.yaml`, `github.yaml`, `tickets.yaml`, and `review-trust-root.yaml`, in a directory outside the repository and set `container_config_dir` to it. The tasks receive them through the task definitions, so a file holds settings and never a credential.
+    3. Adjust `container_service_counts`. The services find each repository in `repositories.yaml` at `/repositories/<name>` on the checkouts file system, and repository intelligence indexes those with `index: true`. To run the collector, set `container_collector_image` and `container_tls_sidecar_image` to the references `inv publish-platform-images` printed. It exports traces to X-Ray and metrics to a Prometheus workspace unless `container_collector_exports_enabled = false`, and `container_xray_encryption_enabled = true` sets the region's X-Ray encryption to a customer managed key.
     4. To run Langfuse and ClickHouse, which need `create_cache`, `create_clickhouse_storage`, and `create_langfuse_bucket`, set `container_langfuse_web_image`, `container_langfuse_worker_image`, `container_clickhouse_image`, and `container_tls_sidecar_image` to the references `inv publish-platform-images` printed, and `container_langfuse_admin_email` to the administrator's email. List the operator role or user that signs in first under `langfuse_admin_password` in `secret_readers`, so it can read the generated password. Issue the ClickHouse certificate from the internal load balancer CA with `inv clickhouse-certs issue --dir DIR`.
     5. Apply as in step 6. With Langfuse, write the ClickHouse certificate to its secret with `inv clickhouse-certs put --dir DIR` after the apply.
     6. Run `inv platform-deploy`. It migrates the database as `platform_migrator`, starts ClickHouse and migrates its Langfuse schema, moves every service to its current task definition, starts a new build of each Temporal worker in its idle slot, registers the reap and intake schedules, and prunes the drained Worker Deployment versions. It leaves an older worker slot running while executions are pinned to its build, and the next deploy scales that slot to zero once they finish. Run it after every apply that changes an image or the configuration. The [container-services README](infra/terraform/container-services/README.md) describes the services and the slots.
@@ -142,7 +142,7 @@ Two binaries live under `vendor/bin` and are provisioned outside the Python inst
 | Review (rebar) | `REBAR_LLM_*`, `REVIEW_ATTESTATION_SECRET` | Point at LiteLLM, set an attestation secret for the HMAC fallback |
 | Review signing | `REVIEW_SIGNING_ENABLED`, `REVIEW_SIGNING_KEY_PATH` or `REVIEW_SIGNING_KEY`, `REVIEW_TRUST_ROOT_PATH` | On by default. Provision a signing key and trust root, or set enabled to false. See [docs/review-verdict-signing.md](docs/review-verdict-signing.md) |
 | Authorship signing | `AUTHORSHIP_SIGNING_ENABLED`, `AUTHORSHIP_IDENTITY_ID`, `AUTHORSHIP_SIGNING_KEY_PATH` or `AUTHORSHIP_SIGNING_KEY` | On by default, active only on the rebar backend with an identity set. Jira does not participate. See [docs/authored-identity-signing.md](docs/authored-identity-signing.md) |
-| Backends | `TICKET_BACKEND`, `SOURCE_CONTROL_BACKEND`, `SOURCE_CONTROL_LOCAL_*` | Select the ticket and source-control backends. Defaults are Jira and GitHub. See [Ticket and source-control backends](#ticket-and-source-control-backends) |
+| Backends | `TICKET_BACKEND`, `REPOSITORY_ROOT`, `SOURCE_CONTROL_LOCAL_*` | Select the ticket backend, where repository checkouts appear in a container, and the local backend's artifacts and operators. Each repository's source-control backend is set in `repositories.yaml`. See [Ticket and source-control backends](#ticket-and-source-control-backends) |
 | Admission | `MAX_CONCURRENT_RUNS`, `EXECUTION_ORPHAN_GRACE_SECONDS` | Cap on runs in flight and the grace window before a dead run's slot is reclaimed. Defaults work locally |
 | Dependency discovery | `DEPENDENCY_DETECTION_ENABLED`, `DEPENDENCY_REPLAN_ATTEMPTS` | Enable cross-ticket dependency discovery and set the re-plan attempt cap. Defaults to off. See [Cross-ticket dependency discovery](#cross-ticket-dependency-discovery) |
 | Integration tokens | `GITHUB_TOKEN`, `JIRA_API_TOKEN`, `JIRA_PAT` | The secrets named by `token_ref` in `github.yaml` and `jira.yaml`. See [Integration credentials](#integration-credentials) |
@@ -157,18 +157,54 @@ The tracked files under `config/platform` hold configuration the platform owns a
 
 Non-secret integration config lives in the git-ignored YAML files under `config/local`, and the secret tokens live in `.env`. The YAML never holds a secret. It names one with `token_ref`, and the platform reads the value from the environment variable of that name locally and from Secrets Manager in AWS.
 
-For example, `github.yaml` sets `token_ref: GITHUB_TOKEN` and `.env` sets `GITHUB_TOKEN=<your token>`. Do not paste a token into the YAML. Set it in `.env` under the key the config names. Every `token_ref` you use must have a matching key in `.env`. The repository and project allowlists also live in these YAML files under `allowlist`, so `.env` holds only the secrets.
+For example, `github.yaml` sets `token_ref: GITHUB_TOKEN` and `.env` sets `GITHUB_TOKEN=<your token>`. Do not paste a token into the YAML. Set it in `.env` under the key the config names. Every `token_ref` you use must have a matching key in `.env`. The repository list lives in `repositories.yaml` and the project allowlist in `jira.yaml`, so `.env` holds only the secrets.
+
+### Source-control repositories
+
+`config/local/repositories.yaml` lists every repository the platform works on, and it is the repository authorization boundary. Copy the committed template with `cp config/local/repositories.yaml.example config/local/repositories.yaml` and edit the copy. The file is git-ignored. Each entry names its source-control backend, so one installation can deliver to GitHub repositories and to local git folders together. The allowlist of the GitHub integration, the repositories that repository intelligence indexes, and the promotion policy's `allowed_repos` input are all derived from this file.
+
+`defaults` sets `backend`, `default_branch`, and `index` for every entry that leaves them unset. An entry accepts these fields:
+
+| Field | Meaning |
+|---|---|
+| `backend` | `github` or `local` |
+| `default_branch` | The branch an execution bases its change on when the ticket declares no `base:` label |
+| `index` | `true` makes repository intelligence index the checkout |
+| `index_ref` | The ref repository intelligence indexes, the checkout's `HEAD` when unset |
+| `path` | The checkout on the host, absolute or relative to the platform checkout. Required for `local`, and needed by the local stack for any indexed repository |
+| `host`, `owner`, `token_ref` | Overrides of the `github.yaml` default identity, for a `github` repository only |
+
+```yaml
+config_version: 1
+
+defaults:
+  backend: github
+  default_branch: main
+
+repositories:
+  agentic-demo-service:
+    path: ../agentic-demo-service
+    index: true
+  legacy-core:
+    host: enterprise
+    owner: platform
+  local-demo:
+    backend: local
+    path: ~/src/local-demo
+```
+
+Inside a container each checkout appears at `REPOSITORY_ROOT/<name>`, `/repos` locally and `/repositories` on ECS. `inv repos-compose` mounts each repository that names a `path`, read-write into the activity worker for a `local` repository so the worker can commit to it, and read-only everywhere else. Commands that run on the host, such as `inv operator-done`, use the `path` directly.
+
+The settings `SOURCE_CONTROL_BACKEND`, `SOURCE_CONTROL_LOCAL_ROOT`, `SOURCE_CONTROL_LOCAL_REPOS`, `REPO_INTELLIGENCE_REPOS`, `REPO_INTELLIGENCE_REPO_ROOT`, `REPO_INTELLIGENCE_COMMIT`, and `GITHUB_DEFAULT_BASE_BRANCH` are no longer read. A process that finds one of them in its environment or in `.env` refuses to start and names the `repositories.yaml` field that replaced it.
 
 ### GitHub source configuration
 
-`config/local/github.yaml` maps each repository to the host, owner, and token used to reach it. Copy the committed template with `cp config/local/github.yaml.example config/local/github.yaml` and edit the copy. The file is git-ignored, so your edits never conflict with a repository update.
+`config/local/github.yaml` holds the connection and identity used to reach each repository with backend `github`. Copy the committed template with `cp config/local/github.yaml.example config/local/github.yaml` and edit the copy. The file is git-ignored, so your edits never conflict with a repository update.
 
-`allowlist` lists the repositories the platform may reach and is the authorization boundary. `hosts` names a connection once, its REST API base and its git base, and reuses it under a short key. `default` sets the host, owner, and token reference applied to any allowlisted repository you do not list under `repositories`. A `repositories` entry overrides the host, owner, or token for one repository, and anything it leaves unset inherits the default. A github.com repository that uses the default identity needs no entry.
+`hosts` names a connection once, its REST API base and its git base, and reuses it under a short key. `default` sets the host, owner, and token reference applied to every GitHub repository in `repositories.yaml`, and an entry there overrides any of the three for itself. A github.com repository that uses the default identity needs no override. Version 2 of the file moved the `allowlist` and `repositories` sections to `repositories.yaml`, and a file that still sets either is refused.
 
 ```yaml
-allowlist:
-  - agentic-demo-service
-  - agentic-demo-greenfield
+config_version: 2
 
 hosts:
   github-com:
@@ -182,18 +218,11 @@ default:
   host: github-com
   owner: agentic-demo
   token_ref: GITHUB_TOKEN
-
-repositories:
-  billing-svc:
-    token_ref: BILLING_TOKEN
-  legacy-core:
-    host: enterprise
-    owner: platform
 ```
 
 ### Pull request base branch
 
-Every execution opens its pull request against `github_default_base_branch`, which defaults to `main`. A ticket overrides that for itself with a `base:<branch>` label, so a change that only makes sense on top of an unmerged pull request can target that pull request's branch instead. Rebar tags and Jira labels both feed this, so the convention is the same on either backend.
+Every execution opens its pull request against its repository's `default_branch` in `repositories.yaml`, which defaults to `main`. A ticket overrides that for itself with a `base:<branch>` label, so a change that only makes sense on top of an unmerged pull request can target that pull request's branch instead. Rebar tags and Jira labels both feed this, so the convention is the same on either backend.
 
 ```
 base:alice/PLAT-482
@@ -252,7 +281,7 @@ projects:
 
 ### Ticket and source-control backends
 
-The platform reads work from a ticket backend and delivers changes to a source-control backend, and each is selected independently in `.env`. `TICKET_BACKEND` is `jira` (default) or `rebar`, and `SOURCE_CONTROL_BACKEND` is `github` (default) or `local`. Leaving both unset behaves exactly as a Jira plus GitHub deployment, so [GitHub source configuration](#github-source-configuration) and [Jira source configuration](#jira-source-configuration) apply unchanged. The two axes are orthogonal, so a rebar store can target GitHub and a Jira project can target a local folder.
+The platform reads work from a ticket backend and delivers changes to a source-control backend. `TICKET_BACKEND` in `.env` is `jira` (default) or `rebar`. Each repository in [`repositories.yaml`](#source-control-repositories) names its own source-control backend, `github` (default) or `local`. The two axes are orthogonal, so a rebar store can target GitHub and a Jira project can target a local folder.
 
 `MAX_CONCURRENT_RUNS` caps the runs in flight at once across every ticket source, and excess candidates are deferred to a later intake pass. At the start of each pass the reconciler reclaims the slot of any non-terminal execution whose workflow is missing or closed, once the execution is older than `EXECUTION_ORPHAN_GRACE_SECONDS`, so a crashed run does not hold a slot forever.
 
@@ -272,11 +301,11 @@ Locally the store syncs to the `rebar-tickets` bucket in MinIO. Copy `config/loc
 
 #### Local source-control backend
 
-Set `SOURCE_CONTROL_BACKEND=local` to deliver changes to a git folder on disk instead of GitHub. `SOURCE_CONTROL_LOCAL_ROOT` is the parent directory that holds the target repositories, and `SOURCE_CONTROL_LOCAL_REPOS` is an optional comma-separated allowlist where an empty value discovers every git repository under the root. The local backend commits the change to an `agent/<task_id>` branch in the repository, performs no push, and opens no pull request. It writes a `SUMMARY.md` and a `change.patch` per run under `SOURCE_CONTROL_LOCAL_ARTIFACTS_ROOT`, along with a done ledger, and an empty artifacts root defaults to `<root>/.agent-publish`.
+Set `backend: local` and `path` on a repository in `repositories.yaml` to deliver its changes to a git folder on disk instead of GitHub. The local backend commits the change to an `agent/<task_id>` branch in the repository, performs no push, and opens no pull request. It writes a `SUMMARY.md` and a `change.patch` per run under `SOURCE_CONTROL_LOCAL_ARTIFACTS_ROOT`, along with a done ledger. An empty artifacts root defaults to `.agent-publish` under the execution workspace root, which the workers and the host share. The promotion policy does not require CI for a local repository, because the repository has no CI to report.
 
 A local-backend run has no merge webhook, so an operator completes it. When the run reaches the promoted branch it parks at `AWAITING_PR_CLOSE`. Run `inv operator-done --workflow-id ID --repo REPO --branch agent/<task_id>` to verify the published artifacts and signal completion, which advances the ticket to its terminal status. Add `--closed-unmerged` to complete as closed-unmerged rather than merged. `SOURCE_CONTROL_LOCAL_OPERATORS` is the comma-separated allowlist of operators authorized to run the command, matched against the operating system account, and the workflow id prints when the pipeline starts.
 
-`inv operator-done` runs on the host while the workers run in containers, so it rewrites the container mount roots in `SOURCE_CONTROL_LOCAL_ROOT` and `SOURCE_CONTROL_LOCAL_ARTIFACTS_ROOT` to the host directories that back the compose mounts before it verifies artifacts. The `/repos` mount resolves to the parent directory of the platform checkout and the `/workspaces` mount resolves to `.agent-workspaces` inside it, matching `compose.override.yaml`. A value already set to a host path is left unchanged.
+`inv operator-done` runs on the host while the workers run in containers. It reads each local repository at its `path` and rewrites a `/workspaces` prefix in `SOURCE_CONTROL_LOCAL_ARTIFACTS_ROOT` to `.agent-workspaces` inside the platform checkout, the directory that backs the workspace mount, before it verifies artifacts. A value already set to a host path is left unchanged.
 
 ### Cross-ticket dependency discovery
 
@@ -474,6 +503,7 @@ Run `inv --list` for the full set. The common tasks are below.
 | Task | Purpose |
 | --- | --- |
 | `inv local-up`, `inv local-down` | Build, migrate, and start the stack, or stop it with volumes preserved |
+| `inv repos-compose` | Write `compose.repositories.yaml`, which mounts each repository in `repositories.yaml` that names a `path` |
 | `inv logs [--service NAME]` | Follow logs for the stack or one service |
 | `inv db-migrate`, `inv db-reset` | Apply migrations, or rebuild the schema then migrate |
 | `inv temporal-upgrade` | Back up the Temporal databases and upgrade them one minor release at a time |
@@ -580,7 +610,7 @@ fixtures/          scripts/           tests/               docker/
 
 | Symptom | Cause and fix |
 | --- | --- |
-| `inv local-up` fails on a missing mount | A sibling demo repo is not checked out next to this one. Clone it, or remove its mount from `compose.override.yaml` |
+| `inv repos-compose` reports repository checkouts not found | A repository in `repositories.yaml` names a `path` with no checkout behind it. Clone it there, correct the `path`, or remove the entry |
 | `inv connectivity-check` fails | The Bedrock path is not open. Confirm `BEDROCK_CONNECTIVITY_PROVIDER` and its keys, then rerun `inv tunnel-start` |
 | Smoke test reports a database failure | Migrations have not run. Apply them with `inv db-migrate` |
 | Container build fails resolving `nava-rebar` | The PyPI index is unreachable. Confirm network access to install the `review` extra |

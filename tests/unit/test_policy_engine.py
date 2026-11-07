@@ -19,10 +19,11 @@ from services.orchestration.temporal_activities.policy import (
     EvaluatePromotionRequest,
     evaluate_promotion,
 )
+from tests.support import configure_repositories, hermetic_settings
 
 _ALLOWED_PROJECTS = {"AGENTDEV"}
 _ALLOWED_REPOS = {"agentic-demo-service", "agentic-demo-greenfield"}
-_BUNDLE_VERSION = "0.4.0"
+_BUNDLE_VERSION = "0.5.0"
 
 
 def _policy_decision(inp: dict) -> dict:
@@ -286,3 +287,35 @@ async def test_mock_engine_returns_seeded_decision():
     engine = MockPolicyEngine(seeded)
 
     assert await engine.evaluate(_compliant()) is seeded
+
+
+async def test_the_mediator_requires_ci_for_a_github_repository_and_not_a_local_one(
+    monkeypatch, tmp_path
+):
+    configure_repositories(
+        monkeypatch,
+        tmp_path,
+        "repositories:\n  agentic-demo-service: {}\n  notes:\n    backend: local\n"
+        "    path: /srv/notes\n",
+    )
+    monkeypatch.setattr(
+        "services.integration.tickets.factory.ticket_projects", lambda settings=None: {"AGENTDEV"}
+    )
+    seen: list[PolicyInput] = []
+
+    class _Recording:
+        async def evaluate(self, decision_input: PolicyInput) -> PolicyDecision:
+            seen.append(decision_input)
+            return PolicyDecision(
+                allow=True, bundle_version=_BUNDLE_VERSION, reasons=(), next_action="proceed"
+            )
+
+    mediator = PromotionPolicyMediator.from_settings(_Recording(), hermetic_settings())
+    await mediator.evaluate(_compliant(repository="agentic-demo-service"))
+    await mediator.evaluate(_compliant(repository="notes"))
+
+    assert [(item.repository, item.ci_required) for item in seen] == [
+        ("agentic-demo-service", True),
+        ("notes", False),
+    ]
+    assert seen[0].allowed_repos == ["agentic-demo-service", "notes"]

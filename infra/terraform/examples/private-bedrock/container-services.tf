@@ -51,7 +51,6 @@ module "container_services" {
   environment             = var.container_environment
   environment_config      = local.container_environment_config
   platform_ca_pem         = var.container_platform_ca_file == "" ? "" : file(var.container_platform_ca_file)
-  repo_intelligence_repos = var.container_repo_intelligence_repos
   service_counts          = var.container_service_counts
   use_fips_endpoints      = var.container_use_fips_endpoints
   https_proxy             = var.container_https_proxy

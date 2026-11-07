@@ -1,10 +1,13 @@
-"""GitHub credentials resolved from named hosts, a default identity, and per-repo overrides."""
+"""GitHub credentials resolved from named hosts, a default identity, and per-repo overrides.
+
+github.yaml names the hosts and the default identity. Which repositories are reachable, and
+any per-repository host, owner, or token override, come from repositories.yaml.
+"""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path
 
 from scripts.config import Settings, get_settings
 
@@ -13,10 +16,10 @@ from services.integration.credentials import (
     EnvSecretResolver,
     SecretResolver,
     load_env_config,
-    parse_allowlist,
     require_current_config,
 )
 from services.integration.github.git_auth import GitAuth
+from services.integration.repositories import GITHUB, RepositoryRegistry, load_repository_registry
 
 
 @dataclass(frozen=True)
@@ -52,7 +55,6 @@ class GitHubSourceConfig:
     hosts: dict[str, _Host]
     default: _Identity | None
     repositories: dict[str, _RepoOverride]
-    allowlist: tuple[str, ...] = ()
 
 
 class UnconfiguredRepositoryError(RuntimeError):
@@ -108,34 +110,34 @@ def _parse_default(raw: Mapping[str, object], hosts: dict[str, _Host]) -> _Ident
     return _Identity(host=parsed["host"], owner=parsed["owner"], token_ref=parsed["token_ref"])
 
 
-def _parse_repositories(
-    raw: Mapping[str, object], hosts: dict[str, _Host]
-) -> dict[str, _RepoOverride]:
-    repos_raw = raw.get("repositories") or {}
-    if not isinstance(repos_raw, Mapping):
-        raise ConfigError("github config 'repositories' is not a mapping")
-    repositories: dict[str, _RepoOverride] = {}
-    for name, fields in repos_raw.items():
-        if not isinstance(fields, Mapping):
-            raise ConfigError(f"github config repository is not a mapping: {name}")
-        parsed = _string_fields(fields, f"repository {name}")
-        host = parsed.get("host")
-        if host is not None and host not in hosts:
-            raise ConfigError(f"github repository {name} references unknown host: {host}")
-        repositories[str(name)] = _RepoOverride(
-            host=host, owner=parsed.get("owner"), token_ref=parsed.get("token_ref")
+_MOVED_SECTIONS = ("allowlist", "repositories")
+
+
+def parse_github_config(
+    raw: Mapping[str, object], registry: RepositoryRegistry | None = None
+) -> GitHubSourceConfig:
+    """Parse github.yaml, taking each GitHub repository's overrides from the registry."""
+    moved = [section for section in _MOVED_SECTIONS if section in raw]
+    if moved:
+        raise ConfigError(
+            f"github.yaml sets {' and '.join(moved)}, which repositories.yaml now holds. "
+            "List each repository in config/<env>/repositories.yaml with its host, owner, or "
+            "token_ref override, and remove the section from github.yaml."
         )
-    return repositories
-
-
-def parse_github_config(raw: Mapping[str, object]) -> GitHubSourceConfig:
     hosts = _parse_hosts(raw)
     default = _parse_default(raw, hosts)
-    repositories = _parse_repositories(raw, hosts)
-    allowlist = parse_allowlist(raw, "github")
-    return GitHubSourceConfig(
-        hosts=hosts, default=default, repositories=repositories, allowlist=allowlist
-    )
+    repositories: dict[str, _RepoOverride] = {}
+    for name in sorted(registry.names(GITHUB)) if registry is not None else ():
+        repository = registry.require(name)
+        if repository.host is not None and repository.host not in hosts:
+            raise ConfigError(
+                f"repositories.yaml repository {name} references a host github.yaml does not "
+                f"define: {repository.host}"
+            )
+        repositories[name] = _RepoOverride(
+            host=repository.host, owner=repository.owner, token_ref=repository.token_ref
+        )
+    return GitHubSourceConfig(hosts=hosts, default=default, repositories=repositories)
 
 
 class GitHubCredentialResolver:
@@ -210,25 +212,12 @@ def build_github_credential_resolver(
 ) -> GitHubCredentialResolver:
     resolved = settings or get_settings()
     env = environment or resolved.environment
+    registry = load_repository_registry(resolved, environment=env)
     require_current_config("github", environment=env)
     raw = load_env_config("github", environment=env)
-    config = parse_github_config(raw)
+    config = parse_github_config(raw, registry)
     secrets = secret_resolver or EnvSecretResolver()
-    return GitHubCredentialResolver(config, set(config.allowlist), secrets)
-
-
-def allowed_repos(
-    settings: Settings | None = None,
-    *,
-    environment: str | None = None,
-    root: Path | None = None,
-) -> set[str]:
-    """Return the allowlisted repositories declared in config/<env>/github.yaml."""
-    resolved = settings or get_settings()
-    env = environment or resolved.environment
-    require_current_config("github", environment=env, root=root)
-    raw = load_env_config("github", environment=env, root=root)
-    return set(parse_github_config(raw).allowlist)
+    return GitHubCredentialResolver(config, registry.names(GITHUB), secrets)
 
 
 def build_single_identity_resolver(

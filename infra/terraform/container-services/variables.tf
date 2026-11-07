@@ -225,12 +225,6 @@ variable "evidence_kms_key_arn" {
   default     = ""
 }
 
-variable "repo_intelligence_repos" {
-  description = "REPO_INTELLIGENCE_REPOS, name=path pairs under /repositories, the read-only repository checkout mount."
-  type        = string
-  default     = ""
-}
-
 variable "service_counts" {
   description = "Tasks inv platform-deploy runs per service."
   type        = map(number)

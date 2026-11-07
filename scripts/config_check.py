@@ -14,7 +14,7 @@ from services.integration.credentials import (
 
 from scripts.config import get_settings
 
-_CONFIGS = ("github", "jira", "integrations", "gates", "gate_engine", "tickets")
+_CONFIGS = ("github", "jira", "integrations", "gates", "gate_engine", "tickets", "repositories")
 _REQUIRED_SECRETS = ("COORDINATION_SHARED_SECRET",)
 
 
