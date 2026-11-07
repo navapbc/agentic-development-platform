@@ -87,3 +87,24 @@ def test_rendered_local_overlay_leaves_the_gateway_host_header_unchecked(tmp_pat
     ).stdout
 
     assert _container_env(yaml.safe_load_all(rendered), "mcp-gateway")["MCP_ALLOWED_HOSTS"] == ""
+
+
+def _gateway_documents() -> list[dict[str, Any]]:
+    return [d for d in yaml.safe_load_all((MANIFESTS / "mcp-gateway.yaml").read_text()) if d]
+
+
+def test_the_gateway_reads_its_token_from_the_platform_secret():
+    deployment = next(d for d in _gateway_documents() if d["kind"] == "Deployment")
+    container = deployment["spec"]["template"]["spec"]["containers"][0]
+    token = next(e for e in container["env"] if e["name"] == "MCP_GATEWAY_TOKEN")
+
+    assert token["valueFrom"]["secretKeyRef"] == {
+        "name": "agentic-platform",
+        "key": "mcp_gateway_token",
+    }
+
+
+def test_the_gateway_load_balancer_admits_only_the_declared_client_cidrs():
+    ingress = next(d for d in _gateway_documents() if d["kind"] == "Ingress")
+
+    assert ingress["metadata"]["annotations"]["alb.ingress.kubernetes.io/inbound-cidrs"]

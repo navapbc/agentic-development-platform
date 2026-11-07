@@ -416,7 +416,7 @@ Component roles:
 | AWS Credentials Secret | Holds the credentials `inv aws-login` writes. LiteLLM and the review worker reread it through `credential_process` before the credentials they hold expire. |
 | Workspace Volume | Holds the execution checkouts, the copies of the local-backend repositories and local gate engines that `inv repos-sync` sends, and the rebar ticket store seeded from MinIO. `inv fetch-results` brings the agent branches back to the host checkouts. |
 | Inbound Webhook Receiver | Receives GitHub pull request events from the GitHub CLI forwarder and signals the matching Temporal workflow when a pull request closes. |
-| MCP Gateway | Serves read-only Jira, GitHub, evidence, and repository context tools over the Model Context Protocol. |
+| MCP Gateway | Serves read-only Jira, GitHub, evidence, and repository context tools over the Model Context Protocol to clients that present its bearer token. |
 | OpenHands Coding Sandbox | One agent-server pod per execution that performs the implementation stage. The activity worker reaches it on its pod IP with a per-sandbox session key. |
 | External Review Gate | One pod per configured external gate, running an AI CLI reviewer or a SARIF scanner. |
 | LLM Tracing | Langfuse records model generations from LiteLLM and from the workers. |

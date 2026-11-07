@@ -15,7 +15,7 @@ from services.integration.credentials import (
 from scripts.config import get_settings
 
 _CONFIGS = ("github", "jira", "integrations", "gates", "gate_engine", "tickets", "repositories")
-_REQUIRED_SECRETS = ("COORDINATION_SHARED_SECRET",)
+_REQUIRED_SECRETS = ("COORDINATION_SHARED_SECRET", "MCP_GATEWAY_TOKEN")
 
 
 def report_required_secrets(resolver: SecretResolver) -> int:

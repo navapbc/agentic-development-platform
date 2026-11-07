@@ -126,6 +126,7 @@ def workload_secret_values(
         "github_webhook_secret": env.get("GITHUB_WEBHOOK_SECRET") or "local-demo-secret",
         "jira_webhook_secret": env.get("JIRA_WEBHOOK_SECRET") or "local-demo-secret",
         "coordination_shared_secret": env.get("COORDINATION_SHARED_SECRET", ""),
+        "mcp_gateway_token": env.get("MCP_GATEWAY_TOKEN", ""),
     }
 
 

@@ -188,6 +188,7 @@ class Settings(BaseSettings):
 
     coordination_url: str = "http://localhost:8130"
     mcp_allowed_hosts: str = ""
+    mcp_gateway_token: str = ""
     coordination_shared_secret: str = ""
     repo_index_poll_interval_seconds: float = 30.0
     repo_index_worker_concurrency: int = 2

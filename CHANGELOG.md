@@ -46,6 +46,8 @@ AWS transition and FedRAMP Medium readiness. The platform documents its local-to
 - The local backend commits each run's `SUMMARY.md`, `change.patch`, and pull record to `refs/agent-results/<branch>` in the repository, in place of files under `SOURCE_CONTROL_LOCAL_ARTIFACTS_ROOT`, which now holds only the `inv operator-done` ledger.
 - `local_path` of a local-mode engine in `gate_engine.yaml` names the engine checkout on the host, absolute or relative to the platform checkout, and `inv repos-sync` copies its working tree into the cluster. Replace a container path such as `/engines/ai-common-workflows` with the host path.
 - `OPA_HOST_PORT` and `LANGGRAPH_HOST_PORT` are removed and OPA has no host port. `inv smoke-test` checks OPA through `kubectl exec`. The `docker compose` commands that named `activity-worker` run against the cluster instead, through `kubectl exec` on the deployment.
+- The MCP gateway requires `Authorization: Bearer <MCP_GATEWAY_TOKEN>` on every `/mcp` request and answers any other request with 401, and it refuses to start while `MCP_GATEWAY_TOKEN` is empty. Set `MCP_GATEWAY_TOKEN` in `.env`, run `inv k8s-deploy`, and give each MCP client the same value. The health paths answer without it.
+- The `mcp-gateway` Ingress sets `alb.ingress.kubernetes.io/inbound-cidrs` to the documentation range `192.0.2.0/24`, which admits no client. Patch it to the client subnets in the environment overlay.
 
 ### Added
 
@@ -128,6 +130,7 @@ AWS transition and FedRAMP Medium readiness. The platform documents its local-to
 - `inv smoke-test` reports the readiness of each cluster deployment, OPA on the activity worker's loopback, the expiry of the cluster's AWS credentials, and whether the cluster enforces the `agent-sandbox` network policies. The review worker logs a warning naming `inv aws-login` while its credentials are within `AWS_CREDENTIALS_WARN_SECONDS` of expiry.
 - Base Kubernetes manifests for the activity worker with an OPA loopback sidecar, the review worker, LiteLLM, the activity worker's sandbox Role, and the gate pod egress policy.
 - The `K8S_CONTEXT`, `K8S_NAMESPACE`, `K8S_COMPOSE_ADDRESS`, `K8S_IMAGE_LOAD`, and `K8S_IMAGE_LOAD_TARGET` settings, and the coordination service port 8130 published on the host.
+- The `secret-store` module generates `mcp_gateway_token`, the gateway's bearer token, and `inv config-check` reports `MCP_GATEWAY_TOKEN`.
 
 ### Changed
 

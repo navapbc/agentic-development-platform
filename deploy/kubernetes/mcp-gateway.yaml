@@ -42,6 +42,11 @@ spec:
                 configMapKeyRef:
                   name: agentic-platform
                   key: repo_intelligence_url
+            - name: MCP_GATEWAY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: agentic-platform
+                  key: mcp_gateway_token
             - name: MCP_ALLOWED_HOSTS
               value: mcp.internal.example,mcp.internal.example:443
           volumeMounts:
@@ -113,6 +118,7 @@ metadata:
     app.kubernetes.io/part-of: agentic-dev-platform
   annotations:
     alb.ingress.kubernetes.io/scheme: internal
+    alb.ingress.kubernetes.io/inbound-cidrs: 192.0.2.0/24
     alb.ingress.kubernetes.io/target-type: ip
     alb.ingress.kubernetes.io/healthcheck-path: /health
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'

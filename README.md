@@ -147,6 +147,7 @@ Two binaries live under `vendor/bin` and are provisioned outside the Python inst
 | Admission | `MAX_CONCURRENT_RUNS`, `EXECUTION_ORPHAN_GRACE_SECONDS` | Cap on runs in flight and the grace window before a dead run's slot is reclaimed. Defaults work locally |
 | Dependency discovery | `DEPENDENCY_DETECTION_ENABLED`, `DEPENDENCY_REPLAN_ATTEMPTS` | Enable cross-ticket dependency discovery and set the re-plan attempt cap. Defaults to off. See [Cross-ticket dependency discovery](#cross-ticket-dependency-discovery) |
 | Integration tokens | `GITHUB_TOKEN`, `JIRA_API_TOKEN`, `JIRA_PAT` | The secrets named by `token_ref` in `github.yaml` and `jira.yaml`. See [Integration credentials](#integration-credentials) |
+| Service tokens | `COORDINATION_SHARED_SECRET`, `MCP_GATEWAY_TOKEN` | The bearer tokens the coordination service and the MCP gateway require. Each service refuses to start while its token is empty, and `inv config-check` reports both |
 | Jira tooling | `JIRA_ACLI_PATH`, `INSTALL_ACLI`, `ACLI_VERSION`, `ACLI_DOWNLOAD_URL`, `ACLI_SHA256` | Path and provisioning for the vendored acli binary |
 | Observability | `LANGFUSE_*`, `OTEL_EXPORTER_OTLP_ENDPOINT` | Defaults work locally |
 
@@ -413,7 +414,7 @@ The activity worker, the review worker, LiteLLM, the inbound webhook, and the MC
 | `review-worker` | none | Temporal worker for the review activities, reading each execution's checkout from the workspace volume read-only |
 | `litellm` | 4000 | Single gateway to Bedrock, published through a `LoadBalancer` Service |
 | `inbound-webhook` | 8140 | Webhook front door. See [Inbound webhooks and CI](#inbound-webhooks-and-ci) |
-| `mcp-gateway` | none | MCP tool gateway |
+| `mcp-gateway` | none | Read-only MCP tool gateway. Every `/mcp` request needs `Authorization: Bearer <MCP_GATEWAY_TOKEN>`, and the health paths answer without it. See [deploy/kubernetes/README.md](deploy/kubernetes/README.md#mcp-gateway-authentication) |
 
 `inv k8s-reload` builds the platform and OPA images with the build command `inv publish-platform-images` uses, loads them into the cluster as `K8S_IMAGE_LOAD` names, renders `deploy/kubernetes/local` with the settings, config files, and policies of this checkout, and rolls every deployment. It rebuilds the Compose platform services with the same build identifier, so the cluster and Compose workers register as one Worker Deployment version. Run it after changing code or config. `inv k8s-deploy` applies the manifests for the last build without rebuilding, `inv k8s-delete` removes the workloads and keeps the workspace volume unless given `--volumes`, and `inv local-down` scales the workloads to zero.
 

@@ -27,6 +27,7 @@ Generated secrets get a random value from Terraform on the first apply. Terrafor
 | `langfuse_admin_password` | generated | `LANGFUSE_INIT_USER_PASSWORD` | In the Langfuse UI, see below |
 | `clickhouse_password` | generated | `CLICKHOUSE_PASSWORD` | Manual, by generation |
 | `coordination_shared_secret` | generated | `COORDINATION_SHARED_SECRET` | Manual, by generation |
+| `mcp_gateway_token` | generated | `MCP_GATEWAY_TOKEN` | Manual, by generation |
 | `github_token` | external | `GITHUB_TOKEN` | At the issuer |
 | `github_webhook_secret` | external | `GITHUB_WEBHOOK_SECRET` | At the issuer |
 | `jira_api_token` | external | `JIRA_API_TOKEN` | At the issuer |

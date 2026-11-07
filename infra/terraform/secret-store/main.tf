@@ -66,6 +66,11 @@ locals {
       prefix      = ""
       hex         = false
     }
+    mcp_gateway_token = {
+      description = "Bearer token every MCP gateway client presents, set as MCP_GATEWAY_TOKEN on the gateway and on each client."
+      prefix      = ""
+      hex         = false
+    }
   }
 
   external_secrets = {

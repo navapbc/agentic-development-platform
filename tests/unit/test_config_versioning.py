@@ -93,14 +93,16 @@ def test_config_check_reports_a_missing_required_secret(tmp_path: Path, capsys) 
     missing = report_required_secrets(resolver)
 
     output = capsys.readouterr().out
-    assert missing == 1
-    assert "COORDINATION_SHARED_SECRET" in output
+    assert missing == 2
+    assert "COORDINATION_SHARED_SECRET: MISSING" in output
+    assert "MCP_GATEWAY_TOKEN: MISSING" in output
     assert "inv local-up" in output
 
 
 def test_config_check_passes_a_present_required_secret(tmp_path: Path, capsys) -> None:
     resolver = EnvSecretResolver(
-        {"COORDINATION_SHARED_SECRET": "set-locally"}, env_file=tmp_path / ".env"
+        {"COORDINATION_SHARED_SECRET": "set-locally", "MCP_GATEWAY_TOKEN": "set-locally"},
+        env_file=tmp_path / ".env",
     )
 
     assert report_required_secrets(resolver) == 0

@@ -85,7 +85,11 @@ def _rendered(tmp_path: Path, **settings: object) -> list[dict]:
     return render(
         RenderInputs(
             settings=hermetic_settings(**settings),
-            env={"DATABASE_URL": "postgresql://u:p@postgres:5432/db", "AWS_PROFILE": "p"},
+            env={
+                "DATABASE_URL": "postgresql://u:p@postgres:5432/db",
+                "AWS_PROFILE": "p",
+                "MCP_GATEWAY_TOKEN": "gateway-token",
+            },
             network=NETWORK,
             build_id="0.3.0.1",
             root=root,
@@ -272,3 +276,9 @@ def test_a_config_change_changes_every_pod_template_and_a_rerender_does_not(
     assert first == again
     assert len(first) == 5
     assert all(changed[name] != first[name] for name in first)
+
+
+def test_the_gateway_token_reaches_the_workload_secret(tmp_path: Path) -> None:
+    workload = _named(_rendered(tmp_path), "Secret", "agentic-platform")["data"]
+
+    assert base64.b64decode(workload["mcp_gateway_token"]) == b"gateway-token"

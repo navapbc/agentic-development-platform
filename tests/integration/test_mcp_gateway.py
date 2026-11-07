@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 
+import pytest
 from adapters.interfaces.git_host import CodeHit, FileContent, PRComment, PRFeedback
 from mcp.shared.memory import create_connected_server_and_client_session
-from services.integration.mcp_gateway.server import HEALTH_PATHS, build_server
+from services.integration.mcp_gateway import server as gateway
+from services.integration.mcp_gateway.server import HEALTH_PATHS, build_app, build_server
 from services.integration.mcp_gateway.tools import READ_TOOL_NAMES, ReadOnlyToolset
 from starlette.testclient import TestClient
 
@@ -65,7 +68,13 @@ def _result_dict(result) -> dict:
     return json.loads(result.content[0].text)
 
 
-def _initialize(client: TestClient, host: str):
+TOKEN = "gateway-token-for-tests"
+
+
+def _initialize(client: TestClient, host: str = "localhost", token: str | None = TOKEN):
+    headers = {"Accept": "application/json, text/event-stream", "Host": host}
+    if token is not None:
+        headers["Authorization"] = f"Bearer {token}"
     return client.post(
         "/mcp",
         json={
@@ -78,7 +87,7 @@ def _initialize(client: TestClient, host: str):
                 "clientInfo": {"name": "test-client", "version": "1"},
             },
         },
-        headers={"Accept": "application/json, text/event-stream", "Host": host},
+        headers=headers,
     )
 
 
@@ -152,8 +161,8 @@ async def test_gateway_refuses_a_tool_outside_the_catalog():
     assert result.isError is True
 
 
-def test_gateway_health_paths_answer_an_alb_target_health_check():
-    app = build_server(_toolset()).streamable_http_app()
+def test_gateway_health_paths_answer_an_alb_target_health_check_without_a_token():
+    app = build_app(build_server(_toolset()), TOKEN)
     pod_address = {"Host": "10.0.1.23:8150"}
 
     with TestClient(app) as client:
@@ -163,13 +172,14 @@ def test_gateway_health_paths_answer_an_alb_target_health_check():
     for path, response in responses.items():
         assert response.status_code == 200, path
         assert response.json() == {"status": "ok", "service": "mcp-gateway"}
-    assert unknown.status_code == 404
+    assert unknown.status_code == 401
 
 
 def test_gateway_checks_the_host_header_against_the_configured_list_when_bound_to_all_interfaces():
-    app = build_server(
-        _toolset(), host="0.0.0.0", allowed_hosts=["mcp.internal.example:443"]
-    ).streamable_http_app()
+    app = build_app(
+        build_server(_toolset(), host="0.0.0.0", allowed_hosts=["mcp.internal.example:443"]),
+        TOKEN,
+    )
 
     with TestClient(app) as client:
         refused = _initialize(client, "rebind.example:443")
@@ -182,9 +192,112 @@ def test_gateway_checks_the_host_header_against_the_configured_list_when_bound_t
 
 
 def test_gateway_leaves_the_host_header_unchecked_when_no_allowed_hosts_are_configured():
-    app = build_server(_toolset(), host="0.0.0.0", allowed_hosts=[]).streamable_http_app()
+    app = build_app(build_server(_toolset(), host="0.0.0.0", allowed_hosts=[]), TOKEN)
 
     with TestClient(app) as client:
         response = _initialize(client, "anything.example")
 
     assert response.status_code == 200
+
+
+class _CountingToolset:
+    """Wraps the fake toolset so a test can see whether any tool ran."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self._inner = _toolset()
+
+    def __getattr__(self, name: str):
+        tool = getattr(self._inner, name)
+
+        async def counted(*args, **kwargs):
+            self.calls += 1
+            return await tool(*args, **kwargs)
+
+        counted.__name__ = tool.__name__
+        counted.__doc__ = tool.__doc__
+        counted.__signature__ = inspect.signature(tool)
+        return counted
+
+
+@pytest.mark.parametrize(
+    "authorization",
+    [None, "Bearer wrong-token", "Basic Z2F0ZXdheS10b2tlbg==", f"Bearer {TOKEN}x", "Bearer "],
+)
+def test_a_request_without_the_token_is_refused_and_invokes_no_tool(authorization):
+    toolset = _CountingToolset()
+    app = build_app(build_server(toolset, host="0.0.0.0", allowed_hosts=[]), TOKEN)
+    headers = {"Accept": "application/json, text/event-stream", "Host": "localhost"}
+    if authorization is not None:
+        headers["Authorization"] = authorization
+
+    with TestClient(app) as client:
+        listed = client.post(
+            "/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, headers=headers
+        )
+        called = client.post(
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {"name": "jira_get_task", "arguments": {"issue_key": "T-1"}},
+            },
+            headers=headers,
+        )
+
+    assert listed.status_code == 401
+    assert called.status_code == 401
+    assert listed.headers["WWW-Authenticate"] == "Bearer"
+    assert toolset.calls == 0
+
+
+def test_a_request_with_the_token_lists_and_invokes_the_tools():
+    toolset = _CountingToolset()
+    app = build_app(build_server(toolset, host="0.0.0.0", allowed_hosts=[]), TOKEN)
+    headers = {
+        "Accept": "application/json, text/event-stream",
+        "Host": "localhost",
+        "Authorization": f"Bearer {TOKEN}",
+    }
+
+    with TestClient(app) as client:
+        initialized = _initialize(client)
+        session = {**headers, "mcp-session-id": initialized.headers["mcp-session-id"]}
+        client.post(
+            "/mcp",
+            json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+            headers=session,
+        )
+        listed = client.post(
+            "/mcp", json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, headers=session
+        )
+        called = client.post(
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {"name": "jira_get_task", "arguments": {"issue_key": "T-1"}},
+            },
+            headers=session,
+        )
+
+    assert initialized.status_code == 200
+    assert listed.status_code == 200
+    assert all(name in listed.text for name in READ_TOOL_NAMES)
+    assert called.status_code == 200
+    assert '"isError":false' in called.text.replace(" ", "")
+    assert toolset.calls == 1
+
+
+def test_the_gateway_refuses_to_start_without_a_token(monkeypatch):
+    monkeypatch.setattr(gateway, "get_settings", lambda: type("S", (), {"mcp_gateway_token": ""})())
+
+    with pytest.raises(SystemExit, match="MCP_GATEWAY_TOKEN.*\\.env.*inv k8s-deploy"):
+        gateway.main()
+
+
+def test_the_gate_refuses_to_wrap_the_app_without_a_token():
+    with pytest.raises(ValueError, match="MCP_GATEWAY_TOKEN"):
+        build_app(build_server(_toolset()), "")

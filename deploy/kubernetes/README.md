@@ -27,11 +27,12 @@ Nothing derived is written to disk. The renderer pipes the manifests to `kubectl
 
 ## Per-environment values
 
-Three values in the base manifests are synthetic and must be replaced for every environment.
+Four values in the base manifests are synthetic and must be replaced for every environment.
 
 - The container image registry `123456789012.dkr.ecr.us-east-1.amazonaws.com`, replaced through the kustomize `images` transformer.
 - The ACM certificate ARN `arn:aws:acm:us-east-1:123456789012:certificate/00000000-0000-0000-0000-000000000000` on each Ingress, replaced through an overlay patch.
 - The `MCP_ALLOWED_HOSTS` value `mcp.internal.example,mcp.internal.example:443` on the `mcp-gateway` Deployment, replaced through an overlay patch.
+- The `alb.ingress.kubernetes.io/inbound-cidrs` value `192.0.2.0/24` on the `mcp-gateway` Ingress, a documentation range that admits no client, replaced through an overlay patch with the CIDRs of the subnets that hold the gateway's clients. See [MCP gateway authentication](#mcp-gateway-authentication).
 
 Both Ingress resources declare an HTTPS-only listener through `alb.ingress.kubernetes.io/listen-ports` and pin `alb.ingress.kubernetes.io/ssl-policy` to `ELBSecurityPolicy-TLS13-1-2-2021-06`, which negotiates TLS 1.3 and TLS 1.2 only. The controller refuses to reconcile an Ingress whose `certificate-arn` does not resolve in the account, so an unreplaced value fails provisioning instead of falling back to a plaintext listener.
 
@@ -68,6 +69,28 @@ patches:
 ## Target group health checks
 
 Both Ingress resources set `alb.ingress.kubernetes.io/healthcheck-path: /health`. Each service answers `/health`, `/healthz`, and `/` with a 200 and a JSON body, so the ALB default of `GET /` also succeeds. The health check reaches the pod over HTTP on the traffic port. Terminating TLS at the listener does not change it.
+
+## MCP gateway authentication
+
+Every request to `/mcp` must carry `Authorization: Bearer <MCP_GATEWAY_TOKEN>`. The gateway compares the token in constant time and answers any other request with 401 before the MCP app sees it, so a refused request lists and invokes no tool. `/health`, `/healthz`, and `/` answer without a token for the target group and the pod probes. The gateway exits at startup when `MCP_GATEWAY_TOKEN` is empty.
+
+The Deployment reads the token from the `mcp_gateway_token` key of the `agentic-platform` Secret. The local overlay's renderer fills it from `MCP_GATEWAY_TOKEN` in `.env`. A deployed environment fills it from the `mcp_gateway_token` secret the [secret-store](../../infra/terraform/secret-store) module generates, and gives each client the same value.
+
+The Ingress sets `alb.ingress.kubernetes.io/inbound-cidrs`, which the AWS Load Balancer Controller writes as the only inbound rules of the load balancer's security group. Patch it to the client subnets from the environment overlay.
+
+```yaml
+patches:
+  - target:
+      kind: Ingress
+      name: mcp-gateway
+    patch: |
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: mcp-gateway
+        annotations:
+          alb.ingress.kubernetes.io/inbound-cidrs: 10.20.16.0/22,10.20.20.0/22
+```
 
 ## MCP gateway host header
 
