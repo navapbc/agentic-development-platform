@@ -1,11 +1,15 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-namespace: agentic-dev-platform
-
 resources:
   - ../mcp-gateway.yaml
   - ../inbound-webhook.yaml
+  - ../activity-worker.yaml
+  - ../review-worker.yaml
+  - ../litellm.yaml
+  - ../sandbox.yaml
+  - ../../../openhands/policies/networkpolicy-default-deny-egress.yaml
+  - ../../../openhands/policies/networkpolicy-allow-egress.yaml
 
 images:
   - name: 123456789012.dkr.ecr.us-east-1.amazonaws.com/agentic-dev-platform/mcp-gateway
@@ -14,29 +18,29 @@ images:
   - name: 123456789012.dkr.ecr.us-east-1.amazonaws.com/agentic-dev-platform/inbound-webhook
     newName: agentic-dev-platform-local
     newTag: local
+  - name: 123456789012.dkr.ecr.us-east-1.amazonaws.com/agentic-dev-platform/platform
+    newName: agentic-dev-platform-local
+    newTag: local
+  - name: 123456789012.dkr.ecr.us-east-1.amazonaws.com/agentic-dev-platform/opa
+    newName: agentic-dev-platform-opa
+    newTag: local
 
 generatorOptions:
   disableNameSuffixHash: true
 
 configMapGenerator:
-  - name: agentic-platform
-    literals:
-      - repo_intelligence_url=http://host.docker.internal:8130
-      - jira_acceptance_field=customfield_10040
-      - temporal_host=host.docker.internal:7233
-      - temporal_namespace=default
   - name: integration-config
+    namespace: agentic-dev-platform
     files:
       - github.yaml=../../../config/local/github.yaml
       - jira.yaml=../../../config/local/jira.yaml
       - integrations.yaml=../../../config/local/integrations.yaml
       - repositories.yaml=../../../config/local/repositories.yaml
-
-secretGenerator:
-  - name: agentic-platform
-    type: Opaque
-    envs:
-      - agentic-platform.secret.env
+  - name: aws-credential-process
+    namespace: agentic-dev-platform
+    files:
+      - config=aws/config
+      - credential-process.py=aws/credential-process.py
 
 patches:
   - target:
@@ -100,3 +104,114 @@ patches:
       - op: replace
         path: /spec/ports/0/port
         value: 8140
+  - target:
+      kind: PersistentVolumeClaim
+      name: workspaces
+    patch: |
+      - op: replace
+        path: /spec/accessModes
+        value: [ReadWriteOnce]
+  - target:
+      kind: Service
+      name: litellm
+    patch: |
+      - op: add
+        path: /spec/type
+        value: LoadBalancer
+  - target:
+      kind: Deployment
+      name: activity-worker
+    patch: |
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: activity-worker
+      spec:
+        template:
+          spec:
+            containers:
+              - name: activity-worker
+                imagePullPolicy: IfNotPresent
+                env:
+                  - name: LOG_LEVEL
+                    value: DEBUG
+                  - name: AWS_CONFIG_FILE
+                    value: /app/config/local/rebar-store-aws-config
+                  - name: OPENHANDS_MAX_TOOL_CALLS
+                    value: "100"
+                  - name: INTAKE_RUN_REVIEWS
+                    value: "true"
+                  - name: INTAKE_RUN_POLICY
+                    value: "true"
+                  - name: GATE_REGISTRY_TLS_VERIFY
+                    value: "false"
+            initContainers:
+              - name: opa
+                imagePullPolicy: IfNotPresent
+  - target:
+      kind: Deployment
+      name: review-worker
+    patch: |
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: review-worker
+      spec:
+        template:
+          spec:
+            containers:
+              - name: review-worker
+                imagePullPolicy: IfNotPresent
+                env:
+                  - name: LOG_LEVEL
+                    value: DEBUG
+                  - name: AWS_CONFIG_FILE
+                    value: /etc/aws/config
+                  - name: AWS_CREDENTIALS_FILE
+                    value: /var/run/aws-credentials/credentials.json
+                volumeMounts:
+                  - name: aws-credential-process
+                    mountPath: /etc/aws
+                    readOnly: true
+                  - name: aws-credentials
+                    mountPath: /var/run/aws-credentials
+                    readOnly: true
+            volumes:
+              - name: aws-credential-process
+                configMap:
+                  name: aws-credential-process
+              - name: aws-credentials
+                secret:
+                  secretName: aws-credentials
+                  optional: true
+  - target:
+      kind: Deployment
+      name: litellm
+    patch: |
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: litellm
+      spec:
+        template:
+          spec:
+            containers:
+              - name: litellm
+                env:
+                  - name: AWS_CONFIG_FILE
+                    value: /etc/aws/config
+                volumeMounts:
+                  - name: aws-credential-process
+                    mountPath: /etc/aws
+                    readOnly: true
+                  - name: aws-credentials
+                    mountPath: /var/run/aws-credentials
+                    readOnly: true
+            volumes:
+              - name: aws-credential-process
+                configMap:
+                  name: aws-credential-process
+              - name: aws-credentials
+                secret:
+                  secretName: aws-credentials
+                  optional: true

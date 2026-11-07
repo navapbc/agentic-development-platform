@@ -84,6 +84,8 @@ def build_command(
     image: str,
     arch: str,
     build_args: dict[str, str] | None = None,
+    *,
+    output: str = "--push",
 ) -> list[str]:
     arguments = [
         part
@@ -103,7 +105,7 @@ def build_command(
         str(root / spec.dockerfile),
         "--tag",
         image,
-        "--push",
+        output,
         str(root),
     ]
 

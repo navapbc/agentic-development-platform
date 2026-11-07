@@ -82,3 +82,19 @@ def test_code_step_applies_the_extracted_patch_to_the_workspace(tmp_path: Path) 
 
     assert (Path(workspace.path) / "file.txt").read_text() == "hello world\n"
     assert provisioner.patched[0][1] == "/workspace/project"
+
+
+def test_each_sandbox_gets_its_own_session_key_and_the_driver_presents_it(tmp_path: Path) -> None:
+    provisioner = FakeSandboxProvisioner()
+    driver = FakeConversationDriver()
+
+    for attempt in ("first", "second"):
+        step = OpenHandsCodeStep(
+            runtime=_runtime(provisioner, driver), workspace_root=tmp_path / attempt
+        )
+        asyncio.run(step.run(workspace=_workspace(tmp_path / attempt), task=attempt))
+
+    keys = [spec.session_api_key for spec in provisioner.specs]
+    assert all(len(key) >= 32 for key in keys)
+    assert keys[0] != keys[1]
+    assert driver.session_api_keys == keys

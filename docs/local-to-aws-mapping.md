@@ -12,6 +12,8 @@ Workloads sign Bedrock inference with a role that carries the `bedrock:InvokeMod
 
 ## Component mapping
 
+Locally the activity worker, the review worker, LiteLLM, OPA, the inbound webhook, and the MCP gateway run on the local Kubernetes cluster from the manifests in [deploy/kubernetes](../deploy/kubernetes), and the other components run in Compose. No local pod mounts a host directory, so the inputs each workload reads are the ones it reads in AWS, delivered as images, ConfigMaps, Secrets, and a workspace volume that stands in for the EFS checkouts access point.
+
 | Local component | AWS target | Provisioning |
 |---|---|---|
 | `postgres` | Aurora PostgreSQL 16 with Serverless v2 capacity in the data tier | [aurora-postgresql](../infra/terraform/aurora-postgresql). Per-service roles planned, see the [roadmap](../ROADMAP.md) |
@@ -20,12 +22,11 @@ Workloads sign Bedrock inference with a role that carries the `bedrock:InvokeMod
 | `temporal-ui` | Temporal UI 2.58.0 service in the management tier behind an internal HTTPS load balancer, reached by operators through `inv temporal-ui` | [temporal-control-plane](../infra/terraform/temporal-control-plane) |
 | `db-migrate` | One-shot `alembic upgrade head` task in the management tier as the `platform_migrator` role, run by `inv platform-deploy` | [container-services](../infra/terraform/container-services) |
 | `workflow-worker`, `review-worker` | Fargate services in the application tier, each in a blue and a green slot so a new build starts beside the executions pinned to the old one | [container-services](../infra/terraform/container-services) |
-| `activity-worker` | Worker on the EKS cluster, which also runs the agent pods | Planned, see the [roadmap](../ROADMAP.md) |
+| `activity-worker` | Worker on the EKS cluster, which also runs the sandbox and gate pods and reaches each on its pod IP. The local cluster runs the same base manifest | Planned, see the [roadmap](../ROADMAP.md) |
 | `schedule-bootstrap` | One-shot task in the management tier that registers the reap and intake schedules, run by `inv platform-deploy` | [container-services](../infra/terraform/container-services) |
 | `coordination-service` | Fargate service in the application tier, reached over HTTPS through the internal load balancer at `coordination.<internal_domain>` | [container-services](../infra/terraform/container-services) |
-| `langgraph-service` | Not deployed. It serves only a health endpoint, and the LangGraph graphs run inside the activity worker | None |
 | `litellm` | Model-proxy service on the container platform, reaching Bedrock through the private endpoint | Bedrock access via [bedrock-iam](../infra/terraform/bedrock-iam) and [vpc-endpoints](../infra/terraform/vpc-endpoints). Service planned, see the [roadmap](../ROADMAP.md) |
-| `opa` | Policy service on the container platform | Planned, see the [roadmap](../ROADMAP.md) |
+| `opa` | Sidecar of the activity worker on the EKS cluster, bound to the pod's loopback so no Service exposes it. The local cluster runs it the same way | Planned, see the [roadmap](../ROADMAP.md) |
 | `minio` | Amazon S3 for the evidence and audit object store, the Langfuse uploads, and the rebar ticket store | Evidence bucket via [evidence-store](../infra/terraform/evidence-store), Langfuse bucket via [langfuse-blob-store](../infra/terraform/langfuse-blob-store), trail bucket via [cloudtrail](../infra/terraform/cloudtrail), and rebar ticket store bucket via [rebar-ticket-store](../infra/terraform/rebar-ticket-store). The ticket store syncs through `git-remote-s3`, fetching under a reader role and pushing under a writer role |
 | `redis` | ElastiCache for Valkey 9.1 with TLS required and an RBAC user, in the data tier | [elasticache](../infra/terraform/elasticache) |
 | `clickhouse` | ClickHouse task in the application tier on an encrypted EFS file system in the data tier, serving only TLS under a Cloud Map name | Storage via [clickhouse-storage](../infra/terraform/clickhouse-storage), task via [container-services](../infra/terraform/container-services) |

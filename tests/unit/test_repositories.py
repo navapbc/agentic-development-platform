@@ -103,10 +103,7 @@ def test_the_compose_override_mounts_each_repository_with_a_path(tmp_path: Path)
     rendered = repositories_compose.render(_registry(), base=tmp_path, container_root="/repos")
     svc = f"{(tmp_path.parent / 'svc').resolve()}:/repos/svc"
 
-    assert rendered["services"]["activity-worker"]["volumes"] == [
-        "/srv/notes:/repos/notes",
-        f"{svc}:ro",
-    ]
+    assert set(rendered["services"]) == {"repo-intelligence", "repo-index-worker"}
     assert rendered["services"]["repo-intelligence"]["volumes"] == [
         "/srv/notes:/repos/notes:ro",
         f"{svc}:ro",

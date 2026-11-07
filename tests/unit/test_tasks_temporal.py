@@ -98,7 +98,7 @@ def test_the_target_matches_the_compose_pins():
     assert f"docker.io/temporalio/admin-tools:{version}@sha256:" in compose
 
 
-def test_local_up_applies_the_schema_before_the_server_and_the_namespace_before_the_stack(project):
+def test_local_up_starts_compose_then_the_cluster_with_credentials_and_repositories(project):
     context = _DatabaseContext({"temporal": None, "temporal_visibility": None})
 
     tasks_module.local_up(context)
@@ -110,7 +110,11 @@ def test_local_up_applies_the_schema_before_the_server_and_the_namespace_before_
         f"{COMPOSE} run --rm temporal-admin-tools schema",
         f"{COMPOSE} up -d --wait --wait-timeout 600 temporal",
         f"{COMPOSE} run --rm temporal-admin-tools namespace",
-        f"{COMPOSE} up -d --wait --wait-timeout 600",
+        f"{COMPOSE} up -d --wait --wait-timeout 600 --remove-orphans",
+        f"{tasks_module.HOST_PYTHON} -m scripts.k8s_cluster reload --build-id {BUILD_ID} "
+        "--compose-file compose.yaml",
+        f"{tasks_module.HOST_PYTHON} -m scripts.aws_login",
+        f"{tasks_module.HOST_PYTHON} -m scripts.repos_sync",
     ]
 
 
@@ -119,7 +123,8 @@ def test_local_up_accepts_a_database_at_the_target_schema(project):
 
     tasks_module.local_up(context)
 
-    assert context.commands[-1][0] == f"{COMPOSE} up -d --wait --wait-timeout 600"
+    stack = [command for command, _ in context.commands if command.startswith(COMPOSE)]
+    assert stack[-1] == f"{COMPOSE} up -d --wait --wait-timeout 600 --remove-orphans"
 
 
 def test_local_up_refuses_to_skip_minor_releases(project):

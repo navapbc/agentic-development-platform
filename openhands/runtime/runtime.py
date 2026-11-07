@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import secrets
 from dataclasses import dataclass, replace
 
 from openhands.runtime.caps import RuntimeCaps
@@ -66,6 +67,7 @@ class SandboxRuntime:
             server_port=self.server_port,
             litellm_base_url=self.litellm_base_url,
             workspace=binding,
+            session_api_key=secrets.token_urlsafe(32),
         )
         metadata = {"execution_id": execution_id, "stage": "implementing"}
         if task_id:
@@ -82,6 +84,7 @@ class SandboxRuntime:
                 caps=self.caps,
                 working_dir=project_dir,
                 metadata=metadata,
+                session_api_key=handle.session_api_key,
             )
             if binding is not None:
                 patch = await self.provisioner.extract_patch(handle, project_dir)

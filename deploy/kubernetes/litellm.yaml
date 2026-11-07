@@ -1,0 +1,152 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: litellm
+  namespace: agentic-dev-platform
+  labels:
+    app.kubernetes.io/name: litellm
+    app.kubernetes.io/part-of: agentic-dev-platform
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: litellm
+  namespace: agentic-dev-platform
+  labels:
+    app.kubernetes.io/name: litellm
+    app.kubernetes.io/part-of: agentic-dev-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: litellm
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: litellm
+        app.kubernetes.io/part-of: agentic-dev-platform
+      annotations:
+        agentic-dev-platform/bedrock-client: "true"
+    spec:
+      serviceAccountName: litellm
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: litellm
+          image: ghcr.io/berriai/litellm:v1.97.0@sha256:468c25f35f3e5ec4e414974f00deab93337b1b4d9953cabcfd3722e59415f834
+          args:
+            - --config
+            - /app/config/litellm-config.yaml
+            - --port
+            - "4000"
+          ports:
+            - name: http
+              containerPort: 4000
+          env:
+            - name: LITELLM_MASTER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: agentic-platform-env
+                  key: LITELLM_MASTER_KEY
+            - name: AWS_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: agentic-platform-env
+                  key: AWS_REGION
+            - name: AWS_USE_FIPS_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: agentic-platform-env
+                  key: AWS_USE_FIPS_ENDPOINT
+                  optional: true
+            - name: LANGFUSE_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: agentic-platform-env
+                  key: LANGFUSE_HOST
+                  optional: true
+            - name: LANGFUSE_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: agentic-platform-env
+                  key: LANGFUSE_PUBLIC_KEY
+                  optional: true
+            - name: LANGFUSE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: agentic-platform-env
+                  key: LANGFUSE_SECRET_KEY
+                  optional: true
+            - name: LITELLM_LOCAL_MODEL_COST_MAP
+              value: "True"
+            - name: HOME
+              value: /home/litellm
+          volumeMounts:
+            - name: litellm-config
+              mountPath: /app/config/litellm-config.yaml
+              subPath: litellm-config.yaml
+              readOnly: true
+            - name: litellm-config
+              mountPath: /app/litellm_redaction.py
+              subPath: litellm_redaction.py
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            - name: home
+              mountPath: /home/litellm
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            capabilities:
+              drop:
+                - ALL
+          readinessProbe:
+            httpGet:
+              path: /health/readiness
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /health/liveliness
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 10
+      volumes:
+        - name: litellm-config
+          configMap:
+            name: litellm-config
+        - name: tmp
+          emptyDir: {}
+        - name: home
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: litellm
+  namespace: agentic-dev-platform
+  labels:
+    app.kubernetes.io/name: litellm
+    app.kubernetes.io/part-of: agentic-dev-platform
+spec:
+  selector:
+    app.kubernetes.io/name: litellm
+  ports:
+    - name: http
+      port: 4000
+      targetPort: http

@@ -346,14 +346,25 @@ async def main() -> None:
                 alive=lambda: all(worker.is_running for worker in workers),
             )
         )
+    watch_task = None
+    if settings.aws_credentials_file:
+        from services.aws_credentials import watch_credentials
+
+        watch_task = asyncio.create_task(
+            watch_credentials(
+                Path(settings.aws_credentials_file),
+                warn_seconds=settings.aws_credentials_warn_seconds,
+            )
+        )
     runners = [worker.run() for worker in workers]
     if settings.worker_versioning_enabled:
         runners.append(set_current_version(client, settings, queues))
     try:
         await asyncio.gather(*runners)
     finally:
-        if heartbeat_task is not None:
-            heartbeat_task.cancel()
+        for task in (heartbeat_task, watch_task):
+            if task is not None:
+                task.cancel()
 
 
 if __name__ == "__main__":

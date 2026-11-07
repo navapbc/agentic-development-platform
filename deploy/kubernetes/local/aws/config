@@ -1,0 +1,2 @@
+[default]
+credential_process = python3 /etc/aws/credential-process.py

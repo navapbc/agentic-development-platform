@@ -8,6 +8,7 @@ under the read-only role and pushes under the write role without a change to reb
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from services import process
@@ -97,6 +98,57 @@ def configure_store_remote(repo_root: str, config: TicketsStoreConfig) -> StoreR
     return expected
 
 
+def seed_store(repo_root: str, config: TicketsStoreConfig, identity_id: str = "") -> bool:
+    """Create the store from its S3 remote when repo_root holds no git repository.
+
+    rebar init attaches to the remote's tickets branch when the remote is reachable, so a new
+    volume starts with every ticket the bucket holds. The selected identity is store-local
+    state the bucket does not carry, so the given identity is selected again. Returns whether
+    it created the store.
+    """
+    root = Path(repo_root)
+    if (root / ".git").exists():
+        return False
+    root.mkdir(parents=True, exist_ok=True)
+    initialized = _git(repo_root, "init", "--quiet")
+    if initialized.returncode != 0:
+        raise ConfigError(
+            f"git init of the rebar store at {repo_root} failed: {initialized.stderr}"
+        )
+    configure_store_remote(repo_root, config)
+    _rebar(repo_root, "init", "--silent")
+    if identity_id:
+        _rebar(repo_root, "identity", "use", identity_id)
+    return True
+
+
+def _rebar(repo_root: str, *args: str) -> None:
+    result = process.run(
+        ["rebar", *args],
+        timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS,
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise ConfigError(
+            f"rebar {' '.join(args)} in the store at {repo_root} failed: "
+            f"{(result.stderr or result.stdout).strip()}"
+        )
+
+
+def seed_absent_store(repo_root: str, settings: Settings) -> None:
+    """Seed the store when the tickets config names a bucket, and leave it absent otherwise."""
+    from services.integration.tickets.store_config import load_tickets_store_config
+
+    try:
+        config = load_tickets_store_config(settings)
+    except ConfigError:
+        return
+    if config.store.bucket:
+        seed_store(repo_root, config, settings.authorship_identity_id)
+
+
 def _profile_role_arn(profile: str) -> str:
     from botocore.exceptions import ProfileNotFound
     from botocore.session import Session
@@ -145,6 +197,8 @@ def tickets_store_preflight(settings: Settings) -> None:
     if resolve_ticket_backend_name(settings) != REBAR:
         return
     repo_root = load_rebar_backend_config(settings).repo_root
+    if not (Path(repo_root) / ".git").exists():
+        seed_absent_store(repo_root, settings)
     remote = read_store_remote(repo_root)
     if remote is None or not remote.is_s3:
         return

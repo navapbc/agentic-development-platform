@@ -6,10 +6,14 @@ import zipfile
 from pathlib import Path
 
 import pytest
+from services.integration.credentials import ConfigError
+from services.orchestration.gates import engine_source
 from services.orchestration.gates.engine_source import (
     CommandResult,
     EngineSourceError,
     GateEngineConfig,
+    locate_local_engines,
+    parse_gate_engine_configs,
     resolve_engine_source,
 )
 
@@ -411,3 +415,30 @@ def test_triage_engine_is_none_when_no_enabled_classifier():
     )
 
     assert triage_engine(configs) is None
+
+
+def test_a_local_engine_reads_the_synced_copy_inside_the_image() -> None:
+    configs = parse_gate_engine_configs(
+        {"engines": [{"name": "review", "enabled": True, "mode": "local", "local_path": "../e"}]}
+    )
+
+    located = locate_local_engines(configs, engine_root="/workspaces/engines/", in_image=True)
+
+    assert located[0].local_path == "/workspaces/engines/review"
+
+
+def test_a_local_engine_resolves_a_relative_path_from_the_platform_checkout_on_the_host() -> None:
+    configs = parse_gate_engine_configs(
+        {"engines": [{"name": "review", "enabled": True, "mode": "local", "local_path": "../e"}]}
+    )
+
+    located = locate_local_engines(configs, engine_root="/workspaces/engines", in_image=False)
+
+    assert located[0].local_path == str((engine_source._PLATFORM_ROOT.parent / "e").resolve())
+
+
+def test_a_local_engine_name_must_be_usable_as_a_directory() -> None:
+    with pytest.raises(ConfigError, match="names its directory"):
+        parse_gate_engine_configs(
+            {"engines": [{"name": "../x", "enabled": True, "mode": "local", "local_path": "e"}]}
+        )

@@ -94,10 +94,24 @@ class Settings(BaseSettings):
     ssh_bastion_target: str = ""
     bedrock_tunnel_local_port: int = 8444
 
+    aws_login_command: str = ""
+    aws_login_session_seconds: int = 43200
+    aws_login_static_passthrough: bool = False
+    aws_credentials_warn_seconds: int = 900
+    aws_credentials_file: str = ""
+
+    k8s_context: str = "docker-desktop"
+    k8s_namespace: str = "agentic-dev-platform"
+    k8s_compose_address: str = "host.docker.internal"
+    k8s_image_load: str = "shared"
+    k8s_image_load_target: str = ""
+
     @field_validator(
         "jumphost_session_duration_seconds",
         "jumphost_keepalive_seconds",
         "execution_orphan_grace_seconds",
+        "aws_login_session_seconds",
+        "aws_credentials_warn_seconds",
         mode="before",
     )
     @classmethod
@@ -105,6 +119,26 @@ class Settings(BaseSettings):
         if info.field_name is not None and (value is None or value == ""):
             return cls.model_fields[info.field_name].default
         return value
+
+    @field_validator("aws_login_session_seconds")
+    @classmethod
+    def _session_token_duration(cls, value: int) -> int:
+        if not 900 <= value <= 129600:
+            raise ValueError(
+                "AWS_LOGIN_SESSION_SECONDS must be between 900 and 129600, the range "
+                "sts:GetSessionToken accepts"
+            )
+        return value
+
+    @field_validator("k8s_image_load")
+    @classmethod
+    def _known_image_load(cls, value: str) -> str:
+        method = value.strip().lower() or "shared"
+        if method not in K8S_IMAGE_LOAD_METHODS:
+            raise ValueError(
+                f"K8S_IMAGE_LOAD must be one of {', '.join(K8S_IMAGE_LOAD_METHODS)}, got {value!r}"
+            )
+        return method
 
     @field_validator("log_level")
     @classmethod
@@ -142,9 +176,8 @@ class Settings(BaseSettings):
 
     postgres_host_port: int = 5432
     temporal_host_port: int = 7233
-    langgraph_host_port: int = 8100
     litellm_host_port: int = 4000
-    opa_host_port: int = 8181
+    coordination_host_port: int = 8130
     langfuse_web_host_port: int = 3000
     otel_grpc_host_port: int = 4317
     otel_http_host_port: int = 4318
@@ -209,6 +242,7 @@ class Settings(BaseSettings):
         "@sha256:7c2b605262748ace2c5c57c5550942d0adad57aec82ede3070927722306c0ffb"
     )
     gate_engine_privileged: bool = False
+    gate_engine_root: str = "/workspaces/engines"
     gate_registry_tls_verify: bool = True
 
     reap_schedule_id: str = "orphan-reaper"
@@ -240,6 +274,12 @@ class Settings(BaseSettings):
         """
         configured = self.source_control_local_artifacts_root.strip()
         return configured or f"{self.execution_workspace_root.rstrip('/')}/.agent-publish"
+
+
+# shared: the cluster reads the Docker image store, as Docker Desktop does. kind: kind load
+# docker-image into the cluster named by K8S_IMAGE_LOAD_TARGET. registry: push to the registry
+# named by K8S_IMAGE_LOAD_TARGET, which the cluster pulls from.
+K8S_IMAGE_LOAD_METHODS = ("shared", "kind", "registry")
 
 
 # Each setting names the repositories.yaml field that replaced it.
@@ -290,11 +330,10 @@ def configured_log_level() -> str:
 
 _COMPOSE_PUBLISHED_PORTS: dict[str, dict[int, str]] = {
     "litellm": {4000: "litellm_host_port"},
-    "opa": {8181: "opa_host_port"},
+    "coordination-service": {8130: "coordination_host_port"},
     "langfuse-web": {3000: "langfuse_web_host_port"},
     "postgres": {5432: "postgres_host_port"},
     "temporal": {7233: "temporal_host_port"},
-    "langgraph-service": {8100: "langgraph_host_port"},
     "otel-collector": {
         4317: "otel_grpc_host_port",
         4318: "otel_http_host_port",

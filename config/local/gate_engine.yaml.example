@@ -51,7 +51,8 @@ engines:
     review_entrypoint: engines/security-compliance-review/harness/ai-pr-review
     classifier_entrypoint: engines/test-classifier/harness/ai-test-classifier
 
-    # local mode reads this
+    # local mode reads this checkout on the host, relative to the platform checkout. inv repos-sync
+    # copies its working tree, uncommitted edits included, into the cluster.
     local_path: ../ai-common-workflows
 
     # tag mode reads these

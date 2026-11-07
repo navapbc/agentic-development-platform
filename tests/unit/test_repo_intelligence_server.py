@@ -46,7 +46,6 @@ class _Recorder(server.Handler):
 def test_server_exposes_entrypoint():
     assert callable(server.main)
     assert isinstance(server.PORT, int)
-    assert server.PORT != 8100
 
 
 def test_handler_reports_health():

@@ -156,11 +156,12 @@ def test_allow_policy_permits_only_dns_litellm_and_mediators() -> None:
     selectors = []
     for rule in policy["spec"]["egress"]:
         for target in rule["to"]:
+            namespace = target.get("namespaceSelector", {}).get("matchLabels", {})
             pod_selector = target.get("podSelector", {}).get("matchLabels", {})
-            selectors.append(pod_selector)
-    assert {"k8s-app": "kube-dns"} in selectors
-    assert {"app": "litellm"} in selectors
-    assert {"agentic-dev-platform/mediator": "true"} in selectors
+            selectors.append((namespace.get("kubernetes.io/metadata.name"), pod_selector))
+    assert ("kube-system", {"k8s-app": "kube-dns"}) in selectors
+    assert ("agentic-dev-platform", {"app.kubernetes.io/name": "litellm"}) in selectors
+    assert (None, {"agentic-dev-platform/mediator": "true"}) in selectors
 
 
 def test_security_group_policy_targets_the_sandbox_pods() -> None:
@@ -168,3 +169,19 @@ def test_security_group_policy_targets_the_sandbox_pods() -> None:
     assert policy["kind"] == "SecurityGroupPolicy"
     assert policy["apiVersion"].startswith("vpcresources.k8s.aws/")
     assert policy["spec"]["podSelector"]["matchLabels"]["app"] == "openhands-sandbox"
+
+
+def test_a_session_key_reaches_the_agent_server_environment() -> None:
+    spec = SandboxSpec(execution_id="exec-1", image="agent-server:test", session_api_key="k" * 40)
+
+    env = build_pod_manifest(spec)["spec"]["containers"][0]["env"]
+
+    assert {"name": "SESSION_API_KEY", "value": "k" * 40} in env
+
+
+def test_no_session_key_leaves_the_agent_server_on_loopback() -> None:
+    env = build_pod_manifest(SandboxSpec(execution_id="exec-1", image="agent-server:test"))["spec"][
+        "containers"
+    ][0]["env"]
+
+    assert all(variable["name"] != "SESSION_API_KEY" for variable in env)

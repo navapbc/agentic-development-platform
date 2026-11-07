@@ -42,11 +42,6 @@ spec:
                 configMapKeyRef:
                   name: agentic-platform
                   key: repo_intelligence_url
-            - name: JIRA_ACCEPTANCE_FIELD
-              valueFrom:
-                configMapKeyRef:
-                  name: agentic-platform
-                  key: jira_acceptance_field
             - name: MCP_ALLOWED_HOSTS
               value: mcp.internal.example,mcp.internal.example:443
           volumeMounts:

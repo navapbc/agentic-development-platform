@@ -1,6 +1,29 @@
 # Kubernetes manifests
 
-`mcp-gateway.yaml` and `inbound-webhook.yaml` are the base manifests for a cluster running the AWS Load Balancer Controller. `local/` is a kustomize overlay for a sandbox cluster. It deletes both Ingress resources and exposes `inbound-webhook` through a `LoadBalancer` Service instead.
+The files in this directory are the base manifests for the platform workloads on a cluster running the AWS Load Balancer Controller. `local/` is a kustomize overlay for a workstation cluster such as Docker Desktop Kubernetes.
+
+| Manifest | Workloads |
+| --- | --- |
+| `activity-worker.yaml` | The activity worker with its ServiceAccount, the `workspaces` volume claim, and OPA as a sidecar init container bound to the pod's loopback |
+| `review-worker.yaml` | The review worker, which mounts the `workspaces` claim read-only |
+| `litellm.yaml` | LiteLLM with a ClusterIP Service on 4000 |
+| `sandbox.yaml` | The activity worker's Role and RoleBinding in `agent-sandbox` for the sandbox and gate pods, and the gate pod egress policy |
+| `mcp-gateway.yaml`, `inbound-webhook.yaml` | The MCP gateway and the webhook front door, each with an Ingress |
+
+The workers read every platform setting from the `agentic-platform-env` Secret, the environment's config files from the `platform-config` ConfigMap and the `platform-config-secrets` Secret, and the compose or AWS endpoints from the `agentic-platform` ConfigMap. The OpenHands sandbox egress policies live in `openhands/policies`. No manifest mounts a `hostPath` volume.
+
+## The local overlay
+
+The overlay replaces each image with the local build, deletes both Ingress resources, narrows the `workspaces` claim to `ReadWriteOnce`, exposes `inbound-webhook` on 8140 and LiteLLM on 4000 through `LoadBalancer` Services, and mounts the `aws-credentials` Secret into LiteLLM and the review worker through `credential_process`. `inv k8s-reload` and `inv k8s-deploy` render it through `scripts/k8s_render.py`, which adds what derives from the workstation at deploy time:
+
+- the `agentic-platform-env` Secret from `.env`, with each compose service address replaced by `K8S_COMPOSE_ADDRESS` and the port compose publishes, and the workstation-only keys such as `AWS_PROFILE` left out
+- the `platform-config` ConfigMap from the YAML files in `config/<env>`, and the `platform-config-secrets` Secret from its other files, such as the signing keys and the ticket store's AWS profiles
+- the `promotion-policies` ConfigMap from `config/policies`, and the `litellm-config` ConfigMap from `config/platform`
+- the image tag of the current build and its `AGENT_BUILD_ID`
+- a Bedrock relay sidecar in LiteLLM and the review worker under the `jumphost` and `ssh-bastion` connectivity providers
+- the namespaces `K8S_NAMESPACE` and `OPENHANDS_SANDBOX_NAMESPACE` name
+
+Nothing derived is written to disk. The renderer pipes the manifests to `kubectl apply`.
 
 ## Per-environment values
 
@@ -82,4 +105,4 @@ patches:
 
 The `inbound-webhook` Ingress routes `/webhook/pr` and `/webhook/jira` to the service, which serves both. Register the GitHub webhook URL as `https://<webhook-hostname>/webhook/pr` and, when `jira_intake` runs in `webhook` or `hybrid` mode in `config/<env>/integrations.yaml`, the Jira webhook URL as `https://<webhook-hostname>/webhook/jira`. The Deployment reads `JIRA_WEBHOOK_SECRET` from the `agentic-platform` secret under the key `jira_webhook_secret`. Set it to the secret configured at the issuer whenever `jira_intake` runs in `webhook` or `hybrid` mode. The key is optional, so an environment that runs `jira_intake` in polling mode starts without it.
 
-Render an overlay with `kubectl kustomize --load-restrictor LoadRestrictionsNone deploy/kubernetes/local`.
+Render the static part of the overlay with `kubectl kustomize --load-restrictor LoadRestrictionsNone deploy/kubernetes/local`, or the full set with `python -m scripts.k8s_render --build-id <id>`, which prints the Secrets with their values.

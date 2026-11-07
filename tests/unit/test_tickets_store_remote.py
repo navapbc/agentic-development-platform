@@ -182,3 +182,63 @@ def test_preflight_accepts_a_consistent_s3_store(monkeypatch, store, profiles):
     configure_store_remote(store, parse_tickets_store_config(_raw()))
 
     tickets_store_preflight(_preflight_env(monkeypatch, store, _raw()))
+
+
+def test_seed_creates_the_store_with_the_split_remote_and_runs_rebar_init(monkeypatch, tmp_path):
+    rebar_calls: list[tuple[str, ...]] = []
+    run = store_remote.process.run
+
+    def fake_run(command, **kwargs):
+        if command[0] == "rebar":
+            assert kwargs["cwd"] == root
+            rebar_calls.append(tuple(command[1:]))
+            return subprocess.CompletedProcess(command, 0, "", "")
+        return run(command, **kwargs)
+
+    monkeypatch.setattr(store_remote.process, "run", fake_run)
+    root = str(tmp_path / "store")
+
+    seeded = store_remote.seed_store(root, parse_tickets_store_config(_raw()), "2940-c3f4")
+
+    assert seeded is True
+    assert read_store_remote(root) == StoreRemote("origin", READER_URL, WRITER_URL)
+    assert rebar_calls == [("init", "--silent"), ("identity", "use", "2940-c3f4")]
+
+
+def test_seed_leaves_an_existing_store_alone(monkeypatch, store):
+    monkeypatch.setattr(store_remote, "configure_store_remote", pytest.fail)
+
+    assert store_remote.seed_store(store, parse_tickets_store_config(_raw())) is False
+
+
+def test_preflight_seeds_an_absent_s3_store_before_checking_it(monkeypatch, tmp_path, profiles):
+    profiles()
+    root = str(tmp_path / "store")
+    seeded: list[str] = []
+
+    def seed(repo_root, config, identity_id=""):
+        seeded.append(repo_root)
+        subprocess.run(["git", "init", "-q", repo_root], check=True)
+        configure_store_remote(repo_root, config)
+        return True
+
+    monkeypatch.setattr(store_remote, "seed_store", seed)
+
+    tickets_store_preflight(_preflight_env(monkeypatch, root, _raw()))
+
+    assert seeded == [root]
+
+
+def test_preflight_does_not_seed_without_a_store_config(monkeypatch, tmp_path):
+    from services.integration.tickets import store_config
+
+    settings = _preflight_env(monkeypatch, str(tmp_path / "store"), _raw())
+
+    def missing(_settings):
+        raise ConfigError("tickets.yaml has no store section")
+
+    monkeypatch.setattr(store_config, "load_tickets_store_config", missing)
+    monkeypatch.setattr(store_remote, "seed_store", pytest.fail)
+
+    with pytest.raises(ConfigError):
+        tickets_store_preflight(settings)

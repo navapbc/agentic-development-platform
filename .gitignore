@@ -88,8 +88,6 @@ crash.*.log
 .agent-context/
 .agent-workspaces/
 
-# Generated local k8s secret env (derived from .env at deploy time)
-deploy/kubernetes/local/*.secret.env
 .context/compound-engineering/
 
 .sast/

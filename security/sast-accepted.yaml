@@ -178,3 +178,18 @@
   path: docker/tls-sidecar.Dockerfile
   match: ''
   justification: The image runs as a proxy sidecar or as an init container that issues a certificate and exits, so no single image-level HEALTHCHECK fits both. ECS ignores a Dockerfile HEALTHCHECK, and the task definition probes the proxy with the bundled healthprobe binary.
+- tool: trivy
+  rule: KSV-0125
+  path: deploy/kubernetes/litellm.yaml
+  match: 'containers:'
+  justification: The LiteLLM image is the upstream ghcr.io release that compose.yaml pins by the same digest. Trivy's default trusted-registry list has no ghcr.io entry. An EKS overlay replaces the reference with the image mirrored into the account's ECR repository.
+- tool: trivy
+  rule: KSV-0048
+  path: deploy/kubernetes/sandbox.yaml
+  match: '- apiGroups: [""]'
+  justification: The activity worker creates and deletes one OpenHands sandbox pod per execution and one pod per external review gate, which is the function of the Role. It is a namespaced Role bound only to the activity-worker ServiceAccount, so it grants nothing outside agent-sandbox, and it covers pods alone, with no Deployment, Job, Secret, or RBAC resource.
+- tool: trivy
+  rule: KSV-0053
+  path: deploy/kubernetes/sandbox.yaml
+  match: '- apiGroups: [""]'
+  justification: The activity worker copies the execution checkout into each sandbox and gate pod and reads the patch back through pods/exec, the same tar-over-exec transport the pod runner uses. The grant is limited to the agent-sandbox namespace and the activity-worker ServiceAccount, and the pods it reaches are the ephemeral ones that worker created.

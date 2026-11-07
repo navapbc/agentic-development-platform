@@ -104,6 +104,8 @@ def test_every_rewritable_service_publishes_through_a_variable():
     defaults = _declared_ports()
 
     for service, port_map in _COMPOSE_PUBLISHED_PORTS.items():
+        if service not in compose["services"]:
+            continue
         published = {
             entry.rsplit(":", 1)[0]: entry.rsplit(":", 1)[1]
             for entry in compose["services"][service]["ports"]
@@ -145,3 +147,12 @@ def test_alembic_database_url_derives_the_configured_credentials(monkeypatch):
     assert alembic_database_url() == (
         f"postgresql+psycopg://platform:{secret}@localhost:15432/agent_platform"
     )
+
+
+def test_the_cluster_publishes_litellm_on_the_host_port_the_host_tasks_use():
+    documents = yaml.safe_load_all(
+        (COMPOSE_PATH.parent / "deploy" / "kubernetes" / "litellm.yaml").read_text()
+    )
+    service = next(d for d in documents if d and d["kind"] == "Service")
+
+    assert service["spec"]["ports"][0]["port"] == _declared_ports().litellm_host_port

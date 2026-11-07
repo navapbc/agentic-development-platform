@@ -39,6 +39,7 @@ class SandboxSpec:
     labels: Mapping[str, str] = field(default_factory=dict)
     env: Mapping[str, str] = field(default_factory=dict)
     workspace: WorkspaceBinding | None = None
+    session_api_key: str = ""
 
 
 @dataclass(frozen=True)
@@ -46,6 +47,7 @@ class SandboxHandle:
     name: str
     namespace: str
     base_url: str
+    session_api_key: str = ""
 
 
 def pod_name_for(execution_id: str) -> str:
@@ -79,6 +81,10 @@ def build_pod_manifest(spec: SandboxSpec) -> dict:
         {"name": "HOME", "value": _SANDBOX_HOME},
     ]
     env += [{"name": key, "value": value} for key, value in spec.env.items()]
+    # The agent server binds the pod IP only when a session key is set, and then requires
+    # that key on every call, so the in-cluster driver can reach it and nothing else can.
+    if spec.session_api_key:
+        env.append({"name": "SESSION_API_KEY", "value": spec.session_api_key})
     volumes = [
         {"name": "agent-tmp", "emptyDir": {}},
         {"name": "agent-home", "emptyDir": {}},
@@ -201,7 +207,12 @@ class KubernetesSandboxProvisioner:
             await asyncio.to_thread(core.create_namespaced_pod, spec.namespace, manifest)
         pod_ip = await self._wait_ready(core, name, spec.namespace)
         base_url = f"http://{pod_ip}:{spec.server_port}"
-        return SandboxHandle(name=name, namespace=spec.namespace, base_url=base_url)
+        return SandboxHandle(
+            name=name,
+            namespace=spec.namespace,
+            base_url=base_url,
+            session_api_key=spec.session_api_key,
+        )
 
     async def _wait_absent(self, core, name: str, namespace: str) -> None:
         from kubernetes.client.exceptions import ApiException
@@ -336,6 +347,7 @@ class FakeSandboxProvisioner:
             name=pod_name_for(spec.execution_id),
             namespace=spec.namespace,
             base_url=self._base_url,
+            session_api_key=spec.session_api_key,
         )
         self.specs.append(spec)
         self.provisioned.append(handle)
@@ -413,6 +425,7 @@ class PortForwardSandboxProvisioner:
             name=handle.name,
             namespace=handle.namespace,
             base_url=f"http://127.0.0.1:{local_port}",
+            session_api_key=handle.session_api_key,
         )
 
     async def _wait_forward(self, port: int, proc: process.Popen) -> None:

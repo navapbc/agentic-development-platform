@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 from pathlib import Path
 
 import pytest
@@ -79,6 +80,10 @@ EXPECTED_TASKS = {
     "approve-pr",
     "k8s-deploy",
     "k8s-delete",
+    "k8s-reload",
+    "aws-login",
+    "repos-sync",
+    "fetch-results",
     "webhook-setup",
     "webhook-teardown",
 }
@@ -108,7 +113,10 @@ def project(tmp_path, monkeypatch):
 
 
 def _in_activity_worker(command: str) -> str:
-    return f"{tasks_module.COMPOSE} -f compose.yaml exec -T activity-worker {command}"
+    from scripts.config import get_settings
+    from scripts.k8s_cluster import exec_argv
+
+    return shlex.join(exec_argv(get_settings(), shlex.split(command), tty=False))
 
 
 def test_repair_runs_in_the_activity_worker(project):
@@ -168,15 +176,15 @@ def test_no_host_task_invokes_a_bare_python(project):
     assert 'c.run(f"python ' not in source
 
 
-def test_rebar_store_remote_runs_in_a_one_off_worker_container(project):
+def test_rebar_store_remote_runs_in_a_one_off_worker_pod(project):
     container, host = _RecordingContext(), _RecordingContext()
 
     tasks_module.rebar_store_remote(container)
     tasks_module.rebar_store_remote(host, local=True)
 
     assert container.commands == [
-        f"{tasks_module.COMPOSE} -f compose.yaml run --rm --no-deps activity-worker "
-        "python -m scripts.rebar_store_remote"
+        f"{tasks_module.HOST_PYTHON} -m scripts.k8s_cluster one-off --compose-file compose.yaml "
+        "-- python -m scripts.rebar_store_remote"
     ]
     assert host.commands == [f"{tasks_module.HOST_PYTHON} -m scripts.rebar_store_remote"]
 

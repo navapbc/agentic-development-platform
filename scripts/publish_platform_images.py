@@ -62,6 +62,7 @@ REPO_INTELLIGENCE = ImageSpec(
     ),
 )
 COLLECTOR = ImageSpec("otel-collector", "docker/otel-collector.Dockerfile", ("docker/healthprobe",))
+OPA = ImageSpec("opa", "docker/opa.Dockerfile", ("docker/healthprobe",))
 TLS_SIDECAR = ImageSpec(
     "tls-sidecar", "docker/tls-sidecar.Dockerfile", ("docker/tls-sidecar", "docker/healthprobe")
 )

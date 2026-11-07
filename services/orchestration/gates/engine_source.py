@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from services import process
@@ -22,6 +23,9 @@ _OUTPUT_FORMATS = frozenset({REVIEW_JSON, SARIF})
 WARN = "warn"
 ABORT = "abort"
 _ON_UNAVAILABLE = frozenset({WARN, ABORT})
+
+_PLATFORM_ROOT = Path(__file__).resolve().parents[3]
+_ENGINE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
 class EngineSourceError(Exception):
@@ -257,11 +261,43 @@ def parse_gate_engine_configs(raw: dict) -> tuple[GateEngineConfig, ...]:
         if not isinstance(entry, dict) or not str(entry.get("name", "")):
             raise ConfigError("each gate_engine entry must be a mapping with a name")
         config = parse_gate_engine_config(entry)
+        if config.enabled and config.mode == LOCAL and not _ENGINE_NAME.match(config.name):
+            raise ConfigError(
+                f"gate_engine name {config.name!r} names its directory in local mode, so it must "
+                f"match {_ENGINE_NAME.pattern}"
+            )
         if config.name in seen:
             raise ConfigError(f"gate_engine.engines has a duplicate name {config.name!r}")
         seen.add(config.name)
         configs.append(config)
     return tuple(configs)
+
+
+def engine_host_path(config: GateEngineConfig, base: Path = _PLATFORM_ROOT) -> Path:
+    """Return a local-mode engine's checkout on the host, resolving a relative path from base."""
+    path = Path(config.local_path).expanduser()
+    return path if path.is_absolute() else (base / path).resolve()
+
+
+def locate_local_engines(
+    configs: tuple[GateEngineConfig, ...], *, engine_root: str, in_image: bool
+) -> tuple[GateEngineConfig, ...]:
+    """Point each local-mode engine at the checkout this process reads.
+
+    Inside the platform image, inv repos-sync copies the engine's working tree to
+    <engine_root>/<name>. On the host the configured local_path is the checkout.
+    """
+    located = []
+    for config in configs:
+        if config.mode == LOCAL and config.local_path:
+            path = (
+                f"{engine_root.rstrip('/')}/{config.name}"
+                if in_image
+                else str(engine_host_path(config))
+            )
+            config = replace(config, local_path=path)
+        located.append(config)
+    return tuple(located)
 
 
 def enabled_engines(configs: tuple[GateEngineConfig, ...]) -> tuple[GateEngineConfig, ...]:
@@ -278,7 +314,7 @@ def triage_engine(configs: tuple[GateEngineConfig, ...]) -> GateEngineConfig | N
 def load_gate_engine_configs(
     settings=None, *, environment: str | None = None
 ) -> tuple[GateEngineConfig, ...]:
-    from scripts.config import get_settings
+    from scripts.config import get_settings, in_platform_image
 
     from services.integration.credentials import (
         env_config_dir,
@@ -291,4 +327,8 @@ def load_gate_engine_configs(
     if not (env_config_dir(env) / "gate_engine.yaml").exists():
         return ()
     require_current_config("gate_engine", environment=env)
-    return parse_gate_engine_configs(load_env_config("gate_engine", environment=env))
+    return locate_local_engines(
+        parse_gate_engine_configs(load_env_config("gate_engine", environment=env)),
+        engine_root=resolved.gate_engine_root,
+        in_image=in_platform_image(),
+    )

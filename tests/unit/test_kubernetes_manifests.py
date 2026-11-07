@@ -45,14 +45,15 @@ def _overlay_patch_env(kind: str, name: str) -> dict[str, Any]:
 def _hermetic_overlay(root: Path) -> Path:
     """Reproduce the tree the overlay walks up to, from tracked files only.
 
-    Its generators read an operator secret and four `config/local` files that the
-    repository does not track, so a checkout renders in place only on a machine that
-    already runs the sandbox. The copy skips any secret file an operator holds, so the
-    render reads the same inputs everywhere.
+    Its generators read four `config/local` files that the repository does not track, so a
+    checkout renders in place only on a machine that already runs the sandbox, and it
+    includes the sandbox network policies under `openhands/policies`.
     """
     manifests = root / "deploy" / "kubernetes"
-    shutil.copytree(MANIFESTS, manifests, ignore=shutil.ignore_patterns("*.secret.env"))
-    (manifests / "local" / "agentic-platform.secret.env").write_text("")
+    shutil.copytree(MANIFESTS, manifests)
+    shutil.copytree(
+        MANIFESTS.parents[1] / "openhands" / "policies", root / "openhands" / "policies"
+    )
     config_local = root / "config" / "local"
     config_local.mkdir(parents=True)
     for name in GENERATED_CONFIG:

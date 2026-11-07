@@ -18,7 +18,7 @@ def _git(cwd: Path, *args: str) -> str:
 
 
 @pytest.fixture
-def local_repo(tmp_path: Path) -> tuple[Path, Path]:
+def local_repo(tmp_path: Path) -> Path:
     root = tmp_path / "repos"
     repo = root / "demo"
     repo.mkdir(parents=True)
@@ -28,7 +28,7 @@ def local_repo(tmp_path: Path) -> tuple[Path, Path]:
     (repo / "README.md").write_text("base\n", encoding="utf-8")
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "base")
-    return root, tmp_path / "artifacts"
+    return root
 
 
 def _staged_request(
@@ -70,7 +70,7 @@ def test_each_repository_resolves_its_configured_backend(monkeypatch, tmp_path) 
 def test_the_git_host_routes_each_repository_to_its_backend(
     monkeypatch, tmp_path, local_repo
 ) -> None:
-    root, artifacts = local_repo
+    root = local_repo
     configure_repositories(
         monkeypatch,
         tmp_path / "config",
@@ -82,9 +82,7 @@ def test_the_git_host_routes_each_repository_to_its_backend(
         classmethod(lambda cls, settings=None: sentinel),
     )
     host = build_git_host(
-        hermetic_settings(
-            repository_root=str(root), source_control_local_artifacts_root=str(artifacts)
-        )
+        hermetic_settings(repository_root=str(root))
     )
 
     assert isinstance(host, RoutingGitHost)
@@ -93,16 +91,16 @@ def test_the_git_host_routes_each_repository_to_its_backend(
 
 
 def test_local_host_conforms_to_git_host(local_repo) -> None:
-    root, artifacts = local_repo
-    host: GitHost = LocalGitHost(root, artifacts_root=artifacts)
+    root = local_repo
+    host: GitHost = LocalGitHost(root)
     assert host is not None
 
 
 @pytest.mark.asyncio
 async def test_commit_lands_on_local_branch_without_push(local_repo, tmp_path: Path) -> None:
-    root, artifacts = local_repo
+    root = local_repo
     repo = root / "demo"
-    host = LocalGitHost(root, artifacts_root=artifacts)
+    host = LocalGitHost(root)
 
     await host.ensure_branch("demo", "agent/T-1", "main")
     request = _staged_request(
@@ -127,8 +125,8 @@ async def test_commit_lands_on_local_branch_without_push(local_repo, tmp_path: P
 
 @pytest.mark.asyncio
 async def test_commit_is_idempotent_on_replay(local_repo, tmp_path: Path) -> None:
-    root, artifacts = local_repo
-    host = LocalGitHost(root, artifacts_root=artifacts)
+    root = local_repo
+    host = LocalGitHost(root)
     request = _staged_request(
         root,
         tmp_path,
@@ -145,9 +143,9 @@ async def test_commit_is_idempotent_on_replay(local_repo, tmp_path: Path) -> Non
 
 @pytest.mark.asyncio
 async def test_publish_writes_artifacts_and_opens_no_remote_pr(local_repo, tmp_path: Path) -> None:
-    root, artifacts = local_repo
+    root = local_repo
     repo = root / "demo"
-    host = LocalGitHost(root, artifacts_root=artifacts)
+    host = LocalGitHost(root)
     await host.commit_and_push(
         _staged_request(
             root,
@@ -163,11 +161,12 @@ async def test_publish_writes_artifacts_and_opens_no_remote_pr(local_repo, tmp_p
 
     assert pr.draft is True
     assert pr.state == "open"
-    summary = artifacts / "demo" / "agent/T-3" / "SUMMARY.md"
-    patch = artifacts / "demo" / "agent/T-3" / "change.patch"
-    assert "Add feature" in summary.read_text(encoding="utf-8")
-    assert "feature.txt" in patch.read_text(encoding="utf-8")
+    summary = _git(repo, "show", "refs/agent-results/agent/T-3:SUMMARY.md")
+    patch = _git(repo, "show", "refs/agent-results/agent/T-3:change.patch")
+    assert "Add feature" in summary
+    assert "feature.txt" in patch
     assert _git(repo, "remote").strip() == ""
+    assert _git(repo, "status", "--porcelain").strip() == ""
 
     found = await host.find_open_pr("demo", "agent/T-3")
     assert found is not None and found.number == pr.number
@@ -178,12 +177,13 @@ async def test_publish_writes_artifacts_and_opens_no_remote_pr(local_repo, tmp_p
     closed = await host.close_pr("demo", pr.number)
     assert closed.state == "closed"
     assert await host.find_open_pr("demo", "agent/T-3") is None
+    assert _git(repo, "show", "refs/agent-results/agent/T-3:change.patch") == patch
 
 
 @pytest.mark.asyncio
 async def test_local_publish_fills_result_with_branch_and_patch(local_repo, tmp_path: Path) -> None:
-    root, artifacts = local_repo
-    host = LocalGitHost(root, artifacts_root=artifacts)
+    root = local_repo
+    host = LocalGitHost(root)
     await host.commit_and_push(
         _staged_request(
             root,
@@ -200,16 +200,16 @@ async def test_local_publish_fills_result_with_branch_and_patch(local_repo, tmp_
     assert isinstance(result, PublishResult)
     assert result.branch == "agent/T-4"
     assert result.completion_signal_id != ""
-    assert Path(result.patch_path).exists()
-    assert "feature.txt" in Path(result.patch_path).read_text(encoding="utf-8")
+    assert result.patch_path == "refs/agent-results/agent/T-4:change.patch"
+    assert "feature.txt" in (await host.read_result("demo", "agent/T-4", "change.patch") or "")
 
 
 @pytest.mark.asyncio
 async def test_local_discovery_finds_open_branch_then_none_after_close(
     local_repo, tmp_path: Path
 ) -> None:
-    root, artifacts = local_repo
-    host = LocalGitHost(root, artifacts_root=artifacts)
+    root = local_repo
+    host = LocalGitHost(root)
     await host.commit_and_push(
         _staged_request(
             root,
@@ -306,9 +306,9 @@ def test_publish_result_carries_no_approval_or_status_field() -> None:
 async def test_publish_after_the_base_moved_keeps_the_patch_to_the_change(
     local_repo, tmp_path: Path
 ) -> None:
-    root, artifacts = local_repo
+    root = local_repo
     repo = root / "demo"
-    host = LocalGitHost(root, artifacts_root=artifacts)
+    host = LocalGitHost(root)
     await host.commit_and_push(
         _staged_request(
             root,
@@ -335,15 +335,15 @@ async def test_publish_after_the_base_moved_keeps_the_patch_to_the_change(
     )
     result = await host.publish("demo", "agent/T-6", "main", "Add feature", "body")
 
-    patch = Path(result.patch_path).read_text(encoding="utf-8")
+    patch = _git(repo, "show", result.patch_path)
     assert "feature.txt" in patch
     assert "notes.md" not in patch
 
 
 async def test_rerun_on_an_unchanged_base_keeps_a_single_parent(local_repo, tmp_path: Path) -> None:
-    root, artifacts = local_repo
+    root = local_repo
     repo = root / "demo"
-    host = LocalGitHost(root, artifacts_root=artifacts)
+    host = LocalGitHost(root)
     first = await host.commit_and_push(
         _staged_request(
             root,

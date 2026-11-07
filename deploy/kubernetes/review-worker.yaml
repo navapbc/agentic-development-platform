@@ -1,0 +1,133 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: review-worker
+  namespace: agentic-dev-platform
+  labels:
+    app.kubernetes.io/name: review-worker
+    app.kubernetes.io/part-of: agentic-dev-platform
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: review-worker
+  namespace: agentic-dev-platform
+  labels:
+    app.kubernetes.io/name: review-worker
+    app.kubernetes.io/part-of: agentic-dev-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: review-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: review-worker
+        app.kubernetes.io/part-of: agentic-dev-platform
+      annotations:
+        agentic-dev-platform/bedrock-client: "true"
+    spec:
+      serviceAccountName: review-worker
+      securityContext:
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: review-worker
+          image: 123456789012.dkr.ecr.us-east-1.amazonaws.com/agentic-dev-platform/platform:0.3.0
+          command:
+            - python
+            - -m
+            - services.orchestration.worker
+          envFrom:
+            - secretRef:
+                name: agentic-platform-env
+          env:
+            - name: WORKER_ROLE
+              value: review
+            - name: HEALTH_HEARTBEAT_FILE
+              value: /tmp/worker.heartbeat
+            - name: EXECUTION_WORKSPACE_ROOT
+              value: /workspaces
+            - name: REPOSITORY_ROOT
+              value: /workspaces/repositories
+            - name: LITELLM_BASE_URL
+              value: http://litellm:4000
+            - name: REBAR_LLM_CONFIG_FILE
+              value: /app/config/platform/rebar-review.toml
+            - name: REPO_INTELLIGENCE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: agentic-platform
+                  key: repo_intelligence_url
+            - name: COORDINATION_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: agentic-platform
+                  key: coordination_url
+            - name: TEMPORAL_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: agentic-platform
+                  key: temporal_host
+            - name: TEMPORAL_NAMESPACE
+              valueFrom:
+                configMapKeyRef:
+                  name: agentic-platform
+                  key: temporal_namespace
+          volumeMounts:
+            - name: workspaces
+              mountPath: /workspaces
+              readOnly: true
+            - name: platform-config
+              mountPath: /app/config/local
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            - name: home
+              mountPath: /home/appuser
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            capabilities:
+              drop:
+                - ALL
+          startupProbe:
+            exec:
+              command: [python, -m, services.healthcheck, heartbeat, /tmp/worker.heartbeat, --max-age, "60"]
+            periodSeconds: 10
+            failureThreshold: 30
+          livenessProbe:
+            exec:
+              command: [python, -m, services.healthcheck, heartbeat, /tmp/worker.heartbeat, --max-age, "60"]
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+      volumes:
+        - name: workspaces
+          persistentVolumeClaim:
+            claimName: workspaces
+            readOnly: true
+        - name: platform-config
+          projected:
+            sources:
+              - configMap:
+                  name: platform-config
+              - secret:
+                  name: platform-config-secrets
+        - name: tmp
+          emptyDir: {}
+        - name: home
+          emptyDir: {}

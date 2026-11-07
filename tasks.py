@@ -69,12 +69,30 @@ def _on_host(command: str) -> str:
     return command
 
 
-def _run_scripted(c, command: str, *, local: bool, service: str = "activity-worker") -> None:
-    """Run a python -m command in the activity-worker container, or on the host with local=True."""
+def _run_scripted(c, command: str, *, local: bool) -> None:
+    """Run a python -m command in the in-cluster activity worker, or on the host with local=True."""
     if local:
         c.run(_on_host(command), pty=True)
-    else:
-        c.run(f"{COMPOSE} {_compose_files()} exec -T {service} {command}", pty=True)
+        return
+    from scripts.config import get_settings
+    from scripts.k8s_cluster import exec_argv
+
+    c.run(shlex.join(exec_argv(get_settings(), shlex.split(command), tty=False)), pty=True)
+
+
+def _compose_file_flags() -> str:
+    """Name the compose files the cluster scripts read the published ports from."""
+    tokens = shlex.split(_compose_files())
+    names = [tokens[index + 1] for index, part in enumerate(tokens) if part == "-f"]
+    return "".join(f" --compose-file {shlex.quote(name)}" for name in names)
+
+
+def _k8s(c, action: str, build_id: str = "", extra: str = "") -> None:
+    flags = f" --build-id {shlex.quote(build_id)}" if build_id else ""
+    c.run(
+        f"{HOST_PYTHON} -m scripts.k8s_cluster {action}{flags}{_compose_file_flags()}{extra}",
+        pty=True,
+    )
 
 
 @task(help={"detach": "Run the tunnel in the background."})
@@ -129,7 +147,53 @@ def local_up(c, force=False):
     _temporal_admin(c, "schema")
     c.run(f"{COMPOSE} {files} up -d --wait --wait-timeout 600 temporal")
     _temporal_admin(c, "namespace")
-    c.run(f"{COMPOSE} {files} up -d --wait --wait-timeout 600")
+    c.run(f"{COMPOSE} {files} up -d --wait --wait-timeout 600 --remove-orphans")
+    _k8s(c, "reload", build_id)
+    aws_login(c)
+    repos_sync(c)
+
+
+@task(
+    help={
+        "force": "Replace the workers even when running executions are pinned to the "
+        "outgoing build."
+    }
+)
+def k8s_reload(c, force=False):
+    """Rebuild the platform images for the current sources and roll compose and the cluster.
+
+    The compose workflow worker and the cluster workers register as one Worker Deployment
+    version, so both move to the build these sources produce.
+    """
+    outgoing = recorded_build_id()
+    build_id = resolve_build_id()
+    if build_id != outgoing and not force:
+        _refuse_to_strand(outgoing)
+    os.environ["AGENT_BUILD_ID"] = build_id
+    files = _compose_files()
+    c.run(f"{COMPOSE} {files} build --build-arg AGENT_BUILD_ID={shlex.quote(build_id)}")
+    c.run(f"{COMPOSE} {files} up -d --wait --wait-timeout 600 --remove-orphans")
+    _k8s(c, "reload", build_id)
+
+
+@task
+def aws_login(c):
+    """Sign in when needed and write the AWS credentials to the cluster Secret."""
+    c.run(f"{HOST_PYTHON} -m scripts.aws_login", pty=True)
+
+
+@task(help={"repo": "Sync only this repository or gate engine."})
+def repos_sync(c, repo=""):
+    """Copy the local-backend repositories and local gate engines into the cluster volume."""
+    flag = f" --repo {shlex.quote(repo)}" if repo else ""
+    c.run(f"{HOST_PYTHON} -m scripts.repos_sync{flag}", pty=True)
+
+
+@task(help={"repo": "Fetch only this repository."})
+def fetch_results(c, repo=""):
+    """Fetch the agent branches and their results refs from the cluster into the host checkouts."""
+    flag = f" --repo {shlex.quote(repo)}" if repo else ""
+    c.run(f"{HOST_PYTHON} -m scripts.fetch_results{flag}", pty=True)
 
 
 @dataclass(frozen=True)
@@ -304,25 +368,37 @@ def _refuse_to_strand(outgoing: str) -> None:
 
 @task
 def local_down(c):
-    """Stop the local stack (containers + network; volumes preserved)."""
+    """Stop the local stack and scale the cluster workloads to zero (volumes preserved)."""
+    _k8s(c, "stop")
     c.run(f"{COMPOSE} {_compose_files()} down")
 
 
 @task
 def local_stop(c):
-    """Stop the local stack without removing containers (containers + volumes preserved)."""
+    """Stop the compose containers without removing them and scale the cluster workloads to zero."""
+    _k8s(c, "stop")
     c.run(f"{COMPOSE} {_compose_files()} stop")
 
 
 @task
 def local_destroy(c):
-    """Bring the local stack down and delete its volumes (destroys Postgres and index data)."""
+    """Remove the stack and its volumes, including the cluster workspace volume."""
+    _k8s(c, "delete", recorded_build_id(), " --volumes")
     c.run(f"{COMPOSE} {_compose_files()} down --volumes --remove-orphans")
 
 
 @task(help={"service": "Optional single service to tail."})
 def logs(c, service=""):
-    """Follow logs for the stack or a single service."""
+    """Follow logs for the compose stack, or for one compose service or cluster deployment."""
+    from scripts.k8s_cluster import DEPLOYMENTS
+
+    if service in DEPLOYMENTS:
+        from scripts.config import get_settings
+        from scripts.k8s_cluster import namespaced
+
+        argv = namespaced(get_settings(), "logs", "-f", f"deployment/{service}", "--all-containers")
+        c.run(shlex.join(argv), pty=True)
+        return
     c.run(f"{COMPOSE} {_compose_files()} logs -f {service}".strip(), pty=True)
 
 
@@ -362,7 +438,7 @@ def seed(c):
         "status": "Comma-separated Jira statuses to import (default: all).",
         "limit": "Import at most N tickets (0 means no limit).",
         "reset": "Wipe the store and re-init empty before importing.",
-        "local": "Run on the host instead of the activity-worker container.",
+        "local": "Run on the host instead of the activity worker pod.",
     }
 )
 def import_rebar_tickets(c, xlsx="", root="", status="", limit=0, reset=False, local=False):
@@ -384,7 +460,7 @@ def import_rebar_tickets(c, xlsx="", root="", status="", limit=0, reset=False, l
         "new": "Report new tickets.",
         "field-changes": "Report field changes.",
         "status-changes": "Report status changes.",
-        "local": "Run on the host instead of in the activity-worker container.",
+        "local": "Run on the host instead of in the activity worker pod.",
     }
 )
 def rebar_changes(c, new=False, field_changes=False, status_changes=False, local=False):
@@ -399,15 +475,15 @@ def rebar_changes(c, new=False, field_changes=False, status_changes=False, local
     _run_scripted(c, f"python -m scripts.rebar_poll {' '.join(flags)}".strip(), local=local)
 
 
-@task(help={"local": "Run on the host instead of in the activity-worker container."})
+@task(help={"local": "Run on the host instead of in the activity worker pod."})
 def rebar_store_remote(c, local=False):
     """Point the rebar ticket store at its S3 bucket as the reader for fetch and writer for push."""
     command = "python -m scripts.rebar_store_remote"
     if local:
         c.run(_on_host(command), pty=True)
         return
-    # A one-off container, because the activity worker refuses to start while the remote is wrong.
-    c.run(f"{COMPOSE} {_compose_files()} run --rm --no-deps activity-worker {command}", pty=True)
+    # A one-off pod, because the activity worker refuses to start while the remote is wrong.
+    _k8s(c, "one-off", extra=f" -- {command}")
 
 
 def _rebar_gate_env() -> dict[str, str]:
@@ -486,6 +562,7 @@ def operator_done(c, workflow_id, repo, branch, completion_signal_id="", closed_
         flags += f" --completion-signal-id {completion_signal_id}"
     if closed_unmerged:
         flags += " --closed-unmerged"
+    fetch_results(c, repo=repo)
     c.run(
         f"{HOST_PYTHON} -m scripts.operator_done {flags}",
         pty=True,
@@ -891,7 +968,7 @@ def reap(c, apply=False):
 @task(
     help={
         "root": "Workspace root to scrub (empty uses EXECUTION_WORKSPACE_ROOT).",
-        "local": "Run on the host instead of the activity-worker container.",
+        "local": "Run on the host instead of the activity worker pod.",
     }
 )
 def scrub_workspaces(c, root="", local=False):
@@ -906,7 +983,7 @@ def scrub_workspaces(c, root="", local=False):
         "schedule": "Install the Temporal intake schedule for the source.",
         "retry": "Clear the intake dedup for a failed ticket so the next pass relaunches it.",
         "repo": "Scope a --retry to one repository.",
-        "local": "Run on the host instead of the activity-worker container.",
+        "local": "Run on the host instead of the activity worker pod.",
     }
 )
 def intake(c, source="", schedule=False, retry="", repo="", local=False):
@@ -925,7 +1002,7 @@ def intake(c, source="", schedule=False, retry="", repo="", local=False):
     help={
         "repo": "Allowlisted repository name to pre-index.",
         "commit": "Commit to index (empty uses the head).",
-        "local": "Run on the host instead of the activity-worker container.",
+        "local": "Run on the host instead of the activity worker pod.",
     }
 )
 def index_repo(c, repo, commit="", local=False):
@@ -939,7 +1016,7 @@ def index_repo(c, repo, commit="", local=False):
         "issue": "Jira issue key parked for human repair, for example ADSER-24.",
         "retry": "Re-run CI and repair on the current branch head.",
         "abandon": "Abandon the workflow so intake can relaunch a fresh execution.",
-        "local": "Run on the host instead of the activity-worker container.",
+        "local": "Run on the host instead of the activity worker pod.",
     }
 )
 def repair(c, issue, retry=False, abandon=False, local=False):
@@ -956,7 +1033,7 @@ def repair(c, issue, retry=False, abandon=False, local=False):
         "gate": "Name of the human gate to resolve, for example plan.",
         "approve": "Approve the gate and continue the run.",
         "reject": "Reject the gate and cancel the run.",
-        "local": "Run on the host instead of the activity-worker container.",
+        "local": "Run on the host instead of the activity worker pod.",
     }
 )
 def gate(c, issue, gate, approve=False, reject=False, local=False):
@@ -973,7 +1050,7 @@ def gate(c, issue, gate, approve=False, reject=False, local=False):
     help={
         "issue": "Jira issue key to restart, for example ADSER-24.",
         "repo": "Scope the intake retry to one repository when the issue fanned out to several.",
-        "local": "Run on the host instead of the activity-worker container.",
+        "local": "Run on the host instead of the activity worker pod.",
     }
 )
 def restart(c, issue, repo="", local=False):
@@ -1096,87 +1173,19 @@ def approve_pr(c, workflow_id, reject=False, pr_closed=False, merged=False):
     c.run(f"{HOST_PYTHON} -m scripts.approve_pr {flags}".strip(), pty=True)
 
 
-_K8S_LOCAL = "deploy/kubernetes/local"
-_K8S_RENDER = f"kubectl kustomize --load-restrictor LoadRestrictionsNone {_K8S_LOCAL}"
-_K8S_IMAGE = "agentic-dev-platform-local"
-_K8S_SECRET_ENV = f"{_K8S_LOCAL}/agentic-platform.secret.env"
-
-
-def _git_output(*args: str) -> str:
-    return process.run(
-        ["git", *args],
-        timeout=process.SHORT_COMMAND_TIMEOUT_SECONDS,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.strip()
-
-
-def _k8s_image_tag() -> str:
-    import hashlib
-    import re
-
-    branch = _git_output("rev-parse", "--abbrev-ref", "HEAD")
-    sha = _git_output("rev-parse", "--short", "HEAD")
-    base = f"{re.sub(r'[^A-Za-z0-9_.-]', '-', branch)}_{sha}"
-    dirty = _git_output("status", "--porcelain")
-    if not dirty:
-        return base
-    digest = hashlib.sha256((_git_output("diff", "HEAD") + "\n" + dirty).encode()).hexdigest()
-    return f"{base}_{digest[:7]}"
-
-
-def _read_env_file(path: str) -> dict[str, str]:
-    values: dict[str, str] = {}
-    with open(path, encoding="utf-8") as handle:
-        for raw in handle:
-            line = raw.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, value = line.split("=", 1)
-            values[key.strip()] = value.strip()
-    return values
-
-
-def _write_k8s_secret_env() -> None:
-    env = _read_env_file(".env")
-    database_url = env.get("DATABASE_URL", "").replace("@postgres:", "@host.docker.internal:")
-    github_webhook_secret = env.get("GITHUB_WEBHOOK_SECRET", "local-demo-secret")
-    jira_webhook_secret = env.get("JIRA_WEBHOOK_SECRET", "local-demo-secret")
-    with open(_K8S_SECRET_ENV, "w", encoding="utf-8") as handle:
-        handle.write(f"database_url={database_url}\n")
-        handle.write(f"github_webhook_secret={github_webhook_secret}\n")
-        handle.write(f"jira_webhook_secret={jira_webhook_secret}\n")
-
-
-@task(help={"build": "Build and tag the image from docker/Dockerfile before deploying."})
+@task(help={"build": "Build and load the images of the current sources before deploying."})
 def k8s_deploy(c, build=False):
-    """Deploy the sandbox namespace, mcp-gateway, and inbound-webhook to the local cluster."""
-    image = f"{_K8S_IMAGE}:{_k8s_image_tag()}"
+    """Apply the cluster manifests for the last build and roll every deployment."""
     if build:
-        c.run(
-            f"docker build -f docker/Dockerfile -t {image} .",
-            pty=True,
-        )
-    _write_k8s_secret_env()
-    c.run(f"kubectl apply -f {_K8S_LOCAL}/namespaces.yaml", pty=True)
-    c.run(f"{_K8S_RENDER} | sed 's|{_K8S_IMAGE}:local|{image}|g' | kubectl apply -f -", pty=True)
-    c.run("kubectl rollout restart deployment/mcp-gateway -n agentic-dev-platform", pty=True)
-    c.run("kubectl rollout restart deployment/inbound-webhook -n agentic-dev-platform", pty=True)
-    c.run(
-        "kubectl rollout status deployment/mcp-gateway -n agentic-dev-platform --timeout=120s",
-        pty=True,
-    )
-    c.run(
-        "kubectl rollout status deployment/inbound-webhook -n agentic-dev-platform --timeout=120s",
-        pty=True,
-    )
+        k8s_reload(c)
+        return
+    _k8s(c, "deploy", recorded_build_id())
 
 
-@task
-def k8s_delete(c):
-    """Remove the local mcp-gateway and inbound-webhook deployment."""
-    c.run(f"{_K8S_RENDER} | kubectl delete --ignore-not-found -f -", pty=True)
+@task(help={"volumes": "Also delete the workspace volume and everything on it."})
+def k8s_delete(c, volumes=False):
+    """Remove the cluster workloads, keeping the namespaces and, unless asked, the volume."""
+    _k8s(c, "delete", recorded_build_id(), " --volumes" if volumes else "")
 
 
 @task(
@@ -1264,6 +1273,10 @@ for _t in (
     approve_pr,
     k8s_deploy,
     k8s_delete,
+    k8s_reload,
+    aws_login,
+    repos_sync,
+    fetch_results,
     webhook_setup,
     webhook_teardown,
 ):

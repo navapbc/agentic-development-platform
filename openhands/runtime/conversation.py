@@ -50,6 +50,7 @@ class ConversationDriver(Protocol):
         caps: RuntimeCaps,
         working_dir: str = "",
         metadata: dict[str, str] | None = None,
+        session_api_key: str = "",
     ) -> ImplementationOutcome: ...
 
 
@@ -68,9 +69,10 @@ class RemoteConversationDriver:
         caps: RuntimeCaps,
         working_dir: str = "",
         metadata: dict[str, str] | None = None,
+        session_api_key: str = "",
     ) -> ImplementationOutcome:
         return await asyncio.to_thread(
-            self._run_sync, base_url, task, context, caps, working_dir, metadata
+            self._run_sync, base_url, task, context, caps, working_dir, metadata, session_api_key
         )
 
     def _run_sync(
@@ -81,6 +83,7 @@ class RemoteConversationDriver:
         caps: RuntimeCaps,
         working_dir: str = "",
         metadata: dict[str, str] | None = None,
+        session_api_key: str = "",
     ) -> ImplementationOutcome:
         from openhands.sdk import LLM, AgentContext, Conversation, Workspace
         from openhands.sdk.event import ActionEvent
@@ -107,7 +110,11 @@ class RemoteConversationDriver:
             agent = agent.model_copy(
                 update={"agent_context": AgentContext(system_message_suffix=suffix)}
             )
-        workspace = Workspace(host=base_url, working_dir=working_dir or "workspace/project")
+        workspace = Workspace(
+            host=base_url,
+            working_dir=working_dir or "workspace/project",
+            api_key=session_api_key or None,
+        )
 
         def on_event(event: object) -> None:
             if isinstance(event, ActionEvent):
@@ -241,6 +248,7 @@ class FakeConversationDriver:
         self._summary = summary
         self._fail = fail
         self.calls: list[str] = []
+        self.session_api_keys: list[str] = []
         self.metadata: dict[str, str] | None = None
 
     async def run_task(
@@ -252,8 +260,10 @@ class FakeConversationDriver:
         caps: RuntimeCaps,
         working_dir: str = "",
         metadata: dict[str, str] | None = None,
+        session_api_key: str = "",
     ) -> ImplementationOutcome:
         self.calls.append(base_url)
+        self.session_api_keys.append(session_api_key)
         self.metadata = metadata
         tracker = CapTracker(caps)
         if self._fail:

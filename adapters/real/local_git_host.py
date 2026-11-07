@@ -24,9 +24,20 @@ from adapters.interfaces.git_host import (
 from scripts.config import Settings, get_settings
 from services import process
 
-_PULLS_FILE = "pulls.json"
-_SUMMARY_FILE = "SUMMARY.md"
-_PATCH_FILE = "change.patch"
+RESULTS_REF_PREFIX = "refs/agent-results/"
+PULL_FILE = "pull.json"
+SUMMARY_FILE = "SUMMARY.md"
+PATCH_FILE = "change.patch"
+_RESULTS_IDENTITY = {
+    "GIT_AUTHOR_NAME": "agentic-dev-platform",
+    "GIT_AUTHOR_EMAIL": "agentic-dev-platform@localhost",
+    "GIT_COMMITTER_NAME": "agentic-dev-platform",
+    "GIT_COMMITTER_EMAIL": "agentic-dev-platform@localhost",
+}
+
+
+def results_ref(branch: str) -> str:
+    return f"{RESULTS_REF_PREFIX}{branch}"
 
 
 @dataclass(frozen=True)
@@ -40,19 +51,13 @@ class LocalGitHost:
     """A GitHost that operates on a local git working tree without a remote.
 
     Commits land on a local branch. No push happens and no remote pull request
-    is opened. A publish writes a summary and a patch artifact and records a
-    local branch state that discovery and promotion read back.
+    is opened. A publish commits a summary, a patch, and the local pull record to
+    refs/agent-results/<branch> in the same repository, which discovery and promotion
+    read back and which travels with the branch when the repository is copied.
     """
 
-    def __init__(
-        self,
-        root: Path,
-        *,
-        artifacts_root: Path | None = None,
-        path_for: Callable[[str], Path] | None = None,
-    ) -> None:
+    def __init__(self, root: Path, *, path_for: Callable[[str], Path] | None = None) -> None:
         self._root = root
-        self._artifacts_root = artifacts_root or (root / ".agent-publish")
         self._path_for = path_for
 
     @classmethod
@@ -64,11 +69,7 @@ class LocalGitHost:
         if not root:
             raise ValueError("repository_root is required for a repository with backend local")
         registry = load_repository_registry(resolved)
-        return cls(
-            Path(root),
-            artifacts_root=Path(resolved.local_artifacts_root()),
-            path_for=lambda repo: Path(registry.location(repo)),
-        )
+        return cls(Path(root), path_for=lambda repo: Path(registry.location(repo)))
 
     def _repo_path(self, repo: str) -> Path:
         return self._path_for(repo) if self._path_for is not None else self._root / repo
@@ -76,15 +77,14 @@ class LocalGitHost:
     def source_location(self, repo: str) -> str:
         return str(self._repo_path(repo))
 
-    def _artifacts_path(self, repo: str) -> Path:
-        return self._artifacts_root / repo
-
     async def _run(
         self,
         *args: str,
         cwd: str | Path,
         allowed: tuple[int, ...] = (0,),
         env: dict[str, str] | None = None,
+        stdin: str | None = None,
+        strip: bool = True,
     ) -> _GitResult:
         def run() -> process.CompletedProcess[str]:
             return process.run(
@@ -93,6 +93,7 @@ class LocalGitHost:
                 cwd=str(cwd),
                 capture_output=True,
                 text=True,
+                input=stdin,
                 env={**os.environ, **env} if env else None,
             )
 
@@ -100,7 +101,8 @@ class LocalGitHost:
         if proc.returncode not in allowed:
             detail = (proc.stderr or proc.stdout).strip()
             raise RuntimeError(f"git {' '.join(args)} failed (rc {proc.returncode}): {detail}")
-        return _GitResult(proc.returncode, proc.stdout.strip(), proc.stderr.strip())
+        stdout = proc.stdout.strip() if strip else proc.stdout
+        return _GitResult(proc.returncode, stdout, proc.stderr.strip())
 
     async def _git(self, *args: str, cwd: str | Path, env: dict[str, str] | None = None) -> str:
         return (await self._run(*args, cwd=cwd, env=env)).stdout
@@ -184,12 +186,8 @@ class LocalGitHost:
         self, repo: str, head: str, base: str, title: str, body: str
     ) -> PullRequest:
         repo_path = self._repo_path(repo)
-        artifacts = self._artifacts_path(repo) / head
-        artifacts.mkdir(parents=True, exist_ok=True)
         patch = await self._git("diff", f"{base}...{head}", cwd=repo_path)
-        (artifacts / _SUMMARY_FILE).write_text(f"# {title}\n\n{body}\n", encoding="utf-8")
-        (artifacts / _PATCH_FILE).write_text(f"{patch}\n" if patch else "", encoding="utf-8")
-        pulls = self._load_pulls(repo)
+        pulls = await self._load_pulls(repo)
         record = pulls.get(head)
         if record is None:
             number = max((int(r["number"]) for r in pulls.values()), default=0) + 1
@@ -202,15 +200,22 @@ class LocalGitHost:
                 "body": body,
                 "draft": True,
                 "state": "open",
-                "url": str((artifacts / _SUMMARY_FILE).resolve()),
+                "url": f"{results_ref(head)}:{SUMMARY_FILE}",
             }
         )
-        pulls[head] = record
-        self._save_pulls(repo, pulls)
+        await self._write_results(
+            repo,
+            head,
+            {
+                SUMMARY_FILE: f"# {title}\n\n{body}\n",
+                PATCH_FILE: f"{patch}\n" if patch else "",
+                PULL_FILE: _record_text(record),
+            },
+        )
         return self._pull_request(repo, head, record, created=bool(record.get("created")))
 
     async def find_open_pr(self, repo: str, head: str) -> PullRequest | None:
-        record = self._load_pulls(repo).get(head)
+        record = await self._read_record(repo, head)
         if record is None or record.get("state") == "closed":
             return None
         return self._pull_request(repo, head, record, created=False)
@@ -219,32 +224,30 @@ class LocalGitHost:
         self, repo: str, head: str, base: str, title: str, body: str
     ) -> PublishResult:
         pr = await self.open_draft_pr(repo, head, base, title, body)
-        artifacts = self._artifacts_path(repo) / head
         return PublishResult(
             repo=repo,
             branch=head,
             completion_signal_id=str(pr.number),
-            summary_path=str((artifacts / _SUMMARY_FILE).resolve()),
-            patch_path=str((artifacts / _PATCH_FILE).resolve()),
+            summary_path=f"{results_ref(head)}:{SUMMARY_FILE}",
+            patch_path=f"{results_ref(head)}:{PATCH_FILE}",
             created=pr.created,
         )
 
     async def find_published_branch(self, repo: str, head: str) -> PublishResult | None:
-        record = self._load_pulls(repo).get(head)
+        record = await self._read_record(repo, head)
         if record is None or record.get("state") == "closed":
             return None
-        artifacts = self._artifacts_path(repo) / head
         return PublishResult(
             repo=repo,
             branch=head,
             completion_signal_id=str(record["number"]),
-            summary_path=str((artifacts / _SUMMARY_FILE).resolve()),
-            patch_path=str((artifacts / _PATCH_FILE).resolve()),
+            summary_path=f"{results_ref(head)}:{SUMMARY_FILE}",
+            patch_path=f"{results_ref(head)}:{PATCH_FILE}",
             reused=True,
         )
 
     async def read_pr_feedback(self, repo: str, number: int) -> PRFeedback:
-        branch, record = self._find_by_number(repo, number)
+        _, record = await self._find_by_number(repo, number)
         state = record.get("state", "open") if record else "closed"
         return PRFeedback(repo=repo, number=number, state=state, comments=())
 
@@ -256,42 +259,86 @@ class LocalGitHost:
         return True
 
     async def close_pr(self, repo: str, number: int) -> PullRequest:
-        return self._set_record(repo, number, {"state": "closed"})
+        return await self._set_record(repo, number, {"state": "closed"})
 
     async def mark_pr_ready(self, repo: str, number: int) -> PullRequest:
-        return self._set_record(repo, number, {"draft": False})
+        return await self._set_record(repo, number, {"draft": False})
 
-    def _pulls_path(self, repo: str) -> Path:
-        return self._artifacts_path(repo) / _PULLS_FILE
+    async def read_result(self, repo: str, branch: str, name: str) -> str | None:
+        """Return one file of the branch's published results, or None when it has none."""
+        result = await self._run(
+            "show",
+            f"{results_ref(branch)}:{name}",
+            cwd=self._repo_path(repo),
+            allowed=(0, 128),
+            strip=False,
+        )
+        return result.stdout if result.returncode == 0 else None
 
-    def _load_pulls(self, repo: str) -> dict[str, dict[str, Any]]:
-        path = self._pulls_path(repo)
-        if not path.exists():
-            return {}
-        return json.loads(path.read_text(encoding="utf-8"))
+    async def _read_record(self, repo: str, branch: str) -> dict[str, Any] | None:
+        text = await self.read_result(repo, branch, PULL_FILE)
+        return json.loads(text) if text else None
 
-    def _save_pulls(self, repo: str, pulls: dict[str, dict[str, Any]]) -> None:
-        path = self._pulls_path(repo)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(pulls, indent=2, sort_keys=True), encoding="utf-8")
+    async def _load_pulls(self, repo: str) -> dict[str, dict[str, Any]]:
+        listing = await self._git(
+            "for-each-ref", "--format=%(refname)", RESULTS_REF_PREFIX, cwd=self._repo_path(repo)
+        )
+        pulls: dict[str, dict[str, Any]] = {}
+        for ref in filter(None, listing.splitlines()):
+            branch = ref.removeprefix(RESULTS_REF_PREFIX)
+            record = await self._read_record(repo, branch)
+            if record is not None:
+                pulls[branch] = record
+        return pulls
 
-    def _find_by_number(
+    async def _write_results(self, repo: str, branch: str, files: dict[str, str]) -> None:
+        """Commit files onto the branch's results ref, keeping any file the update leaves out."""
+        repo_path = self._repo_path(repo)
+        ref = results_ref(branch)
+        previous = await self._run(
+            "rev-parse", "--verify", "--quiet", ref, cwd=repo_path, allowed=(0, 1)
+        )
+        parent = previous.stdout if previous.returncode == 0 else ""
+        contents = dict(files)
+        if parent:
+            for name in (SUMMARY_FILE, PATCH_FILE, PULL_FILE):
+                if name not in contents:
+                    kept = await self.read_result(repo, branch, name)
+                    if kept is not None:
+                        contents[name] = kept
+        entries = []
+        for name in sorted(contents):
+            blob = await self._run(
+                "hash-object", "-w", "--stdin", cwd=repo_path, stdin=contents[name]
+            )
+            entries.append(f"100644 blob {blob.stdout}\t{name}")
+        tree = await self._run("mktree", cwd=repo_path, stdin="\n".join(entries) + "\n")
+        commit = await self._git(
+            "commit-tree",
+            tree.stdout,
+            *(["-p", parent] if parent else []),
+            "-m",
+            f"Agent results for {branch}",
+            cwd=repo_path,
+            env=_RESULTS_IDENTITY,
+        )
+        await self._git("update-ref", ref, commit, *([parent] if parent else []), cwd=repo_path)
+
+    async def _find_by_number(
         self, repo: str, number: int
     ) -> tuple[str, dict[str, Any]] | tuple[None, None]:
-        for branch, record in self._load_pulls(repo).items():
+        for branch, record in (await self._load_pulls(repo)).items():
             if int(record["number"]) == number:
                 return branch, record
         return None, None
 
-    def _set_record(self, repo: str, number: int, changes: dict[str, Any]) -> PullRequest:
-        pulls = self._load_pulls(repo)
-        for branch, record in pulls.items():
-            if int(record["number"]) == number:
-                record.update(changes)
-                pulls[branch] = record
-                self._save_pulls(repo, pulls)
-                return self._pull_request(repo, branch, record, created=False)
-        raise KeyError(f"no local pull request #{number} for {repo}")
+    async def _set_record(self, repo: str, number: int, changes: dict[str, Any]) -> PullRequest:
+        branch, record = await self._find_by_number(repo, number)
+        if branch is None or record is None:
+            raise KeyError(f"no local pull request #{number} for {repo}")
+        record.update(changes)
+        await self._write_results(repo, branch, {PULL_FILE: _record_text(record)})
+        return self._pull_request(repo, branch, record, created=False)
 
     def _pull_request(
         self, repo: str, branch: str, record: dict[str, Any], *, created: bool
@@ -308,3 +355,7 @@ class LocalGitHost:
             state=str(record.get("state", "open")),
             created=created,
         )
+
+
+def _record_text(record: dict[str, Any]) -> str:
+    return json.dumps(record, indent=2, sort_keys=True) + "\n"

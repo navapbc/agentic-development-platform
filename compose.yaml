@@ -128,69 +128,6 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
-      litellm:
-        condition: service_started
-
-  activity-worker:
-    <<: *python-service
-    command: ["python", "-m", "services.orchestration.worker"]
-    healthcheck:
-      test: ["CMD", "python", "-m", "services.healthcheck", "heartbeat", "/tmp/worker.heartbeat", "--max-age", "60"]
-      interval: 30s
-      timeout: 10s
-      start_period: 180s
-      retries: 3
-    volumes:
-      - ./config/local:/app/config/local:ro
-      - ./config/platform:/app/config/platform:ro
-    environment:
-      WORKER_ROLE: activity
-      AWS_CONFIG_FILE: /app/config/local/rebar-store-aws-config
-      HEALTH_HEARTBEAT_FILE: /tmp/worker.heartbeat
-      REPO_INTELLIGENCE_URL: http://repo-intelligence:8120
-      COORDINATION_URL: http://coordination-service:8130
-      JIRA_ACLI_PATH: /app/vendor/bin/acli
-      EXECUTION_WORKSPACE_ROOT: /home/appuser/agent-workspaces
-      AWS_USE_FIPS_ENDPOINT: ${AWS_USE_FIPS_ENDPOINT:-false}
-    depends_on:
-      temporal:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
-      litellm:
-        condition: service_started
-
-  review-worker:
-    <<: *python-service
-    command: ["python", "-m", "services.orchestration.worker"]
-    healthcheck:
-      test: ["CMD", "python", "-m", "services.healthcheck", "heartbeat", "/tmp/worker.heartbeat", "--max-age", "60"]
-      interval: 30s
-      timeout: 10s
-      start_period: 180s
-      retries: 3
-    volumes:
-      - ./config/local:/app/config/local:ro
-      - ./config/platform:/app/config/platform:ro
-      - ${HOME}/.aws:/home/appuser/.aws:ro
-    environment:
-      WORKER_ROLE: review
-      HEALTH_HEARTBEAT_FILE: /tmp/worker.heartbeat
-      REPO_INTELLIGENCE_URL: http://repo-intelligence:8120
-      COORDINATION_URL: http://coordination-service:8130
-      JIRA_ACLI_PATH: /app/vendor/bin/acli
-      EXECUTION_WORKSPACE_ROOT: /home/appuser/agent-workspaces
-      AWS_PROFILE: ${PLATFORM_AWS_PROFILE:-${AWS_PROFILE}}
-      AWS_REGION: ${AWS_REGION}
-      AWS_USE_FIPS_ENDPOINT: ${AWS_USE_FIPS_ENDPOINT:-false}
-      REBAR_LLM_CONFIG_FILE: /app/config/platform/rebar-review.toml
-    depends_on:
-      temporal:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
-      litellm:
-        condition: service_started
 
   schedule-bootstrap:
     <<: *python-service
@@ -204,8 +141,6 @@ services:
         condition: service_healthy
       workflow-worker:
         condition: service_started
-      activity-worker:
-        condition: service_started
 
   coordination-service:
     <<: *python-service
@@ -216,65 +151,10 @@ services:
       timeout: 10s
       start_period: 60s
       retries: 3
+    ports: ["${COORDINATION_HOST_PORT:-8130}:8130"]
     depends_on:
       postgres:
         condition: service_healthy
-
-  langgraph-service:
-    <<: *python-service
-    command: ["python", "-m", "services.orchestration.langgraph.service"]
-    healthcheck:
-      test: ["CMD", "python", "-m", "services.healthcheck", "http", "8100"]
-      interval: 30s
-      timeout: 10s
-      start_period: 60s
-      retries: 3
-    volumes:
-      - ./config/local:/app/config/local:ro
-      - ./config/platform:/app/config/platform:ro
-    depends_on:
-      litellm:
-        condition: service_started
-    ports: ["${LANGGRAPH_HOST_PORT:-8100}:8100"]
-
-  litellm:
-    image: ghcr.io/berriai/litellm:v1.97.0@sha256:468c25f35f3e5ec4e414974f00deab93337b1b4d9953cabcfd3722e59415f834
-    command: ["--config", "/app/config/litellm-config.yaml", "--port", "4000"]
-    healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4000/health/liveliness', timeout=5)"]
-      interval: 30s
-      timeout: 10s
-      start_period: 60s
-      retries: 3
-    environment:
-      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
-      AWS_PROFILE: ${PLATFORM_AWS_PROFILE:-${AWS_PROFILE}}
-      AWS_REGION: ${AWS_REGION}
-      AWS_USE_FIPS_ENDPOINT: ${AWS_USE_FIPS_ENDPOINT:-false}
-      LANGFUSE_HOST: ${LANGFUSE_HOST:-http://langfuse-web:3000}
-      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY}
-      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY}
-    volumes:
-      - ./config/platform/litellm-config.yaml:/app/config/litellm-config.yaml:ro
-      - ./config/platform/litellm_redaction.py:/app/litellm_redaction.py:ro
-      - ${HOME}/.aws:/root/.aws:ro
-    ports: ["${LITELLM_HOST_PORT:-4000}:4000"]
-    restart: unless-stopped
-
-  opa:
-    build:
-      context: .
-      dockerfile: docker/opa.Dockerfile
-    command:
-      - "run"
-      - "--server"
-      - "--addr=0.0.0.0:8181"
-      - "--log-level=info"
-      - "/policies"
-    volumes:
-      - ./config/policies:/policies:ro
-    ports: ["${OPA_HOST_PORT:-8181}:8181"]
-    restart: unless-stopped
 
   clickhouse:
     image: docker.io/clickhouse/clickhouse-server:26.9.19.9@sha256:bdb5c911a23d92fd364e246ab20b5a0a485f00112f3663fa626b083fb46c146b
