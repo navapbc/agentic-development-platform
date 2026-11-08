@@ -206,11 +206,12 @@ run "pod_identity_roles_are_bound_to_their_service_accounts" {
       activity_worker = { service_account = "activity-worker", policy_arns = ["arn:aws:iam::111111111111:policy/rebar-ticket-store"] }
       litellm         = { service_account = "litellm", policy_arns = ["arn:aws:iam::111111111111:policy/agentic-platform-bedrock-invoke"] }
       inbound_webhook = { service_account = "inbound-webhook" }
+      tenant_adp      = { service_account = "activity-worker", namespace = "tenant-adp" }
     }
   }
 
   assert {
-    condition     = keys(aws_iam_role.pod_identity) == ["activity_worker", "efs_csi_controller", "efs_csi_node", "inbound_webhook", "litellm", "load_balancer_controller", "vpc_cni"]
+    condition     = keys(aws_iam_role.pod_identity) == ["activity_worker", "efs_csi_controller", "efs_csi_node", "inbound_webhook", "litellm", "load_balancer_controller", "tenant_adp", "vpc_cni"]
     error_message = "The module does not create a Pod Identity role for each workload and kube-system service account."
   }
 
@@ -228,7 +229,9 @@ run "pod_identity_roles_are_bound_to_their_service_accounts" {
     condition = (
       jsondecode(aws_iam_role.pod_identity["litellm"].assume_role_policy).Statement[0].Condition.StringEquals["aws:RequestTag/kubernetes-namespace"] == "agentic-dev-platform" &&
       jsondecode(aws_iam_role.pod_identity["litellm"].assume_role_policy).Statement[0].Condition.StringEquals["aws:RequestTag/kubernetes-service-account"] == "litellm" &&
-      jsondecode(aws_iam_role.pod_identity["vpc_cni"].assume_role_policy).Statement[0].Condition.StringEquals["aws:RequestTag/kubernetes-service-account"] == "aws-node"
+      jsondecode(aws_iam_role.pod_identity["vpc_cni"].assume_role_policy).Statement[0].Condition.StringEquals["aws:RequestTag/kubernetes-service-account"] == "aws-node" &&
+      jsondecode(aws_iam_role.pod_identity["tenant_adp"].assume_role_policy).Statement[0].Condition.StringEquals["aws:RequestTag/kubernetes-namespace"] == "tenant-adp" &&
+      aws_eks_pod_identity_association.this["tenant_adp"].namespace == "tenant-adp"
     )
     error_message = "A Pod Identity role is not bound to its namespace and service account."
   }
@@ -246,7 +249,7 @@ run "pod_identity_roles_are_bound_to_their_service_accounts" {
 
   assert {
     condition = (
-      keys(aws_eks_pod_identity_association.this) == ["activity_worker", "inbound_webhook", "litellm", "load_balancer_controller"] &&
+      keys(aws_eks_pod_identity_association.this) == ["activity_worker", "inbound_webhook", "litellm", "load_balancer_controller", "tenant_adp"] &&
       aws_eks_pod_identity_association.this["load_balancer_controller"].namespace == "kube-system" &&
       aws_eks_pod_identity_association.this["load_balancer_controller"].service_account == "aws-load-balancer-controller" &&
       [for association in aws_eks_addon.before_nodes["vpc-cni"].pod_identity_association : association.service_account] == ["aws-node"] &&

@@ -8,7 +8,7 @@ locals {
     for name in fileset(var.container_config_dir, "*.yaml") : name => file("${var.container_config_dir}/${name}")
   }
 
-  reader_sets = [var.secret_readers, local.temporal_secret_readers, module.container_services.secret_readers, local.eks_secret_readers]
+  reader_sets = [var.secret_readers, local.temporal_secret_readers, module.container_services.secret_readers, local.eks_secret_readers, local.tenant_secret_readers]
   secret_readers = {
     for key in distinct(flatten([for readers in local.reader_sets : keys(readers)])) :
     key => distinct(flatten([for readers in local.reader_sets : lookup(readers, key, [])]))
@@ -34,6 +34,8 @@ module "container_services" {
 
   create_container_services = var.create_container_services
   name_prefix               = var.name_prefix
+  tenant_workspaces         = keys(local.tenants)
+  platform_settings         = var.container_platform_settings
 
   vpc_id                       = local.vpc_id
   application_subnet_ids       = local.subnet_ids

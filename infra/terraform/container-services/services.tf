@@ -158,6 +158,10 @@ locals {
 
   database_url = "postgresql+asyncpg://${var.database_host}:${var.database_port}/${var.database_name}"
   platform_environment = merge(
+    var.platform_settings,
+    local.module_environment,
+  )
+  module_environment = merge(
     {
       ENVIRONMENT                   = var.environment
       LOG_LEVEL                     = var.log_level
@@ -190,6 +194,8 @@ locals {
       NO_PROXY    = join(",", compact([var.no_proxy, ".${var.internal_domain}", ".amazonaws.com", "169.254.170.2"]))
     },
   )
+
+  overridden_settings = sort(tolist(setintersection(keys(var.platform_settings), keys(local.module_environment))))
 
   ca_secret = try(var.temporal.ca_secret_arn, null)
 

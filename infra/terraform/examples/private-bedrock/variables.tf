@@ -804,3 +804,53 @@ variable "github_publish_refs" {
   type        = list(string)
   default     = ["refs/heads/main", "refs/tags/v*"]
 }
+
+variable "tenants" {
+  description = "Tenants that share the deployment, keyed by a name of 2 to 16 lowercase letters and digits. Each tenant is a trust boundary with its own activity worker identity, secrets, image prefix, config bundle prefix, ticket store, and workspace. secrets lists the secrets created empty under <name_prefix>/tenants/<tenant>/ for the tenant to fill. shared_secrets lists secret store keys the tenant's worker may also read. config_repository names the GitHub repository whose workflows publish the tenant's config bundle and images. ticket_store sets the operators, admins, and GitHub OIDC writer of the tenant's rebar store. create_eks requires at least one tenant."
+  type = map(object({
+    description    = string
+    secrets        = optional(list(string), ["github_token", "jira_api_token", "jira_pat", "authorship_signing_key", "registry_token", "slack_webhook_url"])
+    shared_secrets = optional(list(string), [])
+    config_repository = optional(object({
+      github_repository = string
+      allowed_refs      = optional(list(string), ["refs/heads/main"])
+      github_repository_ids = optional(object({
+        owner_id      = number
+        repository_id = number
+      }))
+    }))
+    ticket_store = optional(object({
+      operators = optional(list(string), [])
+      admins    = optional(list(string), [])
+      writer_github_oidc_trust = optional(object({
+        provider_arn      = string
+        subjects          = list(string)
+        job_workflow_refs = optional(list(string), [])
+        audience          = optional(string, "sts.amazonaws.com")
+      }))
+    }), {})
+  }))
+  default = {}
+
+  validation {
+    condition     = alltrue([for name in keys(var.tenants) : can(regex("^[a-z][a-z0-9]{1,15}$", name)) && name != "default"])
+    error_message = "A tenant name is 2 to 16 lowercase letters and digits starting with a letter, and default is not a tenant name."
+  }
+}
+
+variable "tenant_config_admin_principals" {
+  description = "IAM principal ARNs allowed to read, write, and restore every tenant's config bundle, and to empty the tenant config bucket before a destroy."
+  type        = list(string)
+  default     = []
+}
+
+variable "container_platform_settings" {
+  description = "Platform-wide settings the platform tasks and the EKS workers receive in their environment, such as TICKET_BACKEND or AUTHORSHIP_IDENTITY_ID. A setting may not name a secret, which belongs in the secret store, or a variable the container-services module sets."
+  type        = map(string)
+  default     = {}
+
+  validation {
+    condition     = alltrue([for name in keys(var.container_platform_settings) : can(regex("^[A-Z][A-Z0-9_]*$", name)) && !can(regex("(KEY|TOKEN|SECRET|PASSWORD|PAT)", name))])
+    error_message = "A platform setting name is an upper-case variable name and may not contain KEY, TOKEN, SECRET, PASSWORD, or PAT, because a secret belongs in the secret store."
+  }
+}

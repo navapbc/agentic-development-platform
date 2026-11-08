@@ -116,6 +116,28 @@ variable "environment_config" {
   default     = {}
 }
 
+variable "tenant_workspaces" {
+  description = "Tenants that receive their own workspace access point, rooted at /tenants/<tenant> on the workspace file system."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for tenant in var.tenant_workspaces : can(regex("^[a-z][a-z0-9]{1,15}$", tenant))])
+    error_message = "A tenant name is 2 to 16 lowercase letters and digits, starting with a letter."
+  }
+}
+
+variable "platform_settings" {
+  description = "Platform-wide settings the platform tasks and the EKS workers receive in their environment, such as TICKET_BACKEND. A setting may not name a secret or a variable the module sets."
+  type        = map(string)
+  default     = {}
+
+  validation {
+    condition     = alltrue([for name in keys(var.platform_settings) : can(regex("^[A-Z][A-Z0-9_]*$", name)) && !can(regex("(KEY|TOKEN|SECRET|PASSWORD|PAT)", name))])
+    error_message = "A platform setting name is an upper-case variable name and may not contain KEY, TOKEN, SECRET, PASSWORD, or PAT, because a secret belongs in Secrets Manager."
+  }
+}
+
 variable "platform_ca_pem" {
   description = "PEM of the CA that issued internal_acm_certificate_arn, which the platform clients trust beside the system roots. Empty when that certificate chains to a public root."
   type        = string

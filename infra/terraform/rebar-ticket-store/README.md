@@ -4,7 +4,7 @@ Reusable module that provisions the S3 bucket the rebar ticket store syncs to. r
 
 ## What it provisions
 
-- A bucket named `<name_prefix>-rebar-tickets-<suffix>` with bucket-owner-enforced ownership, a public-access block, versioning, and server access logging to `access_log_bucket`.
+- A bucket named `<name_prefix>-rebar-tickets-<suffix>`, or `<bucket_prefix><suffix>` when `bucket_prefix` is set, with bucket-owner-enforced ownership, a public-access block, versioning, and server access logging to `access_log_bucket`.
 - SSE-KMS under a dedicated customer managed key with yearly automatic rotation and an S3 Bucket Key. The key policy lets the store roles and `admin_principals` use the key only through S3 and only for this bucket.
 - A lifecycle rule that expires replaced bundle versions after `noncurrent_version_retention_days`, 90 by default, and abandoned multipart uploads after 7 days.
 - A reader role that lists and reads the prefix, and a writer role that also writes and deletes it, both trusted by `trusted_principals`. Set `existing_reader_role_arn` and `existing_writer_role_arn` to use roles the organization issues, and the module creates none.

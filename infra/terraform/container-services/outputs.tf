@@ -39,12 +39,13 @@ output "service_arns" {
 }
 
 output "workspace" {
-  description = "Workspace file system and its checkouts and index access points, for the EKS workloads that write the checkouts. Null without the services."
+  description = "Workspace file system, its checkouts and index access points, and each tenant's access point, for the EKS workloads that write the checkouts. Null without the services."
   value = local.services_enabled ? {
-    file_system_id    = aws_efs_file_system.workspace[0].id
-    file_system_arn   = aws_efs_file_system.workspace[0].arn
-    access_point_arns = { for name, point in aws_efs_access_point.workspace : name => point.arn }
-    security_group_id = aws_security_group.workspace[0].id
+    file_system_id           = aws_efs_file_system.workspace[0].id
+    file_system_arn          = aws_efs_file_system.workspace[0].arn
+    access_point_arns        = { for name, point in aws_efs_access_point.workspace : name => point.arn }
+    tenant_access_point_arns = { for tenant, point in aws_efs_access_point.tenant : tenant => point.arn }
+    security_group_id        = aws_security_group.workspace[0].id
   } : null
 }
 

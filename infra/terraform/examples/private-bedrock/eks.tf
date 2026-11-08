@@ -241,7 +241,7 @@ resource "aws_iam_policy" "eks_workspace_mount" {
   count = local.eks_workspace ? 1 : 0
 
   name_prefix = "${var.name_prefix}-eks-workspace-mount-"
-  description = "Lets the EFS CSI node driver mount the workspace checkouts access point read-write for the EKS pods."
+  description = "Lets the EFS CSI node driver mount the workspace checkouts access point and each tenant's access point read-write for the EKS pods."
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
@@ -250,7 +250,7 @@ resource "aws_iam_policy" "eks_workspace_mount" {
       Action   = ["elasticfilesystem:ClientMount", "elasticfilesystem:ClientWrite"]
       Resource = module.container_services.workspace.file_system_arn
       Condition = {
-        StringEquals = { "elasticfilesystem:AccessPointArn" = module.container_services.workspace.access_point_arns["checkouts"] }
+        StringEquals = { "elasticfilesystem:AccessPointArn" = concat([module.container_services.workspace.access_point_arns["checkouts"]], values(module.container_services.workspace.tenant_access_point_arns)) }
       }
     }]
   })
@@ -273,7 +273,10 @@ module "eks_cluster" {
   use_fips_endpoints            = var.container_use_fips_endpoints
   addon_versions                = var.eks_addon_versions
 
-  workloads                = { for name, workload in local.eks_workloads : name => { service_account = workload.service_account, policy_arns = workload.policy_arns } }
+  workloads = merge(
+    { for name, workload in local.eks_workloads : name => { service_account = workload.service_account, policy_arns = workload.policy_arns } },
+    local.tenant_workloads,
+  )
   efs_csi_node_policy_arns = aws_iam_policy.eks_workspace_mount[*].arn
 
   tags = var.tags

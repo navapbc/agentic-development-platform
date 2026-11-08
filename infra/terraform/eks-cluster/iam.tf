@@ -5,7 +5,7 @@ locals {
   # roles are bound by an aws_eks_pod_identity_association.
   workload_identities = {
     for name, workload in var.workloads : name => {
-      namespace       = var.platform_namespace
+      namespace       = coalesce(workload.namespace, var.platform_namespace)
       service_account = workload.service_account
       addon           = null
       policy_arns     = workload.policy_arns

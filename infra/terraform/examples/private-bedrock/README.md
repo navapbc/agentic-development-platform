@@ -122,6 +122,21 @@ With the ECS cluster and the container services, `create_eks` also provisions th
 
 With Aurora and the secret store, the secret store's restart rule also starts the task with `restart activity-worker inbound-webhook mcp-gateway` when the `database_platform_app` secret changes, so the EKS pods that hold a database connection read the rotated password. The activity worker and inbound webhook roles decrypt the Temporal CA through an identity policy, because the Temporal key admits its readers through IAM.
 
+## Tenants
+
+Teams share the deployment as tenants. A tenant is a trust boundary, a set of credentials and everything that may see them, and teams that share credentials share a tenant. `tenants` maps each tenant name to its entry, and `create_eks` needs at least one entry, because every run belongs to a tenant and the deployment has no default tenant. The name `default` is refused. [tenants.tfvars.example](tenants.tfvars.example) defines a platform tenant and Java, Python, and ReactJS tenants.
+
+For each tenant the root creates the following.
+
+- A Pod Identity role, `<cluster>-tenant-<tenant>`, bound to the `activity-worker` service account of the `tenant-<tenant>` namespace, with the [tenant](../../tenant) module's worker policy attached.
+- The resources of the tenant module, which are its key, its secrets under `<name_prefix>/tenants/<tenant>/`, its ECR prefix `<name_prefix>/tenants/<tenant>` with repositories created on the first push, its config publisher role when `config_repository` is set, and its rebar ticket store.
+- A workspace access point rooted at `/tenants/<tenant>` on the workspace file system, which the EFS CSI node role may mount.
+- Read access to each secret store key in `shared_secrets`, for a credential the tenant shares with the platform or with another tenant.
+
+`secrets` defaults to `github_token`, `jira_api_token`, `jira_pat`, `authorship_signing_key`, `registry_token`, and `slack_webhook_url`. Fill each with `aws secretsmanager put-secret-value --secret-id <name_prefix>/tenants/<tenant>/<name>`. A tenant's `config_repository` needs the account's GitHub OIDC provider, from `github_oidc_provider_arn` or `create_github_image_publisher`. The [tenant-config-store](../../tenant-config-store) bucket holds every tenant's bundle under `tenants/<tenant>/`, and `tenant_config_admin_principals` may restore or empty it. The trail records object-level events on that bucket and on each tenant's ticket store. The `tenants` output names each tenant's role, namespaces, secrets, prefixes, publisher role, ticket store, and workspace access point.
+
+`container_platform_settings` sets environment values every platform task and EKS worker receives, such as `TICKET_BACKEND`, for settings that are the same for every tenant. A name that contains KEY, TOKEN, SECRET, PASSWORD, or PAT is refused, because a secret belongs in the secret store, and so is a name the container-services module sets.
+
 ## After apply
 
 1. Push the jumphost image to the repository shown in the `jumphost_ecr_repository_url` output with `inv publish-jumphost-image --tag v1`.

@@ -99,7 +99,7 @@ resource "aws_kms_alias" "this" {
 resource "aws_s3_bucket" "this" {
   count = local.enabled ? 1 : 0
 
-  bucket_prefix = "${var.name_prefix}-rebar-tickets-"
+  bucket_prefix = coalesce(var.bucket_prefix, "${var.name_prefix}-rebar-tickets-")
 
   tags = merge(var.tags, { Name = "${var.name_prefix}-rebar-tickets" })
 }

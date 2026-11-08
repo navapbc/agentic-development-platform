@@ -121,3 +121,9 @@ Run the local stack as the `default` tenant with the directory source. Document 
 ## Verification Record
 
 Each unit records its verification here when it completes.
+
+### U1 (ADP-172), 2026-11-08
+
+Decisions. No default tenant exists. `create_eks` needs at least one tenant, and the existing deployment is the `adp` tenant. A tenant's worker runs in `tenant-<tenant>` and its pods in `tenant-<tenant>-sandbox`. The running activity worker keeps its current role, secrets, and ticket store until U4 renders the tenant workers and removes the old wiring. The tenant config bucket is created in U1, because the publisher roles name it, and U2 adds its loader. The bucket and key policies name tenant roles only in conditions, so they hold no principal that may not exist yet. A tenant's ticket store bucket is named `<tenant>-rebar-tickets-<suffix>`, because S3 limits a generated name's prefix to 37 characters.
+
+Sandbox. The `adp` tenant applied with 52 resources added. A push to `agentic-platform/tenants/adp/adp172-probe` created the repository with immutable tags, the tenant key, the `tenant` tag, and the untagged expiry rule, and the probe repository was deleted. The IAM policy simulator, evaluated with the secret's resource policy, allowed `GetSecretValue` on `agentic-platform/tenants/adp/github-token` to the `adp` worker role and denied it explicitly to `platform-admin` and to the existing activity worker role. The config bucket accepted an admin write under `tenants/adp/`, refused one at the bucket root, and stored it under the bucket key, and the simulator with the bucket policy allowed the `adp` worker to read `tenants/adp/` and denied it a write, and denied the existing activity worker both. The plan after apply showed no changes.

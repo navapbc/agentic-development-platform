@@ -268,3 +268,13 @@
   path: examples/gate-engines/test-policy/policy.py
   match: 'with urllib.request.urlopen(request, timeout=MODEL_TIMEOUT_SECONDS) as response:'
   justification: The URL is the model gateway the platform injects in ANTHROPIC_BASE_URL, and suggest_tests refuses any value that does not start with http:// or https:// before building the request, so no file or custom scheme reaches urlopen.
+- tool: semgrep
+  rule: terraform.lang.security.iam.no-iam-resource-exposure.no-iam-resource-exposure
+  path: infra/terraform/tenant/images.tf
+  match: Action = ["kms:CreateGrant", "kms:RetireGrant", "kms:DescribeKey"]
+  justification: ECR assumes the tenant's repository creation role and creates a KMS grant for each repository it creates on push, which AWS documents as required for a creation template that uses KMS. The statement names only the tenant's own key, and only ECR can assume the role.
+- tool: semgrep
+  rule: terraform.lang.security.iam.no-iam-creds-exposure.no-iam-creds-exposure
+  path: infra/terraform/tenant/publisher.tf
+  match: Action = "ecr:GetAuthorizationToken"
+  justification: Docker signs in to ECR with the token this action returns, so the tenant publisher that pushes the tenant's images needs it, and the action supports no resource-level scoping. The token authorizes only the pushes the role's other statement grants, which are limited to the tenant's image prefix, and only the workflows of the tenant's config repository on its allowed refs can assume the role.

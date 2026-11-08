@@ -282,3 +282,16 @@ output "eks" {
     }
   } : null
 }
+
+output "tenants" {
+  description = "Each tenant's worker role, namespaces, secrets, image prefix, config bundle prefix and publisher role, and ticket store, with the config bucket."
+  value = local.tenants_enabled ? {
+    config_bucket = module.tenant_config_store.bucket
+    tenants = {
+      for name, tenant in local.tenant_records : name => merge(tenant, {
+        worker_role_arn        = module.eks_cluster.pod_identity_role_arns["tenant_${name}"]
+        workspace_access_point = module.container_services.workspace.tenant_access_point_arns[name]
+      })
+    }
+  } : null
+}

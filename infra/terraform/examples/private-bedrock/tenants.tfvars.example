@@ -1,0 +1,52 @@
+# Tenants that share the deployment. Pass this file with -var-file beside the environment's tfvars.
+# Each tenant is a trust boundary with its own worker identity, secrets, images, config bundle,
+# ticket store, and workspace. The tech stack of each repository is the tenant's runtime profile, which the
+# tenant publishes in its config bundle, so one tenant may hold Java, Python, and Node repositories.
+
+tenants = {
+  # The platform team's own tickets and demo repositories.
+  adp = {
+    description = "The agentic-development-platform team's tickets and demo repositories."
+    config_repository = {
+      github_repository = "navapbc/adp-tenant-config"
+    }
+    ticket_store = {
+      operators = ["arn:aws:iam::123456789012:role/platform-operator"]
+      admins    = ["arn:aws:iam::123456789012:role/platform-admin"]
+    }
+  }
+
+  # A Java team with its own GitHub organization token and Jira project.
+  claims = {
+    description = "The claims team's Spring Boot services."
+    config_repository = {
+      github_repository = "example-org/claims-platform-config"
+      allowed_refs      = ["refs/heads/main", "refs/tags/v*"]
+    }
+  }
+
+  # A Python team that shares the platform's Slack webhook and keeps no Jira credentials.
+  payments = {
+    description    = "The payments team's FastAPI services."
+    secrets        = ["github_token", "authorship_signing_key", "registry_token"]
+    shared_secrets = ["slack_webhook_url"]
+    config_repository = {
+      github_repository = "example-org/payments-platform-config"
+    }
+  }
+
+  # A frontend team with a ReactJS application on Node.
+  portal = {
+    description = "The portal team's ReactJS frontend."
+    config_repository = {
+      github_repository = "example-org/portal-platform-config"
+    }
+  }
+}
+
+tenant_config_admin_principals = ["arn:aws:iam::123456789012:role/platform-admin"]
+
+# Platform-wide settings every tenant's worker shares. Secrets belong in the secret store.
+container_platform_settings = {
+  TICKET_BACKEND = "rebar"
+}

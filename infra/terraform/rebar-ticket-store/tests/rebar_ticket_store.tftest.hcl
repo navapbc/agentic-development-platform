@@ -512,3 +512,18 @@ run "a_padded_oidc_subject_entry_is_rejected" {
 
   expect_failures = [terraform_data.inputs_guard]
 }
+
+run "a_bucket_prefix_names_the_bucket" {
+  command = plan
+
+  variables {
+    create_rebar_ticket_store = true
+    trusted_principals        = ["arn:aws:iam::111111111111:role/activity-worker"]
+    bucket_prefix             = "adp-rebar-tickets-"
+  }
+
+  assert {
+    condition     = aws_s3_bucket.this[0].bucket_prefix == "adp-rebar-tickets-"
+    error_message = "bucket_prefix does not name the bucket."
+  }
+}

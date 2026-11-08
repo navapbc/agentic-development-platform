@@ -4,6 +4,20 @@ locals {
     checkouts = { path = "/checkouts", permissions = "0755" }
     index     = { path = "/repository-indexes", permissions = "0750" }
   }
+  tenant_access_points = { for tenant in var.tenant_workspaces : tenant => "/tenants/${tenant}" }
+  workspace_access_point_arns = concat(
+    [for point in aws_efs_access_point.workspace : point.arn],
+    [for point in aws_efs_access_point.tenant : point.arn],
+  )
+}
+
+resource "terraform_data" "platform_settings_guard" {
+  lifecycle {
+    precondition {
+      condition     = length(local.overridden_settings) == 0
+      error_message = "platform_settings may not set a variable the module sets: ${join(", ", local.overridden_settings)}."
+    }
+  }
 }
 
 resource "aws_efs_file_system" "workspace" {
@@ -83,6 +97,30 @@ resource "aws_efs_access_point" "workspace" {
   tags = merge(var.tags, { Name = "${var.name_prefix}-workspace-${each.key}" })
 }
 
+# Each tenant's checkouts live under their own root, outside /checkouts, so no other tenant's
+# access point reaches them.
+resource "aws_efs_access_point" "tenant" {
+  for_each = local.services_enabled ? local.tenant_access_points : {}
+
+  file_system_id = aws_efs_file_system.workspace[0].id
+
+  posix_user {
+    uid = 10001
+    gid = 10001
+  }
+
+  root_directory {
+    path = each.value
+    creation_info {
+      owner_uid   = 10001
+      owner_gid   = 10001
+      permissions = "0750"
+    }
+  }
+
+  tags = merge(var.tags, { Name = "${var.name_prefix}-workspace-tenant-${each.key}", tenant = each.key })
+}
+
 resource "aws_efs_file_system_policy" "workspace" {
   count = local.services_enabled ? 1 : 0
 
@@ -104,7 +142,7 @@ resource "aws_efs_file_system_policy" "workspace" {
         Principal = { AWS = "*" }
         Action    = ["elasticfilesystem:ClientMount", "elasticfilesystem:ClientWrite", "elasticfilesystem:ClientRootAccess"]
         Resource  = aws_efs_file_system.workspace[0].arn
-        Condition = { StringNotEquals = { "elasticfilesystem:AccessPointArn" = [for point in aws_efs_access_point.workspace : point.arn] } }
+        Condition = { StringNotEquals = { "elasticfilesystem:AccessPointArn" = local.workspace_access_point_arns } }
       },
     ]
   })

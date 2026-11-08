@@ -282,3 +282,64 @@ run "a_service_without_its_inputs_is_refused" {
 
   expect_failures = [terraform_data.services_guard]
 }
+
+run "each_tenant_gets_its_own_workspace_root" {
+  command = apply
+
+  variables {
+    tenant_workspaces = ["adp", "payments"]
+  }
+
+  assert {
+    condition = (
+      aws_efs_access_point.tenant["adp"].root_directory[0].path == "/tenants/adp" &&
+      aws_efs_access_point.tenant["payments"].root_directory[0].path == "/tenants/payments" &&
+      aws_efs_access_point.tenant["adp"].posix_user[0].uid == 10001 &&
+      aws_efs_access_point.tenant["adp"].tags.tenant == "adp"
+    )
+    error_message = "A tenant access point is not rooted at /tenants/<tenant> as the platform user."
+  }
+
+  assert {
+    condition     = length(jsondecode(aws_efs_file_system_policy.workspace[0].policy).Statement[1].Condition.StringNotEquals["elasticfilesystem:AccessPointArn"]) == 4
+    error_message = "The file system policy does not admit the tenant access points."
+  }
+
+  assert {
+    condition     = keys(output.workspace.tenant_access_point_arns) == ["adp", "payments"]
+    error_message = "The workspace output does not name each tenant's access point."
+  }
+}
+
+run "platform_settings_reach_the_platform_environment" {
+  command = plan
+
+  variables {
+    platform_settings = { TICKET_BACKEND = "rebar", MAX_CONCURRENT_RUNS = "4" }
+  }
+
+  assert {
+    condition     = output.platform_environment.TICKET_BACKEND == "rebar" && output.platform_environment.MAX_CONCURRENT_RUNS == "4"
+    error_message = "The platform settings do not reach the platform environment."
+  }
+}
+
+run "a_platform_setting_may_not_name_a_secret" {
+  command = plan
+
+  variables {
+    platform_settings = { GITHUB_TOKEN = "x" }
+  }
+
+  expect_failures = [var.platform_settings]
+}
+
+run "a_platform_setting_may_not_override_the_module" {
+  command = plan
+
+  variables {
+    platform_settings = { DATABASE_URL = "postgresql://elsewhere" }
+  }
+
+  expect_failures = [terraform_data.platform_settings_guard]
+}
