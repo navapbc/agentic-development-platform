@@ -28,7 +28,7 @@ variable "subnet_ids" {
 }
 
 variable "api_access_security_group_ids" {
-  description = "Security groups admitted to the private API endpoint on 443, such as the operator jumphost."
+  description = "Security groups admitted to the private API endpoint on 443, such as the operator jumphost. The module adds the matching egress rule to each group."
   type        = list(string)
   default     = []
 }
@@ -108,16 +108,21 @@ variable "platform_namespace" {
   default     = "agentic-dev-platform"
 }
 
-variable "activity_worker_policy_arns" {
-  description = "IAM policies attached to the activity-worker Pod Identity role."
-  type        = list(string)
-  default     = []
-}
+variable "workloads" {
+  description = "Platform workloads that receive a Pod Identity role, keyed by a static name, each with its service account in platform_namespace and the IAM policies attached to its role, such as the bedrock:InvokeModel policy of bedrock-iam for litellm."
+  type = map(object({
+    service_account = string
+    policy_arns     = optional(list(string), [])
+  }))
+  default = {
+    activity_worker = { service_account = "activity-worker" }
+    litellm         = { service_account = "litellm" }
+  }
 
-variable "litellm_policy_arns" {
-  description = "IAM policies attached to the litellm Pod Identity role, such as the bedrock:InvokeModel policy of bedrock-iam."
-  type        = list(string)
-  default     = []
+  validation {
+    condition     = length(setintersection(keys(var.workloads), ["load_balancer_controller", "vpc_cni", "efs_csi_controller", "efs_csi_node"])) == 0
+    error_message = "workloads must not use the names of the kube-system roles: load_balancer_controller, vpc_cni, efs_csi_controller, or efs_csi_node."
+  }
 }
 
 variable "efs_csi_node_policy_arns" {

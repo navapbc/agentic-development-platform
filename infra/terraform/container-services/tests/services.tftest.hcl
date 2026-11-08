@@ -256,6 +256,23 @@ run "the_workspace_admits_tls_and_access_points_only" {
   }
 }
 
+run "the_workspace_admits_listed_client_groups_on_nfs" {
+  command = plan
+
+  variables {
+    workspace_client_security_group_ids = ["sg-eks-cluster"]
+  }
+
+  assert {
+    condition = (
+      aws_vpc_security_group_ingress_rule.workspace_from_clients[0].referenced_security_group_id == "sg-eks-cluster" &&
+      aws_vpc_security_group_ingress_rule.workspace_from_clients[0].from_port == 2049 &&
+      aws_vpc_security_group_ingress_rule.workspace_from_clients[0].to_port == 2049
+    )
+    error_message = "A listed client group is not admitted to the workspace mount targets on NFS only."
+  }
+}
+
 run "a_service_without_its_inputs_is_refused" {
   command = plan
 

@@ -46,6 +46,10 @@ resource "terraform_data" "inputs_guard" {
       condition     = !local.create_public_tier || length(var.public_subnet_cidrs) > 0
       error_message = "An egress path needs at least one public_subnet_cidrs entry."
     }
+    precondition {
+      condition     = !var.create_eks || !local.create_public_tier || length(var.public_subnet_cidrs) >= 2
+      error_message = "create_eks needs two public_subnet_cidrs entries, because an internet-facing load balancer spans two Availability Zones."
+    }
   }
 }
 
@@ -67,7 +71,7 @@ resource "aws_subnet" "private" {
   availability_zone       = local.azs[count.index]
   map_public_ip_on_launch = false
 
-  tags = merge(var.tags, { Name = "${var.name_prefix}-private-${count.index}" })
+  tags = merge(var.tags, { Name = "${var.name_prefix}-private-${count.index}" }, var.create_eks ? { "kubernetes.io/role/internal-elb" = "1" } : {})
 }
 
 resource "aws_route_table" "private" {
@@ -120,6 +124,7 @@ module "vpc_endpoints" {
     local.secret_store_cache ? ["elasticache"] : [],
     var.create_container_services && var.container_use_fips_endpoints ? ["bedrock-runtime-fips"] : [],
     local.container_telemetry_exports ? [var.container_use_fips_endpoints ? "xray-fips" : "xray", "aps-workspaces"] : [],
+    var.create_eks ? ["eks-auth"] : [],
   )
 
   name_prefix = var.name_prefix

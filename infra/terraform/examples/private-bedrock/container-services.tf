@@ -8,7 +8,7 @@ locals {
     for name in fileset(var.container_config_dir, "*.yaml") : name => file("${var.container_config_dir}/${name}")
   }
 
-  reader_sets = [var.secret_readers, local.temporal_secret_readers, module.container_services.secret_readers]
+  reader_sets = [var.secret_readers, local.temporal_secret_readers, module.container_services.secret_readers, local.eks_secret_readers]
   secret_readers = {
     for key in distinct(flatten([for readers in local.reader_sets : keys(readers)])) :
     key => distinct(flatten([for readers in local.reader_sets : lookup(readers, key, [])]))
@@ -103,6 +103,7 @@ module "container_services" {
   xray_encryption_enabled              = var.container_xray_encryption_enabled
   langfuse_task_sizes                  = var.container_langfuse_task_sizes
   internal_operator_security_group_ids = [module.bedrock_jumphost.task_security_group_id]
+  workspace_client_security_group_ids  = local.eks_enabled ? [module.eks_cluster.cluster_security_group_id] : []
   secret_recovery_window_days          = var.secret_recovery_window_days
 
   bedrock_invoke_policy_arns = [module.bedrock_iam.invoke_policy_arn]

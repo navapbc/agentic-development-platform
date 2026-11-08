@@ -348,6 +348,60 @@ variable "ecs_deployer_passable_role_arns" {
   default     = []
 }
 
+variable "create_eks" {
+  description = "Create the EKS cluster for the activity worker, its sandbox pods, LiteLLM, the inbound webhook, and the MCP gateway, in the application subnets."
+  type        = bool
+  default     = false
+}
+
+variable "eks_kubernetes_version" {
+  description = "Kubernetes minor version of the EKS control plane and node groups."
+  type        = string
+  default     = "1.37"
+}
+
+variable "eks_admin_principal_arns" {
+  description = "IAM principals granted cluster admin through EKS access entries, keyed by a static label, such as { operator = \"arn:aws:iam::123456789012:role/platform-operator\" }."
+  type        = map(string)
+  default     = {}
+}
+
+variable "eks_platform_node_group" {
+  description = "Graviton instance types and scaling of the platform node group."
+  type = object({
+    instance_types = optional(list(string), ["m7g.large"])
+    min_size       = optional(number, 1)
+    max_size       = optional(number, 3)
+    desired_size   = optional(number, 2)
+    disk_size_gib  = optional(number, 50)
+  })
+  default = {}
+}
+
+variable "eks_sandbox_node_group" {
+  description = "Graviton instance types and scaling of the tainted sandbox node group."
+  type = object({
+    instance_types = optional(list(string), ["m7g.large"])
+    min_size       = optional(number, 1)
+    max_size       = optional(number, 3)
+    desired_size   = optional(number, 1)
+    disk_size_gib  = optional(number, 100)
+  })
+  default = {}
+}
+
+variable "eks_network_policy_enforcing_mode" {
+  description = "VPC CNI network policy mode, standard or strict. Create the cluster in standard mode and set strict once the kube-system and platform NetworkPolicies are applied."
+  type        = string
+  default     = "standard"
+}
+
+variable "eks_addon_versions" {
+  description = "EKS add-on version by add-on name. An add-on not listed gets the default version for the cluster version."
+  type        = map(string)
+  default     = {}
+}
+
 variable "create_container_services" {
   description = "Create the platform container services on the platform ECS cluster, starting with the ECR repositories for their images."
   type        = bool

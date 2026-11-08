@@ -361,6 +361,12 @@ variable "secret_recovery_window_days" {
   }
 }
 
+variable "workspace_client_security_group_ids" {
+  description = "Security groups outside the module allowed to mount the workspace file system on 2049, such as the EKS cluster security group, which the nodes that mount it for their pods carry."
+  type        = list(string)
+  default     = []
+}
+
 variable "internal_operator_security_group_ids" {
   description = "Security groups, such as the jumphost task group, allowed to reach the internal load balancer on 443. The module adds the matching egress rule to each group."
   type        = list(string)

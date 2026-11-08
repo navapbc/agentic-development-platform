@@ -242,3 +242,23 @@ output "github_image_publisher_role_arn" {
   description = "The role the publish-images workflow assumes. Set it as the AWS_PUBLISH_ROLE_ARN repository variable. Null when disabled."
   value       = module.github_image_publisher.role_arn
 }
+
+output "eks" {
+  description = "Cluster name, private endpoint, Pod Identity roles, security groups, workspace access point, node scheduling, and Load Balancer Controller settings the EKS deploy reads. Null without create_eks."
+  value = local.eks_enabled ? {
+    cluster_name              = module.eks_cluster.cluster_name
+    region                    = var.region
+    endpoint                  = module.eks_cluster.cluster_endpoint
+    vpc_id                    = module.eks_cluster.vpc_id
+    pod_identity_role_arns    = module.eks_cluster.pod_identity_role_arns
+    cluster_security_group_id = module.eks_cluster.cluster_security_group_id
+    temporal_client_group_id  = module.temporal_control_plane.client_security_group_id
+    internal_client_group_id  = try(module.container_services.internal_endpoints.client_security_group_id, null)
+    workspace_file_system_id  = try(module.container_services.workspace.file_system_id, null)
+    workspace_access_point_id = try(element(split("/", module.container_services.workspace.access_point_arns["checkouts"]), 1), null)
+    node_pool_label           = module.eks_cluster.node_pool_label
+    sandbox_taint             = module.eks_cluster.sandbox_taint
+    load_balancer_controller  = module.eks_cluster.load_balancer_controller
+    log_group_name            = module.eks_cluster.log_group_name
+  } : null
+}

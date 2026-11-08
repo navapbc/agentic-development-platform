@@ -90,6 +90,19 @@ resource "aws_vpc_security_group_ingress_rule" "api_access" {
   tags = var.tags
 }
 
+resource "aws_vpc_security_group_egress_rule" "api_access" {
+  count = local.enabled ? length(var.api_access_security_group_ids) : 0
+
+  security_group_id            = var.api_access_security_group_ids[count.index]
+  referenced_security_group_id = aws_eks_cluster.this[0].vpc_config[0].cluster_security_group_id
+  ip_protocol                  = "tcp"
+  from_port                    = 443
+  to_port                      = 443
+  description                  = "Kubernetes API of ${local.cluster_name}"
+
+  tags = var.tags
+}
+
 resource "aws_eks_access_entry" "admin" {
   for_each = local.enabled ? var.admin_principal_arns : {}
 

@@ -3,19 +3,16 @@ locals {
 
   # addon names the managed add-on whose pod_identity_association binds the role. The other
   # roles are bound by an aws_eks_pod_identity_association.
-  pod_identities = {
-    activity_worker = {
+  workload_identities = {
+    for name, workload in var.workloads : name => {
       namespace       = var.platform_namespace
-      service_account = "activity-worker"
+      service_account = workload.service_account
       addon           = null
-      policy_arns     = var.activity_worker_policy_arns
+      policy_arns     = workload.policy_arns
     }
-    litellm = {
-      namespace       = var.platform_namespace
-      service_account = "litellm"
-      addon           = null
-      policy_arns     = var.litellm_policy_arns
-    }
+  }
+
+  pod_identities = merge(local.workload_identities, {
     load_balancer_controller = {
       namespace       = "kube-system"
       service_account = "aws-load-balancer-controller"
@@ -40,7 +37,7 @@ locals {
       addon           = "aws-efs-csi-driver"
       policy_arns     = var.efs_csi_node_policy_arns
     }
-  }
+  })
 
   pod_identity_policy_attachments = merge([
     for name, identity in local.pod_identities : {

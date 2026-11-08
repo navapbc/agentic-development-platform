@@ -147,9 +147,10 @@ run "access_entries_and_api_rules_follow_the_inputs" {
   assert {
     condition = (
       aws_vpc_security_group_ingress_rule.api_access[0].referenced_security_group_id == "sg-jumphost" &&
-      aws_vpc_security_group_ingress_rule.api_access[0].from_port == 443 && aws_vpc_security_group_ingress_rule.api_access[0].to_port == 443
+      aws_vpc_security_group_ingress_rule.api_access[0].from_port == 443 && aws_vpc_security_group_ingress_rule.api_access[0].to_port == 443 &&
+      aws_vpc_security_group_egress_rule.api_access[0].security_group_id == "sg-jumphost" && aws_vpc_security_group_egress_rule.api_access[0].to_port == 443
     )
-    error_message = "The operator security group is not admitted to the API on 443 only."
+    error_message = "The operator security group is not admitted to the API, and allowed out to it, on 443 only."
   }
 }
 
@@ -200,14 +201,17 @@ run "pod_identity_roles_are_bound_to_their_service_accounts" {
   command = plan
 
   variables {
-    create_eks_cluster          = true
-    litellm_policy_arns         = ["arn:aws:iam::111111111111:policy/agentic-platform-bedrock-invoke"]
-    activity_worker_policy_arns = ["arn:aws:iam::111111111111:policy/rebar-ticket-store"]
+    create_eks_cluster = true
+    workloads = {
+      activity_worker = { service_account = "activity-worker", policy_arns = ["arn:aws:iam::111111111111:policy/rebar-ticket-store"] }
+      litellm         = { service_account = "litellm", policy_arns = ["arn:aws:iam::111111111111:policy/agentic-platform-bedrock-invoke"] }
+      inbound_webhook = { service_account = "inbound-webhook" }
+    }
   }
 
   assert {
-    condition     = keys(aws_iam_role.pod_identity) == ["activity_worker", "efs_csi_controller", "efs_csi_node", "litellm", "load_balancer_controller", "vpc_cni"]
-    error_message = "The module does not create exactly the six Pod Identity roles."
+    condition     = keys(aws_iam_role.pod_identity) == ["activity_worker", "efs_csi_controller", "efs_csi_node", "inbound_webhook", "litellm", "load_balancer_controller", "vpc_cni"]
+    error_message = "The module does not create a Pod Identity role for each workload and kube-system service account."
   }
 
   assert {
@@ -242,7 +246,7 @@ run "pod_identity_roles_are_bound_to_their_service_accounts" {
 
   assert {
     condition = (
-      keys(aws_eks_pod_identity_association.this) == ["activity_worker", "litellm", "load_balancer_controller"] &&
+      keys(aws_eks_pod_identity_association.this) == ["activity_worker", "inbound_webhook", "litellm", "load_balancer_controller"] &&
       aws_eks_pod_identity_association.this["load_balancer_controller"].namespace == "kube-system" &&
       aws_eks_pod_identity_association.this["load_balancer_controller"].service_account == "aws-load-balancer-controller" &&
       [for association in aws_eks_addon.before_nodes["vpc-cni"].pod_identity_association : association.service_account] == ["aws-node"] &&

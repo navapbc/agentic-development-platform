@@ -34,7 +34,7 @@ output "node_role_arn" {
 }
 
 output "pod_identity_role_arns" {
-  description = "Pod Identity role of each workload, keyed by activity_worker, litellm, load_balancer_controller, vpc_cni, efs_csi_controller, and efs_csi_node. A secret store lists a role as a reader to let the pod read the secret."
+  description = "Pod Identity role of each workload, keyed by each workload name and by load_balancer_controller, vpc_cni, efs_csi_controller, and efs_csi_node. A secret store lists a role as a reader to let the pod read the secret."
   value       = { for name, role in aws_iam_role.pod_identity : name => role.arn }
 }
 

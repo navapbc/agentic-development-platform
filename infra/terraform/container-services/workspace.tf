@@ -50,6 +50,17 @@ resource "aws_efs_mount_target" "workspace" {
   security_groups = [aws_security_group.workspace[0].id]
 }
 
+resource "aws_vpc_security_group_ingress_rule" "workspace_from_clients" {
+  count = local.services_enabled ? length(var.workspace_client_security_group_ids) : 0
+
+  security_group_id            = aws_security_group.workspace[0].id
+  description                  = "NFS from a client outside the module, such as the EKS nodes"
+  from_port                    = 2049
+  to_port                      = 2049
+  ip_protocol                  = "tcp"
+  referenced_security_group_id = var.workspace_client_security_group_ids[count.index]
+}
+
 resource "aws_efs_access_point" "workspace" {
   for_each = local.services_enabled ? local.workspace_access_points : {}
 
