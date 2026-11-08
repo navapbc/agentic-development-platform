@@ -57,9 +57,9 @@ variable "platform_node_group" {
 }
 
 variable "sandbox_node_group" {
-  description = "Instance types and scaling of the sandbox node group, which is tainted so that only the sandbox, gate, checks, and scanner pods that tolerate the taint run on it. The instance types must be Graviton."
+  description = "Instance types and scaling of the sandbox node group, which is tainted so that only the sandbox, gate, checks, and scanner pods that tolerate the taint run on it. The instance types must be Graviton, with at least 4 vCPUs, because a checks pod requests 2."
   type = object({
-    instance_types = optional(list(string), ["m7g.large"])
+    instance_types = optional(list(string), ["m7g.xlarge"])
     min_size       = optional(number, 1)
     max_size       = optional(number, 3)
     desired_size   = optional(number, 1)

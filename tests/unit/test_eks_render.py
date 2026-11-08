@@ -30,6 +30,7 @@ def _inputs() -> dict[str, Any]:
         "jira_api_token",
         "jira_pat",
         "slack_webhook_url",
+        "registry_token",
         "github_webhook_secret",
         "jira_webhook_secret",
         "mcp_gateway_token",
@@ -239,3 +240,14 @@ def test_an_image_setting_left_synthetic_is_refused(overlay) -> None:
 
     with pytest.raises(eks_render.RenderError, match="no published image for TRIVY_IMAGE"):
         eks_render.render(overlay, inputs, REPOSITORY)
+
+
+def test_the_aws_registry_mode_opens_the_gate_pods_to_addresses_outside_the_vpc(overlay) -> None:
+    inputs = _inputs()
+    inputs["gate_egress_internet"] = True
+    documents, _ = eks_render.render(overlay, inputs, REPOSITORY)
+    egress = _named(documents, "NetworkPolicy", "gate-engine-egress")["spec"]["egress"]
+    registry = next(rule for rule in egress if rule["ports"][0]["port"] == 443)
+
+    assert {"ipBlock": {"cidr": "0.0.0.0/0", "except": ["10.42.0.0/16"]}} in registry["to"]
+    assert [rule["ports"][0]["port"] for rule in egress] == [53, 4000, 443]

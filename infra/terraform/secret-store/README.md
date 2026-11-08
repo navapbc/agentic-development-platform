@@ -36,6 +36,7 @@ Generated secrets get a random value from Terraform on the first apply. Terrafor
 | `slack_webhook_url` | external | `SLACK_WEBHOOK_URL` | At the issuer |
 | `review_signing_key` | external | `REVIEW_SIGNING_KEY` | With a trust-root change |
 | `authorship_signing_key` | external | `AUTHORSHIP_SIGNING_KEY` | With an identity key change |
+| `registry_token` | external | `REGISTRY_TOKEN` | At the issuer |
 | `database_platform_migrator` | database | `ALEMBIC_DATABASE_URL` user and password | Automatic |
 | `database_platform_app` | database | `DATABASE_URL` user and password | Automatic |
 | `database_temporal` | database | Temporal `POSTGRES_USER` and `POSTGRES_PWD` | Automatic |

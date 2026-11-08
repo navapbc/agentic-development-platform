@@ -5,13 +5,17 @@ Reusable module that filters the VPC's DNS through a Route 53 Resolver DNS Firew
 ## What it provisions
 
 - An allowlist domain list and a catch-all `*` domain list.
-- A rule group that allows the allowlist at priority 100 and applies `default_action` to everything else at priority 200, associated with the VPC.
+- A rule group that allows the allowlist at priority 100, allows `redirect_trusted_domains` at priority 110 when the list is not empty, and applies `default_action` to everything else at priority 200, associated with the VPC.
 - A firewall configuration that fails closed, so queries are blocked rather than resolved if the firewall is unavailable.
 - Resolver query logging to a CloudWatch log group with `query_log_retention_days` retention, which records every query and the rule that matched it.
 
 ## Allowlist
 
 The defaults cover the AWS service names under `amazonaws.com` that the endpoints, RDS, ElastiCache, ECR, and Systems Manager resolve, the EC2 internal names, GitHub, Atlassian, and the Slack webhook host. Add the SMTP relay and any private service discovery namespace through `additional_allowed_domains`. A `*.` entry matches subdomains only, so list an apex separately when it is also needed.
+
+## CNAME chains
+
+The allowlist rule inspects every name in a CNAME chain, so a listed domain that aliases to an unlisted name is answered NXDOMAIN. That suits names whose targets the platform knows. Package registries such as `files.pythonhosted.org` and `deb.debian.org` alias to CDN names such as `dualstack.python.map.fastly.net`, which the CDN may change. List those in `redirect_trusted_domains`, whose rule sets `TRUST_REDIRECTION_DOMAIN` and resolves the chain without inspecting it. A domain in both lists is inspected, because the allowlist rule has the lower priority number.
 
 ## Rollout
 

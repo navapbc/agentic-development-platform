@@ -3,7 +3,9 @@ locals {
   domains = distinct(concat(var.allowed_domains, var.additional_allowed_domains))
 
   # Route 53 Resolver stores each domain as a fully qualified name, so a name without the trailing dot plans a change on every run.
-  fqdns = [for domain in local.domains : endswith(domain, ".") ? domain : "${domain}."]
+  fqdns           = [for domain in local.domains : endswith(domain, ".") ? domain : "${domain}."]
+  redirect_fqdns  = [for domain in var.redirect_trusted_domains : endswith(domain, ".") ? domain : "${domain}."]
+  redirect_listed = local.enabled && length(var.redirect_trusted_domains) > 0
 }
 
 resource "terraform_data" "inputs_guard" {
@@ -20,6 +22,14 @@ resource "aws_route53_resolver_firewall_domain_list" "allowed" {
 
   name    = "${var.name_prefix}-allowed"
   domains = local.fqdns
+  tags    = var.tags
+}
+
+resource "aws_route53_resolver_firewall_domain_list" "redirect_trusted" {
+  count = local.redirect_listed ? 1 : 0
+
+  name    = "${var.name_prefix}-redirect-trusted"
+  domains = local.redirect_fqdns
   tags    = var.tags
 }
 
@@ -48,6 +58,17 @@ resource "aws_route53_resolver_firewall_rule" "allow_listed" {
   priority                = 100
 }
 
+resource "aws_route53_resolver_firewall_rule" "allow_redirect_trusted" {
+  count = local.redirect_listed ? 1 : 0
+
+  name                               = "allow-redirect-trusted"
+  action                             = "ALLOW"
+  firewall_domain_list_id            = aws_route53_resolver_firewall_domain_list.redirect_trusted[0].id
+  firewall_rule_group_id             = aws_route53_resolver_firewall_rule_group.egress[0].id
+  firewall_domain_redirection_action = "TRUST_REDIRECTION_DOMAIN"
+  priority                           = 110
+}
+
 resource "aws_route53_resolver_firewall_rule" "default" {
   count = local.enabled ? 1 : 0
 
@@ -70,6 +91,7 @@ resource "aws_route53_resolver_firewall_rule_group_association" "vpc" {
 
   depends_on = [
     aws_route53_resolver_firewall_rule.allow_listed,
+    aws_route53_resolver_firewall_rule.allow_redirect_trusted,
     aws_route53_resolver_firewall_rule.default,
   ]
 }

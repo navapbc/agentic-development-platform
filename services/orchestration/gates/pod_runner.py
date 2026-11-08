@@ -162,7 +162,10 @@ def describe_pod_not_ready(status: Mapping[str, Any]) -> str:
     return f"The pod is {phase} and no scheduling or container condition explains it."
 
 
-def _run_script(spec: PodEngineSpec, registry_auth: bool = False) -> str:
+def _run_script(
+    spec: PodEngineSpec,
+    registry: registry_auth_script.RegistrySetup = registry_auth_script.NO_REGISTRY,
+) -> str:
     """The build-and-run script executed inside the pod.
 
     Builds the tool image from the copied source when no published image is named, mounts the tool
@@ -195,20 +198,21 @@ def _run_script(spec: PodEngineSpec, registry_auth: bool = False) -> str:
         acquire = f"img={shlex.quote(spec.image)}"
     else:
         acquire = (
-            f"buildah bud -t {_BUILD_TAG} {shlex.quote(_ENGINE_MOUNT)} >&2 && img={_BUILD_TAG}"
+            f"buildah bud {registry.build_flags()}-t {_BUILD_TAG} {shlex.quote(_ENGINE_MOUNT)} >&2 "
+            f"&& img={_BUILD_TAG}"
         )
     # TLS verification is only relevant to the registry pull in image mode. Disabling it lets the
     # gate pod pull from a plain-HTTP local registry. The build path never touches a registry.
     tls_flag = "--tls-verify=false " if spec.image and not spec.tls_verify else ""
     return (
         "set -e\n"
-        f"{registry_auth_script.before_pull(registry_auth)}"
+        f"{registry.before_pull()}"
         f"{acquire}\n"
         'hostflag=""\n'
         f"gw=$(getent hosts {_HOST_GATEWAY_ALIAS} 2>/dev/null | awk '{{print $1}}' | head -1)\n"
         f'if [ -n "$gw" ]; then hostflag="--add-host {_HOST_GATEWAY_ALIAS}:$gw"; fi\n'
         f'ctr=$(buildah from {tls_flag}$hostflag "$img")\n'
-        f"{registry_auth_script.after_pull(registry_auth)}"
+        f"{registry.after_pull()}"
         # The checkout is copied in as root, but the engine image runs as a non-root user, so make
         # the mount directory writable for the engine to create its --json-out file.
         f"chmod 0777 {shlex.quote(_WORKSPACE_MOUNT)}\n"
@@ -268,11 +272,11 @@ class PodEngineRunner:
             if spec.source_path:
                 await self._ops.copy_in(pod, self._namespace, spec.source_path, _ENGINE_MOUNT)
             await self._ops.copy_in(pod, self._namespace, spec.checkout_dir, _WORKSPACE_MOUNT)
-            authenticated = await registry_auth_script.install(
+            registry = await registry_auth_script.install(
                 self._ops, pod, self._namespace, [spec.image, self._builder_image]
             )
             code, stdout, stderr = await self._ops.exec_capture(
-                pod, self._namespace, _run_script(spec, authenticated)
+                pod, self._namespace, _run_script(spec, registry)
             )
             if code != 0:
                 raise PodEngineError(

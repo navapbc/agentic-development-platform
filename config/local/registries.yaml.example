@@ -1,0 +1,25 @@
+# Mirrors the gate, checks, and scanner pods pull images and packages through. Leave the file out
+# on a workstation, where the pods reach the public registries. In AWS the private-bedrock
+# composition generates the aws mode file when registry_mode = "aws". Write this file into
+# container_config_dir for registry_mode = "external".
+config_version: 1
+mode: external
+
+# Upstream image prefix to its mirror, as host/path with no scheme. A pull of an image under a
+# prefix is sent to the mirror with the rest of the name appended.
+mirrors:
+  docker.io: artifactory.example.gov/docker-remote
+  quay.io: artifactory.example.gov/quay-remote
+  ghcr.io: artifactory.example.gov/ghcr-remote
+
+# Package index URL by type. Accepted types are pypi, npm, and go.
+packages:
+  pypi: https://artifactory.example.gov/artifactory/api/pypi/pypi-remote/simple
+  npm: https://artifactory.example.gov/artifactory/api/npm/npm-remote/
+  go: https://artifactory.example.gov/artifactory/api/go/go-remote
+
+# Read-only identity the pods present to the registry. token_env names the variable the activity
+# worker reads the token from, which the registry_token secret sets in AWS.
+credential:
+  username: agentic-platform-reader
+  token_env: REGISTRY_TOKEN

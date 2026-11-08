@@ -139,7 +139,16 @@ Every pod path, the external gates, the project checks, and the built-in scanner
 GATE_ENGINE_PRIVILEGED=true
 ```
 
-It defaults to `false` and should stay there wherever the cluster allows it, because a privileged container gets host device access and the host kernel's full capability set, which removes most of the isolation the pod would otherwise provide. Turn it on only when image unpacking fails without it, as it does under the local k3s used for development, and prefer a cluster configured for rootless unpacking in any shared environment.
+It defaults to `false` and should stay there wherever the cluster allows it, because a privileged container gets host device access and the host kernel's full capability set, which removes most of the isolation the pod would otherwise provide. Turn it on only when image unpacking fails without it, as it does under the local k3s used for development, and prefer a cluster configured for rootless unpacking in any shared environment. The Amazon Linux 2023 nodes of the EKS sandbox node group unpack unprivileged, so the AWS overlay leaves it unset.
+
+## Registries
+
+The gate, checks, and scanner pods pull their images with buildah, and a project's checks command installs its own dependencies. On a workstation they reach the public registries. In AWS, DNS Firewall resolves none of them, so `config/<env>/registries.yaml` names the mirrors the pods use instead, and the activity worker copies a buildah `registries.conf` drop-in into each pod that sends every listed upstream prefix to its mirror. A Dockerfile `FROM python:3.12-slim` or a checks image named `node:22` is therefore pulled from the mirror with no change to the repository.
+
+- `mode: aws`, which the `private-bedrock` composition generates when `registry_mode = "aws"`, mirrors each upstream through an ECR pull-through cache. The activity worker hands the pod an ECR token, and the pod installs packages from the public PyPI, npm, and Go module indexes, which DNS Firewall resolves by name.
+- `mode: external` mirrors images and packages through an Artifactory or compatible service. The pod receives `PIP_INDEX_URL`, `NPM_CONFIG_REGISTRY`, and `GOPROXY` for the package indexes and a netrc and npmrc holding the token, which the activity worker reads from the variable `credential.token_env` names. [registries.yaml.example](../config/local/registries.yaml.example) shows the shape.
+
+Credentials reach the pod as files over the exec stream and are removed before project or engine code runs. Composer and other package managers are not configured, and OS package sources that use plain HTTP, such as the Debian mirrors an `apt-get` in a Dockerfile reads, are not reachable in either mode. A gate engine whose Dockerfile installs OS packages therefore runs in AWS from an image published with them, not from a build in the pod.
 
 ## Running the built-in scanners from their own images
 

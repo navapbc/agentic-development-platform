@@ -15,7 +15,7 @@ The inputs are the JSON the eks-deployer task definition carries in DEPLOY_INPUT
 - `workspace_volume_handle`, `<file system>::<access point>` of the checkouts access point
 - `rebar_roles`, the reader and writer role ARNs of the ticket store
 - `secrets`, each secret store key, and `temporal_ca`, mapped to its secret ARN
-- `vpc_cidr`, `service_cidr`, and `gate_egress_cidrs`
+- `vpc_cidr`, `service_cidr`, `gate_egress_cidrs`, and `gate_egress_internet`
 - `ingress`, the webhook and gateway certificate ARNs and the gateway client CIDRs
 """
 
@@ -161,14 +161,25 @@ def set_secrets(
 
 
 def set_network_cidrs(
-    documents: list[dict[str, Any]], vpc_cidr: str, service_cidr: str, gate_cidrs: list[str]
+    documents: list[dict[str, Any]],
+    vpc_cidr: str,
+    service_cidr: str,
+    gate_cidrs: list[str],
+    gate_internet: bool = False,
 ) -> None:
+    """Point the policies at the environment's ranges.
+
+    With `gate_internet`, which the aws registry mode sets, the gate pods also reach any address
+    outside the VPC on 443, where DNS Firewall resolves only the allowed package registries.
+    """
     for document in documents:
         if document.get("kind") != "NetworkPolicy":
             continue
         if document["metadata"]["name"] == GATE_EGRESS_POLICY:
             registry = next(r for r in document["spec"]["egress"] if _ports(r) == [443])
             registry["to"] = [{"ipBlock": {"cidr": cidr}} for cidr in gate_cidrs]
+            if gate_internet:
+                registry["to"].append({"ipBlock": {"cidr": "0.0.0.0/0", "except": [vpc_cidr]}})
             continue
         for rule in [*document["spec"].get("ingress", []), *document["spec"].get("egress", [])]:
             for peer in rule.get("from", []) + rule.get("to", []):
@@ -279,7 +290,11 @@ def render(
     set_security_groups(documents, inputs["security_groups"])
     skipped = set_secrets(documents, inputs["secrets"], omit_secrets)
     set_network_cidrs(
-        documents, inputs["vpc_cidr"], inputs["service_cidr"], inputs["gate_egress_cidrs"]
+        documents,
+        inputs["vpc_cidr"],
+        inputs["service_cidr"],
+        inputs["gate_egress_cidrs"],
+        bool(inputs.get("gate_egress_internet")),
     )
     documents = set_ingress(documents, inputs.get("ingress") or {}, mcp_hostname)
     generated = generated_objects(inputs, root)

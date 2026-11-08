@@ -1,4 +1,4 @@
-"""Registry credentials for the images a gate, checks, or scanner pod pulls with buildah.
+"""Registry mirrors and credentials for the images a gate, checks, or scanner pod pulls.
 
 These pods carry no AWS identity, and buildah inside the pod pulls their images, so on EKS a pull
 from a private ECR repository has no credential of its own. The activity worker, which signs with
@@ -6,19 +6,23 @@ its Pod Identity role, requests an ECR authorization token for each ECR registry
 from and copies a containers auth file into the pod through `copy_in`, so the token never appears
 in a command line or the API server audit log. The pod's script exports `REGISTRY_AUTH_FILE` for
 the pull and deletes the file before any project or scanner code runs. An image outside ECR, such
-as one from a local registry, installs nothing.
+as one from a local registry, installs nothing. With a registries.yaml, the pod also receives the
+buildah mirror drop-in, and in external mode the mirror's token and the package credential.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import re
+import shlex
 import tempfile
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from services.orchestration.gates import registry_mirrors
 
 AUTH_DIR = "/run/registry-auth"
 AUTH_FILE = f"{AUTH_DIR}/auth.json"
@@ -50,30 +54,114 @@ def ecr_token(account: str, region: str) -> str:
     return data[0]["authorizationToken"]
 
 
-def auth_document(registries: dict[str, tuple[str, str]], token: TokenSource) -> dict[str, Any]:
-    return {"auths": {host: {"auth": token(*where)} for host, where in sorted(registries.items())}}
+PACKAGE_AUTH_DIR = "/run/package-auth"
+MIRRORS_DIR = "/etc/containers/registries.conf.d"
+MIRRORS_FILE = "50-agentic-dev-platform-mirrors.conf"
+
+
+@dataclass(frozen=True)
+class RegistrySetup:
+    """What `install` placed in a pod, and the script fragments that use it.
+
+    The registry credential lives only for the pull. The package credential stays for the run,
+    because the project's own command installs its packages, so it is read-only by contract.
+    """
+
+    authenticated: bool = False
+    package_auth: bool = False
+    packages: Mapping[str, str] = field(default_factory=dict)
+
+    def before_pull(self) -> str:
+        return f"export REGISTRY_AUTH_FILE={AUTH_FILE}\n" if self.authenticated else ""
+
+    def after_pull(self) -> str:
+        return f"rm -rf {AUTH_DIR}\nunset REGISTRY_AUTH_FILE\n" if self.authenticated else ""
+
+    def _environment(self) -> dict[str, str]:
+        environment = dict(self.packages)
+        if self.package_auth:
+            environment["NETRC"] = f"{PACKAGE_AUTH_DIR}/netrc"
+            environment["NPM_CONFIG_USERCONFIG"] = f"{PACKAGE_AUTH_DIR}/npmrc"
+        return environment
+
+    def run_flags(self) -> str:
+        """Flags that give a `buildah run` container the package indexes and their credential."""
+        flags = [f"-e {shlex.quote(f'{k}={v}')}" for k, v in sorted(self._environment().items())]
+        if self.package_auth:
+            flags.insert(0, f"-v {PACKAGE_AUTH_DIR}:{PACKAGE_AUTH_DIR}:ro")
+        return "".join(f"{flag} " for flag in flags)
+
+    def build_flags(self) -> str:
+        """Flags that give the RUN steps of a `buildah bud` the package indexes and credential."""
+        flags = [f"--env {shlex.quote(f'{k}={v}')}" for k, v in sorted(self._environment().items())]
+        if self.package_auth:
+            flags.insert(0, f"--volume {PACKAGE_AUTH_DIR}:{PACKAGE_AUTH_DIR}:ro")
+        return "".join(f"{flag} " for flag in flags)
+
+
+NO_REGISTRY = RegistrySetup()
+
+
+async def _copy_files(ops: Any, pod: str, namespace: str, files: Mapping[str, str], target: str):
+    with tempfile.TemporaryDirectory(prefix="registry-") as directory:
+        for name, content in files.items():
+            descriptor = os.open(
+                Path(directory) / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600
+            )
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                handle.write(content)
+        await ops.copy_in(pod, namespace, directory, target)
+
+
+def _external_token(config: registry_mirrors.RegistryConfig | None) -> str | None:
+    """Return the external registry's token, or None for a config that authenticates with ECR."""
+    if config is None or config.mode != registry_mirrors.EXTERNAL:
+        return None
+    token = os.environ.get(config.token_env)
+    if not token:
+        raise RegistryAuthError(f"{config.token_env} holds no registry token")
+    return token
 
 
 async def install(
-    ops: Any, pod: str, namespace: str, images: Iterable[str], token: TokenSource | None = None
-) -> bool:
-    """Copy an auth file for the ECR registries among `images` into the pod, if there are any."""
-    registries = ecr_registries(images)
-    if not registries:
-        return False
-    document = await asyncio.to_thread(auth_document, registries, token or ecr_token)
-    with tempfile.TemporaryDirectory(prefix="registry-auth-") as directory:
-        path = Path(directory) / Path(AUTH_FILE).name
-        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            json.dump(document, handle)
-        await ops.copy_in(pod, namespace, directory, AUTH_DIR)
-    return True
+    ops: Any,
+    pod: str,
+    namespace: str,
+    images: Iterable[str],
+    token: TokenSource | None = None,
+    registries: registry_mirrors.RegistryConfig | None | bool = True,
+) -> RegistrySetup:
+    """Place the mirror config and the credentials the pod's pulls and installs need.
+
+    `registries` defaults to the environment's registries.yaml. The ECR token covers each ECR
+    registry among `images` and the mirrors, and an external mirror's token comes from the
+    variable its config names.
+    """
+    config = registry_mirrors.current() if registries is True else registries or None
+    mirror_images = [f"{location}/x" for location in config.mirrors.values()] if config else []
+    ecr = ecr_registries([*images, *mirror_images])
+    entries = await asyncio.to_thread(
+        lambda: {host: (token or ecr_token)(*where) for host, where in sorted(ecr.items())}
+    )
+    external_token = _external_token(config)
+    if external_token is not None:
+        entries.update(registry_mirrors.basic_auth(config, external_token))
+    if config is not None and config.mirrors:
+        conf = {MIRRORS_FILE: registry_mirrors.registries_conf(config)}
+        await _copy_files(ops, pod, namespace, conf, MIRRORS_DIR)
+    if entries:
+        document = {Path(AUTH_FILE).name: registry_mirrors.auth_document(entries)}
+        await _copy_files(ops, pod, namespace, document, AUTH_DIR)
+    package_auth = bool(external_token is not None and config.packages)
+    if package_auth:
+        files = registry_mirrors.package_auth_files(config, external_token)
+        await _copy_files(ops, pod, namespace, files, PACKAGE_AUTH_DIR)
+    return RegistrySetup(
+        authenticated=bool(entries),
+        package_auth=package_auth,
+        packages=registry_mirrors.package_env(config) if config else {},
+    )
 
 
-def before_pull(installed: bool) -> str:
-    return f"export REGISTRY_AUTH_FILE={AUTH_FILE}\n" if installed else ""
-
-
-def after_pull(installed: bool) -> str:
-    return f"rm -rf {AUTH_DIR}\nunset REGISTRY_AUTH_FILE\n" if installed else ""
+class RegistryAuthError(RuntimeError):
+    """The registry credential the environment names is not available to the worker."""

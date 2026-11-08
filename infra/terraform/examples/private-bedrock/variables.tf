@@ -381,7 +381,7 @@ variable "eks_platform_node_group" {
 variable "eks_sandbox_node_group" {
   description = "Graviton instance types and scaling of the tainted sandbox node group."
   type = object({
-    instance_types = optional(list(string), ["m7g.large"])
+    instance_types = optional(list(string), ["m7g.xlarge"])
     min_size       = optional(number, 1)
     max_size       = optional(number, 3)
     desired_size   = optional(number, 1)
@@ -428,6 +428,46 @@ variable "eks_load_balancer_controller_image_repository" {
 
 variable "eks_gate_image_repository_arns" {
   description = "ECR repositories of the gate engine images the gate pods pull in image mode, beyond the semgrep and trivy repositories the scanner pods pull from."
+  type        = list(string)
+  default     = []
+}
+
+variable "registry_mode" {
+  description = "Where the gate, checks, and scanner pods pull images and packages from. aws mirrors images through ECR pull-through caches and allows the package registries in DNS Firewall, external uses an Artifactory or compatible service that config/<env>/registries.yaml names, and none leaves the pods with no route to a public registry."
+  type        = string
+  default     = "none"
+
+  validation {
+    condition     = contains(["none", "aws", "external"], var.registry_mode)
+    error_message = "registry_mode must be none, aws, or external."
+  }
+}
+
+variable "registry_package_domains" {
+  description = "Package registry domains DNS Firewall resolves in aws mode, for the package installs of the checks pods. Their CNAME chains are trusted, because they are served from CDNs. The gate pods reach them on 443 only, so OS package sources that use plain HTTP, such as the Debian mirrors, stay unreachable."
+  type        = list(string)
+  default     = ["pypi.org", "files.pythonhosted.org", "registry.npmjs.org", "proxy.golang.org", "sum.golang.org"]
+}
+
+variable "registry_upstream_credentials" {
+  description = "Upstreams whose pull-through rule needs credentials, docker-hub and ghcr, in aws mode. The composition creates an ecr-pullthroughcache/ secret for each, which an operator fills with the upstream username and access token."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = length(setsubtract(var.registry_upstream_credentials, ["docker-hub", "ghcr"])) == 0
+    error_message = "registry_upstream_credentials accepts docker-hub and ghcr."
+  }
+}
+
+variable "registry_external_host" {
+  description = "Host name of the external registry in external mode, which DNS Firewall resolves."
+  type        = string
+  default     = ""
+}
+
+variable "registry_external_cidrs" {
+  description = "Address ranges of the external registry in external mode, which the gate pods may reach on 443."
   type        = list(string)
   default     = []
 }

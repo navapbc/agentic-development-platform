@@ -82,6 +82,7 @@ locals {
     slack_webhook_url      = "Slack incoming webhook URL for alerts, set as SLACK_WEBHOOK_URL."
     review_signing_key     = "OpenSSH private key that signs review verdicts, set as REVIEW_SIGNING_KEY."
     authorship_signing_key = "OpenSSH private key that signs authored artifacts, set as AUTHORSHIP_SIGNING_KEY."
+    registry_token         = "Read-only token of an external registry such as Artifactory, set as REGISTRY_TOKEN."
   }
 
   database_roles = {

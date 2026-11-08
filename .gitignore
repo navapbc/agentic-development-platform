@@ -22,6 +22,8 @@ config/*/tickets.yaml
 !config/*/tickets.yaml.example
 config/*/repositories.yaml
 !config/*/repositories.yaml.example
+config/*/registries.yaml
+!config/*/registries.yaml.example
 config/*/review-trust-root.yaml
 !config/*/review-trust-root.yaml.example
 config/*/review-signing-key

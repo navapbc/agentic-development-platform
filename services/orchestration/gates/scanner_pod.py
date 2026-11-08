@@ -112,7 +112,11 @@ def _restore_path(value: object, cwd: str) -> object:
     return value
 
 
-def scan_script(image: str, args: Sequence[str], registry_auth: bool = False) -> str:
+def scan_script(
+    image: str,
+    args: Sequence[str],
+    registry: registry_auth_script.RegistrySetup = registry_auth_script.NO_REGISTRY,
+) -> str:
     """Build the scanner in its own image and keep the tool's JSON alone on stdout.
 
     The tool writes to a file that is echoed as the last step, so buildah's own progress output
@@ -127,9 +131,9 @@ def scan_script(image: str, args: Sequence[str], registry_auth: bool = False) ->
     command = " ".join(shlex.quote(arg) for arg in args)
     return (
         f"out=$(mktemp) || exit {SCRATCH_FILE_EXIT}\n"
-        f"{registry_auth_script.before_pull(registry_auth)}"
+        f"{registry.before_pull()}"
         f"ctr=$(buildah from {shlex.quote(image)}) || exit {IMAGE_PULL_EXIT}\n"
-        f"{registry_auth_script.after_pull(registry_auth)}"
+        f"{registry.after_pull()}"
         f"buildah run --net host -v {_WORKSPACE_MOUNT}:{_WORKSPACE_MOUNT} "
         f'"$ctr" -- {command} > "$out"\n'
         "rc=$?\n"
@@ -185,13 +189,13 @@ class PodCommandRunner:
                 await self._ops.wait_ready(pod, self._namespace)
                 if cwd:
                     await self._ops.copy_in(pod, self._namespace, cwd, _WORKSPACE_MOUNT)
-                authenticated = await registry_auth_script.install(
+                registry = await registry_auth_script.install(
                     self._ops, pod, self._namespace, [self._image]
                 )
                 code, stdout, stderr = await self._ops.exec_capture(
                     pod,
                     self._namespace,
-                    scan_script(self._image, remap_paths(args, cwd), authenticated),
+                    scan_script(self._image, remap_paths(args, cwd), registry),
                 )
                 if code == IMAGE_PULL_EXIT:
                     self._unavailable(f"could not pull {self._image}: {stderr.strip()[:400]}")

@@ -14,6 +14,7 @@ from services.orchestration.gates.scanner_pod import PodCommandRunner, scan_scri
 ECR = "123456789012.dkr.ecr.us-east-1.amazonaws.com"
 TRIVY = f"{ECR}/agentic-platform/trivy:0.74.0@sha256:{'a' * 64}"
 TOKEN = "dG9rZW4="
+PULLING = registry_auth.RegistrySetup(authenticated=True)
 
 
 class _CopyingOps:
@@ -69,9 +70,11 @@ async def test_install_copies_an_owner_only_auth_file_for_each_ecr_registry() ->
         requested.append((account, region))
         return TOKEN
 
-    installed = await registry_auth.install(ops, "pod", "agent-sandbox", [TRIVY, TRIVY], token)
+    installed = await registry_auth.install(
+        ops, "pod", "agent-sandbox", [TRIVY, TRIVY], token, registries=None
+    )
 
-    assert installed
+    assert installed.authenticated
     assert requested == [("123456789012", "us-east-1")]
     mode, content = ops.copied[registry_auth.AUTH_DIR]["auth.json"]
     assert mode == 0o600
@@ -84,7 +87,11 @@ async def test_install_does_nothing_for_an_image_outside_ecr() -> None:
     def token(account: str, region: str) -> str:
         raise AssertionError("no token is requested")
 
-    assert not await registry_auth.install(ops, "pod", "ns", ["docker.io/semgrep/semgrep:1"], token)
+    setup = await registry_auth.install(
+        ops, "pod", "ns", ["docker.io/semgrep/semgrep:1"], token, registries=None
+    )
+
+    assert setup == registry_auth.NO_REGISTRY
     assert ops.copied == {}
 
 
@@ -109,22 +116,23 @@ def test_each_script_reads_the_auth_file_only_for_the_pull() -> None:
         repo="r", execution_id="e", checkout_dir="/c", command="make test", image=TRIVY
     )
     scripts = {
-        "scanner": (scan_script(TRIVY, ["trivy", "fs", "/workspace"], True), "buildah run"),
-        "gate": (_run_script(spec, True), "buildah run"),
-        "checks": (_checks_script(checks, True), "buildah run"),
-        "fix": (_fix_script(checks, True), "buildah run"),
+        "scanner": (scan_script(TRIVY, ["trivy", "fs", "/workspace"], PULLING), "buildah run"),
+        "gate": (_run_script(spec, PULLING), "buildah run"),
+        "checks": (_checks_script(checks, PULLING), "buildah run"),
+        "fix": (_fix_script(checks, PULLING), "buildah run"),
     }
 
     for name, (script, run) in scripts.items():
         export, pull, remove = _pull_window(script)
         assert export < pull < remove < script.index(run), name
-    assert "REGISTRY_AUTH_FILE" not in scan_script(TRIVY, ["trivy"], False)
+    assert "REGISTRY_AUTH_FILE" not in scan_script(TRIVY, ["trivy"])
 
 
 async def test_a_scanner_pod_pulls_its_ecr_image_with_the_copied_token(
     monkeypatch, tmp_path
 ) -> None:
     monkeypatch.setattr(registry_auth, "ecr_token", lambda account, region: "dG9rZW4=")
+    monkeypatch.setattr(registry_auth.registry_mirrors, "current", lambda: None)
     ops = _CopyingOps()
 
     await PodCommandRunner(TRIVY, scanner="trivy", ops=ops)(

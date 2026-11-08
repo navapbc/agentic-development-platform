@@ -55,7 +55,7 @@ output "egress_public_ip" {
 
 output "dns_firewall_allowed_domains" {
   description = "Domains the VPC may resolve when the DNS Firewall is enabled."
-  value       = module.dns_firewall.allowed_domains
+  value       = concat(module.dns_firewall.allowed_domains, module.dns_firewall.redirect_trusted_domains)
 }
 
 output "aurora_endpoint" {

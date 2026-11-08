@@ -204,6 +204,11 @@
   match: Action = "ecr:GetAuthorizationToken"
   justification: The gate, checks, and scanner pods carry no AWS identity, so the activity worker requests the ECR token their in-pod pulls use and copies it into the pod over the exec stream, and the action supports no resource-level scoping. The token authorizes only the pulls the role's other statement grants, which are limited to the semgrep and trivy repositories and the listed gate image repositories, and the pod deletes it after the pull.
 - tool: semgrep
+  rule: terraform.aws.security.aws-secretsmanager-secret-unencrypted.aws-secretsmanager-secret-unencrypted
+  path: infra/terraform/examples/private-bedrock/registry.tf
+  match: resource "aws_secretsmanager_secret" "registry_upstream" {
+  justification: ECR reads a pull-through cache credential only from a secret encrypted with the AWS managed aws/secretsmanager key and does not support a customer managed key for it. The secret holds a read-only upstream registry token, and only ECR and the operators who fill it read it.
+- tool: semgrep
   rule: terraform.lang.security.iam.no-iam-creds-exposure.no-iam-creds-exposure
   path: infra/terraform/eks-deployer/main.tf
   match: Action = "ecr:GetAuthorizationToken"

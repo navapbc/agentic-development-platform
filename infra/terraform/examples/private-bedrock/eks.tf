@@ -6,10 +6,11 @@ locals {
   eks_workloads = {
     activity_worker = {
       service_account = "activity-worker"
-      policy_arns     = concat(aws_iam_policy.eks_sandbox_image_pull[*].arn, aws_iam_policy.eks_temporal_ca[*].arn)
+      policy_arns     = concat(aws_iam_policy.eks_sandbox_image_pull[*].arn, aws_iam_policy.eks_temporal_ca[*].arn, aws_iam_policy.eks_registry_cache_fill[*].arn)
       secrets = [
         "database_platform_app", "coordination_shared_secret", "litellm_master_key", "authorship_signing_key",
         "review_attestation_secret", "github_token", "jira_api_token", "jira_pat", "slack_webhook_url",
+        "registry_token",
       ]
     }
     litellm = {
@@ -86,7 +87,7 @@ locals {
     }
     settings             = { LANGFUSE_HOST = "https://langfuse.${var.container_internal_domain}" }
     platform_environment = coalesce(module.container_services.platform_environment, {})
-    environment_config   = local.container_environment_config
+    environment_config   = merge(local.registry_environment_config, local.container_environment_config)
     security_groups = {
       cluster         = module.eks_cluster.cluster_security_group_id
       temporal_client = coalesce(module.temporal_control_plane.client_security_group_id, "")
@@ -97,10 +98,15 @@ locals {
       reader = coalesce(module.rebar_ticket_store.reader_role_arn, "")
       writer = coalesce(module.rebar_ticket_store.writer_role_arn, "")
     }
-    secrets           = merge(module.secret_store.secret_arns, { temporal_ca = coalesce(module.temporal_control_plane.client_ca_secret_arn, "") })
-    vpc_cidr          = data.aws_vpc.eks[0].cidr_block
-    service_cidr      = module.eks_cluster.service_cidr
-    gate_egress_cidrs = concat(local.app_cidrs, [for entry in data.aws_ec2_managed_prefix_list.s3_eks[0].entries : entry.cidr])
+    secrets      = merge(module.secret_store.secret_arns, { temporal_ca = coalesce(module.temporal_control_plane.client_ca_secret_arn, "") })
+    vpc_cidr     = data.aws_vpc.eks[0].cidr_block
+    service_cidr = module.eks_cluster.service_cidr
+    gate_egress_cidrs = concat(
+      local.app_cidrs,
+      [for entry in data.aws_ec2_managed_prefix_list.s3_eks[0].entries : entry.cidr],
+      var.registry_mode == "external" ? var.registry_external_cidrs : [],
+    )
+    gate_egress_internet = var.registry_mode == "aws"
     ingress = {
       webhook_certificate_arn     = var.eks_webhook_certificate_arn
       mcp_gateway_certificate_arn = var.eks_mcp_gateway_certificate_arn
@@ -179,9 +185,30 @@ resource "aws_iam_policy" "eks_sandbox_image_pull" {
         Resource = concat(
           [for name in ["semgrep", "trivy"] : module.container_services.repository_arns[name]],
           var.eks_gate_image_repository_arns,
+          local.registry_cache_repository_arns,
         )
       },
     ]
+  })
+
+  tags = var.tags
+}
+
+# The first pull of an image through a pull-through cache creates its repository and imports the
+# image with the puller's identity, which is the activity worker's token in the gate pod.
+resource "aws_iam_policy" "eks_registry_cache_fill" {
+  count = local.eks_enabled && local.registry_aws ? 1 : 0
+
+  name_prefix = "${var.name_prefix}-eks-registry-cache-fill-"
+  description = "Lets the gate, checks, and scanner pods fill the ECR pull-through caches on a first pull."
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid      = "FillThePullThroughCache"
+      Effect   = "Allow"
+      Action   = ["ecr:BatchImportUpstreamImage", "ecr:CreateRepository"]
+      Resource = local.registry_cache_repository_arns
+    }]
   })
 
   tags = var.tags
