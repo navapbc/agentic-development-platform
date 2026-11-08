@@ -61,3 +61,31 @@ def test_the_entrypoint_writes_the_files_and_points_the_loader_at_them(tmp_path)
     )
 
     assert result.stdout.splitlines()[-1] == "backend: rebar"
+
+
+def test_the_entrypoint_exports_each_mounted_secret_file(tmp_path) -> None:
+    secrets = tmp_path / "secrets"
+    secrets.mkdir()
+    (secrets / "COORDINATION_SHARED_SECRET").write_text("shared\n", encoding="utf-8")
+    ca = "-----BEGIN CERTIFICATE-----\nAA==\n"
+    (secrets / "TEMPORAL_TLS_CA").write_text(ca, encoding="utf-8")
+    (secrets / "not-a-name").write_text("ignored", encoding="utf-8")
+    env = {"PATH": os.environ["PATH"], "PLATFORM_SECRETS_DIR": str(secrets)}
+
+    result = subprocess.run(
+        [
+            "sh",
+            "docker/platform-entrypoint.sh",
+            "sh",
+            "-c",
+            'printf "%s|%s|%s" "$COORDINATION_SHARED_SECRET" "$TEMPORAL_TLS_CA" "${not_a_name:-}"',
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert result.stdout == "shared|-----BEGIN CERTIFICATE-----\nAA==|"
+    assert "ignoring not-a-name" in result.stderr

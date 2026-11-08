@@ -211,6 +211,7 @@ def _fake_settings():
         gate_engine_namespace="agent-sandbox",
         gate_engine_builder_image="builder",
         gate_engine_privileged=False,
+        sandbox_node_pool="",
     )
 
 

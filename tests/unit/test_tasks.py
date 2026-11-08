@@ -63,6 +63,7 @@ EXPECTED_TASKS = {
     "go-test",
     "temporal-certs",
     "clickhouse-certs",
+    "webhook-certs",
     "langfuse-ui",
     "temporal-deploy",
     "platform-deploy",

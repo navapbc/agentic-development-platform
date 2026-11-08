@@ -569,6 +569,7 @@ Run `inv --list` for the full set. The common tasks are below.
 | `inv operator-done --workflow-id ID --repo REPO --branch BRANCH [--closed-unmerged]` | Fetch a local source-control run's results, verify them, and signal the workflow |
 | `inv publish-jumphost-image [--tag TAG]` | Build and push the jumphost base image to the account ECR repository |
 | `inv temporal-certs generate --out DIR`, `inv temporal-certs put --dir DIR [--import-to-acm]` | Issue self-signed Temporal TLS certificates, or check a certificate directory and write it to Secrets Manager |
+| `inv webhook-certs issue --dir DIR [--name NAME]`, `inv webhook-certs import --dir DIR` | Issue a self-signed certificate for the inbound webhook load balancer, or import it into ACM for `eks_webhook_certificate_arn` |
 | `inv publish-platform-images` | Build the platform, repository-intelligence, collector, TLS sidecar, and OPA images, copy the pinned Langfuse, ClickHouse, LiteLLM, OpenHands agent-server, buildah, semgrep, and trivy images, push them to ECR, and write their references to `images.auto.tfvars.json` |
 | `inv aws-release [--var-file FILE] [--yes]` | Plan the composition root with the published images, apply it after confirmation, and run `inv platform-deploy` |
 | `inv aws-destroy [--var-file FILE] [--plan-only] [--delete-images]` | Destroy the composition root after the account ID is typed, keeping the bootstrap root and the images |

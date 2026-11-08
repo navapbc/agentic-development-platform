@@ -185,6 +185,7 @@ async def _project_autofix(req: ApplyCIRepairRequest, workspace_path: str) -> bo
             namespace=settings.gate_engine_namespace,
             builder_image=settings.gate_engine_builder_image,
             privileged=settings.gate_engine_privileged,
+            node_pool=settings.sandbox_node_pool,
         )
         result = await runner.run_fix(
             ChecksSpec(

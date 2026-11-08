@@ -8,6 +8,8 @@ from pathlib import Path
 
 import yaml
 from openhands.runtime.provisioner import (
+    NODE_POOL_LABEL,
+    SANDBOX_TAINT_KEY,
     SandboxSpec,
     WorkspaceBinding,
     _free_port,
@@ -15,7 +17,8 @@ from openhands.runtime.provisioner import (
     build_pod_manifest,
 )
 
-MANIFESTS = Path(__file__).resolve().parents[2] / "openhands"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+MANIFESTS = REPO_ROOT / "openhands"
 POD = MANIFESTS / "images" / "agent-server-pod.yaml"
 POLICIES = MANIFESTS / "policies"
 
@@ -185,3 +188,25 @@ def test_no_session_key_leaves_the_agent_server_on_loopback() -> None:
     ][0]["env"]
 
     assert all(variable["name"] != "SESSION_API_KEY" for variable in env)
+
+
+def test_the_sandbox_pod_lands_on_the_tainted_node_pool() -> None:
+    spec = build_pod_manifest(SandboxSpec(execution_id="exec-1", image="img", node_pool="sandbox"))[
+        "spec"
+    ]
+
+    assert spec["nodeSelector"] == {NODE_POOL_LABEL: "sandbox"}
+    assert spec["tolerations"] == [
+        {"key": SANDBOX_TAINT_KEY, "operator": "Exists", "effect": "NoSchedule"}
+    ]
+    assert (
+        "nodeSelector" not in build_pod_manifest(SandboxSpec(execution_id="e", image="i"))["spec"]
+    )
+
+
+def test_the_node_pool_label_and_taint_match_the_eks_node_groups() -> None:
+    nodes = (REPO_ROOT / "infra/terraform/eks-cluster/nodes.tf").read_text(encoding="utf-8")
+
+    assert f'node_pool_label = "{NODE_POOL_LABEL}"' in nodes
+    assert f'key = "{SANDBOX_TAINT_KEY}"' in nodes
+    assert 'effect = "NO_SCHEDULE"' in nodes

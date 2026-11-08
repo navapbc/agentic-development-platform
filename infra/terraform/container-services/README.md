@@ -133,6 +133,7 @@ The telemetry KMS key encrypts the workspace. X-Ray encryption is one setting pe
 | `secret_readers` | Execution roles that inject each secret, keyed by its secret store key, for the secret store |
 | `service_arns` | ECS service of each service and worker slot |
 | `workspace` | The workspace file system, its access points, and its security group, for the workloads outside the module that write the checkouts |
+| `platform_environment` | The environment every platform task receives, without the config files, for the EKS workloads that run the platform image. Null without the services |
 | `deploy` | The cluster, services, worker slots, Langfuse and ClickHouse services, one-shot tasks, and subnets `inv platform-deploy` reads |
 | `temporal_client_role_arns` | Execution roles of the workloads that connect to Temporal, which read the Temporal CA |
 | `secret_restart_services` | The services and worker slots that read each secret, the `platform_app` login included, for the secret store's restart rules |

@@ -326,6 +326,7 @@ class _Settings:
         self.gate_engine_namespace = "gates"
         self.gate_engine_builder_image = "quay.io/buildah/stable:v1.38.0"
         self.gate_engine_privileged = True
+        self.sandbox_node_pool = ""
         self.semgrep_binary = "semgrep"
         self.trivy_binary = "trivy"
 

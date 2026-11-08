@@ -102,6 +102,11 @@ output "deploy" {
   } : null
 }
 
+output "platform_environment" {
+  description = "Environment every platform task receives, without the config files, for the EKS workloads that run the platform image. Null without the services."
+  value       = local.services_enabled ? { for key, value in local.platform_environment : key => value if key != "PLATFORM_ENV_CONFIG" && value != "" } : null
+}
+
 output "secret_readers" {
   description = "Execution roles that inject each secret, keyed by its secret store key, for the secret store's secret_readers. Empty without the services."
   value = local.services_enabled ? merge(

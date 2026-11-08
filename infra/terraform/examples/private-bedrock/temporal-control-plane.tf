@@ -23,7 +23,7 @@ module "temporal_control_plane" {
   internode_server_name         = var.temporal_internode_server_name
 
   frontend_certificate_publicly_trusted = var.temporal_frontend_certificate_publicly_trusted
-  ca_secret_readers                     = concat(module.container_services.temporal_client_role_arns, local.eks_activity_worker_role_arns)
+  ca_secret_readers                     = concat(module.container_services.temporal_client_role_arns, local.eks_temporal_client_role_arns)
   fips_140_mode                         = var.temporal_fips_140_mode
   secret_recovery_window_days           = var.secret_recovery_window_days
 

@@ -18,6 +18,10 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
+from openhands.runtime.provisioner import node_pool_scheduling
+
+from services.orchestration.gates import registry_auth as registry_auth_script
+
 _NAME_SANITISE = re.compile(r"[^a-z0-9-]+")
 
 _ENGINE_MOUNT = "/engine"
@@ -83,6 +87,7 @@ def build_pod_manifest(
     builder_image: str,
     privileged: bool = False,
     resources: dict[str, dict[str, str]] | None = None,
+    node_pool: str = "",
 ) -> dict:
     # Unpacking an image layer remounts the container root MS_PRIVATE|MS_REC, which some clusters
     # (k3s, Colima) deny to an unprivileged pod even with CAP_SYS_ADMIN and seccomp unconfined.
@@ -116,6 +121,7 @@ def build_pod_manifest(
                     "resources": deepcopy(resources or DEFAULT_POD_RESOURCES),
                 }
             ],
+            **node_pool_scheduling(node_pool),
         },
     }
 
@@ -156,7 +162,7 @@ def describe_pod_not_ready(status: Mapping[str, Any]) -> str:
     return f"The pod is {phase} and no scheduling or container condition explains it."
 
 
-def _run_script(spec: PodEngineSpec) -> str:
+def _run_script(spec: PodEngineSpec, registry_auth: bool = False) -> str:
     """The build-and-run script executed inside the pod.
 
     Builds the tool image from the copied source when no published image is named, mounts the tool
@@ -196,11 +202,13 @@ def _run_script(spec: PodEngineSpec) -> str:
     tls_flag = "--tls-verify=false " if spec.image and not spec.tls_verify else ""
     return (
         "set -e\n"
+        f"{registry_auth_script.before_pull(registry_auth)}"
         f"{acquire}\n"
         'hostflag=""\n'
         f"gw=$(getent hosts {_HOST_GATEWAY_ALIAS} 2>/dev/null | awk '{{print $1}}' | head -1)\n"
         f'if [ -n "$gw" ]; then hostflag="--add-host {_HOST_GATEWAY_ALIAS}:$gw"; fi\n'
         f'ctr=$(buildah from {tls_flag}$hostflag "$img")\n'
+        f"{registry_auth_script.after_pull(registry_auth)}"
         # The checkout is copied in as root, but the engine image runs as a non-root user, so make
         # the mount directory writable for the engine to create its --json-out file.
         f"chmod 0777 {shlex.quote(_WORKSPACE_MOUNT)}\n"
@@ -241,23 +249,30 @@ class PodEngineRunner:
         namespace: str = DEFAULT_NAMESPACE,
         builder_image: str = DEFAULT_BUILDER_IMAGE,
         privileged: bool = False,
+        node_pool: str = "",
     ) -> None:
         self._ops = ops
         self._namespace = namespace
         self._builder_image = builder_image
         self._privileged = privileged
+        self._node_pool = node_pool
 
     async def run_engine(self, spec: PodEngineSpec) -> dict[str, Any]:
         pod = pod_name_for(spec.name, spec.execution_id)
-        manifest = build_pod_manifest(pod, self._namespace, self._builder_image, self._privileged)
+        manifest = build_pod_manifest(
+            pod, self._namespace, self._builder_image, self._privileged, node_pool=self._node_pool
+        )
         await self._ops.create(manifest)
         try:
             await self._ops.wait_ready(pod, self._namespace)
             if spec.source_path:
                 await self._ops.copy_in(pod, self._namespace, spec.source_path, _ENGINE_MOUNT)
             await self._ops.copy_in(pod, self._namespace, spec.checkout_dir, _WORKSPACE_MOUNT)
+            authenticated = await registry_auth_script.install(
+                self._ops, pod, self._namespace, [spec.image, self._builder_image]
+            )
             code, stdout, stderr = await self._ops.exec_capture(
-                pod, self._namespace, _run_script(spec)
+                pod, self._namespace, _run_script(spec, authenticated)
             )
             if code != 0:
                 raise PodEngineError(

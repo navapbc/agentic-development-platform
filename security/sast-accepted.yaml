@@ -198,3 +198,8 @@
   path: infra/terraform/github-image-publisher/main.tf
   match: Action = "ecr:GetAuthorizationToken"
   justification: Docker signs in to ECR with the token this action returns, so a role that pushes an image needs it, and the action supports no resource-level scoping. The token authorizes only the repository actions the role's other statement grants, which are limited to the platform repositories, and the role is assumable only by this repository's workflows on main and v tags.
+- tool: semgrep
+  rule: terraform.lang.security.iam.no-iam-creds-exposure.no-iam-creds-exposure
+  path: infra/terraform/examples/private-bedrock/eks.tf
+  match: Action = "ecr:GetAuthorizationToken"
+  justification: The gate, checks, and scanner pods carry no AWS identity, so the activity worker requests the ECR token their in-pod pulls use and copies it into the pod over the exec stream, and the action supports no resource-level scoping. The token authorizes only the pulls the role's other statement grants, which are limited to the semgrep and trivy repositories and the listed gate image repositories, and the pod deletes it after the pull.

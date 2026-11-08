@@ -1,3 +1,13 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mcp-gateway
+  namespace: agentic-dev-platform
+  labels:
+    app.kubernetes.io/name: mcp-gateway
+    app.kubernetes.io/part-of: agentic-dev-platform
+automountServiceAccountToken: false
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -17,6 +27,7 @@ spec:
         app.kubernetes.io/name: mcp-gateway
         app.kubernetes.io/part-of: agentic-dev-platform
     spec:
+      serviceAccountName: mcp-gateway
       automountServiceAccountToken: false
       securityContext:
         seccompProfile:
@@ -24,7 +35,7 @@ spec:
       containers:
         - name: mcp-gateway
           image: 123456789012.dkr.ecr.us-east-1.amazonaws.com/agentic-dev-platform/mcp-gateway:0.3.0
-          command:
+          args:
             - python
             - -m
             - services.integration.mcp_gateway.server

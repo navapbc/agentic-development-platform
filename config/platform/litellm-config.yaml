@@ -1,45 +1,61 @@
 # LiteLLM gateway config. Logical model names map to US Bedrock Claude inference
 # profiles, resolved under the configured AWS profile. No group carries a second
 # deployment, so a throttled call is retried against Claude rather than answered
-# by a different model family.
+# by a different model family. Each deployment declares its per-token price, the
+# us-east-1 regional on-demand rate, because the pinned LiteLLM image's cost map
+# predates the Claude 5.5 models and would otherwise record every call at zero.
 
 model_list:
   - model_name: planning-model
     litellm_params:
-      model: bedrock/us.anthropic.claude-opus-4-5-20251101-v1:0
+      model: bedrock/us.anthropic.claude-opus-5-5
       aws_region_name: us-east-1
+      input_cost_per_token: 4.40e-06
+      output_cost_per_token: 2.20e-05
 
   - model_name: coding-model
     litellm_params:
-      model: bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0
+      model: bedrock/us.anthropic.claude-sonnet-5-5
       aws_region_name: us-east-1
+      input_cost_per_token: 2.20e-06
+      output_cost_per_token: 1.10e-05
 
   - model_name: review-model
     litellm_params:
-      model: bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0
+      model: bedrock/us.anthropic.claude-sonnet-5-5
       aws_region_name: us-east-1
+      input_cost_per_token: 2.20e-06
+      output_cost_per_token: 1.10e-05
 
   - model_name: security-review-model
     litellm_params:
-      model: bedrock/us.anthropic.claude-opus-4-5-20251101-v1:0
+      model: bedrock/us.anthropic.claude-opus-5-5
       aws_region_name: us-east-1
+      input_cost_per_token: 4.40e-06
+      output_cost_per_token: 2.20e-05
 
   - model_name: evaluation-model
     litellm_params:
-      model: bedrock/us.anthropic.claude-opus-4-5-20251101-v1:0
+      model: bedrock/us.anthropic.claude-opus-5-5
       aws_region_name: us-east-1
+      input_cost_per_token: 4.40e-06
+      output_cost_per_token: 2.20e-05
 
   - model_name: classification-summary
     litellm_params:
-      model: bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0
+      model: bedrock/us.anthropic.claude-haiku-5-5
       aws_region_name: us-east-1
+      input_cost_per_token: 1.10e-07
+      output_cost_per_token: 5.50e-07
 
   # Canonical-id model groups. Named by the provider model id that AI-CLI engines (claude-code)
   # recognize, so a gate can route a review through a client-recognized model. Bedrock-backed.
-  - model_name: claude-opus-4-5-20251101
+  - model_name: claude-opus-5-5
     litellm_params:
-      model: bedrock/us.anthropic.claude-opus-4-5-20251101-v1:0
+      model: bedrock/us.anthropic.claude-opus-5-5
       aws_region_name: us-east-1
+      input_cost_per_token: 4.40e-06
+      output_cost_per_token: 2.20e-05
 
 litellm_settings:
   drop_params: true

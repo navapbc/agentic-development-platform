@@ -1,0 +1,353 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# The review worker runs on ECS in AWS, so this overlay leaves out review-worker.yaml.
+resources:
+  - namespaces.yaml
+  - ../mcp-gateway.yaml
+  - ../inbound-webhook.yaml
+  - ../activity-worker.yaml
+  - ../litellm.yaml
+  - ../sandbox.yaml
+  - ../../../openhands/policies/networkpolicy-default-deny-egress.yaml
+  - ../../../openhands/policies/networkpolicy-allow-egress.yaml
+  - secret-provider-classes.yaml
+  - aws-resources.yaml
+
+images:
+  - name: 123456789012.dkr.ecr.us-east-1.amazonaws.com/agentic-dev-platform/mcp-gateway
+    newName: 123456789012.dkr.ecr.us-east-1.amazonaws.com/agentic-platform/platform
+  - name: 123456789012.dkr.ecr.us-east-1.amazonaws.com/agentic-dev-platform/inbound-webhook
+    newName: 123456789012.dkr.ecr.us-east-1.amazonaws.com/agentic-platform/platform
+  - name: 123456789012.dkr.ecr.us-east-1.amazonaws.com/agentic-dev-platform/platform
+    newName: 123456789012.dkr.ecr.us-east-1.amazonaws.com/agentic-platform/platform
+  - name: 123456789012.dkr.ecr.us-east-1.amazonaws.com/agentic-dev-platform/opa
+    newName: 123456789012.dkr.ecr.us-east-1.amazonaws.com/agentic-platform/opa
+  - name: ghcr.io/berriai/litellm
+    newName: 123456789012.dkr.ecr.us-east-1.amazonaws.com/agentic-platform/litellm
+
+generatorOptions:
+  disableNameSuffixHash: true
+
+configMapGenerator:
+  - name: agentic-platform-eks
+    namespace: agentic-dev-platform
+    literals:
+      - OPENHANDS_IN_CLUSTER=true
+      - GATE_ENGINE_EXECUTION=pod
+      - SCANNER_EXECUTION=pod
+      - AWS_USE_FIPS_ENDPOINT=true
+      - BEDROCK_CONNECTIVITY_PROVIDER=direct
+      - SANDBOX_NODE_POOL=sandbox
+      - LANGFUSE_HOST=https://langfuse.platform.internal
+      - OPENHANDS_AGENT_SERVER_IMAGE=123456789012.dkr.ecr.us-east-1.amazonaws.com/agentic-platform/openhands-agent-server:1.56.0-python@sha256:718bf6d719f34184810ecaebe607f1aafaf526e109654815e61ddd6238728023
+      - GATE_ENGINE_BUILDER_IMAGE=123456789012.dkr.ecr.us-east-1.amazonaws.com/agentic-platform/buildah:v1.43.5@sha256:7c2b605262748ace2c5c57c5550942d0adad57aec82ede3070927722306c0ffb
+      - SEMGREP_IMAGE=123456789012.dkr.ecr.us-east-1.amazonaws.com/agentic-platform/semgrep:1.177.0@sha256:acaac22ffc7b7cc5926de0751b223bce0b2491c33d18422fa72f632c78d81198
+      - TRIVY_IMAGE=123456789012.dkr.ecr.us-east-1.amazonaws.com/agentic-platform/trivy:0.74.0@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969
+  - name: rebar-store-aws-config
+    namespace: agentic-dev-platform
+    files:
+      - config=rebar-store-aws-config
+
+patches:
+  - target:
+      kind: PersistentVolumeClaim
+      name: workspaces
+    patch: |
+      apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: workspaces
+      spec:
+        storageClassName: ""
+        volumeName: agentic-platform-checkouts
+  - target:
+      kind: Deployment
+      name: activity-worker
+    patch: |
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: activity-worker
+      spec:
+        template:
+          spec:
+            containers:
+              - name: activity-worker
+                envFrom:
+                  - configMapRef:
+                      name: agentic-platform-env
+                  - configMapRef:
+                      name: agentic-platform-eks
+                env:
+                  - $patch: replace
+                  - name: WORKER_ROLE
+                    value: activity
+                  - name: HEALTH_HEARTBEAT_FILE
+                    value: /tmp/worker.heartbeat
+                  - name: REPOSITORY_ROOT
+                    value: /repositories
+                  - name: EXECUTION_WORKSPACE_ROOT
+                    value: /repositories/.agent-workspaces
+                  - name: GATE_ENGINE_ROOT
+                    value: /repositories/.gate-engines
+                  - name: OPA_URL
+                    value: http://127.0.0.1:8181
+                  - name: LITELLM_BASE_URL
+                    value: http://litellm:4000
+                  - name: SANDBOX_LITELLM_BASE_URL
+                    value: http://litellm.agentic-dev-platform.svc.cluster.local:4000
+                  - name: PLATFORM_SECRETS_DIR
+                    value: /mnt/secrets
+                  - name: PLATFORM_ENV_CONFIG_DIR
+                    value: /app/config/env
+                  - name: AWS_CONFIG_FILE
+                    value: /app/config/aws/config
+                volumeMounts:
+                  - $patch: replace
+                  - name: workspaces
+                    mountPath: /repositories
+                  - name: platform-config
+                    mountPath: /app/config/env
+                    readOnly: true
+                  - name: rebar-store-aws-config
+                    mountPath: /app/config/aws
+                    readOnly: true
+                  - name: secrets
+                    mountPath: /mnt/secrets
+                    readOnly: true
+                  - name: tmp
+                    mountPath: /tmp
+                  - name: home
+                    mountPath: /home/appuser
+            volumes:
+              - $patch: replace
+              - name: workspaces
+                persistentVolumeClaim:
+                  claimName: workspaces
+              - name: platform-config
+                configMap:
+                  name: platform-config
+              - name: rebar-store-aws-config
+                configMap:
+                  name: rebar-store-aws-config
+              - name: secrets
+                csi:
+                  driver: secrets-store.csi.k8s.io
+                  readOnly: true
+                  volumeAttributes:
+                    secretProviderClass: activity-worker
+              - name: policies
+                configMap:
+                  name: promotion-policies
+              - name: tmp
+                emptyDir: {}
+              - name: home
+                emptyDir: {}
+  - target:
+      kind: Deployment
+      name: inbound-webhook
+    patch: |
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: inbound-webhook
+      spec:
+        template:
+          spec:
+            containers:
+              - name: inbound-webhook
+                envFrom:
+                  - configMapRef:
+                      name: agentic-platform-env
+                  - configMapRef:
+                      name: agentic-platform-eks
+                env:
+                  - $patch: replace
+                  - name: PLATFORM_SECRETS_DIR
+                    value: /mnt/secrets
+                  - name: PLATFORM_ENV_CONFIG_DIR
+                    value: /app/config/env
+                volumeMounts:
+                  - $patch: replace
+                  - name: platform-config
+                    mountPath: /app/config/env
+                    readOnly: true
+                  - name: secrets
+                    mountPath: /mnt/secrets
+                    readOnly: true
+                  - name: tmp
+                    mountPath: /tmp
+            volumes:
+              - $patch: replace
+              - name: platform-config
+                configMap:
+                  name: platform-config
+              - name: secrets
+                csi:
+                  driver: secrets-store.csi.k8s.io
+                  readOnly: true
+                  volumeAttributes:
+                    secretProviderClass: inbound-webhook
+              - name: tmp
+                emptyDir: {}
+  - target:
+      kind: Deployment
+      name: mcp-gateway
+    patch: |
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: mcp-gateway
+      spec:
+        template:
+          spec:
+            containers:
+              - name: mcp-gateway
+                envFrom:
+                  - configMapRef:
+                      name: agentic-platform-env
+                  - configMapRef:
+                      name: agentic-platform-eks
+                env:
+                  - $patch: replace
+                  - name: MCP_ALLOWED_HOSTS
+                    value: mcp.internal.example,mcp.internal.example:443
+                  - name: PLATFORM_SECRETS_DIR
+                    value: /mnt/secrets
+                  - name: PLATFORM_ENV_CONFIG_DIR
+                    value: /app/config/env
+                volumeMounts:
+                  - $patch: replace
+                  - name: platform-config
+                    mountPath: /app/config/env
+                    readOnly: true
+                  - name: secrets
+                    mountPath: /mnt/secrets
+                    readOnly: true
+                  - name: tmp
+                    mountPath: /tmp
+            volumes:
+              - $patch: replace
+              - name: platform-config
+                configMap:
+                  name: platform-config
+              - name: secrets
+                csi:
+                  driver: secrets-store.csi.k8s.io
+                  readOnly: true
+                  volumeAttributes:
+                    secretProviderClass: mcp-gateway
+              - name: tmp
+                emptyDir: {}
+  # The upstream LiteLLM image has no platform entrypoint, so the container exports the mounted
+  # secret files and trusts the platform CA beside the system roots before it starts LiteLLM.
+  # It takes only the settings it names, because LiteLLM treats DATABASE_URL as its own store.
+  - target:
+      kind: Deployment
+      name: litellm
+    patch: |
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: litellm
+      spec:
+        template:
+          spec:
+            containers:
+              - name: litellm
+                command:
+                  - /bin/sh
+                  - -c
+                  - |
+                    set -eu
+                    for file in /mnt/secrets/*; do
+                      [ -f "$file" ] && export "${file##*/}=$(cat "$file")"
+                    done
+                    if [ -n "${PLATFORM_CA_PEM:-}" ]; then
+                      cat /etc/ssl/certs/ca-certificates.crt > /tmp/ca-bundle.pem
+                      printf '%s\n' "$PLATFORM_CA_PEM" >> /tmp/ca-bundle.pem
+                      export SSL_CERT_FILE=/tmp/ca-bundle.pem REQUESTS_CA_BUNDLE=/tmp/ca-bundle.pem
+                    fi
+                    exec docker/prod_entrypoint.sh "$@"
+                  - litellm
+                env:
+                  - $patch: replace
+                  - name: AWS_REGION
+                    valueFrom:
+                      configMapKeyRef:
+                        name: agentic-platform-env
+                        key: AWS_REGION
+                  - name: PLATFORM_CA_PEM
+                    valueFrom:
+                      configMapKeyRef:
+                        name: agentic-platform-env
+                        key: PLATFORM_CA_PEM
+                        optional: true
+                  - name: AWS_USE_FIPS_ENDPOINT
+                    valueFrom:
+                      configMapKeyRef:
+                        name: agentic-platform-eks
+                        key: AWS_USE_FIPS_ENDPOINT
+                  - name: LANGFUSE_HOST
+                    valueFrom:
+                      configMapKeyRef:
+                        name: agentic-platform-eks
+                        key: LANGFUSE_HOST
+                  - name: LITELLM_LOCAL_MODEL_COST_MAP
+                    value: "True"
+                  - name: HOME
+                    value: /home/litellm
+                volumeMounts:
+                  - name: secrets
+                    mountPath: /mnt/secrets
+                    readOnly: true
+            volumes:
+              - name: secrets
+                csi:
+                  driver: secrets-store.csi.k8s.io
+                  readOnly: true
+                  volumeAttributes:
+                    secretProviderClass: litellm
+  # Gate, checks, and scanner pods reach DNS, LiteLLM, and the registry only. The application
+  # subnets hold the ECR interface endpoints, and the S3 range carries the image layers through
+  # the S3 gateway endpoint.
+  - target:
+      kind: NetworkPolicy
+      name: gate-engine-egress
+    patch: |
+      - op: replace
+        path: /spec/egress
+        value:
+          - to:
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: kube-system
+                podSelector:
+                  matchLabels:
+                    k8s-app: kube-dns
+            ports:
+              - protocol: UDP
+                port: 53
+              - protocol: TCP
+                port: 53
+          - to:
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: agentic-dev-platform
+                podSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: litellm
+            ports:
+              - protocol: TCP
+                port: 4000
+          - to:
+              - ipBlock:
+                  cidr: 10.0.1.0/24
+              - ipBlock:
+                  cidr: 10.0.2.0/24
+              - ipBlock:
+                  cidr: 192.0.2.0/24
+            ports:
+              - protocol: TCP
+                port: 443

@@ -1019,6 +1019,30 @@ def clickhouse_certs(c, action, dir, name="", days=397, force=False):  # noqa: A
     )
 
 
+@task(
+    help={
+        "action": "issue to write a self-signed certificate, or import to import it into ACM.",
+        "dir": "Directory outside the repository for webhook.pem and webhook-key.pem.",
+        "name": "issue: the host name (default *.<AWS_REGION>.elb.amazonaws.com).",
+        "days": "issue: validity in days (default 397).",
+        "force": "issue: replace a certificate already in the directory.",
+    }
+)
+def webhook_certs(c, action, dir, name="", days=397, force=False):  # noqa: A002
+    """Issue the self-signed inbound webhook certificate, or import it into ACM."""
+    from scripts.config import get_settings
+
+    if action not in ("issue", "import"):
+        raise Exit("action must be issue or import")
+    flags = f" --dir {shlex.quote(dir)}"
+    if action == "issue":
+        flags += f" --days {int(days)}" + (f" --name {shlex.quote(name)}" if name else "")
+        flags += " --force" if force else ""
+    settings = get_settings()
+    env = {"AWS_PROFILE": settings.aws_profile, "AWS_REGION": settings.aws_region}
+    c.run(f"{HOST_PYTHON} -m scripts.webhook_certs {action}{flags}", pty=True, env=env)
+
+
 @task(help={"apply": "Perform real deletions instead of a dry-run."})
 def reap(c, apply=False):
     """Reap expired platform orphan artifacts (dry-run by default)."""
@@ -1316,6 +1340,7 @@ for _t in (
     aws_destroy,
     temporal_certs,
     clickhouse_certs,
+    webhook_certs,
     langfuse_ui,
     temporal_deploy,
     platform_deploy,

@@ -17,6 +17,9 @@ _NAME_SANITISE = re.compile(r"[^a-z0-9-]+")
 _SANDBOX_UID = 10001
 _SANDBOX_HOME = "/home/sandbox"
 _BASE_TAG = "__openhands_base"
+# The eks-cluster module labels its nodes with the pool name and taints the sandbox pool.
+NODE_POOL_LABEL = "agentic-dev-platform/node-pool"
+SANDBOX_TAINT_KEY = "agentic-dev-platform/sandbox"
 
 
 class SandboxExecError(RuntimeError):
@@ -40,6 +43,7 @@ class SandboxSpec:
     env: Mapping[str, str] = field(default_factory=dict)
     workspace: WorkspaceBinding | None = None
     session_api_key: str = ""
+    node_pool: str = ""
 
 
 @dataclass(frozen=True)
@@ -67,6 +71,16 @@ def _workspace_volume(binding: WorkspaceBinding) -> tuple[dict, dict]:
     mount = {"name": "agent-workspace", "mountPath": binding.mount_path}
     volume = {"name": "agent-workspace", "emptyDir": {}}
     return volume, mount
+
+
+def node_pool_scheduling(node_pool: str) -> dict:
+    """Return the pod spec fields that place a pod on the tainted node pool, or none without one."""
+    if not node_pool:
+        return {}
+    return {
+        "nodeSelector": {NODE_POOL_LABEL: node_pool},
+        "tolerations": [{"key": SANDBOX_TAINT_KEY, "operator": "Exists", "effect": "NoSchedule"}],
+    }
 
 
 def build_pod_manifest(spec: SandboxSpec) -> dict:
@@ -133,6 +147,7 @@ def build_pod_manifest(spec: SandboxSpec) -> dict:
         "securityContext": {"seccompProfile": {"type": "RuntimeDefault"}},
         "containers": [container],
         "volumes": volumes,
+        **node_pool_scheduling(spec.node_pool),
     }
     if spec.runtime_class:
         spec_body["runtimeClassName"] = spec.runtime_class

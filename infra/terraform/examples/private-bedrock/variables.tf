@@ -396,6 +396,30 @@ variable "eks_network_policy_enforcing_mode" {
   default     = "standard"
 }
 
+variable "eks_webhook_certificate_arn" {
+  description = "ACM certificate the internet-facing inbound webhook load balancer presents, such as the one inv webhook-certs imports."
+  type        = string
+  default     = ""
+}
+
+variable "eks_mcp_gateway_certificate_arn" {
+  description = "ACM certificate the internal MCP gateway load balancer presents."
+  type        = string
+  default     = ""
+}
+
+variable "eks_mcp_gateway_client_cidrs" {
+  description = "CIDRs of the subnets that hold the MCP gateway's clients, which its internal load balancer admits."
+  type        = list(string)
+  default     = []
+}
+
+variable "eks_gate_image_repository_arns" {
+  description = "ECR repositories of the gate engine images the gate pods pull in image mode, beyond the semgrep and trivy repositories the scanner pods pull from."
+  type        = list(string)
+  default     = []
+}
+
 variable "eks_addon_versions" {
   description = "EKS add-on version by add-on name. An add-on not listed gets the default version for the cluster version."
   type        = map(string)

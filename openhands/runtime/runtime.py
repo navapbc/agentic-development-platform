@@ -22,6 +22,7 @@ class SandboxRuntime:
     server_port: int
     litellm_base_url: str
     workspace_mount_path: str = "/workspace"
+    node_pool: str = ""
 
     @classmethod
     def from_settings(
@@ -45,6 +46,7 @@ class SandboxRuntime:
             server_port=resolved.openhands_server_port,
             litellm_base_url=resolved.litellm_base_url,
             workspace_mount_path=resolved.sandbox_workspace_mount_path,
+            node_pool=resolved.sandbox_node_pool,
         )
 
     async def run_implementation(
@@ -68,6 +70,7 @@ class SandboxRuntime:
             litellm_base_url=self.litellm_base_url,
             workspace=binding,
             session_api_key=secrets.token_urlsafe(32),
+            node_pool=self.node_pool,
         )
         metadata = {"execution_id": execution_id, "stage": "implementing"}
         if task_id:

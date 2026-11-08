@@ -57,8 +57,7 @@ def one_off_argv(
     worker = next(c for c in spec["containers"] if c["name"] == WORKER)
     for probe in _PROBES:
         worker.pop(probe, None)
-    worker.update({"name": name, "command": list(command), "stdin": True, "stdinOnce": True})
-    worker.pop("args", None)
+    worker.update({"name": name, "args": list(command), "stdin": True, "stdinOnce": True})
     spec["containers"] = [worker]
     spec["restartPolicy"] = "Never"
     overrides = json.dumps({"apiVersion": "v1", "spec": spec}, separators=(",", ":"))

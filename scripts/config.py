@@ -223,6 +223,7 @@ class Settings(BaseSettings):
         "@sha256:718bf6d719f34184810ecaebe607f1aafaf526e109654815e61ddd6238728023"
     )
     openhands_runtime_class: str = ""
+    sandbox_node_pool: str = ""
     openhands_sandbox_namespace: str = "agent-sandbox"
     openhands_server_port: int = 8000
     openhands_max_tool_calls: int = 60

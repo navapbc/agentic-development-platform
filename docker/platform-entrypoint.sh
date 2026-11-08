@@ -4,8 +4,25 @@
 # OpenSSL read SSL_CERT_FILE, requests reads REQUESTS_CA_BUNDLE, and the gRPC OTLP exporter
 # reads OTEL_EXPORTER_OTLP_CERTIFICATE. When the task injects PLATFORM_ENV_CONFIG, it also writes
 # the environment's config files, which the read-only root cannot hold, and points the loader
-# at them through PLATFORM_ENV_CONFIG_DIR.
+# at them through PLATFORM_ENV_CONFIG_DIR. When the pod sets PLATFORM_SECRETS_DIR, it exports
+# each file the Secrets Store CSI driver mounts there as the variable the file name names, so no
+# Kubernetes Secret holds the values.
 set -eu
+
+if [ -n "${PLATFORM_SECRETS_DIR:-}" ]; then
+    for file in "$PLATFORM_SECRETS_DIR"/*; do
+        [ -f "$file" ] || continue
+        name="${file##*/}"
+        case "$name" in
+            [!A-Za-z_]* | *[!A-Za-z0-9_]*)
+                echo "platform-entrypoint: ignoring $name, which is not a variable name" >&2
+                continue
+                ;;
+        esac
+        value="$(cat "$file")"
+        export "$name=$value"
+    done
+fi
 
 if [ -n "${PLATFORM_CA_PEM:-}" ]; then
     bundle="${TMPDIR:-/tmp}/platform-ca-bundle.pem"

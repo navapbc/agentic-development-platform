@@ -37,7 +37,7 @@ spec:
       containers:
         - name: review-worker
           image: 123456789012.dkr.ecr.us-east-1.amazonaws.com/agentic-dev-platform/platform:0.3.0
-          command:
+          args:
             - python
             - -m
             - services.orchestration.worker

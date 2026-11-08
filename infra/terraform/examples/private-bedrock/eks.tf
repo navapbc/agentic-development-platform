@@ -6,11 +6,10 @@ locals {
   eks_workloads = {
     activity_worker = {
       service_account = "activity-worker"
-      policy_arns     = []
+      policy_arns     = aws_iam_policy.eks_sandbox_image_pull[*].arn
       secrets = [
         "database_platform_app", "coordination_shared_secret", "litellm_master_key", "authorship_signing_key",
         "review_attestation_secret", "github_token", "jira_api_token", "jira_pat", "slack_webhook_url",
-        "langfuse_public_key", "langfuse_secret_key",
       ]
     }
     litellm = {
@@ -45,7 +44,40 @@ locals {
   eks_domains = local.eks_enabled ? ["eks-auth.${var.region}.api.aws"] : []
 
   eks_activity_worker_role_arns = local.eks_enabled ? [module.eks_cluster.pod_identity_role_arns["activity_worker"]] : []
+  # The activity worker and the inbound webhook start and signal Temporal workflows.
+  eks_temporal_client_role_arns = local.eks_enabled ? [for name in ["activity_worker", "inbound_webhook"] : module.eks_cluster.pod_identity_role_arns[name]] : []
   eks_workspace                 = local.eks_enabled && module.container_services.workspace != null
+}
+
+# The gate, checks, and scanner pods carry no AWS identity, so the activity worker requests the
+# ECR token their in-pod pulls use, and its role bounds what that token can pull.
+resource "aws_iam_policy" "eks_sandbox_image_pull" {
+  count = local.eks_enabled && var.create_container_services ? 1 : 0
+
+  name_prefix = "${var.name_prefix}-eks-sandbox-image-pull-"
+  description = "Lets the activity worker issue the ECR token the gate, checks, and scanner pods pull their images with."
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "IssueRegistryTokens"
+        Effect   = "Allow"
+        Action   = "ecr:GetAuthorizationToken"
+        Resource = "*"
+      },
+      {
+        Sid    = "PullTheSandboxImages"
+        Effect = "Allow"
+        Action = ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer", "ecr:BatchCheckLayerAvailability"]
+        Resource = concat(
+          [for name in ["semgrep", "trivy"] : module.container_services.repository_arns[name]],
+          var.eks_gate_image_repository_arns,
+        )
+      },
+    ]
+  })
+
+  tags = var.tags
 }
 
 resource "aws_iam_policy" "eks_workspace_mount" {

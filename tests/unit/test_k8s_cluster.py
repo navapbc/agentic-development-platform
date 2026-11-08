@@ -235,7 +235,7 @@ def test_a_one_off_pod_copies_the_worker_template_without_its_probes() -> None:
                         {
                             "name": "activity-worker",
                             "image": "img:1",
-                            "command": ["python", "-m", "worker"],
+                            "args": ["python", "-m", "worker"],
                             "livenessProbe": {},
                             "startupProbe": {},
                         }
@@ -251,7 +251,8 @@ def test_a_one_off_pod_copies_the_worker_template_without_its_probes() -> None:
     container = overrides["spec"]["containers"][0]
 
     assert container["name"] == "job"
-    assert container["command"] == ["python", "-m", "job"]
+    assert container["args"] == ["python", "-m", "job"]
+    assert "command" not in container
     assert "livenessProbe" not in container and "startupProbe" not in container
     assert overrides["spec"]["restartPolicy"] == "Never"
     assert overrides["spec"]["volumes"] == [{"name": "workspaces"}]

@@ -23,12 +23,12 @@ def test_every_review_tier_has_a_native_mapping():
 
 
 def test_resolve_review_tier_returns_the_bedrock_model_id():
-    assert resolve_review_tier("review-model") == "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+    assert resolve_review_tier("review-model") == "us.anthropic.claude-sonnet-5-5"
 
 
 def test_review_primary_ref_is_provider_qualified():
     assert review_primary_ref("review-model") == (
-        f"{BEDROCK_PROVIDER}:us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+        f"{BEDROCK_PROVIDER}:us.anthropic.claude-sonnet-5-5"
     )
 
 

@@ -232,6 +232,31 @@ async def test_runner_propagates_privilege_to_the_manifest():
     assert _security_context(ops.created[0])["privileged"] is True
 
 
+def test_pod_manifest_runs_anywhere_without_a_node_pool():
+    spec = build_pod_manifest("pod-1", "agent-sandbox", "builder:1")["spec"]
+    assert "nodeSelector" not in spec and "tolerations" not in spec
+
+
+async def test_runner_places_the_pod_on_the_tainted_sandbox_pool():
+    ops = _FakePodOps()
+    runner = PodEngineRunner(ops, node_pool="sandbox")
+    await runner.run_engine(
+        PodEngineSpec(
+            name="gate",
+            execution_id="exec-1",
+            checkout_dir="/tmp/checkout",
+            entrypoint="run.sh",
+            base_ref="main",
+            image="img",
+        )
+    )
+    spec = ops.created[0]["spec"]
+    assert spec["nodeSelector"] == {"agentic-dev-platform/node-pool": "sandbox"}
+    assert spec["tolerations"] == [
+        {"key": "agentic-dev-platform/sandbox", "operator": "Exists", "effect": "NoSchedule"}
+    ]
+
+
 class _FakeProc:
     def __init__(self, returncode=0, stderr=b""):
         self.returncode = returncode

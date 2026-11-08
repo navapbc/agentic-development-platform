@@ -265,6 +265,12 @@ output "eks" {
       opa      = var.eks_opa_image
       litellm  = var.eks_litellm_image
     }
+    platform_environment        = module.container_services.platform_environment
+    environment_config          = local.container_environment_config
+    webhook_certificate_arn     = var.eks_webhook_certificate_arn
+    mcp_gateway_certificate_arn = var.eks_mcp_gateway_certificate_arn
+    mcp_gateway_client_cidrs    = var.eks_mcp_gateway_client_cidrs
+    temporal_ca_secret_arn      = module.temporal_control_plane.client_ca_secret_arn
     image_settings = {
       OPENHANDS_AGENT_SERVER_IMAGE = var.eks_agent_server_image
       GATE_ENGINE_BUILDER_IMAGE    = var.eks_buildah_image
