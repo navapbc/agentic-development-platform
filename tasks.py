@@ -867,6 +867,23 @@ _AWS_CREDENTIAL_VARIABLES = ("AWS_ACCESS_KEY_ID", "AWS_WEB_IDENTITY_TOKEN_FILE")
 @task(
     help={
         "var_file": "Var file in the composition root (default greenfield.tfvars).",
+        "delete_images": "Also delete the ECR repositories and their images.",
+        "plan_only": "Show what the destroy removes and keeps, then stop.",
+    }
+)
+def aws_destroy(c, var_file="greenfield.tfvars", delete_images=False, plan_only=False):
+    """Destroy the composition root after the account ID is typed, keeping bootstrap and images."""
+    from scripts.config import get_settings
+
+    flags = f" --var-file {shlex.quote(var_file)}"
+    flags += " --delete-images" if delete_images else ""
+    flags += " --plan-only" if plan_only else ""
+    c.run(f"{HOST_PYTHON} -m scripts.aws_destroy{flags}", pty=True, env=_aws_env(get_settings()))
+
+
+@task(
+    help={
+        "var_file": "Var file in the composition root (default greenfield.tfvars).",
         "region": "AWS region for the deploy (empty uses AWS_REGION).",
         "yes": "Apply the plan without asking.",
     }
@@ -1296,6 +1313,7 @@ for _t in (
     publish_temporal_images,
     publish_platform_images,
     aws_release,
+    aws_destroy,
     temporal_certs,
     clickhouse_certs,
     langfuse_ui,

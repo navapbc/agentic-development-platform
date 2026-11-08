@@ -207,10 +207,10 @@ variable "temporal" {
   default = null
 }
 
-variable "bedrock_invoke_policy_arn" {
-  description = "Policy granting bedrock:InvokeModel, attached to the review worker task role only."
-  type        = string
-  default     = ""
+variable "bedrock_invoke_policy_arns" {
+  description = "Policies granting bedrock:InvokeModel, attached to the review worker task role only. A list, so the count is known before the policies exist."
+  type        = list(string)
+  default     = []
 }
 
 variable "evidence_bucket_arn" {

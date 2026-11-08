@@ -95,6 +95,7 @@ The admin-tools task connects to Aurora with `SQL_TLS=true` and `SQL_TLS_CA_FILE
 | `client_ca_secret_arn` | Secret clients inject as `TEMPORAL_TLS_CA`. Null when the frontend chains to a public root |
 | `client_security_group_id` | Security group a workload attaches to reach the frontend. Null until the images are set |
 | `server_service_arn` | Server ECS service, for `secret_restart_services`. Null until the images are set |
+| `service_arns` | Server and UI ECS services, for the off-hours schedule. Empty until the images are set |
 | `execution_role_arns` | Execution role of each task, keyed by `server`, `admin_tools`, and `ui` |
 | `deploy` | Cluster, server service and count, task definitions, subnets, security groups, and UI service `inv temporal-deploy` reads. Null until the images are set |
 | `ui_url` | HTTPS address of the UI ALB. Null without the UI |

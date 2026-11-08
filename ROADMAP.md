@@ -53,7 +53,8 @@ Goal. The platform is technically FedRAMP Medium ready. It has documented local-
 | Rebar ticket store bucket terraform | 16-21h | [plan](docs/plans/2026-09-14-2150-feat-rebar-ticket-store-bucket-terraform-plan.md) |
 | ECS Fargate services for the platform containers | 28-41h (low) | Jira ADP-136, a sub-task of ADP-61, delivered through ADP-154 to ADP-159. [plan](docs/plans/2026-09-14-2151-feat-container-platform-services-terraform-plan.md) |
 | Platform image builds in CI | 6-10h | Jira ADP-162, a sub-task of ADP-61. Builds and publishes the images in GitHub Actions through the same `inv` tasks a developer runs. |
-| EKS cluster for the pod-orchestrating workloads | 28-40h (low) | Jira ADP-137, a sub-task of ADP-61. [plan](docs/plans/2026-09-14-2151-feat-container-platform-services-terraform-plan.md) |
+| EKS cluster for the pod-orchestrating workloads | 32-50h (low) | Jira ADP-137, ADP-164, ADP-165, ADP-166, ADP-167, and ADP-168, sub-tasks of ADP-61 for the cluster module, the composition wiring, the images, the production overlay, the deploy task, and the verification. [plan](docs/plans/2026-09-14-2151-feat-container-platform-services-terraform-plan.md) |
+| Sandbox teardown | 2-4h | Jira ADP-163, a sub-task of ADP-61. Destroys the composition root and keeps the bootstrap, to stop the sandbox's standing cost between work sessions. |
 | Local Temporal server upgrade to 1.32.1 | 6-10h | Jira ADP-138. [plan](docs/plans/2026-10-30-1330-feat-temporal-server-upgrade-plan.md) |
 | Platform ECS cluster | 3-5h | Jira ADP-145. The shared cluster the platform owns for the Temporal control plane, the ECS services, and other teams. |
 | Temporal control plane terraform | 15-21h | Jira ADP-97. [plan](docs/plans/2026-09-14-2152-feat-temporal-control-plane-terraform-plan.md) |
@@ -69,7 +70,7 @@ Goal. The platform is technically FedRAMP Medium ready. It has documented local-
 | Leaked OpenHands sandbox pods | 3-5h | Jira ADP-141 |
 | Slack escalation channel with approve, reject, retry, and abandon actions | 28-42h (low) | Jira ADP-160. [plan](docs/plans/2026-11-06-1000-feat-slack-escalation-channel-plan.md) |
 
-Version effort. 251-368h.
+Version effort. 257-382h.
 
 ## v0.4.0 Production serving and demo readiness
 

@@ -123,13 +123,13 @@ The workflow signs in to AWS through the account's GitHub OIDC provider, so GitH
 
 The composition root protects its data by default, so a destroy needs a preparation apply first. The bootstrap root stays, because it holds the state of every other root.
 
-1. Stop the tunnel with `inv tunnel-stop`, then stop any jumphost task that is still running with `aws ecs stop-task --cluster agentic-platform-bedrock-jumphost --task <task arn>`. A running task holds a network interface that blocks the subnet delete.
-2. Empty the Langfuse bucket and the rebar ticket store bucket, including every object version, when anything has written to them. Empty the ticket store bucket as a principal in `rebar_ticket_store_admin_principals`, because its policy denies object access to everyone else. The bucket is versioned and refuses to delete while it holds objects.
-3. Set `aurora_deletion_protection = false` in the tfvars file. In a disposable environment also set `aurora_skip_final_snapshot = true` to delete the cluster without a final snapshot, and `secret_recovery_window_days = 0` so the secret names can be created again at once. Otherwise each name stays reserved for 30 days.
-4. Apply the change with `AWS_PROFILE=agentic-platform terraform apply -var-file=greenfield.tfvars`. Terraform reads these settings from state when it destroys, so this apply must come first.
-5. Destroy with `AWS_PROFILE=agentic-platform terraform destroy -var-file=greenfield.tfvars`.
+1. Set `aurora_deletion_protection = false` in the tfvars file. In a disposable environment also set `aurora_skip_final_snapshot = true` to delete the cluster without a final snapshot, and `secret_recovery_window_days = 0`. Apply the change with `AWS_PROFILE=agentic-platform terraform apply -var-file=greenfield.tfvars`. Terraform reads these settings from state when it destroys, so this apply must come first.
+2. Stop the tunnel with `inv tunnel-stop`.
+3. Run `inv aws-destroy`, or `inv aws-destroy --plan-only` to see what it removes and keeps. It plans a destroy of every resource the composition root manages except the ECR repositories, their keys, and their images, and applies it only after you type the account ID. Before the destroy it removes what Terraform does not own but would trip over, which is the load balancers, target groups, and security groups the AWS Load Balancer Controller created for Ingress resources and any ECS task started outside a service, such as a jumphost session. It also empties every bucket Terraform would refuse to delete, including the rebar ticket store, so run it as a principal in `rebar_ticket_store_admin_principals`. After the destroy it deletes the secrets left pending deletion, so a rebuild can reuse their names, and lists every tagged resource that still carries the name prefix. That list includes the kept repositories, the bootstrap buckets, and, for some hours, deleted resources the tagging API still reports, such as inactive ECS clusters and task definitions. Add `--delete-images` to delete the repositories and their images too.
 
-The destroy removes the jumphost image and the external secret values, so a later deployment repeats steps 7 and 10. The KMS keys wait 30 days before deletion and can be restored with `aws kms cancel-key-deletion` during that time. A final snapshot, when one is taken, and the ClickHouse file system backups in the `aws/efs/automatic-backup-vault` vault remain after the destroy and are deleted separately.
+The destroy removes the external secret values, so a rebuild sets them again as in step 11. The KMS keys wait 30 days before deletion and can be restored with `aws kms cancel-key-deletion` during that time. A final snapshot, when one is taken, and the ClickHouse file system backups in the `aws/efs/automatic-backup-vault` vault remain after the destroy and are deleted separately.
+
+Rebuild with the steps above from step 6. The kept repositories still hold the images, and `images.auto.tfvars.json` still names them, so the rebuild needs no publish unless the sources changed.
 
 ## Vendored binaries
 
@@ -571,6 +571,7 @@ Run `inv --list` for the full set. The common tasks are below.
 | `inv temporal-certs generate --out DIR`, `inv temporal-certs put --dir DIR [--import-to-acm]` | Issue self-signed Temporal TLS certificates, or check a certificate directory and write it to Secrets Manager |
 | `inv publish-platform-images` | Build the platform, repository-intelligence, collector, and TLS sidecar images, copy the pinned Langfuse and ClickHouse images, push them to ECR, and write their references to `images.auto.tfvars.json` |
 | `inv aws-release [--var-file FILE] [--yes]` | Plan the composition root with the published images, apply it after confirmation, and run `inv platform-deploy` |
+| `inv aws-destroy [--var-file FILE] [--plan-only] [--delete-images]` | Destroy the composition root after the account ID is typed, keeping the bootstrap root and the images |
 | `inv temporal-deploy` | Apply the Temporal schema, replace the server tasks with its current task definition, register the namespace, and replace the UI tasks |
 | `inv temporal-ui` | Forward `localhost:8443`, or `--port`, to the Temporal UI load balancer through the jump-host |
 | `inv publish-temporal-images [--arch arm64\|amd64]` | Build and push the Temporal server and admin-tools images, skipping an image whose tag is already pushed |

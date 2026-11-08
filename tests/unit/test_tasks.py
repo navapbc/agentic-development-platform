@@ -59,6 +59,7 @@ EXPECTED_TASKS = {
     "publish-temporal-images",
     "publish-platform-images",
     "aws-release",
+    "aws-destroy",
     "go-test",
     "temporal-certs",
     "clickhouse-certs",

@@ -1,9 +1,9 @@
 locals {
   container_service_arns = module.container_services.service_arns
-  off_hours_foundation = compact(concat(
-    [module.temporal_control_plane.server_service_arn, module.temporal_control_plane.ui_service_arn],
-    [for name in ["clickhouse", "otel-collector"] : lookup(local.container_service_arns, name, "")],
-  ))
+  off_hours_foundation = concat(
+    module.temporal_control_plane.service_arns,
+    [for name in ["clickhouse", "otel-collector"] : local.container_service_arns[name] if contains(keys(local.container_service_arns), name)],
+  )
 }
 
 module "off_hours" {

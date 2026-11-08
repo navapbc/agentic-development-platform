@@ -102,12 +102,12 @@ module "container_services" {
   collector_exports_enabled            = var.container_collector_exports_enabled
   xray_encryption_enabled              = var.container_xray_encryption_enabled
   langfuse_task_sizes                  = var.container_langfuse_task_sizes
-  internal_operator_security_group_ids = compact([module.bedrock_jumphost.task_security_group_id])
+  internal_operator_security_group_ids = [module.bedrock_jumphost.task_security_group_id]
   secret_recovery_window_days          = var.secret_recovery_window_days
 
-  bedrock_invoke_policy_arn = module.bedrock_iam.invoke_policy_arn
-  enable_execute_command    = var.container_enable_execute_command
-  exec_task_policy_arn      = module.ecs_cluster.exec_task_policy_arn
+  bedrock_invoke_policy_arns = [module.bedrock_iam.invoke_policy_arn]
+  enable_execute_command     = var.container_enable_execute_command
+  exec_task_policy_arn       = module.ecs_cluster.exec_task_policy_arn
 
   tags = var.tags
 }

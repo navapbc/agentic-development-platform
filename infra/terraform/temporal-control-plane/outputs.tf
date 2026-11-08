@@ -95,7 +95,7 @@ output "client_security_group_id" {
 
 output "server_service_arn" {
   description = "Server ECS service, for secret_restart_services after a temporal role rotation. Null until the images are set."
-  value       = try(aws_ecs_service.server[0].id, null)
+  value       = one(aws_ecs_service.server[*].id)
 }
 
 output "execution_role_arns" {
@@ -122,7 +122,7 @@ output "deploy" {
   } : null
 }
 
-output "ui_service_arn" {
-  description = "UI ECS service, for the off-hours schedule. Null without the UI."
-  value       = try(aws_ecs_service.ui[0].id, null)
+output "service_arns" {
+  description = "Server and UI ECS services, for the off-hours schedule. Empty until the images are set."
+  value       = concat(aws_ecs_service.server[*].id, aws_ecs_service.ui[*].id)
 }

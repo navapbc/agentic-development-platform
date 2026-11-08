@@ -164,10 +164,10 @@ resource "aws_iam_role_policy" "workload_task" {
 }
 
 resource "aws_iam_role_policy_attachment" "review_bedrock" {
-  count = local.services_enabled && var.bedrock_invoke_policy_arn != "" ? 1 : 0
+  count = local.services_enabled ? length(var.bedrock_invoke_policy_arns) : 0
 
   role       = aws_iam_role.workload_task["review-worker"].name
-  policy_arn = var.bedrock_invoke_policy_arn
+  policy_arn = var.bedrock_invoke_policy_arns[count.index]
 }
 
 resource "aws_iam_role_policy_attachment" "workload_exec" {

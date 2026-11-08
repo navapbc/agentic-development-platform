@@ -72,7 +72,7 @@ variables {
   database_app_secret_arn      = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/database/platform_app-a"
   database_migrator_secret_arn = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/database/platform_migrator-b"
   secret_kms_key_arn           = "arn:aws:kms:us-east-1:111111111111:key/secrets"
-  bedrock_invoke_policy_arn    = "arn:aws:iam::111111111111:policy/agentic-platform-bedrock-invoke"
+  bedrock_invoke_policy_arns   = ["arn:aws:iam::111111111111:policy/agentic-platform-bedrock-invoke"]
   secret_arns = {
     coordination_shared_secret = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/coordination-c"
     review_signing_key         = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/external/review-signing-key-d"
@@ -178,7 +178,7 @@ run "only_the_review_worker_calls_bedrock_and_only_the_index_writers_write_the_i
   command = apply
 
   assert {
-    condition     = length(aws_iam_role_policy_attachment.review_bedrock) == 1 && aws_iam_role_policy_attachment.review_bedrock[0].policy_arn == var.bedrock_invoke_policy_arn
+    condition     = length(aws_iam_role_policy_attachment.review_bedrock) == 1 && aws_iam_role_policy_attachment.review_bedrock[0].policy_arn == var.bedrock_invoke_policy_arns[0]
     error_message = "The review worker task role lacks the Bedrock policy."
   }
 
