@@ -126,6 +126,20 @@ variable "restart_services" {
   }
 }
 
+variable "restart_eks" {
+  description = "The eks-deployer task, which restarts the EKS deployments that read a secret after it changes. deployments maps a secret key to the deployment names. Null restarts no EKS deployment."
+  type = object({
+    cluster_arn        = string
+    task_family        = string
+    container          = string
+    subnet_ids         = list(string)
+    security_group_ids = list(string)
+    pass_role_arns     = list(string)
+    deployments        = map(list(string))
+  })
+  default = null
+}
+
 variable "log_retention_days" {
   description = "CloudWatch retention for the rotation function logs. Must be a value CloudWatch Logs accepts."
   type        = number

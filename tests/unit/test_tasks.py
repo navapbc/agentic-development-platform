@@ -64,6 +64,7 @@ EXPECTED_TASKS = {
     "temporal-certs",
     "clickhouse-certs",
     "webhook-certs",
+    "eks-deploy",
     "langfuse-ui",
     "temporal-deploy",
     "platform-deploy",

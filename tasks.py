@@ -889,7 +889,7 @@ def aws_destroy(c, var_file="greenfield.tfvars", delete_images=False, plan_only=
     }
 )
 def aws_release(c, var_file="greenfield.tfvars", region="", yes=False):
-    """Plan and apply the composition root with the published images, then run platform-deploy."""
+    """Plan and apply the composition root with the published images, then deploy ECS and EKS."""
     from scripts.config import get_settings
 
     flags = f" --var-file {shlex.quote(var_file)}"
@@ -924,6 +924,23 @@ def platform_deploy(c, region=""):
     flags = f" --region {shlex.quote(region)}" if region else ""
     env = {"AWS_PROFILE": settings.aws_profile, "AWS_REGION": settings.aws_region}
     c.run(f"{HOST_PYTHON} -m scripts.platform_deploy{flags}", pty=True, env=env)
+
+
+@task(
+    help={
+        "command": "deploy (default), check-policies, or restart followed by deployment names.",
+        "region": "AWS region (empty uses AWS_REGION).",
+    }
+)
+def eks_deploy(c, command="deploy", region=""):
+    """Deploy the EKS workloads through the eks-deployer task inside the VPC."""
+    from scripts.config import get_settings
+
+    settings = get_settings()
+    flags = f" --region {shlex.quote(region)}" if region else ""
+    words = " ".join(shlex.quote(word) for word in command.split())
+    env = {"AWS_PROFILE": settings.aws_profile, "AWS_REGION": settings.aws_region}
+    c.run(f"{HOST_PYTHON} -m scripts.eks_deploy{flags} {words}", pty=True, env=env)
 
 
 @task(help={"port": "Local port forwarded to the UI load balancer (default 8443)."})
@@ -1341,6 +1358,7 @@ for _t in (
     temporal_certs,
     clickhouse_certs,
     webhook_certs,
+    eks_deploy,
     langfuse_ui,
     temporal_deploy,
     platform_deploy,

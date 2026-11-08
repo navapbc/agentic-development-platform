@@ -7,7 +7,7 @@ registry.
   UTC timestamp that `scripts.build_id` orders. Its tag is `<build id>-<source hash>-<arch>`,
   so a build whose sources are already in the repository reuses that image and its build ID
   instead of minting a new Worker Deployment version.
-- The repository-intelligence, collector, TLS sidecar, and OPA images are tagged
+- The repository-intelligence, collector, TLS sidecar, OPA, and eks-deployer images are tagged
   `<version>-<content hash>-<arch>`.
 - Langfuse web, Langfuse worker, and ClickHouse are copied by the digest `compose.yaml` pins,
   LiteLLM by the digest its cluster manifest pins, and the OpenHands agent-server, buildah,
@@ -68,6 +68,7 @@ TFVARS_KEYS = {
     "buildah": "eks_buildah_image",
     "semgrep": "eks_semgrep_image",
     "trivy": "eks_trivy_image",
+    "eks-deployer": "eks_deployer_image",
 }
 PLATFORM = ImageSpec("platform", "docker/Dockerfile", ())
 REPO_INTELLIGENCE = ImageSpec(
@@ -89,6 +90,24 @@ REPO_INTELLIGENCE = ImageSpec(
 )
 COLLECTOR = ImageSpec("otel-collector", "docker/otel-collector.Dockerfile", ("docker/healthprobe",))
 OPA = ImageSpec("opa", "docker/opa.Dockerfile", ("docker/healthprobe",))
+EKS_DEPLOYER = ImageSpec(
+    "eks-deployer",
+    "docker/eks-deployer.Dockerfile",
+    (
+        "LICENSE",
+        "NOTICE",
+        "scripts/__init__.py",
+        "scripts/eks_render.py",
+        "scripts/eks_deploy_task.py",
+        "services/__init__.py",
+        "services/process.py",
+        "deploy/kubernetes",
+        "openhands/policies",
+        "config/platform/litellm-config.yaml",
+        "config/platform/litellm_redaction.py",
+        "config/policies",
+    ),
+)
 TLS_SIDECAR = ImageSpec(
     "tls-sidecar", "docker/tls-sidecar.Dockerfile", ("docker/tls-sidecar", "docker/healthprobe")
 )
@@ -330,6 +349,7 @@ def publish(publisher: Publisher, acli: AcliBuild, root: Path = REPO_ROOT) -> li
                 ),
             ),
             publisher.built(TLS_SIDECAR, context, release_version()),
+            publisher.built(EKS_DEPLOYER, context, release_version()),
             publisher.built(
                 OPA,
                 context,

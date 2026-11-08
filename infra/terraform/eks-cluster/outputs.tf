@@ -23,6 +23,11 @@ output "cluster_security_group_id" {
   value       = local.enabled ? aws_eks_cluster.this[0].vpc_config[0].cluster_security_group_id : ""
 }
 
+output "service_cidr" {
+  description = "Service CIDR of the cluster, which a NetworkPolicy names to reach the Kubernetes API Service."
+  value       = local.enabled ? aws_eks_cluster.this[0].kubernetes_network_config[0].service_ipv4_cidr : ""
+}
+
 output "vpc_id" {
   description = "VPC of the cluster, which the Load Balancer Controller needs because the hop limit of 1 keeps it from reading the instance metadata."
   value       = local.enabled ? aws_eks_cluster.this[0].vpc_config[0].vpc_id : ""

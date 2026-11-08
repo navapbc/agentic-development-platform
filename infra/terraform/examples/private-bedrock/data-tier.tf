@@ -67,6 +67,7 @@ module "secret_store" {
   region              = var.region
   secret_readers      = local.secret_readers
   restart_services    = local.secret_restart_services
+  restart_eks         = local.eks_restart
 
   recovery_window_days = var.secret_recovery_window_days
 

@@ -271,6 +271,8 @@ output "eks" {
     mcp_gateway_certificate_arn = var.eks_mcp_gateway_certificate_arn
     mcp_gateway_client_cidrs    = var.eks_mcp_gateway_client_cidrs
     temporal_ca_secret_arn      = module.temporal_control_plane.client_ca_secret_arn
+    deployer                    = module.eks_deployer.deploy
+    secret_arns                 = try(local.eks_deploy_inputs.secrets, {})
     image_settings = {
       OPENHANDS_AGENT_SERVER_IMAGE = var.eks_agent_server_image
       GATE_ENGINE_BUILDER_IMAGE    = var.eks_buildah_image

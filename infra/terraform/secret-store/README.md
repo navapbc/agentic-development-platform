@@ -82,6 +82,8 @@ The bootstrap revokes `PUBLIC` access on each of these databases, so a role conn
 
 Each service reads its secrets once, when its task starts. `restart_services` maps a secret key to up to five ECS service ARNs. For each listed secret, an EventBridge rule starts the restart automation on a `RotationSucceeded` event or on a `PutSecretValue` that does not stage a pending version, which is an operator update. The automation calls `UpdateService` with `forceNewDeployment`, so ECS starts tasks that read the new value before it stops the old ones. The rules read CloudTrail management events, so the account needs a trail that records them, such as the one the `cloudtrail` module creates.
 
+`restart_eks` names a one-shot ECS task, such as the [eks-deployer](../eks-deployer), and maps a secret key to the EKS deployments that read it. For each listed secret, a separate EventBridge rule on the same events starts an automation that runs the task with `restart` and the deployment names, so the pods roll onto the new value. The rule is separate because an EventBridge rule takes at most five targets.
+
 ## Manual rotation runbook
 
 | Secret | Procedure |

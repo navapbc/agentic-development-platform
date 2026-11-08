@@ -3,7 +3,8 @@
 `inv publish-platform-images`, or the `publish-images` workflow artifact, writes the references
 to `images.auto.tfvars.json` in the composition root, which Terraform loads with no flag. This
 plans the root, applies the plan after confirmation, and runs `inv platform-deploy`, which rolls
-the services onto the task definitions the apply registered.
+the services onto the task definitions the apply registered, then `inv eks-deploy` when the root
+has an EKS cluster.
 """
 
 from __future__ import annotations
@@ -120,6 +121,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--yes", action="store_true", help="Apply without asking.")
     args = parser.parse_args(argv)
 
+    from scripts.eks_deploy import main as eks_deploy
     from scripts.platform_deploy import main as platform_deploy
 
     def confirm() -> bool:
@@ -130,7 +132,9 @@ def main(argv: list[str] | None = None) -> int:
     deploy_args = ["--region", args.region] if args.region else []
     try:
         return release(
-            ROOT / args.var_file, confirm=confirm, deploy=lambda: platform_deploy(deploy_args)
+            ROOT / args.var_file,
+            confirm=confirm,
+            deploy=lambda: platform_deploy(deploy_args) or eks_deploy(deploy_args),
         )
     except ReleaseError as exc:
         print(f"{LOG} {exc}", file=sys.stderr)

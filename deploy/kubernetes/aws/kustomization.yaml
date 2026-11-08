@@ -13,6 +13,7 @@ resources:
   - ../../../openhands/policies/networkpolicy-allow-egress.yaml
   - secret-provider-classes.yaml
   - aws-resources.yaml
+  - network-policies.yaml
 
 images:
   - name: 123456789012.dkr.ecr.us-east-1.amazonaws.com/agentic-dev-platform/mcp-gateway

@@ -1,0 +1,266 @@
+# NetworkPolicies for strict mode, where a pod that no policy selects is denied all traffic.
+# Host-networked pods are exempt. 10.0.0.0/16 stands for the VPC CIDR, and 172.20.0.0/16 for the
+# cluster's service CIDR. 169.254.170.23 is the EKS Pod Identity agent on each node.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: system-baseline
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/part-of: agentic-dev-platform
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+        - ipBlock:
+            cidr: 10.0.0.0/16
+        - ipBlock:
+            cidr: 169.254.169.253/32
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: 169.254.170.23/32
+      ports:
+        - protocol: TCP
+          port: 80
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+        - ipBlock:
+            cidr: 172.20.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: coredns-ingress
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/part-of: agentic-dev-platform
+spec:
+  podSelector:
+    matchLabels:
+      k8s-app: kube-dns
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector: {}
+        - ipBlock:
+            cidr: 10.0.0.0/16
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: load-balancer-controller-webhook
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/part-of: agentic-dev-platform
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: aws-load-balancer-controller
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: 10.0.0.0/16
+      ports:
+        - protocol: TCP
+          port: 9443
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: secrets-store-baseline
+  namespace: aws-secrets-manager
+  labels:
+    app.kubernetes.io/part-of: agentic-dev-platform
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 169.254.170.23/32
+      ports:
+        - protocol: TCP
+          port: 80
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+        - ipBlock:
+            cidr: 172.20.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: platform-baseline
+  namespace: agentic-dev-platform
+  labels:
+    app.kubernetes.io/part-of: agentic-dev-platform
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: 169.254.170.23/32
+      ports:
+        - protocol: TCP
+          port: 80
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+        - ipBlock:
+            cidr: 172.20.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443
+    - to:
+        - ipBlock:
+            cidr: 10.0.0.0/16
+      ports:
+        - protocol: TCP
+          port: 5432
+        - protocol: TCP
+          port: 7233
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: litellm
+      ports:
+        - protocol: TCP
+          port: 4000
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: agent-sandbox
+          podSelector:
+            matchLabels:
+              app: openhands-sandbox
+      ports:
+        - protocol: TCP
+          port: 8000
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: litellm-ingress
+  namespace: agentic-dev-platform
+  labels:
+    app.kubernetes.io/part-of: agentic-dev-platform
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: litellm
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: {}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: agent-sandbox
+      ports:
+        - protocol: TCP
+          port: 4000
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: load-balancer-targets
+  namespace: agentic-dev-platform
+  labels:
+    app.kubernetes.io/part-of: agentic-dev-platform
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [inbound-webhook, mcp-gateway]
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: 10.0.0.0/16
+      ports:
+        - protocol: TCP
+          port: 8140
+        - protocol: TCP
+          port: 8150
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-default-deny-ingress
+  namespace: agent-sandbox
+  labels:
+    app.kubernetes.io/part-of: agentic-dev-platform
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: openhands-sandbox-ingress
+  namespace: agent-sandbox
+  labels:
+    app.kubernetes.io/part-of: agentic-dev-platform
+spec:
+  podSelector:
+    matchLabels:
+      app: openhands-sandbox
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: agentic-dev-platform
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: activity-worker
+      ports:
+        - protocol: TCP
+          port: 8000

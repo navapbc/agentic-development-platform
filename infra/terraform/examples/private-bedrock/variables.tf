@@ -414,6 +414,18 @@ variable "eks_mcp_gateway_client_cidrs" {
   default     = []
 }
 
+variable "eks_deployer_image" {
+  description = "eks-deployer image, which inv publish-platform-images writes to images.auto.tfvars.json."
+  type        = string
+  default     = ""
+}
+
+variable "eks_load_balancer_controller_image_repository" {
+  description = "Repository of the AWS Load Balancer Controller image. Empty selects the EKS registry of the region."
+  type        = string
+  default     = ""
+}
+
 variable "eks_gate_image_repository_arns" {
   description = "ECR repositories of the gate engine images the gate pods pull in image mode, beyond the semgrep and trivy repositories the scanner pods pull from."
   type        = list(string)
