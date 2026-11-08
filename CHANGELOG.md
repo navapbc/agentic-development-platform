@@ -138,6 +138,7 @@ AWS transition and FedRAMP Medium readiness. The platform documents its local-to
 - `inv aws-release` plans the composition root with the published images, applies after confirmation, and runs `inv platform-deploy`.
 - `inv k8s-reload` builds the cluster images through the build function `inv publish-platform-images` uses, with a local target.
 - `inv aws-destroy` destroys the `private-bedrock` composition root after the account ID is typed, keeping the bootstrap root and the ECR repositories with their images. It first removes the load balancers the AWS Load Balancer Controller created, stops ECS tasks outside a service, and empties the buckets Terraform would refuse to delete, and afterwards deletes the secrets left pending deletion.
+- The `eks-cluster` module provisions an EKS cluster with a private API endpoint, KMS envelope encryption of Kubernetes secrets, the api, audit, and authenticator control plane logs in a KMS-encrypted log group, and access entries in place of the `aws-auth` ConfigMap. It adds a platform and a tainted sandbox managed node group on arm64 with IMDSv2 at a hop limit of 1 and KMS-encrypted volumes, the VPC CNI with network policy enforcement and security groups for pods, CoreDNS, kube-proxy, the Pod Identity agent, and the EFS and Secrets Store CSI drivers as managed add-ons, and Pod Identity roles for the activity worker, LiteLLM, the Load Balancer Controller, the VPC CNI, and the EFS CSI driver.
 
 ### Changed
 

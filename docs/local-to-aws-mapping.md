@@ -48,6 +48,7 @@ These modules provision the shared AWS infrastructure the components above consu
 | Audit trail | CloudTrail with its own S3 bucket | [cloudtrail](../infra/terraform/cloudtrail) |
 | Bedrock inference authorization | `bedrock:InvokeModel` IAM policy | [bedrock-iam](../infra/terraform/bedrock-iam) |
 | Container platform | Shared ECS cluster on Fargate that the platform owns, with encrypted Exec sessions and ephemeral storage | [ecs-cluster](../infra/terraform/ecs-cluster) |
+| Kubernetes platform | EKS cluster with a private API endpoint, a platform and a tainted sandbox node group on arm64, network policy enforcement, and Pod Identity roles for the workloads that call AWS | [eks-cluster](../infra/terraform/eks-cluster) |
 | Service-to-service HTTPS | One internal ALB under the FIPS TLS policy with host routing to each service, re-encrypting to every task, and a private hosted zone | [container-services](../infra/terraform/container-services) |
 | Off-hours schedule | EventBridge Scheduler and SSM Automation that scale the ECS services to zero overnight so Aurora pauses | [off-hours](../infra/terraform/off-hours) |
 | Laptop Bedrock path for test accounts | Ephemeral ECS Fargate jump-host reached over ECS Exec, in the management tier | [bedrock-jumphost-fargate](../infra/terraform/bedrock-jumphost-fargate) |
