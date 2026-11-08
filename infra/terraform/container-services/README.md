@@ -4,7 +4,7 @@ Module that runs the platform containers on the platform ECS cluster. Nothing is
 
 ## What it provisions
 
-- ECR repositories `<name_prefix>/platform`, `<name_prefix>/repo-intelligence`, `<name_prefix>/otel-collector`, `<name_prefix>/langfuse-web`, `<name_prefix>/langfuse-worker`, and `<name_prefix>/clickhouse` through the [ecr](../ecr) module, each with immutable tags, scan on push, KMS encryption, and a lifecycle policy that expires untagged images. `kms_key_arn` sets one key for all of them, and empty creates one key per repository. The `tls-sidecar` repository holds the TLS image described below.
+- ECR repositories `<name_prefix>/platform`, `<name_prefix>/repo-intelligence`, `<name_prefix>/otel-collector`, `<name_prefix>/langfuse-web`, `<name_prefix>/langfuse-worker`, and `<name_prefix>/clickhouse` through the [ecr](../ecr) module, each with immutable tags, scan on push, KMS encryption, and a lifecycle policy that expires untagged images. `kms_key_arn` sets one key for all of them, and empty creates one key per repository. The `tls-sidecar` repository holds the TLS image described below. The `opa`, `litellm`, `openhands-agent-server`, `buildah`, `semgrep`, and `trivy` repositories hold the images the EKS pods run, the OPA sidecar of the activity worker, LiteLLM, the sandbox agent-server, and the builder and scanner images of the gate, checks, and scanner pods.
 - With `internal_acm_certificate_arn` set, the internal load balancer described below, its private hosted zone, and the `<name_prefix>-internal-lb-logs-<account>` bucket, which receives its access logs under `internal/`. Load balancer log delivery requires S3-managed encryption, so the bucket uses SSE-S3, denies requests without TLS, expires logs after `load_balancer_log_retention_days`, and sends its own server access logs to `access_log_bucket`.
 - With `platform_image`, `repo_intelligence_image`, and `temporal` set as well, the platform services, the one-shot tasks, their task and execution roles, security groups, and log groups, a KMS key for the logs and the workspace, and the workspace file system, all described below.
 - With `collector_image` set as well, the collector service, and with `collector_exports_enabled`, the Prometheus workspace and the telemetry KMS key, described under Collector.
@@ -12,7 +12,7 @@ Module that runs the platform containers on the platform ECS cluster. Nothing is
 
 ## Images
 
-The ECS tasks pull only from these repositories, because DNS Firewall resolves no public registry. `inv publish-platform-images` builds or copies every image for `linux/arm64`, or `--arch amd64`, prints each reference with its digest, and writes the references to `images.auto.tfvars.json` in the composition root.
+The ECS tasks and the EKS pods pull only from these repositories, because DNS Firewall resolves no public registry. `inv publish-platform-images` builds or copies every image for `linux/arm64`, or `--arch amd64`, prints each reference with its digest, and writes the references to `images.auto.tfvars.json` in the composition root.
 
 | Repository | Source | Tag |
 |---|---|---|
@@ -26,7 +26,7 @@ The platform image runs every worker role and the coordination service. Its buil
 
 The platform image carries the RDS global CA bundle at `/etc/ssl/rds-global-bundle.pem`. The build fetches it from `RDS_CA_BUNDLE_URL` and fails unless its SHA-256 matches `RDS_CA_BUNDLE_SHA256`, the same checksum the Temporal images pin.
 
-The built images come from a copy of the files git tracks or would track, so ignored local artifacts, such as the binaries `inv fetch-acli` leaves under `vendor/bin`, never reach an image. A copied image keeps the multi-architecture digest `compose.yaml` pins, and the publish fails when the repository holds a different digest under that tag. The repository lifecycle policy does not expire the per-architecture images an index references.
+The built images come from a copy of the files git tracks or would track, so ignored local artifacts, such as the binaries `inv fetch-acli` leaves under `vendor/bin`, never reach an image. A copied image keeps the multi-architecture digest its source pins, which is `compose.yaml` for Langfuse and ClickHouse, `deploy/kubernetes/litellm.yaml` for LiteLLM, and the default of the `openhands_agent_server_image`, `gate_engine_builder_image`, `semgrep_image`, and `trivy_image` settings for the others. The publish fails when the repository holds a different digest under that tag, and the error names the source. The OPA image is built from `docker/opa.Dockerfile` and tagged with the OPA version its base pins. The repository lifecycle policy does not expire the per-architecture images an index references.
 
 Basic scanning scans the per-architecture images of a copied index, not the index itself. It cannot scan the collector image, whose distroless base has no package database, and reports `UnsupportedImageError`. Amazon Inspector enhanced scanning, an account-level setting, scans the Go binaries in it.
 

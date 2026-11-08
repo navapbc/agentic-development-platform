@@ -260,5 +260,16 @@ output "eks" {
     sandbox_taint             = module.eks_cluster.sandbox_taint
     load_balancer_controller  = module.eks_cluster.load_balancer_controller
     log_group_name            = module.eks_cluster.log_group_name
+    images = {
+      platform = var.container_platform_image
+      opa      = var.eks_opa_image
+      litellm  = var.eks_litellm_image
+    }
+    image_settings = {
+      OPENHANDS_AGENT_SERVER_IMAGE = var.eks_agent_server_image
+      GATE_ENGINE_BUILDER_IMAGE    = var.eks_buildah_image
+      SEMGREP_IMAGE                = var.eks_semgrep_image
+      TRIVY_IMAGE                  = var.eks_trivy_image
+    }
   } : null
 }

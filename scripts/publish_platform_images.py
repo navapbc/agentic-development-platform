@@ -1,15 +1,18 @@
 """Build the platform container images, mirror the upstream ones, and push them to ECR.
 
-The ECS tasks pull only from ECR, because DNS Firewall resolves no public registry.
+The ECS tasks and the EKS pods pull only from ECR, because DNS Firewall resolves no public
+registry.
 
 - The platform image carries the Temporal Worker Deployment build ID, a release version and a
   UTC timestamp that `scripts.build_id` orders. Its tag is `<build id>-<source hash>-<arch>`,
   so a build whose sources are already in the repository reuses that image and its build ID
   instead of minting a new Worker Deployment version.
-- The repository-intelligence, collector, and TLS sidecar images are tagged
+- The repository-intelligence, collector, TLS sidecar, and OPA images are tagged
   `<version>-<content hash>-<arch>`.
-- Langfuse web, Langfuse worker, and ClickHouse are copied by the digest `compose.yaml` pins
-  and tagged with their upstream version, and the copy must keep that digest.
+- Langfuse web, Langfuse worker, and ClickHouse are copied by the digest `compose.yaml` pins,
+  LiteLLM by the digest its cluster manifest pins, and the OpenHands agent-server, buildah,
+  semgrep, and trivy images by the digests their settings default to. Each copy is tagged with
+  its upstream version and must keep the pinned digest.
 
 The images are built from the files git tracks or would track, so ignored local artifacts such
 as the binaries under `vendor/bin` never reach an image.
@@ -59,6 +62,12 @@ TFVARS_KEYS = {
     "langfuse-web": "container_langfuse_web_image",
     "langfuse-worker": "container_langfuse_worker_image",
     "clickhouse": "container_clickhouse_image",
+    "opa": "eks_opa_image",
+    "litellm": "eks_litellm_image",
+    "openhands-agent-server": "eks_agent_server_image",
+    "buildah": "eks_buildah_image",
+    "semgrep": "eks_semgrep_image",
+    "trivy": "eks_trivy_image",
 }
 PLATFORM = ImageSpec("platform", "docker/Dockerfile", ())
 REPO_INTELLIGENCE = ImageSpec(
@@ -88,7 +97,14 @@ MIRRORED_SERVICES = {
     "langfuse-worker": "langfuse-worker",
     "clickhouse": "clickhouse",
 }
-_COLLECTOR_VERSION = re.compile(r"^FROM \S*opentelemetry-collector-contrib:([0-9.]+)@sha256:", re.M)
+MIRRORED_SETTINGS = {
+    "openhands-agent-server": "openhands_agent_server_image",
+    "buildah": "gate_engine_builder_image",
+    "semgrep": "semgrep_image",
+    "trivy": "trivy_image",
+}
+LITELLM = "litellm"
+LITELLM_MANIFEST = "deploy/kubernetes/litellm.yaml"
 _PINNED_REFERENCE = re.compile(
     r"^(?P<source>[^@\s]+):(?P<tag>[\w.-]+)@(?P<digest>sha256:[0-9a-f]{64})$"
 )
@@ -104,6 +120,7 @@ class Mirror:
     source: str
     tag: str
     digest: str
+    origin: str = "compose.yaml"
 
 
 @dataclass(frozen=True)
@@ -118,25 +135,49 @@ class AcliBuild:
         return {"INSTALL_ACLI": "true", "ACLI_VERSION": self.version, "ACLI_SHA256": self.sha256}
 
 
+def pinned(name: str, reference: str, origin: str) -> Mirror:
+    match = _PINNED_REFERENCE.match(reference)
+    if match is None:
+        raise PublishError(f"{origin} pins {name} as {reference}, without a tag and digest")
+    return Mirror(name, match["source"], match["tag"], match["digest"], origin)
+
+
 def mirrors(compose: str) -> list[Mirror]:
     """Read the pinned upstream image of each mirrored service from `compose.yaml`."""
     services = yaml.safe_load(compose)["services"]
-    found: list[Mirror] = []
-    for name, service in MIRRORED_SERVICES.items():
-        reference = services[service]["image"]
-        match = _PINNED_REFERENCE.match(reference)
-        if match is None:
-            raise PublishError(
-                f"compose.yaml pins {service} as {reference}, without a tag and digest"
-            )
-        found.append(Mirror(name, match["source"], match["tag"], match["digest"]))
+    return [
+        pinned(name, services[service]["image"], "compose.yaml")
+        for name, service in MIRRORED_SERVICES.items()
+    ]
+
+
+def litellm_reference(manifest: str) -> str:
+    for document in yaml.safe_load_all(manifest):
+        if document and document.get("kind") == "Deployment":
+            for container in document["spec"]["template"]["spec"]["containers"]:
+                if container["name"] == LITELLM:
+                    return container["image"]
+    raise PublishError(f"{LITELLM_MANIFEST} has no {LITELLM} container")
+
+
+def cluster_mirrors(root: Path) -> list[Mirror]:
+    """Read the pinned upstream images the EKS pods run from their settings and manifests."""
+    from scripts.config import Settings
+
+    found = [
+        pinned(name, Settings.model_fields[field].default, f"the {field} setting")
+        for name, field in MIRRORED_SETTINGS.items()
+    ]
+    manifest = (root / LITELLM_MANIFEST).read_text(encoding="utf-8")
+    found.append(pinned(LITELLM, litellm_reference(manifest), LITELLM_MANIFEST))
     return found
 
 
-def collector_version(dockerfile: str) -> str:
-    match = _COLLECTOR_VERSION.search(dockerfile)
+def base_image_version(dockerfile: str, image: str) -> str:
+    """Return the version of the pinned base `image` the Dockerfile's FROM line names."""
+    match = re.search(rf"^FROM \S*{re.escape(image)}:([0-9.]+)@sha256:", dockerfile, re.M)
     if match is None:
-        raise PublishError("the collector Dockerfile pins no collector image by version and digest")
+        raise PublishError(f"the Dockerfile pins no {image} image by version and digest")
     return match.group(1)
 
 
@@ -268,7 +309,7 @@ class Publisher:
             self.pushed.append(f"{image}@{digest}")
         if digest != mirror.digest:
             raise PublishError(
-                f"{image} has digest {digest}, and compose.yaml pins {mirror.digest}. "
+                f"{image} has digest {digest}, and {mirror.origin} pins {mirror.digest}. "
                 "Delete the tag from the repository and publish again."
             )
         return f"{image}@{digest}"
@@ -283,12 +324,23 @@ def publish(publisher: Publisher, acli: AcliBuild, root: Path = REPO_ROOT) -> li
             publisher.built(
                 COLLECTOR,
                 context,
-                collector_version((context / COLLECTOR.dockerfile).read_text(encoding="utf-8")),
+                base_image_version(
+                    (context / COLLECTOR.dockerfile).read_text(encoding="utf-8"),
+                    "opentelemetry-collector-contrib",
+                ),
             ),
             publisher.built(TLS_SIDECAR, context, release_version()),
+            publisher.built(
+                OPA,
+                context,
+                base_image_version(
+                    (context / OPA.dockerfile).read_text(encoding="utf-8"), "openpolicyagent/opa"
+                ),
+            ),
         ]
     compose = (root / "compose.yaml").read_text(encoding="utf-8")
     references += [publisher.mirror(mirror) for mirror in mirrors(compose)]
+    references += [publisher.mirror(mirror) for mirror in cluster_mirrors(root)]
     return references
 
 

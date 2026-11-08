@@ -42,12 +42,18 @@ run "repositories_hold_every_image_the_services_run" {
       "agentic-platform/langfuse-worker",
       "agentic-platform/clickhouse",
       "agentic-platform/tls-sidecar",
+      "agentic-platform/opa",
+      "agentic-platform/litellm",
+      "agentic-platform/openhands-agent-server",
+      "agentic-platform/buildah",
+      "agentic-platform/semgrep",
+      "agentic-platform/trivy",
     ])
     error_message = "A repository is missing or misnamed."
   }
 
   assert {
-    condition     = keys(output.repository_urls) == sort(["platform", "repo-intelligence", "otel-collector", "langfuse-web", "langfuse-worker", "clickhouse", "tls-sidecar"])
+    condition     = keys(output.repository_urls) == sort(["platform", "repo-intelligence", "otel-collector", "langfuse-web", "langfuse-worker", "clickhouse", "tls-sidecar", "opa", "litellm", "openhands-agent-server", "buildah", "semgrep", "trivy"])
     error_message = "The repository_urls output does not name every image."
   }
 }

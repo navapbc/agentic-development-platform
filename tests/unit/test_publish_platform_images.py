@@ -97,10 +97,43 @@ def test_a_compose_image_without_a_digest_is_refused() -> None:
         publisher.mirrors(compose)
 
 
-def test_the_collector_version_comes_from_its_pinned_base() -> None:
-    dockerfile = (REPO_ROOT / "docker/otel-collector.Dockerfile").read_text(encoding="utf-8")
+def test_the_collector_and_opa_versions_come_from_their_pinned_bases() -> None:
+    collector = (REPO_ROOT / "docker/otel-collector.Dockerfile").read_text(encoding="utf-8")
+    opa = (REPO_ROOT / "docker/opa.Dockerfile").read_text(encoding="utf-8")
 
-    assert publisher.collector_version(dockerfile) == "0.160.0"
+    assert publisher.base_image_version(collector, "opentelemetry-collector-contrib") == "0.160.0"
+    assert publisher.base_image_version(opa, "openpolicyagent/opa") == "1.20.1"
+
+
+def test_a_base_image_without_a_digest_is_refused() -> None:
+    with pytest.raises(publisher.PublishError, match="pins no openpolicyagent/opa image"):
+        publisher.base_image_version("FROM openpolicyagent/opa:1.20.1\n", "openpolicyagent/opa")
+
+
+def test_every_cluster_mirror_reads_the_digest_its_setting_or_manifest_pins() -> None:
+    from scripts.config import Settings
+
+    mirrors = {mirror.name: mirror for mirror in publisher.cluster_mirrors(REPO_ROOT)}
+
+    assert set(mirrors) == {*publisher.MIRRORED_SETTINGS, publisher.LITELLM}
+    for name, field in publisher.MIRRORED_SETTINGS.items():
+        mirror = mirrors[name]
+        assert (
+            Settings.model_fields[field].default == f"{mirror.source}:{mirror.tag}@{mirror.digest}"
+        )
+    litellm = mirrors[publisher.LITELLM]
+    manifest = (REPO_ROOT / publisher.LITELLM_MANIFEST).read_text(encoding="utf-8")
+    assert f"image: {litellm.source}:{litellm.tag}@{litellm.digest}" in manifest
+
+
+def test_a_litellm_manifest_without_the_container_is_refused() -> None:
+    manifest = (
+        "kind: Deployment\nspec:\n  template:\n    spec:\n"
+        "      containers:\n        - name: other\n          image: x\n"
+    )
+
+    with pytest.raises(publisher.PublishError, match="has no litellm container"):
+        publisher.litellm_reference(manifest)
 
 
 def test_the_platform_image_pins_the_rds_ca_bundle_the_temporal_images_pin() -> None:
@@ -196,6 +229,45 @@ def test_a_mirror_whose_digest_differs_from_the_pin_is_refused(commands) -> None
         publisher.Publisher(ecr, REGISTRY, "agentic-platform", "arm64").mirror(mirror)
 
 
+def test_a_cluster_mirror_whose_digest_differs_names_the_setting_that_pins_it(commands) -> None:
+    trivy = next(m for m in publisher.cluster_mirrors(REPO_ROOT) if m.name == "trivy")
+    ecr = _FakeEcr({("agentic-platform/trivy", trivy.tag): "sha256:" + "c" * 64})
+
+    with pytest.raises(publisher.PublishError, match="the trivy_image setting pins"):
+        publisher.Publisher(ecr, REGISTRY, "agentic-platform", "arm64").mirror(trivy)
+
+
+def test_a_publish_writes_every_composition_root_variable(commands, monkeypatch) -> None:
+    monkeypatch.setattr(publisher, "generate_build_id", lambda: "0.3.0.20261105120000")
+    compose = (REPO_ROOT / "compose.yaml").read_text(encoding="utf-8")
+    ecr = _FakeEcr(
+        {
+            (f"agentic-platform/{mirror.name}", mirror.tag): mirror.digest
+            for mirror in publisher.mirrors(compose) + publisher.cluster_mirrors(REPO_ROOT)
+        }
+    )
+
+    def _run(command, **_):
+        if command[0] == "git":
+            return subprocess.run(command, capture_output=True, check=True)
+        commands.append(command)
+        _pushes(ecr, commands)
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+
+    monkeypatch.setattr(publisher.process, "run", _run)
+    platform = publisher.Publisher(ecr, REGISTRY, "agentic-platform", "arm64")
+
+    references = publisher.publish(platform, publisher.AcliBuild())
+
+    assert set(publisher.tfvars(references)) == set(publisher.TFVARS_KEYS.values())
+    built = {
+        command[command.index("--tag") + 1].split(":")[0]
+        for command in commands
+        if "--tag" in command
+    }
+    assert f"{REGISTRY}/agentic-platform/opa" in built
+
+
 @pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
 def test_the_build_context_holds_no_ignored_file(tmp_path) -> None:
     repository = tmp_path / "repository"
@@ -232,11 +304,12 @@ def test_the_references_map_to_the_composition_root_variables() -> None:
 def test_every_published_image_has_a_composition_root_variable() -> None:
     from scripts.publish_temporal_images import ImageSpec
 
-    published = {
-        spec.name
-        for spec in vars(publisher).values()
-        if isinstance(spec, ImageSpec) and spec is not publisher.OPA
-    } | set(publisher.MIRRORED_SERVICES.values())
+    published = (
+        {spec.name for spec in vars(publisher).values() if isinstance(spec, ImageSpec)}
+        | set(publisher.MIRRORED_SERVICES.values())
+        | set(publisher.MIRRORED_SETTINGS)
+        | {publisher.LITELLM}
+    )
 
     assert published == set(publisher.TFVARS_KEYS)
     variables = (REPO_ROOT / "infra/terraform/examples/private-bedrock/variables.tf").read_text()

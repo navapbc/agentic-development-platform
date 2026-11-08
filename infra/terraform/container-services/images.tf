@@ -1,5 +1,6 @@
 locals {
-  # Each key is the repository suffix inv publish-platform-images pushes to.
+  # Each key is the repository suffix inv publish-platform-images pushes to. The EKS pods pull
+  # the last six.
   images = toset([
     "platform",
     "repo-intelligence",
@@ -8,6 +9,12 @@ locals {
     "langfuse-worker",
     "clickhouse",
     "tls-sidecar",
+    "opa",
+    "litellm",
+    "openhands-agent-server",
+    "buildah",
+    "semgrep",
+    "trivy",
   ])
 }
 

@@ -402,6 +402,42 @@ variable "eks_addon_versions" {
   default     = {}
 }
 
+variable "eks_opa_image" {
+  description = "OPA image the activity worker runs as a sidecar. inv publish-platform-images writes it to images.auto.tfvars.json."
+  type        = string
+  default     = ""
+}
+
+variable "eks_litellm_image" {
+  description = "LiteLLM image. inv publish-platform-images writes it to images.auto.tfvars.json."
+  type        = string
+  default     = ""
+}
+
+variable "eks_agent_server_image" {
+  description = "OpenHands agent-server image of the sandbox pods, for OPENHANDS_AGENT_SERVER_IMAGE. inv publish-platform-images writes it to images.auto.tfvars.json."
+  type        = string
+  default     = ""
+}
+
+variable "eks_buildah_image" {
+  description = "buildah image of the gate, checks, and scanner pods, for GATE_ENGINE_BUILDER_IMAGE. inv publish-platform-images writes it to images.auto.tfvars.json."
+  type        = string
+  default     = ""
+}
+
+variable "eks_semgrep_image" {
+  description = "semgrep image of the scanner pods, for SEMGREP_IMAGE. inv publish-platform-images writes it to images.auto.tfvars.json."
+  type        = string
+  default     = ""
+}
+
+variable "eks_trivy_image" {
+  description = "trivy image of the scanner pods, for TRIVY_IMAGE. inv publish-platform-images writes it to images.auto.tfvars.json."
+  type        = string
+  default     = ""
+}
+
 variable "create_container_services" {
   description = "Create the platform container services on the platform ECS cluster, starting with the ECR repositories for their images."
   type        = bool
