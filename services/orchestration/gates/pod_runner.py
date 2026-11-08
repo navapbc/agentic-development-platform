@@ -204,6 +204,8 @@ def _run_script(
     # TLS verification is only relevant to the registry pull in image mode. Disabling it lets the
     # gate pod pull from a plain-HTTP local registry. The build path never touches a registry.
     tls_flag = "--tls-verify=false " if spec.image and not spec.tls_verify else ""
+    # An image-mode engine carries its harness at the engine path, which a mount would hide.
+    engine_mount = f"-v {_ENGINE_MOUNT}:{_ENGINE_MOUNT} " if spec.source_path else ""
     return (
         "set -e\n"
         f"{registry.before_pull()}"
@@ -219,7 +221,7 @@ def _run_script(
         "set +e\n"
         f"buildah run --user root -v {_WORKSPACE_MOUNT}:{_WORKSPACE_MOUNT} {ownership_flags} "
         f'"$ctr" -- sh -c {shlex.quote(snapshot)} >&2\n'
-        f"buildah run --net host -v {_ENGINE_MOUNT}:{_ENGINE_MOUNT} "
+        f"buildah run --net host {engine_mount}"
         f"-v {_WORKSPACE_MOUNT}:{_WORKSPACE_MOUNT} {ownership_flags} {env_flags} "
         f'"$ctr" -- {invoke} >&2\n'
         "rc=$?\n"

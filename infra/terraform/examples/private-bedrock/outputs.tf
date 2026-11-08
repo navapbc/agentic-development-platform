@@ -278,6 +278,7 @@ output "eks" {
       GATE_ENGINE_BUILDER_IMAGE    = var.eks_buildah_image
       SEMGREP_IMAGE                = var.eks_semgrep_image
       TRIVY_IMAGE                  = var.eks_trivy_image
+      GATE_ENGINE_IMAGES           = jsonencode(var.eks_gate_engine_images)
     }
   } : null
 }

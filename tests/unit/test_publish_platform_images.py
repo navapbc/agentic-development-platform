@@ -259,7 +259,9 @@ def test_a_publish_writes_every_composition_root_variable(commands, monkeypatch)
 
     references = publisher.publish(platform, publisher.AcliBuild())
 
-    assert set(publisher.tfvars(references)) == set(publisher.TFVARS_KEYS.values())
+    values = publisher.tfvars(references)
+    assert set(values) == set(publisher.TFVARS_KEYS.values()) | {publisher.GATE_ENGINE_IMAGES_KEY}
+    assert set(values[publisher.GATE_ENGINE_IMAGES_KEY]) == {"security-policy", "test-policy"}
     built = {
         command[command.index("--tag") + 1].split(":")[0]
         for command in commands
@@ -314,6 +316,49 @@ def test_every_published_image_has_a_composition_root_variable() -> None:
     assert published == set(publisher.TFVARS_KEYS)
     variables = (REPO_ROOT / "infra/terraform/examples/private-bedrock/variables.tf").read_text()
     assert all(f'variable "{key}"' in variables for key in publisher.TFVARS_KEYS.values())
+
+
+def test_the_gate_engine_images_map_to_their_engine_names() -> None:
+    engine = f"{REGISTRY}/agentic-platform/gate-engine-test-policy:0.3.0-abc-arm64@{DIGEST}"
+
+    assert publisher.tfvars([PUSHED, engine]) == {
+        "container_platform_image": PUSHED,
+        "eks_gate_engine_images": {"test-policy": engine},
+    }
+    variables = (REPO_ROOT / "infra/terraform/examples/private-bedrock/variables.tf").read_text()
+    assert f'variable "{publisher.GATE_ENGINE_IMAGES_KEY}"' in variables
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+def test_each_gate_engine_builds_from_its_own_directory(monkeypatch) -> None:
+    commands: list[list[str]] = []
+    contexts: list[set[str]] = []
+
+    def _build(command, **_):
+        commands.append(command)
+        contexts.append({p.name for p in Path(command[-1]).iterdir()})
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+
+    pushed = publisher.push_engines_locally("localhost:5001", "arm64", REPO_ROOT, _build)
+
+    assert set(pushed) == {"security-policy", "test-policy"}
+    for command in commands:
+        context = Path(command[-1])
+        assert context.name in pushed
+        assert command[command.index("--file") + 1] == str(context / "Dockerfile")
+        assert "--push" in command
+    assert all({"Dockerfile", "bin", "policy.py", "rules.toml"} <= names for names in contexts)
+    assert pushed["test-policy"].startswith("localhost:5001/gate-engine-test-policy:")
+
+
+def test_the_local_engine_references_name_the_registry_as_the_pods_address_it() -> None:
+    from scripts.gate_engine_images import pull_references
+
+    pushed = {"security-policy": "localhost:5001/gate-engine-security-policy:1"}
+
+    assert pull_references(pushed, "localhost:5001", "host.docker.internal:5001") == {
+        "security-policy": "host.docker.internal:5001/gate-engine-security-policy:1"
+    }
 
 
 def test_the_manifest_marks_only_the_images_this_run_pushed() -> None:

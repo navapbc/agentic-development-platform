@@ -4,7 +4,7 @@ This roadmap groups the remaining platform work into versions. The authoritative
 
 Every v0.2.0 feature and every v0.3.0 feature planned before the Jira board has a dedicated implementation plan. The v0.3.0 features added from the Jira board name their ticket. Later versions link to their entry in the roadmap plan until their plans are written.
 
-Total remaining scope is roughly 168 to 225 hours across 23 features.
+Total remaining scope is roughly 178 to 239 hours across 23 features.
 
 ## v0.1.0 Pluggable ticket and source-control backends
 
@@ -53,7 +53,7 @@ Goal. The platform is technically FedRAMP Medium ready. It has documented local-
 | Rebar ticket store bucket terraform | 16-21h | [plan](docs/plans/2026-09-14-2150-feat-rebar-ticket-store-bucket-terraform-plan.md) |
 | ECS Fargate services for the platform containers | 28-41h (low) | Jira ADP-136, a sub-task of ADP-61, delivered through ADP-154 to ADP-159. [plan](docs/plans/2026-09-14-2151-feat-container-platform-services-terraform-plan.md) |
 | Platform image builds in CI | 6-10h | Jira ADP-162, a sub-task of ADP-61. Builds and publishes the images in GitHub Actions through the same `inv` tasks a developer runs. |
-| EKS cluster for the pod-orchestrating workloads | 49-71h (low) | Jira ADP-137, ADP-164, ADP-165, ADP-166, ADP-167, ADP-169, and ADP-168, sub-tasks of ADP-61 for the cluster module, the composition wiring, the images, the production overlay, the in-VPC deploy task, the registry provider for the gate pods, and the verification. [plan](docs/plans/2026-09-14-2151-feat-container-platform-services-terraform-plan.md) |
+| EKS cluster for the pod-orchestrating workloads | 59-85h (low) | Jira ADP-137, ADP-164, ADP-165, ADP-166, ADP-167, ADP-169, ADP-170, and ADP-168, sub-tasks of ADP-61 for the cluster module, the composition wiring, the images, the production overlay, the in-VPC deploy task, the registry provider for the gate pods, the example gate engines, and the verification. [plan](docs/plans/2026-09-14-2151-feat-container-platform-services-terraform-plan.md) |
 | Sandbox teardown | 2-4h | Jira ADP-163, a sub-task of ADP-61. Destroys the composition root and keeps the bootstrap, to stop the sandbox's standing cost between work sessions. |
 | Local Temporal server upgrade to 1.32.1 | 6-10h | Jira ADP-138. [plan](docs/plans/2026-10-30-1330-feat-temporal-server-upgrade-plan.md) |
 | Platform ECS cluster | 3-5h | Jira ADP-145. The shared cluster the platform owns for the Temporal control plane, the ECS services, and other teams. |

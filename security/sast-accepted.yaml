@@ -238,3 +238,33 @@
   path: docker/eks-deployer.Dockerfile
   match: FROM tools-${TARGETARCH} AS tools
   justification: tools-${TARGETARCH} names the build stage that holds the checksum-pinned tools for the target architecture, not an image, so it carries no tag. Trivy cannot resolve the stage through the variable and reads it as an untagged image. Every image the Dockerfile pulls is pinned by digest.
+- tool: bandit
+  rule: B404
+  path: examples/gate-engines/security-policy/policy.py
+  match: import subprocess
+  justification: The example engine runs in its own image without the platform's services.process wrapper, and it starts only git to read the change under review. The one call resolves git to an absolute path, passes an argument list without a shell, and sets a timeout.
+- tool: bandit
+  rule: B603
+  path: examples/gate-engines/security-policy/policy.py
+  match: return subprocess.run(
+  justification: Bandit reports every subprocess call that does not use a shell. The call runs git, resolved to an absolute path, with an argument list the engine builds from fixed subcommands and the base ref the platform passes, and with a timeout. Git receives the ref as one argument, so it cannot inject a command.
+- tool: bandit
+  rule: B404
+  path: examples/gate-engines/test-policy/policy.py
+  match: import subprocess
+  justification: The example engine runs in its own image without the platform's services.process wrapper, and it starts only git to read the change under review. The one call resolves git to an absolute path, passes an argument list without a shell, and sets a timeout.
+- tool: bandit
+  rule: B603
+  path: examples/gate-engines/test-policy/policy.py
+  match: return subprocess.run(
+  justification: Bandit reports every subprocess call that does not use a shell. The call runs git, resolved to an absolute path, with an argument list the engine builds from fixed subcommands, the base ref the platform passes, and paths git itself reported, and with a timeout. Git receives each value as one argument, so none can inject a command.
+- tool: bandit
+  rule: B310
+  path: examples/gate-engines/test-policy/policy.py
+  match: 'with urllib.request.urlopen(request, timeout=MODEL_TIMEOUT_SECONDS) as response:'
+  justification: The URL is the model gateway the platform injects in ANTHROPIC_BASE_URL, and suggest_tests refuses any value that does not start with http:// or https:// before building the request, so no file or custom scheme reaches urlopen.
+- tool: semgrep
+  rule: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
+  path: examples/gate-engines/test-policy/policy.py
+  match: 'with urllib.request.urlopen(request, timeout=MODEL_TIMEOUT_SECONDS) as response:'
+  justification: The URL is the model gateway the platform injects in ANTHROPIC_BASE_URL, and suggest_tests refuses any value that does not start with http:// or https:// before building the request, so no file or custom scheme reaches urlopen.

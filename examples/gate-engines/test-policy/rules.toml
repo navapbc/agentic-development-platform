@@ -1,0 +1,33 @@
+# Each mapping selects source files with sources and exclude, and names the test files that cover
+# one of them in tests, where {stem} is the source file name without its extension. A changed source
+# file passes when the change also adds or modifies a file that one of its test patterns matches.
+# Patterns are fnmatch patterns on the repository-relative path, where * also matches across
+# directories. The first mapping whose sources select a file applies. severity is CRITICAL, HIGH,
+# MEDIUM, or LOW.
+
+[[mapping]]
+name = "Python"
+sources = ["*.py"]
+exclude = ["tests/*", "*/tests/*", "test_*.py", "*/test_*.py", "*_test.py", "conftest.py", "*/conftest.py", "setup.py", "__init__.py", "*/__init__.py", "*/migrations/*"]
+tests = ["*test_{stem}.py", "*{stem}_test.py"]
+severity = "MEDIUM"
+
+[[mapping]]
+name = "TypeScript or JavaScript"
+sources = ["*.ts", "*.tsx", "*.js", "*.jsx"]
+exclude = ["*.test.*", "*.spec.*", "*.d.ts", "*/__tests__/*", "*.config.*"]
+tests = ["*{stem}.test.*", "*{stem}.spec.*", "*/__tests__/{stem}.*"]
+severity = "MEDIUM"
+
+[[mapping]]
+name = "Go"
+sources = ["*.go"]
+exclude = ["*_test.go"]
+tests = ["*{stem}_test.go"]
+severity = "MEDIUM"
+
+[[mapping]]
+name = "Java"
+sources = ["*/src/main/*.java", "src/main/*.java"]
+tests = ["*{stem}Test.java", "*{stem}Tests.java", "*{stem}IT.java"]
+severity = "MEDIUM"

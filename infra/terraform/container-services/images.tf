@@ -1,6 +1,6 @@
 locals {
   # Each key is the repository suffix inv publish-platform-images pushes to. The EKS pods pull
-  # opa through trivy, and the eks-deployer task deploys them.
+  # opa through trivy and the gate engines, and the eks-deployer task deploys them.
   images = toset([
     "platform",
     "repo-intelligence",
@@ -16,6 +16,8 @@ locals {
     "semgrep",
     "trivy",
     "eks-deployer",
+    "gate-engine-security-policy",
+    "gate-engine-test-policy",
   ])
 }
 

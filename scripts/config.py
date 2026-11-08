@@ -245,6 +245,7 @@ class Settings(BaseSettings):
     )
     gate_engine_privileged: bool = False
     gate_engine_root: str = "/workspaces/engines"
+    gate_engine_images: dict[str, str] = {}
     gate_registry_tls_verify: bool = True
 
     reap_schedule_id: str = "orphan-reaper"

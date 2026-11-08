@@ -1,5 +1,6 @@
 locals {
-  eks_enabled = var.create_eks
+  eks_enabled               = var.create_eks
+  eks_gate_pod_repositories = ["semgrep", "trivy", "gate-engine-security-policy", "gate-engine-test-policy"]
 
   # Secret store keys each EKS workload reads through the Secrets Store CSI driver. The database
   # keys exist only with Aurora, and the secret store rejects a reader key that names no secret.
@@ -84,6 +85,7 @@ locals {
       GATE_ENGINE_BUILDER_IMAGE    = var.eks_buildah_image
       SEMGREP_IMAGE                = var.eks_semgrep_image
       TRIVY_IMAGE                  = var.eks_trivy_image
+      GATE_ENGINE_IMAGES           = jsonencode(var.eks_gate_engine_images)
     }
     settings             = { LANGFUSE_HOST = "https://langfuse.${var.container_internal_domain}" }
     platform_environment = coalesce(module.container_services.platform_environment, {})
@@ -183,7 +185,7 @@ resource "aws_iam_policy" "eks_sandbox_image_pull" {
         Effect = "Allow"
         Action = ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer", "ecr:BatchCheckLayerAvailability"]
         Resource = concat(
-          [for name in ["semgrep", "trivy"] : module.container_services.repository_arns[name]],
+          [for name in local.eks_gate_pod_repositories : module.container_services.repository_arns[name]],
           var.eks_gate_image_repository_arns,
           local.registry_cache_repository_arns,
         )

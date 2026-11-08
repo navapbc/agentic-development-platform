@@ -508,6 +508,12 @@ variable "eks_semgrep_image" {
   default     = ""
 }
 
+variable "eks_gate_engine_images" {
+  description = "Image of each example gate engine by engine name, for GATE_ENGINE_IMAGES, which an image-mode engine in gate_engine.yaml without an image reference runs. inv publish-platform-images writes it to images.auto.tfvars.json."
+  type        = map(string)
+  default     = {}
+}
+
 variable "eks_trivy_image" {
   description = "trivy image of the scanner pods, for TRIVY_IMAGE. inv publish-platform-images writes it to images.auto.tfvars.json."
   type        = string

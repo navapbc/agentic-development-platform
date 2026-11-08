@@ -7,8 +7,8 @@ registry.
   UTC timestamp that `scripts.build_id` orders. Its tag is `<build id>-<source hash>-<arch>`,
   so a build whose sources are already in the repository reuses that image and its build ID
   instead of minting a new Worker Deployment version.
-- The repository-intelligence, collector, TLS sidecar, OPA, and eks-deployer images are tagged
-  `<version>-<content hash>-<arch>`.
+- The repository-intelligence, collector, TLS sidecar, OPA, and eks-deployer images and the example
+  gate engine images under `examples/gate-engines` are tagged `<version>-<content hash>-<arch>`.
 - Langfuse web, Langfuse worker, and ClickHouse are copied by the digest `compose.yaml` pins,
   LiteLLM by the digest its cluster manifest pins, and the OpenHands agent-server, buildah,
   semgrep, and trivy images by the digests their settings default to. Each copy is tagged with
@@ -111,6 +111,12 @@ EKS_DEPLOYER = ImageSpec(
 TLS_SIDECAR = ImageSpec(
     "tls-sidecar", "docker/tls-sidecar.Dockerfile", ("docker/tls-sidecar", "docker/healthprobe")
 )
+GATE_ENGINE_ROOT = "examples/gate-engines"
+GATE_ENGINE_IMAGES_KEY = "eks_gate_engine_images"
+GATE_ENGINES = {
+    name: ImageSpec(f"gate-engine-{name}", "Dockerfile", ("bin", "policy.py", "rules.toml"))
+    for name in ("security-policy", "test-policy")
+}
 MIRRORED_SERVICES = {
     "langfuse-web": "langfuse-web",
     "langfuse-worker": "langfuse-worker",
@@ -350,6 +356,10 @@ def publish(publisher: Publisher, acli: AcliBuild, root: Path = REPO_ROOT) -> li
             ),
             publisher.built(TLS_SIDECAR, context, release_version()),
             publisher.built(EKS_DEPLOYER, context, release_version()),
+            *[
+                publisher.built(spec, context / GATE_ENGINE_ROOT / name, release_version())
+                for name, spec in GATE_ENGINES.items()
+            ],
             publisher.built(
                 OPA,
                 context,
@@ -391,9 +401,42 @@ def image_name(reference: str) -> str:
     return reference.split("@", 1)[0].rsplit(":", 1)[0].rsplit("/", 1)[1]
 
 
-def tfvars(references: list[str]) -> dict[str, str]:
-    """Map each reference to the composition-root variable that takes it."""
-    return {TFVARS_KEYS[image_name(reference)]: reference for reference in references}
+def tfvars(references: list[str]) -> dict[str, object]:
+    """Map each reference to the composition-root variable that takes it.
+
+    The gate engine images go into one map keyed by the engine name gate_engine.yaml uses.
+    """
+    engines = {spec.name: name for name, spec in GATE_ENGINES.items()}
+    values: dict[str, object] = {}
+    engine_images: dict[str, str] = {}
+    for reference in references:
+        name = image_name(reference)
+        if name in engines:
+            engine_images[engines[name]] = reference
+        else:
+            values[TFVARS_KEYS[name]] = reference
+    if engine_images:
+        values[GATE_ENGINE_IMAGES_KEY] = engine_images
+    return values
+
+
+def push_engines_locally(registry: str, arch: str, root: Path = REPO_ROOT, run=None) -> dict:
+    """Build each example gate engine and push it to a local registry, returning its references."""
+    run = run or process.run
+    pushed = {}
+    with build_context(root) as context:
+        for name, spec in GATE_ENGINES.items():
+            engine = context / GATE_ENGINE_ROOT / name
+            tag = f"{release_version()}-{content_hash(spec, engine)}-{arch}"
+            image = f"{registry}/{spec.name}:{tag}"
+            print(f"{LOG} building {image} for {PLATFORMS[arch]}")
+            run(
+                build_command(spec, engine, image, arch),
+                timeout=BUILD_TIMEOUT_SECONDS,
+                check=True,
+            )
+            pushed[name] = image
+    return pushed
 
 
 def manifest(references: list[str], pushed: list[str]) -> list[dict[str, object]]:

@@ -88,6 +88,7 @@ EXPECTED_TASKS = {
     "aws-login",
     "repos-sync",
     "fetch-results",
+    "gate-engine-images",
     "webhook-setup",
     "webhook-teardown",
 }

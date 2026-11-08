@@ -189,6 +189,19 @@ def repos_sync(c, repo=""):
     c.run(f"{HOST_PYTHON} -m scripts.repos_sync{flag}", pty=True)
 
 
+@task(
+    help={
+        "registry": "Registry the host pushes to (default localhost:5001).",
+        "pull_registry": "The same registry as the gate pods address it.",
+    }
+)
+def gate_engine_images(c, registry="", pull_registry=""):
+    """Build the example gate engines, push them to the local registry, and print the settings."""
+    flags = f" --registry {shlex.quote(registry)}" if registry else ""
+    flags += f" --pull-registry {shlex.quote(pull_registry)}" if pull_registry else ""
+    c.run(f"{HOST_PYTHON} -m scripts.gate_engine_images{flags}", pty=True)
+
+
 @task(help={"repo": "Fetch only this repository."})
 def fetch_results(c, repo=""):
     """Fetch the agent branches and their results refs from the cluster into the host checkouts."""
@@ -1381,6 +1394,7 @@ for _t in (
     k8s_reload,
     aws_login,
     repos_sync,
+    gate_engine_images,
     fetch_results,
     webhook_setup,
     webhook_teardown,

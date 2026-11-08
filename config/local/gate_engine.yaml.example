@@ -3,88 +3,76 @@
 # --against <ref> and --json-out <path> and writes either SARIF 2.1.0 or the review and classifier
 # JSON contract, selected per entry by output_format. The path is inert unless at least one engine
 # is enabled, so with this file absent or every engine disabled the built-in rebar security review
-# stays the gate and neither the engine code nor its overlay deploys. There is no plugin or
-# pip-install path; every external gate is added here by config.
+# stays the gate. Every external gate is added here by config.
 #
 # engines is a list. Each entry backs one gate, named by name, and is enabled and required
-# independently in gates.yaml. Add an entry per tool to run several side by side, for example the
-# ai-common-workflows reviewer plus a Semgrep or Snyk SARIF gate. The first entry shown is the
-# ai-common-workflows reference example. Change name, the source, and the entrypoints per tool.
+# independently in gates.yaml. The two entries below are the example engines under
+# examples/gate-engines, a deterministic SARIF security scan and a test coverage review that asks
+# the model gateway for suggested test cases. See examples/gate-engines/README.md.
 
 config_version: 1
 
 engines:
-  - name: ai-security-review
-
+  - name: security-policy
     enabled: false
 
-    # The AI CLI the engine drives (claude, codex, or copilot). It is pointed at the platform
-    # LiteLLM gateway, so every model call is monitored by Guardrails and routed to Bedrock. Direct
-    # provider access is never used.
-    tool: claude
-
-    # LiteLLM model-list names the gateway maps to Bedrock. review_model runs the review gate,
-    # triage_model runs the advisory test classifier. Both must exist in the LiteLLM config. Set
-    # classifier_entrypoint to "" for a review-only engine that runs no classifier.
-    review_model: security-review-model
-    triage_model: review-model
-
-    # Output token cap passed to the CLI, kept under the Bedrock provider output limit.
-    max_output_tokens: 8192
-
     # How the platform parses the engine's --json-out file.
-    #   review-json: the AI-review JSON contract (default). Requires a model and the gateway.
+    #   review-json: the review JSON contract. The engine receives the model gateway.
     #   sarif:       SARIF 2.1.0, the native output of Semgrep, Snyk, CodeQL, Trivy, and most
-    #                scanners. No model is needed, so tool/review_model are ignored for a sarif gate.
-    output_format: review-json
+    #                scanners. No model is needed, so tool and review_model are ignored.
+    output_format: sarif
 
-    # Source mode. Set mode to one of local, tag, or zip, then fill the fields that mode reads.
+    # Source mode. Set mode to one of image, local, tag, or zip, then fill the fields it reads.
+    #   image: image, or the entry GATE_ENGINE_IMAGES holds for this name when image is empty
     #   local: local_path
     #   tag:   repo_url, tag, cache_root
     #   zip:   zip_path, cache_root (create with: gh api repos/<org>/<repo>/zipball/<ref> > x.zip)
-    # tag pulls only when the tag moved, as a pre-flight fail-fast check. The resolver records the
-    # resolved commit or zip hash so the run pins the exact engine version into the manifest.
-    mode: local
+    # image runs the harness inside the published image. The source modes copy the engine into the
+    # gate pod and build its Dockerfile there, which needs the package registries the Dockerfile
+    # installs from. The resolver records the image, commit, or zip hash into the run manifest.
+    mode: image
+    image: ""
 
-    # Harness paths inside the engine checkout, relative to its root. Point them at another engine's
-    # harness to integrate a different review or classifier workflow with no code change.
-    review_entrypoint: engines/security-compliance-review/harness/ai-pr-review
-    classifier_entrypoint: engines/test-classifier/harness/ai-test-classifier
+    # Harness path inside the engine, relative to its root. Required for an enabled engine.
+    review_entrypoint: bin/scan
 
-    # local mode reads this checkout on the host, relative to the platform checkout. inv repos-sync
-    # copies its working tree, uncommitted edits included, into the cluster.
-    local_path: ../ai-common-workflows
+  - name: test-policy
+    enabled: false
+    output_format: review-json
 
-    # tag mode reads these
-    repo_url: https://github.com/navapbc/ai-common-workflows.git
-    tag: ""
-    cache_root: .agent-context/engine-cache
+    # The model the engine's calls use, a canonical-id group of the LiteLLM config such as
+    # claude-opus-5-5, which both the gateway routes to Bedrock through the guardrails and an AI CLI
+    # recognizes. An alias group such as review-model is refused. tool is the AI CLI a review-json
+    # engine drives, and max_output_tokens caps its output.
+    review_model: claude-opus-5-5
+    tool: claude
+    max_output_tokens: 8192
 
-    # zip mode reads this and cache_root
-    zip_path: ""
+    mode: image
+    image: ""
+    review_entrypoint: bin/review
 
-  # A second engine, for example a wrapped SonarQube or a custom review script. It registers the
-  # sonarqube-review gate. Enable it in gates.yaml the same as any other gate.
+    # Harness path of the advisory test classifier, which runs in the activity worker. Empty runs
+    # no classifier. triage_model is the model it uses.
+    classifier_entrypoint: ""
+    triage_model: review-model
+
+  # An engine in its own repository, pinned to a tag and built from its Dockerfile in the gate pod.
   # - name: sonarqube-review
   #   enabled: true
-  #   tool: claude
+  #   output_format: sarif
   #   mode: tag
   #   repo_url: https://github.com/your-org/sonar-review-engine.git
   #   tag: v1.0.0
   #   cache_root: .agent-context/engine-cache
-  #   review_entrypoint: bin/review
-  #   classifier_entrypoint: ""
-
-  # A SARIF scanner gate, for example Semgrep or Snyk. output_format sarif needs no model. The
-  # entrypoint is a one-line wrapper that runs the tool and writes SARIF to the --json-out path.
-  # The tool binary must be present in the worker image (see docs/gate-engine.md).
-  # - name: semgrep-sarif
-  #   enabled: true
-  #   output_format: sarif
-  #   mode: tag
-  #   repo_url: https://github.com/your-org/semgrep-gate.git
-  #   tag: v1.0.0
-  #   cache_root: .agent-context/engine-cache
   #   review_entrypoint: bin/scan
-  #   classifier_entrypoint: ""
 
+  # An engine checkout on the workstation, which inv repos-sync copies into the cluster with its
+  # uncommitted edits. local_path is relative to the platform checkout.
+  # - name: custom-review
+  #   enabled: true
+  #   output_format: review-json
+  #   review_model: claude-opus-5-5
+  #   mode: local
+  #   local_path: ../custom-review-engine
+  #   review_entrypoint: bin/review

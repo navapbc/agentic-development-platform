@@ -1,6 +1,6 @@
 # Integrating an external gate
 
-The platform drives every external review or scanner tool as a gate through one config-driven mechanism. A tool is never installed into the platform. It is named in `config/<env>/gate_engine.yaml`, resolved from a config-selected source, and run as a subprocess whose output the platform parses onto the shared finding scale. The adapter is tool-agnostic, so a SARIF-emitting scanner such as Semgrep, Snyk, or SonarQube and an AI-CLI reviewer such as `ai-common-workflows` are added the same way, with no packaging and no code change. This is the only way to add an external gate. There is no plugin or pip-install path.
+The platform drives every external review or scanner tool as a gate through one config-driven mechanism. A tool is never installed into the platform. It is named in `config/<env>/gate_engine.yaml`, resolved from a config-selected source, and run as a subprocess or in an ephemeral gate pod, whose output the platform parses onto the shared finding scale. The adapter is tool-agnostic, so a SARIF-emitting scanner such as Semgrep, Snyk, or SonarQube and a model-driven reviewer are added the same way, with no packaging and no code change. [examples/gate-engines](../examples/gate-engines) holds two worked examples, a deterministic security scan that writes SARIF and a test coverage review that asks the model gateway for suggested test cases. This is the only way to add an external gate. There is no plugin or pip-install path.
 
 ## Inert by default
 
@@ -54,19 +54,17 @@ A Snyk or SonarQube gate is the same shape, with `review_entrypoint` pointing at
 ```yaml
 config_version: 1
 engines:
-  - name: ai-security-review
+  - name: security-policy
     enabled: true
-    tool: claude           # claude, codex, or copilot
-    review_model: security-review-model
-    triage_model: review-model
-    max_output_tokens: 8192
-    mode: local            # local, tag, or zip
-    # Harness paths relative to the engine checkout root. These default to the ai-common-workflows
-    # layout. Point them at another engine's harness to integrate a different workflow. Set
-    # classifier_entrypoint to "" for a review-only engine that runs no classifier.
-    review_entrypoint: engines/security-compliance-review/harness/ai-pr-review
-    classifier_entrypoint: engines/test-classifier/harness/ai-test-classifier
-    local_path: ../ai-common-workflows
+    output_format: sarif
+    mode: image
+    review_entrypoint: bin/scan
+  - name: test-policy
+    enabled: true
+    output_format: review-json
+    review_model: claude-opus-5-5
+    mode: image
+    review_entrypoint: bin/review
   - name: sonarqube-review
     enabled: true
     mode: tag
@@ -77,11 +75,25 @@ engines:
     classifier_entrypoint: ""
 ```
 
-Each enabled engine registers a scanner gate under its `name`. Enable it in `gates.yaml` with its own `enabled` and `required` flags. The advisory test classifier runs for the first enabled engine that sets a `classifier_entrypoint`.
+Each enabled engine registers a scanner gate under its `name`. Enable it in `gates.yaml` with its own `enabled` and `required` flags. `review_entrypoint` is the harness path relative to the engine root and is required for an enabled engine. The advisory test classifier runs for the first enabled engine that sets a `classifier_entrypoint`, and an engine without one runs no classifier.
 
 ## Selecting a source mode
 
-`mode` is a per-engine field. Set it to `local`, `tag`, or `zip` inside an engine entry, then fill the fields that mode reads. All three record the resolved commit or content hash into the determinism manifest, so a run pins the exact engine version.
+`mode` is a per-engine field. Set it to `image`, `local`, `tag`, or `zip` inside an engine entry, then fill the fields that mode reads. Each records the image reference, commit, or content hash into the determinism manifest, so a run pins the exact engine version.
+
+`image` runs a published image whose harness sits at `/engine`, so the gate pod pulls the image and runs the entrypoint inside it with no build. It is the mode for AWS, where a gate pod cannot install the packages an engine Dockerfile needs. An entry with `image` set runs that reference. An entry without one runs the image that `GATE_ENGINE_IMAGES`, a JSON map of engine name to image reference, names for it, so `gate_engine.yaml` carries no account-specific registry. A deployment that publishes the example engines sets `GATE_ENGINE_IMAGES` through `inv eks-deploy` in AWS or `inv gate-engine-images` locally, as the [examples README](../examples/gate-engines/README.md#running-them) describes. Loading the config fails when an enabled image-mode engine has neither.
+
+```yaml
+engines:
+  - name: security-policy
+    enabled: true
+    output_format: sarif
+    mode: image
+    image: registry.example.gov/gate-engines/security-policy:1.0.0@sha256:...
+    review_entrypoint: bin/scan
+```
+
+The `local`, `tag`, and `zip` modes copy the engine source into the gate pod and build its Dockerfile there. Setting `image` on one of them pulls that image instead of building, with the source still mounted at `/engine`.
 
 `local` points at a checkout already on disk. Use it while the engine has no release yet.
 
@@ -148,7 +160,7 @@ The gate, checks, and scanner pods pull their images with buildah, and a project
 - `mode: aws`, which the `private-bedrock` composition generates when `registry_mode = "aws"`, mirrors each upstream through an ECR pull-through cache. The activity worker hands the pod an ECR token, and the pod installs packages from the public PyPI, npm, and Go module indexes, which DNS Firewall resolves by name.
 - `mode: external` mirrors images and packages through an Artifactory or compatible service. The pod receives `PIP_INDEX_URL`, `NPM_CONFIG_REGISTRY`, and `GOPROXY` for the package indexes and a netrc and npmrc holding the token, which the activity worker reads from the variable `credential.token_env` names. [registries.yaml.example](../config/local/registries.yaml.example) shows the shape.
 
-Credentials reach the pod as files over the exec stream and are removed before project or engine code runs. Composer and other package managers are not configured, and OS package sources that use plain HTTP, such as the Debian mirrors an `apt-get` in a Dockerfile reads, are not reachable in either mode. A gate engine whose Dockerfile installs OS packages therefore runs in AWS from an image published with them, not from a build in the pod.
+Credentials reach the pod as files over the exec stream and are removed before project or engine code runs. Composer and other package managers are not configured, and OS package sources that use plain HTTP, such as the Debian mirrors an `apt-get` in a Dockerfile reads, are not reachable in either mode. A gate engine whose Dockerfile installs OS packages therefore runs in AWS in image mode, from an image published with them, not from a build in the pod.
 
 ## Running the built-in scanners from their own images
 
@@ -190,18 +202,18 @@ The default changes existing behaviour. Before this setting, `scan_change` let a
 
 ## Integrating a different engine
 
-Because the boundary is the invocation and JSON contract, another review or classifier workflow integrates by configuration alone. Set `mode` and its source fields at the other engine, and set `review_entrypoint` and `classifier_entrypoint` to its harness paths. The engine reads the `--against` ref and the gateway env, and writes the review or classifier JSON. No adapter change is needed, and `ai-common-workflows` stands as the worked example rather than a hard dependency.
+Because the boundary is the invocation and JSON contract, another review or classifier workflow integrates by configuration alone. Set `mode` and its source fields at the other engine, and set `review_entrypoint` and `classifier_entrypoint` to its harness paths. The engine reads the `--against` ref and the gateway env, and writes the review or classifier JSON. No adapter change is needed. The [example engines](../examples/gate-engines) are a starting point to copy.
 
 ## Adding more engines and tools
 
-`gate_engine.yaml` takes a list, so add an entry per external tool you want to pin and run from config, for example the `ai-common-workflows` reviewer beside a Semgrep, Snyk, or SonarQube SARIF gate and a custom script. Each entry backs its own named gate, enabled in `gates.yaml`, with no limit on how many run and no package to install.
+`gate_engine.yaml` takes a list, so add an entry per external tool you want to pin and run from config, for example the example security and test engines beside a Semgrep, Snyk, or SonarQube SARIF gate. Each entry backs its own named gate, enabled in `gates.yaml`, with no limit on how many run and no package to install.
 
 ## Runtime provisioning and AWS
 
 Config selects and runs a gate, but the tool's own executable must exist in the worker that runs it, because the gate runs as a subprocess inside the activity worker. This is the one operational step config cannot cover.
 
 - Source, not runtime. The `local`, `tag`, and `zip` modes fetch the tool's entrypoint and wrapper into the worker, and they pin the exact version. They do not install the tool the wrapper calls. A wrapper that runs `semgrep` or an AI CLI needs that binary on the worker's `PATH`.
-- Base image. The base worker image ships `git` and `bash` but not scanner binaries or AI CLIs. In subprocess execution mode the external-gate path is inert until both the config and the runtime are present. In pod execution mode the gate builds the tool image in an isolated build-and-run pod, so no tool binary is needed in the worker.
+- Base image. The base worker image ships `git` and `bash` but not scanner binaries or AI CLIs. In subprocess execution mode the external-gate path is inert until both the config and the runtime are present. In pod execution mode the gate builds the tool image in an isolated build-and-run pod, or pulls it in image mode, so no tool binary is needed in the worker.
 - Providing the binary. Build a derived worker image from the base that installs the tools a deployment enables, for example `FROM <platform-worker>` then `RUN pip install semgrep` or a `COPY` of a vendored CLI, and deploy that image. On EKS this is the worker image the deployment runs. There is no in-pod install step, because the container is immutable, so the binary is baked into the image the same way in local Docker and on AWS.
 - Model-only gates need no binary. An `output_format: review-json` AI-CLI gate still needs its CLI (`AI_REVIEW_TOOL`) in the image. A gate whose wrapper calls only tools already present needs no image change.
 

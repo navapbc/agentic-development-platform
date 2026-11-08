@@ -88,6 +88,17 @@ async def test_image_mode_skips_the_build():
     assert ops.copied == [("/tmp/checkout", "/workspace")]
 
 
+def test_image_mode_runs_the_harness_inside_the_image():
+    script = _run_script(_spec(source_path="", image="registry.example/security-policy:1"))
+
+    assert "-v /engine:/engine" not in script
+    assert "bash /engine/engines/security-compliance-review/harness/ai-pr-review" in script
+
+
+def test_a_source_mode_mounts_the_copied_engine():
+    assert "-v /engine:/engine" in _run_script(_spec())
+
+
 async def test_nonzero_exit_raises_and_tears_down():
     ops = _FakePodOps(exec_result=(2, "", "boom"))
     runner = PodEngineRunner(ops)

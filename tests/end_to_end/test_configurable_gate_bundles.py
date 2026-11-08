@@ -65,10 +65,16 @@ class _SnykScanner:
 
 
 _ENGINE = GateEngineConfig(
-    name="ai-security-review", enabled=True, mode="local", local_path="/tmp/engine"
+    review_entrypoint="bin/review",
+    classifier_entrypoint="bin/classify",
+    name="ai-security-review",
+    enabled=True,
+    mode="local",
+    local_path="/tmp/engine",
 )
 
 _SNYK_ENGINE = GateEngineConfig(
+    classifier_entrypoint="bin/classify",
     name="snyk",
     enabled=True,
     mode="local",
@@ -177,7 +183,7 @@ async def test_a_disabled_gate_is_neither_run_nor_required():
 
 async def test_the_engine_gate_maps_findings_into_the_scanner_family(tmp_path):
     source_root = tmp_path / "engine"
-    entry = source_root / "engines" / "security-compliance-review" / "harness" / "ai-pr-review"
+    entry = source_root / "bin" / "review"
     entry.parent.mkdir(parents=True)
     entry.write_text("#!/usr/bin/env bash\n")
     entry.chmod(0o755)
@@ -206,6 +212,8 @@ async def test_the_engine_gate_maps_findings_into_the_scanner_family(tmp_path):
     scanner = AiReviewScanner(
         name="ai-security-review",
         config=GateEngineConfig(
+            review_entrypoint="bin/review",
+            classifier_entrypoint="bin/classify",
             enabled=True,
             mode="local",
             local_path=str(source_root),

@@ -129,6 +129,7 @@ async def test_sarif_engine_runs_without_a_model_and_parses_findings(tmp_path):
     scanner = AiReviewScanner(
         name="semgrep-sarif",
         config=GateEngineConfig(
+            classifier_entrypoint="bin/classify",
             enabled=True,
             mode="local",
             local_path=str(source_root),
@@ -151,7 +152,7 @@ async def test_sarif_engine_runs_without_a_model_and_parses_findings(tmp_path):
 
 
 def _install_entrypoint(root: Path) -> None:
-    entry = root / "engines" / "security-compliance-review" / "harness" / "ai-pr-review"
+    entry = root / "bin" / "review"
     entry.parent.mkdir(parents=True)
     entry.write_text("#!/usr/bin/env bash\n")
     entry.chmod(0o755)
@@ -184,6 +185,8 @@ async def test_scan_runs_the_entrypoint_and_maps_findings(tmp_path):
     scanner = AiReviewScanner(
         name="ai-security-review",
         config=GateEngineConfig(
+            review_entrypoint="bin/review",
+            classifier_entrypoint="bin/classify",
             enabled=True,
             mode="local",
             local_path=str(source_root),
@@ -235,7 +238,13 @@ async def test_scan_fails_closed_without_a_gateway_base_url(tmp_path):
 
     scanner = AiReviewScanner(
         name="ai-security-review",
-        config=GateEngineConfig(enabled=True, mode="local", local_path=str(source_root)),
+        config=GateEngineConfig(
+            review_entrypoint="bin/review",
+            classifier_entrypoint="bin/classify",
+            enabled=True,
+            mode="local",
+            local_path=str(source_root),
+        ),
         litellm_base_url="",
         runner=spy_runner,
         source=_resolved(str(source_root)),
@@ -259,6 +268,8 @@ async def test_scan_fails_closed_when_the_engine_errors(tmp_path):
     scanner = AiReviewScanner(
         name="ai-security-review",
         config=GateEngineConfig(
+            review_entrypoint="bin/review",
+            classifier_entrypoint="bin/classify",
             enabled=True,
             mode="local",
             local_path=str(source_root),
@@ -285,7 +296,13 @@ async def test_scan_fails_closed_when_entrypoint_missing(tmp_path):
 
     scanner = AiReviewScanner(
         name="ai-security-review",
-        config=GateEngineConfig(enabled=True, mode="local", local_path=str(source_root)),
+        config=GateEngineConfig(
+            review_entrypoint="bin/review",
+            classifier_entrypoint="bin/classify",
+            enabled=True,
+            mode="local",
+            local_path=str(source_root),
+        ),
         runner=unused_runner,
         source=_resolved(str(source_root)),
     )
@@ -299,7 +316,9 @@ async def test_scan_fails_closed_when_engine_disabled(tmp_path):
     repo_root.mkdir()
     scanner = AiReviewScanner(
         name="ai-security-review",
-        config=GateEngineConfig(enabled=False),
+        config=GateEngineConfig(
+            review_entrypoint="bin/review", classifier_entrypoint="bin/classify", enabled=False
+        ),
     )
 
     with pytest.raises(GateEngineError):
@@ -326,6 +345,7 @@ async def test_scan_drives_a_config_driven_entrypoint(tmp_path):
     scanner = AiReviewScanner(
         name="ai-security-review",
         config=GateEngineConfig(
+            classifier_entrypoint="bin/classify",
             enabled=True,
             mode="local",
             local_path=str(source_root),
@@ -427,7 +447,7 @@ def test_map_classifications_ignores_out_of_scope_application_bug():
 
 
 def _install_classifier_entrypoint(root: Path) -> None:
-    entry = root / "engines" / "test-classifier" / "harness" / "ai-test-classifier"
+    entry = root / "bin" / "classify"
     entry.parent.mkdir(parents=True)
     entry.write_text("#!/usr/bin/env bash\n")
     entry.chmod(0o755)
@@ -458,6 +478,8 @@ async def test_classify_runs_the_entrypoint_and_maps_verdicts(tmp_path):
     classifier = AiTestClassifier(
         name="test-triage",
         config=GateEngineConfig(
+            review_entrypoint="bin/review",
+            classifier_entrypoint="bin/classify",
             enabled=True,
             mode="local",
             local_path=str(source_root),
@@ -537,6 +559,8 @@ async def test_scan_uses_the_pod_runner_when_provided(tmp_path):
     scanner = AiReviewScanner(
         name="ai-security-review",
         config=GateEngineConfig(
+            review_entrypoint="bin/review",
+            classifier_entrypoint="bin/classify",
             enabled=True,
             mode="local",
             local_path=str(source_root),
@@ -590,6 +614,8 @@ async def test_scan_threads_tls_verify_into_the_pod_spec(tmp_path):
     scanner = AiReviewScanner(
         name="ai-security-review",
         config=GateEngineConfig(
+            review_entrypoint="bin/review",
+            classifier_entrypoint="bin/classify",
             enabled=True,
             mode="local",
             local_path=str(source_root),
@@ -633,6 +659,8 @@ async def test_image_acts_as_runtime_override_with_local_source(tmp_path):
     scanner = AiReviewScanner(
         name="ai-security-review",
         config=GateEngineConfig(
+            review_entrypoint="bin/review",
+            classifier_entrypoint="bin/classify",
             enabled=True,
             mode="local",
             local_path=str(source_root),
@@ -677,6 +705,8 @@ async def test_scan_raises_scanner_unavailable_when_pod_engine_fails(tmp_path):
     scanner = AiReviewScanner(
         name="ai-security-review",
         config=GateEngineConfig(
+            review_entrypoint="bin/review",
+            classifier_entrypoint="bin/classify",
             enabled=True,
             mode="local",
             local_path=str(source_root),
@@ -704,7 +734,13 @@ async def test_scan_raises_scanner_unavailable_when_pod_engine_fails(tmp_path):
 async def test_engine_env_injects_trace_headers_only_with_execution():
     from services.orchestration.gates.gate_engine import _engine_env
 
-    cfg = GateEngineConfig(enabled=True, mode="local", review_model="review-model")
+    cfg = GateEngineConfig(
+        review_entrypoint="bin/review",
+        classifier_entrypoint="bin/classify",
+        enabled=True,
+        mode="local",
+        review_model="review-model",
+    )
     with_exec = _engine_env(
         config=cfg,
         profile="cms-ars",
