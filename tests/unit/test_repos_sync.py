@@ -50,7 +50,7 @@ def test_a_sync_copies_the_branches_and_checks_out_the_default(cluster) -> None:
     pod, host, run = cluster
     _git(host, "branch", "agent/T-1")
 
-    result = repos_sync.sync_repository(hermetic_settings(), "demo", host, "main", run)
+    result = repos_sync.sync_repository(hermetic_settings(tenant="adp"), "demo", host, "main", run)
 
     copy = pod / "repositories" / "demo"
     assert result.startswith("sent")
@@ -60,7 +60,7 @@ def test_a_sync_copies_the_branches_and_checks_out_the_default(cluster) -> None:
 
 def test_a_second_sync_sends_nothing_until_the_host_moves(cluster) -> None:
     pod, host, run = cluster
-    settings = hermetic_settings()
+    settings = hermetic_settings(tenant="adp")
     repos_sync.sync_repository(settings, "demo", host, "main", run)
 
     assert repos_sync.sync_repository(settings, "demo", host, "main", run) == "up to date"
@@ -72,7 +72,7 @@ def test_a_second_sync_sends_nothing_until_the_host_moves(cluster) -> None:
 
 def test_a_sync_never_replaces_an_agent_branch_in_the_copy(cluster) -> None:
     pod, host, run = cluster
-    settings = hermetic_settings()
+    settings = hermetic_settings(tenant="adp")
     repos_sync.sync_repository(settings, "demo", host, "main", run)
     copy = pod / "repositories" / "demo"
     agent = _git(copy, "rev-parse", "main")
@@ -88,7 +88,7 @@ def test_a_sync_never_replaces_an_agent_branch_in_the_copy(cluster) -> None:
 
 def test_fetch_results_brings_the_agent_branch_and_its_results_ref_home(cluster) -> None:
     pod, host, run = cluster
-    settings = hermetic_settings()
+    settings = hermetic_settings(tenant="adp")
     repos_sync.sync_repository(settings, "demo", host, "main", run)
     copy = pod / "repositories" / "demo"
     _git(copy, "checkout", "-q", "-b", "agent/T-3")
@@ -105,7 +105,7 @@ def test_fetch_results_brings_the_agent_branch_and_its_results_ref_home(cluster)
 
 def test_fetch_results_reports_a_copy_with_no_agent_branches(cluster) -> None:
     _, host, run = cluster
-    settings = hermetic_settings()
+    settings = hermetic_settings(tenant="adp")
     repos_sync.sync_repository(settings, "demo", host, "main", run)
 
     assert fetch_results.fetch_repository(settings, "demo", host, run) == "no agent branches"
@@ -118,7 +118,7 @@ def test_an_engine_sync_carries_uncommitted_edits_and_the_git_directory(cluster)
     (host / ".gitignore").write_text("ignored.md\n")
     (host / "ignored.md").write_text("no\n")
 
-    repos_sync.sync_engine(hermetic_settings(), "review", host, run)
+    repos_sync.sync_engine(hermetic_settings(tenant="adp"), "review", host, run)
 
     copy = pod / "engines" / "review"
     assert (copy / "README.md").read_text() == "edited\n"

@@ -85,17 +85,3 @@ module "secret_store" {
 
   tags = var.tags
 }
-
-module "rebar_ticket_store" {
-  source = "../../rebar-ticket-store"
-
-  create_rebar_ticket_store = var.create_rebar_ticket_store
-  name_prefix               = var.name_prefix
-  access_log_bucket         = var.access_log_bucket
-  trusted_principals        = concat(var.rebar_ticket_store_trusted_principals, local.eks_activity_worker_role_arns)
-  writer_github_oidc_trust  = var.rebar_ticket_store_writer_oidc_trust
-  admin_principals          = var.rebar_ticket_store_admin_principals
-  existing_reader_role_arn  = var.rebar_ticket_store_existing_reader_role_arn
-  existing_writer_role_arn  = var.rebar_ticket_store_existing_writer_role_arn
-  tags                      = var.tags
-}

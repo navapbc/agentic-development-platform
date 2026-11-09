@@ -9,8 +9,9 @@ import pytest
 import yaml
 from scripts import k8s_render
 from scripts.cluster_env import compose_network, rewrite_address, rewrite_env
-from scripts.k8s_cluster import exec_argv, one_off_argv, removable
+from scripts.k8s_cluster import delete_retired, deployments, exec_argv, one_off_argv, removable
 from scripts.k8s_render import RenderInputs, render
+from services import process
 from tests.support import hermetic_settings
 
 REPOSITORY = Path(__file__).resolve().parents[2]
@@ -84,7 +85,7 @@ def _rendered(tmp_path: Path, **settings: object) -> list[dict]:
     (config / "rebar-store-aws-config").write_text("endpoint_url = http://minio:9000\n")
     return render(
         RenderInputs(
-            settings=hermetic_settings(**settings),
+            settings=hermetic_settings(**{"tenants": "adp", **settings}),
             env={
                 "DATABASE_URL": "postgresql://u:p@postgres:5432/db",
                 "AWS_PROFILE": "p",
@@ -121,9 +122,13 @@ def test_the_workers_run_the_build_image_and_report_its_build_id(tmp_path: Path)
         ]
         assert container["image"] == "agentic-dev-platform-local:0.3.0.1"
         assert {"name": "AGENT_BUILD_ID", "value": "0.3.0.1"} in container["env"]
-    opa = _named(documents, "Deployment", "activity-worker")["spec"]["template"]["spec"][
-        "initContainers"
-    ][0]
+    opa = next(
+        c
+        for c in _named(documents, "Deployment", "activity-worker")["spec"]["template"]["spec"][
+            "initContainers"
+        ]
+        if c["name"] == "opa"
+    )
     assert opa["image"] == "agentic-dev-platform-opa:0.3.0.1"
     assert opa["restartPolicy"] == "Always"
     assert "--addr=127.0.0.1:8181" in opa["args"]
@@ -175,9 +180,10 @@ def test_configured_namespaces_move_every_resource_and_reference(tmp_path: Path)
     documents = _rendered(tmp_path, k8s_namespace="platform", openhands_sandbox_namespace="sbx")
 
     namespaces = {d["metadata"].get("namespace") for d in documents} - {None}
-    assert namespaces == {"platform", "sbx"}
+    assert namespaces == {"platform", "tenant-adp", "tenant-adp-sandbox"}
     binding = _named(documents, "RoleBinding", "activity-worker-sandbox")
-    assert binding["subjects"][0]["namespace"] == "platform"
+    assert binding["metadata"]["namespace"] == "tenant-adp-sandbox"
+    assert binding["subjects"][0]["namespace"] == "tenant-adp"
     activity = _named(documents, "Deployment", "activity-worker")["spec"]["template"]["spec"]
     sandbox_url = next(
         e["value"]
@@ -187,8 +193,48 @@ def test_configured_namespaces_move_every_resource_and_reference(tmp_path: Path)
     assert sandbox_url == "http://litellm.platform.svc.cluster.local:4000"
     policy = _named(documents, "NetworkPolicy", "gate-engine-egress")
     assert "platform" in json.dumps(policy["spec"])
-    assert any(d["kind"] == "Namespace" and d["metadata"]["name"] == "sbx" for d in documents)
+    assert not any(d["kind"] == "Namespace" and d["metadata"]["name"] == "sbx" for d in documents)
     assert yaml.safe_load_all(k8s_render.dump(documents))
+
+
+def test_each_tenant_writes_its_own_host_directory_and_the_review_worker_reads_them_all(
+    tmp_path: Path,
+) -> None:
+    documents = _rendered(tmp_path, tenants="adp,claims")
+
+    for tenant in ("adp", "claims"):
+        worker = next(
+            d
+            for d in documents
+            if d["kind"] == "Deployment" and d["metadata"]["namespace"] == f"tenant-{tenant}"
+        )
+        spec = worker["spec"]["template"]["spec"]
+        owner = spec["initContainers"][0]
+        assert owner["command"] == ["chown", "10001:10001", f"/tenants/{tenant}"]
+        assert owner["securityContext"]["capabilities"] == {"drop": ["ALL"], "add": ["CHOWN"]}
+        claim = next(
+            d
+            for d in documents
+            if d["kind"] == "PersistentVolumeClaim"
+            and d["metadata"]["namespace"] == f"tenant-{tenant}"
+        )
+        volume = _named(documents, "PersistentVolume", claim["spec"]["volumeName"])
+        assert volume["spec"]["hostPath"]["path"] == f"{k8s_render.TENANTS_HOST_ROOT}/{tenant}"
+    review = _named(documents, "Deployment", "review-worker")["spec"]["template"]["spec"]
+    mounts = {m["name"]: m for m in review["containers"][0]["volumeMounts"]}
+    assert mounts["tenants"]["mountPath"] == "/tenants" and mounts["tenants"]["readOnly"]
+    claim = next(
+        d
+        for d in documents
+        if d["kind"] == "PersistentVolumeClaim" and d["metadata"]["name"] == "tenants"
+    )
+    volume = _named(documents, "PersistentVolume", claim["spec"]["volumeName"])
+    assert volume["spec"]["hostPath"]["path"] == k8s_render.TENANTS_HOST_ROOT
+
+
+def test_the_local_render_refuses_a_workstation_without_a_tenant(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="TENANTS or TENANT"):
+        _rendered(tmp_path, tenants="")
 
 
 def test_a_delete_keeps_the_namespaces_and_the_volume_unless_asked() -> None:
@@ -206,14 +252,14 @@ def test_a_delete_keeps_the_namespaces_and_the_volume_unless_asked() -> None:
 
 
 def test_scripted_tasks_run_in_the_activity_worker_of_the_configured_context() -> None:
-    settings = hermetic_settings(k8s_context="ctx", k8s_namespace="ns")
+    settings = hermetic_settings(k8s_context="ctx", k8s_namespace="ns", tenant="adp")
 
     assert exec_argv(settings, ["python", "-m", "x"], tty=False) == [
         "kubectl",
         "--context",
         "ctx",
         "--namespace",
-        "ns",
+        "tenant-adp",
         "exec",
         "-i",
         "deploy/activity-worker",
@@ -246,7 +292,7 @@ def test_a_one_off_pod_copies_the_worker_template_without_its_probes() -> None:
         }
     }
 
-    argv = one_off_argv(hermetic_settings(), deployment, ["python", "-m", "job"], "job")
+    argv = one_off_argv(hermetic_settings(tenant="adp"), deployment, ["python", "-m", "job"], "job")
     overrides = json.loads(next(a for a in argv if a.startswith("--overrides=")).split("=", 1)[1])
     container = overrides["spec"]["containers"][0]
 
@@ -283,3 +329,35 @@ def test_the_gateway_token_reaches_the_workload_secret(tmp_path: Path) -> None:
     workload = _named(_rendered(tmp_path), "Secret", "agentic-platform")["data"]
 
     assert base64.b64decode(workload["mcp_gateway_token"]) == b"gateway-token"
+
+
+def test_each_tenant_worker_rolls_in_its_own_namespace() -> None:
+    settings = hermetic_settings(k8s_namespace="ns", tenants="adp,claims")
+
+    assert ("tenant-adp", "activity-worker") in deployments(settings)
+    assert ("tenant-claims", "activity-worker") in deployments(settings)
+    assert ("ns", "activity-worker") not in deployments(settings)
+
+
+def test_the_retired_objects_are_deleted_from_the_configured_namespaces() -> None:
+    calls: list[list[str]] = []
+    settings = hermetic_settings(k8s_namespace="ns", openhands_sandbox_namespace="sbx")
+
+    def run(argv, **_):
+        calls.append(argv)
+        missing = "secretproviderclass" in argv
+        return process.CompletedProcess(
+            argv,
+            1 if missing else 0,
+            "",
+            'error: the server doesn\'t have a resource type "secretproviderclass"'
+            if missing
+            else "",
+        )
+
+    delete_retired(settings, run)
+
+    assert ["--namespace", "ns", "delete", "deployment", "activity-worker"] in [
+        c[3:8] for c in calls
+    ]
+    assert ["delete", "namespace", "sbx", "--ignore-not-found"] in [c[3:7] for c in calls]

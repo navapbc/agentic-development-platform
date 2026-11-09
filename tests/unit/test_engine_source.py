@@ -410,9 +410,12 @@ def test_entrypoints_are_config_driven_for_another_engine():
 
 
 def test_load_is_inert_when_no_config_file_exists():
+    from scripts.config import get_settings
     from services.orchestration.gates.engine_source import load_gate_engine_configs
 
-    configs = load_gate_engine_configs(environment="no-such-environment")
+    settings = get_settings().model_copy(update={"gate_engine_images": {}})
+
+    configs = load_gate_engine_configs(settings, environment="no-such-environment")
 
     assert configs == ()
 

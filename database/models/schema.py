@@ -76,6 +76,7 @@ executions = Table(
         server_default="TASK_RECEIVED",
     ),
     Column("repository", String(255), nullable=True),
+    Column("tenant", String(32), nullable=True, index=True),
     Column("repository_sha", String(64), nullable=True),
     Column("policy_bundle_version", String(64), nullable=True),
     Column("resolved_models", JSON, nullable=True),

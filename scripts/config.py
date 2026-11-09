@@ -248,6 +248,7 @@ class Settings(BaseSettings):
     gate_engine_images: dict[str, str] = {}
     runtime_images: dict[str, str] = {}
     tenant: str = ""
+    tenants: str = ""
     tenant_config_bucket: str = ""
     tenant_config_refresh_seconds: int = 60
     gate_registry_tls_verify: bool = True

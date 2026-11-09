@@ -24,7 +24,7 @@ resource "aws_iam_policy" "worker" {
         {
           Sid       = "ListTheTenantBundle"
           Effect    = "Allow"
-          Action    = "s3:ListBucket"
+          Action    = ["s3:ListBucket", "s3:ListBucketVersions"]
           Resource  = var.config_store.bucket_arn
           Condition = { StringLike = { "s3:prefix" = ["${local.config_prefix}*"] } }
         },

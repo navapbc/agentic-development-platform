@@ -105,7 +105,7 @@ def test_local_up_starts_compose_then_the_cluster_with_credentials_and_repositor
 
     assert [command for command, _ in context.commands] == [
         f"{tasks_module.HOST_PYTHON} -m scripts.repositories_compose",
-        f"{COMPOSE} build --build-arg AGENT_BUILD_ID={BUILD_ID}",
+        f"{COMPOSE} build --provenance=false --build-arg AGENT_BUILD_ID={BUILD_ID}",
         f"{COMPOSE} run --rm --build db-migrate",
         f"{COMPOSE} run --rm temporal-admin-tools schema",
         f"{COMPOSE} up -d --wait --wait-timeout 600 temporal",

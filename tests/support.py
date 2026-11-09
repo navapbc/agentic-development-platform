@@ -113,4 +113,3 @@ def configure_repositories(
         (directory / "github.yaml").write_text("config_version: 2\n" + github, encoding="utf-8")
     monkeypatch.setenv("PLATFORM_ENV_CONFIG_DIR", str(directory))
     return directory
-

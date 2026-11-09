@@ -3,8 +3,12 @@
 The kustomize overlay holds the static shape. This adds what is derived from the workstation
 at deploy time: the platform settings from `.env` with the compose addresses rewritten for the
 pods, the operator config files, the promotion policies, the LiteLLM config, the image of the
-current build, the Bedrock tunnel relay when the connectivity provider needs one, and the
-namespaces the settings name.
+current build, the Bedrock tunnel relay when the connectivity provider needs one, each tenant's
+worker and sandbox namespaces, and the namespaces the settings name.
+
+Each tenant's workspace is a hostPath directory on the node under TENANTS_HOST_ROOT, and the
+review worker mounts that root read-only at /tenants, the layout the EFS access points give the
+workers in AWS.
 """
 
 from __future__ import annotations
@@ -47,6 +51,10 @@ RELAY_IMAGE = (
 BUILD_WORKERS = frozenset({"activity-worker", "review-worker"})
 LITELLM_FILES = ("litellm-config.yaml", "litellm_redaction.py")
 REBAR_STORE_AWS_CONFIG = "rebar-store-aws-config"
+TENANTS_HOST_ROOT = "/var/lib/agentic-dev-platform/tenants"
+TENANTS_CLAIM = "tenants"
+REVIEW_WORKER = "review-worker"
+APP_UID = 10001
 
 
 @dataclass(frozen=True)
@@ -298,14 +306,129 @@ def stamp_config_hash(documents: list[dict[str, Any]], generated: list[dict[str,
         template.setdefault("annotations", {})[CONFIG_HASH] = digest
 
 
+def _host_volume(name: str, path: str, access: str) -> dict[str, Any]:
+    return {
+        "apiVersion": "v1",
+        "kind": "PersistentVolume",
+        "metadata": {"name": name, "labels": {"app.kubernetes.io/part-of": PLATFORM_NAMESPACE}},
+        "spec": {
+            "capacity": {"storage": "50Gi"},
+            "accessModes": [access],
+            "persistentVolumeReclaimPolicy": "Retain",
+            "storageClassName": "",
+            "hostPath": {"path": path, "type": "DirectoryOrCreate"},
+        },
+    }
+
+
+def _claim(name: str, namespace: str, volume: str, access: str) -> dict[str, Any]:
+    return {
+        "apiVersion": "v1",
+        "kind": "PersistentVolumeClaim",
+        "metadata": _metadata(name, namespace),
+        "spec": {
+            "accessModes": [access],
+            "storageClassName": "",
+            "volumeName": volume,
+            "resources": {"requests": {"storage": "50Gi"}},
+        },
+    }
+
+
+def _volume_owner(image: str, mount_path: str) -> dict[str, Any]:
+    """Return the init container that hands the new hostPath directory to the platform user.
+
+    The kubelet creates a DirectoryOrCreate hostPath owned by root with mode 0755.
+    """
+    return {
+        "name": "workspace-owner",
+        "image": image,
+        "imagePullPolicy": "IfNotPresent",
+        "command": ["chown", f"{APP_UID}:{APP_UID}", mount_path],
+        "securityContext": {
+            "runAsUser": 0,
+            "runAsNonRoot": False,
+            "allowPrivilegeEscalation": False,
+            "readOnlyRootFilesystem": True,
+            "capabilities": {"drop": ["ALL"], "add": ["CHOWN"]},
+        },
+        "volumeMounts": [{"name": "workspaces", "mountPath": mount_path}],
+    }
+
+
+def local_tenants(settings: Settings, documents: list[dict[str, Any]]) -> list[Any]:
+    """Return each tenant TENANTS names, or the TENANT of this workstation, with its workspace."""
+    from services.orchestration.task_queues import tenant_names
+
+    from scripts.tenant_render import WORKER, WORKSPACE_CLAIM, Tenant, tenant_root, worker_env
+
+    names = tenant_names(settings) or ([settings.tenant] if settings.tenant else [])
+    if not names:
+        raise ValueError("set TENANTS or TENANT, because every activity worker serves a tenant")
+    worker = next(
+        d for d in documents if d["kind"] == "Deployment" and d["metadata"]["name"] == WORKER
+    )
+    image = worker["spec"]["template"]["spec"]["containers"][0]["image"]
+    tenants = []
+    for name in names:
+        volume = f"tenant-{name}-workspace"
+        tenants.append(
+            Tenant(
+                name=name,
+                env=worker_env(name),
+                workspace=(
+                    _host_volume(volume, f"{TENANTS_HOST_ROOT}/{name}", "ReadWriteOnce"),
+                    _claim(WORKSPACE_CLAIM, f"tenant-{name}", volume, "ReadWriteOnce"),
+                ),
+                init_containers=(_volume_owner(image, tenant_root(name)),),
+            )
+        )
+    return tenants
+
+
+def mount_tenants_on_review(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Give the review worker every tenant's workspace read-only at /tenants, as on ECS."""
+    from scripts.tenant_render import WORKSPACE_CLAIM
+
+    review = next(
+        (
+            d
+            for d in documents
+            if d["kind"] == "Deployment" and d["metadata"]["name"] == REVIEW_WORKER
+        ),
+        None,
+    )
+    if review is None:
+        return documents
+    spec = review["spec"]["template"]["spec"]
+    for volume in spec.get("volumes", []):
+        if (volume.get("persistentVolumeClaim") or {}).get("claimName") == WORKSPACE_CLAIM:
+            volume["name"] = TENANTS_CLAIM
+            volume["persistentVolumeClaim"] = {"claimName": TENANTS_CLAIM, "readOnly": True}
+    for container in spec["containers"]:
+        for mount in container.get("volumeMounts", []):
+            if mount["name"] == WORKSPACE_CLAIM:
+                mount.update(name=TENANTS_CLAIM, mountPath="/tenants", readOnly=True)
+    volume = "agentic-platform-tenants"
+    return documents + [
+        _host_volume(volume, TENANTS_HOST_ROOT, "ReadOnlyMany"),
+        _claim(TENANTS_CLAIM, PLATFORM_NAMESPACE, volume, "ReadOnlyMany"),
+    ]
+
+
 def render(inputs: RenderInputs, overlay: Path = OVERLAY) -> list[dict[str, Any]]:
     """Return the namespaces, then the overlay, then the generated config, ready to apply."""
+    from scripts.tenant_render import tenantize
+
     directory = inputs.root / overlay
     generated = generated_objects(inputs)
     documents = namespaces(directory) + kustomize(directory) + generated
     set_images(documents, inputs.build_id, inputs.image_registry)
     set_build_id(documents, inputs.build_id)
     add_bedrock_relay(documents, inputs.settings)
+    documents = tenantize(
+        mount_tenants_on_review(documents), local_tenants(inputs.settings, documents)
+    )
     stamp_config_hash(documents, generated)
     return retarget_namespaces(
         documents,

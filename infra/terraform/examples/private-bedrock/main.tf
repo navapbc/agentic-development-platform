@@ -96,7 +96,6 @@ module "cloudtrail" {
   region            = var.region
   access_log_bucket = var.access_log_bucket
   data_event_bucket_arns = concat(
-    var.create_rebar_ticket_store ? [module.rebar_ticket_store.bucket_arn] : [],
     local.tenants_enabled && length(var.tenants) > 0 ? [module.tenant_config_store.bucket_arn] : [],
     [for tenant in values(local.tenant_records) : tenant.ticket_store.bucket_arn],
   )

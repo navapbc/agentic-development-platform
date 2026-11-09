@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from services.integration.source_control import source_control_repos
 
@@ -41,8 +42,10 @@ async def _run_once(apply: bool) -> int:
     return 0
 
 
-async def _install_schedule() -> int:
+async def install_schedule(client: Any = None) -> int:
+    """Register the reap schedule of this process's tenant and remove the untenanted one."""
     from services import temporal_client
+    from services.orchestration.task_queues import run_task_queue, tenant_schedule_id
     from services.orchestration.temporal_workflows.reap import ReapInput, ReapWorkflow
     from temporalio.client import (
         Schedule,
@@ -51,15 +54,18 @@ async def _install_schedule() -> int:
         SchedulePolicy,
         ScheduleSpec,
     )
+    from temporalio.service import RPCError, RPCStatusCode
 
     settings = get_settings()
-    client = await temporal_client.connect(settings.temporal_host, settings)
+    if client is None:
+        client = await temporal_client.connect(settings.temporal_host, settings)
+    schedule_id = tenant_schedule_id(settings.reap_schedule_id, settings)
     schedule = Schedule(
         action=ScheduleActionStartWorkflow(
             ReapWorkflow.run,
             ReapInput(dry_run=settings.reap_schedule_dry_run),
-            id=f"{settings.reap_schedule_id}-run",
-            task_queue=settings.temporal_task_queue,
+            id=f"{schedule_id}-run",
+            task_queue=run_task_queue(settings),
         ),
         spec=ScheduleSpec(
             intervals=[
@@ -74,14 +80,21 @@ async def _install_schedule() -> int:
             catchup_window=timedelta(minutes=settings.reap_schedule_interval_minutes)
         ),
     )
-    handle = client.get_schedule_handle(settings.reap_schedule_id)
+    handle = client.get_schedule_handle(schedule_id)
     try:
-        await client.create_schedule(settings.reap_schedule_id, schedule)
-        print(f"[reap] created schedule '{settings.reap_schedule_id}'")
+        await client.create_schedule(schedule_id, schedule)
+        print(f"[reap] created schedule '{schedule_id}'")
     except Exception:
         await handle.delete()
-        await client.create_schedule(settings.reap_schedule_id, schedule)
-        print(f"[reap] replaced schedule '{settings.reap_schedule_id}'")
+        await client.create_schedule(schedule_id, schedule)
+        print(f"[reap] replaced schedule '{schedule_id}'")
+    if schedule_id != settings.reap_schedule_id:
+        try:
+            await client.get_schedule_handle(settings.reap_schedule_id).delete()
+            print(f"[reap] removed schedule '{settings.reap_schedule_id}'")
+        except RPCError as exc:
+            if exc.status != RPCStatusCode.NOT_FOUND:
+                raise
     return 0
 
 
@@ -93,7 +106,7 @@ def main() -> int:
     )
     args = parser.parse_args()
     if args.schedule:
-        return asyncio.run(_install_schedule())
+        return asyncio.run(install_schedule())
     return asyncio.run(_run_once(args.apply))
 
 

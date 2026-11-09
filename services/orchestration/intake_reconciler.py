@@ -309,9 +309,7 @@ async def route_candidate(
         unchecked = [repo for repo in resolution.repos if repo not in ctx.checks_repos]
         if unchecked:
             reason = checks_not_configured_reason(unchecked)
-            await _hold(
-                candidate.task_id, project, reason, digest, ctx.alerter, ctx.ledger, report
-            )
+            await _hold(candidate.task_id, project, reason, digest, ctx.alerter, ctx.ledger, report)
             # The fix lands in operator config rather than the ticket, so a watermark poll
             # must re-read the ticket on the next pass instead of treating it as settled.
             report.deferred.append(candidate.task_id)

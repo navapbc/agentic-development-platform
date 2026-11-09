@@ -117,7 +117,12 @@ def project(tmp_path, monkeypatch):
     (tmp_path / "compose.yaml").write_text("services: {}\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("COMPOSE_FILE", raising=False)
-    return tmp_path
+    monkeypatch.setenv("TENANT", "adp")
+    from scripts.config import get_settings
+
+    get_settings.cache_clear()
+    yield tmp_path
+    get_settings.cache_clear()
 
 
 def _in_activity_worker(command: str) -> str:

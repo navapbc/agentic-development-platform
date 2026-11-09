@@ -21,6 +21,42 @@ locals {
   } : {}
 
   tenant_records = { for name, tenant in module.tenant : name => tenant.tenant }
+
+  # The platform secrets every tenant worker reads, besides the tenant's own and its shared ones.
+  # The database key exists only with Aurora.
+  tenant_platform_secrets = [
+    for key in ["database_platform_app", "coordination_shared_secret", "litellm_master_key", "review_attestation_secret"] :
+    key if !startswith(key, "database_") || local.secret_store_database
+  ]
+  tenant_platform_secret_readers = local.tenants_enabled && var.create_secret_store ? {
+    for key in local.tenant_platform_secrets : key => tolist([for name in keys(local.tenants) : module.eks_cluster.pod_identity_role_arns["tenant_${name}"]])
+  } : {}
+
+  tenant_worker_policy_arns = merge(
+    { for policy in aws_iam_policy.eks_sandbox_image_pull : "sandbox-image-pull" => policy.arn },
+    { for policy in aws_iam_policy.eks_temporal_ca : "temporal-ca" => policy.arn },
+    { for policy in aws_iam_policy.eks_registry_cache_fill : "registry-cache-fill" => policy.arn },
+  )
+  tenant_worker_policies = {
+    for pair in setproduct(keys(local.tenants), keys(local.tenant_worker_policy_arns)) :
+    "${pair[0]}-${pair[1]}" => { tenant = pair[0], policy_arn = local.tenant_worker_policy_arns[pair[1]] }
+  }
+
+  eks_tenant_inputs = [
+    for name, tenant in local.tenants : {
+      name                    = name
+      workspace_volume_handle = local.eks_workspace ? "${module.container_services.workspace.file_system_id}::${element(split("/", module.container_services.workspace.tenant_access_point_arns[name]), 1)}" : ""
+      rebar_roles = {
+        reader = local.tenant_records[name].ticket_store.reader_role_arn
+        writer = local.tenant_records[name].ticket_store.writer_role_arn
+      }
+      secrets          = local.tenant_records[name].secret_arns
+      platform_secrets = distinct(concat(local.tenant_platform_secrets, tenant.shared_secrets, local.temporal_deployed ? ["temporal_ca"] : []))
+      settings         = tenant.settings
+      sandbox_quota    = tenant.sandbox_quota
+      config_bucket    = module.tenant_config_store.bucket
+    }
+  ]
 }
 
 resource "terraform_data" "tenants_guard" {
@@ -86,6 +122,17 @@ module "tenant" {
     github_repository_ids = each.value.config_repository.github_repository_ids
   }
   tags = var.tags
+}
+
+# The shared EKS policies attach by role name here, as the tenant policy does, so the roles and
+# policies do not form a cycle through the cluster module.
+resource "aws_iam_role_policy_attachment" "tenant_worker_shared" {
+  for_each = local.tenant_worker_policies
+
+  role       = element(split("/", module.eks_cluster.pod_identity_role_arns["tenant_${each.value.tenant}"]), 1)
+  policy_arn = each.value.policy_arn
+
+  depends_on = [module.eks_cluster]
 }
 
 resource "aws_iam_role_policy_attachment" "tenant_worker" {

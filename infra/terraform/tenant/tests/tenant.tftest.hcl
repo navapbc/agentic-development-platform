@@ -102,6 +102,7 @@ run "the_worker_reads_only_its_own_bundle_and_images" {
     condition = (
       one([for s in jsondecode(aws_iam_policy.worker[0].policy).Statement : s if s.Sid == "ReadTheTenantBundle"]).Resource == "arn:aws:s3:::agentic-platform-tenant-config-abc/tenants/adp/*" &&
       one([for s in jsondecode(aws_iam_policy.worker[0].policy).Statement : s if s.Sid == "ListTheTenantBundle"]).Condition.StringLike["s3:prefix"] == ["tenants/adp/*"] &&
+      one([for s in jsondecode(aws_iam_policy.worker[0].policy).Statement : s if s.Sid == "ListTheTenantBundle"]).Action == ["s3:ListBucket", "s3:ListBucketVersions"] &&
       one([for s in jsondecode(aws_iam_policy.worker[0].policy).Statement : s if s.Sid == "PullTheTenantImages"]).Resource == "arn:aws:ecr:us-east-1:111111111111:repository/agentic-platform/tenants/adp/*"
     )
     error_message = "The worker policy reaches beyond the tenant's bundle prefix or image prefix."

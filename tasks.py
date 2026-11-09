@@ -125,6 +125,17 @@ def config_check(c):
     c.run(f"{HOST_PYTHON} -m scripts.config_check", pty=True)
 
 
+def _compose_build(c, files: str, build_id: str) -> None:
+    # BuildKit's default provenance attestation records the build time, so a rebuild of an
+    # unchanged image is a new image index under the containerd image store, and `up` would
+    # recreate Temporal and the other built services under the running workers. The compose
+    # file's `provenance` key does not reach the builder, so the flag goes on the command.
+    c.run(
+        f"{COMPOSE} {files} build --provenance=false "
+        f"--build-arg AGENT_BUILD_ID={shlex.quote(build_id)}"
+    )
+
+
 @task(
     help={
         "force": "Replace the workers even when running executions are pinned to the "
@@ -141,7 +152,7 @@ def local_up(c, force=False):
     os.environ["AGENT_BUILD_ID"] = build_id
     repos_compose(c)
     files = _compose_files()
-    c.run(f"{COMPOSE} {files} build --build-arg AGENT_BUILD_ID={shlex.quote(build_id)}")
+    _compose_build(c, files, build_id)
     db_migrate(c)
     _require_temporal_schema_at_target(c)
     _temporal_admin(c, "schema")
@@ -171,7 +182,7 @@ def k8s_reload(c, force=False):
         _refuse_to_strand(outgoing)
     os.environ["AGENT_BUILD_ID"] = build_id
     files = _compose_files()
-    c.run(f"{COMPOSE} {files} build --build-arg AGENT_BUILD_ID={shlex.quote(build_id)}")
+    _compose_build(c, files, build_id)
     c.run(f"{COMPOSE} {files} up -d --wait --wait-timeout 600 --remove-orphans")
     _k8s(c, "reload", build_id)
 
@@ -472,8 +483,8 @@ def db_migrate(c):
 
 @task
 def schedules_install(c):
-    """Register the Temporal reap and intake schedules by running the schedule-bootstrap task."""
-    c.run(f"{COMPOSE} {_compose_files()} run --rm --build schedule-bootstrap", pty=True)
+    """Remove the untenanted reap and intake schedules, which each tenant's worker installs."""
+    c.run(f"{COMPOSE} {_compose_files()} run --rm --build --no-deps schedule-bootstrap", pty=True)
 
 
 @task
@@ -708,8 +719,9 @@ def test(c):
 
 @task
 def ci(c):
-    """Run the portable CI checks: lint, the hermetic test tiers, and the evaluation gate."""
+    """Run the portable CI checks: lint, format, the hermetic tests, and the evaluation gate."""
     c.run(f"{HOST_PYTHON} -m ruff check", pty=True)
+    c.run(f"{HOST_PYTHON} -m ruff format --check", pty=True)
     c.run(f"{HOST_PYTHON} -m pytest -q tests/unit tests/end_to_end", pty=True)
     c.run(f"{HOST_PYTHON} -m scripts.eval_gate", pty=True)
 
@@ -990,7 +1002,8 @@ def platform_deploy(c, region=""):
 
 @task(
     help={
-        "command": "deploy (default), check-policies, or restart followed by deployment names.",
+        "command": "deploy (default), check-policies, or restart followed by deployment names, "
+        "namespace/name, or tenant-workers.",
         "region": "AWS region (empty uses AWS_REGION).",
     }
 )

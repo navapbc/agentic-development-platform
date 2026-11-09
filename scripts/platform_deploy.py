@@ -289,7 +289,7 @@ def main(argv: list[str] | None = None) -> int:
     except DeployError as exc:
         print(f"{LOG} {exc}")
         return 1
-    print(f"{LOG} the services run their current task definitions and the schedules exist")
+    print(f"{LOG} the services run their current task definitions without untenanted schedules")
     return 0
 
 

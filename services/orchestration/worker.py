@@ -309,10 +309,14 @@ async def main() -> None:
         interceptors=temporal_interceptors(),
     )
 
+    from services.orchestration.task_queues import run_task_queue, workflow_task_queues
+
     if role == WORKER_ROLE_REVIEW:
-        task_queue = settings.review_task_queue
+        queues = [settings.review_task_queue]
+    elif role == WORKER_ROLE_WORKFLOW:
+        queues = workflow_task_queues(settings)
     else:
-        task_queue = settings.temporal_task_queue
+        queues = [run_task_queue(settings)]
 
     if role in (WORKER_ROLE_REVIEW, WORKER_ROLE_ALL):
         from services.orchestration.review_signing import (
@@ -330,6 +334,7 @@ async def main() -> None:
         from services.integration.tickets.store_remote import tickets_store_preflight
         from services.orchestration.authorship import authorship_signing_preflight
         from services.orchestration.tenant_pinning import (
+            install_tenant_schedules,
             refresh_tenant_config,
             start_tenant_config,
         )
@@ -341,6 +346,7 @@ async def main() -> None:
         tenant_refresh_task = asyncio.create_task(
             refresh_tenant_config(tenant_config, settings.tenant_config_refresh_seconds)
         )
+        await install_tenant_schedules(client, settings)
         tickets_store_preflight(settings)
         authorship_signing_preflight(settings)
         await _scrub_workspace_credentials(settings.execution_workspace_root)
@@ -350,8 +356,7 @@ async def main() -> None:
 
         evidence_object_store_preflight(settings)
 
-    workers = [build_worker(client, task_queue, role)]
-    queues = [task_queue]
+    workers = [build_worker(client, queue, role) for queue in queues]
     if role == WORKER_ROLE_ALL:
         workers.append(build_worker(client, settings.review_task_queue, WORKER_ROLE_REVIEW))
         queues.append(settings.review_task_queue)

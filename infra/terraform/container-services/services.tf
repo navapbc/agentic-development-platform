@@ -5,7 +5,10 @@ locals {
   region           = data.aws_region.current.region
   runtime_volume   = "tmp"
   checkouts_path   = "/repositories"
-  index_path       = "/app/repository_indexes"
+  # Each tenant's worker writes its checkouts under /tenants/<tenant>, and the review worker reads
+  # them at the same path.
+  tenants_path = "/tenants"
+  index_path   = "/app/repository_indexes"
   # The platform image's entrypoint writes environment_config here, under TMPDIR.
   env_config_dir = "/tmp/platform-config"
 
@@ -36,7 +39,10 @@ locals {
       temporal        = true
       internal_client = true
       target          = ""
-      mounts          = [{ volume = "checkouts", path = local.checkouts_path, read_only = true }]
+      mounts = concat(
+        [{ volume = "checkouts", path = local.checkouts_path, read_only = true }],
+        length(var.tenant_workspaces) > 0 ? [{ volume = "tenants", path = local.tenants_path, read_only = true }] : [],
+      )
       secrets = merge(
         { REVIEW_SIGNING_KEY = "review_signing_key", REVIEW_ATTESTATION_SECRET = "review_attestation_secret" },
         local.review_exports_to_langfuse ? { LANGFUSE_PUBLIC_KEY = "langfuse_public_key", LANGFUSE_SECRET_KEY = "langfuse_secret_key" } : {},
@@ -122,7 +128,7 @@ locals {
     }
     schedule-bootstrap = {
       image           = var.platform_image
-      command         = ["sh", "-c", "python -m scripts.reap --schedule && python -m scripts.intake --schedule"]
+      command         = ["python", "-m", "scripts.schedules"]
       cpu             = 512
       memory          = 1024
       database        = true
@@ -178,6 +184,7 @@ locals {
       COORDINATION_URL              = "https://coordination.${var.internal_domain}"
       REPO_INTELLIGENCE_URL         = "https://repo-intelligence.${var.internal_domain}"
       REPOSITORY_ROOT               = local.checkouts_path
+      TENANTS                       = join(",", var.tenant_workspaces)
       PLATFORM_CA_PEM               = var.platform_ca_pem
       PLATFORM_ENV_CONFIG           = length(var.environment_config) == 0 ? "" : jsonencode(var.environment_config)
       TEMPORAL_HOST                 = try(var.temporal.endpoint, "")

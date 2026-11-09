@@ -193,7 +193,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         print(f"{LOG} engine {engine.name}: {sync_engine(settings, engine.name, host)}")
         synced += 1
-    print(f"{LOG} synced {synced} source(s) into {settings.k8s_namespace}/activity-worker")
+    print(f"{LOG} synced {synced} source(s) into the activity worker of tenant {settings.tenant}")
     return 0
 
 

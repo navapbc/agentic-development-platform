@@ -127,9 +127,7 @@ def _commit(*, changed: bool, excluded: list[str]) -> CommitPushResult:
 def test_a_repair_confined_to_excluded_paths_is_reported_as_dropped() -> None:
     workflow = DraftPullRequestWorkflow()
     workflow._commit = _commit(changed=False, excluded=["portal/tests/__snapshots__/a.snap"])
-    repair = ApplyCIRepairResult(
-        applied=True, changed_files=["portal/tests/__snapshots__/a.snap"]
-    )
+    repair = ApplyCIRepairResult(applied=True, changed_files=["portal/tests/__snapshots__/a.snap"])
 
     assert workflow._repair_dropped_by_scope(repair) == ["portal/tests/__snapshots__/a.snap"]
 

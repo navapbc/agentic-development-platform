@@ -117,7 +117,7 @@ variable "environment_config" {
 }
 
 variable "tenant_workspaces" {
-  description = "Tenants that receive their own workspace access point, rooted at /tenants/<tenant> on the workspace file system."
+  description = "Tenants that receive their own workspace access point, rooted at /tenants/<tenant> on the workspace file system. The review worker mounts /tenants read-only, and the platform environment carries the list as TENANTS."
   type        = list(string)
   default     = []
 

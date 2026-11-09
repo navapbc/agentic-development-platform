@@ -17,8 +17,10 @@ class IntakeSourceMismatch(SystemExit):
 
 
 def intake_schedule_id(settings: Settings, source: str) -> str:
-    """Return the Temporal schedule id for a source, honoring an explicit override."""
-    return settings.intake_schedule_id or f"{source}-intake"
+    """Return the Temporal schedule id for a source and tenant, honoring an explicit override."""
+    from services.orchestration.task_queues import tenant_schedule_id
+
+    return settings.intake_schedule_id or tenant_schedule_id(f"{source}-intake", settings)
 
 
 def resolve_intake_source(requested: str | None, settings: Settings) -> str:
@@ -60,8 +62,14 @@ async def _retry(source: str, ticket_key: str, repo: str | None) -> int:
 
 
 async def install_schedule(source: str, client: Any = None) -> int:
-    """Register the intake schedule for a source and remove another source's schedule."""
+    """Register the intake schedule for a source and remove another source's schedule.
+
+    The schedule installs paused, with the reason as its note, while the source cannot
+    authenticate with this process's credentials.
+    """
     from services import temporal_client
+    from services.integration.intake_readiness import intake_blocker
+    from services.orchestration.task_queues import run_task_queue, tenant_schedule_id
     from services.orchestration.temporal_workflows.intake import IntakeInput, IntakeWorkflow
     from temporalio.client import (
         Schedule,
@@ -69,10 +77,12 @@ async def install_schedule(source: str, client: Any = None) -> int:
         ScheduleIntervalSpec,
         SchedulePolicy,
         ScheduleSpec,
+        ScheduleState,
     )
     from temporalio.service import RPCError, RPCStatusCode
 
     settings = get_settings()
+    blocker = intake_blocker(source, settings)
     if client is None:
         client = await temporal_client.connect(settings.temporal_host, settings)
     schedule_id = intake_schedule_id(settings, source)
@@ -81,7 +91,7 @@ async def install_schedule(source: str, client: Any = None) -> int:
             IntakeWorkflow.run,
             IntakeInput(),
             id=f"{schedule_id}-run",
-            task_queue=settings.temporal_task_queue,
+            task_queue=run_task_queue(settings),
         ),
         spec=ScheduleSpec(
             intervals=[
@@ -95,6 +105,9 @@ async def install_schedule(source: str, client: Any = None) -> int:
         policy=SchedulePolicy(
             catchup_window=timedelta(seconds=settings.intake_schedule_interval_seconds)
         ),
+        state=ScheduleState(
+            paused=bool(blocker), note=f"paused because {blocker}" if blocker else ""
+        ),
     )
     handle = client.get_schedule_handle(schedule_id)
     try:
@@ -104,10 +117,17 @@ async def install_schedule(source: str, client: Any = None) -> int:
         await handle.delete()
         await client.create_schedule(schedule_id, schedule)
         print(f"[intake:{source}] replaced schedule '{schedule_id}'")
+    if blocker:
+        print(
+            f"[intake:{source}] schedule '{schedule_id}' is paused because {blocker}. "
+            "It resumes when a worker starts and the source can authenticate.",
+            flush=True,
+        )
 
-    for other in TICKET_BACKENDS:
-        other_id = f"{other}-intake"
-        if other == source or other_id == schedule_id:
+    retired = [tenant_schedule_id(f"{other}-intake", settings) for other in TICKET_BACKENDS]
+    retired += [f"{other}-intake" for other in TICKET_BACKENDS if settings.tenant]
+    for other_id in dict.fromkeys(retired):
+        if other_id == schedule_id:
             continue
         try:
             await client.get_schedule_handle(other_id).delete()
@@ -115,7 +135,7 @@ async def install_schedule(source: str, client: Any = None) -> int:
             if exc.status != RPCStatusCode.NOT_FOUND:
                 raise
             continue
-        print(f"[intake:{source}] removed schedule '{other_id}' for the inactive {other} source")
+        print(f"[intake:{source}] removed schedule '{other_id}'")
     return 0
 
 

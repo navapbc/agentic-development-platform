@@ -12,9 +12,10 @@ The inputs are the JSON the eks-deployer task definition carries in DEPLOY_INPUT
 - `image_settings` and `settings`, values for the `agentic-platform-eks` ConfigMap
 - `platform_environment` and `environment_config`, for `agentic-platform-env` and `platform-config`
 - `security_groups`, the cluster, Temporal client, and internal client group IDs
-- `workspace_volume_handle`, `<file system>::<access point>` of the checkouts access point
-- `rebar_roles`, the reader and writer role ARNs of the ticket store
 - `secrets`, each secret store key, and `temporal_ca`, mapped to its secret ARN
+- `tenants`, each tenant's name, the volume handle of its workspace access point, its ticket store
+  roles, its secret ARNs, the platform secret keys it reads, its settings, its sandbox quota, and
+  the config bucket, from which `scripts.tenant_render` renders its worker and sandbox namespaces
 - `vpc_cidr`, `service_cidr`, `gate_egress_cidrs`, and `gate_egress_internet`
 - `ingress`, the webhook and gateway certificate ARNs and the gateway client CIDRs
 """
@@ -107,21 +108,93 @@ def set_settings(documents: list[dict[str, Any]], inputs: Mapping[str, Any]) -> 
         raise RenderError(f"no published image for {', '.join(synthetic)}")
 
 
-def set_rebar_roles(documents: list[dict[str, Any]], roles: Mapping[str, str]) -> None:
-    profiles = _named(documents, "ConfigMap", "rebar-store-aws-config")
-    if profiles is None:
-        raise RenderError("the overlay has no rebar-store-aws-config ConfigMap")
-    profiles["data"]["config"] = "\n".join(
+def rebar_profiles(roles: Mapping[str, str]) -> str:
+    return "\n".join(
         f"[profile rebar-tickets-{access}]\nrole_arn = {roles[access]}\n"
         "credential_source = EcsContainer\n"
         for access in ("reader", "writer")
     )
 
 
-def set_workspace(documents: list[dict[str, Any]], volume_handle: str) -> None:
-    for document in documents:
-        if document.get("kind") == "PersistentVolume":
-            document["spec"]["csi"]["volumeHandle"] = volume_handle
+def tenant_workspace(
+    documents: list[dict[str, Any]], tenant: str, volume_handle: str
+) -> tuple[dict[str, Any], ...]:
+    """Return the static volume and claim of a tenant's workspace access point."""
+    from scripts.tenant_render import WORKSPACE_CLAIM, worker_namespace
+
+    volume = next(d for d in documents if d.get("kind") == "PersistentVolume")
+    claim = _named(documents, "PersistentVolumeClaim", WORKSPACE_CLAIM)
+    if claim is None:
+        raise RenderError("the overlay has no workspaces PersistentVolumeClaim")
+    volume, claim = copy.deepcopy(volume), copy.deepcopy(claim)
+    volume["metadata"]["name"] = f"tenant-{tenant}-workspace"
+    volume["metadata"].setdefault("labels", {})["agentic-dev-platform/tenant"] = tenant
+    volume["spec"]["csi"]["volumeHandle"] = volume_handle
+    claim["metadata"]["namespace"] = worker_namespace(tenant)
+    claim["spec"]["volumeName"] = volume["metadata"]["name"]
+    return volume, claim
+
+
+def tenant_specs(documents: list[dict[str, Any]], inputs: Mapping[str, Any]) -> list[Any]:
+    from scripts.tenant_render import Tenant, worker_env
+
+    tenants = []
+    for entry in inputs.get("tenants") or []:
+        name = entry["name"]
+        env = {**worker_env(name), **(entry.get("settings") or {})}
+        if entry.get("config_bucket"):
+            env["TENANT_CONFIG_BUCKET"] = entry["config_bucket"]
+        tenants.append(
+            Tenant(
+                name=name,
+                env=env,
+                workspace=tenant_workspace(documents, name, entry["workspace_volume_handle"]),
+                config={"rebar-store-aws-config": {"config": rebar_profiles(entry["rebar_roles"])}},
+                quota=entry.get("sandbox_quota") or {},
+            )
+        )
+    return tenants
+
+
+def set_tenant_secrets(
+    documents: list[dict[str, Any]],
+    inputs: Mapping[str, Any],
+    omit: Iterable[str],
+) -> list[str]:
+    """Point the platform providers at the platform secrets and each tenant's at its own.
+
+    A tenant's provider mounts the platform secrets its role may read and its own secrets, and
+    leaves out every other key. An omitted key is `<key>` for a platform secret and
+    `<tenant>:<key>` for a tenant secret without a current value.
+    """
+    from scripts.tenant_render import worker_namespace
+
+    omitted = set(omit)
+    tenants = {worker_namespace(entry["name"]): entry for entry in inputs.get("tenants") or []}
+    platform = [d for d in documents if d.get("metadata", {}).get("namespace") not in tenants]
+    skipped = set_secrets(platform, inputs["secrets"], {key for key in omitted if ":" not in key})
+    for namespace, entry in tenants.items():
+        name = entry["name"]
+        own = entry.get("secrets") or {}
+        arns = {key: inputs["secrets"][key] for key in entry.get("platform_secrets") or []}
+        arns.update(own)
+        providers = [
+            d
+            for d in documents
+            if d.get("kind") == "SecretProviderClass"
+            and d["metadata"].get("namespace") == namespace
+        ]
+        mounted = {
+            secret_key(item["objectName"]): item.get("objectAlias", "")
+            for provider in providers
+            for item in json.loads(provider["spec"]["parameters"]["objects"])
+        }
+        unset = {key.split(":", 1)[1] for key in omitted if key.startswith(f"{name}:")}
+        unset |= {key for key in omitted if ":" not in key and key not in own}
+        unset &= set(arns)
+        set_secrets(providers, arns, (set(mounted) - set(arns)) | unset)
+        skipped += [f"{namespace}:{mounted[key] or key}" for key in sorted(unset & set(mounted))]
+    return skipped
 
 
 def set_security_groups(documents: list[dict[str, Any]], groups: Mapping[str, str]) -> None:
@@ -282,13 +355,12 @@ def render(
     mcp_hostname: str = "",
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Return the environment's manifests and the secret aliases left out of them."""
+    from scripts.tenant_render import tenantize
+
     documents = copy.deepcopy(overlay_documents)
     set_images(documents, inputs["images"])
     set_settings(documents, inputs)
-    set_rebar_roles(documents, inputs["rebar_roles"])
-    set_workspace(documents, inputs["workspace_volume_handle"])
     set_security_groups(documents, inputs["security_groups"])
-    skipped = set_secrets(documents, inputs["secrets"], omit_secrets)
     set_network_cidrs(
         documents,
         inputs["vpc_cidr"],
@@ -298,5 +370,10 @@ def render(
     )
     documents = set_ingress(documents, inputs.get("ingress") or {}, mcp_hostname)
     generated = generated_objects(inputs, root)
-    stamp_config_hash(documents, generated)
-    return documents + generated, skipped
+    tenants = tenant_specs(documents, inputs)
+    if not tenants:
+        raise RenderError("the inputs name no tenant, and every activity worker serves one")
+    documents = tenantize(documents + generated, tenants)
+    skipped = set_tenant_secrets(documents, inputs, omit_secrets)
+    stamp_config_hash(documents, [])
+    return documents, skipped

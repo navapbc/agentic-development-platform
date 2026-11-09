@@ -64,12 +64,12 @@ Every service runs on Fargate in the application subnets without a public addres
 | Service | Image | Command | Reaches |
 |---|---|---|---|
 | `workflow-worker` | platform | `services.orchestration.worker` with `WORKER_ROLE=workflow` | Database, Temporal |
-| `review-worker` | platform | `services.orchestration.worker` with `WORKER_ROLE=review` | Database, Temporal, Bedrock, the evidence bucket, the internal load balancer, the checkouts read-only |
+| `review-worker` | platform | `services.orchestration.worker` with `WORKER_ROLE=review` | Database, Temporal, Bedrock, the evidence bucket, the internal load balancer, the checkouts read-only, and with `tenant_workspaces` every tenant's workspace read-only at `/tenants` |
 | `coordination` | platform | `services.coordination.service` over HTTPS on 8130 | Database, Temporal, behind the internal load balancer |
 | `repo-intelligence` | repo-intelligence | `services.repository_intelligence.server` over HTTPS on 8120 | The checkouts read-only and the index, behind the internal load balancer |
 | `repo-index-worker` | repo-intelligence | `services.repository_intelligence.indexing.worker` | The checkouts read-only and the index |
 | `db-migrate` | platform | `alembic upgrade head`, once per deploy | Database as `platform_migrator` |
-| `schedule-bootstrap` | platform | `reap --schedule && intake --schedule`, once per deploy | Database, Temporal |
+| `schedule-bootstrap` | platform | `scripts.schedules`, once per deploy, which removes the untenanted intake and reap schedules that each tenant's worker replaces | Database, Temporal |
 
 Each workload has its own task role, execution role, and security group. The security group has no ingress and admits egress to the VPC endpoints, S3, and only the database, workspace, Temporal, or load balancer the workload reaches. Each execution role reads only the secrets its task injects. The task definitions carry secret ARNs, never values. A workload that reaches the database receives `PGUSER` and `PGPASSWORD` from the `platform_app` secret, or the `platform_migrator` secret for `db-migrate`, and connects with `PGSSLMODE=verify-full` against the RDS CA bundle in the image. A workload that reaches Temporal receives the Temporal CA as `TEMPORAL_TLS_CA` and attaches the Temporal client group. The root file systems are read-only, and a task volume mounted at `/tmp` holds what a task writes.
 
@@ -90,6 +90,8 @@ Each SQLAlchemy engine holds its own pool of `DATABASE_POOL_SIZE` connections an
 ### Workspace
 
 An encrypted EFS file system with elastic throughput holds the repository checkouts and the repository index, through the access points `checkouts` at `/checkouts` and `index` at `/repository-indexes`, both owned by uid 10001, the `appuser` of both images. Its policy admits only TLS connections through an access point. Its mount targets admit NFS from the tasks that mount it and from each group in `workspace_client_security_group_ids`, such as the EKS cluster security group. The services mount `checkouts` read-only at `/repositories`, and the index writers mount `index` at `/app/repository_indexes`. Every platform and repository-intelligence task sets `REPOSITORY_ROOT` to `/repositories`, so each repository in the environment's `repositories.yaml` is read at `/repositories/<name>`, and repository intelligence indexes those with `index: true`. `environment_config` carries `repositories.yaml` into the tasks with the other config files.
+
+Each name in `tenant_workspaces` receives an access point rooted at `/tenants/<tenant>`, which the tenant's activity worker mounts read-write at the same path from EKS. With any tenant the module adds the `tenants` access point at `/tenants`, which the review worker mounts read-only at `/tenants`, so the review worker reads a tenant's checkouts at the path the tenant's worker passes it. The platform environment carries the tenant names as `TENANTS`, which the workflow worker reads to poll each tenant's task queue.
 
 ## Langfuse and ClickHouse
 

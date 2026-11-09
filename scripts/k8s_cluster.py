@@ -23,7 +23,7 @@ from scripts.config import Settings, get_settings
 LOG = "[k8s]"
 REPO_ROOT = Path(__file__).resolve().parent.parent
 WORKER = "activity-worker"
-DEPLOYMENTS = ("litellm", "activity-worker", "review-worker", "mcp-gateway", "inbound-webhook")
+DEPLOYMENTS = ("litellm", "review-worker", "mcp-gateway", "inbound-webhook")
 ROLLOUT_TIMEOUT = "600s"
 _ARCHES = {"arm64": "arm64", "aarch64": "arm64", "x86_64": "amd64", "amd64": "amd64"}
 _PROBES = ("startupProbe", "readinessProbe", "livenessProbe")
@@ -39,10 +39,37 @@ def namespaced(settings: Settings, *args: str) -> list[str]:
     return kubectl(settings, "--namespace", settings.k8s_namespace, *args)
 
 
+def tenants(settings: Settings) -> list[str]:
+    from services.orchestration.task_queues import tenant_names
+
+    return tenant_names(settings) or ([settings.tenant] if settings.tenant else [])
+
+
+def in_worker_namespace(settings: Settings, *args: str) -> list[str]:
+    """Address the activity worker of TENANT, or of the first tenant TENANTS names."""
+    from scripts.tenant_render import worker_namespace
+
+    names = tenants(settings)
+    if not names:
+        raise SystemExit(f"{LOG} set TENANT or TENANTS, because every activity worker serves one")
+    return kubectl(settings, "--namespace", worker_namespace(settings.tenant or names[0]), *args)
+
+
+def deployments(settings: Settings) -> list[tuple[str, str]]:
+    """Return each deployment the local cluster runs, by namespace and name."""
+    from scripts.tenant_render import worker_namespace
+
+    return [(settings.k8s_namespace, name) for name in DEPLOYMENTS] + [
+        (worker_namespace(name), WORKER) for name in tenants(settings)
+    ]
+
+
 def exec_argv(settings: Settings, command: Sequence[str], *, tty: bool) -> list[str]:
     """Run command in the activity worker container of the running deployment."""
     flags = ["-it"] if tty else ["-i"]
-    return namespaced(settings, "exec", *flags, f"deploy/{WORKER}", "-c", WORKER, "--", *command)
+    return in_worker_namespace(
+        settings, "exec", *flags, f"deploy/{WORKER}", "-c", WORKER, "--", *command
+    )
 
 
 def one_off_argv(
@@ -61,7 +88,7 @@ def one_off_argv(
     spec["containers"] = [worker]
     spec["restartPolicy"] = "Never"
     overrides = json.dumps({"apiVersion": "v1", "spec": spec}, separators=(",", ":"))
-    return namespaced(
+    return in_worker_namespace(
         settings,
         "run",
         name,
@@ -77,7 +104,7 @@ def one_off_argv(
 def run_one_off(settings: Settings, command: Sequence[str], run: Runner = process.run) -> int:
     deployment = json.loads(
         run(
-            namespaced(settings, "get", f"deployment/{WORKER}", "-o", "json"),
+            in_worker_namespace(settings, "get", f"deployment/{WORKER}", "-o", "json"),
             timeout=process.SHORT_COMMAND_TIMEOUT_SECONDS,
             capture_output=True,
             text=True,
@@ -180,12 +207,47 @@ def roll(settings: Settings, run: Runner = process.run) -> None:
     The renderer stamps each pod template with a digest of the images and generated config,
     so the apply itself rolls a deployment whose inputs changed.
     """
-    for target in (f"deployment/{name}" for name in DEPLOYMENTS):
+    for namespace, name in deployments(settings):
         run(
-            namespaced(settings, "rollout", "status", target, f"--timeout={ROLLOUT_TIMEOUT}"),
+            kubectl(
+                settings,
+                "--namespace",
+                namespace,
+                "rollout",
+                "status",
+                f"deployment/{name}",
+                f"--timeout={ROLLOUT_TIMEOUT}",
+            ),
             timeout=process.LONG_COMMAND_TIMEOUT_SECONDS,
             check=True,
         )
+
+
+def delete_retired(settings: Settings, run: Runner = process.run) -> None:
+    """Delete the objects a deployment rendered before tenants, which an apply does not prune."""
+    from scripts.tenant_render import PLATFORM_NAMESPACE, RETIRED, SANDBOX_NAMESPACE
+
+    moved = {
+        PLATFORM_NAMESPACE: settings.k8s_namespace,
+        SANDBOX_NAMESPACE: settings.openhands_sandbox_namespace,
+    }
+    for kind, namespace, name in RETIRED:
+        if kind == "namespace":
+            name = moved.get(name, name)
+        scope = ["--namespace", moved.get(namespace, namespace)] if namespace else []
+        result = run(
+            kubectl(settings, *scope, "delete", kind, name, "--ignore-not-found", "--wait=false"),
+            timeout=process.SHORT_COMMAND_TIMEOUT_SECONDS,
+            capture_output=True,
+            text=True,
+        )
+        # A workstation cluster serves no SecretProviderClass, so that kind has nothing to delete.
+        if result.returncode != 0 and "the server doesn't have a resource type" not in (
+            result.stderr or ""
+        ):
+            raise SystemExit(f"{LOG} could not delete {kind}/{name}: {result.stderr.strip()}")
+        if (result.stdout or "").strip():
+            print(f"{LOG} {result.stdout.strip()}")
 
 
 def removable(documents: Sequence[dict], *, volumes: bool) -> list[dict]:
@@ -209,16 +271,17 @@ def delete(
 
 
 def scale(settings: Settings, replicas: int, run: Runner = process.run) -> None:
-    run(
-        namespaced(
-            settings,
-            "scale",
-            f"--replicas={replicas}",
-            *(f"deployment/{name}" for name in DEPLOYMENTS),
-        ),
-        timeout=process.SHORT_COMMAND_TIMEOUT_SECONDS,
-        check=True,
-    )
+    by_namespace: dict[str, list[str]] = {}
+    for namespace, name in deployments(settings):
+        by_namespace.setdefault(namespace, []).append(f"deployment/{name}")
+    for namespace, targets in by_namespace.items():
+        run(
+            kubectl(
+                settings, "--namespace", namespace, "scale", f"--replicas={replicas}", *targets
+            ),
+            timeout=process.SHORT_COMMAND_TIMEOUT_SECONDS,
+            check=True,
+        )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -248,6 +311,7 @@ def main(argv: list[str] | None = None) -> int:
         images = build_images(settings, args.build_id, dotenv_values(REPO_ROOT / ".env"))
         load_images(settings, images)
     apply(settings, documents)
+    delete_retired(settings)
     roll(settings)
     print(f"{LOG} {settings.k8s_context}/{settings.k8s_namespace} runs build {args.build_id}")
     return 0

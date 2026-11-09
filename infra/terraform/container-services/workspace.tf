@@ -1,9 +1,12 @@
 locals {
   # uid 10001 is appuser in the platform and repository-intelligence images.
-  workspace_access_points = {
-    checkouts = { path = "/checkouts", permissions = "0755" }
-    index     = { path = "/repository-indexes", permissions = "0750" }
-  }
+  workspace_access_points = merge(
+    {
+      checkouts = { path = "/checkouts", permissions = "0755" }
+      index     = { path = "/repository-indexes", permissions = "0750" }
+    },
+    length(var.tenant_workspaces) > 0 ? { tenants = { path = local.tenants_path, permissions = "0755" } } : {},
+  )
   tenant_access_points = { for tenant in var.tenant_workspaces : tenant => "/tenants/${tenant}" }
   workspace_access_point_arns = concat(
     [for point in aws_efs_access_point.workspace : point.arn],

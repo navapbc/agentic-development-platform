@@ -295,47 +295,6 @@ variable "secret_recovery_window_days" {
   default     = 30
 }
 
-variable "create_rebar_ticket_store" {
-  description = "Create the S3 bucket, KMS key, and reader and writer roles for the rebar ticket store."
-  type        = bool
-  default     = false
-}
-
-variable "rebar_ticket_store_trusted_principals" {
-  description = "IAM principal ARNs allowed to assume the ticket store reader and writer roles the module creates."
-  type        = list(string)
-  default     = []
-}
-
-variable "rebar_ticket_store_writer_oidc_trust" {
-  description = "GitHub Actions OIDC trust for the ticket store writer role, which lets the reconcile-bridge workflow push the store without a stored AWS key. See the rebar-ticket-store module for the shape."
-  type = object({
-    provider_arn      = string
-    subjects          = list(string)
-    job_workflow_refs = optional(list(string), [])
-    audience          = optional(string, "sts.amazonaws.com")
-  })
-  default = null
-}
-
-variable "rebar_ticket_store_admin_principals" {
-  description = "IAM principal ARNs allowed to seed the ticket store and to empty its bucket before a destroy."
-  type        = list(string)
-  default     = []
-}
-
-variable "rebar_ticket_store_existing_reader_role_arn" {
-  description = "Existing role that fetches the ticket store. Set it with the writer role to skip creating both."
-  type        = string
-  default     = ""
-}
-
-variable "rebar_ticket_store_existing_writer_role_arn" {
-  description = "Existing role that pushes the ticket store. Set it with the reader role to skip creating both."
-  type        = string
-  default     = ""
-}
-
 variable "create_ecs_cluster" {
   description = "Create the platform ECS cluster that the Temporal control plane, the platform services, and other teams' services run on."
   type        = bool
@@ -812,7 +771,7 @@ variable "github_publish_refs" {
 }
 
 variable "tenants" {
-  description = "Tenants that share the deployment, keyed by a name of 2 to 16 lowercase letters and digits. Each tenant is a trust boundary with its own activity worker identity, secrets, image prefix, config bundle prefix, ticket store, and workspace. secrets lists the secrets created empty under <name_prefix>/tenants/<tenant>/ for the tenant to fill. shared_secrets lists secret store keys the tenant's worker may also read. config_repository names the GitHub repository whose workflows publish the tenant's config bundle and images. ticket_store sets the operators, admins, and GitHub OIDC writer of the tenant's rebar store. create_eks requires at least one tenant."
+  description = "Tenants that share the deployment, keyed by a name of 2 to 16 lowercase letters and digits. Each tenant is a trust boundary with its own activity worker identity, secrets, image prefix, config bundle prefix, ticket store, and workspace. secrets lists the secrets created empty under <name_prefix>/tenants/<tenant>/ for the tenant to fill. shared_secrets lists secret store keys the tenant's worker may also read. config_repository names the GitHub repository whose workflows publish the tenant's config bundle and images. ticket_store sets the operators, admins, and GitHub OIDC writer of the tenant's rebar store. settings are environment variables only the tenant's worker receives, such as TICKET_BACKEND, and override container_platform_settings. sandbox_quota is the ResourceQuota hard limits of the tenant's sandbox namespace, such as requests.cpu or pods. create_eks requires at least one tenant."
   type = map(object({
     description    = string
     secrets        = optional(list(string), ["github_token", "jira_api_token", "jira_pat", "authorship_signing_key", "registry_token", "slack_webhook_url"])
@@ -835,12 +794,27 @@ variable "tenants" {
         audience          = optional(string, "sts.amazonaws.com")
       }))
     }), {})
+    settings      = optional(map(string), {})
+    sandbox_quota = optional(map(string), {})
   }))
   default = {}
 
   validation {
     condition     = alltrue([for name in keys(var.tenants) : can(regex("^[a-z][a-z0-9]{1,15}$", name)) && name != "default"])
     error_message = "A tenant name is 2 to 16 lowercase letters and digits starting with a letter, and default is not a tenant name."
+  }
+
+  validation {
+    condition     = alltrue(flatten([for tenant in values(var.tenants) : [for name in keys(tenant.settings) : can(regex("^[A-Z][A-Z0-9_]*$", name)) && !can(regex("(KEY|TOKEN|SECRET|PASSWORD|PAT)", name))]]))
+    error_message = "A tenant setting name is an upper-case variable name and may not contain KEY, TOKEN, SECRET, PASSWORD, or PAT, because a secret belongs in the tenant's secrets."
+  }
+
+  validation {
+    condition = alltrue(flatten([for tenant in values(var.tenants) : [for name in keys(tenant.settings) : !contains([
+      "TENANT", "TENANTS", "TENANT_CONFIG_BUCKET", "OPENHANDS_SANDBOX_NAMESPACE", "GATE_ENGINE_NAMESPACE",
+      "REPOSITORY_ROOT", "EXECUTION_WORKSPACE_ROOT", "GATE_ENGINE_ROOT",
+    ], name)]]))
+    error_message = "A tenant setting may not set TENANT, TENANTS, TENANT_CONFIG_BUCKET, or the namespaces and paths the deployment derives from the tenant name."
   }
 }
 

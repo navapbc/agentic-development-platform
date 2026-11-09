@@ -137,6 +137,16 @@ def _alert_rejected(identity: BundleIdentity, reason: str) -> None:
     )
 
 
+async def install_tenant_schedules(client: Any, settings: Any) -> None:
+    """Register this tenant's intake and reap schedules on its task queue."""
+    from scripts.intake import install_schedule as install_intake_schedule
+    from scripts.intake import resolve_intake_source
+    from scripts.reap import install_schedule as install_reap_schedule
+
+    await install_reap_schedule(client)
+    await install_intake_schedule(resolve_intake_source(None, settings), client)
+
+
 def start_tenant_config(settings: Any) -> TenantConfig:
     """Load the worker's tenant config, refusing to start without a tenant or a valid bundle."""
     if not settings.tenant:

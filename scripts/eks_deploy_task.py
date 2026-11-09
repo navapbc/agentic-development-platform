@@ -10,7 +10,8 @@ overlay, so the workstation needs none of them.
   environment, applies it, waits for each deployment, and sets the MCP gateway's host list once
   its load balancer exists. It ends by listing every pod that is not host-networked and that no
   NetworkPolicy selects, which strict network policy mode would deny.
-- `restart` rolls the named deployments, so their pods read the current secret values.
+- `restart` rolls the named deployments, `namespace/name` or a platform deployment by name, and
+  `tenant-workers` for every tenant's activity worker, so their pods read the current secret values.
 - `check-policies` prints the pods no NetworkPolicy selects and exits 1 when there are any.
 """
 
@@ -36,7 +37,7 @@ AUTHENTICATOR = "/usr/local/bin/aws-iam-authenticator"
 ROOT = Path(os.environ.get("EKS_DEPLOYER_ROOT", "/opt/eks-deployer"))
 OVERLAY = ROOT / "deploy" / "kubernetes" / "aws"
 CHART = ROOT / "charts" / "aws-load-balancer-controller.tgz"
-DEPLOYMENTS = ("litellm", "activity-worker", "inbound-webhook", "mcp-gateway")
+DEPLOYMENTS = ("litellm", "inbound-webhook", "mcp-gateway")
 COMMAND_TIMEOUT = 300
 ROLLOUT_TIMEOUT = "10m"
 LOG = "[eks-deployer]"
@@ -169,14 +170,27 @@ def install_controller(inputs: Mapping[str, Any]) -> None:
     )
 
 
-def rollout(names: Iterable[str]) -> None:
-    for name in names:
+def _namespaced(target: str) -> tuple[str, str]:
+    """Split `namespace/name`, where a bare name is a deployment of the platform namespace."""
+    namespace, _, name = target.rpartition("/")
+    return namespace or PLATFORM_NAMESPACE, name
+
+
+def tenant_workers(inputs: Mapping[str, Any]) -> list[str]:
+    from scripts.tenant_render import WORKER, worker_namespace
+
+    return [f"{worker_namespace(entry['name'])}/{WORKER}" for entry in inputs.get("tenants") or []]
+
+
+def rollout(targets: Iterable[str]) -> None:
+    for target in targets:
+        namespace, name = _namespaced(target)
         try:
             run(
                 [
                     KUBECTL,
                     "-n",
-                    PLATFORM_NAMESPACE,
+                    namespace,
                     "rollout",
                     "status",
                     f"deployment/{name}",
@@ -185,12 +199,23 @@ def rollout(names: Iterable[str]) -> None:
                 timeout=900,
             )
         except DeployError:
-            diagnose(name)
+            diagnose(name, namespace)
             raise
-        print(f"{LOG} deployment/{name} is rolled out")
+        print(f"{LOG} {namespace}/deployment/{name} is rolled out")
 
 
-def diagnose(name: str) -> None:
+def delete_retired() -> None:
+    """Delete the objects a deployment rendered before tenants, which an apply does not prune."""
+    from scripts.tenant_render import RETIRED
+
+    for kind, namespace, name in RETIRED:
+        scope = ["-n", namespace] if namespace else []
+        output = run([KUBECTL, *scope, "delete", kind, name, "--ignore-not-found", "--wait=false"])
+        if output.strip():
+            print(f"{LOG} {output.strip()}")
+
+
+def diagnose(name: str, namespace: str = PLATFORM_NAMESPACE) -> None:
     """Print the pods, warnings, and recent log of a deployment that did not roll out.
 
     The operator has no kubectl, so the task log is where a failed rollout is explained.
@@ -203,7 +228,7 @@ def diagnose(name: str) -> None:
         ["logs", f"deployment/{name}", "--all-containers", "--tail=40"],
     ):
         try:
-            print(run([KUBECTL, "-n", PLATFORM_NAMESPACE, *args]), end="")
+            print(run([KUBECTL, "-n", namespace, *args]), end="")
         except DeployError as exc:
             print(f"{LOG} {exc}")
 
@@ -289,7 +314,8 @@ def deploy(inputs: Mapping[str, Any], omit_secrets: list[str]) -> None:
     for alias in skipped:
         print(f"{LOG} {alias} has no current value, so the workload starts without it")
     apply(documents)
-    rollout(DEPLOYMENTS)
+    delete_retired()
+    rollout([*DEPLOYMENTS, *tenant_workers(inputs)])
     if any(
         d.get("kind") == "Ingress" and d["metadata"]["name"] == "mcp-gateway" for d in documents
     ):
@@ -305,10 +331,17 @@ def deploy(inputs: Mapping[str, Any], omit_secrets: list[str]) -> None:
     report_unselected()
 
 
-def restart(names: list[str]) -> None:
-    for name in names:
-        run([KUBECTL, "-n", PLATFORM_NAMESPACE, "rollout", "restart", f"deployment/{name}"])
-    rollout(names)
+def restart(targets: list[str], inputs: Mapping[str, Any]) -> None:
+    """Restart each deployment, where `tenant-workers` names every tenant's activity worker."""
+    expanded = [
+        worker
+        for target in targets
+        for worker in (tenant_workers(inputs) if target == "tenant-workers" else [target])
+    ]
+    for target in expanded:
+        namespace, name = _namespaced(target)
+        run([KUBECTL, "-n", namespace, "rollout", "restart", f"deployment/{name}"])
+    rollout(expanded)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -330,7 +363,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.command == "deploy":
                 deploy(inputs, args.omit_secrets)
             elif args.command == "restart":
-                restart(args.deployments)
+                restart(args.deployments, inputs)
             elif report_unselected():
                 return 1
         except (DeployError, RenderError) as exc:

@@ -9,11 +9,13 @@ from typing import Any
 
 import pytest
 import yaml
+from scripts.tenant_render import tenant_root, worker_env
 from services import process
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 OVERLAY = REPOSITORY / "deploy" / "kubernetes" / "aws"
-EKS_ROOT = REPOSITORY / "infra" / "terraform" / "examples" / "private-bedrock" / "eks.tf"
+ROOT = REPOSITORY / "infra" / "terraform" / "examples" / "private-bedrock"
+EKS_ROOT = ROOT / "eks.tf"
 SERVICES = REPOSITORY / "infra" / "terraform" / "container-services" / "services.tf"
 PLATFORM_WORKLOADS = ("activity-worker", "inbound-webhook", "mcp-gateway")
 WORKLOADS = (*PLATFORM_WORKLOADS, "litellm")
@@ -79,17 +81,29 @@ def test_the_review_worker_stays_on_ecs(documents) -> None:
     assert not [d for d in documents if d["metadata"]["name"] == "review-worker"]
 
 
+def _tenant_worker_secret_keys() -> set[str]:
+    """Read the platform secrets every tenant worker reads and a tenant's default own secrets."""
+    platform = re.search(
+        r"tenant_platform_secrets = \[\s*for key in \[(.*?)\]", (ROOT / "tenants.tf").read_text()
+    )
+    own = re.search(
+        r"secrets\s+= optional\(list\(string\), \[(.*?)\]\)", (ROOT / "variables.tf").read_text()
+    )
+    return {key for match in (platform, own) for key in re.findall(r'"([a-z_]+)"', match.group(1))}
+
+
 def test_every_workload_runs_as_the_service_account_its_pod_identity_binds(documents) -> None:
     terraform = _terraform_secret_keys()
 
     for name in WORKLOADS:
         assert _pod(documents, name)["serviceAccountName"] == name
-        assert name in terraform
+        assert name in terraform or name == "activity-worker"
         _named(documents, "ServiceAccount", name)
+    assert 'service_account = "activity-worker"' in (ROOT / "tenants.tf").read_text()
 
 
 def test_each_workload_mounts_the_secrets_its_role_may_read(documents) -> None:
-    terraform = _terraform_secret_keys()
+    terraform = {**_terraform_secret_keys(), "activity-worker": _tenant_worker_secret_keys()}
 
     for name in WORKLOADS:
         volume = next(v for v in _pod(documents, name)["volumes"] if v["name"] == "secrets")
@@ -131,20 +145,18 @@ def test_every_image_comes_from_ecr(documents) -> None:
     assert settings["SANDBOX_NODE_POOL"] == "sandbox"
 
 
-def test_the_activity_worker_shares_the_checkouts_at_the_ecs_path(documents) -> None:
-    ecs_path = re.search(r'checkouts_path\s+= "([^"]+)"', SERVICES.read_text()).group(1)
+def test_the_tenant_workspace_sits_where_the_review_worker_reads_it(documents) -> None:
+    review_path = re.search(r'tenants_path\s+= "([^"]+)"', SERVICES.read_text()).group(1)
     claim = _named(documents, "PersistentVolumeClaim", "workspaces")
     volume = _named(documents, "PersistentVolume", claim["spec"]["volumeName"])
-    mounts = {
-        m["name"]: m["mountPath"] for m in _container(documents, "activity-worker")["volumeMounts"]
-    }
-    env = {e["name"]: e.get("value") for e in _container(documents, "activity-worker")["env"]}
+    env = worker_env("adp")
 
     assert claim["spec"]["storageClassName"] == ""
     assert volume["spec"]["csi"]["driver"] == "efs.csi.aws.com"
     assert "iam" in volume["spec"]["mountOptions"] and "tls" in volume["spec"]["mountOptions"]
-    assert mounts["workspaces"] == ecs_path == env["REPOSITORY_ROOT"]
-    assert env["EXECUTION_WORKSPACE_ROOT"].startswith(f"{ecs_path}/")
+    assert tenant_root("adp") == f"{review_path}/adp"
+    assert env["REPOSITORY_ROOT"].startswith(f"{review_path}/adp/")
+    assert env["EXECUTION_WORKSPACE_ROOT"].startswith(f"{review_path}/adp/")
 
 
 def test_the_temporal_clients_carry_the_client_security_groups(documents) -> None:

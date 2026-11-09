@@ -301,13 +301,29 @@ run "each_tenant_gets_its_own_workspace_root" {
   }
 
   assert {
-    condition     = length(jsondecode(aws_efs_file_system_policy.workspace[0].policy).Statement[1].Condition.StringNotEquals["elasticfilesystem:AccessPointArn"]) == 4
-    error_message = "The file system policy does not admit the tenant access points."
+    condition     = length(jsondecode(aws_efs_file_system_policy.workspace[0].policy).Statement[1].Condition.StringNotEquals["elasticfilesystem:AccessPointArn"]) == 5
+    error_message = "The file system policy does not admit the tenant access points and the tenants root."
   }
 
   assert {
     condition     = keys(output.workspace.tenant_access_point_arns) == ["adp", "payments"]
     error_message = "The workspace output does not name each tenant's access point."
+  }
+
+  assert {
+    condition = (
+      aws_efs_access_point.workspace["tenants"].root_directory[0].path == "/tenants" &&
+      contains(
+        [for mount in jsondecode(aws_ecs_task_definition.workload["review-worker"].container_definitions)[1].mountPoints : "${mount.sourceVolume}:${mount.containerPath}:${try(mount.readOnly, false)}"],
+        "tenants:/tenants:true",
+      )
+    )
+    error_message = "The review worker does not mount the tenants root read-only at the path the tenant workers write."
+  }
+
+  assert {
+    condition     = output.platform_environment.TENANTS == "adp,payments"
+    error_message = "The platform environment does not list the tenants, which the workflow worker polls."
   }
 }
 

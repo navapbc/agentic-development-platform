@@ -59,11 +59,11 @@ Run these once from the repository root.
 3. Copy the gate selection config with `cp config/local/gates.yaml.example config/local/gates.yaml`. It is required for any run that evaluates gates. Copying `config/local/gate_engine.yaml.example` to `config/local/gate_engine.yaml` is optional and adds an external gate engine. See [Configurable gates](#configurable-gates).
 4. Provision review-verdict signing, which is on by default. Generate a key and trust root and set the signing variables in `.env` by following the local setup in [docs/review-verdict-signing.md](docs/review-verdict-signing.md). Without this the review worker fails closed at startup. To skip signing, set `REVIEW_SIGNING_ENABLED=false`.
 5. Install the locked dependencies into `.venv` with `uv sync --locked --all-extras`, then activate it with `source .venv/bin/activate`. `uv.lock` pins every package with its hashes, and `--locked` refuses a lock that no longer matches `pyproject.toml`. See [CONTRIBUTING.md](CONTRIBUTING.md) for changing a dependency.
-6. Confirm the toolchain with `inv ci`, which runs the lint, the hermetic tests, and the evaluation gate.
+6. Confirm the toolchain with `inv ci`, which runs the lint, the format check, the hermetic tests, and the evaluation gate.
 7. Choose a Bedrock connectivity provider in `.env` and open the path with `inv tunnel-start`. See [Bedrock connectivity](#bedrock-connectivity).
 8. Validate the Bedrock path and local reachability with `inv connectivity-check`.
 9. Build the images, apply database migrations, and start the stack with `inv local-up`. It runs `inv repos-compose`, which writes the git-ignored `compose.repositories.yaml` that mounts each repository in `repositories.yaml` with a `path` into repository intelligence, then starts Compose, then deploys the cluster workloads with `inv k8s-reload`, writes the AWS credentials with `inv aws-login`, and copies the local-backend repositories in with `inv repos-sync`. See [The cluster workloads](#the-cluster-workloads).
-10. Register the Temporal reap and intake schedules with `inv schedules-install`. They persist in Temporal's database, so run it again only after the volumes are wiped or a schedule setting changes.
+10. Each tenant's activity worker registers its Temporal reap and intake schedules, `orphan-reaper-<tenant>` and `<source>-intake-<tenant>`, on its task queue when it starts. `inv schedules-install` removes the untenanted schedules an earlier version registered.
 11. Publish the prompt library to Langfuse with `inv prompts-seed`. Without it each stage falls back to the static text in `services/prompts/library.py` and logs a prompt fetch warning on every run.
 12. Confirm everything is healthy with `inv smoke-test`.
 13. Load allowlisted seed data with `inv seed` when you need demo fixtures.
@@ -307,7 +307,7 @@ Set `TICKET_BACKEND=rebar` to track work in a git-backed rebar ticket store inst
 
 Seed the store from an operator-provided Excel export with `inv import-rebar-tickets --xlsx <path>`, which imports through rebar's own capability. Add `--reset` to wipe and re-initialize the store first, `--status` to import only selected statuses, and `--limit` to cap the count.
 
-The `rebar-intake` schedule starts a draft-PR execution for each ready ticket in the store. Install it with `inv intake --schedule` or `inv schedules-install`, or run one pass with `inv intake`. `inv rebar-changes` reports new tickets, field changes, and status changes since the last intake pass. It reads the intake cursor without saving it, so a report never hides a ticket from the next intake pass.
+The `rebar-intake-<tenant>` schedule starts a draft-PR execution for each ready ticket in the tenant's store. The tenant's worker installs it at startup, `inv intake --schedule` installs it on demand, and `inv intake` runs one pass. `inv rebar-changes` reports new tickets, field changes, and status changes since the last intake pass. It reads the intake cursor without saving it, so a report never hides a ticket from the next intake pass.
 
 The store can sync to S3 through the `git-remote-s3` helper, which the `review` extra installs. The `store` section of `tickets.yaml` names the bucket, the prefix, and two AWS profiles. `inv rebar-store-remote` points the store's git remote at the bucket so that it fetches under `reader_profile` and pushes under `writer_profile`. When the remote is an S3 URL, the activity worker validates the isolation rules in `tickets.yaml` and the remote at startup and refuses to start on a mismatch. A store with no remote stays local-only and skips the check.
 
@@ -408,7 +408,7 @@ The one-shot services run under the `tasks` profile, so `up` never creates them.
 | Service | Run with | Role |
 | --- | --- | --- |
 | `db-migrate` | `inv db-migrate`, `inv db-reset`, `inv local-up` | Applies the migrations |
-| `schedule-bootstrap` | `inv schedules-install` | Registers the reap schedule and the intake schedule for the configured ticket source |
+| `schedule-bootstrap` | `inv schedules-install` | Removes the untenanted reap and intake schedules, which each tenant's worker replaces with its own |
 | `temporal-admin-tools` | `inv local-up`, `inv temporal-upgrade` | Applies the Temporal schemas and registers the `default` namespace |
 
 The workers and `coordination-service` check the schema revision at startup. While the database is behind the migrations their image carries, they wait and log `Run inv db-migrate` every 30 seconds. When the database holds a revision their image does not carry, as after a newer checkout migrated it, they exit.
@@ -549,11 +549,11 @@ Run `inv --list` for the full set. The common tasks are below.
 | `inv logs [--service NAME]` | Follow logs for the stack or one service |
 | `inv db-migrate`, `inv db-reset` | Apply migrations, or rebuild the schema then migrate |
 | `inv temporal-upgrade` | Back up the Temporal databases and upgrade them one minor release at a time |
-| `inv schedules-install` | Register the reap schedule and the intake schedule for the configured ticket source |
+| `inv schedules-install` | Remove the untenanted reap and intake schedules, which each tenant's worker replaces with its own |
 | `inv seed` | Load allowlisted seed data |
 | `inv smoke-test`, `inv connectivity-check` | Health and Bedrock path checks |
 | `inv test` | Run the pytest suite |
-| `inv ci` | Run lint, the hermetic test tiers, and the evaluation gate as CI does |
+| `inv ci` | Run lint, the format check, the hermetic test tiers, and the evaluation gate as CI does |
 | `inv sast` | Run the SAST, secret, misconfiguration, and dependency scans against the accepted-findings register. Needs Docker |
 | `inv terraform-test` | Run `terraform test` in each Terraform module that has a `tests` directory, as CI does. Needs Terraform 1.11 or later |
 | `inv tunnel-start`, `inv tunnel-stop`, `inv tunnel-status` | Manage the Bedrock connectivity tunnel |

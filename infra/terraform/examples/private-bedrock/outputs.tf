@@ -108,21 +108,6 @@ output "role_bootstrap_function_name" {
   value       = module.secret_store.role_bootstrap_function_name
 }
 
-output "rebar_ticket_store_bucket" {
-  description = "Ticket store bucket, set as store.bucket in tickets.yaml. Null when create_rebar_ticket_store is false."
-  value       = module.rebar_ticket_store.bucket
-}
-
-output "rebar_ticket_store_reader_role_arn" {
-  description = "Role the reader profile assumes, set as roles.read_only in tickets.yaml."
-  value       = module.rebar_ticket_store.reader_role_arn
-}
-
-output "rebar_ticket_store_writer_role_arn" {
-  description = "Role the writer profile assumes, set as roles.write in tickets.yaml."
-  value       = module.rebar_ticket_store.writer_role_arn
-}
-
 output "ecs_cluster_arn" {
   description = "Platform ECS cluster ARN. Empty when create_ecs_cluster is false."
   value       = module.ecs_cluster.cluster_arn
@@ -244,7 +229,7 @@ output "github_image_publisher_role_arn" {
 }
 
 output "eks" {
-  description = "Cluster name, private endpoint, Pod Identity roles, security groups, workspace access point, node scheduling, and Load Balancer Controller settings the EKS deploy reads. Null without create_eks."
+  description = "Cluster name, private endpoint, Pod Identity roles, security groups, workspace file system, node scheduling, Load Balancer Controller settings, and each tenant's secrets that the EKS deploy reads. Null without create_eks."
   value = local.eks_enabled ? {
     cluster_name              = module.eks_cluster.cluster_name
     region                    = var.region
@@ -255,7 +240,6 @@ output "eks" {
     temporal_client_group_id  = module.temporal_control_plane.client_security_group_id
     internal_client_group_id  = try(module.container_services.internal_endpoints.client_security_group_id, null)
     workspace_file_system_id  = try(module.container_services.workspace.file_system_id, null)
-    workspace_access_point_id = try(element(split("/", module.container_services.workspace.access_point_arns["checkouts"]), 1), null)
     node_pool_label           = module.eks_cluster.node_pool_label
     sandbox_taint             = module.eks_cluster.sandbox_taint
     load_balancer_controller  = module.eks_cluster.load_balancer_controller
@@ -273,6 +257,7 @@ output "eks" {
     temporal_ca_secret_arn      = module.temporal_control_plane.client_ca_secret_arn
     deployer                    = module.eks_deployer.deploy
     secret_arns                 = try(local.eks_deploy_inputs.secrets, {})
+    tenants                     = [for entry in local.eks_tenant_inputs : { name = entry.name, secrets = entry.secrets }]
     image_settings = {
       OPENHANDS_AGENT_SERVER_IMAGE = var.eks_agent_server_image
       GATE_ENGINE_BUILDER_IMAGE    = var.eks_buildah_image

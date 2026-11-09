@@ -43,6 +43,11 @@ def mounted_secret_keys(providers: Path = PROVIDERS) -> list[str]:
     return sorted(keys)
 
 
+def _has_value(arn: str, secretsmanager: Any) -> bool:
+    stages = secretsmanager.describe_secret(SecretId=arn).get("VersionIdsToStages") or {}
+    return any("AWSCURRENT" in labels for labels in stages.values())
+
+
 def unset_secrets(keys: list[str], arns: dict[str, str], secretsmanager: Any) -> list[str]:
     """Return the keys whose secret has no AWSCURRENT version, which no pod could mount."""
     unset = []
@@ -50,10 +55,19 @@ def unset_secrets(keys: list[str], arns: dict[str, str], secretsmanager: Any) ->
         arn = arns.get(key)
         if not arn:
             raise DeployError(f"the eks output names no secret for {key}")
-        stages = secretsmanager.describe_secret(SecretId=arn).get("VersionIdsToStages") or {}
-        if not any("AWSCURRENT" in labels for labels in stages.values()):
+        if not _has_value(arn, secretsmanager):
             unset.append(key)
     return unset
+
+
+def unset_tenant_secrets(tenants: list[dict[str, Any]], secretsmanager: Any) -> list[str]:
+    """Return `<tenant>:<key>` for each tenant secret without an AWSCURRENT version."""
+    return [
+        f"{tenant['name']}:{key}"
+        for tenant in tenants
+        for key, arn in sorted((tenant.get("secrets") or {}).items())
+        if not _has_value(arn, secretsmanager)
+    ]
 
 
 def run_deployer(ecs: Any, logs: Any, deployer: dict[str, Any], command: list[str]) -> int:
@@ -120,9 +134,9 @@ def deploy(session: Any, eks: dict[str, Any] | None, command: list[str]) -> int:
         print(f"{LOG} the composition root has no EKS cluster or eks-deployer image, skipping")
         return 0
     if command[0] == "deploy":
-        unset = unset_secrets(
-            mounted_secret_keys(), eks["secret_arns"], session.client("secretsmanager")
-        )
+        secretsmanager = session.client("secretsmanager")
+        unset = unset_secrets(mounted_secret_keys(), eks["secret_arns"], secretsmanager)
+        unset += unset_tenant_secrets(eks.get("tenants") or [], secretsmanager)
         for key in unset:
             print(f"{LOG} {key} has no value, so the pods that mount it start without it")
         command = command + [part for key in unset for part in ("--omit-secret", key)]
@@ -136,7 +150,7 @@ def main(argv: list[str] | None = None) -> int:
         "command",
         nargs="*",
         default=["deploy"],
-        help="deploy, check-policies, or restart DEPLOYMENT...",
+        help="deploy, check-policies, or restart DEPLOYMENT... (namespace/name or tenant-workers)",
     )
     args = parser.parse_args(argv)
 

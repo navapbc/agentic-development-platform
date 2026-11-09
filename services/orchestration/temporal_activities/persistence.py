@@ -50,6 +50,7 @@ def execution_state_upsert(payload: ExecutionState) -> Any:
         workflow_id=payload.workflow_id,
         state=payload.state,
         repository=payload.repository,
+        tenant=get_settings().tenant or None,
         repository_sha=payload.repository_sha,
         policy_bundle_version=payload.policy_bundle_version,
         resolved_models=payload.resolved_models or None,

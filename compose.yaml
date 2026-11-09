@@ -131,16 +131,12 @@ services:
 
   schedule-bootstrap:
     <<: *python-service
-    command: ["sh", "-c", "python -m scripts.reap --schedule && python -m scripts.intake --schedule"]
+    command: ["python", "-m", "scripts.schedules"]
     restart: "no"
     profiles: ["tasks"]
-    environment:
-      REAP_SCHEDULE_DRY_RUN: "true"
     depends_on:
       temporal:
         condition: service_healthy
-      workflow-worker:
-        condition: service_started
 
   coordination-service:
     <<: *python-service

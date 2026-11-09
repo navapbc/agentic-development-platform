@@ -16,13 +16,16 @@ tenants = {
     }
   }
 
-  # A Java team with its own GitHub organization token and Jira project.
+  # A Java team with its own GitHub organization token and Jira project, whose sandbox namespace
+  # is capped at 16 CPUs and 40 pods.
   claims = {
     description = "The claims team's Spring Boot services."
     config_repository = {
       github_repository = "example-org/claims-platform-config"
       allowed_refs      = ["refs/heads/main", "refs/tags/v*"]
     }
+    settings      = { TICKET_BACKEND = "jira" }
+    sandbox_quota = { "requests.cpu" = "16", pods = "40" }
   }
 
   # A Python team that shares the platform's Slack webhook and keeps no Jira credentials.

@@ -5,15 +5,6 @@ locals {
   # Secret store keys each EKS workload reads through the Secrets Store CSI driver. The database
   # keys exist only with Aurora, and the secret store rejects a reader key that names no secret.
   eks_workloads = {
-    activity_worker = {
-      service_account = "activity-worker"
-      policy_arns     = concat(aws_iam_policy.eks_sandbox_image_pull[*].arn, aws_iam_policy.eks_temporal_ca[*].arn, aws_iam_policy.eks_registry_cache_fill[*].arn)
-      secrets = [
-        "database_platform_app", "coordination_shared_secret", "litellm_master_key", "authorship_signing_key",
-        "review_attestation_secret", "github_token", "jira_api_token", "jira_pat", "slack_webhook_url",
-        "registry_token",
-      ]
-    }
     litellm = {
       service_account = "litellm"
       policy_arns     = [module.bedrock_iam.invoke_policy_arn]
@@ -45,9 +36,8 @@ locals {
   # The Pod Identity agent reaches the eks-auth interface endpoint under this name.
   eks_domains = local.eks_enabled ? ["eks-auth.${var.region}.api.aws"] : []
 
-  eks_activity_worker_role_arns = local.eks_enabled ? [module.eks_cluster.pod_identity_role_arns["activity_worker"]] : []
-  # The activity worker and the inbound webhook start and signal Temporal workflows.
-  eks_temporal_client_role_arns = local.eks_enabled ? [for name in ["activity_worker", "inbound_webhook"] : module.eks_cluster.pod_identity_role_arns[name]] : []
+  # The tenant workers and the inbound webhook start and signal Temporal workflows.
+  eks_temporal_client_role_arns = local.eks_enabled ? [for name in concat(keys(local.tenant_workloads), ["inbound_webhook"]) : module.eks_cluster.pod_identity_role_arns[name]] : []
   eks_workspace                 = local.eks_enabled && module.container_services.workspace != null
   eks_deployer_enabled          = local.eks_enabled && var.create_ecs_cluster && var.create_container_services
 
@@ -96,11 +86,7 @@ locals {
       temporal_client = coalesce(module.temporal_control_plane.client_security_group_id, "")
       internal_client = try(module.container_services.internal_endpoints.client_security_group_id, "")
     }
-    workspace_volume_handle = local.eks_workspace ? "${module.container_services.workspace.file_system_id}::${element(split("/", module.container_services.workspace.access_point_arns["checkouts"]), 1)}" : ""
-    rebar_roles = {
-      reader = coalesce(module.rebar_ticket_store.reader_role_arn, "")
-      writer = coalesce(module.rebar_ticket_store.writer_role_arn, "")
-    }
+    tenants      = local.eks_tenant_inputs
     secrets      = merge(module.secret_store.secret_arns, { temporal_ca = coalesce(module.temporal_control_plane.client_ca_secret_arn, "") })
     vpc_cidr     = data.aws_vpc.eks[0].cidr_block
     service_cidr = module.eks_cluster.service_cidr
@@ -131,7 +117,7 @@ locals {
     subnet_ids         = local.management_subnet_ids
     security_group_ids = [module.eks_deployer.security_group_id]
     pass_role_arns     = [module.eks_deployer.execution_role_arn, module.eks_deployer.task_role_arn]
-    deployments        = { database_platform_app = ["activity-worker", "inbound-webhook", "mcp-gateway"] }
+    deployments        = { database_platform_app = ["tenant-workers", "inbound-webhook", "mcp-gateway"] }
   } : null
 }
 
@@ -165,13 +151,13 @@ module "eks_deployer" {
   tags = var.tags
 }
 
-# The gate, checks, and scanner pods carry no AWS identity, so the activity worker requests the
-# ECR token their in-pod pulls use, and its role bounds what that token can pull.
+# The gate, checks, and scanner pods carry no AWS identity, so the tenant's activity worker
+# requests the ECR token their in-pod pulls use, and its role bounds what that token can pull.
 resource "aws_iam_policy" "eks_sandbox_image_pull" {
   count = local.eks_enabled && var.create_container_services ? 1 : 0
 
   name_prefix = "${var.name_prefix}-eks-sandbox-image-pull-"
-  description = "Lets the activity worker issue the ECR token the gate, checks, and scanner pods pull their images with."
+  description = "Lets a tenant's activity worker issue the ECR token the gate, checks, and scanner pods pull their images with."
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
@@ -198,7 +184,7 @@ resource "aws_iam_policy" "eks_sandbox_image_pull" {
 }
 
 # The first pull of an image through a pull-through cache creates its repository and imports the
-# image with the puller's identity, which is the activity worker's token in the gate pod.
+# image with the puller's identity, which is the tenant worker's token in the gate pod.
 resource "aws_iam_policy" "eks_registry_cache_fill" {
   count = local.eks_enabled && local.registry_aws ? 1 : 0
 
@@ -242,16 +228,16 @@ resource "aws_iam_policy" "eks_workspace_mount" {
   count = local.eks_workspace ? 1 : 0
 
   name_prefix = "${var.name_prefix}-eks-workspace-mount-"
-  description = "Lets the EFS CSI node driver mount the workspace checkouts access point and each tenant's access point read-write for the EKS pods."
+  description = "Lets the EFS CSI node driver mount each tenant's workspace access point read-write for the tenant's activity worker."
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Sid      = "MountTheCheckoutsAccessPoint"
+      Sid      = "MountTheTenantAccessPoints"
       Effect   = "Allow"
       Action   = ["elasticfilesystem:ClientMount", "elasticfilesystem:ClientWrite"]
       Resource = module.container_services.workspace.file_system_arn
       Condition = {
-        StringEquals = { "elasticfilesystem:AccessPointArn" = concat([module.container_services.workspace.access_point_arns["checkouts"]], values(module.container_services.workspace.tenant_access_point_arns)) }
+        StringEquals = { "elasticfilesystem:AccessPointArn" = values(module.container_services.workspace.tenant_access_point_arns) }
       }
     }]
   })

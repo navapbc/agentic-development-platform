@@ -86,14 +86,31 @@ def test_restart_rolls_each_named_deployment(monkeypatch) -> None:
     calls: list[list[str]] = []
     monkeypatch.setattr(eks_deploy_task, "run", lambda args, **_: calls.append(args) or "")
 
-    eks_deploy_task.restart(["activity-worker", "mcp-gateway"])
+    eks_deploy_task.restart(["tenant-workers", "mcp-gateway"], {"tenants": [{"name": "adp"}]})
 
-    assert [c[3:5] for c in calls[:2]] == [
-        ["rollout", "restart"],
-        ["rollout", "restart"],
+    assert [c[1:6] for c in calls[:2]] == [
+        ["-n", "tenant-adp", "rollout", "restart", "deployment/activity-worker"],
+        ["-n", "agentic-dev-platform", "rollout", "restart", "deployment/mcp-gateway"],
     ]
-    assert calls[0][5] == "deployment/activity-worker"
-    assert [c[5] for c in calls[2:]] == ["deployment/activity-worker", "deployment/mcp-gateway"]
+    assert [c[1:3] + c[5:6] for c in calls[2:]] == [
+        ["-n", "tenant-adp", "deployment/activity-worker"],
+        ["-n", "agentic-dev-platform", "deployment/mcp-gateway"],
+    ]
+
+
+def test_the_retired_objects_are_deleted_when_present(monkeypatch) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(eks_deploy_task, "run", lambda args, **_: calls.append(args) or "")
+
+    eks_deploy_task.delete_retired()
+
+    assert ["delete", "namespace", "agent-sandbox", "--ignore-not-found", "--wait=false"] in [
+        c[1:] for c in calls
+    ]
+    assert all("--ignore-not-found" in c for c in calls)
+    assert ["-n", "agentic-dev-platform", "delete", "deployment", "activity-worker"] in [
+        c[1:6] for c in calls
+    ]
 
 
 def test_the_mounted_secrets_cover_every_provider_object() -> None:
@@ -119,6 +136,13 @@ def test_secrets_without_a_current_value_are_left_out() -> None:
     secrets = _FakeSecrets({"arn:gh": False, "arn:mcp": True})
 
     assert eks_deploy.unset_secrets(list(arns), arns, secrets) == ["github_token"]
+
+
+def test_tenant_secrets_without_a_current_value_are_named_by_tenant() -> None:
+    tenants = [{"name": "adp", "secrets": {"github_token": "arn:gh", "jira_pat": "arn:pat"}}]
+    secrets = _FakeSecrets({"arn:gh": True, "arn:pat": False})
+
+    assert eks_deploy.unset_tenant_secrets(tenants, secrets) == ["adp:jira_pat"]
 
 
 def test_a_secret_without_an_arn_is_an_error() -> None:

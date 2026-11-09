@@ -36,6 +36,7 @@ class _Client:
         self.failing = set(failing)
         self.created: list[tuple[str, str]] = []
         self.policies: list = []
+        self.states: list = []
         self.deleted: list[str] = []
 
     def get_schedule_handle(self, schedule_id: str) -> _Handle:
@@ -47,6 +48,7 @@ class _Client:
         self.schedules.add(schedule_id)
         self.created.append((schedule_id, schedule.action.id))
         self.policies.append(schedule.policy)
+        self.states.append(schedule.state)
 
 
 @pytest.fixture
@@ -107,10 +109,78 @@ async def test_install_removes_the_inactive_source_schedule(rebar_settings, caps
     client = _Client("jira-intake")
     await install_schedule("rebar", client=client)
     assert client.schedules == {"rebar-intake"}
-    assert "removed schedule 'jira-intake' for the inactive jira source" in capsys.readouterr().out
+    assert "removed schedule 'jira-intake'" in capsys.readouterr().out
 
 
 async def test_install_propagates_an_error_other_than_not_found(rebar_settings):
     client = _Client("jira-intake", failing=("jira-intake",))
     with pytest.raises(RPCError):
         await install_schedule("rebar", client=client)
+
+
+@pytest.fixture
+def tenant_settings(monkeypatch):
+    settings = hermetic_settings(ticket_backend="rebar", tenant="adp")
+    monkeypatch.setattr(intake, "get_settings", lambda: settings)
+    return settings
+
+
+async def test_a_tenant_owns_its_schedule_on_its_queue_and_retires_the_untenanted_ones(
+    tenant_settings,
+):
+    client = _Client("rebar-intake", "jira-intake", "jira-intake-adp", "rebar-intake-payments")
+
+    await install_schedule("rebar", client=client)
+
+    assert client.created == [("rebar-intake-adp", "rebar-intake-adp-run")]
+    assert client.schedules == {"rebar-intake-adp", "rebar-intake-payments"}
+
+
+async def test_the_tenant_schedule_starts_runs_on_the_tenant_queue(monkeypatch, tenant_settings):
+    started = []
+
+    class _Recording(_Client):
+        async def create_schedule(self, schedule_id, schedule):
+            started.append(schedule.action.task_queue)
+            await super().create_schedule(schedule_id, schedule)
+
+    await install_schedule("rebar", client=_Recording())
+
+    assert started == [f"{tenant_settings.temporal_task_queue}-adp"]
+
+
+async def test_the_deploy_retires_only_the_untenanted_schedules(monkeypatch, capsys):
+    import scripts.schedules as schedules
+
+    settings = hermetic_settings()
+    monkeypatch.setattr(schedules, "get_settings", lambda: settings)
+    client = _Client("jira-intake", settings.reap_schedule_id, "rebar-intake-adp")
+
+    removed = await schedules.retire_untenanted(client)
+
+    assert sorted(removed) == sorted(["jira-intake", settings.reap_schedule_id])
+    assert client.schedules == {"rebar-intake-adp"}
+    assert "removed the untenanted schedule 'jira-intake'" in capsys.readouterr().out
+
+
+async def test_a_source_that_cannot_authenticate_installs_its_schedule_paused(
+    monkeypatch, tenant_settings, capsys
+):
+    import services.integration.intake_readiness as readiness
+
+    monkeypatch.setattr(readiness, "intake_blocker", lambda source, settings: "no token")
+    client = _Client()
+
+    await install_schedule("rebar", client=client)
+
+    assert client.states[0].paused
+    assert client.states[0].note == "paused because no token"
+    assert "is paused because no token" in capsys.readouterr().out
+
+
+async def test_a_source_that_authenticates_installs_its_schedule_running(tenant_settings):
+    client = _Client()
+
+    await install_schedule("rebar", client=client)
+
+    assert not client.states[0].paused

@@ -81,9 +81,7 @@ def test_the_git_host_routes_each_repository_to_its_backend(
         "adapters.real.git_host.RealGitHost.from_settings",
         classmethod(lambda cls, settings=None: sentinel),
     )
-    host = build_git_host(
-        hermetic_settings(repository_root=str(root))
-    )
+    host = build_git_host(hermetic_settings(repository_root=str(root)))
 
     assert isinstance(host, RoutingGitHost)
     assert isinstance(host.host_for("demo"), LocalGitHost)

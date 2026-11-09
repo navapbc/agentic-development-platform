@@ -70,6 +70,8 @@ class TemporalStarter:
         await_pr_close = repository.backend == LOCAL
         caps = BudgetCaps.from_settings(self._settings)
         workflow_id = f"draft-pr-{start.issue_key}-{start.execution_id}"
+        from services.orchestration.task_queues import run_task_queue
+
         await self._client.start_workflow(
             DraftPullRequestWorkflow.run,
             DraftPullRequestInput(
@@ -108,7 +110,7 @@ class TemporalStarter:
                 max_tokens=caps.max_tokens,
             ),
             id=workflow_id,
-            task_queue=self._settings.temporal_task_queue,
+            task_queue=run_task_queue(self._settings),
         )
         return workflow_id
 
@@ -125,6 +127,14 @@ class NotificationsAlerter:
         )
 
 
+def _this_tenant(executions: Any) -> list[Any]:
+    """Limit a query to this process's tenant, whose worker owns the runs it admits and reaps."""
+    from scripts.config import get_settings
+
+    tenant = get_settings().tenant
+    return [executions.c.tenant == tenant] if tenant else []
+
+
 class PostgresExecutionSeeder:
     def __init__(self) -> None:
         self._engine: Any = None
@@ -139,6 +149,7 @@ class PostgresExecutionSeeder:
 
     async def seed(self, *, execution_id: str, task_id: str, repo: str) -> None:
         from database.models.schema import executions
+        from scripts.config import get_settings
         from sqlalchemy.dialects.postgresql import insert
 
         stmt = (
@@ -148,6 +159,7 @@ class PostgresExecutionSeeder:
                 task_id=task_id,
                 state="TASK_RECEIVED",
                 repository=repo,
+                tenant=get_settings().tenant or None,
             )
             .on_conflict_do_nothing(index_elements=[executions.c.execution_id])
         )
@@ -163,6 +175,7 @@ class PostgresExecutionSeeder:
             .where(executions.c.task_id == issue_key)
             .where(executions.c.repository == repo)
             .where(executions.c.state.not_in(("COMPLETED", "FAILED", "CANCELLED")))
+            .where(*_this_tenant(executions))
             .order_by(executions.c.updated_at.desc())
             .limit(1)
         )
@@ -180,6 +193,7 @@ class PostgresExecutionSeeder:
             select(func.count())
             .select_from(executions)
             .where(executions.c.state.not_in(("COMPLETED", "FAILED", "CANCELLED")))
+            .where(*_this_tenant(executions))
         )
         async with self._get_engine().connect() as conn:
             return int((await conn.execute(stmt)).scalar_one())
@@ -194,7 +208,10 @@ class PostgresExecutionSeeder:
             executions.c.workflow_id,
             executions.c.updated_at,
             executions.c.state,
-        ).where(executions.c.state.not_in(("COMPLETED", "FAILED", "CANCELLED")))
+        ).where(
+            executions.c.state.not_in(("COMPLETED", "FAILED", "CANCELLED")),
+            *_this_tenant(executions),
+        )
         async with self._get_engine().connect() as conn:
             rows = (await conn.execute(stmt)).all()
         return [

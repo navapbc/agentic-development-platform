@@ -99,6 +99,7 @@ EKS_DEPLOYER = ImageSpec(
         "NOTICE",
         "scripts/__init__.py",
         "scripts/eks_render.py",
+        "scripts/tenant_render.py",
         "scripts/eks_deploy_task.py",
         "services/__init__.py",
         "services/process.py",
