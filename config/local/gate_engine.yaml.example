@@ -1,19 +1,21 @@
 # Optional external gates that back their own review or scanner gates plus the advisory test
 # classifier. The adapter is tool-agnostic. It drives any tool whose entrypoint accepts
 # --against <ref> and --json-out <path> and writes either SARIF 2.1.0 or the review and classifier
-# JSON contract, selected per entry by output_format. The path is inert unless at least one engine
-# is enabled, so with this file absent or every engine disabled the built-in rebar security review
-# stays the gate. Every external gate is added here by config.
+# JSON contract, selected per entry by output_format. With this file absent, only the catalog
+# engines register, and the built-in rebar security review stays the gate unless gates.yaml or a
+# runtime profile enables an engine. Every external gate is added here by config.
 #
-# engines is a list. Each entry backs one gate, named by name, and is enabled and required
-# independently in gates.yaml. The two entries below are the example engines under
-# examples/gate-engines, a deterministic SARIF security scan and a test coverage review that asks
-# the model gateway for suggested test cases. See examples/gate-engines/README.md.
+# The catalog engines security-policy and test-policy, the example engines under
+# examples/gate-engines, are defined in config/platform/gate-engines.yaml and register wherever
+# GATE_ENGINE_IMAGES names their images. Enable them in gates.yaml by name. This file may not reuse
+# their names. engines is a list of the tenant's own engines. Each entry backs one gate, named by
+# name, and is enabled and required independently in gates.yaml. The entry below shows every
+# field. See examples/gate-engines/README.md.
 
 config_version: 1
 
 engines:
-  - name: security-policy
+  - name: custom-scan
     enabled: false
 
     # How the platform parses the engine's --json-out file.
@@ -36,27 +38,6 @@ engines:
     # Harness path inside the engine, relative to its root. Required for an enabled engine.
     review_entrypoint: bin/scan
 
-  - name: test-policy
-    enabled: false
-    output_format: review-json
-
-    # The model the engine's calls use, a canonical-id group of the LiteLLM config such as
-    # claude-opus-5-5, which both the gateway routes to Bedrock through the guardrails and an AI CLI
-    # recognizes. An alias group such as review-model is refused. tool is the AI CLI a review-json
-    # engine drives, and max_output_tokens caps its output.
-    review_model: claude-opus-5-5
-    tool: claude
-    max_output_tokens: 8192
-
-    mode: image
-    image: ""
-    review_entrypoint: bin/review
-
-    # Harness path of the advisory test classifier, which runs in the activity worker. Empty runs
-    # no classifier. triage_model is the model it uses.
-    classifier_entrypoint: ""
-    triage_model: review-model
-
   # An engine in its own repository, pinned to a tag and built from its Dockerfile in the gate pod.
   # - name: sonarqube-review
   #   enabled: true
@@ -69,10 +50,17 @@ engines:
 
   # An engine checkout on the workstation, which inv repos-sync copies into the cluster with its
   # uncommitted edits. local_path is relative to the platform checkout.
+  # review_model is a canonical-id group of the LiteLLM config, such as claude-opus-5-5, which the
+  # gateway routes to Bedrock through the guardrails. tool is the AI CLI a review-json engine
+  # drives, max_output_tokens caps its output, and classifier_entrypoint, empty by default, names
+  # the advisory test classifier harness, which runs with triage_model.
   # - name: custom-review
   #   enabled: true
   #   output_format: review-json
   #   review_model: claude-opus-5-5
+  #   tool: claude
+  #   max_output_tokens: 8192
   #   mode: local
   #   local_path: ../custom-review-engine
   #   review_entrypoint: bin/review
+  #   classifier_entrypoint: ""

@@ -54,6 +54,7 @@ with workflow.unsafe.imports_passed_through():
         ClassifyTestFailuresRequest,
         EvaluateGateRequest,
         GatePlan,
+        LoadGatePlanRequest,
         TriageResult,
         classify_test_failures,
         evaluate_gate,
@@ -563,6 +564,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 task_id=params.task_id,
                 repository_sha=params.base_sha,
                 snapshot_version=params.snapshot_version,
+                repo=params.repo,
             ),
             start_to_close_timeout=short,
             retry_policy=retry,
@@ -1511,7 +1513,10 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         subject = _change_subject(impl, commit_sha)
 
         plan: GatePlan = await workflow.execute_activity(
-            load_gate_plan, start_to_close_timeout=short, retry_policy=retry
+            load_gate_plan,
+            LoadGatePlanRequest(execution_id=params.execution_id, repo=params.repo),
+            start_to_close_timeout=short,
+            retry_policy=retry,
         )
         if not plan.review:
             return replace(outcome, status=REVIEW_PASSED, review_status="passed")
@@ -1707,7 +1712,10 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             )
         self._plan_approved = True
         plan: GatePlan = await workflow.execute_activity(
-            load_gate_plan, start_to_close_timeout=short, retry_policy=retry
+            load_gate_plan,
+            LoadGatePlanRequest(execution_id=params.execution_id, repo=params.repo),
+            start_to_close_timeout=short,
+            retry_policy=retry,
         )
         if plan.plan_pause:
             approved = await self._park_for_gate_decision(
@@ -2045,7 +2053,10 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         )
 
         plan: GatePlan = await workflow.execute_activity(
-            load_gate_plan, start_to_close_timeout=short, retry_policy=retry
+            load_gate_plan,
+            LoadGatePlanRequest(execution_id=params.execution_id, repo=params.repo),
+            start_to_close_timeout=short,
+            retry_policy=retry,
         )
 
         try:

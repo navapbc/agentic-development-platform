@@ -32,24 +32,7 @@ When there are findings, the engine calls the gateway's Anthropic Messages endpo
 
 ## Running them
 
-Both engines run in image mode, where the gate pod pulls a published image and runs the harness inside it.
-
-```yaml
-# config/<env>/gate_engine.yaml
-config_version: 1
-engines:
-  - name: security-policy
-    enabled: true
-    mode: image
-    output_format: sarif
-    review_entrypoint: bin/scan
-  - name: test-policy
-    enabled: true
-    mode: image
-    output_format: review-json
-    review_model: claude-opus-5-5
-    review_entrypoint: bin/review
-```
+Both engines are catalog engines, defined in [config/platform/gate-engines.yaml](../../config/platform/gate-engines.yaml). They run in image mode, where the gate pod pulls the published image and runs the harness inside it, and they register wherever `GATE_ENGINE_IMAGES` names their images. A tenant enables them by name in `gates.yaml`, or through a runtime profile, and its `gate_engine.yaml` may not reuse their names. Every catalog runtime profile enables both, as [docs/runtime-profiles.md](../../docs/runtime-profiles.md) lists.
 
 ```yaml
 # config/<env>/gates.yaml
@@ -64,11 +47,9 @@ gates:
     required: false
 ```
 
-An image-mode entry without an `image` runs the image `GATE_ENGINE_IMAGES` names for it.
-
 - On a workstation, start the local registry with `docker compose --profile registry up -d registry`, run `inv gate-engine-images`, set the `GATE_REGISTRY_TLS_VERIFY` and `GATE_ENGINE_IMAGES` lines it prints in `.env`, and run `inv k8s-reload`.
 - In AWS, `inv publish-platform-images` and the `publish-images` workflow push both images to the `gate-engine-security-policy` and `gate-engine-test-policy` ECR repositories and write them to `eks_gate_engine_images` in `images.auto.tfvars.json`, and `inv eks-deploy` sets `GATE_ENGINE_IMAGES` on the activity worker.
 
 ## Writing your own
 
-Copy a directory, keep the entrypoint arguments and the exit status, and write SARIF or review-json to the `--json-out` file. Install the tools the engine needs in its Dockerfile, because a gate pod in AWS cannot install packages at run time. Name the engine in `gate_engine.yaml` with `mode: image` and its published `image`, or add it to `GATE_ENGINES` in `scripts/publish_platform_images.py` with an ECR repository in `container-services` to publish it with the platform.
+Copy a directory, keep the entrypoint arguments and the exit status, and write SARIF or review-json to the `--json-out` file. Install the tools the engine needs in its Dockerfile, because a gate pod in AWS cannot install packages at run time. Name the engine in `gate_engine.yaml` with `mode: image` and its published `image`, or add it to `GATE_ENGINES` in `scripts/publish_platform_images.py`, to `config/platform/gate-engines.yaml`, and to the ECR repositories of `container-services` to make it a catalog engine the platform publishes.

@@ -13,6 +13,7 @@ class RecordManifestRequest:
     task_id: str
     repository_sha: str = ""
     snapshot_version: int = 0
+    repo: str = ""
 
 
 async def _resolve_bundle_version() -> str:
@@ -42,6 +43,13 @@ def _active_config_bundle() -> tuple[str, dict]:
     return config.tenant, identity.to_manifest()
 
 
+def _runtime_profile(repo: str) -> str:
+    from services.integration.runtime_profiles import repository_profile
+
+    profile = repository_profile(repo)
+    return profile.name if profile is not None else ""
+
+
 @activity.defn
 async def record_manifest(req: RecordManifestRequest) -> str:
     from services.coordination.manifest import DeterminismManifest, PostgresManifestStore
@@ -68,6 +76,7 @@ async def record_manifest(req: RecordManifestRequest) -> str:
         gate_config_hash=gates.config_hash,
         tenant=tenant,
         config_bundle=config_bundle,
+        runtime_profile=_runtime_profile(req.repo),
     )
     record = await PostgresManifestStore().record(manifest)
     return record.event_id

@@ -1,8 +1,9 @@
 """The source-control repositories an environment works on, from config/<env>/repositories.yaml.
 
-Each repository names its source-control backend, its default branch, and whether repository
-intelligence indexes it. A GitHub repository may override the host, owner, or token reference
-of the default identity in github.yaml. A local repository names the checkout on the host that
+Each repository names its source-control backend, its default branch, whether repository
+intelligence indexes it, and the runtime profile whose containers its runs use. A GitHub
+repository may override the host, owner, or token reference of the default identity in
+github.yaml. A local repository names the checkout on the host that
 the platform reads and pushes branches into. Inside a container, every repository's checkout
 appears at ``<REPOSITORY_ROOT>/<name>``. On the host, a repository with a path is located at
 that path, so operator commands work on the same checkouts the containers mount.
@@ -32,8 +33,10 @@ CONFIG_NAME = "repositories"
 _PLATFORM_ROOT = Path(__file__).resolve().parents[2]
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _GITHUB_FIELDS = ("host", "owner", "token_ref")
-_FIELDS = frozenset({"backend", "default_branch", "index", "index_ref", "path", *_GITHUB_FIELDS})
-_DEFAULT_FIELDS = frozenset({"backend", "default_branch", "index"})
+_FIELDS = frozenset(
+    {"backend", "default_branch", "index", "index_ref", "path", "profile", *_GITHUB_FIELDS}
+)
+_DEFAULT_FIELDS = frozenset({"backend", "default_branch", "index", "profile"})
 
 
 class UnknownRepositoryError(ConfigError):
@@ -55,6 +58,7 @@ class Repository:
     host: str | None = None
     owner: str | None = None
     token_ref: str | None = None
+    profile: str | None = None
 
 
 @dataclass(frozen=True)
@@ -163,6 +167,7 @@ def parse_repositories(
     default_backend = _backend(defaults.get("backend"), "defaults") or GITHUB
     default_branch = _text(defaults.get("default_branch"), "default_branch", "defaults") or "main"
     default_index = _flag(defaults.get("index"), "index", "defaults") or False
+    default_profile = _text(defaults.get("profile"), "profile", "defaults")
 
     repositories: dict[str, Repository] = {}
     for name, fields in _mapping(raw.get("repositories"), "repositories").items():
@@ -195,6 +200,7 @@ def parse_repositories(
             index=default_index if index is None else index,
             index_ref=_text(entry.get("index_ref"), "index_ref", context),
             path=path,
+            profile=_text(entry.get("profile"), "profile", context) or default_profile,
             **github,
         )
     return RepositoryRegistry(repositories=repositories, root=root, host_base=host_base)

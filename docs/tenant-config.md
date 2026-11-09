@@ -29,6 +29,7 @@ The tenant files are listed below.
 | `github.yaml` | The GitHub hosts, the default owner, and the `token_ref` of each credential |
 | `jira.yaml` | The Jira sites, projects, boards, flows, and the `token_ref` of each credential |
 | `tickets.yaml` | The rebar ticket store, its status flow, its poll identity, and its S3 store |
+| `profiles.yaml` | The tenant's own runtime profiles, beside the catalog's |
 
 Because the environment directory fills every gap, one environment-level file can serve every tenant, such as the aws-mode `registries.yaml` that Terraform generates. The required-content rules below still apply to the effective config, the bundle and the environment together.
 
@@ -44,6 +45,7 @@ A worker validates a bundle before it activates it, and `inv tenant-config-valid
 - `TICKET_BACKEND=rebar` and `tickets.yaml` is absent.
 - `TICKET_BACKEND=jira` and `jira.yaml` is absent.
 - A repository uses the `github` backend and `github.yaml` is absent.
+- A repository names a runtime profile that neither the catalog nor `profiles.yaml` defines, a profile reuses a catalog name, a profile's catalog image is not published, or a profile's checks or gates do not parse or enable a gate that does not register.
 
 The workers check the source every `TENANT_CONFIG_REFRESH_SECONDS`, 60 by default. A new bundle that passes validation becomes active for the runs that start after it. A new bundle that fails stays refused until its content changes. The last valid bundle stays active, and the workers alert over the Slack webhook and the alert email with every reason. A worker whose first bundle fails validation refuses to start.
 
@@ -53,11 +55,11 @@ A file the effective config lacks, and a key a file omits, take the defaults bel
 
 ### repositories.yaml
 
-Required. `defaults.backend` is `github`, `defaults.default_branch` is `main`, and `defaults.index` is `false`. Each repository inherits the defaults and may override them. A repository on the `local` backend needs a `path`.
+Required. `defaults.backend` is `github`, `defaults.default_branch` is `main`, `defaults.index` is `false`, and `defaults.profile` is unset. Each repository inherits the defaults and may override them. A repository on the `local` backend needs a `path`. A repository without a `profile` runs in the platform's sandbox image with its `checks.yaml` entry and `gates.yaml` alone.
 
 ### checks.yaml
 
-Optional. Absent, no repository has checks. A repository on the `github` backend without an entry is held at intake, because the GitHub backend requires checks. A repository on the `local` backend without an entry skips the checks gate. An entry's `working_dir` is `/workspace`, its `timeout_minutes` is 15, and it has no `fix_command` unless it sets one.
+Optional. Absent, no repository has checks of its own, and a repository whose runtime profile has checks runs those. A repository on the `github` backend without an entry is held at intake, because the GitHub backend requires checks. A repository on the `local` backend without an entry skips the checks gate. An entry's `working_dir` is `/workspace`, its `timeout_minutes` is 15, and it has no `fix_command` unless it sets one.
 
 ### gates.yaml
 
@@ -65,7 +67,7 @@ Required. `profile` selects a shipped bundle, `private` or `government`. Both ru
 
 ### gate_engine.yaml
 
-Optional. Absent, no engine gate registers and the built-in `security-review` gate stays the reviewer. An entry's `enabled` is `false`, `mode` is `local`, `output_format` is `review-json`, `tool` is `claude`, `on_unavailable` is `abort`, and `max_output_tokens` is 8192. An enabled entry must set `review_entrypoint`, and `classifier_entrypoint` is empty, which runs no classifier. An `image`-mode entry without an `image` runs the image `GATE_ENGINE_IMAGES` names for it. [gate-engine.md](gate-engine.md) describes every field.
+Optional. Absent, only the catalog engines `security-policy` and `test-policy` register, where `GATE_ENGINE_IMAGES` names their images, and a tenant entry may not reuse their names. An entry's `enabled` is `false`, `mode` is `local`, `output_format` is `review-json`, `tool` is `claude`, `on_unavailable` is `abort`, and `max_output_tokens` is 8192. An enabled entry must set `review_entrypoint`, and `classifier_entrypoint` is empty, which runs no classifier. An `image`-mode entry without an `image` runs the image `GATE_ENGINE_IMAGES` names for it. [gate-engine.md](gate-engine.md) describes every field.
 
 ### registries.yaml
 
@@ -82,6 +84,10 @@ Required with `TICKET_BACKEND=jira`. `allowlist` names the projects intake reads
 ### tickets.yaml
 
 Required with `TICKET_BACKEND=rebar`. `backend` names the store's `repo_root`, `project`, `default_repo`, and `status_flow`. `store`, `roles`, `provenance`, and `isolation` are optional together. Without `store`, the ticket store stays local to `repo_root` and syncs to no bucket. `write_back.allowed_scopes` defaults to every write scope, `status`, `comment`, `approval`, and `link`.
+
+### profiles.yaml
+
+Optional. Absent, the tenant uses the catalog profiles alone. A profile's `sandbox_image` empty runs the platform's sandbox image, `checks` absent leaves a repository without a `checks.yaml` entry with no checks, and `gates` absent applies no override. [runtime-profiles.md](runtime-profiles.md) describes the catalog and every field.
 
 ## Pinning a run
 

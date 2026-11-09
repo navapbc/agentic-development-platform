@@ -7,7 +7,10 @@ config_version: 1
 # reads it and pushes branches into it. index makes repository intelligence index the
 # repository's checkout, and index_ref pins the ref it indexes. Inside a container each
 # checkout appears at REPOSITORY_ROOT/<name>, so a repository that is indexed or uses the
-# local backend needs a path for the local stack to mount.
+# local backend needs a path for the local stack to mount. profile names the runtime profile,
+# from the platform catalog or the tenant's profiles.yaml, whose sandbox image, default checks,
+# and gate overrides the repository's runs use. A repository without one uses the platform's
+# sandbox image, its checks.yaml entry, and gates.yaml alone. See docs/runtime-profiles.md.
 
 defaults:
   backend: github
@@ -18,6 +21,7 @@ repositories:
   agentic-demo-service:
     path: ../agentic-demo-service
     index: true
+    profile: python-fastapi
   agentic-demo-greenfield:
     path: ../agentic-demo-greenfield
     index: true

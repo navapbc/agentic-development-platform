@@ -184,8 +184,14 @@ async def evaluate_gate(req: EvaluateGateRequest) -> GateResult:
     return result
 
 
+@dataclass
+class LoadGatePlanRequest:
+    execution_id: str = ""
+    repo: str = ""
+
+
 @activity.defn
-async def load_gate_plan() -> GatePlan:
+async def load_gate_plan(req: LoadGatePlanRequest | None = None) -> GatePlan:
     from services.orchestration.gates.config import (
         HUMAN_GATES,
         PLAN_GATE,

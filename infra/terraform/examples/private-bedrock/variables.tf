@@ -514,6 +514,12 @@ variable "eks_gate_engine_images" {
   default     = {}
 }
 
+variable "eks_runtime_images" {
+  description = "Image of each catalog sandbox image beside the agent-server image, agent-server-jvm and agent-server-go, by catalog name, for RUNTIME_IMAGES, which runtime profiles name as catalog:<name>. inv publish-platform-images writes it to images.auto.tfvars.json."
+  type        = map(string)
+  default     = {}
+}
+
 variable "eks_trivy_image" {
   description = "trivy image of the scanner pods, for TRIVY_IMAGE. inv publish-platform-images writes it to images.auto.tfvars.json."
   type        = string

@@ -29,11 +29,13 @@ class DeterminismManifest:
     gate_config_hash: str = ""
     tenant: str = ""
     config_bundle: dict[str, Any] = field(default_factory=dict)
+    runtime_profile: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "tenant": self.tenant,
             "config_bundle": dict(self.config_bundle),
+            "runtime_profile": self.runtime_profile,
             "snapshot_version": self.snapshot_version,
             "repository_sha": self.repository_sha,
             "policy_bundle_version": self.policy_bundle_version,

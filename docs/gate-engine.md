@@ -54,17 +54,12 @@ A Snyk or SonarQube gate is the same shape, with `review_entrypoint` pointing at
 ```yaml
 config_version: 1
 engines:
-  - name: security-policy
+  - name: custom-scan
     enabled: true
     output_format: sarif
     mode: image
+    image: registry.example.gov/gate-engines/custom-scan:1.0.0@sha256:...
     review_entrypoint: bin/scan
-  - name: test-policy
-    enabled: true
-    output_format: review-json
-    review_model: claude-opus-5-5
-    mode: image
-    review_entrypoint: bin/review
   - name: sonarqube-review
     enabled: true
     mode: tag
@@ -75,7 +70,7 @@ engines:
     classifier_entrypoint: ""
 ```
 
-Each enabled engine registers a scanner gate under its `name`. Enable it in `gates.yaml` with its own `enabled` and `required` flags. `review_entrypoint` is the harness path relative to the engine root and is required for an enabled engine. The advisory test classifier runs for the first enabled engine that sets a `classifier_entrypoint`, and an engine without one runs no classifier.
+The catalog engines `security-policy` and `test-policy`, defined in [config/platform/gate-engines.yaml](../config/platform/gate-engines.yaml), register beside these wherever `GATE_ENGINE_IMAGES` names their images, and a tenant entry may not reuse their names. Each enabled engine registers a scanner gate under its `name`. Enable it in `gates.yaml` with its own `enabled` and `required` flags. `review_entrypoint` is the harness path relative to the engine root and is required for an enabled engine. The advisory test classifier runs for the first enabled engine that sets a `classifier_entrypoint`, and an engine without one runs no classifier.
 
 ## Selecting a source mode
 
@@ -85,11 +80,11 @@ Each enabled engine registers a scanner gate under its `name`. Enable it in `gat
 
 ```yaml
 engines:
-  - name: security-policy
+  - name: custom-scan
     enabled: true
     output_format: sarif
     mode: image
-    image: registry.example.gov/gate-engines/security-policy:1.0.0@sha256:...
+    image: registry.example.gov/gate-engines/custom-scan:1.0.0@sha256:...
     review_entrypoint: bin/scan
 ```
 

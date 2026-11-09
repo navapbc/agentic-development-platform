@@ -429,7 +429,7 @@ def _make_activities(
         )
 
     @activity.defn(name="load_gate_plan")
-    async def fake_load_gate_plan() -> GatePlan:
+    async def fake_load_gate_plan(req=None) -> GatePlan:
         on_block = review_on_block or {}
         return GatePlan(
             review=[

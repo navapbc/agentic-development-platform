@@ -23,6 +23,7 @@ _CONFIGS = (
     "tickets",
     "repositories",
     "registries",
+    "profiles",
 )
 _REQUIRED_SECRETS = ("COORDINATION_SHARED_SECRET", "MCP_GATEWAY_TOKEN")
 

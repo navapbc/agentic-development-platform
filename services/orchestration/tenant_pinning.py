@@ -1,10 +1,11 @@
-"""Pin each run's activities to the tenant config bundle its manifest recorded.
+"""Pin each run's activities to its tenant config bundle and bind the run's repository.
 
 The first activity of a run, record_manifest, records the identity of the bundle active when it
 runs. This interceptor reads that identity once per run and has every later activity of the run
 read that bundle's copy, so a bundle published while the run is in flight changes nothing the
 run reads. An activity of a run that has not recorded its manifest, such as intake, reads the
-bundle active when it starts, for its whole duration.
+bundle active when it starts, for its whole duration. The repository named in the activity input
+is bound for the activity, so profile lookups resolve that repository's runtime profile.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from temporalio.worker import ActivityInboundInterceptor, ExecuteActivityInput
 from temporalio.worker import Interceptor as WorkerInterceptor
 
 from services.integration.credentials import ConfigError
+from services.integration.runtime_profiles import bound_repository
 from services.integration.tenant_config import (
     BundleIdentity,
     BundleUnavailableError,
@@ -35,14 +37,23 @@ _CACHE_SIZE = 512
 TENANT_MISMATCH = "TenantMismatch"
 
 
-def _execution_id(args: Sequence[Any]) -> str:
+def _value(holder: Any, name: str) -> str:
+    value = holder.get(name) if isinstance(holder, dict) else getattr(holder, name, "")
+    return str(value) if value else ""
+
+
+def _field(args: Sequence[Any], name: str) -> str:
+    """Return the first value of name in the activity input, at the top level or in its context."""
     for arg in args:
-        value = (
-            arg.get("execution_id") if isinstance(arg, dict) else getattr(arg, "execution_id", "")
-        )
-        if value:
-            return str(value)
+        context = arg.get("context") if isinstance(arg, dict) else getattr(arg, "context", None)
+        for holder in (arg, context):
+            if holder is not None and (value := _value(holder, name)):
+                return value
     return ""
+
+
+def _execution_id(args: Sequence[Any]) -> str:
+    return _field(args, "execution_id")
 
 
 async def _recorded_bundle(execution_id: str) -> tuple[str, dict[str, Any]] | None:
@@ -107,7 +118,7 @@ class _PinnedActivityInbound(ActivityInboundInterceptor):
                 raise
             except ConfigError as exc:
                 raise ApplicationError(str(exc), type=TENANT_MISMATCH, non_retryable=True) from exc
-        with pinned(path, identity):
+        with pinned(path, identity), bound_repository(_field(input.args, "repo")):
             return await super().execute_activity(input)
 
 

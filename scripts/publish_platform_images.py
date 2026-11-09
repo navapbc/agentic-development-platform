@@ -7,8 +7,9 @@ registry.
   UTC timestamp that `scripts.build_id` orders. Its tag is `<build id>-<source hash>-<arch>`,
   so a build whose sources are already in the repository reuses that image and its build ID
   instead of minting a new Worker Deployment version.
-- The repository-intelligence, collector, TLS sidecar, OPA, and eks-deployer images and the example
-  gate engine images under `examples/gate-engines` are tagged `<version>-<content hash>-<arch>`.
+- The repository-intelligence, collector, TLS sidecar, OPA, and eks-deployer images, the example
+  gate engine images under `examples/gate-engines`, and the catalog sandbox images
+  `agent-server-jvm` and `agent-server-go` are tagged `<version>-<content hash>-<arch>`.
 - Langfuse web, Langfuse worker, and ClickHouse are copied by the digest `compose.yaml` pins,
   LiteLLM by the digest its cluster manifest pins, and the OpenHands agent-server, buildah,
   semgrep, and trivy images by the digests their settings default to. Each copy is tagged with
@@ -116,6 +117,11 @@ GATE_ENGINE_IMAGES_KEY = "eks_gate_engine_images"
 GATE_ENGINES = {
     name: ImageSpec(f"gate-engine-{name}", "Dockerfile", ("bin", "policy.py", "rules.toml"))
     for name in ("security-policy", "test-policy")
+}
+RUNTIME_IMAGES_KEY = "eks_runtime_images"
+RUNTIME_IMAGES = {
+    name: ImageSpec(name, f"docker/{name}.Dockerfile", ())
+    for name in ("agent-server-jvm", "agent-server-go")
 }
 MIRRORED_SERVICES = {
     "langfuse-web": "langfuse-web",
@@ -360,6 +366,10 @@ def publish(publisher: Publisher, acli: AcliBuild, root: Path = REPO_ROOT) -> li
                 publisher.built(spec, context / GATE_ENGINE_ROOT / name, release_version())
                 for name, spec in GATE_ENGINES.items()
             ],
+            *[
+                publisher.built(spec, context, release_version())
+                for spec in RUNTIME_IMAGES.values()
+            ],
             publisher.built(
                 OPA,
                 context,
@@ -404,19 +414,21 @@ def image_name(reference: str) -> str:
 def tfvars(references: list[str]) -> dict[str, object]:
     """Map each reference to the composition-root variable that takes it.
 
-    The gate engine images go into one map keyed by the engine name gate_engine.yaml uses.
+    The gate engine images go into one map keyed by the engine name gate_engine.yaml uses, and the
+    catalog sandbox images into one keyed by the catalog name a runtime profile uses.
     """
-    engines = {spec.name: name for name, spec in GATE_ENGINES.items()}
+    maps = {
+        **{spec.name: (GATE_ENGINE_IMAGES_KEY, name) for name, spec in GATE_ENGINES.items()},
+        **{spec.name: (RUNTIME_IMAGES_KEY, name) for name, spec in RUNTIME_IMAGES.items()},
+    }
     values: dict[str, object] = {}
-    engine_images: dict[str, str] = {}
     for reference in references:
         name = image_name(reference)
-        if name in engines:
-            engine_images[engines[name]] = reference
+        if name in maps:
+            key, entry = maps[name]
+            values.setdefault(key, {})[entry] = reference
         else:
             values[TFVARS_KEYS[name]] = reference
-    if engine_images:
-        values[GATE_ENGINE_IMAGES_KEY] = engine_images
     return values
 
 

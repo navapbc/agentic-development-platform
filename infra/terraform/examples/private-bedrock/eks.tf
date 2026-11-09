@@ -86,6 +86,7 @@ locals {
       SEMGREP_IMAGE                = var.eks_semgrep_image
       TRIVY_IMAGE                  = var.eks_trivy_image
       GATE_ENGINE_IMAGES           = jsonencode(var.eks_gate_engine_images)
+      RUNTIME_IMAGES               = jsonencode(var.eks_runtime_images)
     }
     settings             = { LANGFUSE_HOST = "https://langfuse.${var.container_internal_domain}" }
     platform_environment = coalesce(module.container_services.platform_environment, {})

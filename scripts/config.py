@@ -246,6 +246,7 @@ class Settings(BaseSettings):
     gate_engine_privileged: bool = False
     gate_engine_root: str = "/workspaces/engines"
     gate_engine_images: dict[str, str] = {}
+    runtime_images: dict[str, str] = {}
     tenant: str = ""
     tenant_config_bucket: str = ""
     tenant_config_refresh_seconds: int = 60

@@ -89,7 +89,16 @@ def load_checks_configs(
 def checks_for_repo(
     repo: str, settings=None, *, environment: str | None = None
 ) -> ChecksConfig | None:
-    return load_checks_configs(settings, environment=environment).get(repo)
+    """Return the repository's checks.yaml entry, or else its runtime profile's default checks."""
+    from services.integration.runtime_profiles import repository_profile
+
+    explicit = load_checks_configs(settings, environment=environment).get(repo)
+    if explicit is not None:
+        return explicit
+    profile = repository_profile(repo, settings)
+    if profile is None or profile.checks is None:
+        return None
+    return parse_checks_config(repo, dict(profile.checks))
 
 
 def required_checks_repos(
@@ -97,8 +106,8 @@ def required_checks_repos(
 ) -> frozenset[str] | None:
     """Repositories that satisfy the CI requirement, or None when no repository requires CI.
 
-    A GitHub repository requires a checks entry. A local repository has no CI to wait on, so it
-    always satisfies the requirement.
+    A GitHub repository requires a checks entry, its own or its runtime profile's. A local
+    repository has no CI to wait on, so it always satisfies the requirement.
     """
     from scripts.config import get_settings
 
@@ -108,5 +117,13 @@ def required_checks_repos(
     registry = load_repository_registry(resolved, environment=environment)
     if not registry.names(GITHUB):
         return None
-    checked = frozenset(load_checks_configs(resolved, environment=environment))
+    from services.integration.runtime_profiles import load_profiles
+
+    profiles = load_profiles(resolved)
+    profiled = {
+        repository.name
+        for repository in registry.repositories.values()
+        if repository.profile in profiles and profiles[repository.profile].checks is not None
+    }
+    checked = frozenset(load_checks_configs(resolved, environment=environment)) | profiled
     return checked | frozenset(registry.names(LOCAL))

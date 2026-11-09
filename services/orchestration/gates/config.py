@@ -184,9 +184,23 @@ def load_gates_config(
     resolved = settings or get_settings()
     env = environment or resolved.environment
     require_current_config("gates", environment=env)
-    raw = load_env_config("gates", environment=env)
+    raw = with_profile_gates(load_env_config("gates", environment=env), resolved)
     resolved_registry = registry or _registry_with_engines(resolved, env)
     return parse_gates_config(raw, registry=resolved_registry)
+
+
+def with_profile_gates(raw: Mapping[str, Any], settings: Settings) -> Mapping[str, Any]:
+    """Apply the gate overrides of the run repository's profile after the tenant's own.
+
+    A profile entry for a gate the tenant also lists wins, because the profile is specific to
+    the repository the run works on.
+    """
+    from services.integration.runtime_profiles import current_profile
+
+    profile = current_profile(settings)
+    if profile is None or not profile.gates:
+        return raw
+    return {**raw, "gates": [*(raw.get("gates") or []), *profile.gates]}
 
 
 def _registry_with_engines(settings: Settings, environment: str) -> GateRegistry:

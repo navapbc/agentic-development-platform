@@ -109,7 +109,7 @@ def _build_materializer():
     return WorkspaceMaterializer.from_settings(PostgresOrphanRegistry())
 
 
-def _build_runtime():
+def _build_runtime(repo: str = ""):
     from openhands.runtime.conversation import RemoteConversationDriver
     from openhands.runtime.provisioner import (
         KubernetesSandboxProvisioner,
@@ -117,6 +117,8 @@ def _build_runtime():
     )
     from openhands.runtime.runtime import SandboxRuntime
     from scripts.config import get_settings
+
+    from services.integration.runtime_profiles import sandbox_image
 
     settings = get_settings()
     litellm_base_url = settings.sandbox_litellm_base_url
@@ -132,6 +134,7 @@ def _build_runtime():
     provisioner = inner if settings.openhands_in_cluster else PortForwardSandboxProvisioner(inner)
     runtime = SandboxRuntime.from_settings(provisioner, driver, settings)
     runtime.litellm_base_url = litellm_base_url
+    runtime.image = sandbox_image(repo, settings)
     return runtime
 
 
@@ -219,7 +222,7 @@ async def run_implementation_stage(req: ImplementationRequest) -> Implementation
         base=req.base,
         commit_sha=req.commit,
     )
-    runtime = _build_runtime()
+    runtime = _build_runtime(req.repo)
     outcome = await runtime.run_implementation(
         execution_id=req.execution_id,
         task=req.task,

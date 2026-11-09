@@ -260,8 +260,12 @@ def test_a_publish_writes_every_composition_root_variable(commands, monkeypatch)
     references = publisher.publish(platform, publisher.AcliBuild())
 
     values = publisher.tfvars(references)
-    assert set(values) == set(publisher.TFVARS_KEYS.values()) | {publisher.GATE_ENGINE_IMAGES_KEY}
+    assert set(values) == set(publisher.TFVARS_KEYS.values()) | {
+        publisher.GATE_ENGINE_IMAGES_KEY,
+        publisher.RUNTIME_IMAGES_KEY,
+    }
     assert set(values[publisher.GATE_ENGINE_IMAGES_KEY]) == {"security-policy", "test-policy"}
+    assert set(values[publisher.RUNTIME_IMAGES_KEY]) == {"agent-server-jvm", "agent-server-go"}
     built = {
         command[command.index("--tag") + 1].split(":")[0]
         for command in commands
@@ -396,3 +400,22 @@ def test_the_images_file_is_ignored_by_git() -> None:
     )
 
     assert ignored.returncode == 0
+
+
+def test_the_catalog_sandbox_images_build_on_the_pinned_agent_server_image() -> None:
+    from scripts.config import Settings
+
+    pinned = Settings.model_fields["openhands_agent_server_image"].default
+    for spec in publisher.RUNTIME_IMAGES.values():
+        dockerfile = (REPO_ROOT / spec.dockerfile).read_text(encoding="utf-8")
+        assert f"\nFROM {pinned}\n" in dockerfile, spec.dockerfile
+
+
+def test_the_catalog_sandbox_images_use_the_toolchain_of_their_profiles_checks() -> None:
+    import yaml
+
+    catalog = yaml.safe_load((REPO_ROOT / "config/platform/runtime-profiles.yaml").read_text())
+    for profile, image in (("java-spring", "agent-server-jvm"), ("go-service", "agent-server-go")):
+        checks = catalog["profiles"][profile]["checks"]["image"].removeprefix("docker.io/library/")
+        dockerfile = (REPO_ROOT / f"docker/{image}.Dockerfile").read_text(encoding="utf-8")
+        assert f"public.ecr.aws/docker/library/{checks} AS" in dockerfile, image

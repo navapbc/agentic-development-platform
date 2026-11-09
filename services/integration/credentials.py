@@ -24,6 +24,7 @@ _CURRENT_CONFIG_VERSIONS: dict[str, int] = {
     "tickets": 1,
     "repositories": 1,
     "registries": 1,
+    "profiles": 1,
 }
 
 

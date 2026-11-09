@@ -1,0 +1,19 @@
+# Catalog gate engines every tenant may enable in gates.yaml or through a runtime profile. Each
+# runs in image mode from the image GATE_ENGINE_IMAGES names for it, which the platform's publish
+# step writes, and registers only where that image is published. A tenant's gate_engine.yaml may
+# not reuse a catalog name. See examples/gate-engines/README.md.
+config_version: 1
+
+engines:
+  - name: security-policy
+    enabled: true
+    mode: image
+    output_format: sarif
+    review_entrypoint: bin/scan
+
+  - name: test-policy
+    enabled: true
+    mode: image
+    output_format: review-json
+    review_model: claude-opus-5-5
+    review_entrypoint: bin/review

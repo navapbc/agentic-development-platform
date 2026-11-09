@@ -18,6 +18,8 @@ locals {
     "eks-deployer",
     "gate-engine-security-policy",
     "gate-engine-test-policy",
+    "agent-server-jvm",
+    "agent-server-go",
   ])
 }
 

@@ -22,6 +22,7 @@ def _manifest(**overrides) -> DeterminismManifest:
         "gate_config_hash": "sha256:abc123",
         "tenant": "adp",
         "config_bundle": {"id": "0123456789abcdef", "source": "s3", "files": {"gates": "v1"}},
+        "runtime_profile": "python-fastapi",
     }
     values.update(overrides)
     return DeterminismManifest(**values)
@@ -37,6 +38,7 @@ def test_to_dict_carries_every_manifest_input():
     assert payload == {
         "tenant": "adp",
         "config_bundle": {"id": "0123456789abcdef", "source": "s3", "files": {"gates": "v1"}},
+        "runtime_profile": "python-fastapi",
         "snapshot_version": 3,
         "repository_sha": "a1b2c3d4",
         "policy_bundle_version": "policy/v2",

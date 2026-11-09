@@ -338,6 +338,7 @@ def load_gate_engine_configs(
     from scripts.config import get_settings, in_platform_image
 
     from services.integration.credentials import (
+        ConfigError,
         env_config_path,
         load_env_config,
         require_current_config,
@@ -345,13 +346,41 @@ def load_gate_engine_configs(
 
     resolved = settings or get_settings()
     env = environment or resolved.environment
-    if not env_config_path("gate_engine", environment=env).exists():
-        return ()
-    require_current_config("gate_engine", environment=env)
-    configs = parse_gate_engine_configs(load_env_config("gate_engine", environment=env))
-    return attach_published_images(
-        locate_local_engines(
-            configs, engine_root=resolved.gate_engine_root, in_image=in_platform_image()
-        ),
-        resolved.gate_engine_images,
+    configs: tuple[GateEngineConfig, ...] = ()
+    if env_config_path("gate_engine", environment=env).exists():
+        require_current_config("gate_engine", environment=env)
+        configs = parse_gate_engine_configs(load_env_config("gate_engine", environment=env))
+    catalog = catalog_engines(resolved.gate_engine_images)
+    reused = sorted({config.name for config in configs} & set(catalog_engine_names()))
+    if reused:
+        raise ConfigError(
+            f"gate_engine.yaml redefines the catalog engines {', '.join(reused)}. Enable a catalog "
+            "engine in gates.yaml by its name, or give a custom engine another name."
+        )
+    located = locate_local_engines(
+        configs, engine_root=resolved.gate_engine_root, in_image=in_platform_image()
+    )
+    return attach_published_images(located, resolved.gate_engine_images) + catalog
+
+
+def catalog_engine_names() -> tuple[str, ...]:
+    return tuple(config.name for config in _catalog_engine_configs())
+
+
+def _catalog_engine_configs() -> tuple[GateEngineConfig, ...]:
+    from services.integration.credentials import load_platform_config
+
+    return parse_gate_engine_configs(load_platform_config("gate-engines"))
+
+
+def catalog_engines(images: dict[str, str]) -> tuple[GateEngineConfig, ...]:
+    """Return the catalog engines whose image GATE_ENGINE_IMAGES names, with that image.
+
+    An engine whose image this deployment has not published does not register, so enabling it
+    in gates.yaml fails as an unregistered gate.
+    """
+    return tuple(
+        replace(config, image=images[config.name])
+        for config in _catalog_engine_configs()
+        if images.get(config.name)
     )

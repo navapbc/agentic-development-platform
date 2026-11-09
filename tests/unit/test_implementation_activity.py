@@ -69,7 +69,7 @@ async def test_stage_binds_the_materialized_sub_path_into_the_runtime(tmp_path, 
     materializer = _FakeMaterializer(tmp_path)
     runtime = _FakeRuntime()
     monkeypatch.setattr(impl, "_build_materializer", lambda: materializer)
-    monkeypatch.setattr(impl, "_build_runtime", lambda: runtime)
+    monkeypatch.setattr(impl, "_build_runtime", lambda repo="": runtime)
 
     result = await run_implementation_stage(
         ImplementationRequest(
@@ -96,7 +96,7 @@ async def test_stage_appends_the_plan_to_the_coder_context(tmp_path, monkeypatch
     materializer = _FakeMaterializer(tmp_path)
     runtime = _FakeRuntime()
     monkeypatch.setattr(impl, "_build_materializer", lambda: materializer)
-    monkeypatch.setattr(impl, "_build_runtime", lambda: runtime)
+    monkeypatch.setattr(impl, "_build_runtime", lambda repo="": runtime)
 
     await run_implementation_stage(
         ImplementationRequest(

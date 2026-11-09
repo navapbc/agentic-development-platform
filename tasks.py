@@ -202,6 +202,12 @@ def gate_engine_images(c, registry="", pull_registry=""):
     c.run(f"{HOST_PYTHON} -m scripts.gate_engine_images{flags}", pty=True)
 
 
+@task
+def runtime_images(c):
+    """Build the catalog sandbox images into the local cluster and print RUNTIME_IMAGES."""
+    c.run(f"{HOST_PYTHON} -m scripts.runtime_images", pty=True)
+
+
 def _tenant_config_flags(tenant: str, bundle_dir: str, extra: dict[str, str]) -> str:
     flags = f" --tenant {shlex.quote(tenant)}" if tenant else ""
     flags += f" --dir {shlex.quote(bundle_dir)}" if bundle_dir else ""
@@ -1438,6 +1444,7 @@ for _t in (
     aws_login,
     repos_sync,
     gate_engine_images,
+    runtime_images,
     tenant_config_validate,
     tenant_config_publish,
     fetch_results,
