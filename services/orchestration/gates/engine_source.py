@@ -338,14 +338,14 @@ def load_gate_engine_configs(
     from scripts.config import get_settings, in_platform_image
 
     from services.integration.credentials import (
-        env_config_dir,
+        env_config_path,
         load_env_config,
         require_current_config,
     )
 
     resolved = settings or get_settings()
     env = environment or resolved.environment
-    if not (env_config_dir(env) / "gate_engine.yaml").exists():
+    if not env_config_path("gate_engine", environment=env).exists():
         return ()
     require_current_config("gate_engine", environment=env)
     configs = parse_gate_engine_configs(load_env_config("gate_engine", environment=env))

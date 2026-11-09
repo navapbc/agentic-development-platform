@@ -20,6 +20,8 @@ def _manifest(**overrides) -> DeterminismManifest:
         "resolved_models": {"classification-summary": "bedrock/anthropic.claude-3"},
         "gate_versions": {"code-review": "1", "semgrep": "1"},
         "gate_config_hash": "sha256:abc123",
+        "tenant": "adp",
+        "config_bundle": {"id": "0123456789abcdef", "source": "s3", "files": {"gates": "v1"}},
     }
     values.update(overrides)
     return DeterminismManifest(**values)
@@ -33,6 +35,8 @@ def test_manifest_event_id_is_deterministic_per_execution():
 def test_to_dict_carries_every_manifest_input():
     payload = _manifest().to_dict()
     assert payload == {
+        "tenant": "adp",
+        "config_bundle": {"id": "0123456789abcdef", "source": "s3", "files": {"gates": "v1"}},
         "snapshot_version": 3,
         "repository_sha": "a1b2c3d4",
         "policy_bundle_version": "policy/v2",

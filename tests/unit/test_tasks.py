@@ -89,6 +89,8 @@ EXPECTED_TASKS = {
     "repos-sync",
     "fetch-results",
     "gate-engine-images",
+    "tenant-config-validate",
+    "tenant-config-publish",
     "webhook-setup",
     "webhook-teardown",
 }

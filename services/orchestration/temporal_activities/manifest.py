@@ -31,6 +31,17 @@ async def _resolve_models() -> dict[str, str]:
     return await resolve_logical_models([PLANNING_MODEL, settings.coding_model])
 
 
+def _active_config_bundle() -> tuple[str, dict]:
+    """Return the tenant and the identity of the bundle this activity reads, which the run pins."""
+    from services.integration.tenant_config import active_tenant_config, current_identity
+
+    config = active_tenant_config()
+    identity = current_identity()
+    if config is None or identity is None:
+        return "", {}
+    return config.tenant, identity.to_manifest()
+
+
 @activity.defn
 async def record_manifest(req: RecordManifestRequest) -> str:
     from services.coordination.manifest import DeterminismManifest, PostgresManifestStore
@@ -43,6 +54,7 @@ async def record_manifest(req: RecordManifestRequest) -> str:
     prompt_versions = review_prompt_versions(spec.name for spec in config.enabled_gates())
     bundle_version = await _resolve_bundle_version()
     resolved_models = await _resolve_models()
+    tenant, config_bundle = _active_config_bundle()
 
     manifest = DeterminismManifest(
         execution_id=req.execution_id,
@@ -54,6 +66,8 @@ async def record_manifest(req: RecordManifestRequest) -> str:
         resolved_models=resolved_models,
         gate_versions=gates.versions,
         gate_config_hash=gates.config_hash,
+        tenant=tenant,
+        config_bundle=config_bundle,
     )
     record = await PostgresManifestStore().record(manifest)
     return record.event_id

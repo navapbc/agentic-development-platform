@@ -104,9 +104,24 @@ def env_config_dir(environment: str, *, root: Path | None = None) -> Path:
     return base / "config" / environment
 
 
+def env_config_path(name: str, *, environment: str, root: Path | None = None) -> Path:
+    """Return the file config/<environment>/<name>.yaml resolves to.
+
+    A tenant file comes from the tenant's bundle when the bundle holds it, and otherwise from
+    the environment directory. An explicit root selects the checkout layout and no bundle.
+    """
+    if root is None:
+        from services.integration.tenant_config import tenant_file
+
+        bundled = tenant_file(name)
+        if bundled is not None:
+            return bundled
+    return env_config_dir(environment, root=root) / f"{name}.yaml"
+
+
 def load_env_config(name: str, *, environment: str, root: Path | None = None) -> dict[str, Any]:
-    """Load config/<environment>/<name>.yaml as a mapping."""
-    path = env_config_dir(environment, root=root) / f"{name}.yaml"
+    """Load config/<environment>/<name>.yaml, or the tenant bundle's copy, as a mapping."""
+    path = env_config_path(name, environment=environment, root=root)
     if not path.exists():
         raise ConfigError(f"config file missing: {path}; copy {path.name}.example to create it")
     parsed = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -134,7 +149,11 @@ def load_platform_config(name: str, *, root: Path | None = None) -> dict[str, An
 def _read_config_file(
     name: str, *, environment: str, root: Path | None, suffix: str
 ) -> dict[str, Any] | None:
-    path = env_config_dir(environment, root=root) / f"{name}.yaml{suffix}"
+    path = (
+        env_config_path(name, environment=environment, root=root)
+        if suffix == ""
+        else env_config_dir(environment, root=root) / f"{name}.yaml{suffix}"
+    )
     if not path.exists():
         return None
     parsed = yaml.safe_load(path.read_text(encoding="utf-8"))

@@ -202,6 +202,49 @@ def gate_engine_images(c, registry="", pull_registry=""):
     c.run(f"{HOST_PYTHON} -m scripts.gate_engine_images{flags}", pty=True)
 
 
+def _tenant_config_flags(tenant: str, bundle_dir: str, extra: dict[str, str]) -> str:
+    flags = f" --tenant {shlex.quote(tenant)}" if tenant else ""
+    flags += f" --dir {shlex.quote(bundle_dir)}" if bundle_dir else ""
+    for name, value in extra.items():
+        flags += f" --{name} {shlex.quote(value)}" if value else ""
+    return flags
+
+
+@task(
+    help={
+        "tenant": "Tenant name (default TENANT).",
+        "bundle_dir": "Bundle directory (default config/<env>/tenants/<tenant>).",
+        "environment_dir": "Environment config directory the bundle layers over.",
+    }
+)
+def tenant_config_validate(c, tenant="", bundle_dir="", environment_dir=""):
+    """Validate a tenant config bundle layered over the environment's config."""
+    flags = _tenant_config_flags(tenant, bundle_dir, {"environment-dir": environment_dir})
+    c.run(f"{HOST_PYTHON} -m scripts.tenant_config validate{flags}", pty=True)
+
+
+@task(
+    help={
+        "tenant": "Tenant name (default TENANT).",
+        "bundle_dir": "Bundle directory (default config/<env>/tenants/<tenant>).",
+        "bucket": "Tenant config bucket (default TENANT_CONFIG_BUCKET).",
+        "environment_dir": "Environment config directory the bundle layers over.",
+    }
+)
+def tenant_config_publish(c, tenant="", bundle_dir="", bucket="", environment_dir=""):
+    """Validate a tenant config bundle and publish it to the tenant config bucket."""
+    from scripts.config import get_settings
+
+    flags = _tenant_config_flags(
+        tenant, bundle_dir, {"bucket": bucket, "environment-dir": environment_dir}
+    )
+    c.run(
+        f"{HOST_PYTHON} -m scripts.tenant_config publish{flags}",
+        pty=True,
+        env=_aws_env(get_settings()),
+    )
+
+
 @task(help={"repo": "Fetch only this repository."})
 def fetch_results(c, repo=""):
     """Fetch the agent branches and their results refs from the cluster into the host checkouts."""
@@ -1395,6 +1438,8 @@ for _t in (
     aws_login,
     repos_sync,
     gate_engine_images,
+    tenant_config_validate,
+    tenant_config_publish,
     fetch_results,
     webhook_setup,
     webhook_teardown,

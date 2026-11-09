@@ -202,7 +202,13 @@ def build_worker(client: Client, task_queue: str, role: str) -> Worker:
             **versioning,
         )
     if role == WORKER_ROLE_ACTIVITY:
-        return Worker(client, task_queue=task_queue, activities=_ACTIVITIES, **versioning)
+        return Worker(
+            client,
+            task_queue=task_queue,
+            activities=_ACTIVITIES,
+            interceptors=_tenant_interceptors(),
+            **versioning,
+        )
     if role == WORKER_ROLE_REVIEW:
         return Worker(client, task_queue=task_queue, activities=_REVIEW_ACTIVITIES, **versioning)
     return Worker(
@@ -211,8 +217,17 @@ def build_worker(client: Client, task_queue: str, role: str) -> Worker:
         workflows=_WORKFLOWS,
         activities=_all_activities(),
         workflow_runner=runner,
+        interceptors=_tenant_interceptors(),
         **versioning,
     )
+
+
+def _tenant_interceptors() -> list[Any]:
+    from services.integration.tenant_config import active_tenant_config
+    from services.orchestration.tenant_pinning import TenantConfigInterceptor
+
+    config = active_tenant_config()
+    return [] if config is None else [TenantConfigInterceptor(config)]
 
 
 def _warm_acli_auth(settings) -> None:
@@ -310,10 +325,22 @@ async def main() -> None:
         if change is not None:
             log.info("recorded review trust-root change: %s", change)
 
+    tenant_refresh_task = None
     if role in (WORKER_ROLE_ACTIVITY, WORKER_ROLE_ALL):
         from services.integration.tickets.store_remote import tickets_store_preflight
         from services.orchestration.authorship import authorship_signing_preflight
+        from services.orchestration.tenant_pinning import (
+            refresh_tenant_config,
+            start_tenant_config,
+        )
 
+        tenant_config = start_tenant_config(settings)
+        log.info(
+            "serving tenant %s on config bundle %s", tenant_config.tenant, tenant_config.active.id
+        )
+        tenant_refresh_task = asyncio.create_task(
+            refresh_tenant_config(tenant_config, settings.tenant_config_refresh_seconds)
+        )
         tickets_store_preflight(settings)
         authorship_signing_preflight(settings)
         await _scrub_workspace_credentials(settings.execution_workspace_root)
@@ -362,7 +389,7 @@ async def main() -> None:
     try:
         await asyncio.gather(*runners)
     finally:
-        for task in (heartbeat_task, watch_task):
+        for task in (heartbeat_task, watch_task, tenant_refresh_task):
             if task is not None:
                 task.cancel()
 

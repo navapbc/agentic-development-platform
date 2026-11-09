@@ -20,12 +20,11 @@ from __future__ import annotations
 import base64
 import json
 from dataclasses import dataclass, field
-from functools import lru_cache
 from typing import Any
 from urllib.parse import urlsplit
 
 from services.integration.credentials import (
-    env_config_dir,
+    env_config_path,
     load_env_config,
     require_current_config,
 )
@@ -85,13 +84,12 @@ def parse(raw: dict[str, Any]) -> RegistryConfig:
     )
 
 
-@lru_cache(maxsize=1)
 def current() -> RegistryConfig | None:
     """Return the environment's registry config, or None when it has none."""
     from scripts.config import get_settings
 
     environment = get_settings().environment
-    if not (env_config_dir(environment) / "registries.yaml").exists():
+    if not env_config_path("registries", environment=environment).exists():
         return None
     require_current_config("registries", environment=environment)
     return parse(load_env_config("registries", environment=environment))

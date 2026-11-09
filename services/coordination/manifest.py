@@ -9,7 +9,7 @@ from typing import Any, Protocol
 from database.engine import create_platform_engine
 from database.models.schema import audit_events, executions
 from scripts.config import get_settings
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -27,9 +27,13 @@ class DeterminismManifest:
     resolved_models: dict[str, str] = field(default_factory=dict)
     gate_versions: dict[str, str] = field(default_factory=dict)
     gate_config_hash: str = ""
+    tenant: str = ""
+    config_bundle: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "tenant": self.tenant,
+            "config_bundle": dict(self.config_bundle),
             "snapshot_version": self.snapshot_version,
             "repository_sha": self.repository_sha,
             "policy_bundle_version": self.policy_bundle_version,
@@ -94,6 +98,24 @@ class PostgresManifestStore:
                 .on_conflict_do_nothing(index_elements=[audit_events.c.event_id])
             )
         return ManifestRecord(event_id, manifest)
+
+
+async def recorded_config_bundle(
+    execution_id: str, engine: AsyncEngine | None = None
+) -> tuple[str, dict[str, Any]] | None:
+    """Return the tenant and config bundle identity a run's manifest recorded, or None."""
+    resolved = engine or create_platform_engine(get_settings().database_url)
+    async with resolved.connect() as conn:
+        row = (
+            await conn.execute(
+                select(audit_events.c.correlation_ids).where(
+                    audit_events.c.event_id == manifest_event_id(execution_id)
+                )
+            )
+        ).first()
+    if row is None or not row[0] or not row[0].get("config_bundle"):
+        return None
+    return str(row[0].get("tenant") or ""), dict(row[0]["config_bundle"])
 
 
 class InMemoryManifestStore:
