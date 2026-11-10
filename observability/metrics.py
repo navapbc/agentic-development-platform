@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 from typing import Any
 
 from opentelemetry.sdk.resources import Resource
@@ -25,6 +26,9 @@ _stage_cost: Any | None = None
 
 
 def _build_metric_reader() -> Any | None:
+    if not os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "").strip():
+        log.warning("OTEL_EXPORTER_OTLP_ENDPOINT not set; metrics will not be exported")
+        return None
     try:
         from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
         from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader

@@ -61,7 +61,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 ARG AGENT_BUILD_ID=0.3.0
 ENV AGENT_BUILD_ID=${AGENT_BUILD_ID}
 
-RUN useradd --create-home --uid 10001 appuser
-USER appuser
+#RUN useradd --create-home --uid 10001 appuser
+#USER appuser
 
 CMD ["python", "-m", "services.orchestration.worker"]

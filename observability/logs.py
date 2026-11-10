@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 import re
 from typing import Any
 
@@ -74,6 +75,9 @@ def _redact_handler(handler: logging.Handler) -> None:
 
 
 def _build_log_exporter() -> Any | None:
+    if not os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "").strip():
+        log.warning("OTEL_EXPORTER_OTLP_ENDPOINT not set; logs will not be exported")
+        return None
     try:
         from opentelemetry.exporter.otlp.proto.grpc._log_exporter import OTLPLogExporter
 

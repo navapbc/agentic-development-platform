@@ -108,6 +108,9 @@ def _composite_propagator() -> CompositePropagator:
 
 
 def _build_exporter() -> SpanExporter | None:
+    if not os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "").strip():
+        log.warning("OTEL_EXPORTER_OTLP_ENDPOINT not set; spans will not be exported")
+        return None
     try:
         from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 

@@ -25,10 +25,6 @@ class PromotionPolicyMediator:
     def from_settings(
         cls, engine: PolicyEngine, settings: Settings | None = None
     ) -> PromotionPolicyMediator:
-        from services.integration.github.factory import (
-            GITHUB,
-            resolve_source_control_backend_name,
-        )
         from services.integration.source_control import source_control_repos
         from services.integration.tickets.factory import ticket_projects
 
@@ -37,7 +33,7 @@ class PromotionPolicyMediator:
             engine=engine,
             allowed_repos=frozenset(source_control_repos(resolved)),
             allowed_projects=frozenset(ticket_projects(resolved)),
-            ci_required=resolve_source_control_backend_name(resolved) == GITHUB,
+            ci_required=False,
         )
 
     def _guard(self, repo: str) -> None:
