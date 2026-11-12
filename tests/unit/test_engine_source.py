@@ -13,8 +13,6 @@ from services.orchestration.gates.engine_source import (
     resolve_engine_source,
 )
 
-pytestmark = pytest.mark.asyncio
-
 
 class _FakeGit:
     def __init__(self, responses: dict[tuple[str, ...], CommandResult]) -> None:
@@ -243,12 +241,9 @@ async def test_zip_mode_descends_into_a_single_wrapper_directory(tmp_path):
     assert (Path(resolved.path) / "engines" / "_common" / "CONTRACT.md").is_file()
 
 
-
 async def test_unknown_mode_fails_fast():
     with pytest.raises(EngineSourceError):
-        await resolve_engine_source(
-            GateEngineConfig(enabled=True, mode="svn"), runner=_FakeGit({})
-        )
+        await resolve_engine_source(GateEngineConfig(enabled=True, mode="svn"), runner=_FakeGit({}))
 
 
 def test_parse_disabled_config_is_inert():
@@ -375,9 +370,7 @@ def test_parse_rejects_a_duplicate_engine_name():
     from services.orchestration.gates.engine_source import parse_gate_engine_configs
 
     with pytest.raises(ConfigError):
-        parse_gate_engine_configs(
-            {"engines": [{"name": "dup"}, {"name": "dup"}]}
-        )
+        parse_gate_engine_configs({"engines": [{"name": "dup"}, {"name": "dup"}]})
 
 
 def test_parse_rejects_an_entry_without_a_name():
@@ -418,4 +411,3 @@ def test_triage_engine_is_none_when_no_enabled_classifier():
     )
 
     assert triage_engine(configs) is None
-

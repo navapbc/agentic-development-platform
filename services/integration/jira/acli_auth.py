@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
-import subprocess
 import time
 from urllib.parse import urlsplit
 
+from services import process
 from services.integration.jira.credentials import JiraProjectCredential
 
 _AUTH_TTL_SECONDS = 60.0
 _last_ensured: dict[str, float] = {}
+
+
+class AcliNotInstalledError(RuntimeError):
+    """The Jira Cloud path needs acli and the configured binary is absent."""
 
 
 def _acli_command(acli_path: str) -> list[str]:
@@ -22,11 +26,19 @@ def _site_host(url: str) -> str:
 
 
 def acli_is_authenticated(*, acli_path: str = "") -> bool:
-    result = subprocess.run(
-        [*_acli_command(acli_path), "jira", "auth", "status"],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = process.run(
+            [*_acli_command(acli_path), "jira", "auth", "status"],
+            timeout=process.SHORT_COMMAND_TIMEOUT_SECONDS,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as exc:
+        raise AcliNotInstalledError(
+            f"acli is not installed at {acli_path or 'acli on PATH'}. The Jira Cloud path needs "
+            "it. Rebuild the worker images with INSTALL_ACLI=true in .env, or run inv fetch-acli "
+            "for a host run."
+        ) from exc
     return result.returncode == 0
 
 
@@ -45,7 +57,7 @@ def ensure_acli_authenticated(cred: JiraProjectCredential, *, acli_path: str = "
     ]
     if missing:
         raise ValueError(f"cannot authenticate acli, missing settings: {', '.join(missing)}")
-    result = subprocess.run(
+    result = process.run(
         [
             *_acli_command(acli_path),
             "jira",
@@ -57,6 +69,7 @@ def ensure_acli_authenticated(cred: JiraProjectCredential, *, acli_path: str = "
             cred.email,
             "--token",
         ],
+        timeout=process.SHORT_COMMAND_TIMEOUT_SECONDS,
         input=cred.token,
         capture_output=True,
         text=True,

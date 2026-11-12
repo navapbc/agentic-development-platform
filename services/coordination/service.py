@@ -11,10 +11,11 @@ from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-from scripts.config import get_settings
+from scripts.config import configured_log_level, get_settings
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from services.coordination.auth import SHARED_SECRET_ENV_VAR, SHARED_SECRET_REMEDY
 from services.coordination.claims import (
     PostgresWorkClaimStore,
     WorkClaimStore,
@@ -31,11 +32,16 @@ from services.coordination.sequencing import (
     SequencedAction,
     SequenceGate,
 )
+from services.http_front_door import (
+    REQUEST_TIMEOUT_SECONDS,
+    RequestRejected,
+    bearer_token_accepted,
+    read_bounded_body,
+)
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=configured_log_level())
 log = logging.getLogger("coordination-service")
 
-HOST = "0.0.0.0"  # noqa: S104
 PORT = 8130
 
 
@@ -62,11 +68,15 @@ def build_handler(
     gate: SequenceGate,
     claim_store: WorkClaimStore,
     loop: asyncio.AbstractEventLoop,
+    *,
+    shared_secret: str,
 ) -> type[BaseHTTPRequestHandler]:
     def _run(coro: Coroutine[Any, Any, Any]) -> Any:
         return asyncio.run_coroutine_threadsafe(coro, loop).result()
 
     class Handler(BaseHTTPRequestHandler):
+        timeout = REQUEST_TIMEOUT_SECONDS
+
         def do_GET(self) -> None:
             if self.path in ("/health", "/healthz", "/"):
                 healthy = _agent_platform_healthy(loop)
@@ -79,8 +89,16 @@ def build_handler(
                 self.end_headers()
 
         def do_POST(self) -> None:
+            if not bearer_token_accepted(self.headers, shared_secret):
+                self.close_connection = True
+                self._respond(401, {"error": "unauthorized"})
+                return
             try:
                 payload = self._read_json()
+            except RequestRejected as exc:
+                self.close_connection = True
+                self._respond(exc.status, {"error": exc.message})
+                return
             except ValueError:
                 self._respond(400, {"error": "invalid json body"})
                 return
@@ -119,8 +137,7 @@ def build_handler(
             raise KeyError(path)
 
         def _read_json(self) -> dict[str, Any]:
-            length = int(self.headers.get("Content-Length", 0))
-            raw = self.rfile.read(length) if length else b""
+            raw = read_bounded_body(self.rfile, self.headers)
             try:
                 return json.loads(raw or b"{}")
             except json.JSONDecodeError as exc:
@@ -152,13 +169,13 @@ def _temporal_owner_active() -> Callable[[str], Awaitable[bool]]:
     lock = asyncio.Lock()
 
     async def _client() -> Any:
-        from temporalio.client import Client
+        from services import temporal_client
 
         if cache["client"] is None:
             async with lock:
                 if cache["client"] is None:
-                    cache["client"] = await Client.connect(
-                        settings.temporal_host, namespace=settings.temporal_namespace
+                    cache["client"] = await temporal_client.connect(
+                        settings.temporal_host, settings
                     )
         return cache["client"]
 
@@ -180,6 +197,14 @@ def _temporal_owner_active() -> Callable[[str], Awaitable[bool]]:
 
 
 def main() -> None:
+    from database.schema_guard import wait_for_platform_schema
+
+    settings = get_settings()
+    if not settings.coordination_shared_secret:
+        raise SystemExit(
+            f"the coordination service has no {SHARED_SECRET_ENV_VAR}. {SHARED_SECRET_REMEDY}"
+        )
+    asyncio.run(wait_for_platform_schema(settings.database_url))
     loop = asyncio.new_event_loop()
     threading.Thread(target=loop.run_forever, name="coordination-loop", daemon=True).start()
     handler = build_handler(
@@ -187,9 +212,10 @@ def main() -> None:
         PostgresSequenceGate(),
         PostgresWorkClaimStore(owner_active=_temporal_owner_active()),
         loop,
+        shared_secret=settings.coordination_shared_secret,
     )
-    log.info("coordination-service listening on %s:%d", HOST, PORT)
-    ThreadingHTTPServer((HOST, PORT), handler).serve_forever()
+    log.info("coordination-service listening on %s:%d", settings.bind_host, PORT)
+    ThreadingHTTPServer((settings.bind_host, PORT), handler).serve_forever()
 
 
 if __name__ == "__main__":

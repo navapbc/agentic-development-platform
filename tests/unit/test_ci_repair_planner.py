@@ -167,3 +167,221 @@ def test_analyze_failure_guardrail_aborts_unknown_without_model():
 
     assert plan.status == UNREPAIRABLE
     assert plan.instruction == ""
+
+
+_PRETTIER_LOG = (
+    "> portal@1.0.0 format-check\n"
+    "> prettier --check .\n"
+    "\n"
+    "npm warn deprecated rimraf@3.0.2: no longer supported\n"
+    "Checking formatting...\n"
+    "[warn] src/pages/applications/phone-number.tsx\n"
+    "[warn] Code style issues found in the above file. Run Prettier with --write to fix.\n"
+    "Error: exit status 1\n"
+)
+
+
+def test_prettier_failure_classifies_as_lint():
+    assert classify_failure(failure_summary(_PRETTIER_LOG)) == LINT
+
+
+def test_prettier_summary_keeps_the_offending_filename_for_the_repair_agent():
+    summary = failure_summary(_PRETTIER_LOG)
+
+    assert "src/pages/applications/phone-number.tsx" in summary
+
+
+def test_prettier_summary_drops_npm_deprecation_noise():
+    assert "npm warn deprecated" not in failure_summary(_PRETTIER_LOG)
+
+
+_ESLINT_LOG = (
+    "> portal@1.0.0 lint:ci\n"
+    "> eslint --cache --ext .js,.ts,.tsx --max-warnings 0 ./\n"
+    "\n"
+    "npm warn deprecated rimraf@3.0.2: no longer supported\n"
+    "/workspace/portal/tests/components/Footer.test.tsx\n"
+    "  38:23  error  Avoid using container methods. Prefer using the methods from "
+    'Testing Library, such as "getByRole()"  testing-library/no-container\n'
+    "\n"
+    "\u2716 1 problem (1 error, 0 warnings)\n"
+    "Error: exit status 1\n"
+)
+
+
+def test_eslint_summary_keeps_the_offending_filename_for_the_repair_agent():
+    summary = failure_summary(_ESLINT_LOG)
+
+    assert "/workspace/portal/tests/components/Footer.test.tsx" in summary
+
+
+def test_eslint_summary_names_a_file_the_repair_can_scope_to():
+    from services.orchestration.langgraph.ci_repair import failing_files
+
+    assert failing_files(failure_summary(_ESLINT_LOG)) == (
+        "/workspace/portal/tests/components/Footer.test.tsx",
+    )
+
+
+def test_eslint_summary_drops_npm_deprecation_noise():
+    assert "npm warn deprecated" not in failure_summary(_ESLINT_LOG)
+
+
+def test_eslint_failure_classifies_as_lint():
+    summary = failure_summary(
+        "/workspace/portal/src/x.tsx\n"
+        "  64:7  error  Unexpected token  react/jsx-no-undef\n"
+        "\u2716 1 problem (1 error, 0 warnings)\n"
+    )
+
+    assert classify_failure(summary) == LINT
+
+
+def test_typescript_compile_error_classifies_as_build():
+    summary = failure_summary(
+        "src/x.tsx(64,7): error TS2322: Type 'string' is not assignable.\nError: exit status 1\n"
+    )
+
+    assert classify_failure(summary) == BUILD
+
+
+def test_jest_failure_still_classifies_as_a_test_failure():
+    summary = failure_summary(
+        "FAIL tests/pages/applications/phone-number.test.ts\n"
+        "Tests:       1 failed, 0 passed, 1 total\n"
+        "Error: exit status 1\n"
+    )
+
+    assert classify_failure(summary) == TEST_FAILURE
+
+
+def test_failing_files_keeps_dotfiles_and_dot_directories():
+    from services.orchestration.langgraph.ci_repair import failing_files, in_repair_scope
+
+    found = failing_files("[warn] .eslintrc.js\n[warn] .github/workflows/ci.yml")
+
+    assert found == (".eslintrc.js", ".github/workflows/ci.yml")
+    assert in_repair_scope("portal/.eslintrc.js", found)
+
+
+def test_scope_rejects_a_changed_path_shorter_than_the_entry_it_resembles():
+    from services.orchestration.langgraph.ci_repair import in_repair_scope
+
+    scope = ("portal/src/app.tsx",)
+
+    assert in_repair_scope("portal/src/app.tsx", scope)
+    assert in_repair_scope("other/portal/src/app.tsx", scope)
+    assert not in_repair_scope("src/app.tsx", scope)
+    assert not in_repair_scope("app.tsx", scope)
+
+
+def test_prose_and_urls_do_not_widen_the_repair_scope():
+    from services.orchestration.langgraph.ci_repair import failing_files
+
+    found = failing_files("see https://example.com/x.html, e.g. portal/src/app.tsx is broken")
+
+    assert found == ("portal/src/app.tsx",)
+
+
+_LINT_SUMMARY = "app.py:1:1: E501 line too long, ruff would reformat"
+
+
+def test_a_declared_fix_command_is_named_in_the_lint_instruction():
+    """The instruction is the only channel the repair agent reads, so the hint must reach it."""
+    plan = plan_repair(_LINT_SUMMARY, fix_command="npm run lint:fix")
+
+    assert plan.category == LINT
+    assert "run `npm run lint:fix`" in plan.instruction
+
+
+def test_the_lint_instruction_reads_cleanly_when_no_fix_command_is_declared():
+    """A project without a fix command must not be told to run an empty one."""
+    plan = plan_repair(_LINT_SUMMARY)
+
+    assert plan.category == LINT
+    assert "fix command" not in plan.instruction
+    assert "{fix_hint}" not in plan.instruction
+    assert "report. \n" not in plan.instruction
+
+
+def test_a_declared_fix_command_does_not_leak_into_other_categories():
+    plan = plan_repair(
+        '  File "app.py", line 3\n    def (\nSyntaxError: invalid syntax',
+        fix_command="npm run lint:fix",
+    )
+
+    assert "npm run lint:fix" not in plan.instruction
+
+
+_SNAPSHOT_SUMMARY = (
+    "FAIL tests/pages/applications/phone-number.test.ts\n"
+    " \u203a 1 snapshot failed.\n"
+    "Tests:       2 failed, 5095 passed, 5097 total\n"
+)
+
+
+def test_a_stale_snapshot_may_be_updated_rather_than_reverting_the_change():
+    """Without this carve-out the agent reverts the change to satisfy the old recording."""
+    plan = plan_repair(_SNAPSHOT_SUMMARY)
+
+    assert plan.category == TEST_FAILURE
+    assert "update the stored snapshot" in plan.instruction
+
+
+def test_the_instruction_names_the_task_so_the_repair_cannot_revert_it():
+    from services.orchestration.langgraph.ci_repair import instruction_for_task
+
+    instruction = instruction_for_task("Fix the failing test.", "Remove the Heading size prop")
+
+    assert "Fix the failing test." in instruction
+    assert "Remove the Heading size prop" in instruction
+    assert "Keep it." in instruction
+
+
+def test_an_absent_task_leaves_the_instruction_untouched():
+    from services.orchestration.langgraph.ci_repair import instruction_for_task
+
+    assert instruction_for_task("Fix the failing test.", "   ") == "Fix the failing test."
+    assert instruction_for_task("", "Remove the prop") == ""
+
+
+_JEST_SNAPSHOT_LOG = (
+    "> portal@1.0.0 test\n"
+    "npm warn deprecated glob@10.5.0: contains publicized security vulnerabilities\n"
+    "PASS tests/pages/landing.test.ts\n"
+    " FAIL  tests/pages/applications/phone-number.test.ts\n"
+    "  \u25cf PhoneNumber \u203a renders the page\n"
+    "\n"
+    "    expect(received).toMatchSnapshot()\n"
+    "\n"
+    "    - Snapshot  - 1\n"
+    "    + Received  + 1\n"
+    "\n"
+    "          <h2\n"
+    '    -       class="font-heading-lg text-bold"\n'
+    '    +       class="font-heading-md text-bold"\n'
+    "          >\n"
+    "PASS tests/storybook/claim-review.test.tsx\n"
+    "Test Suites: 1 failed, 362 passed, 363 total\n"
+)
+
+
+def test_a_jest_snapshot_diff_survives_the_summary_for_the_repair_agent():
+    summary = failure_summary(_JEST_SNAPSHOT_LOG)
+
+    assert 'class="font-heading-lg text-bold"' in summary
+    assert 'class="font-heading-md text-bold"' in summary
+    assert "expect(received).toMatchSnapshot()" in summary
+
+
+def test_the_summary_keeps_passing_suites_out_of_the_failure_block():
+    summary = failure_summary(_JEST_SNAPSHOT_LOG)
+
+    assert "PASS tests/pages/landing.test.ts" not in summary
+    assert "PASS tests/storybook/claim-review.test.tsx" not in summary
+
+
+def test_package_manager_advisories_never_reach_the_repair_agent():
+    summary = failure_summary(_JEST_SNAPSHOT_LOG)
+
+    assert "npm warn deprecated" not in summary

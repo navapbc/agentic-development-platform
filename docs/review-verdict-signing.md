@@ -7,12 +7,13 @@ The review gate signs every review verdict with an asymmetric SSHSIG signature c
 Three settings control the signed path.
 
 - `REVIEW_SIGNING_ENABLED` turns the signed path on. It defaults to `true`. Set it to `false` to use the HMAC attestor.
-- `REVIEW_SIGNING_KEY_PATH` is the filesystem path to the OpenSSH private key that signs verdicts. The key is provisioned to the review worker out of band, the same way other secrets reach the worker.
+- `REVIEW_SIGNING_KEY_PATH` is the filesystem path to the OpenSSH private key that signs verdicts.
+- `REVIEW_SIGNING_KEY` holds the private key itself. When it is set it takes precedence over the path, and the worker writes it once to a private file that only the worker user can read. A deployed environment injects it from the secret store.
 - `REVIEW_TRUST_ROOT_PATH` is the filesystem path to the trust-root bundle described below.
 
 Every review stage signs. Plan review, code review, security review, and acceptance verification each carry an SSHSIG-over-DSSE signature when signing is configured.
 
-With signing enabled, a signed stage fails closed when `REVIEW_SIGNING_KEY_PATH` or `REVIEW_TRUST_ROOT_PATH` is unset. Selection raises `ReviewSigningNotConfigured` rather than downgrading to the symmetric secret, so provision both the signing key and the trust root before running reviews.
+With signing enabled, a signed stage fails closed when neither `REVIEW_SIGNING_KEY` nor `REVIEW_SIGNING_KEY_PATH` is set, or when `REVIEW_TRUST_ROOT_PATH` is unset. Selection raises `ReviewSigningNotConfigured` rather than downgrading to the symmetric secret, so provision both the signing key and the trust root before running reviews.
 
 The review runtime needs OpenSSH `ssh-keygen` version 8.9 or newer, which the container image installs. The attestor raises a clear error at construction when `ssh-keygen` is missing.
 
@@ -33,7 +34,7 @@ The key files and `config/local/review-trust-root.yaml` are gitignored. The comp
 
 ### Deployed environments
 
-Store the private signing key in the deployment secret store, the same path other worker secrets take, and mount it at `REVIEW_SIGNING_KEY_PATH`. The trust-root bundle holds only public keys, so ship it as a non-secret configuration artifact at `REVIEW_TRUST_ROOT_PATH`. Rebuild or repull the review-worker image so it carries `openssh-client`.
+Store the private signing key in the `review_signing_key` secret of the [secret-store](../infra/terraform/secret-store) module and inject it into the review worker as `REVIEW_SIGNING_KEY`. The trust-root bundle holds only public keys, so ship it as a non-secret configuration artifact at `REVIEW_TRUST_ROOT_PATH`. Rebuild or repull the review-worker image so it carries `openssh-client`.
 
 The worker records a trust-root change to the platform audit store at startup when the loaded bundle differs from the last one recorded. The audit event names the actor, the change summary, and the affected key identifiers.
 

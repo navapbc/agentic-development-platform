@@ -37,9 +37,7 @@ def _scanned_names(description: str, allowlist: frozenset[str]) -> tuple[str, ..
     return tuple(found)
 
 
-def _component_names(
-    components: Sequence[str], component_map: ComponentMap
-) -> tuple[str, ...]:
+def _component_names(components: Sequence[str], component_map: ComponentMap) -> tuple[str, ...]:
     found: list[str] = []
     for component in components:
         found.extend(component_map.repos_for(component))

@@ -23,6 +23,7 @@ from services.orchestration.temporal_activities.gates import (
 )
 from services.orchestration.temporal_activities.implementation import (
     claim_work_unit,
+    finalize_work_claim,
     reset_task_coordination,
     run_implementation_stage,
 )
@@ -38,7 +39,10 @@ from services.orchestration.temporal_activities.persistence import (
     record_audit_event,
     record_usage_metrics,
 )
-from services.orchestration.temporal_activities.planning import gather_repo_context
+from services.orchestration.temporal_activities.planning import (
+    gather_repo_context,
+    record_plan_evidence,
+)
 from services.orchestration.temporal_activities.policy import evaluate_promotion
 from services.orchestration.temporal_activities.pull_request import (
     apply_task_status,
@@ -80,6 +84,7 @@ __all__ = [
     "capture_base_head",
     "check_dependency_cycle",
     "claim_work_unit",
+    "finalize_work_claim",
     "reset_task_coordination",
     "classify_test_failures",
     "clear_suspension",
@@ -104,6 +109,7 @@ __all__ = [
     "record_audit_event",
     "record_dependency_link",
     "record_manifest",
+    "record_plan_evidence",
     "record_pr_approval",
     "record_suspension",
     "record_usage_metrics",

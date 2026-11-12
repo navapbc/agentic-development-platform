@@ -7,6 +7,14 @@ resource "aws_s3_bucket" "exec_logs" {
   tags = merge(var.tags, { Name = "${var.name_prefix}-jumphost-exec-logs" })
 }
 
+resource "aws_s3_bucket_logging" "exec_logs" {
+  count = local.enabled ? 1 : 0
+
+  bucket        = aws_s3_bucket.exec_logs[0].id
+  target_bucket = var.access_log_bucket
+  target_prefix = "${local.task_label}-exec-logs/"
+}
+
 resource "aws_s3_bucket_versioning" "exec_logs" {
   count = local.enabled ? 1 : 0
 

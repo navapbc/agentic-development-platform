@@ -63,9 +63,7 @@ def authorize_write_back(
             f"(owner {run_owner_issue_key!r})"
         )
     if ctx.project and _project_of(ctx.issue_key) != ctx.project:
-        raise WriteBackError(
-            f"ticket {ctx.issue_key!r} does not belong to project {ctx.project!r}"
-        )
+        raise WriteBackError(f"ticket {ctx.issue_key!r} does not belong to project {ctx.project!r}")
 
 
 def write_back_audit(ctx: WriteBackContext, *, scope: str, outcome: str) -> dict[str, Any]:

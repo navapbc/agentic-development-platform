@@ -18,10 +18,7 @@ def generation_usage(observation: dict[str, Any]) -> dict[str, float]:
     usage = observation.get("usageDetails") or {}
     cost = observation.get("costDetails") or {}
     prompt = (
-        usage.get("input")
-        or usage.get("prompt_tokens")
-        or observation.get("promptTokens")
-        or 0
+        usage.get("input") or usage.get("prompt_tokens") or observation.get("promptTokens") or 0
     )
     completion = (
         usage.get("output")

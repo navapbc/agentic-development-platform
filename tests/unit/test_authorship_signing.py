@@ -26,9 +26,7 @@ def _init_store(root: Path) -> None:
 
     root.mkdir(parents=True, exist_ok=True)
     subprocess.run(["git", "init", "-q", "-b", "main"], cwd=root, check=True)
-    subprocess.run(
-        ["git", "config", "user.email", "a@b.invalid"], cwd=root, check=True
-    )
+    subprocess.run(["git", "config", "user.email", "a@b.invalid"], cwd=root, check=True)
     subprocess.run(["git", "config", "user.name", "agent"], cwd=root, check=True)
     rebar.init_repo(repo_root=str(root), force_new_store=True)
 

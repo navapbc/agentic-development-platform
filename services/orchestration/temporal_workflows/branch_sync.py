@@ -62,6 +62,7 @@ class BranchSyncOutput:
     rebases: int = 0
     drift: bool = False
     escalated: bool = False
+    detail: str = ""
 
 
 @workflow.defn
@@ -96,7 +97,7 @@ class BranchSyncWorkflow:
                 retry_policy=retry,
             )
 
-        def pause_output(reason: str) -> BranchSyncOutput:
+        def pause_output(reason: str, detail: str = "") -> BranchSyncOutput:
             return BranchSyncOutput(
                 execution_id=params.execution_id,
                 status="paused",
@@ -105,6 +106,7 @@ class BranchSyncWorkflow:
                 rebases=rebases,
                 drift=drift,
                 escalated=True,
+                detail=detail,
             )
 
         await persist("IMPLEMENTING")
@@ -151,6 +153,7 @@ class BranchSyncWorkflow:
                 )
 
             if sync.human_commits:
+                human_commits_detail = "human commits present on the agent branch"
                 await audit(
                     AuditEvent(
                         event_id=f"{params.execution_id}:BRANCH_SYNC_PAUSED:human",
@@ -160,11 +163,11 @@ class BranchSyncWorkflow:
                         stage="BRANCH_SYNC",
                         new_state="paused",
                         decision="pause",
-                        reason="human commits present on the agent branch",
+                        reason=human_commits_detail,
                         workflow_id=workflow_id,
                     )
                 )
-                return pause_output(HUMAN_COMMITS)
+                return pause_output(HUMAN_COMMITS, human_commits_detail)
 
             if sync.status in (FAST_FORWARD, REBASED):
                 await audit(
@@ -184,6 +187,9 @@ class BranchSyncWorkflow:
                 break
 
             if rebases >= params.rebase_cap:
+                cap_detail = (
+                    f"unresolved conflicts after {rebases} rebases (cap {params.rebase_cap})"
+                )
                 await audit(
                     AuditEvent(
                         event_id=f"{params.execution_id}:BRANCH_SYNC_PAUSED:cap",
@@ -193,14 +199,11 @@ class BranchSyncWorkflow:
                         stage="BRANCH_SYNC",
                         new_state="paused",
                         decision="pause",
-                        reason=(
-                            f"unresolved conflicts after {rebases} rebases "
-                            f"(cap {params.rebase_cap})"
-                        ),
+                        reason=cap_detail,
                         workflow_id=workflow_id,
                     )
                 )
-                return pause_output(REBASE_CAP_EXCEEDED)
+                return pause_output(REBASE_CAP_EXCEEDED, cap_detail)
 
             rebases += 1
             resolution: ResolveResult = await workflow.execute_activity(
@@ -211,6 +214,7 @@ class BranchSyncWorkflow:
             )
 
             if resolution.status == RESOLUTION_PAUSED:
+                material_detail = f"material conflicts require a human: {resolution.material}"
                 await audit(
                     AuditEvent(
                         event_id=f"{params.execution_id}:CONFLICT_PAUSE:{rebases}",
@@ -220,11 +224,11 @@ class BranchSyncWorkflow:
                         stage="BRANCH_SYNC",
                         new_state="paused",
                         decision="pause",
-                        reason=f"material conflicts require a human: {resolution.material}",
+                        reason=material_detail,
                         workflow_id=workflow_id,
                     )
                 )
-                return pause_output(MATERIAL_CONFLICT)
+                return pause_output(MATERIAL_CONFLICT, material_detail)
 
             await audit(
                 AuditEvent(
@@ -267,7 +271,7 @@ class BranchSyncWorkflow:
                         workflow_id=workflow_id,
                     )
                 )
-                return pause_output(recheck.category)
+                return pause_output(recheck.category, recheck.reason)
 
         await audit(
             AuditEvent(

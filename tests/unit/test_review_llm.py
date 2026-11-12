@@ -12,7 +12,7 @@ def _settings() -> Settings:
         rebar_review_native=False,
         rebar_llm_base_url="http://litellm:4000",
         rebar_llm_api_key="gateway-key",
-        rebar_llm_model_provider="openai",
+        rebar_llm_model_provider="openai-chat",
         rebar_llm_max_tokens=8192,
     )
 
@@ -23,7 +23,7 @@ def test_review_llm_config_targets_the_litellm_gateway():
     assert cfg.runner == "pydantic_ai"
     assert cfg.base_url == "http://litellm:4000"
     assert cfg.api_key == "gateway-key"
-    assert cfg.model_provider == "openai"
+    assert cfg.model_provider == "openai-chat"
     assert cfg.model == "review-model"
     assert cfg.max_tokens == 8192
 
@@ -59,7 +59,7 @@ def test_review_llm_config_defaults_to_native_bedrock():
 def test_review_llm_config_uses_the_proxied_path_when_the_flag_is_cleared():
     cfg = review_llm_config("review-model", _settings())
 
-    assert cfg.model_provider == "openai"
+    assert cfg.model_provider == "openai-chat"
     assert cfg.base_url == "http://litellm:4000"
     assert cfg.bedrock_region_name is None
 

@@ -29,13 +29,7 @@ resource "aws_security_group" "endpoints" {
     cidr_blocks = var.allowed_cidr_blocks
   }
 
-  egress {
-    description = "Return traffic"
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
+  egress = []
 
   tags = merge(var.tags, { Name = "${var.name_prefix}-vpce" })
 

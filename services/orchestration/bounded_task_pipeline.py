@@ -15,7 +15,13 @@ from services.integration.jira.adapter import apply_status
 from services.integration.jira.credentials import StatusFlow
 from services.integration.jira.edits import PauseSignal, recheck_issue_before_pr
 from services.integration.jira.linkback import LinkbackClient, post_pr_linkback
-from services.integration.jira.snapshot import TaskSnapshotStore, capture_task_snapshot
+from services.integration.jira.snapshot import (
+    JIRA_SOURCES,
+    TaskSnapshot,
+    TaskSnapshotStore,
+    capture_candidate_snapshot,
+    capture_task_snapshot,
+)
 from services.orchestration.branch_sync import CONFLICTS, BranchSynchronizer
 from services.orchestration.materialization import MaterializedWorkspace, WorkspaceMaterializer
 
@@ -101,6 +107,33 @@ def _breached(result: CodeResult, request: PipelineRequest) -> bool:
     return over_budget or result.terminal_reason != COMPLETED
 
 
+async def _capture_snapshot(
+    deps: PipelineDeps, request: PipelineRequest, settings: Settings
+) -> TaskSnapshot:
+    """Snapshot the task, normalizing only the sources whose raw issue is Jira-shaped.
+
+    Mirrors the intake dispatch so a ticket reaching the pipeline is snapshotted under the
+    same payload shape the pre-PR recheck reads back from its own backend.
+    """
+    if request.jira_source in JIRA_SOURCES:
+        return await capture_task_snapshot(
+            dict(request.raw_issue),
+            execution_id=request.execution_id,
+            jira_source=request.jira_source,
+            settings=settings,
+            store=deps.snapshot_store,
+        )
+    payload = dict(request.raw_issue)
+    return await capture_candidate_snapshot(
+        payload,
+        execution_id=request.execution_id,
+        task_id=request.task_id,
+        project=str(payload.get("project") or ""),
+        source=request.jira_source,
+        store=deps.snapshot_store,
+    )
+
+
 async def run_bounded_task(
     deps: PipelineDeps,
     request: PipelineRequest,
@@ -113,13 +146,7 @@ async def run_bounded_task(
 
     settings = deps.settings or get_settings()
     _progress("intake: capturing task snapshot")
-    snapshot = await capture_task_snapshot(
-        dict(request.raw_issue),
-        execution_id=request.execution_id,
-        jira_source=request.jira_source,
-        settings=settings,
-        store=deps.snapshot_store,
-    )
+    snapshot = await _capture_snapshot(deps, request, settings)
 
     unit = WorkUnit(
         request.task_id,
@@ -223,10 +250,11 @@ async def run_bounded_task(
             terminal_reason=pause.classification.category,
         )
 
+    staged = await deps.materializer.stage(workspace, allowed_paths=request.file_impact)
     commit_request = await deps.materializer.build_commit_request(
-        workspace, message=request.commit_message
+        workspace, message=request.commit_message, staged=staged
     )
-    if not commit_request.files:
+    if not staged.changed:
         return PipelineResult(
             request.execution_id,
             NO_CHANGES,

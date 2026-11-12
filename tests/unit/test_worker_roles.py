@@ -48,8 +48,8 @@ def test_all_activities_union_is_deduplicated():
 
 async def test_build_worker_review_role_registers_only_review_activities():
     async with await WorkflowEnvironment.start_time_skipping() as env:
-        worker = build_worker(env.client, "q-review", WORKER_ROLE_REVIEW)
-        config = worker.config()
+        async with build_worker(env.client, "q-review", WORKER_ROLE_REVIEW) as worker:
+            config = worker.config()
         assert config.get("activities")
         assert not config.get("workflows")
 
@@ -58,5 +58,6 @@ async def test_review_and_activity_roles_use_distinct_queues():
     async with await WorkflowEnvironment.start_time_skipping() as env:
         review = build_worker(env.client, "review-queue", WORKER_ROLE_REVIEW)
         activity = build_worker(env.client, "activity-queue", WORKER_ROLE_ACTIVITY)
-        assert review.task_queue == "review-queue"
-        assert activity.task_queue == "activity-queue"
+        async with review, activity:
+            assert review.task_queue == "review-queue"
+            assert activity.task_queue == "activity-queue"

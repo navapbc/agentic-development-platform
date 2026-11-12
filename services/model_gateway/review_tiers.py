@@ -1,33 +1,22 @@
 """Platform review-tier resolver for the native Bedrock review path.
 
-Each review tier resolves to a Bedrock Claude primary model. The Claude-to-Nova
-fallback chain is configured in rebar's model-class config file, keyed by the
-primary model id, so rebar builds the ``FallbackModel`` natively and prompt caching
-survives the wrap. rebar exposes three fixed classes keyed by primary, so the two
-tiers that share the Opus primary share one Nova fallback.
+Each review tier resolves to a Bedrock Claude model with no cross-family fallback.
+A tier that cannot reach Claude fails once rebar exhausts its own retry budget rather
+than answering from a weaker model, so a verdict always carries the quality the tier
+was chosen for.
 """
 
 from __future__ import annotations
 
 BEDROCK_PROVIDER = "bedrock"
 
-# The primary and fallback model ids per tier. The primary is what the native review
-# config dispatches on. The fallback ids are the intended chain and must match the
-# rebar model-class config in config/rebar-review.toml, which is what rebar actually
-# reads at runtime; test_review_tiers asserts the two stay in agreement.
-REVIEW_TIER_MODELS: dict[str, tuple[str, str]] = {
-    "review-model": (
-        "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-        "us.amazon.nova-pro-v1:0",
-    ),
-    "security-review-model": (
-        "us.anthropic.claude-opus-4-5-20251101-v1:0",
-        "us.amazon.nova-pro-v1:0",
-    ),
-    "evaluation-model": (
-        "us.anthropic.claude-opus-4-5-20251101-v1:0",
-        "us.amazon.nova-pro-v1:0",
-    ),
+# The Bedrock model id per tier. Each must match the primary of the matching rebar class in
+# config/platform/rebar-review.toml, which is what rebar reads at runtime. test_review_tiers
+# asserts the two stay in agreement.
+REVIEW_TIER_MODELS: dict[str, str] = {
+    "review-model": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "security-review-model": "us.anthropic.claude-opus-4-5-20251101-v1:0",
+    "evaluation-model": "us.anthropic.claude-opus-4-5-20251101-v1:0",
 }
 
 
@@ -35,8 +24,8 @@ class UnknownReviewTierError(ValueError):
     """A review tier has no configured native Bedrock model mapping."""
 
 
-def resolve_review_tier(tier: str) -> tuple[str, str]:
-    """Return the (primary, fallback) Bedrock model ids for a review tier."""
+def resolve_review_tier(tier: str) -> str:
+    """Return the Bedrock model id for a review tier."""
     try:
         return REVIEW_TIER_MODELS[tier]
     except KeyError:
@@ -46,12 +35,5 @@ def resolve_review_tier(tier: str) -> tuple[str, str]:
 
 
 def review_primary_ref(tier: str) -> str:
-    """Return the provider-qualified primary model reference for a review tier."""
-    primary, _ = resolve_review_tier(tier)
-    return f"{BEDROCK_PROVIDER}:{primary}"
-
-
-def review_fallback_ref(tier: str) -> str:
-    """Return the provider-qualified Nova fallback reference for a review tier."""
-    _, fallback = resolve_review_tier(tier)
-    return f"{BEDROCK_PROVIDER}:{fallback}"
+    """Return the provider-qualified model reference for a review tier."""
+    return f"{BEDROCK_PROVIDER}:{resolve_review_tier(tier)}"

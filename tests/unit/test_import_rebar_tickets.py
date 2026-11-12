@@ -7,7 +7,7 @@ import pytest
 pytest.importorskip("rebar")
 pytest.importorskip("openpyxl")
 
-from scripts.import_rebar_tickets import import_xlsx, reset_store  # noqa: E402
+from scripts.import_rebar_tickets import import_xlsx, main, reset_store  # noqa: E402
 
 _HEADER = [
     "Summary",
@@ -166,10 +166,7 @@ def test_limit_bounds_the_import(store: Path, tmp_path: Path) -> None:
     xlsx = tmp_path / "x.xlsx"
     _write_xlsx(
         xlsx,
-        [
-            [f"t{i}", f"P-{i}", "Task", "To Do", "Medium", "d", "", "", "", ""]
-            for i in range(10)
-        ],
+        [[f"t{i}", f"P-{i}", "Task", "To Do", "Medium", "d", "", "", "", ""] for i in range(10)],
     )
     report = import_xlsx(xlsx, store, limit=3)
     assert len(report.created) == 3
@@ -196,3 +193,61 @@ def test_reimport_is_idempotent_by_issue_key(store: Path, tmp_path: Path) -> Non
     assert first.created == ["P-1"]
     assert second.created == []
     assert second.skipped == ["P-1"]
+
+
+def _refuse_transitions(monkeypatch: pytest.MonkeyPatch) -> None:
+    import rebar
+
+    def _raise(*_args: object, **_kwargs: object) -> None:
+        raise rebar.RebarError("transition refused")
+
+    monkeypatch.setattr(rebar, "transition", _raise)
+
+
+def test_failed_transition_is_recorded(
+    store: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _refuse_transitions(monkeypatch)
+    xlsx = tmp_path / "x.xlsx"
+    _write_xlsx(xlsx, [["done", "P-1", "Task", "Done", "Medium", "d", "", "", "", ""]])
+
+    report = import_xlsx(xlsx, store)
+
+    assert report.created == ["P-1"]
+    assert report.transitioned == 0
+    assert [(f.ticket, f.target) for f in report.failed_transitions] == [("P-1", "closed")]
+    assert "transition refused" in report.failed_transitions[0].error
+    assert _by_key(store)["P-1"]["status"] == "open"
+
+
+def test_main_exits_non_zero_when_a_transition_fails(
+    store: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _refuse_transitions(monkeypatch)
+    xlsx = tmp_path / "x.xlsx"
+    _write_xlsx(xlsx, [["done", "P-1", "Task", "Done", "Medium", "d", "", "", "", ""]])
+
+    assert main([str(xlsx), "--root", str(store)]) == 1
+
+
+def test_main_reports_each_failure(
+    store: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _refuse_transitions(monkeypatch)
+    xlsx = tmp_path / "x.xlsx"
+    _write_xlsx(
+        xlsx,
+        [
+            ["done", "P-1", "Task", "Done", "Medium", "d", "", "", "", ""],
+            ["prog", "P-2", "Task", "In Progress", "Medium", "d", "", "", "", ""],
+        ],
+    )
+
+    main([str(xlsx), "--root", str(store)])
+
+    out = capsys.readouterr().out
+    assert "transition to closed failed for P-1" in out
+    assert "transition to in_progress failed for P-2" in out

@@ -19,6 +19,7 @@ from services.orchestration.gates.contract import (
 
 ReviewFn = Callable[[Any], Awaitable[Any]]
 ScannerFactory = Callable[[], Any]
+_SCANNER_EXECUTION_MODES = frozenset({"subprocess", "pod"})
 
 
 def review_gate(name: str, review_fn: ReviewFn) -> Gate:
@@ -35,6 +36,7 @@ def review_gate(name: str, review_fn: ReviewFn) -> Gate:
                 repo=context.repo,
                 repo_root=context.repo_root or None,
                 ref=context.ref or None,
+                acceptance_criteria=context.acceptance_criteria,
             )
         )
         findings = [GateFinding(severity=BLOCK, title=title) for title in outcome.findings]
@@ -100,12 +102,35 @@ def builtin_scanner_backends() -> dict[str, ScannerFactory]:
     from adapters.real.security_scanner import RealSemgrepScanner, RealTrivyScanner
 
     return {
-        "semgrep": RealSemgrepScanner.from_settings,
-        "trivy": RealTrivyScanner.from_settings,
+        "semgrep": lambda settings=None: _scanner_backend(
+            "semgrep", RealSemgrepScanner.from_settings, settings
+        ),
+        "trivy": lambda settings=None: _scanner_backend(
+            "trivy", RealTrivyScanner.from_settings, settings
+        ),
     }
 
 
-def _resolve_gate_model(config: Any, settings: Any) -> str:
+def _scanner_backend(name: str, factory: Any, settings: Any = None) -> Any:
+    """Build a scanner that shells out on the worker, or runs from the tool's own image in a pod."""
+    from scripts.config import get_settings
+
+    from services.integration.credentials import ConfigError
+
+    resolved = settings or get_settings()
+    mode = resolved.scanner_execution
+    if mode not in _SCANNER_EXECUTION_MODES:
+        raise ConfigError(
+            f"scanner_execution must be one of {sorted(_SCANNER_EXECUTION_MODES)}, got {mode!r}"
+        )
+    if mode != "pod":
+        return factory(resolved)
+    from services.orchestration.gates.scanner_pod import pod_command_runner
+
+    return factory(resolved, runner=pod_command_runner(name, resolved))
+
+
+def _resolve_gate_model(config: Any) -> str:
     """Resolve the gate's requested model to a client-recognized id that the gateway can route.
 
     Reads the available canonical-id model groups from the gateway config and maps the gate's
@@ -115,7 +140,7 @@ def _resolve_gate_model(config: Any, settings: Any) -> str:
     """
     import logging
 
-    from services.integration.credentials import ConfigError, load_env_config
+    from services.integration.credentials import ConfigError, load_platform_config
     from services.orchestration.gates.model_resolver import (
         available_gate_model_groups,
         resolve_from_available,
@@ -125,7 +150,7 @@ def _resolve_gate_model(config: Any, settings: Any) -> str:
     if not requested or not getattr(config, "needs_model", False):
         return requested
     try:
-        litellm_config = load_env_config("litellm-config", environment=settings.environment)
+        litellm_config = load_platform_config("litellm-config")
     except ConfigError:
         return requested
     groups = available_gate_model_groups(litellm_config)
@@ -154,6 +179,7 @@ def engine_review_backend(config: Any, profile: str = "") -> Any:
             KubectlPodOps(),
             namespace=settings.gate_engine_namespace,
             builder_image=settings.gate_engine_builder_image,
+            privileged=settings.gate_engine_privileged,
         )
         litellm_base_url = settings.sandbox_litellm_base_url
     return AiReviewScanner(
@@ -164,7 +190,7 @@ def engine_review_backend(config: Any, profile: str = "") -> Any:
         litellm_api_key=settings.litellm_master_key,
         pod_runner=pod_runner,
         tls_verify=settings.gate_registry_tls_verify,
-        review_model=_resolve_gate_model(config, settings),
+        review_model=_resolve_gate_model(config),
     )
 
 
@@ -187,6 +213,10 @@ def builtin_gates() -> dict[str, Callable[[], Gate]]:
         "code-review": lambda: review_gate("code-review", review_code),
         "security-review": lambda: review_gate("security-review", review_security),
         "acceptance": lambda: review_gate("acceptance", verify_acceptance),
-        "semgrep": lambda: scanner_gate("semgrep", RealSemgrepScanner.from_settings),
-        "trivy": lambda: scanner_gate("trivy", RealTrivyScanner.from_settings),
+        "semgrep": lambda: scanner_gate(
+            "semgrep", lambda: _scanner_backend("semgrep", RealSemgrepScanner.from_settings)
+        ),
+        "trivy": lambda: scanner_gate(
+            "trivy", lambda: _scanner_backend("trivy", RealTrivyScanner.from_settings)
+        ),
     }

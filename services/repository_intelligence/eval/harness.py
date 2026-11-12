@@ -39,9 +39,18 @@ _PRECISION_GATES = {
 
 _SEARCH_BATTERY = ("task", "store", "status", "create", "Task")
 
-_DEFAULT_CORPUS = "~/Documents/Projects/Nava/agentic-demo-service"
-_DEFAULT_CBM = "~/Documents/Projects/Nava/codebase-memory-mcp/build/c/codebase-memory-mcp"
-_DEFAULT_CACHE = "/tmp/cbm-cache"
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_DEFAULT_CORPUS = str(_REPO_ROOT.parent / "agentic-demo-service")
+_DEFAULT_CBM = str(_REPO_ROOT / "vendor" / "bin" / "codebase-memory-mcp")
+_DEFAULT_CACHE = str(Path.home() / ".cache" / "agentic-dev-platform" / "cbm")
+
+
+def _portable_path(path: Path) -> str:
+    """Render a path relative to the repository so a scorecard is identical on any machine."""
+    try:
+        return str(path.resolve().relative_to(_REPO_ROOT))
+    except ValueError:
+        return path.name
 
 
 def _ratio(numerator: int, denominator: int) -> float:
@@ -391,7 +400,7 @@ def _toolchain(cbm_binary: Path) -> dict[str, Any]:
     return {
         "python": platform.python_version(),
         "platform": platform.platform(),
-        "cbm_binary": str(cbm_binary),
+        "cbm_binary": _portable_path(cbm_binary),
         "cbm_binary_bytes": stat.st_size if stat else None,
     }
 
@@ -518,7 +527,7 @@ def run(
         "repo": meta.repo,
         "commit": meta.commit,
         "gold": {
-            "path": str(gold_path),
+            "path": _portable_path(gold_path),
             "records": len(records),
             "oracles": meta.oracles,
             "generated_at": meta.generated_at,

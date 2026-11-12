@@ -133,9 +133,7 @@ async def run_operator_done(
     )
     await signaler(workflow_id, merged)
     ledger.mark(key)
-    audit.record(
-        {"event": "operator_done_signaled", "workflow_id": workflow_id, "merged": merged}
-    )
+    audit.record({"event": "operator_done_signaled", "workflow_id": workflow_id, "merged": merged})
     return OperatorDoneResult(
         authorized=True,
         verified=True,
@@ -180,8 +178,8 @@ class FileDoneLedger:
 def main(argv: list[str] | None = None) -> int:
     import asyncio
 
+    from services import temporal_client
     from services.integration.github.factory import build_git_host
-    from temporalio.client import Client
 
     from scripts.config import get_settings, to_host_hostport
     from scripts.operator_identity import local_operator
@@ -211,7 +209,7 @@ def main(argv: list[str] | None = None) -> int:
 
     async def _signaler(workflow_id: str, merged: bool) -> None:
         address = to_host_hostport(settings.temporal_host)
-        client = await Client.connect(address, namespace=settings.temporal_namespace)
+        client = await temporal_client.connect(address, settings)
         handle = client.get_workflow_handle(workflow_id)
         await handle.signal(COMPLETION_SIGNAL, args=[merged, actor])
 

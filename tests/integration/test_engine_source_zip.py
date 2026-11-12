@@ -12,8 +12,6 @@ from pathlib import Path
 import pytest
 from services.orchestration.gates.engine_source import GateEngineConfig, resolve_engine_source
 
-pytestmark = pytest.mark.asyncio
-
 _UPLOADS = Path(__file__).resolve().parents[2] / ".agent-context" / "engine-cache" / "uploads"
 _ARCHIVES = sorted(_UPLOADS.glob("*.zip")) if _UPLOADS.is_dir() else []
 
@@ -33,10 +31,6 @@ async def test_zip_mode_resolves_a_github_archive(tmp_path):
     assert resolved.mode == "zip"
     assert resolved.version.startswith("sha256:")
     entrypoint = (
-        Path(resolved.path)
-        / "engines"
-        / "security-compliance-review"
-        / "harness"
-        / "ai-pr-review"
+        Path(resolved.path) / "engines" / "security-compliance-review" / "harness" / "ai-pr-review"
     )
     assert entrypoint.is_file()

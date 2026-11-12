@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import IO, Any
 
+from services import process
 from services.repository_intelligence.languages import Language
 
 _ENCODING = "utf-8"
@@ -40,7 +40,7 @@ def encode_message(payload: dict[str, Any]) -> bytes:
     return header + body
 
 
-def read_message(reader: BinaryIO) -> dict[str, Any] | None:
+def read_message(reader: IO[bytes]) -> dict[str, Any] | None:
     length = _read_content_length(reader)
     if length is None:
         return None
@@ -50,7 +50,7 @@ def read_message(reader: BinaryIO) -> dict[str, Any] | None:
     return json.loads(body.decode(_ENCODING))
 
 
-def _read_content_length(reader: BinaryIO) -> int | None:
+def _read_content_length(reader: IO[bytes]) -> int | None:
     length: int | None = None
     while True:
         line = reader.readline()
@@ -70,7 +70,7 @@ def _read_content_length(reader: BinaryIO) -> int | None:
 class LspClient:
     """JSON-RPC client speaking LSP over a reader/writer pair."""
 
-    def __init__(self, reader: BinaryIO, writer: BinaryIO) -> None:
+    def __init__(self, reader: IO[bytes], writer: IO[bytes]) -> None:
         self._reader = reader
         self._writer = writer
         self._next_id = 0
@@ -121,12 +121,13 @@ class LspClient:
         self._writer.flush()
 
 
-def spawn(spec: LspServerSpec) -> tuple[subprocess.Popen[bytes], LspClient]:
-    process = subprocess.Popen(  # noqa: S603
+def spawn(spec: LspServerSpec) -> tuple[process.Popen[bytes], LspClient]:
+    server: process.Popen[bytes] = process.popen(
         list(spec.command),
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
+        stdin=process.PIPE,
+        stdout=process.PIPE,
+        stderr=process.DEVNULL,
     )
-    assert process.stdin is not None and process.stdout is not None
-    return process, LspClient(process.stdout, process.stdin)
+    if server.stdin is None or server.stdout is None:
+        raise RuntimeError(f"language server {spec.command[0]} started without stdio pipes")
+    return server, LspClient(server.stdout, server.stdin)

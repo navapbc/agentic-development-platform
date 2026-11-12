@@ -4,11 +4,32 @@ from __future__ import annotations
 
 import sys
 
-from services.integration.credentials import ConfigError, config_status
+from services.integration.credentials import (
+    ConfigError,
+    EnvSecretResolver,
+    SecretNotFoundError,
+    SecretResolver,
+    config_status,
+)
 
 from scripts.config import get_settings
 
 _CONFIGS = ("github", "jira", "integrations", "gates", "gate_engine", "tickets")
+_REQUIRED_SECRETS = ("COORDINATION_SHARED_SECRET",)
+
+
+def report_required_secrets(resolver: SecretResolver) -> int:
+    """Print the state of each secret a service refuses to start without, and count the absent."""
+    missing = 0
+    for ref in _REQUIRED_SECRETS:
+        try:
+            resolver.resolve(ref)
+        except SecretNotFoundError as exc:
+            print(f"[config-check] {ref}: MISSING, {exc}")
+            missing += 1
+        else:
+            print(f"[config-check] {ref}: set")
+    return missing
 
 
 def main() -> int:
@@ -40,6 +61,7 @@ def main() -> int:
             f"{status.current_version}. Add: {keys}"
         )
         outdated += 1
+    outdated += report_required_secrets(EnvSecretResolver())
     return 1 if outdated else 0
 
 

@@ -100,6 +100,16 @@ variable "log_retention_days" {
   default     = 365
 }
 
+variable "access_log_bucket" {
+  description = "Target bucket for S3 server access logs on the exec-log bucket, such as the bucket the access-logs module creates."
+  type        = string
+
+  validation {
+    condition     = length(trim(var.access_log_bucket, " ")) > 0
+    error_message = "access_log_bucket must name the bucket that receives S3 server access logs."
+  }
+}
+
 variable "logs_bucket_kms_key_arn" {
   description = "KMS key ARN for the exec log bucket. Empty uses SSE-S3 (AES256), acceptable for a test account."
   type        = string

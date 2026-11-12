@@ -108,7 +108,8 @@ def _gate_content_hash(execution_id: str, result: GateResult) -> str:
 
 
 async def _persist_gate_evidence(context: GateContext, result: GateResult) -> None:
-    from services.review.evidence import EvidenceRecord, PostgresEvidenceSink
+    from services.review.classification import CLASSIFICATION_STANDARD
+    from services.review.evidence import EvidenceRecord, build_evidence_sink
 
     content_hash = result.attestation_hash or _gate_content_hash(context.execution_id, result)
     record = EvidenceRecord(
@@ -116,7 +117,7 @@ async def _persist_gate_evidence(context: GateContext, result: GateResult) -> No
         execution_id=context.execution_id,
         content_hash=content_hash,
         source_component=f"gate:{result.name}",
-        classification="final",
+        classification=CLASSIFICATION_STANDARD,
         metadata={
             "gate": result.name,
             "kind": result.kind,
@@ -125,7 +126,7 @@ async def _persist_gate_evidence(context: GateContext, result: GateResult) -> No
             "attestation_hash": result.attestation_hash,
         },
     )
-    await PostgresEvidenceSink().persist(record)
+    await build_evidence_sink().persist(record)
 
 
 def _backend_error_result(name: str, kind: str, exc: Exception) -> GateResult:
@@ -155,6 +156,8 @@ def _backend_error_result(name: str, kind: str, exc: Exception) -> GateResult:
 
 @activity.defn
 async def evaluate_gate(req: EvaluateGateRequest) -> GateResult:
+    from adapters.interfaces.security_scanner import ScannerUnavailableError
+
     from services.orchestration.gates.config import load_gates_config
     from services.orchestration.gates.registry import registry_for_config
 
@@ -169,12 +172,16 @@ async def evaluate_gate(req: EvaluateGateRequest) -> GateResult:
     ):
         try:
             result = await gate.evaluate(req.context)
+        except ScannerUnavailableError:
+            # A scanner that could not run has reported nothing, so failing closed here would
+            # turn a registry or pod outage into a blocked promotion. Re-raising lets the
+            # activity retry, matching how SecurityScanMediator treats the same signal.
+            raise
         except Exception as exc:  # noqa: BLE001 - a backend failure fails closed, never crashes
             result = _backend_error_result(req.gate, gate.kind, exc)
         await _persist_gate_evidence(req.context, result)
     record_gate_outcome(result.name, result.verdict)
     return result
-
 
 
 @activity.defn
@@ -214,4 +221,3 @@ async def load_gate_plan() -> GatePlan:
         fail_fast_scanner=config.is_fail_fast("scanner"),
         plan_pause=plan_pause,
     )
-

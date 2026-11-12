@@ -30,6 +30,7 @@ class ReviewRequest:
     repo: str = ""
     repo_root: str | None = None
     ref: str | None = None
+    acceptance_criteria: str = ""
 
 
 @dataclass
@@ -58,9 +59,7 @@ class _PromptSpec:
 
 _PLAN = _PromptSpec(name="plan-review", subject_label="Change plan under review")
 _CODE = _PromptSpec(name="code-review", subject_label="Code diff under review")
-_SECURITY = _PromptSpec(
-    name="security-review", subject_label="Code diff under security review"
-)
+_SECURITY = _PromptSpec(name="security-review", subject_label="Code diff under security review")
 _ACCEPTANCE = _PromptSpec(
     name="acceptance-verification",
     subject_label="Completion evidence under acceptance verification",
@@ -82,25 +81,32 @@ def review_prompt_versions(gate_names: Iterable[str]) -> dict[str, str]:
     }
 
 
-
 def build_review_gate(stage: ReviewStage | None = None):
-    from services.review.evidence import PostgresEvidenceSink
+    from services.review.evidence import build_evidence_sink
     from services.review.gate import ReviewGate, select_attestor
     from services.review.kernel import RebarReviewKernel
 
     attestor = select_attestor(stage) if stage is not None else None
-    return ReviewGate(RebarReviewKernel(), PostgresEvidenceSink(), attestor)
+    return ReviewGate(RebarReviewKernel(), build_evidence_sink(), attestor)
 
 
 def _subject_ref(subject: str) -> str:
     return f"sha256:{hashlib.sha256(subject.encode('utf-8')).hexdigest()}"
 
 
-def _instructions(spec: _PromptSpec, req: ReviewRequest) -> str:
+def _instructions(stage: ReviewStage, spec: _PromptSpec, req: ReviewRequest) -> str:
+    """Assemble the reviewer instructions for a stage.
+
+    The acceptance finder is told its criteria are stated in the subject, so the
+    criteria are appended for that stage. Every other stage judges the change itself
+    and keeps the subject it already had.
+    """
     parts = []
     if req.context_summary:
         parts.append(f"Repository context:\n{req.context_summary}")
     parts.append(f"{spec.subject_label}:\n{req.subject}")
+    if stage is ReviewStage.ACCEPTANCE_VERIFICATION and req.acceptance_criteria.strip():
+        parts.append(f"Acceptance criteria:\n{req.acceptance_criteria.strip()}")
     return "\n\n".join(parts)
 
 
@@ -146,7 +152,7 @@ async def _run_gate(stage: ReviewStage, spec: _PromptSpec, req: ReviewRequest) -
         prompt_name=spec.name,
         prompt_version=loaded.version,
         system_prompt=loaded.text,
-        instructions=_instructions(spec, req),
+        instructions=_instructions(stage, spec, req),
         repo_root=repo_root,
         ref=req.ref,
         source="local",

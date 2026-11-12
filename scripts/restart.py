@@ -20,9 +20,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Abandon a parked workflow and re-trigger intake for a fresh execution."
     )
-    parser.add_argument(
-        "issue", help="Jira issue key to restart, for example ADSER-24."
-    )
+    parser.add_argument("issue", help="Jira issue key to restart, for example ADSER-24.")
     parser.add_argument(
         "--repo",
         default=None,

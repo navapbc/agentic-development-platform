@@ -28,10 +28,7 @@ def _no_acli_auth(monkeypatch):
 
 @pytest.fixture
 def fake_dc_jira(monkeypatch):
-    from services.integration.jira._engine import ensure_engine_on_path
-
-    ensure_engine_on_path()
-    from rebar_reconciler.adapters.jira_datacenter import transport
+    from rebar.reconciler.adapters.jira_datacenter import transport
 
     class _FakeJira:
         def __init__(self, *args, **kwargs):
