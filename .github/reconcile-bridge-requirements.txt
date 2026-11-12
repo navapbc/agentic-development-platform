@@ -35,9 +35,9 @@ jsonschema-specifications==2025.9.1 \
     --hash=sha256:98802fee3a11ee76ecaca44429fda8a41bff98b00a0f2838151b113f210cc6fe \
     --hash=sha256:b540987f239e745613c7a9176f3edb72b832a4ac465cf02712288397832b5e8d
     # via jsonschema
-nava-rebar==0.14.0 \
-    --hash=sha256:04787a7ca9f92f42dd78857085aa1cc1b52f59f976bd3fbe9060ef9259572f22 \
-    --hash=sha256:ee21989db59c801e30b7f86887436e1afc18d949ae3543c82bf354750468b18a
+nava-rebar==0.15.1 \
+    --hash=sha256:739a233b234c2fd465bd12eb6e70948c180f01e129500ac3891fea8299dc4166 \
+    --hash=sha256:9d7268fb105dba46731ac413a06aa54802a7c321f82d00c61bbcaa78353de75d
     # via -r .github/reconcile-bridge-requirements.in
 python-dateutil==2.9.0.post0 \
     --hash=sha256:37dd54208da7e1cd875388217d5e00ebd4179249f90fb72437e91a35459a0ad3 \
