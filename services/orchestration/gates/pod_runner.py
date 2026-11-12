@@ -16,11 +16,14 @@ import shlex
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from openhands.runtime.provisioner import node_pool_scheduling
 
+from services.orchestration.gates import image_admission
 from services.orchestration.gates import registry_auth as registry_auth_script
+from services.orchestration.gates.dockerfile_images import base_images, dockerfile_for
 
 _NAME_SANITISE = re.compile(r"[^a-z0-9-]+")
 
@@ -88,6 +91,7 @@ def build_pod_manifest(
     privileged: bool = False,
     resources: dict[str, dict[str, str]] | None = None,
     node_pool: str = "",
+    service_account: str = "",
 ) -> dict:
     # Unpacking an image layer remounts the container root MS_PRIVATE|MS_REC, which some clusters
     # (k3s, Colima) deny to an unprivileged pod even with CAP_SYS_ADMIN and seccomp unconfined.
@@ -108,6 +112,7 @@ def build_pod_manifest(
         "spec": {
             "restartPolicy": "Never",
             "automountServiceAccountToken": False,
+            **({"serviceAccountName": service_account} if service_account else {}),
             "containers": [
                 {
                     "name": "builder",
@@ -266,7 +271,17 @@ class PodEngineRunner:
     async def run_engine(self, spec: PodEngineSpec) -> dict[str, Any]:
         pod = pod_name_for(spec.name, spec.execution_id)
         manifest = build_pod_manifest(
-            pod, self._namespace, self._builder_image, self._privileged, node_pool=self._node_pool
+            pod,
+            self._namespace,
+            self._builder_image,
+            self._privileged,
+            node_pool=self._node_pool,
+            service_account=image_admission.pod_service_account(),
+        )
+        build_images = (
+            base_images(dockerfile_for(Path(spec.source_path)))
+            if spec.source_path and not spec.image
+            else []
         )
         await self._ops.create(manifest)
         try:
@@ -275,7 +290,7 @@ class PodEngineRunner:
                 await self._ops.copy_in(pod, self._namespace, spec.source_path, _ENGINE_MOUNT)
             await self._ops.copy_in(pod, self._namespace, spec.checkout_dir, _WORKSPACE_MOUNT)
             registry = await registry_auth_script.install(
-                self._ops, pod, self._namespace, [spec.image, self._builder_image]
+                self._ops, pod, self._namespace, [spec.image, self._builder_image, *build_images]
             )
             code, stdout, stderr = await self._ops.exec_capture(
                 pod, self._namespace, _run_script(spec, registry)
@@ -307,17 +322,25 @@ class KubectlPodOps:
         await asyncio.to_thread(self._create_sync, manifest)
 
     def _create_sync(self, manifest: dict) -> None:
+        proc = self._kubectl_create(manifest)
+        if proc.returncode and "AlreadyExists" in proc.stderr:
+            # Pod names come from the execution id, so a pod already holding the name was left by
+            # an earlier attempt whose worker stopped, and still holds that attempt's workspace.
+            self._delete_sync(manifest["metadata"]["name"], manifest["metadata"]["namespace"])
+            proc = self._kubectl_create(manifest)
+        if proc.returncode:
+            raise PodEngineError(f"pod create failed: {proc.stderr.strip()}")
+
+    def _kubectl_create(self, manifest: dict):
         from services import process
 
-        proc = process.run(
-            [self._kubectl, "apply", "-f", "-"],
+        return process.run(
+            [self._kubectl, "create", "-f", "-"],
             timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS,
             input=json.dumps(manifest),
             capture_output=True,
             text=True,
         )
-        if proc.returncode:
-            raise PodEngineError(f"pod create failed: {proc.stderr.strip()}")
 
     async def wait_ready(self, pod: str, namespace: str) -> None:
         import asyncio

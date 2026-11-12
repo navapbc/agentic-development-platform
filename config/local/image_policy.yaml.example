@@ -1,0 +1,44 @@
+# The images a tenant pod may pull, which the platform owns and a tenant bundle never overrides.
+# In AWS the private-bedrock root generates this file. See docs/image-governance.md.
+#
+# catalog lists the platform's own repositories, signed with signatures.platform_profile.
+# tenant_prefix is the tenant's own prefix, where {tenant} is the tenant name, signed with the
+# tenant's profile in signatures.tenant_profiles. caches lists the pull-through cache prefixes, which carry no
+# signature. registries lists any other repository or prefix the deployment admits. An entry
+# ending in / admits every repository under it, and any other entry admits that repository only.
+# platform_registries names the hosts whose repositories only these entries admit, so a tenant's
+# registries.yaml mirror cannot point into another tenant's prefix. Every image needs a digest.
+#
+# scan.gate inspector refuses an image Amazon Inspector has not scanned, or whose scan holds an
+# active finding at scan.severity or above that image_exceptions.yaml does not accept. off skips
+# the scan, which a workstation has no Inspector for.
+
+config_version: 1
+
+platform_registries:
+  - host.docker.internal:5001
+
+catalog:
+  - host.docker.internal:5001/gate-engine-security-policy
+  - host.docker.internal:5001/gate-engine-test-policy
+  - docker.io/library/agent-server-jvm
+  - docker.io/library/agent-server-go
+  - docker.io/library/agentic-dev-platform-buildah
+
+tenant_prefix: host.docker.internal:5001/tenants/{tenant}/
+
+caches: []
+
+registries:
+  - ghcr.io/openhands/agent-server
+  - docker.io/semgrep/semgrep
+  - docker.io/aquasec/trivy
+  - docker.io/library/
+  - public.ecr.aws/docker/library/
+
+scan:
+  gate: off
+  severity: HIGH
+
+signatures:
+  verification: false

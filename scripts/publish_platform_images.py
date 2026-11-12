@@ -7,13 +7,13 @@ registry.
   UTC timestamp that `scripts.build_id` orders. Its tag is `<build id>-<source hash>-<arch>`,
   so a build whose sources are already in the repository reuses that image and its build ID
   instead of minting a new Worker Deployment version.
-- The repository-intelligence, collector, TLS sidecar, OPA, and eks-deployer images, the example
-  gate engine images under `examples/gate-engines`, and the catalog sandbox images
-  `agent-server-jvm` and `agent-server-go` are tagged `<version>-<content hash>-<arch>`.
+- The repository-intelligence, collector, TLS sidecar, OPA, eks-deployer, and buildah builder
+  images, the example gate engine images under `examples/gate-engines`, and the catalog sandbox
+  images `agent-server-jvm` and `agent-server-go` are tagged `<version>-<content hash>-<arch>`.
 - Langfuse web, Langfuse worker, and ClickHouse are copied by the digest `compose.yaml` pins,
-  LiteLLM by the digest its cluster manifest pins, and the OpenHands agent-server, buildah,
-  semgrep, and trivy images by the digests their settings default to. Each copy is tagged with
-  its upstream version and must keep the pinned digest.
+  LiteLLM by the digest its cluster manifest pins, and the OpenHands agent-server, semgrep, and
+  trivy images by the digests their settings default to. Each copy is tagged with its upstream
+  version and must keep the pinned digest.
 
 The images are built from the files git tracks or would track, so ignored local artifacts such
 as the binaries under `vendor/bin` never reach an image.
@@ -21,6 +21,15 @@ as the binaries under `vendor/bin` never reach an image.
 The references are written to `images.auto.tfvars.json` in the `private-bedrock` composition
 root, which Terraform loads with no flag, and optionally to a manifest that marks the images
 this run pushed.
+
+Every image is scanned with the Amazon Inspector SBOM generator and the Inspector Scan API before
+it is pushed, as `scripts.image_scan` describes. An image with an unaccepted finding at
+`--block-severity` or above is not pushed, and the run writes no references.
+
+With a signing profile, every image a tenant pod may run from the platform catalog is signed with
+it through notation and the AWS Signer plugin, run from the buildah builder image this publish
+built, so the publishing host needs neither installed. An image that already carries a signature
+is not signed again.
 """
 
 from __future__ import annotations
@@ -110,6 +119,7 @@ EKS_DEPLOYER = ImageSpec(
         "config/policies",
     ),
 )
+BUILDAH = ImageSpec("buildah", "docker/buildah.Dockerfile", ())
 TLS_SIDECAR = ImageSpec(
     "tls-sidecar", "docker/tls-sidecar.Dockerfile", ("docker/tls-sidecar", "docker/healthprobe")
 )
@@ -131,10 +141,23 @@ MIRRORED_SERVICES = {
 }
 MIRRORED_SETTINGS = {
     "openhands-agent-server": "openhands_agent_server_image",
-    "buildah": "gate_engine_builder_image",
     "semgrep": "semgrep_image",
     "trivy": "trivy_image",
 }
+# The catalog repositories a tenant pod may run, which the platform signs.
+SIGNED_CATALOG = frozenset(
+    {
+        "semgrep",
+        "trivy",
+        "gate-engine-security-policy",
+        "gate-engine-test-policy",
+        "openhands-agent-server",
+        "agent-server-jvm",
+        "agent-server-go",
+        "buildah",
+    }
+)
+SIGNER_PLUGIN = "com.amazonaws.signer.notation.plugin"
 LITELLM = "litellm"
 LITELLM_MANIFEST = "deploy/kubernetes/litellm.yaml"
 _PINNED_REFERENCE = re.compile(
@@ -264,13 +287,37 @@ def build_context(root: Path) -> Iterator[Path]:
 
 
 class Publisher:
-    def __init__(self, ecr, registry: str, name_prefix: str, arch: str) -> None:
+    def __init__(
+        self, ecr, registry: str, name_prefix: str, arch: str, scanner=None, run=None
+    ) -> None:
         self.ecr = ecr
         self.registry = registry
         self.name_prefix = name_prefix
         self.arch = arch
+        self.scanner = scanner
+        self.run = run or process.run
         self._logged_in = False
         self.pushed: list[str] = []
+        self.refused: list[str] = []
+
+    def _passes_scan(self, local: str, keys: list[str]) -> bool:
+        """Scan an image the local Docker holds, recording it as refused when it fails."""
+        if self.scanner is None:
+            return True
+        result = self.scanner.scan(local, keys)
+        print(f"{LOG} {result.describe()}")
+        if not result.passed:
+            self.refused.append(result.describe())
+        return result.passed
+
+    def _local_digest(self, image: str) -> str:
+        return self.run(
+            ["docker", "image", "inspect", "--format", "{{.Id}}", image],
+            timeout=process.SHORT_COMMAND_TIMEOUT_SECONDS,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
 
     def _repository(self, name: str) -> str:
         return f"{self.name_prefix}/{name}"
@@ -288,16 +335,26 @@ class Publisher:
         digest = _pushed_digest(self.ecr, repository, tag)
         if digest:
             print(f"{LOG} {image} is already pushed")
-        else:
-            self._login()
-            print(f"{LOG} building {image} for {PLATFORMS[self.arch]}")
-            process.run(
+            return f"{image}@{digest}"
+        self._login()
+        print(f"{LOG} building {image} for {PLATFORMS[self.arch]}")
+        if self.scanner is None:
+            self.run(
                 build_command(spec, context, image, self.arch, build_args),
                 timeout=BUILD_TIMEOUT_SECONDS,
                 check=True,
             )
-            digest = _pushed_digest(self.ecr, repository, tag)
-            self.pushed.append(f"{image}@{digest}")
+        else:
+            self.run(
+                build_command(spec, context, image, self.arch, build_args, output="--load"),
+                timeout=BUILD_TIMEOUT_SECONDS,
+                check=True,
+            )
+            if not self._passes_scan(image, [f"{image}@{self._local_digest(image)}"]):
+                return f"{image}@refused"
+            self.run(["docker", "push", image], timeout=BUILD_TIMEOUT_SECONDS, check=True)
+        digest = _pushed_digest(self.ecr, repository, tag)
+        self.pushed.append(f"{image}@{digest}")
         return f"{image}@{digest}"
 
     def platform(self, context: Path, acli: AcliBuild) -> str:
@@ -323,8 +380,17 @@ class Publisher:
             print(f"{LOG} {image} is already pushed")
         else:
             self._login()
-            print(f"{LOG} copying {mirror.source}@{mirror.digest} to {image}")
-            process.run(
+            upstream = f"{mirror.source}@{mirror.digest}"
+            if self.scanner is not None:
+                self.run(
+                    ["docker", "pull", "--platform", PLATFORMS[self.arch], upstream],
+                    timeout=BUILD_TIMEOUT_SECONDS,
+                    check=True,
+                )
+                if not self._passes_scan(upstream, [upstream, f"{image}@{mirror.digest}"]):
+                    return f"{image}@refused"
+            print(f"{LOG} copying {upstream} to {image}")
+            self.run(
                 [
                     "docker",
                     "buildx",
@@ -363,6 +429,7 @@ def publish(publisher: Publisher, acli: AcliBuild, root: Path = REPO_ROOT) -> li
             ),
             publisher.built(TLS_SIDECAR, context, release_version()),
             publisher.built(EKS_DEPLOYER, context, release_version()),
+            publisher.built(BUILDAH, context, release_version()),
             *[
                 publisher.built(spec, context / GATE_ENGINE_ROOT / name, release_version())
                 for name, spec in GATE_ENGINES.items()
@@ -383,6 +450,118 @@ def publish(publisher: Publisher, acli: AcliBuild, root: Path = REPO_ROOT) -> li
     references += [publisher.mirror(mirror) for mirror in mirrors(compose)]
     references += [publisher.mirror(mirror) for mirror in cluster_mirrors(root)]
     return references
+
+
+class Signer:
+    """Sign catalog images with notation and the AWS Signer plugin inside the builder image."""
+
+    def __init__(self, session, ecr, registry: str, profile_arn: str, arch: str, run=None) -> None:
+        self.session = session
+        self.ecr = ecr
+        self.registry = registry
+        self.profile_arn = profile_arn
+        self.arch = arch
+        self.run = run or process.run
+
+    def _notation(self, builder: str, workdir: Path, *args: str) -> process.CompletedProcess:
+        credentials = self.session.get_credentials().get_frozen_credentials()
+        environment = {
+            "AWS_ACCESS_KEY_ID": credentials.access_key,
+            "AWS_SECRET_ACCESS_KEY": credentials.secret_key,
+            "AWS_SESSION_TOKEN": credentials.token or "",
+            "AWS_REGION": self.session.region_name,
+            "AWS_USE_FIPS_ENDPOINT": "false",
+            "DOCKER_CONFIG": "/auth",
+        }
+        env_file = workdir / "notation.env"
+        env_file.write_text("".join(f"{k}={v}\n" for k, v in environment.items()))
+        env_file.chmod(0o600)
+        return self.run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--platform",
+                PLATFORMS[self.arch],
+                "--env-file",
+                str(env_file),
+                "--volume",
+                f"{workdir / 'auth'}:/auth:ro",
+                "--entrypoint",
+                "notation",
+                builder,
+                *args,
+            ],
+            timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS,
+            capture_output=True,
+            text=True,
+        )
+
+    def sign(self, references: list[str], builder: str) -> list[str]:
+        """Sign each catalog reference that carries no signature yet, returning those it signed."""
+        from services.orchestration.gates.registry_auth import ecr_token
+        from services.orchestration.gates.registry_mirrors import auth_document
+
+        account, region = self.registry.split(".", 1)[0], self.session.region_name
+        signed = []
+        with tempfile.TemporaryDirectory(prefix="notation-") as directory:
+            workdir = Path(directory)
+            (workdir / "auth").mkdir(mode=0o700)
+            config = workdir / "auth" / "config.json"
+            config.write_text(auth_document({self.registry: ecr_token(account, region)}))
+            config.chmod(0o644)
+            for reference in references:
+                if image_name(reference) not in SIGNED_CATALOG:
+                    continue
+                listed = self._notation(builder, workdir, "list", reference)
+                if listed.returncode != 0:
+                    raise PublishError(f"notation could not list {reference}: {listed.stderr}")
+                if "application/vnd.cncf.notary.signature" in listed.stdout:
+                    print(f"{LOG} {reference} is already signed")
+                    continue
+                print(f"{LOG} signing {reference}")
+                result = self._notation(
+                    builder,
+                    workdir,
+                    "sign",
+                    "--plugin",
+                    SIGNER_PLUGIN,
+                    "--id",
+                    self.profile_arn,
+                    reference,
+                )
+                if result.returncode != 0:
+                    raise PublishError(f"notation could not sign {reference}: {result.stderr}")
+                signed.append(reference)
+        return signed
+
+
+def signing_profile(explicit: str) -> str:
+    """Return the profile to sign with, from the flag, IMAGE_SIGNING_PROFILE_ARN, or the root."""
+    import os
+
+    from scripts.temporal_certs import COMPOSITION_ROOT
+
+    if explicit or os.environ.get("IMAGE_SIGNING_PROFILE_ARN"):
+        return explicit or os.environ["IMAGE_SIGNING_PROFILE_ARN"]
+    try:
+        result = process.run(
+            [
+                "terraform",
+                f"-chdir={COMPOSITION_ROOT}",
+                "output",
+                "-json",
+                "image_signing_profile_arn",
+            ],
+            timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        return ""
+    if result.returncode != 0:
+        return ""
+    return json.loads(result.stdout or "null") or ""
 
 
 def build_locally(
@@ -433,8 +612,20 @@ def tfvars(references: list[str]) -> dict[str, object]:
     return values
 
 
+def registry_digest(image: str, run=None) -> str:
+    """Return the digest a registry holds for `image`, the sha256 of its raw manifest."""
+    run = run or process.run
+    raw = run(
+        ["docker", "buildx", "imagetools", "inspect", "--raw", image],
+        timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS,
+        capture_output=True,
+        check=True,
+    ).stdout
+    return f"sha256:{hashlib.sha256(raw).hexdigest()}"
+
+
 def push_engines_locally(registry: str, arch: str, root: Path = REPO_ROOT, run=None) -> dict:
-    """Build each example gate engine and push it to a local registry, returning its references."""
+    """Build each example gate engine, push it to a local registry, and return it by digest."""
     run = run or process.run
     pushed = {}
     with build_context(root) as context:
@@ -448,7 +639,7 @@ def push_engines_locally(registry: str, arch: str, root: Path = REPO_ROOT, run=N
                 timeout=BUILD_TIMEOUT_SECONDS,
                 check=True,
             )
-            pushed[name] = image
+            pushed[name] = f"{image}@{registry_digest(image, run)}"
     return pushed
 
 
@@ -491,10 +682,43 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Also describe each image and whether it was pushed.",
     )
+    parser.add_argument(
+        "--signing-profile",
+        default="",
+        help=(
+            "AWS Signer profile ARN to sign the catalog images with. Defaults to "
+            "IMAGE_SIGNING_PROFILE_ARN, then the composition root's image_signing_profile_arn."
+        ),
+    )
+    parser.add_argument(
+        "--unsigned",
+        action="store_true",
+        help="Publish without signing, for a deployment that does not verify signatures.",
+    )
+    parser.add_argument(
+        "--block-severity",
+        default="high",
+        choices=("low", "medium", "high", "critical"),
+        help="Lowest Inspector severity that keeps an image from being pushed.",
+    )
+    parser.add_argument(
+        "--exceptions",
+        default="",
+        help="An image_exceptions.yaml whose unexpired entries accept a finding in an image.",
+    )
     args = parser.parse_args(argv)
 
     from scripts.aws_clients import configure_aws_fips
     from scripts.config import get_settings
+
+    profile = signing_profile(args.signing_profile)
+    if not profile and not args.unsigned:
+        print(
+            f"{LOG} no signing profile, so nothing is published. Set IMAGE_SIGNING_PROFILE_ARN or "
+            "--signing-profile to the image_signing_profile_arn output, or pass --unsigned for a "
+            "deployment that does not verify signatures."
+        )
+        return 1
 
     settings = get_settings()
     configure_aws_fips(settings)
@@ -505,10 +729,33 @@ def main(argv: list[str] | None = None) -> int:
     session = boto3.Session(region_name=region)
     account = session.client("sts").get_caller_identity()["Account"]
     registry = f"{account}.dkr.ecr.{region}.amazonaws.com"
-    publisher = Publisher(session.client("ecr"), registry, args.name_prefix, args.arch)
+    from scripts.image_scan import ImageScanner, load_exceptions
+
+    scanner = ImageScanner(
+        session,
+        args.arch,
+        block=args.block_severity,
+        exceptions=load_exceptions(args.exceptions),
+    )
+    publisher = Publisher(session.client("ecr"), registry, args.name_prefix, args.arch, scanner)
     acli = AcliBuild(args.install_acli, args.acli_version, args.acli_sha256)
     try:
         references = publish(publisher, acli)
+        if publisher.refused:
+            for refusal in publisher.refused:
+                print(f"{LOG} not pushed: {refusal}")
+            print(
+                f"{LOG} {len(publisher.refused)} image(s) carry blocking findings and were not "
+                f"pushed, so {args.images_file} is unchanged. Rebuild each on a patched base, or "
+                "accept each finding in the exceptions file with a reason and an expiry."
+            )
+            return 1
+        if profile:
+            builder = next(r for r in references if image_name(r) == BUILDAH.name)
+            signer = Signer(session, publisher.ecr, registry, profile, args.arch)
+            signer.sign(references, builder)
+        else:
+            print(f"{LOG} --unsigned, so the catalog images are not signed")
     except PublishError as exc:
         print(f"{LOG} {exc}")
         return 1

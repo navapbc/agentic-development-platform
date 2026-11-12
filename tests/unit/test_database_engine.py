@@ -36,3 +36,45 @@ def test_no_engine_is_created_outside_the_factory() -> None:
     ]
 
     assert offenders == []
+
+
+async def test_the_shared_engine_is_one_per_event_loop_and_url(monkeypatch) -> None:
+    import asyncio
+    import weakref
+
+    from database import engine as engine_module
+
+    monkeypatch.setattr(engine_module, "_shared", weakref.WeakKeyDictionary())
+    built: list[str] = []
+    monkeypatch.setattr(
+        engine_module, "create_platform_engine", lambda url: built.append(url) or object()
+    )
+
+    first = engine_module.shared_platform_engine("postgresql+asyncpg://a/db")
+    second = engine_module.shared_platform_engine("postgresql+asyncpg://a/db")
+    other_url = engine_module.shared_platform_engine("postgresql+asyncpg://b/db")
+    other_loop = await asyncio.to_thread(
+        asyncio.run, _shared_engine_on_a_new_loop("postgresql+asyncpg://a/db")
+    )
+
+    assert first is second
+    assert other_url is not first
+    assert other_loop is not first
+    assert len(built) == 3
+
+
+async def _shared_engine_on_a_new_loop(url: str):
+    from database.engine import shared_platform_engine
+
+    return shared_platform_engine(url)
+
+
+def test_no_long_lived_service_creates_an_engine_per_instance() -> None:
+    offenders = [
+        f"{path.relative_to(REPO_ROOT)}:{number}"
+        for path in sorted((REPO_ROOT / "services").rglob("*.py"))
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1)
+        if "create_platform_engine(get_settings().database_url)" in line
+    ]
+
+    assert offenders == []

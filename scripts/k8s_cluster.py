@@ -171,6 +171,30 @@ def load_images(settings: Settings, images: Sequence[str], run: Runner = process
         run(argv, timeout=process.LONG_COMMAND_TIMEOUT_SECONDS, check=True)
 
 
+def warm_shared_images(
+    settings: Settings, images: Sequence[str], run: Runner = process.run
+) -> None:
+    """Pull each image by tag into every node of a cluster that reads the Docker image store.
+
+    Docker Desktop's nodes reach the Docker image store through a mirror that resolves a tag but
+    not a digest, so a pod that names an image by digest finds it only once a node holds it.
+    """
+    nodes = run(
+        kubectl(settings, "get", "nodes", "-o", "jsonpath={.items[*].metadata.name}"),
+        timeout=process.SHORT_COMMAND_TIMEOUT_SECONDS,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    for node in nodes:
+        for image in images:
+            run(
+                ["docker", "exec", node, "crictl", "pull", image],
+                timeout=process.LONG_COMMAND_TIMEOUT_SECONDS,
+                check=True,
+            )
+
+
 def rendered(settings: Settings, build_id: str, compose_files: Sequence[str]) -> list[dict]:
     from dotenv import dotenv_values
 

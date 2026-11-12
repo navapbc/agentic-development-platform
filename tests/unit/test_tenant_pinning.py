@@ -10,6 +10,7 @@ from services.integration import tenant_config
 from services.integration.tenant_config import DirectorySource, current_identity, tenant_bundle_dir
 from services.orchestration.tenant_pinning import TENANT_MISMATCH, TenantConfigInterceptor
 from temporalio.exceptions import ApplicationError
+from tests.support import write_image_policy
 
 REPOSITORIES = """config_version: 1
 defaults:
@@ -51,6 +52,7 @@ def config(tmp_path, monkeypatch):
     env.mkdir()
     (env / "gates.yaml").write_text(GATES)
     (env / "tickets.yaml").write_text(TICKETS)
+    write_image_policy(env)
     monkeypatch.setenv("PLATFORM_ENV_CONFIG_DIR", str(env))
     source = tmp_path / "source"
     source.mkdir()

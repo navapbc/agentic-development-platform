@@ -79,7 +79,13 @@ def _rendered(tmp_path: Path, **settings: object) -> list[dict]:
         shutil.copytree(REPOSITORY / directory, root / directory)
     config = root / "config" / "local"
     config.mkdir()
-    for name in ("github.yaml", "jira.yaml", "integrations.yaml", "repositories.yaml"):
+    for name in (
+        "github.yaml",
+        "jira.yaml",
+        "integrations.yaml",
+        "repositories.yaml",
+        "image_policy.yaml",
+    ):
         (config / name).write_text((REPOSITORY / "config/local" / f"{name}.example").read_text())
     (config / "review-signing-key").write_text("secret-key\n")
     (config / "rebar-store-aws-config").write_text("endpoint_url = http://minio:9000\n")

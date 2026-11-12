@@ -20,6 +20,7 @@ from services.integration.tenant_config import (
     pinned,
     validate_bundle,
 )
+from tests.support import write_image_policy
 
 REPOSITORIES = """config_version: 1
 defaults:
@@ -54,6 +55,7 @@ def environment(tmp_path, monkeypatch) -> Path:
     (env / "gates.yaml").write_text(GATES)
     (env / "tickets.yaml").write_text(TICKETS)
     (env / "review-trust-root.yaml").write_text("version: 1\n")
+    write_image_policy(env)
     monkeypatch.setenv("PLATFORM_ENV_CONFIG_DIR", str(env))
     tenant_config.reset()
     yield env

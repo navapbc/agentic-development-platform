@@ -25,6 +25,8 @@ _CURRENT_CONFIG_VERSIONS: dict[str, int] = {
     "repositories": 1,
     "registries": 1,
     "profiles": 1,
+    "image_policy": 1,
+    "image_exceptions": 1,
 }
 
 

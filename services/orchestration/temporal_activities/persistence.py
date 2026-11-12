@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from database.engine import create_platform_engine
+from database.engine import shared_platform_engine
 from database.models.schema import audit_events, executions, usage_metrics
 from observability import record_stage_cost, record_stage_latency
 from scripts.config import get_settings
@@ -14,14 +14,9 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncEngine
 from temporalio import activity
 
-_engine: AsyncEngine | None = None
-
 
 def _get_engine() -> AsyncEngine:
-    global _engine
-    if _engine is None:
-        _engine = create_platform_engine(get_settings().database_url)
-    return _engine
+    return shared_platform_engine()
 
 
 @dataclass

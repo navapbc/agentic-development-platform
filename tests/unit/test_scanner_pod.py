@@ -22,6 +22,8 @@ from services.orchestration.gates.scanner_pod import (
     scanner_pod_name,
 )
 
+pytestmark = pytest.mark.usefixtures("allow_any_image")
+
 
 class FakePodOps:
     def __init__(self, exit_code: int = 0, stdout: str = "{}") -> None:
@@ -110,7 +112,8 @@ async def test_pod_runner_mounts_the_checkout_and_always_deletes_the_pod():
     result = await runner(["semgrep", "scan", "/checkout"], "/checkout")
 
     assert result.returncode == 0
-    assert ops.copied_in == [("/checkout", "/workspace")]
+    assert ops.copied_in[0] == ("/checkout", "/workspace")
+    assert ops.copied_in[1][1] == "/etc/containers"
     assert ops.deleted == [ops.created[0]["metadata"]["name"]]
     assert "/workspace" in ops.script
 

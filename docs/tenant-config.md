@@ -48,6 +48,7 @@ A worker validates a bundle before it activates it, and `inv tenant-config-valid
 - `TICKET_BACKEND=jira` and `jira.yaml` is absent.
 - A repository uses the `github` backend and `github.yaml` is absent.
 - A repository names a runtime profile that neither the catalog nor `profiles.yaml` defines, a profile reuses a catalog name, a profile's catalog image is not published, or a profile's checks or gates do not parse or enable a gate that does not register.
+- An image the effective config names, a profile's sandbox or checks image, a checks image, or a gate engine image, lacks an `@sha256:` digest or comes from a repository the platform's `image_policy.yaml` does not admit for the tenant. `image_policy.yaml` and `image_exceptions.yaml` are platform files. See [image governance](image-governance.md).
 
 The workers check the source every `TENANT_CONFIG_REFRESH_SECONDS`, 60 by default. A new bundle that passes validation becomes active for the runs that start after it. A new bundle that fails stays refused until its content changes. The last valid bundle stays active, and the workers alert over the Slack webhook and the alert email with every reason. A worker whose first bundle fails validation refuses to start.
 

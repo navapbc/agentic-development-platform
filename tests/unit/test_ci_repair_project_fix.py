@@ -19,6 +19,8 @@ from services.orchestration.temporal_activities.repair import (
     _apply_staged_files,
 )
 
+pytestmark = pytest.mark.usefixtures("allow_any_image")
+
 
 def _spec(**overrides) -> ChecksSpec:
     base: dict[str, Any] = {
@@ -304,7 +306,8 @@ def test_a_verified_fix_copies_the_changed_files_out_of_the_pod():
 
     assert result.verified is True
     assert result.changed_files == ("portal/a.ts", "portal/b.ts")
-    assert ops.copied_in == [("/checkout", "/workspace")]
+    assert ops.copied_in[0] == ("/checkout", "/workspace")
+    assert ops.copied_in[1][1] == "/etc/containers"
     assert ops.copied_out == [("/workspace", "/staging", "/workspace/.gatefix.list")]
     assert ops.deleted, "the fix pod must be torn down"
 

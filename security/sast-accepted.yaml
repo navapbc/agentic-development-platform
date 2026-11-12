@@ -195,11 +195,6 @@
   justification: The activity worker copies the execution checkout into each sandbox and gate pod and reads the patch back through pods/exec, the same tar-over-exec transport the pod runner uses. The grant is limited to the agent-sandbox namespace and the activity-worker ServiceAccount, and the pods it reaches are the ephemeral ones that worker created.
 - tool: semgrep
   rule: terraform.lang.security.iam.no-iam-creds-exposure.no-iam-creds-exposure
-  path: infra/terraform/github-image-publisher/main.tf
-  match: Action = "ecr:GetAuthorizationToken"
-  justification: Docker signs in to ECR with the token this action returns, so a role that pushes an image needs it, and the action supports no resource-level scoping. The token authorizes only the repository actions the role's other statement grants, which are limited to the platform repositories, and the role is assumable only by this repository's workflows on main and v tags.
-- tool: semgrep
-  rule: terraform.lang.security.iam.no-iam-creds-exposure.no-iam-creds-exposure
   path: infra/terraform/examples/private-bedrock/eks.tf
   match: Action = "ecr:GetAuthorizationToken"
   justification: The gate, checks, and scanner pods carry no AWS identity, so the activity worker requests the ECR token their in-pod pulls use and copies it into the pod over the exec stream, and the action supports no resource-level scoping. The token authorizes only the pulls the role's other statement grants, which are limited to the semgrep and trivy repositories and the listed gate image repositories, and the pod deletes it after the pull.
@@ -278,3 +273,38 @@
   path: infra/terraform/tenant/publisher.tf
   match: Action = "ecr:GetAuthorizationToken"
   justification: Docker signs in to ECR with the token this action returns, so the tenant publisher that pushes the tenant's images needs it, and the action supports no resource-level scoping. The token authorizes only the pushes the role's other statement grants, which are limited to the tenant's image prefix, and only the workflows of the tenant's config repository on its allowed refs can assume the role.
+- tool: semgrep
+  rule: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
+  path: services/orchestration/gates/image_admission.py
+  match: 'with urllib.request.urlopen(request, timeout=60) as response:  # noqa: S310 - https only'
+  justification: The URL is https:// followed by an ECR registry host that the _ECR_HOST pattern matched and a repository and digest from an admitted image reference, so no caller can supply a file or custom scheme. The request pulls a manifest through the pull-through cache so ECR imports the image for scanning.
+- tool: bandit
+  rule: B310
+  path: services/orchestration/gates/image_admission.py
+  match: 'with urllib.request.urlopen(request, timeout=60) as response:  # noqa: S310 - https only'
+  justification: The URL is https:// followed by an ECR registry host that the _ECR_HOST pattern matched and a repository and digest from an admitted image reference, so no caller can supply a file or custom scheme. The request pulls a manifest through the pull-through cache so ECR imports the image for scanning.
+- tool: trivy
+  rule: DS-0001
+  path: docker/buildah.Dockerfile
+  match: FROM tools-${TARGETARCH} AS tools
+  justification: tools-${TARGETARCH} names the build stage that holds the checksum-pinned notation and Signer plugin for the target architecture, not an image, so it carries no tag. Trivy cannot resolve the stage through the variable and reads it as an untagged image. Every image the Dockerfile pulls is pinned by digest.
+- tool: trivy
+  rule: DS-0002
+  path: docker/buildah.Dockerfile
+  match: ''
+  justification: The builder runs buildah, which unpacks image layers and runs the gate, checks, and scanner containers, and that needs root inside the pod. The pod spec sets runAsUser 0 explicitly, runs in the tenant's sandbox namespace on the tainted sandbox node pool, carries no service account token, and reaches only DNS, LiteLLM, the registries, and the Pod Identity agent.
+- tool: trivy
+  rule: DS-0026
+  path: docker/buildah.Dockerfile
+  match: ''
+  justification: The builder pod runs sleep infinity while the worker execs the build and scan steps into it, then deletes it. It serves nothing, so it has no health to check, and the worker reports each step's exit code.
+- tool: trivy
+  rule: DS-0001
+  path: docker/image-scan.Dockerfile
+  match: FROM download-${TARGETARCH} AS unpack
+  justification: download-${TARGETARCH} names the build stage that holds the checksum-pinned SBOM generator for the target architecture, not an image, so it carries no tag. Trivy cannot resolve the stage through the variable and reads it as an untagged image. Every image the Dockerfile pulls is pinned by digest.
+- tool: trivy
+  rule: DS-0026
+  path: docker/image-scan.Dockerfile
+  match: ''
+  justification: The image runs the SBOM generator once against an image archive and exits, so it serves nothing to check.

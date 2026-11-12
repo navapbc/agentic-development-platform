@@ -8,7 +8,7 @@ locals {
   # Each upstream needs no credential unless it is listed in registry_upstream_credentials.
   registry_upstreams = merge(
     {
-      ecr-public = { url = "public.ecr.aws", mirrors = { "docker.io/library" = "docker/library" } }
+      ecr-public = { url = "public.ecr.aws", mirrors = { "docker.io/library" = "docker/library", "public.ecr.aws" = "" } }
       quay       = { url = "quay.io", mirrors = { "quay.io" = "" } }
       k8s        = { url = "registry.k8s.io", mirrors = { "registry.k8s.io" = "" } }
     },

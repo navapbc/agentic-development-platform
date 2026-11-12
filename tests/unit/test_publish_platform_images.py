@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import re
 import shutil
 import subprocess
@@ -339,13 +340,17 @@ def test_each_gate_engine_builds_from_its_own_directory(monkeypatch) -> None:
     contexts: list[set[str]] = []
 
     def _build(command, **_):
+        if command[:3] == ["docker", "buildx", "imagetools"]:
+            return subprocess.CompletedProcess(command, 0, b'{"manifest": 1}', b"")
         commands.append(command)
         contexts.append({p.name for p in Path(command[-1]).iterdir()})
         return subprocess.CompletedProcess(command, 0, b"", b"")
 
     pushed = publisher.push_engines_locally("localhost:5001", "arm64", REPO_ROOT, _build)
 
+    digest = hashlib.sha256(b'{"manifest": 1}').hexdigest()
     assert set(pushed) == {"security-policy", "test-policy"}
+    assert all(image.endswith(f"@sha256:{digest}") for image in pushed.values())
     for command in commands:
         context = Path(command[-1])
         assert context.name in pushed
@@ -419,3 +424,83 @@ def test_the_catalog_sandbox_images_use_the_toolchain_of_their_profiles_checks()
         checks = catalog["profiles"][profile]["checks"]["image"].removeprefix("docker.io/library/")
         dockerfile = (REPO_ROOT / f"docker/{image}.Dockerfile").read_text(encoding="utf-8")
         assert f"public.ecr.aws/docker/library/{checks} AS" in dockerfile, image
+
+
+class _Credentials:
+    access_key, secret_key, token = "AKIA", "secret", "session"
+
+    def get_frozen_credentials(self):
+        return self
+
+
+class _Session:
+    region_name = "us-east-1"
+
+    def get_credentials(self):
+        return _Credentials()
+
+
+def test_the_catalog_images_are_signed_once_inside_the_builder_image(monkeypatch) -> None:
+    from services.orchestration.gates import registry_auth
+
+    monkeypatch.setattr(registry_auth, "ecr_token", lambda account, region: "dG9rZW4=")
+    registry = "123456789012.dkr.ecr.us-east-1.amazonaws.com"
+    signed_before = f"{registry}/agentic-platform/semgrep:1@sha256:{'a' * 64}"
+    unsigned = f"{registry}/agentic-platform/gate-engine-test-policy:1@sha256:{'b' * 64}"
+    platform = f"{registry}/agentic-platform/platform:1@sha256:{'c' * 64}"
+    builder = f"{registry}/agentic-platform/buildah:1@sha256:{'d' * 64}"
+    calls: list[list[str]] = []
+    env_files: list[str] = []
+
+    def run(command, **_):
+        calls.append(command)
+        env_files.append(Path(command[command.index("--env-file") + 1]).read_text())
+        listing = "└── application/vnd.cncf.notary.signature" if signed_before in command else ""
+        return subprocess.CompletedProcess(command, 0, listing, "")
+
+    signer = publisher.Signer(_Session(), None, registry, "arn:profile", "arm64", run)
+    signed = signer.sign([signed_before, unsigned, platform], builder)
+
+    assert signed == [unsigned]
+    sign = next(command for command in calls if "sign" in command)
+    assert sign[sign.index("--entrypoint") + 1 :] == [
+        "notation",
+        builder,
+        "sign",
+        "--plugin",
+        "com.amazonaws.signer.notation.plugin",
+        "--id",
+        "arn:profile",
+        unsigned,
+    ]
+    assert not any(platform in command for command in calls)
+    assert all("AWS_SECRET_ACCESS_KEY=secret" in env for env in env_files)
+    assert not any("secret" in part for command in calls for part in command)
+
+
+def test_publishing_without_a_signing_profile_stops_before_any_aws_call(
+    monkeypatch, capsys
+) -> None:
+    monkeypatch.setattr(publisher, "signing_profile", lambda explicit: "")
+    monkeypatch.setattr(
+        "scripts.config.get_settings",
+        lambda: (_ for _ in ()).throw(AssertionError("no AWS call without a signing profile")),
+    )
+
+    assert publisher.main([]) == 1
+    assert "no signing profile, so nothing is published" in capsys.readouterr().out
+
+
+def test_unsigned_publishing_proceeds_without_a_signing_profile(monkeypatch) -> None:
+    monkeypatch.setattr(publisher, "signing_profile", lambda explicit: "")
+
+    class _Reached(Exception):
+        pass
+
+    def reached(settings):
+        raise _Reached
+
+    monkeypatch.setattr("scripts.aws_clients.configure_aws_fips", reached)
+
+    with pytest.raises(_Reached):
+        publisher.main(["--unsigned"])

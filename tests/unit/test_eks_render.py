@@ -278,7 +278,7 @@ def test_the_aws_registry_mode_opens_the_gate_pods_to_addresses_outside_the_vpc(
     registry = next(rule for rule in egress if rule["ports"][0]["port"] == 443)
 
     assert {"ipBlock": {"cidr": "0.0.0.0/0", "except": ["10.42.0.0/16"]}} in registry["to"]
-    assert [rule["ports"][0]["port"] for rule in egress] == [53, 4000, 443]
+    assert [rule["ports"][0]["port"] for rule in egress] == [53, 4000, 443, 80]
 
 
 def test_each_tenant_gets_a_worker_namespace_and_a_sandbox_namespace(overlay) -> None:
@@ -378,3 +378,31 @@ def test_a_deployment_without_tenants_is_refused(overlay) -> None:
 
     with pytest.raises(eks_render.RenderError, match="name no tenant"):
         eks_render.render(overlay, inputs, REPOSITORY)
+
+
+def test_each_tenant_sandbox_namespace_admits_only_its_image_prefixes(overlay) -> None:
+    from scripts.tenant_render import IMAGE_POLICY
+
+    inputs = _inputs()
+    inputs["tenants"][0]["image_prefixes"] = [
+        "9.dkr.ecr.us-west-2.amazonaws.com/agentic-platform/semgrep",
+        "9.dkr.ecr.us-west-2.amazonaws.com/agentic-platform/tenants/adp/",
+        "docker.io/library/python",
+    ]
+    documents, _ = eks_render.render(overlay, inputs, REPOSITORY)
+
+    policy = _named(documents, "ValidatingAdmissionPolicy", IMAGE_POLICY)
+    assert policy["spec"]["failurePolicy"] == "Fail"
+    binding = _named(documents, "ValidatingAdmissionPolicyBinding", "tenant-adp-sandbox-images")
+    assert binding["spec"]["validationActions"] == ["Deny"]
+    assert binding["spec"]["paramRef"]["namespace"] == "tenant-adp-sandbox"
+    params = next(
+        d
+        for d in documents
+        if d["kind"] == "ConfigMap"
+        and d["metadata"]["name"] == "image-policy"
+        and d["metadata"]["namespace"] == "tenant-adp-sandbox"
+    )
+    prefixes = params["data"]["prefixes"].split("\n")
+    assert "9.dkr.ecr.us-west-2.amazonaws.com/agentic-platform/tenants/adp/" in prefixes
+    assert {"docker.io/library/python", "python", "library/python"} <= set(prefixes)

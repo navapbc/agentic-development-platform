@@ -20,7 +20,7 @@ from services.repository_intelligence.context_builder.registry import (
     RepositoryIntelligenceRegistry,
     RepoSpec,
 )
-from services.repository_intelligence.normalization.models import RepoRef
+from services.repository_intelligence.normalization.models import ContextPackage, RepoRef
 from services.repository_intelligence.normalization.serialization import context_package_to_dict
 
 logging.basicConfig(level=configured_log_level())
@@ -49,6 +49,24 @@ def build_registry() -> RepositoryIntelligenceRegistry | None:
     ]
     _registry = RepositoryIntelligenceRegistry(specs)
     return _registry
+
+
+def _configured_for_indexing(repo: str) -> bool:
+    from services.integration.repositories import load_repository_registry
+
+    return repo in load_repository_registry(get_settings()).indexed()
+
+
+def unindexed_context_package(repo: str, focus: str) -> ContextPackage:
+    """The package for a repository configured with index false, which carries no code context."""
+    return ContextPackage(
+        focus=focus,
+        symbols=(),
+        references=(),
+        related_tests=(),
+        dependencies=(),
+        repository=repo,
+    )
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -91,7 +109,10 @@ class Handler(BaseHTTPRequestHandler):
         registry = build_registry()
         service = registry.service(repo) if registry is not None else None
         if service is None:
-            self._respond(503, {"error": "repository intelligence not configured"})
+            if _configured_for_indexing(repo):
+                self._respond(503, {"error": f"repository intelligence has no index for {repo}"})
+                return
+            self._respond(200, context_package_to_dict(unindexed_context_package(repo, focus)))
             return
         package = service.context_package(RepoRef(repo, commit), focus, detail)
         self._respond(200, context_package_to_dict(package))

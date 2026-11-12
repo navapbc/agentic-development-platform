@@ -5,9 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
-from database.engine import create_platform_engine
+from database.engine import shared_platform_engine
 from database.models.schema import suspended_flows
-from scripts.config import get_settings
 from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -51,7 +50,7 @@ class PostgresSuspensionStore:
 
     def _get_engine(self) -> AsyncEngine:
         if self._engine is None:
-            self._engine = create_platform_engine(get_settings().database_url)
+            self._engine = shared_platform_engine()
         return self._engine
 
     async def record(self, record: SuspensionRecord) -> None:

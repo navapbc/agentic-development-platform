@@ -53,6 +53,12 @@ variable "repository_arns" {
   default     = []
 }
 
+variable "signing_profile_arn" {
+  description = "ARN of the AWS Signer profile the role signs the platform images with. Empty grants no signing."
+  type        = string
+  default     = ""
+}
+
 variable "tags" {
   description = "Tags applied to every resource."
   type        = map(string)

@@ -80,9 +80,10 @@ run "the_role_pushes_only_to_the_platform_repositories" {
   assert {
     condition = (
       jsonencode([for statement in jsondecode(aws_iam_role_policy.push[0].policy).Statement : statement.Resource if statement.Sid == "PushThePlatformImages"]) == jsonencode([var.repository_arns]) &&
-      jsonencode([for statement in jsondecode(aws_iam_role_policy.push[0].policy).Statement : statement.Action if jsonencode(statement.Resource) == jsonencode("*")]) == jsonencode(["ecr:GetAuthorizationToken"])
+      jsonencode([for statement in jsondecode(aws_iam_role_policy.push[0].policy).Statement : statement.Action if jsonencode(statement.Resource) == jsonencode("*")]) == jsonencode(["ecr:GetAuthorizationToken", "inspector-scan:ScanSbom"]) &&
+      length([for statement in jsondecode(aws_iam_role_policy.push[0].policy).Statement : statement if statement.Sid == "SignThePlatformImages"]) == 0
     )
-    error_message = "The role can push outside the platform repositories, or holds a wildcard beyond the ECR token."
+    error_message = "The role can push outside the platform repositories, holds a wildcard beyond the ECR token and the SBOM scan, or signs without a profile."
   }
 }
 
@@ -121,4 +122,17 @@ run "a_ref_outside_heads_and_tags_is_refused" {
   }
 
   expect_failures = [var.allowed_refs]
+}
+
+run "a_signing_profile_lets_the_role_sign_with_it_only" {
+  command = apply
+
+  variables {
+    signing_profile_arn = "arn:aws:signer:us-east-1:111111111111:/signing-profiles/platform"
+  }
+
+  assert {
+    condition     = one([for statement in jsondecode(aws_iam_role_policy.push[0].policy).Statement : statement.Resource if statement.Sid == "SignThePlatformImages"]) == var.signing_profile_arn
+    error_message = "The role signs with another profile than the platform's."
+  }
 }

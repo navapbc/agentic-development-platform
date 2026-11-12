@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from database.engine import create_platform_engine
+from database.engine import shared_platform_engine
 from database.models.schema import executions
 from scripts.config import Settings, get_settings, to_host_hostport
 from sqlalchemy import select
@@ -110,7 +110,7 @@ class PostgresWorkflowResolver:
 
     def _get_engine(self) -> AsyncEngine:
         if self._engine is None:
-            self._engine = create_platform_engine(get_settings().database_url)
+            self._engine = shared_platform_engine()
         return self._engine
 
     async def resolve(self, event: PrClosedEvent) -> str | None:

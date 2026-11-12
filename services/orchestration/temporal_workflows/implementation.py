@@ -101,7 +101,8 @@ class ImplementationWorkflow:
     @workflow.run
     async def run(self, params: ImplementationInput) -> ImplementationOutput:
         retry = RetryPolicy(maximum_attempts=3)
-        once = RetryPolicy(maximum_attempts=1)
+        # The stage refuses every retry except one after its worker stopped mid-attempt.
+        lost_worker_retry = RetryPolicy(maximum_attempts=2)
         short = timedelta(seconds=30)
         context_timeout = timedelta(minutes=5)
         stage_timeout = timedelta(seconds=params.activity_timeout_seconds)
@@ -249,7 +250,7 @@ class ImplementationWorkflow:
                 plan=params.plan,
             ),
             start_to_close_timeout=stage_timeout,
-            retry_policy=once,
+            retry_policy=lost_worker_retry,
         )
 
         await workflow.execute_activity(

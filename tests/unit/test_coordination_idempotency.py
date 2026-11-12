@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, cast
 
+import pytest
 from services.coordination.idempotency import (
     InMemorySideEffectLedger,
     PostgresSideEffectLedger,
@@ -14,6 +15,8 @@ from services.coordination.idempotency import (
 )
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncEngine
+
+STALE = -1
 
 
 @dataclass
@@ -66,37 +69,52 @@ class _FakeConnection:
             return _FakeResult(self._select(sql, params))
         if statement.is_insert:
             key = str(params["side_effect_key"])
-            self._engine.rows.setdefault(
-                key,
-                _SideEffectRow(
-                    side_effect_key=key,
-                    task_id=str(params["task_id"]),
-                    execution_id=str(params["execution_id"]),
-                    operation=str(params["operation"]),
-                    target=str(params["target"]),
-                    status=str(params["status"]),
-                ),
+            if key in self._engine.rows:
+                return _FakeResult([], rowcount=0)
+            self._engine.rows[key] = _SideEffectRow(
+                side_effect_key=key,
+                task_id=str(params["task_id"]),
+                execution_id=str(params["execution_id"]),
+                operation=str(params["operation"]),
+                target=str(params["target"]),
+                status=str(params["status"]),
             )
-            return _FakeResult([], rowcount=1)
+            returned = [SimpleNamespace(side_effect_key=key)] if "RETURNING" in sql else []
+            return _FakeResult(returned, rowcount=1)
         if statement.is_update:
             row = self._engine.rows.get(str(params["side_effect_key_1"]))
-            if row is None:
+            if row is None or ("status_1" in params and row.status != params["status_1"]):
                 return _FakeResult([], rowcount=0)
-            row.status = str(params["status"])
-            row.result = params["result"]
+            if "status" in params:
+                row.status = str(params["status"])
+                row.result = params["result"]
+                return _FakeResult([], rowcount=1)
+            # A reservation's age stands in for now() here, and STALE is older than the lease.
+            if "updated_at <" in sql:
+                if row.updated_at != STALE:
+                    return _FakeResult([], rowcount=0)
+                row.updated_at = 0
+                return _FakeResult(
+                    [SimpleNamespace(side_effect_key=row.side_effect_key)], rowcount=1
+                )
+            row.updated_at = STALE
             return _FakeResult([], rowcount=1)
         raise AssertionError(f"unexpected statement: {statement}")
 
     def _select(self, sql: str, params: dict[str, Any]) -> list[Any]:
+        status = params.get("status_1")
         if "side_effect_key = " in sql:
             row = self._engine.rows.get(str(params["side_effect_key_1"]))
-            return [_row_result(row)] if row is not None else []
+            if row is None or (status is not None and row.status != status):
+                return []
+            return [_row_result(row)]
         rows = [
             row
             for row in self._engine.rows.values()
             if row.task_id == params["task_id_1"]
             and row.execution_id == params["execution_id_1"]
             and row.operation == params["operation_1"]
+            and (status is None or row.status == status)
         ]
         if "ORDER BY" in sql:
             assert "updated_at DESC" in sql
@@ -468,3 +486,84 @@ async def test_pending_intake_start_for_a_different_repo_is_not_reentrant():
 
     assert outcome.replayed is False
     assert outcome.reentrant is False
+
+
+async def test_a_live_reservation_makes_a_concurrent_run_in_flight():
+    ref = SideEffectRef("ADEV-1", "", "intake_start", "ADEV-1:repo-a")
+    engine = _FakeEngine([])
+    ledger = PostgresSideEffectLedger(cast(AsyncEngine, engine))
+    calls: list[str] = []
+
+    async def start_inner():
+        calls.append("inner")
+        return {"workflow_id": "wf-inner"}
+
+    async def start_outer():
+        inner = await ledger.run_once(ref, start_inner)
+        assert inner.in_flight is True and inner.result is None
+        calls.append("outer")
+        return {"workflow_id": "wf-outer"}
+
+    outcome = await ledger.run_once(ref, start_outer)
+
+    assert calls == ["outer"]
+    assert outcome.result == {"workflow_id": "wf-outer"}
+
+
+async def test_a_stale_reservation_is_taken_over_and_run():
+    ref = SideEffectRef("ADEV-1", "", "intake_start", "ADEV-1:repo-a")
+    engine = _FakeEngine(
+        [
+            _SideEffectRow(
+                side_effect_key=side_effect_key(ref),
+                task_id=ref.task_id,
+                execution_id=ref.execution_id,
+                operation=ref.operation,
+                target=ref.target,
+                status="pending",
+                updated_at=STALE,
+            )
+        ]
+    )
+    ledger = PostgresSideEffectLedger(cast(AsyncEngine, engine))
+
+    async def start():
+        return {"workflow_id": "wf"}
+
+    outcome = await ledger.run_once(ref, start)
+
+    assert outcome.in_flight is False
+    assert engine.rows[side_effect_key(ref)].status == "completed"
+
+
+async def test_a_failed_effect_releases_its_reservation_for_the_next_caller():
+    ref = SideEffectRef("ADEV-1", "", "intake_start", "ADEV-1:repo-a")
+    engine = _FakeEngine([])
+    ledger = PostgresSideEffectLedger(cast(AsyncEngine, engine))
+
+    async def fail():
+        raise RuntimeError("database unavailable")
+
+    async def start():
+        return {"workflow_id": "wf"}
+
+    with pytest.raises(RuntimeError):
+        await ledger.run_once(ref, fail)
+    retried = await ledger.run_once(ref, start)
+
+    assert retried.in_flight is False
+    assert retried.result == {"workflow_id": "wf"}
+
+
+async def test_the_in_memory_ledger_refuses_a_concurrent_run_of_the_same_effect():
+    ledger = InMemorySideEffectLedger()
+    ref = SideEffectRef("ADEV-1", "", "intake_start", "ADEV-1:repo-a")
+
+    async def start_inner():
+        raise AssertionError("a concurrent run must not run the effect")
+
+    async def start_outer():
+        assert (await ledger.run_once(ref, start_inner)).in_flight is True
+        return {"workflow_id": "wf"}
+
+    assert (await ledger.run_once(ref, start_outer)).result == {"workflow_id": "wf"}

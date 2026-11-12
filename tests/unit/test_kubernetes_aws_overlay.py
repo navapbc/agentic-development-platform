@@ -174,11 +174,15 @@ def test_the_temporal_clients_carry_the_client_security_groups(documents) -> Non
     }
 
 
-def test_gate_pods_reach_only_dns_litellm_and_the_registry(documents) -> None:
+def test_gate_pods_reach_only_dns_litellm_the_registry_and_the_pod_identity_agent(
+    documents,
+) -> None:
     egress = _named(documents, "NetworkPolicy", "gate-engine-egress")["spec"]["egress"]
     ports = sorted((port["protocol"], port["port"]) for rule in egress for port in rule["ports"])
 
-    assert ports == [("TCP", 53), ("TCP", 443), ("TCP", 4000), ("UDP", 53)]
+    assert ports == [("TCP", 53), ("TCP", 80), ("TCP", 443), ("TCP", 4000), ("UDP", 53)]
+    agent = next(rule for rule in egress if rule["ports"][0]["port"] == 80)
+    assert agent["to"] == [{"ipBlock": {"cidr": "169.254.170.23/32"}}]
     registry = next(rule for rule in egress if rule["ports"][0]["port"] == 443)
     assert all("except" not in peer["ipBlock"] for peer in registry["to"])
     assert "0.0.0.0/0" not in {peer["ipBlock"]["cidr"] for peer in registry["to"]}

@@ -14,6 +14,7 @@ from services.prompts.library import IMPLEMENTATION_VERSION
 IMPLEMENTATION_PROMPT_VERSION = IMPLEMENTATION_VERSION
 
 COORDINATION_AUTH_ERROR_TYPE = "CoordinationAuth"
+IMPLEMENTATION_TIMED_OUT_ERROR_TYPE = "ImplementationTimedOut"
 
 
 @dataclass
@@ -203,6 +204,42 @@ async def finalize_work_claim(req: FinalizeClaimRequest) -> FinalizeClaimResult:
 
 @activity.defn
 async def run_implementation_stage(req: ImplementationRequest) -> ImplementationResult:
+    """Run the coding agent once, retrying only an attempt whose worker stopped.
+
+    Every failure raised here is non-retryable, so Temporal schedules a second attempt only after
+    a timeout. A previous attempt that ran for its whole start-to-close timeout timed out on its
+    own, and the second attempt refuses to run it again. One that ended sooner lost its worker
+    and heartbeats, and the second attempt starts the stage over on a clean workspace. A worker
+    lost within the heartbeat timeout of the stage timeout looks like a full timeout, so that
+    attempt is not retried. The second attempt starts with the stage's whole cost budget.
+    """
+    retry_after_lost_worker = False
+    if activity.in_activity():
+        info = activity.info()
+        if info.attempt > 1:
+            elapsed = info.current_attempt_scheduled_time - info.scheduled_time
+            if info.start_to_close_timeout and elapsed >= info.start_to_close_timeout:
+                raise ApplicationError(
+                    "the implementation stage timed out on its previous attempt",
+                    type=IMPLEMENTATION_TIMED_OUT_ERROR_TYPE,
+                    non_retryable=True,
+                )
+            retry_after_lost_worker = True
+    try:
+        return await _run_implementation_stage(req, clean_workspace=retry_after_lost_worker)
+    except ApplicationError as exc:
+        if exc.non_retryable:
+            raise
+        raise ApplicationError(
+            exc.message, *exc.details, type=exc.type, non_retryable=True
+        ) from exc
+    except Exception as exc:
+        raise ApplicationError(str(exc), type=type(exc).__name__, non_retryable=True) from exc
+
+
+async def _run_implementation_stage(
+    req: ImplementationRequest, *, clean_workspace: bool
+) -> ImplementationResult:
     from scripts.config import get_settings
 
     from services.repository_intelligence.normalization.serialization import (
@@ -222,7 +259,12 @@ async def run_implementation_stage(req: ImplementationRequest) -> Implementation
         base=req.base,
         commit_sha=req.commit,
     )
+    if clean_workspace:
+        await materializer.discard_changes(workspace)
     runtime = _build_runtime(req.repo)
+    from services.orchestration.gates.image_admission import admit_sandbox_image
+
+    await admit_sandbox_image(runtime.image, get_settings())
     outcome = await runtime.run_implementation(
         execution_id=req.execution_id,
         task=req.task,

@@ -225,16 +225,19 @@ async def test_a_changed_body_changes_the_content_address():
 
 async def test_every_artifact_write_shares_one_database_engine(monkeypatch):
     """A sink is built per artifact, so a per-sink engine would leak a pool each write."""
+    import weakref
+
+    from database import engine as engine_module
     from services.review import evidence
 
-    monkeypatch.setattr(evidence, "_shared_engine", None)
+    monkeypatch.setattr(engine_module, "_shared", weakref.WeakKeyDictionary())
     built = []
 
     def _record_engine(*args, **kwargs):
         built.append(args)
         return object()
 
-    monkeypatch.setattr(evidence, "create_platform_engine", _record_engine)
+    monkeypatch.setattr(engine_module, "create_platform_engine", _record_engine)
 
     first = evidence.PostgresEvidenceSink()._get_engine()
     second = evidence.PostgresEvidenceSink()._get_engine()

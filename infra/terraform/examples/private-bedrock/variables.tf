@@ -834,3 +834,32 @@ variable "container_platform_settings" {
     error_message = "A platform setting name is an upper-case variable name and may not contain KEY, TOKEN, SECRET, PASSWORD, or PAT, because a secret belongs in the secret store."
   }
 }
+
+variable "image_scanning_enabled" {
+  description = "Turn on Amazon Inspector enhanced scanning for every ECR repository in the account and region, and refuse a tenant pod image that Inspector has not scanned or that carries an active finding at image_finding_severity or above, unless image_exceptions.yaml in container_config_dir accepts it. Enhanced scanning is an account setting, billed per image scanned."
+  type        = bool
+  default     = false
+}
+
+variable "image_finding_severity" {
+  description = "The lowest Amazon Inspector severity that refuses a tenant pod image: LOW, MEDIUM, HIGH, or CRITICAL."
+  type        = string
+  default     = "HIGH"
+
+  validation {
+    condition     = contains(["LOW", "MEDIUM", "HIGH", "CRITICAL"], var.image_finding_severity)
+    error_message = "image_finding_severity is LOW, MEDIUM, HIGH, or CRITICAL."
+  }
+}
+
+variable "image_signature_verification" {
+  description = "Verify the AWS Signer signature of each catalog and tenant image before a pod pulls it. Catalog images must be signed with the platform profile and tenant images with the tenant's profile. Runs the pull pods as the image-verifier ServiceAccount, whose only permission is signer:GetRevocationStatus, adds the Signer revocation host to the DNS Firewall allowlist, and lets the pull pods reach addresses outside the VPC on 443, because no interface endpoint serves the revocation check."
+  type        = bool
+  default     = false
+}
+
+variable "image_policy_registries" {
+  description = "Registry repositories or prefixes, ending in /, a tenant pod may pull from besides the catalog, the tenant's prefix, and the pull-through caches."
+  type        = list(string)
+  default     = []
+}

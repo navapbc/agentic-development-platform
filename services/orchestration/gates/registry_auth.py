@@ -1,13 +1,18 @@
 """Registry mirrors and credentials for the images a gate, checks, or scanner pod pulls.
 
-These pods carry no AWS identity, and buildah inside the pod pulls their images, so on EKS a pull
-from a private ECR repository has no credential of its own. The activity worker, which signs with
-its Pod Identity role, requests an ECR authorization token for each ECR registry the pod pulls
-from and copies a containers auth file into the pod through `copy_in`, so the token never appears
-in a command line or the API server audit log. The pod's script exports `REGISTRY_AUTH_FILE` for
-the pull and deletes the file before any project or scanner code runs. An image outside ECR, such
-as one from a local registry, installs nothing. With a registries.yaml, the pod also receives the
-buildah mirror drop-in, and in external mode the mirror's token and the package credential.
+These pods carry no AWS identity that can pull, and buildah inside the pod pulls their images, so
+on EKS a pull from a private ECR repository has no credential of its own. The activity worker,
+which signs with its Pod Identity role, requests an ECR authorization token for each ECR registry
+the pod pulls from and copies a containers auth file into the pod through `copy_in`, so the token
+never appears in a command line or the API server audit log. The pod's script exports
+`REGISTRY_AUTH_FILE` for the pull and deletes the file before any project or scanner code runs. An
+image outside ECR, such as one from a local registry, installs nothing. With a registries.yaml, the
+pod also receives the buildah mirror drop-in, and in external mode the mirror's token and the
+package credential.
+
+Every image is admitted first, as `image_admission` describes. The pod receives a policy.json that
+rejects every registry the image policy does not admit, and with signature verification on, the
+notation trust policy its pull verifies each signed image against.
 """
 
 from __future__ import annotations
@@ -22,7 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from services.orchestration.gates import registry_mirrors
+from services.orchestration.gates import image_admission, registry_mirrors
 
 AUTH_DIR = "/run/registry-auth"
 AUTH_FILE = f"{AUTH_DIR}/auth.json"
@@ -70,12 +75,18 @@ class RegistrySetup:
     authenticated: bool = False
     package_auth: bool = False
     packages: Mapping[str, str] = field(default_factory=dict)
+    verify: str = ""
 
     def before_pull(self) -> str:
-        return f"export REGISTRY_AUTH_FILE={AUTH_FILE}\n" if self.authenticated else ""
+        auth = f"export REGISTRY_AUTH_FILE={AUTH_FILE} DOCKER_CONFIG={AUTH_DIR}\n"
+        return (auth if self.authenticated else "") + self.verify
 
     def after_pull(self) -> str:
-        return f"rm -rf {AUTH_DIR}\nunset REGISTRY_AUTH_FILE\n" if self.authenticated else ""
+        return (
+            f"rm -rf {AUTH_DIR}\nunset REGISTRY_AUTH_FILE DOCKER_CONFIG\n"
+            if self.authenticated
+            else ""
+        )
 
     def _environment(self) -> dict[str, str]:
         environment = dict(self.packages)
@@ -137,6 +148,14 @@ async def install(
     registry among `images` and the mirrors, and an external mirror's token comes from the
     variable its config names.
     """
+    images = [image for image in images if image]
+    admission = await image_admission.admit_images(images)
+    policies = {image_admission.POLICY_FILE: image_admission.containers_policy(admission)}
+    await _copy_files(ops, pod, namespace, policies, image_admission.POLICY_DIR)
+    verify = image_admission.verify_script(admission)
+    if verify:
+        trust = {image_admission.TRUST_POLICY_FILE: image_admission.trust_policy(admission)}
+        await _copy_files(ops, pod, namespace, trust, image_admission.NOTATION_CONFIG_DIR)
     config = registry_mirrors.current() if registries is True else registries or None
     mirror_images = [f"{location}/x" for location in config.mirrors.values()] if config else []
     ecr = ecr_registries([*images, *mirror_images])
@@ -150,8 +169,10 @@ async def install(
         conf = {MIRRORS_FILE: registry_mirrors.registries_conf(config)}
         await _copy_files(ops, pod, namespace, conf, MIRRORS_DIR)
     if entries:
-        document = {Path(AUTH_FILE).name: registry_mirrors.auth_document(entries)}
-        await _copy_files(ops, pod, namespace, document, AUTH_DIR)
+        document = registry_mirrors.auth_document(entries)
+        # notation reads the same credentials from the Docker config DOCKER_CONFIG names.
+        files = {Path(AUTH_FILE).name: document, "config.json": document}
+        await _copy_files(ops, pod, namespace, files, AUTH_DIR)
     package_auth = bool(external_token is not None and config.packages)
     if package_auth:
         files = registry_mirrors.package_auth_files(config, external_token)
@@ -160,6 +181,7 @@ async def install(
         authenticated=bool(entries),
         package_auth=package_auth,
         packages=registry_mirrors.package_env(config) if config else {},
+        verify=verify,
     )
 
 

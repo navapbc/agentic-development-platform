@@ -1,6 +1,6 @@
 locals {
   eks_enabled               = var.create_eks
-  eks_gate_pod_repositories = ["semgrep", "trivy", "gate-engine-security-policy", "gate-engine-test-policy"]
+  eks_gate_pod_repositories = local.image_catalog_repositories
 
   # Secret store keys each EKS workload reads through the Secrets Store CSI driver. The database
   # keys exist only with Aurora, and the secret store rejects a reader key that names no secret.
@@ -34,10 +34,14 @@ locals {
   } : {}
 
   # The Pod Identity agent reaches the eks-auth interface endpoint under this name.
-  eks_domains = local.eks_enabled ? ["eks-auth.${var.region}.api.aws"] : []
+  eks_domains = local.eks_enabled ? concat(
+    ["eks-auth.${var.region}.api.aws"],
+    # The AWS Signer plugin checks revocation at this public name, which no interface endpoint serves.
+    var.image_signature_verification ? ["verification.signer.${var.region}.amazonaws.com"] : [],
+  ) : []
 
   # The tenant workers and the inbound webhook start and signal Temporal workflows.
-  eks_temporal_client_role_arns = local.eks_enabled ? [for name in concat(keys(local.tenant_workloads), ["inbound_webhook"]) : module.eks_cluster.pod_identity_role_arns[name]] : []
+  eks_temporal_client_role_arns = local.eks_enabled ? [for name in concat([for tenant in keys(local.tenants) : "tenant_${tenant}"], ["inbound_webhook"]) : module.eks_cluster.pod_identity_role_arns[name]] : []
   eks_workspace                 = local.eks_enabled && module.container_services.workspace != null
   eks_deployer_enabled          = local.eks_enabled && var.create_ecs_cluster && var.create_container_services
 
@@ -80,7 +84,7 @@ locals {
     }
     settings             = { LANGFUSE_HOST = "https://langfuse.${var.container_internal_domain}" }
     platform_environment = coalesce(module.container_services.platform_environment, {})
-    environment_config   = merge(local.registry_environment_config, local.container_environment_config)
+    environment_config   = merge(local.container_environment_config, local.registry_environment_config, local.image_environment_config)
     security_groups = {
       cluster         = module.eks_cluster.cluster_security_group_id
       temporal_client = coalesce(module.temporal_control_plane.client_security_group_id, "")
@@ -95,7 +99,7 @@ locals {
       [for entry in data.aws_ec2_managed_prefix_list.s3_eks[0].entries : entry.cidr],
       var.registry_mode == "external" ? var.registry_external_cidrs : [],
     )
-    gate_egress_internet = var.registry_mode == "aws"
+    gate_egress_internet = var.registry_mode == "aws" || var.image_signature_verification
     ingress = {
       webhook_certificate_arn     = var.eks_webhook_certificate_arn
       mcp_gateway_certificate_arn = var.eks_mcp_gateway_certificate_arn

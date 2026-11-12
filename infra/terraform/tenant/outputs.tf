@@ -9,6 +9,7 @@ output "tenant" {
     image_prefix       = local.image_prefix
     config_prefix      = local.config_prefix
     publisher_role_arn = try(aws_iam_role.publisher[0].arn, null)
+    signing_profile    = aws_signer_signing_profile.this[0].arn
     namespace          = "tenant-${var.tenant}"
     sandbox_namespace  = "tenant-${var.tenant}-sandbox"
     ticket_store = {

@@ -134,7 +134,7 @@ requires-dist = [
     { name = "langfuse", marker = "extra == 'prompts'", specifier = ">=3,<5" },
     { name = "langgraph", marker = "extra == 'reasoning'", specifier = ">=1.2,<2" },
     { name = "mcp", marker = "extra == 'gateway'", specifier = ">=1.30,<2" },
-    { name = "nava-rebar", extras = ["agents", "jira-datacenter", "s3"], marker = "extra == 'review'", specifier = "==0.14.0" },
+    { name = "nava-rebar", extras = ["agents", "jira-datacenter", "s3"], marker = "extra == 'review'", specifier = "==0.15.1" },
     { name = "openhands-sdk", marker = "extra == 'sandbox'", specifier = ">=1.56,<2" },
     { name = "openhands-tools", marker = "extra == 'sandbox'", specifier = ">=1.56,<2" },
     { name = "openpyxl", marker = "extra == 'review'", specifier = ">=3.1,<4" },
@@ -3297,16 +3297,16 @@ wheels = [
 
 [[package]]
 name = "nava-rebar"
-version = "0.14.0"
+version = "0.15.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jsonschema" },
     { name = "pyyaml" },
     { name = "referencing" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/54/ca/3d9412d65e1f8325a2794ff9d704af0ebe6620a7f375b38a6994ae488fe5/nava_rebar-0.14.0.tar.gz", hash = "sha256:04787a7ca9f92f42dd78857085aa1cc1b52f59f976bd3fbe9060ef9259572f22", size = 8106004, upload-time = "2026-10-31T01:03:03.33Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/18/c3/769d2f93402b779f4fb32cd47e330fb5b34ddd5c731313affb7df6a49b22/nava_rebar-0.15.1.tar.gz", hash = "sha256:9d7268fb105dba46731ac413a06aa54802a7c321f82d00c61bbcaa78353de75d", size = 8394175, upload-time = "2026-11-11T23:59:52.578Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/34/7c/287e1bf0538ad9f7331e686defebfe312929dacb9ff1414c861f0d501491/nava_rebar-0.14.0-py3-none-any.whl", hash = "sha256:ee21989db59c801e30b7f86887436e1afc18d949ae3543c82bf354750468b18a", size = 3059711, upload-time = "2026-10-31T01:03:01.303Z" },
+    { url = "https://files.pythonhosted.org/packages/2a/26/f36de785b7b8c7a4d51fe414a644ed0febfb344a8502c6e1555bb81e42ae/nava_rebar-0.15.1-py3-none-any.whl", hash = "sha256:739a233b234c2fd465bd12eb6e70948c180f01e129500ac3891fea8299dc4166", size = 3161236, upload-time = "2026-11-11T23:59:50.292Z" },
 ]
 
 [package.optional-dependencies]

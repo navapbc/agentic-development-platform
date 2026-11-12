@@ -17,6 +17,18 @@ _NAME_SANITISE = re.compile(r"[^a-z0-9-]+")
 _SANDBOX_UID = 10001
 _SANDBOX_HOME = "/home/sandbox"
 _BASE_TAG = "__openhands_base"
+# Untracked paths matching these never reach the patch. A pattern excludes only untracked files,
+# so an edit to a tracked file under one of them still does.
+BUILD_ARTIFACT_EXCLUDES = (
+    "__pycache__/",
+    "*.pyc",
+    ".pytest_cache/",
+    "node_modules/",
+    "target/",
+    "build/",
+    "dist/",
+    ".venv/",
+)
 # The eks-cluster module labels its nodes with the pool name and taints the sandbox pool.
 NODE_POOL_LABEL = "agentic-dev-platform/node-pool"
 SANDBOX_TAINT_KEY = "agentic-dev-platform/sandbox"
@@ -93,6 +105,7 @@ def build_pod_manifest(spec: SandboxSpec) -> dict:
     env = [
         {"name": "LLM_BASE_URL", "value": spec.litellm_base_url},
         {"name": "HOME", "value": _SANDBOX_HOME},
+        {"name": "PYTHONDONTWRITEBYTECODE", "value": "1"},
     ]
     env += [{"name": key, "value": value} for key, value in spec.env.items()]
     # The agent server binds the pod IP only when a session key is set, and then requires
@@ -218,7 +231,12 @@ class KubernetesSandboxProvisioner:
         except ApiException as exc:
             if exc.status != 409:
                 raise
-            await self._wait_absent(core, name, spec.namespace)
+            # The pod name comes from the execution id, so a pod already holding it belongs to
+            # an earlier attempt of this stage, either still terminating or orphaned by a worker
+            # that stopped. Neither is used again, and removing it lets this attempt start.
+            await self.teardown(
+                SandboxHandle(name=name, namespace=spec.namespace, base_url="", session_api_key="")
+            )
             await asyncio.to_thread(core.create_namespaced_pod, spec.namespace, manifest)
         pod_ip = await self._wait_ready(core, name, spec.namespace)
         base_url = f"http://{pod_ip}:{spec.server_port}"
@@ -335,8 +353,11 @@ class KubernetesSandboxProvisioner:
                 "--",
                 "sh",
                 "-c",
-                f"cd {shlex.quote(project_dir)} && git add -A && "
-                f"(git diff --cached {_BASE_TAG} 2>/dev/null || git diff --cached)",
+                f"cd {shlex.quote(project_dir)} && excludes=$(mktemp) && "
+                f"printf '%s\\n' {' '.join(shlex.quote(p) for p in BUILD_ARTIFACT_EXCLUDES)} "
+                f'> "$excludes" && git -c core.excludesFile="$excludes" add -A && '
+                f"(git diff --cached --binary {_BASE_TAG} 2>/dev/null || "
+                f"git diff --cached --binary)",
             ],
             timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS,
             capture_output=True,

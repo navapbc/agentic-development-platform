@@ -46,6 +46,8 @@ jobs:
           role-session-name: publish-images-${{ github.run_id }}
       - name: Publish the platform images
         id: publish
+        env:
+          IMAGE_SIGNING_PROFILE_ARN: ${{ vars.AWS_IMAGE_SIGNING_PROFILE_ARN }}
         run: |
           set -euo pipefail
           uv run --no-sync inv publish-platform-images --arch "$ARCH" --manifest images-manifest.json

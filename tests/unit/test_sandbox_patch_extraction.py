@@ -9,6 +9,8 @@ from openhands.runtime.provisioner import (
     _BASE_TAG,
     KubernetesSandboxProvisioner,
     SandboxHandle,
+    SandboxSpec,
+    build_pod_manifest,
 )
 from services import process
 
@@ -74,7 +76,7 @@ def test_copy_in_commits_the_copied_tree_before_tagging_the_base(monkeypatch):
     provisioner._copy_in_sync(_handle(), "/host/src", "/workspace/project")
 
     cmd = captured["copy_cmd"]
-    assert "git add -A" in cmd
+    assert "add -A" in cmd
     assert "commit --no-verify" in cmd
     assert cmd.index("git add -A") < cmd.index("commit --no-verify")
     assert cmd.index("commit --no-verify") < cmd.index(f"git tag -f {_BASE_TAG} HEAD")
@@ -181,9 +183,9 @@ def test_extract_patch_diffs_against_the_base_tag_with_a_fallback(monkeypatch):
     patch = provisioner._extract_patch_sync(_handle(), "/workspace/project")
 
     cmd = captured["extract_cmd"]
-    assert "git add -A" in cmd
-    assert f"git diff --cached {_BASE_TAG}" in cmd
-    assert "git diff --cached)" in cmd
+    assert "add -A" in cmd
+    assert f"git diff --cached --binary {_BASE_TAG}" in cmd
+    assert "git diff --cached --binary)" in cmd
     assert patch == "diff"
 
 
@@ -230,7 +232,7 @@ async def test_teardown_force_deletes_and_waits_until_absent():
     assert core.present_reads == 0
 
 
-async def test_provision_retries_after_a_terminating_pod_conflict(monkeypatch):
+async def test_provision_replaces_the_pod_an_earlier_attempt_left(monkeypatch):
     from openhands.runtime import provisioner as provisioner_module
     from openhands.runtime.provisioner import SandboxSpec
 
@@ -245,6 +247,93 @@ async def test_provision_retries_after_a_terminating_pod_conflict(monkeypatch):
 
     handle = await provisioner.provision(spec)
 
+    assert core.deleted == [0]
     assert core.created == 1
     assert core.create_conflicts == 0
     assert handle.base_url == "http://10.0.0.5:8000"
+
+
+def _git(cwd, *args):
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+
+
+def _sandbox_pair(tmp_path, tracked: dict[str, bytes]):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    _git(workspace, "init", "-q")
+    for name, body in tracked.items():
+        (workspace / name).parent.mkdir(parents=True, exist_ok=True)
+        (workspace / name).write_bytes(body)
+    _git(workspace, "add", "-A")
+    _git(workspace, "-c", "user.email=t@example.invalid", "-c", "user.name=t", "commit", "-qm", "x")
+    sandbox = tmp_path / "sandbox"
+    shutil.copytree(workspace, sandbox)
+    _git(sandbox, "tag", _BASE_TAG)
+    return workspace, sandbox
+
+
+def _extract_from(sandbox, monkeypatch) -> str:
+    real_run = subprocess.run
+
+    def _run_in_sandbox(args, **kwargs):
+        script = args[-1].replace("/workspace/project", str(sandbox))
+        kwargs.pop("executable", None)
+        return real_run(["sh", "-c", script], **kwargs)
+
+    with monkeypatch.context() as patched:
+        patched.setattr(process, "resolve_executable", lambda name, path=None: name)
+        patched.setattr(subprocess, "run", _run_in_sandbox)
+        return KubernetesSandboxProvisioner(in_cluster=False)._extract_patch_sync(
+            _handle(), "/workspace/project"
+        )
+
+
+def test_an_extracted_patch_carrying_a_binary_file_applies_to_the_workspace(tmp_path, monkeypatch):
+    from openhands.runtime.runtime import _apply_patch
+
+    workspace, sandbox = _sandbox_pair(tmp_path, {"calc.py": b"def add(a, b):\n    return a + b\n"})
+    (sandbox / "logo.png").write_bytes(bytes(range(256)))
+    (sandbox / "calc.py").write_text(
+        "def add(a, b):\n    return a + b\n\n\ndef mul(a, b):\n    return a * b\n"
+    )
+
+    _apply_patch(str(workspace), _extract_from(sandbox, monkeypatch))
+
+    assert (workspace / "logo.png").read_bytes() == bytes(range(256))
+    assert "def mul" in (workspace / "calc.py").read_text()
+
+
+def test_the_extracted_patch_leaves_out_untracked_build_artifacts(tmp_path, monkeypatch):
+    workspace, sandbox = _sandbox_pair(
+        tmp_path, {"calc.py": b"x = 1\n", "build/generate.py": b"y = 1\n"}
+    )
+    (sandbox / "calc.py").write_text("x = 2\n")
+    (sandbox / "build" / "generate.py").write_text("y = 2\n")
+    for artifact in (
+        "__pycache__/calc.cpython-313.pyc",
+        "tests/__pycache__/test_calc.cpython-313.pyc",
+        "stray.pyc",
+        ".pytest_cache/v/cache/lastfailed",
+        "node_modules/left-pad/index.js",
+        "target/classes/App.class",
+        "build/output.bin",
+        "dist/calc-0.1.tar.gz",
+        ".venv/bin/python",
+    ):
+        (sandbox / artifact).parent.mkdir(parents=True, exist_ok=True)
+        (sandbox / artifact).write_bytes(b"\x00artifact")
+
+    patch = _extract_from(sandbox, monkeypatch)
+
+    changed = sorted(
+        line.split(" b/")[-1] for line in patch.splitlines() if line.startswith("diff --git")
+    )
+    assert changed == ["build/generate.py", "calc.py"]
+
+
+def test_the_sandbox_writes_no_python_bytecode() -> None:
+    env = build_pod_manifest(SandboxSpec(execution_id="exec-1", image="img@sha256:" + "a" * 64))[
+        "spec"
+    ]["containers"][0]["env"]
+
+    assert {"name": "PYTHONDONTWRITEBYTECODE", "value": "1"} in env

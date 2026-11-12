@@ -17,6 +17,7 @@ from services.integration.runtime_profiles import (
     sandbox_image,
 )
 from services.integration.tenant_config import validate_bundle
+from tests.support import write_image_policy
 
 ENGINE_IMAGES = {
     "security-policy": "registry.example/gate-engine-security-policy:1@sha256:" + "a" * 64,
@@ -76,6 +77,7 @@ def environment(tmp_path, monkeypatch):
         "tickets.yaml": TICKETS,
     }.items():
         (env / name).write_text(text)
+    write_image_policy(env)
     monkeypatch.setenv("PLATFORM_ENV_CONFIG_DIR", str(env))
     tenant_config.reset()
     yield env

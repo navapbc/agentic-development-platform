@@ -19,6 +19,7 @@ from uuid import uuid4
 from adapters.interfaces.security_scanner import ScannerUnavailableError
 from adapters.real.security_scanner import CommandResult
 
+from services.orchestration.gates import image_admission
 from services.orchestration.gates import registry_auth as registry_auth_script
 from services.orchestration.gates.pod_runner import (
     DEFAULT_BUILDER_IMAGE,
@@ -181,7 +182,12 @@ class PodCommandRunner:
         """
         pod = scanner_pod_name(self._scanner, self._execution_id or uuid4().hex[:8])
         manifest = build_pod_manifest(
-            pod, self._namespace, self._builder_image, self._privileged, node_pool=self._node_pool
+            pod,
+            self._namespace,
+            self._builder_image,
+            self._privileged,
+            node_pool=self._node_pool,
+            service_account=image_admission.pod_service_account(),
         )
         try:
             await self._ops.create(manifest)

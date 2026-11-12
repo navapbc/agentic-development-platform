@@ -297,9 +297,11 @@ def _required_content(settings: Settings) -> list[str]:
         problems.append("jira.yaml is required with TICKET_BACKEND=jira")
     if registry.names(GITHUB) and not _present("github", settings):
         problems.append("github.yaml is required for a repository with backend github")
+    from services.integration.image_policy import image_problems
     from services.integration.runtime_profiles import profile_problems
 
     problems.extend(profile_problems(settings))
+    problems.extend(image_problems(settings))
     return problems
 
 

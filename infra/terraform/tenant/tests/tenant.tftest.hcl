@@ -17,6 +17,12 @@ override_resource {
 }
 
 override_resource {
+  target          = aws_signer_signing_profile.this
+  override_during = plan
+  values          = { arn = "arn:aws:signer:us-east-1:111111111111:/signing-profiles/agentic_platform_tenant_adp_abc" }
+}
+
+override_resource {
   target          = aws_iam_role.image_creation
   override_during = plan
   values          = { arn = "arn:aws:iam::111111111111:role/agentic-platform-tenant-adp-image-creation" }
@@ -163,9 +169,11 @@ run "the_publisher_trusts_one_repository_and_writes_one_prefix" {
       aws_iam_role.publisher[0].name == "agentic-platform-tenant-adp-publisher" &&
       jsondecode(aws_iam_role.publisher[0].assume_role_policy).Statement[0].Condition.StringLike["token.actions.githubusercontent.com:sub"] == ["repo:navapbc/adp-tenant-config:ref:refs/heads/main"] &&
       one([for s in jsondecode(aws_iam_role_policy.publisher[0].policy).Statement : s if s.Sid == "PublishTheTenantBundle"]).Resource == "arn:aws:s3:::agentic-platform-tenant-config-abc/tenants/adp/*" &&
-      one([for s in jsondecode(aws_iam_role_policy.publisher[0].policy).Statement : s if s.Sid == "PushTheTenantImages"]).Resource == "arn:aws:ecr:us-east-1:111111111111:repository/agentic-platform/tenants/adp/*"
+      one([for s in jsondecode(aws_iam_role_policy.publisher[0].policy).Statement : s if s.Sid == "PushTheTenantImages"]).Resource == "arn:aws:ecr:us-east-1:111111111111:repository/agentic-platform/tenants/adp/*" &&
+      one([for s in jsondecode(aws_iam_role_policy.publisher[0].policy).Statement : s if s.Sid == "SignTheTenantImages"]).Resource == "arn:aws:signer:us-east-1:111111111111:/signing-profiles/agentic_platform_tenant_adp_abc" &&
+      startswith(aws_signer_signing_profile.this[0].name_prefix, "agentic_platform_tenant_adp_")
     )
-    error_message = "The publisher trusts another repository or reaches beyond the tenant's prefixes."
+    error_message = "The publisher trusts another repository, reaches beyond the tenant's prefixes, or signs with another profile."
   }
 }
 

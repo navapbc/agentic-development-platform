@@ -13,8 +13,11 @@ from __future__ import annotations
 import base64
 import shlex
 from dataclasses import dataclass
+from pathlib import Path
 
+from services.orchestration.gates import image_admission
 from services.orchestration.gates import registry_auth as registry_auth_script
+from services.orchestration.gates.dockerfile_images import base_images, dockerfile_for
 from services.orchestration.gates.pod_runner import (
     CHECKS_POD_RESOURCES,
     PodOps,
@@ -232,6 +235,13 @@ def parse_fix_output(text: str) -> tuple[tuple[str, ...], str]:
     return tuple(files), "\n".join(kept).strip()
 
 
+def _build_images(spec: ChecksSpec) -> list[str]:
+    """Return the images the build Dockerfile pulls, which the pod admits like its own images."""
+    if not spec.build:
+        return []
+    return base_images(dockerfile_for(Path(spec.checkout_dir), spec.build))
+
+
 class ChecksRunner:
     def __init__(
         self,
@@ -257,14 +267,14 @@ class ChecksRunner:
             self._privileged,
             CHECKS_POD_RESOURCES,
             node_pool=self._node_pool,
+            service_account=image_admission.pod_service_account(),
         )
+        images = [spec.image, self._builder_image, *_build_images(spec)]
         await self._ops.create(manifest)
         try:
             await self._ops.wait_ready(pod, self._namespace)
             await self._ops.copy_in(pod, self._namespace, spec.checkout_dir, _WORKSPACE_MOUNT)
-            registry = await registry_auth_script.install(
-                self._ops, pod, self._namespace, [spec.image, self._builder_image]
-            )
+            registry = await registry_auth_script.install(self._ops, pod, self._namespace, images)
             code, stdout, stderr = await self._ops.exec_capture(
                 pod, self._namespace, _checks_script(spec, registry)
             )
@@ -289,14 +299,14 @@ class ChecksRunner:
             self._privileged,
             CHECKS_POD_RESOURCES,
             node_pool=self._node_pool,
+            service_account=image_admission.pod_service_account(),
         )
+        images = [spec.image, self._builder_image, *_build_images(spec)]
         await self._ops.create(manifest)
         try:
             await self._ops.wait_ready(pod, self._namespace)
             await self._ops.copy_in(pod, self._namespace, spec.checkout_dir, _WORKSPACE_MOUNT)
-            registry = await registry_auth_script.install(
-                self._ops, pod, self._namespace, [spec.image, self._builder_image]
-            )
+            registry = await registry_auth_script.install(self._ops, pod, self._namespace, images)
             code, stdout, stderr = await self._ops.exec_capture(
                 pod, self._namespace, _fix_script(spec, registry)
             )

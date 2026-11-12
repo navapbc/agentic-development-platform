@@ -6,9 +6,8 @@ import hashlib
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from database.engine import create_platform_engine
+from database.engine import shared_platform_engine
 from database.models.schema import audit_events, executions
-from scripts.config import get_settings
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -75,7 +74,7 @@ class PostgresManifestStore:
 
     def _get_engine(self) -> AsyncEngine:
         if self._engine is None:
-            self._engine = create_platform_engine(get_settings().database_url)
+            self._engine = shared_platform_engine()
         return self._engine
 
     async def record(self, manifest: DeterminismManifest) -> ManifestRecord:
@@ -106,7 +105,7 @@ async def recorded_config_bundle(
     execution_id: str, engine: AsyncEngine | None = None
 ) -> tuple[str, dict[str, Any]] | None:
     """Return the tenant and config bundle identity a run's manifest recorded, or None."""
-    resolved = engine or create_platform_engine(get_settings().database_url)
+    resolved = engine or shared_platform_engine()
     async with resolved.connect() as conn:
         row = (
             await conn.execute(

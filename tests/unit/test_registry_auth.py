@@ -6,10 +6,13 @@ import json
 import stat
 from pathlib import Path
 
+import pytest
 from services.orchestration.checks.runner import ChecksSpec, _checks_script, _fix_script
 from services.orchestration.gates import registry_auth
 from services.orchestration.gates.pod_runner import PodEngineSpec, _run_script
 from services.orchestration.gates.scanner_pod import PodCommandRunner, scan_script
+
+pytestmark = pytest.mark.usefixtures("allow_any_image")
 
 ECR = "123456789012.dkr.ecr.us-east-1.amazonaws.com"
 TRIVY = f"{ECR}/agentic-platform/trivy:0.74.0@sha256:{'a' * 64}"
@@ -92,7 +95,7 @@ async def test_install_does_nothing_for_an_image_outside_ecr() -> None:
     )
 
     assert setup == registry_auth.NO_REGISTRY
-    assert ops.copied == {}
+    assert set(ops.copied) == {"/etc/containers"}
 
 
 def _pull_window(script: str) -> tuple[int, int, int]:

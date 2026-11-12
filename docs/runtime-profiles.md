@@ -92,7 +92,7 @@ profiles:
 
 The worker binds the run's repository for each activity from the activity input, so every lookup resolves the profile of the repository the run works on. The run's determinism manifest records the profile's name, and the gate configuration hash covers its gate overrides.
 
-A tenant config bundle is refused when a repository names a profile that neither the catalog nor `profiles.yaml` defines, when a profile's catalog image is not published in the deployment, when a profile's checks or gates do not parse, or when a profile enables a gate that does not register, such as a catalog engine whose image `GATE_ENGINE_IMAGES` does not name.
+A tenant config bundle is refused when a repository names a profile that neither the catalog nor `profiles.yaml` defines, when a profile's catalog image is not published in the deployment, when a profile's checks or gates do not parse, when a profile enables a gate that does not register, such as a catalog engine whose image `GATE_ENGINE_IMAGES` does not name, or when any image the effective config names lacks a digest or comes from a repository the image policy does not admit. A tenant image goes under the tenant's ECR prefix, `<name_prefix>/tenants/<tenant>/`, signed with the tenant's Signer profile when signature verification is on. See [image governance](image-governance.md).
 
 ## Bringing your own sandbox image
 
@@ -107,4 +107,4 @@ The tenant's CI pushes the image to `<name_prefix>/tenants/<tenant>/` in ECR thr
 
 ## Publishing the catalog
 
-`inv publish-platform-images` and the `publish-images` workflow build `agent-server-jvm` and `agent-server-go` into their ECR repositories and write them to `eks_runtime_images` in `images.auto.tfvars.json`, which `inv eks-deploy` sets as `RUNTIME_IMAGES` on the activity worker. The `openhands-agent-server` repository holds the copy of `agent-server-python-node`, which the same command mirrors. Locally, `inv runtime-images` builds both images into the cluster's image store and prints the `RUNTIME_IMAGES` line for `.env`.
+`inv publish-platform-images` and the `publish-images` workflow build `agent-server-jvm` and `agent-server-go` into their ECR repositories and write them to `eks_runtime_images` in `images.auto.tfvars.json`, which `inv eks-deploy` sets as `RUNTIME_IMAGES` on the activity worker. The `openhands-agent-server` repository holds the copy of `agent-server-python-node`, which the same command mirrors. Locally, `inv runtime-images` builds both images and the buildah builder into the cluster's image store and writes `RUNTIME_IMAGES` and `GATE_ENGINE_BUILDER_IMAGE` into `.env`, each pinned by digest.

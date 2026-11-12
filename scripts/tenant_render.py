@@ -50,6 +50,7 @@ class Tenant:
     config: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
     quota: Mapping[str, str] = field(default_factory=dict)
     init_containers: tuple[dict[str, Any], ...] = ()
+    image_prefixes: tuple[str, ...] = ()
 
     @property
     def namespace(self) -> str:
@@ -283,6 +284,115 @@ def _namespace(name: str, tenant: str, role: str) -> dict[str, Any]:
     }
 
 
+IMAGE_POLICY = "agentic-dev-platform-tenant-images"
+IMAGE_POLICY_PARAMS = "image-policy"
+_DOCKER_LIBRARY = "docker.io/library/"
+_DOCKER_HUB = "docker.io/"
+
+# The kubelet pulls a pod's image as written, so the policy matches the written form. A Docker Hub
+# image may be written without its registry or library path, so each Docker Hub entry also admits
+# its short form.
+_IMAGE_RULE = (
+    "variables.images.all(i, i.contains('@sha256:') && variables.allowed.exists(p, "
+    "p.endsWith('/') ? i.startsWith(p) : (i.startsWith(p + ':') || i.startsWith(p + '@'))))"
+)
+
+
+def kubelet_prefixes(entries: Iterable[str]) -> list[str]:
+    """Return each image policy entry with the short forms a pod spec may write it in."""
+    prefixes = []
+    for entry in entries:
+        prefixes.append(entry)
+        if entry.startswith(_DOCKER_LIBRARY):
+            prefixes.append(entry.removeprefix(_DOCKER_LIBRARY))
+        if entry.startswith(_DOCKER_HUB):
+            prefixes.append(entry.removeprefix(_DOCKER_HUB))
+    return [prefix for prefix in dict.fromkeys(prefixes) if prefix]
+
+
+def image_policy() -> dict[str, Any]:
+    """Return the admission policy that refuses a tenant pod image the image policy does not admit.
+
+    The policy reads each tenant's admitted prefixes from the image-policy ConfigMap of the tenant's
+    sandbox namespace, through that namespace's binding.
+    """
+    images = " + ".join(
+        [
+            "object.spec.containers.map(c, c.image)",
+            "(has(object.spec.initContainers) ? object.spec.initContainers.map(c, c.image) : [])",
+            "(has(object.spec.ephemeralContainers) ? "
+            "object.spec.ephemeralContainers.map(c, c.image) : [])",
+        ]
+    )
+    return {
+        "apiVersion": "admissionregistration.k8s.io/v1",
+        "kind": "ValidatingAdmissionPolicy",
+        "metadata": {"name": IMAGE_POLICY, "labels": {PART_OF_LABEL: PLATFORM_NAMESPACE}},
+        "spec": {
+            "failurePolicy": "Fail",
+            "paramKind": {"apiVersion": "v1", "kind": "ConfigMap"},
+            "matchConstraints": {
+                "resourceRules": [
+                    {
+                        "apiGroups": [""],
+                        "apiVersions": ["v1"],
+                        "operations": ["CREATE", "UPDATE"],
+                        "resources": ["pods", "pods/ephemeralcontainers"],
+                    }
+                ]
+            },
+            "variables": [
+                {"name": "images", "expression": images},
+                {
+                    "name": "allowed",
+                    "expression": "params.data.prefixes.split('\\n').filter(p, p != '')",
+                },
+            ],
+            "validations": [
+                {
+                    "expression": _IMAGE_RULE,
+                    "messageExpression": (
+                        "'a tenant pod image needs an @sha256: digest and a repository the image "
+                        "policy admits, and this pod runs ' + variables.images.join(', ')"
+                    ),
+                }
+            ],
+        },
+    }
+
+
+def _image_policy_objects(tenant: Tenant) -> list[dict[str, Any]]:
+    params = {
+        "apiVersion": "v1",
+        "kind": "ConfigMap",
+        "metadata": {"name": IMAGE_POLICY_PARAMS, "namespace": tenant.sandbox_namespace},
+        "data": {"prefixes": "\n".join(kubelet_prefixes(tenant.image_prefixes))},
+    }
+    binding = {
+        "apiVersion": "admissionregistration.k8s.io/v1",
+        "kind": "ValidatingAdmissionPolicyBinding",
+        "metadata": {
+            "name": f"{tenant.sandbox_namespace}-images",
+            "labels": {PART_OF_LABEL: PLATFORM_NAMESPACE, TENANT_LABEL: tenant.name},
+        },
+        "spec": {
+            "policyName": IMAGE_POLICY,
+            "validationActions": ["Deny"],
+            "paramRef": {
+                "name": IMAGE_POLICY_PARAMS,
+                "namespace": tenant.sandbox_namespace,
+                "parameterNotFoundAction": "Deny",
+            },
+            "matchResources": {
+                "namespaceSelector": {
+                    "matchLabels": {"kubernetes.io/metadata.name": tenant.sandbox_namespace}
+                }
+            },
+        },
+    }
+    return [params, binding]
+
+
 def _quota(tenant: Tenant) -> dict[str, Any]:
     return {
         "apiVersion": "v1",
@@ -384,4 +494,8 @@ def tenantize(documents: list[dict[str, Any]], tenants: Iterable[Tenant]) -> lis
             rendered.append(copy.deepcopy(document))
         if tenant.quota:
             rendered.append(_quota(tenant))
+        if tenant.image_prefixes:
+            rendered += _image_policy_objects(tenant)
+    if any(tenant.image_prefixes for tenant in tenants):
+        rendered.append(image_policy())
     return sorted(rendered, key=lambda document: document["kind"] != "Namespace")

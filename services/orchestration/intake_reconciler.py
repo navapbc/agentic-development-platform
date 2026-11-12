@@ -157,6 +157,9 @@ class RunAdmission:
         self.remaining -= 1
         return True
 
+    def release(self) -> None:
+        self.remaining += 1
+
 
 @dataclass(frozen=True)
 class IntakeStartRecord:
@@ -352,7 +355,7 @@ async def _hold(
             issue_key=issue_key,
             project=project,
             reason=reason,
-            alerted=not outcome.replayed,
+            alerted=not (outcome.replayed or outcome.in_flight),
         )
     )
 
@@ -450,6 +453,13 @@ async def _start(
         outcome = await ctx.ledger.run_once(ref, _launch)
     except UnresolvableBaseBranch as exc:
         await _hold(issue_key, project, str(exc), digest, ctx.alerter, ctx.ledger, report)
+        return
+    if outcome.in_flight:
+        # Another pass, in this worker or another, is starting this ticket now. Deferring keeps
+        # the ticket offered, and the next pass replays that start instead of making a second.
+        if ctx.admission is not None:
+            ctx.admission.release()
+        report.deferred.append(issue_key)
         return
     result = outcome.result if isinstance(outcome.result, dict) else {}
     report.started.append(

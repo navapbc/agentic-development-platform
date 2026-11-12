@@ -14,6 +14,21 @@ from services.orchestration.gates.pod_runner import (
     pod_name_for,
 )
 
+pytestmark = pytest.mark.usefixtures("allow_any_image")
+
+DIGEST = "sha256:" + "a" * 64
+_engine_dir = ""
+
+
+@pytest.fixture(autouse=True)
+def engine_source(tmp_path):
+    global _engine_dir
+    source = tmp_path / "engine"
+    source.mkdir()
+    (source / "Dockerfile").write_text(f"FROM python:3.13-slim@{DIGEST}\n", encoding="utf-8")
+    _engine_dir = str(source)
+    return source
+
 
 class _FakePodOps:
     def __init__(self, *, exec_result=(0, "{}", ""), fail_ready=False):
@@ -54,7 +69,7 @@ def _spec(**over):
         checkout_dir="/tmp/checkout",
         entrypoint="engines/security-compliance-review/harness/ai-pr-review",
         base_ref="abc123",
-        source_path="/tmp/engine",
+        source_path=_engine_dir,
         env={"AI_REVIEW_TOOL": "claude", "AI_REVIEW_PROFILE": "cms-ars"},
     )
     base.update(over)
@@ -69,7 +84,8 @@ async def test_run_engine_builds_copies_execs_and_parses():
     result = await runner.run_engine(_spec())
 
     assert result == doc
-    assert ops.copied == [("/tmp/engine", "/engine"), ("/tmp/checkout", "/workspace")]
+    assert ops.copied[:2] == [(_engine_dir, "/engine"), ("/tmp/checkout", "/workspace")]
+    assert ops.copied[2][1] == "/etc/containers"
     assert ops.deleted, "pod must be torn down"
     script = ops.execed[0]
     assert "buildah bud -t gate-tool /engine" in script
@@ -85,7 +101,8 @@ async def test_image_mode_skips_the_build():
     script = ops.execed[0]
     assert "buildah bud" not in script
     assert "img=returntocorp/semgrep:1.0" in script
-    assert ops.copied == [("/tmp/checkout", "/workspace")]
+    assert ops.copied[0] == ("/tmp/checkout", "/workspace")
+    assert ops.copied[1][1] == "/etc/containers"
 
 
 def test_image_mode_runs_the_harness_inside_the_image():
@@ -434,3 +451,60 @@ async def test_a_readiness_timeout_survives_an_unreadable_pod_status(monkeypatch
         await KubectlPodOps(ready_timeout_seconds=30.0).wait_ready("checks-1", "agent-sandbox")
 
     assert 'pods "checks-1" not found' in str(caught.value)
+
+
+async def test_create_replaces_a_pod_an_earlier_attempt_left(monkeypatch):
+    from services import process
+    from services.orchestration.gates.pod_runner import KubectlPodOps
+
+    calls: list[list[str]] = []
+    creates = iter(
+        [
+            process.CompletedProcess(
+                [], 1, "", 'Error from server (AlreadyExists): pods "gate-engine-x" already exists'
+            ),
+            process.CompletedProcess([], 0, "pod/gate-engine-x created", ""),
+        ]
+    )
+
+    def fake_run(argv, **kwargs):
+        calls.append(list(argv))
+        if argv[1] == "create":
+            return next(creates)
+        return process.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(process, "run", fake_run)
+    manifest = {"metadata": {"name": "gate-engine-x", "namespace": "agent-sandbox"}}
+
+    await KubectlPodOps().create(manifest)
+
+    assert [argv[1] for argv in calls] == ["create", "delete", "create"]
+    assert calls[1][2:6] == ["pod", "gate-engine-x", "-n", "agent-sandbox"]
+
+
+async def test_a_source_build_admits_its_base_images_with_the_pod_images(monkeypatch):
+    from services.orchestration.gates import image_admission
+
+    admitted: list[list[str]] = []
+
+    async def record(images):
+        admitted.append(list(images))
+        return image_admission.Admission(images=(), policy=image_admission.ImagePolicy(), tenant="")
+
+    monkeypatch.setattr(image_admission, "admit_images", record)
+
+    await PodEngineRunner(_FakePodOps(), builder_image="builder@" + DIGEST).run_engine(_spec())
+
+    assert admitted == [["builder@" + DIGEST, "python:3.13-slim@" + DIGEST]]
+
+
+async def test_a_source_build_from_an_undigested_base_is_refused_before_the_pod(engine_source):
+    from services.orchestration.gates.image_admission import ImageRefusedError
+
+    (engine_source / "Dockerfile").write_text("FROM python:3.13-slim\n", encoding="utf-8")
+    ops = _FakePodOps()
+
+    with pytest.raises(ImageRefusedError, match="carries no @sha256: digest"):
+        await PodEngineRunner(ops).run_engine(_spec())
+
+    assert ops.created == []

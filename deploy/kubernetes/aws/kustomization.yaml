@@ -313,8 +313,9 @@ patches:
                   volumeAttributes:
                     secretProviderClass: litellm
   # Gate, checks, and scanner pods reach DNS, LiteLLM, and the registry only. The application
-  # subnets hold the ECR interface endpoints, and the S3 range carries the image layers through
-  # the S3 gateway endpoint.
+  # subnets hold the ECR and Signer interface endpoints, and the S3 range carries the image layers
+  # through the S3 gateway endpoint. With signature verification on, the pods run as the
+  # image-verifier ServiceAccount, whose credential the Pod Identity agent serves.
   - target:
       kind: NetworkPolicy
       name: gate-engine-egress
@@ -354,3 +355,9 @@ patches:
             ports:
               - protocol: TCP
                 port: 443
+          - to:
+              - ipBlock:
+                  cidr: 169.254.170.23/32
+            ports:
+              - protocol: TCP
+                port: 80

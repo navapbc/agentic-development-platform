@@ -207,7 +207,7 @@ def repos_sync(c, repo=""):
     }
 )
 def gate_engine_images(c, registry="", pull_registry=""):
-    """Build the example gate engines, push them to the local registry, and print the settings."""
+    """Build the example gate engines, push them to the local registry, and write their digests."""
     flags = f" --registry {shlex.quote(registry)}" if registry else ""
     flags += f" --pull-registry {shlex.quote(pull_registry)}" if pull_registry else ""
     c.run(f"{HOST_PYTHON} -m scripts.gate_engine_images{flags}", pty=True)
@@ -215,7 +215,7 @@ def gate_engine_images(c, registry="", pull_registry=""):
 
 @task
 def runtime_images(c):
-    """Build the catalog sandbox images into the local cluster and print RUNTIME_IMAGES."""
+    """Build the catalog sandbox images and the builder locally, and write their digests."""
     c.run(f"{HOST_PYTHON} -m scripts.runtime_images", pty=True)
 
 
@@ -894,6 +894,8 @@ def publish_temporal_images(c, name_prefix="", arch="arm64", region=""):
         "acli_version": "acli version (empty uses the version scripts/fetch_acli.py pins).",
         "acli_sha256": "SHA-256 of that acli version, required with --acli-version.",
         "manifest": "Also write each image's repository, digest, and whether this run pushed it.",
+        "exceptions": "image_exceptions.yaml whose entries the pre-push scan accepts.",
+        "unsigned": "Publish without signing, for a deployment that does not verify signatures.",
     }
 )
 def publish_platform_images(
@@ -905,9 +907,11 @@ def publish_platform_images(
     acli_version="",
     acli_sha256="",
     manifest="",
+    exceptions="",
+    unsigned=False,
 ):
-    """Build the platform images, mirror Langfuse and ClickHouse, push them all to ECR, and
-    write their references to images.auto.tfvars.json in the composition root."""
+    """Build the platform images, mirror Langfuse and ClickHouse, scan each, push them to ECR,
+    and write their references to images.auto.tfvars.json in the composition root."""
     from scripts.config import get_settings
 
     settings = get_settings()
@@ -918,9 +922,29 @@ def publish_platform_images(
     flags += f" --acli-version {shlex.quote(acli_version)}" if acli_version else ""
     flags += f" --acli-sha256 {shlex.quote(acli_sha256)}" if acli_sha256 else ""
     flags += f" --manifest {shlex.quote(manifest)}" if manifest else ""
+    flags += f" --exceptions {shlex.quote(exceptions)}" if exceptions else ""
+    flags += " --unsigned" if unsigned else ""
     c.run(
         f"{HOST_PYTHON} -m scripts.publish_platform_images{flags}", pty=True, env=_aws_env(settings)
     )
+
+
+@task(
+    help={
+        "image": "Image to scan, repeatable, as the local Docker names it.",
+        "arch": "Platform of the image (default arm64).",
+        "exceptions": "An image_exceptions.yaml whose entries accept a finding.",
+    },
+    iterable=["image"],
+)
+def image_scan(c, image, arch="arm64", exceptions=""):
+    """Scan local images with the Amazon Inspector SBOM generator and Scan API, pushing nothing."""
+    from scripts.config import get_settings
+
+    flags = "".join(f" --image {shlex.quote(name)}" for name in image)
+    flags += f" --arch {shlex.quote(arch)}"
+    flags += f" --exceptions {shlex.quote(exceptions)}" if exceptions else ""
+    c.run(f"{HOST_PYTHON} -m scripts.image_scan{flags}", pty=True, env=_aws_env(get_settings()))
 
 
 def _aws_env(settings) -> dict[str, str]:
@@ -1428,6 +1452,7 @@ for _t in (
     publish_jumphost_image,
     publish_temporal_images,
     publish_platform_images,
+    image_scan,
     aws_release,
     aws_destroy,
     temporal_certs,

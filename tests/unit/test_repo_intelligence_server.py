@@ -150,20 +150,44 @@ def test_context_package_endpoint_rejects_unlisted_repo(monkeypatch):
     assert recorder._status == 403
 
 
-def test_context_package_endpoint_unconfigured_returns_503(monkeypatch):
+def test_context_package_endpoint_without_any_index_returns_an_unindexed_package(monkeypatch):
     monkeypatch.setattr(server, "get_settings", lambda: _FakeSettings())
     monkeypatch.setattr(server, "build_registry", lambda: None)
+    monkeypatch.setattr(server, "_configured_for_indexing", lambda repo: False)
     body = json.dumps({"repo": "agentic-demo-service", "focus": "health"}).encode()
 
     recorder = _Recorder("/context_package", body)
     recorder.do_POST()
 
-    assert recorder._status == 503
+    assert recorder._status == 200
+    package = json.loads(recorder._body)
+    assert package["repository"] == "agentic-demo-service"
+    assert package["focus"] == "health"
+    assert package["indexed_commit"] is None
+    assert package["symbols"] == []
 
 
-def test_context_package_endpoint_unregistered_repo_returns_503(monkeypatch):
+def test_context_package_endpoint_repo_configured_with_index_false_is_unindexed(monkeypatch):
+    monkeypatch.setattr(server, "get_settings", lambda: _FakeSettings())
+    monkeypatch.setattr(
+        server, "build_registry", lambda: _FakeRegistry({"agentic-demo-service": _FakeService()})
+    )
+    monkeypatch.setattr(server, "_configured_for_indexing", lambda repo: False)
+    body = json.dumps({"repo": "agentic-demo-greenfield", "focus": "health"}).encode()
+
+    recorder = _Recorder("/context_package", body)
+    recorder.do_POST()
+
+    assert recorder._status == 200
+    assert json.loads(recorder._body)["repository"] == "agentic-demo-greenfield"
+
+
+def test_context_package_endpoint_indexed_repo_missing_from_the_registry_returns_503(
+    monkeypatch,
+):
     monkeypatch.setattr(server, "get_settings", lambda: _FakeSettings())
     monkeypatch.setattr(server, "build_registry", lambda: _FakeRegistry({}))
+    monkeypatch.setattr(server, "_configured_for_indexing", lambda repo: True)
     body = json.dumps({"repo": "agentic-demo-greenfield", "focus": "health"}).encode()
 
     recorder = _Recorder("/context_package", body)

@@ -59,20 +59,7 @@ def _execution_id(args: Sequence[Any]) -> str:
 async def _recorded_bundle(execution_id: str) -> tuple[str, dict[str, Any]] | None:
     from services.coordination.manifest import recorded_config_bundle
 
-    return await recorded_config_bundle(execution_id, _engine())
-
-
-_shared_engine: Any = None
-
-
-def _engine() -> Any:
-    global _shared_engine
-    if _shared_engine is None:
-        from database.engine import create_platform_engine
-        from scripts.config import get_settings
-
-        _shared_engine = create_platform_engine(get_settings().database_url)
-    return _shared_engine
+    return await recorded_config_bundle(execution_id)
 
 
 class TenantConfigInterceptor(WorkerInterceptor):

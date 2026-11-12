@@ -1,0 +1,11 @@
+# Scan findings the platform accepts, which the platform owns and a tenant bundle never overrides.
+# Each entry accepts one finding in one image digest until it expires. The image may name the
+# reference as configured or the pull-through cache reference it resolves to.
+
+config_version: 1
+
+exceptions: []
+  # - image: docker.io/library/python@sha256:<digest>
+  #   finding: CVE-2025-12345
+  #   reason: The vulnerable package is not reachable from the checks command.
+  #   expires: 2027-01-31

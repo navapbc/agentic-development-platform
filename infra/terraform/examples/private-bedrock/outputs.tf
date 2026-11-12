@@ -281,3 +281,8 @@ output "tenants" {
     }
   } : null
 }
+
+output "image_signing_profile_arn" {
+  description = "The AWS Signer profile inv publish-platform-images signs the catalog images with. Null without the EKS cluster and the container services."
+  value       = try(aws_signer_signing_profile.platform[0].arn, null)
+}

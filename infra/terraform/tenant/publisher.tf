@@ -84,6 +84,12 @@ resource "aws_iam_role_policy" "publisher" {
         ]
         Resource = local.image_repos_arn
       },
+      {
+        Sid      = "SignTheTenantImages"
+        Effect   = "Allow"
+        Action   = ["signer:SignPayload", "signer:GetSigningProfile"]
+        Resource = aws_signer_signing_profile.this[0].arn
+      },
     ]
   })
 }

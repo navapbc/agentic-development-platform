@@ -57,11 +57,17 @@ resource "aws_iam_role_policy" "push" {
   role = aws_iam_role.publisher[0].id
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement = concat([
       {
         Sid      = "EcrAuthorization"
         Effect   = "Allow"
         Action   = "ecr:GetAuthorizationToken"
+        Resource = "*"
+      },
+      {
+        Sid      = "ScanImagesBeforeThePush"
+        Effect   = "Allow"
+        Action   = "inspector-scan:ScanSbom"
         Resource = "*"
       },
       {
@@ -80,6 +86,13 @@ resource "aws_iam_role_policy" "push" {
         ]
         Resource = var.repository_arns
       },
-    ]
+      ],
+      var.signing_profile_arn == "" ? [] : [{
+        Sid      = "SignThePlatformImages"
+        Effect   = "Allow"
+        Action   = ["signer:SignPayload", "signer:GetSigningProfile"]
+        Resource = var.signing_profile_arn
+      }],
+    )
   })
 }

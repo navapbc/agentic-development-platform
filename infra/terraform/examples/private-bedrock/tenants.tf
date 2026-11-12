@@ -5,12 +5,20 @@ locals {
   # Each tenant's activity worker runs as the activity-worker service account of its own
   # namespace. Its policies are attached below, outside the cluster module, because the tenant
   # module needs the role first.
-  tenant_workloads = {
-    for name in keys(local.tenants) : "tenant_${name}" => {
-      service_account = "activity-worker"
-      namespace       = "tenant-${name}"
-    }
-  }
+  tenant_workloads = merge(
+    {
+      for name in keys(local.tenants) : "tenant_${name}" => {
+        service_account = "activity-worker"
+        namespace       = "tenant-${name}"
+      }
+    },
+    var.image_signature_verification ? {
+      for name in keys(local.tenants) : "tenant_${name}_verifier" => {
+        service_account = "image-verifier"
+        namespace       = "tenant-${name}-sandbox"
+      }
+    } : {},
+  )
 
   github_oidc_provider_arn = coalesce(var.github_oidc_provider_arn, module.github_image_publisher.oidc_provider_arn, "none")
 
@@ -34,6 +42,7 @@ locals {
 
   tenant_worker_policy_arns = merge(
     { for policy in aws_iam_policy.eks_sandbox_image_pull : "sandbox-image-pull" => policy.arn },
+    { for policy in aws_iam_policy.image_scan_read : "image-scan-read" => policy.arn },
     { for policy in aws_iam_policy.eks_temporal_ca : "temporal-ca" => policy.arn },
     { for policy in aws_iam_policy.eks_registry_cache_fill : "registry-cache-fill" => policy.arn },
   )
@@ -54,6 +63,7 @@ locals {
       platform_secrets = distinct(concat(local.tenant_platform_secrets, tenant.shared_secrets, local.temporal_deployed ? ["temporal_ca"] : []))
       settings         = tenant.settings
       sandbox_quota    = tenant.sandbox_quota
+      image_prefixes   = local.image_prefixes[name]
       config_bucket    = module.tenant_config_store.bucket
     }
   ]

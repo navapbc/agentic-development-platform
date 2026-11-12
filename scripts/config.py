@@ -247,6 +247,7 @@ class Settings(BaseSettings):
     gate_engine_root: str = "/workspaces/engines"
     gate_engine_images: dict[str, str] = {}
     runtime_images: dict[str, str] = {}
+    image_scan_wait_seconds: int = 600
     tenant: str = ""
     tenants: str = ""
     tenant_config_bucket: str = ""

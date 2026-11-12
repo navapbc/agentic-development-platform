@@ -356,7 +356,9 @@ def _volume_owner(image: str, mount_path: str) -> dict[str, Any]:
     }
 
 
-def local_tenants(settings: Settings, documents: list[dict[str, Any]]) -> list[Any]:
+def local_tenants(
+    settings: Settings, documents: list[dict[str, Any]], root: Path = Path(".")
+) -> list[Any]:
     """Return each tenant TENANTS names, or the TENANT of this workstation, with its workspace."""
     from services.orchestration.task_queues import tenant_names
 
@@ -369,6 +371,9 @@ def local_tenants(settings: Settings, documents: list[dict[str, Any]]) -> list[A
         d for d in documents if d["kind"] == "Deployment" and d["metadata"]["name"] == WORKER
     )
     image = worker["spec"]["template"]["spec"]["containers"][0]["image"]
+    from services.integration.image_policy import load_policy
+
+    policy = load_policy(settings.environment, root)
     tenants = []
     for name in names:
         volume = f"tenant-{name}-workspace"
@@ -381,6 +386,7 @@ def local_tenants(settings: Settings, documents: list[dict[str, Any]]) -> list[A
                     _claim(WORKSPACE_CLAIM, f"tenant-{name}", volume, "ReadWriteOnce"),
                 ),
                 init_containers=(_volume_owner(image, tenant_root(name)),),
+                image_prefixes=tuple(entry for entry, _ in policy.entries(name)),
             )
         )
     return tenants
@@ -427,7 +433,8 @@ def render(inputs: RenderInputs, overlay: Path = OVERLAY) -> list[dict[str, Any]
     set_build_id(documents, inputs.build_id)
     add_bedrock_relay(documents, inputs.settings)
     documents = tenantize(
-        mount_tenants_on_review(documents), local_tenants(inputs.settings, documents)
+        mount_tenants_on_review(documents),
+        local_tenants(inputs.settings, documents, inputs.root),
     )
     stamp_config_hash(documents, generated)
     return retarget_namespaces(

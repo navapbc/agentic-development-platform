@@ -18,6 +18,8 @@ from services.orchestration.checks.runner import (
 )
 from tests.support import capture_evidence
 
+pytestmark = pytest.mark.usefixtures("allow_any_image")
+
 
 def test_parse_checks_config_image_mode():
     cfg = parse_checks_config(
@@ -132,7 +134,8 @@ async def test_run_checks_returns_exit_code_and_output():
     assert isinstance(result, ChecksResult)
     assert result.exit_code == 1
     assert "1 failed" in result.output
-    assert ops.copied == [("/w", "/workspace")]
+    assert ops.copied[0] == ("/w", "/workspace")
+    assert ops.copied[1][1] == "/etc/containers"
     assert ops.deleted, "pod must be torn down"
 
 
@@ -302,3 +305,36 @@ async def test_repair_forwards_changed_paths_into_the_spec(tmp_path, monkeypatch
 
     assert applied is False
     assert captured["spec"].changed_paths == ("src/a.py",)
+
+
+async def test_a_build_mode_run_admits_the_dockerfile_base_images(tmp_path, monkeypatch):
+    from services.orchestration.gates import image_admission
+
+    digest = "sha256:" + "a" * 64
+    (tmp_path / "Dockerfile.checks").write_text(f"FROM python:3.13-slim@{digest}\n")
+    admitted: list[list[str]] = []
+
+    async def record(images):
+        admitted.append(list(images))
+        return image_admission.Admission(images=(), policy=image_admission.ImagePolicy(), tenant="")
+
+    monkeypatch.setattr(image_admission, "admit_images", record)
+    runner = ChecksRunner(_FakeOps((0, "", "")), builder_image=f"builder@{digest}")
+
+    await runner.run_checks(_spec(image="", build="Dockerfile.checks", checkout_dir=str(tmp_path)))
+
+    assert admitted == [[f"builder@{digest}", f"python:3.13-slim@{digest}"]]
+
+
+async def test_a_build_mode_run_from_an_undigested_base_is_refused(tmp_path):
+    from services.orchestration.gates.image_admission import ImageRefusedError
+
+    (tmp_path / "Dockerfile.checks").write_text("FROM python:3.13-slim\n")
+    ops = _FakeOps((0, "", ""))
+
+    with pytest.raises(ImageRefusedError, match="Dockerfile.checks line 1"):
+        await ChecksRunner(ops).run_checks(
+            _spec(image="", build="Dockerfile.checks", checkout_dir=str(tmp_path))
+        )
+
+    assert ops.created == []

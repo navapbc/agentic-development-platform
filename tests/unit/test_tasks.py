@@ -58,6 +58,7 @@ EXPECTED_TASKS = {
     "publish-jumphost-image",
     "publish-temporal-images",
     "publish-platform-images",
+    "image-scan",
     "aws-release",
     "aws-destroy",
     "go-test",

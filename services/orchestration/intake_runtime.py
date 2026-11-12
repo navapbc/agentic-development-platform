@@ -141,10 +141,9 @@ class PostgresExecutionSeeder:
 
     def _get_engine(self) -> Any:
         if self._engine is None:
-            from database.engine import create_platform_engine
-            from scripts.config import get_settings
+            from database.engine import shared_platform_engine
 
-            self._engine = create_platform_engine(get_settings().database_url)
+            self._engine = shared_platform_engine()
         return self._engine
 
     async def seed(self, *, execution_id: str, task_id: str, repo: str) -> None:

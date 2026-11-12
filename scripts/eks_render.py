@@ -14,8 +14,9 @@ The inputs are the JSON the eks-deployer task definition carries in DEPLOY_INPUT
 - `security_groups`, the cluster, Temporal client, and internal client group IDs
 - `secrets`, each secret store key, and `temporal_ca`, mapped to its secret ARN
 - `tenants`, each tenant's name, the volume handle of its workspace access point, its ticket store
-  roles, its secret ARNs, the platform secret keys it reads, its settings, its sandbox quota, and
-  the config bucket, from which `scripts.tenant_render` renders its worker and sandbox namespaces
+  roles, its secret ARNs, the platform secret keys it reads, its settings, its sandbox quota, the
+  image prefixes its sandbox pods may run, and the config bucket, from which
+  `scripts.tenant_render` renders its worker and sandbox namespaces
 - `vpc_cidr`, `service_cidr`, `gate_egress_cidrs`, and `gate_egress_internet`
 - `ingress`, the webhook and gateway certificate ARNs and the gateway client CIDRs
 """
@@ -151,6 +152,7 @@ def tenant_specs(documents: list[dict[str, Any]], inputs: Mapping[str, Any]) -> 
                 workspace=tenant_workspace(documents, name, entry["workspace_volume_handle"]),
                 config={"rebar-store-aws-config": {"config": rebar_profiles(entry["rebar_roles"])}},
                 quota=entry.get("sandbox_quota") or {},
+                image_prefixes=tuple(entry.get("image_prefixes") or ()),
             )
         )
     return tenants

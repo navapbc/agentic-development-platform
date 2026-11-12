@@ -26,6 +26,10 @@ config/*/registries.yaml
 !config/*/registries.yaml.example
 config/*/profiles.yaml
 !config/*/profiles.yaml.example
+config/*/image_policy.yaml
+!config/*/image_policy.yaml.example
+config/*/image_exceptions.yaml
+!config/*/image_exceptions.yaml.example
 config/*/review-trust-root.yaml
 !config/*/review-trust-root.yaml.example
 config/*/review-signing-key

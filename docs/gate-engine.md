@@ -88,7 +88,7 @@ engines:
     review_entrypoint: bin/scan
 ```
 
-The `local`, `tag`, and `zip` modes copy the engine source into the gate pod and build its Dockerfile there. Setting `image` on one of them pulls that image instead of building, with the source still mounted at `/engine`.
+The `local`, `tag`, and `zip` modes copy the engine source into the gate pod and build its Dockerfile there. Every image the Dockerfile pulls needs an `@sha256:` digest and passes the image policy and the scan gate before the pod starts, as [image governance](image-governance.md) describes. Setting `image` on one of them pulls that image instead of building, with the source still mounted at `/engine`.
 
 `local` points at a checkout already on disk. Use it while the engine has no release yet.
 
@@ -150,7 +150,7 @@ It defaults to `false` and should stay there wherever the cluster allows it, bec
 
 ## Registries
 
-The gate, checks, and scanner pods pull their images with buildah, and a project's checks command installs its own dependencies. On a workstation they reach the public registries. In AWS, DNS Firewall resolves none of them, so `config/<env>/registries.yaml` names the mirrors the pods use instead, and the activity worker copies a buildah `registries.conf` drop-in into each pod that sends every listed upstream prefix to its mirror. A Dockerfile `FROM python:3.12-slim` or a checks image named `node:22` is therefore pulled from the mirror with no change to the repository.
+The gate, checks, and scanner pods pull their images with buildah, and a project's checks command installs its own dependencies. On a workstation they reach the public registries. In AWS, DNS Firewall resolves none of them, so `config/<env>/registries.yaml` names the mirrors the pods use instead, and the activity worker copies a buildah `registries.conf` drop-in into each pod that sends every listed upstream prefix to its mirror. A Dockerfile `FROM python:3.12-slim@sha256:...` or a checks image named `node:22@sha256:...` is therefore pulled from the mirror with no change to the repository.
 
 - `mode: aws`, which the `private-bedrock` composition generates when `registry_mode = "aws"`, mirrors each upstream through an ECR pull-through cache. The activity worker hands the pod an ECR token, and the pod installs packages from the public PyPI, npm, and Go module indexes, which DNS Firewall resolves by name.
 - `mode: external` mirrors images and packages through an Artifactory or compatible service. The pod receives `PIP_INDEX_URL`, `NPM_CONFIG_REGISTRY`, and `GOPROXY` for the package indexes and a netrc and npmrc holding the token, which the activity worker reads from the variable `credential.token_env` names. [registries.yaml.example](../config/local/registries.yaml.example) shows the shape.

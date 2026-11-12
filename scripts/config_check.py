@@ -24,6 +24,8 @@ _CONFIGS = (
     "repositories",
     "registries",
     "profiles",
+    "image_policy",
+    "image_exceptions",
 )
 _REQUIRED_SECRETS = ("COORDINATION_SHARED_SECRET", "MCP_GATEWAY_TOKEN")
 

@@ -196,6 +196,11 @@ class WorkspaceMaterializer:
             await _git("reset", "--hard", commit_sha, cwd=str(path))
             await _git("clean", "-fd", cwd=str(path))
 
+    async def discard_changes(self, workspace: MaterializedWorkspace) -> None:
+        """Return the workspace to its materialized commit, dropping an earlier attempt's edits."""
+        await _git("reset", "--hard", workspace.commit_sha, cwd=workspace.path)
+        await _git("clean", "-fd", cwd=workspace.path)
+
     async def _drop_persisted_credential(self, repo: str, path: Path) -> None:
         """Clear the credential an earlier release left in a workspace that is being reused.
 

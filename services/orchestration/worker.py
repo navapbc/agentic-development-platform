@@ -22,6 +22,7 @@ from temporalio.worker import Worker
 from temporalio.worker.workflow_sandbox import SandboxedWorkflowRunner, SandboxRestrictions
 
 from services import temporal_client
+from services.orchestration.activity_heartbeat import ActivityHeartbeatInterceptor
 from services.orchestration.temporal_activities import (
     alert_human_intervention,
     analyze_ci_failure,
@@ -193,12 +194,14 @@ def build_worker(client: Client, task_queue: str, role: str) -> Worker:
     versioning: dict[str, Any] = {}
     if settings.worker_versioning_enabled:
         versioning = {"deployment_config": deployment_config(settings)}
+    heartbeat = ActivityHeartbeatInterceptor()
     if role == WORKER_ROLE_WORKFLOW:
         return Worker(
             client,
             task_queue=task_queue,
             workflows=_WORKFLOWS,
             workflow_runner=runner,
+            interceptors=[heartbeat],
             **versioning,
         )
     if role == WORKER_ROLE_ACTIVITY:
@@ -206,18 +209,24 @@ def build_worker(client: Client, task_queue: str, role: str) -> Worker:
             client,
             task_queue=task_queue,
             activities=_ACTIVITIES,
-            interceptors=_tenant_interceptors(),
+            interceptors=[heartbeat, *_tenant_interceptors()],
             **versioning,
         )
     if role == WORKER_ROLE_REVIEW:
-        return Worker(client, task_queue=task_queue, activities=_REVIEW_ACTIVITIES, **versioning)
+        return Worker(
+            client,
+            task_queue=task_queue,
+            activities=_REVIEW_ACTIVITIES,
+            interceptors=[heartbeat],
+            **versioning,
+        )
     return Worker(
         client,
         task_queue=task_queue,
         workflows=_WORKFLOWS,
         activities=_all_activities(),
         workflow_runner=runner,
-        interceptors=_tenant_interceptors(),
+        interceptors=[heartbeat, *_tenant_interceptors()],
         **versioning,
     )
 
