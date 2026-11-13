@@ -36,6 +36,7 @@ AWS transition and FedRAMP Medium readiness. The platform documents its local-to
 
 ### Added
 
+- `inv worktree-new` adds a git worktree with a virtual environment the worktree owns, and `inv worktree-check` reports any worktree that shares or lacks one, with `--repair` to provision it. The platform installs itself as an editable package, which records one absolute source path, so a virtual environment shared between worktrees resolved imports to whichever worktree synced last and the others tested a source tree they were not editing.
 - A local-to-AWS mapping document that maps each local component to its AWS target and the Terraform module that provisions it.
 - Committed JSON-schema contracts for the audit-event and the evidence-object shapes, with a conformance test that validates the producer write shapes against them.
 - An S3-backed write-once-read-many evidence and audit object store. When `EVIDENCE_OBJECT_STORE_ENABLED` is set, each evidence object and each audit event persists to an S3-compatible store under Object Lock, content-addressed and idempotent, and the Postgres row records the object location. The activity and review workers run a startup preflight that fails fast when the store is enabled without a reachable, Object-Lock-enabled bucket.
