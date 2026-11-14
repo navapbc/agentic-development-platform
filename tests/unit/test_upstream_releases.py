@@ -361,3 +361,21 @@ def test_a_missing_document_raises_lookup_error_and_a_fragment_carries_the_beare
             {"Accept": "application/vnd.github+json", "Authorization": "Bearer anonymous"},
         )
     ]
+
+
+def test_a_refused_token_is_retried_once_without_it(monkeypatch) -> None:
+    import httpx
+
+    seen: list[bool] = []
+
+    def get(url, headers, **_):
+        seen.append("Authorization" in headers)
+        return _Response(403) if "Authorization" in headers else _Response(200)
+
+    monkeypatch.setattr(httpx, "get", get)
+    monkeypatch.setenv("GH_TOKEN", "workflow-token")
+
+    document = upstream_releases.fetch_json(f"{upstream_releases.GITHUB_API}/x", lambda _: None)
+
+    assert document == {"tag_name": "v1"}
+    assert seen == [True, True, True, True, False]

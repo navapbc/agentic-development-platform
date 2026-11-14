@@ -326,6 +326,8 @@ def _one_line(exc: BaseException) -> str:
 def fetch_json(url: str, sleep: Callable[[float], None] = time.sleep) -> Any:
     """GET a JSON document, retrying a rate-limited answer and raising LookupError on a 404.
 
+    A GitHub request that the token keeps getting refused for is tried once without the token.
+
     A URL fragment carries a bearer token for a registry API, which never reaches the server.
     """
     import httpx
@@ -342,6 +344,13 @@ def fetch_json(url: str, sleep: Callable[[float], None] = time.sleep) -> Any:
         if response.status_code not in _RATE_LIMITED or attempt == _FETCH_ATTEMPTS - 1:
             break
         sleep(retry_delay(response.headers, attempt))
+    if response.status_code == 403 and not bearer and "Authorization" in headers:
+        # An organization with an IP allow list refuses a token from an address outside it, even
+        # for a public repository, and serves the same document to an anonymous request.
+        anonymous = {key: value for key, value in headers.items() if key != "Authorization"}
+        response = httpx.get(
+            address, headers=anonymous, timeout=_FETCH_TIMEOUT_SECONDS, follow_redirects=True
+        )
     if response.status_code == 404:
         raise LookupError(f"{address} answered 404")
     response.raise_for_status()
