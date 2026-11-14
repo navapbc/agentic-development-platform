@@ -21,7 +21,85 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  base:
+    runs-on: ${{ (inputs.arch || 'arm64') == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      groups: ${{ steps.groups.outputs.groups }}
+    env:
+      ARCH: ${{ inputs.arch || 'arm64' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: "0.13.3"
+      - run: uv sync --locked --all-extras --python 3.12
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_PUBLISH_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_PUBLISH_REGION }}
+          role-session-name: publish-images-${{ github.run_id }}
+      - name: List the image groups
+        id: groups
+        run: echo "groups=$(uv run --no-sync python -c 'import json; from scripts.publish_platform_images import PUBLISH_GROUPS; print(json.dumps(sorted(PUBLISH_GROUPS)))')" >> "$GITHUB_OUTPUT"
+      - name: Build, scan, and share the hardened base
+        run: uv run --no-sync inv publish-platform-images --arch "$ARCH" --stage base
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: publish-base-${{ env.ARCH }}
+          path: cis-evidence/
+          if-no-files-found: error
+
+  images:
+    needs: base
+    runs-on: ${{ (inputs.arch || 'arm64') == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        group: ${{ fromJSON(needs.base.outputs.groups) }}
+    env:
+      ARCH: ${{ inputs.arch || 'arm64' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: "0.13.3"
+      - run: uv sync --locked --all-extras --python 3.12
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_PUBLISH_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_PUBLISH_REGION }}
+          role-session-name: publish-images-${{ github.run_id }}
+      - name: Publish the ${{ matrix.group }} images
+        env:
+          TENANT_CONFIG_BUCKET: ${{ vars.AWS_CONFIG_BUCKET }}
+        run: uv run --no-sync inv publish-platform-images --arch "$ARCH" --stage group --group "${{ matrix.group }}" --partial "partials/${{ matrix.group }}.json"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: publish-group-${{ env.ARCH }}-${{ matrix.group }}
+          path: |
+            partials/
+            cis-evidence/
+          if-no-files-found: warn
+
   publish:
+    needs: images
     runs-on: ${{ (inputs.arch || 'arm64') == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     permissions:
       contents: read
@@ -46,14 +124,21 @@ jobs:
           role-to-assume: ${{ vars.AWS_PUBLISH_ROLE_ARN }}
           aws-region: ${{ vars.AWS_PUBLISH_REGION }}
           role-session-name: publish-images-${{ github.run_id }}
-      - name: Publish the platform images
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: publish-group-${{ env.ARCH }}-*
+          merge-multiple: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: publish-base-${{ env.ARCH }}
+          path: cis-evidence/
+      - name: Sign the catalog images and write the references
         id: publish
         env:
           IMAGE_SIGNING_PROFILE_ARN: ${{ vars.AWS_IMAGE_SIGNING_PROFILE_ARN }}
-          TENANT_CONFIG_BUCKET: ${{ vars.AWS_CONFIG_BUCKET }}
         run: |
           set -euo pipefail
-          uv run --no-sync inv publish-platform-images --arch "$ARCH" --manifest images-manifest.json
+          uv run --no-sync inv publish-platform-images --arch "$ARCH" --stage finalize --partials partials --manifest images-manifest.json
           echo "pushed=$(jq -c '[.[] | select(.pushed) | {name, repository, digest}]' images-manifest.json)" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -65,7 +150,7 @@ jobs:
           if-no-files-found: error
 
   report:
-    needs: publish
+    needs: [images, publish]
     if: ${{ !cancelled() }}
     runs-on: ${{ (inputs.arch || 'arm64') == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     permissions:
@@ -135,6 +220,7 @@ jobs:
       - name: Write the run report
         if: ${{ !cancelled() }}
         env:
+          IMAGES_RESULT: ${{ needs.images.result }}
           PUBLISH_RESULT: ${{ needs.publish.result }}
         run: |
           set -uo pipefail
@@ -143,6 +229,7 @@ jobs:
             echo "# Image run report for linux/$ARCH"
             echo
             [ ! -s image-report/warnings.md ] || { cat image-report/warnings.md; echo; }
+            echo "- Image group jobs: $IMAGES_RESULT"
             echo "- Publish job: $PUBLISH_RESULT"
             echo "- Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
             echo

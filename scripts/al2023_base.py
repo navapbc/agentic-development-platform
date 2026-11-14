@@ -26,6 +26,7 @@ from scripts.publish_temporal_images import (
     HARDENED_BASE_FILES,
     PLATFORMS,
     ImageSpec,
+    _pushed_digest,
     base_root,
     build_command,
     content_hash,
@@ -56,10 +57,13 @@ def path_problems(path: str) -> list[str]:
 class Base:
     """The hardened base and the OpenSCAP scanner of one build context and architecture."""
 
-    def __init__(self, arch: str, run=None, evidence: Path | None = None) -> None:
+    def __init__(
+        self, arch: str, run=None, evidence: Path | None = None, record_base: bool = True
+    ) -> None:
         self.arch = arch
         self.run = run or process.run
         self.evidence = evidence
+        self.record_base = record_base
         self._base: str | None = None
 
     def _local(self, spec: ImageSpec, context: Path) -> str:
@@ -97,7 +101,7 @@ class Base:
         context = base_root(context)
         if self._base is None:
             image = self._local(BASE, context)
-            if self.evidence is not None or not self._present(image):
+            if (self.evidence is not None and self.record_base) or not self._present(image):
                 self._verify(context)
             self._base = self._load(BASE, context)
         return self._base
@@ -130,6 +134,49 @@ class Base:
                     str(context),
                 ],
                 timeout=BUILD_TIMEOUT_SECONDS,
+                check=True,
+            )
+
+    def _shared(self, spec: ImageSpec, context: Path, registry: str, name_prefix: str) -> str:
+        local = self._local(spec, context)
+        return f"{registry}/{name_prefix}/{spec.name}:{local.split(':', 1)[1]}"
+
+    def share(self, context: Path, ecr, registry: str, name_prefix: str) -> None:
+        """Build, scan, and push the base and the scanner, so parallel publish jobs reuse them.
+
+        Both are build tools rather than platform images, so each is tagged with the content
+        hash of the base inputs, and a tag the repository already holds is not pushed again.
+        """
+        context = base_root(context)
+        self.reference(context)
+        self._load(SCANNER, context)
+        for spec in (BASE, SCANNER):
+            shared = self._shared(spec, context, registry, name_prefix)
+            repository, tag = shared.removeprefix(f"{registry}/").split(":", 1)
+            if _pushed_digest(ecr, repository, tag):
+                print(f"{LOG} {shared} is already pushed")
+                continue
+            self.run(
+                ["docker", "tag", self._local(spec, context), shared],
+                timeout=process.SHORT_COMMAND_TIMEOUT_SECONDS,
+                check=True,
+            )
+            print(f"{LOG} pushing {shared}")
+            self.run(["docker", "push", shared], timeout=BUILD_TIMEOUT_SECONDS, check=True)
+
+    def seed(self, context: Path, registry: str, name_prefix: str) -> None:
+        """Pull the base and the scanner another job shared, under the local names a build uses."""
+        context = base_root(context)
+        for spec in (BASE, SCANNER):
+            shared = self._shared(spec, context, registry, name_prefix)
+            self.run(
+                ["docker", "pull", "--platform", PLATFORMS[self.arch], shared],
+                timeout=BUILD_TIMEOUT_SECONDS,
+                check=True,
+            )
+            self.run(
+                ["docker", "tag", shared, self._local(spec, context)],
+                timeout=process.SHORT_COMMAND_TIMEOUT_SECONDS,
                 check=True,
             )
 

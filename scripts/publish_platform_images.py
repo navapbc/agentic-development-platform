@@ -30,6 +30,11 @@ before it is pushed, and the results of each CIS scan are written under `--cis-e
 image with an unaccepted finding at `--block-severity` or above, or a CIS rule that neither passes
 nor is accepted, is not pushed, and the run writes no references.
 
+`--stage` splits the run for parallel CI jobs. `base` pushes the hardened base and the CIS scanner,
+`group` pulls them and publishes the images one PUBLISH_GROUPS entry names into a partial file, and
+`finalize` merges the partials, signs, and writes the references. The default, `all`, does every
+step in one process.
+
 With a signing profile, every image a tenant pod may run from the platform catalog is signed with
 it through notation and the AWS Signer plugin, run from the buildah builder image this publish
 built, so the publishing host needs neither installed. An image that already carries a signature
@@ -44,9 +49,10 @@ import json
 import re
 import shutil
 import tempfile
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Collection, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 
 from services import process
@@ -470,48 +476,85 @@ class Publisher:
         return f"{image}@{digest}"
 
 
-def publish(publisher: Publisher, root: Path = REPO_ROOT) -> list[str]:
-    """Push every image whose tag is not yet in its repository, returning each reference."""
+def image_steps(
+    publisher: Publisher, context: Path, pins: Mapping[str, str]
+) -> dict[str, Callable[[], str]]:
+    """Return the step that publishes each image, keyed by its repository name, in build order."""
+    release = release_version()
+    steps: dict[str, Callable[[], str]] = {
+        PLATFORM.name: partial(publisher.platform, context),
+        REPO_INTELLIGENCE.name: partial(publisher.built, REPO_INTELLIGENCE, context, release),
+        COLLECTOR.name: partial(
+            publisher.built,
+            COLLECTOR,
+            context,
+            base_image_version(
+                (context / COLLECTOR.dockerfile).read_text(encoding="utf-8"),
+                "opentelemetry-collector-contrib",
+            ),
+        ),
+        TLS_SIDECAR.name: partial(publisher.built, TLS_SIDECAR, context, release),
+        EKS_DEPLOYER.name: partial(publisher.built, EKS_DEPLOYER, context, release),
+        BUILDAH.name: partial(publisher.built, BUILDAH, context, release),
+    }
+    for name, spec in GATE_ENGINES.items():
+        steps[spec.name] = partial(
+            publisher.built, spec, context / GATE_ENGINE_ROOT / name, release
+        )
+    for spec in RUNTIME_IMAGES.values():
+        steps[spec.name] = partial(publisher.built, spec, context, release)
+    steps[AGENT_SERVER.name] = partial(publisher.built, AGENT_SERVER, context, release)
+    steps[OPA.name] = partial(
+        publisher.built,
+        OPA,
+        context,
+        pinned_version((context / OPA.dockerfile).read_text(encoding="utf-8"), "OPA_VERSION"),
+    )
+    mirrors = {mirror.name: mirror for mirror in release_mirrors(pins)}
+    for name, (spec, _) in IMAGE_COMPONENTS.items():
+        steps[name] = (
+            partial(publisher.mirror, mirrors[name])
+            if name in mirrors
+            else partial(publisher.built, spec, context, release)
+        )
+    return steps
+
+
+ALL = "all"
+BASE_STAGE = "base"
+GROUP_STAGE = "group"
+FINALIZE_STAGE = "finalize"
+# The images each parallel job of the publish-images workflow builds, balanced by build time.
+# The groups together hold every image image_steps publishes, which a unit test checks.
+PUBLISH_GROUPS = {
+    "langfuse-web": ("langfuse-web",),
+    "langfuse-worker": ("langfuse-worker",),
+    "scanners": ("trivy", "repo-intelligence"),
+    "platform": ("platform", "eks-deployer", "opa"),
+    "sandbox": ("openhands-agent-server", "agent-server-jvm", "agent-server-go"),
+    "checks": ("checks-python", "checks-node", "checks-jvm", "checks-go"),
+    "services": ("litellm", "semgrep", "clickhouse"),
+    "tools": (
+        "buildah",
+        "gate-engine-security-policy",
+        "gate-engine-test-policy",
+        "otel-collector",
+        "tls-sidecar",
+    ),
+}
+
+
+def publish(
+    publisher: Publisher, root: Path = REPO_ROOT, only: Collection[str] | None = None
+) -> list[str]:
+    """Push every image, or the images `only` names, whose tag is not yet in its repository."""
     pins = base_versions.load(root / "docker" / "al2023" / "versions.env")
     with build_context(root) as context:
-        references = [
-            publisher.platform(context),
-            publisher.built(REPO_INTELLIGENCE, context, release_version()),
-            publisher.built(
-                COLLECTOR,
-                context,
-                base_image_version(
-                    (context / COLLECTOR.dockerfile).read_text(encoding="utf-8"),
-                    "opentelemetry-collector-contrib",
-                ),
-            ),
-            publisher.built(TLS_SIDECAR, context, release_version()),
-            publisher.built(EKS_DEPLOYER, context, release_version()),
-            publisher.built(BUILDAH, context, release_version()),
-            *[
-                publisher.built(spec, context / GATE_ENGINE_ROOT / name, release_version())
-                for name, spec in GATE_ENGINES.items()
-            ],
-            *[
-                publisher.built(spec, context, release_version())
-                for spec in RUNTIME_IMAGES.values()
-            ],
-            publisher.built(AGENT_SERVER, context, release_version()),
-            publisher.built(
-                OPA,
-                context,
-                pinned_version(
-                    (context / OPA.dockerfile).read_text(encoding="utf-8"), "OPA_VERSION"
-                ),
-            ),
-            *[
-                publisher.built(spec, context, release_version())
-                for name, (spec, _) in IMAGE_COMPONENTS.items()
-                if component_mode(pins, name) != RELEASE
-            ],
-        ]
-    references += [publisher.mirror(mirror) for mirror in release_mirrors(pins)]
-    return references
+        steps = image_steps(publisher, context, pins)
+        unknown = sorted(set(only or ()) - set(steps))
+        if unknown:
+            raise PublishError(f"no image is named {', '.join(unknown)}")
+        return [step() for name, step in steps.items() if only is None or name in only]
 
 
 class Signer:
@@ -792,13 +835,35 @@ def main(argv: list[str] | None = None) -> int:
         default=Path("cis-evidence"),
         help="Directory for the CIS benchmark scan results of the base and of each image.",
     )
+    parser.add_argument(
+        "--stage",
+        choices=(ALL, BASE_STAGE, GROUP_STAGE, FINALIZE_STAGE),
+        default=ALL,
+        help=(
+            "all publishes every image in one process. base pushes the hardened base and the CIS "
+            "scanner for parallel jobs, group publishes the images of --group and writes "
+            "--partial, and finalize merges the partials in --partials, signs, and writes the "
+            "references."
+        ),
+    )
+    parser.add_argument("--group", choices=sorted(PUBLISH_GROUPS), help="The group to publish.")
+    parser.add_argument(
+        "--partial", type=Path, default=None, help="Where a group writes its references."
+    )
+    parser.add_argument(
+        "--partials", type=Path, default=None, help="The directory finalize reads partials from."
+    )
     args = parser.parse_args(argv)
+    if args.stage == GROUP_STAGE and (args.group is None or args.partial is None):
+        parser.error("--stage group needs --group and --partial")
+    if args.stage == FINALIZE_STAGE and args.partials is None:
+        parser.error("--stage finalize needs --partials")
 
     from scripts.aws_clients import configure_aws_fips
     from scripts.config import get_settings
 
     profile = signing_profile(args.signing_profile)
-    if not profile and not args.unsigned:
+    if not profile and not args.unsigned and args.stage in (ALL, FINALIZE_STAGE):
         print(
             f"{LOG} no signing profile, so nothing is published. Set IMAGE_SIGNING_PROFILE_ARN or "
             "--signing-profile to the image_signing_profile_arn output, or pass --unsigned for a "
@@ -815,8 +880,27 @@ def main(argv: list[str] | None = None) -> int:
     session = boto3.Session(region_name=region)
     account = session.client("sts").get_caller_identity()["Account"]
     registry = f"{account}.dkr.ecr.{region}.amazonaws.com"
+    ecr = session.client("ecr")
+    if args.stage == BASE_STAGE:
+        from scripts.al2023_base import Base
+
+        _docker_login(ecr, registry)
+        with build_context(REPO_ROOT) as context:
+            Base(args.arch, evidence=args.cis_evidence).share(
+                context, ecr, registry, args.name_prefix
+            )
+        return 0
+    if args.stage == FINALIZE_STAGE:
+        try:
+            references, pushed = merge_partials(args.partials)
+        except PublishError as exc:
+            print(f"{LOG} {exc}")
+            return 1
+        return _finish(args, session, ecr, registry, profile, references, pushed)
+
     from services.integration.image_exceptions import platform_exceptions
 
+    from scripts.al2023_base import Base
     from scripts.image_scan import ImageScanner
 
     scanner = ImageScanner(
@@ -825,31 +909,62 @@ def main(argv: list[str] | None = None) -> int:
         block=args.block_severity,
         exceptions=platform_exceptions(settings, args.exceptions),
     )
-    from scripts.al2023_base import Base
-
-    publisher = Publisher(
-        session.client("ecr"),
-        registry,
-        args.name_prefix,
-        args.arch,
-        scanner,
-        base=Base(args.arch, evidence=args.cis_evidence),
-    )
+    base = Base(args.arch, evidence=args.cis_evidence, record_base=args.stage == ALL)
+    publisher = Publisher(ecr, registry, args.name_prefix, args.arch, scanner, base=base)
+    only = PUBLISH_GROUPS[args.group] if args.stage == GROUP_STAGE else None
     try:
-        references = publish(publisher)
-        if publisher.refused:
-            for refusal in publisher.refused:
-                print(f"{LOG} not pushed: {refusal}")
-            print(
-                f"{LOG} {len(publisher.refused)} image(s) carry blocking findings and were not "
-                f"pushed, so {args.images_file} is unchanged. Rebuild each on a patched base, or "
-                "accept each finding in the exceptions file with a reason and an expiry."
-            )
-            return 1
+        if args.stage == GROUP_STAGE:
+            publisher._login()
+            with build_context(REPO_ROOT) as context:
+                base.seed(context, registry, args.name_prefix)
+        references = publish(publisher, only=only)
+    except PublishError as exc:
+        print(f"{LOG} {exc}")
+        return 1
+    if args.stage == GROUP_STAGE:
+        write_json(
+            args.partial,
+            {"references": references, "pushed": publisher.pushed, "refused": publisher.refused},
+        )
+        print(f"{LOG} wrote {args.partial}")
+    if publisher.refused:
+        for refusal in publisher.refused:
+            print(f"{LOG} not pushed: {refusal}")
+        print(
+            f"{LOG} {len(publisher.refused)} image(s) carry blocking findings and were not "
+            f"pushed, so {args.images_file} is unchanged. Rebuild each on a patched base, or "
+            "accept each finding in the exceptions file with a reason and an expiry."
+        )
+        return 1
+    if args.stage == GROUP_STAGE:
+        return 0
+    return _finish(args, session, ecr, registry, profile, references, publisher.pushed)
+
+
+def merge_partials(directory: Path) -> tuple[list[str], list[str]]:
+    """Merge the references every group wrote, refusing a refusal or a group that is missing."""
+    references: list[str] = []
+    pushed: list[str] = []
+    for path in sorted(directory.rglob("*.json")):
+        partial_run = json.loads(path.read_text(encoding="utf-8"))
+        if partial_run["refused"]:
+            raise PublishError(f"{path.name} refused {', '.join(partial_run['refused'])}")
+        references += partial_run["references"]
+        pushed += partial_run["pushed"]
+    expected = {name for names in PUBLISH_GROUPS.values() for name in names}
+    missing = sorted(expected - {image_name(reference) for reference in references})
+    if missing:
+        raise PublishError(f"no group published {', '.join(missing)}")
+    return references, pushed
+
+
+def _finish(args, session, ecr, registry, profile, references, pushed) -> int:
+    """Sign the catalog images, then write the references and the manifest."""
+    try:
         if profile:
+            _docker_login(ecr, registry)
             builder = next(r for r in references if image_name(r) == BUILDAH.name)
-            signer = Signer(session, publisher.ecr, registry, profile, args.arch)
-            signer.sign(references, builder)
+            Signer(session, ecr, registry, profile, args.arch).sign(references, builder)
         else:
             print(f"{LOG} --unsigned, so the catalog images are not signed")
     except PublishError as exc:
@@ -860,7 +975,7 @@ def main(argv: list[str] | None = None) -> int:
     write_json(args.images_file, tfvars(references))
     print(f"{LOG} wrote {args.images_file}")
     if args.manifest is not None:
-        write_json(args.manifest, manifest(references, publisher.pushed))
+        write_json(args.manifest, manifest(references, pushed))
     return 0
 
 

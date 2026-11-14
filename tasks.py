@@ -980,6 +980,10 @@ def publish_temporal_images(c, name_prefix="", arch="arm64", region="", exceptio
         "manifest": "Also write each image's repository, digest, and whether this run pushed it.",
         "exceptions": "image_exceptions.yaml whose entries the pre-push scan accepts.",
         "unsigned": "Publish without signing, for a deployment that does not verify signatures.",
+        "stage": "all, or base, group, or finalize for the parallel jobs of the CI workflow.",
+        "group": "The image group a group stage publishes.",
+        "partial": "Where a group stage writes its references.",
+        "partials": "The directory a finalize stage merges the group references from.",
     }
 )
 def publish_platform_images(
@@ -990,6 +994,10 @@ def publish_platform_images(
     manifest="",
     exceptions="",
     unsigned=False,
+    stage="",
+    group="",
+    partial="",
+    partials="",
 ):
     """Build the platform and third-party component images, scan each, push them to ECR,
     and write their references to images.auto.tfvars.json in the composition root."""
@@ -1002,6 +1010,13 @@ def publish_platform_images(
     flags += f" --manifest {shlex.quote(manifest)}" if manifest else ""
     flags += f" --exceptions {shlex.quote(exceptions)}" if exceptions else ""
     flags += " --unsigned" if unsigned else ""
+    for name, value in (
+        ("stage", stage),
+        ("group", group),
+        ("partial", partial),
+        ("partials", partials),
+    ):
+        flags += f" --{name} {shlex.quote(value)}" if value else ""
     c.run(
         f"{HOST_PYTHON} -m scripts.publish_platform_images{flags}", pty=True, env=_aws_env(settings)
     )

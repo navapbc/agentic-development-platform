@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
+import json
 import re
 import shutil
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from scripts import base_versions
@@ -520,3 +523,72 @@ def test_the_platform_image_installs_every_executable_the_worker_runs() -> None:
     assert {"git", "tar"} <= called
     assert {packages[name] for name in called & packages.keys()} <= installed
     assert "COPY --from=kubectl /out/kubectl /usr/local/bin/kubectl" in runtime
+
+
+def _stub_publisher():
+    return SimpleNamespace(
+        platform=lambda context: "platform",
+        built=lambda spec, context, version: spec.name,
+        mirror=lambda mirror: mirror.name,
+    )
+
+
+@pytest.mark.parametrize("mode", [publisher.BUILD, publisher.RELEASE])
+def test_the_publish_groups_hold_every_image_once(mode) -> None:
+    pins = base_versions.load()
+    pins.update(
+        {f"{n.upper().replace('-', '_')}_IMAGE_MODE": mode for n in publisher.IMAGE_COMPONENTS}
+    )
+    pins.update(_upstreams())
+    names = [name for group in publisher.PUBLISH_GROUPS.values() for name in group]
+
+    steps = publisher.image_steps(_stub_publisher(), REPO_ROOT, pins)
+
+    assert sorted(names) == sorted(steps)
+    assert len(names) == len(set(names))
+
+
+def test_a_publish_of_named_images_runs_only_their_steps(monkeypatch) -> None:
+    monkeypatch.setattr(publisher, "build_context", lambda root: contextlib.nullcontext(REPO_ROOT))
+
+    published = publisher.publish(_stub_publisher(), only=("checks-go", "platform"))
+
+    assert published == ["platform", "checks-go"]
+    with pytest.raises(publisher.PublishError, match="no image is named nope"):
+        publisher.publish(_stub_publisher(), only=("nope",))
+
+
+def _partial(directory: Path, name: str, references: list[str], refused=()) -> None:
+    (directory / f"{name}.json").write_text(
+        json.dumps({"references": references, "pushed": references[:1], "refused": list(refused)})
+    )
+
+
+def _references(names) -> list[str]:
+    return [f"{REGISTRY}/agentic-platform/{name}:t@{DIGEST}" for name in names]
+
+
+def test_merging_the_partials_returns_every_reference_and_push(tmp_path) -> None:
+    for group, names in publisher.PUBLISH_GROUPS.items():
+        _partial(tmp_path, group, _references(names))
+
+    references, pushed = publisher.merge_partials(tmp_path)
+
+    assert len(references) == sum(len(names) for names in publisher.PUBLISH_GROUPS.values())
+    assert len(pushed) == len(publisher.PUBLISH_GROUPS)
+
+
+def test_a_missing_group_or_a_refusal_stops_the_merge(tmp_path) -> None:
+    groups = dict(publisher.PUBLISH_GROUPS)
+    skipped = groups.pop("checks")
+    for group, names in groups.items():
+        _partial(tmp_path, group, _references(names))
+
+    with pytest.raises(
+        publisher.PublishError, match=f"no group published {', '.join(sorted(skipped))}"
+    ):
+        publisher.merge_partials(tmp_path)
+
+    _partial(tmp_path, "checks", _references(skipped), refused=["checks-go carries 1 finding"])
+    with pytest.raises(publisher.PublishError, match="checks.json refused checks-go"):
+        publisher.merge_partials(tmp_path)

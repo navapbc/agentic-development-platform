@@ -24,6 +24,8 @@ locals {
     "checks-node",
     "checks-jvm",
     "checks-go",
+    "al2023-base",
+    "al2023-openscap",
   ])
 }
 

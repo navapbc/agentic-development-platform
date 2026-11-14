@@ -120,3 +120,52 @@ def test_a_scan_reports_the_blocking_rules_and_writes_the_evidence(tmp_path) -> 
         "registry/image:tag: PATH entry '' is empty",
     ]
     assert (tmp_path / "image" / "results.tsv").is_file()
+
+
+class _Ecr:
+    class exceptions:
+        class ImageNotFoundException(Exception):
+            pass
+
+    def __init__(self, pushed: set[str]) -> None:
+        self.pushed = pushed
+
+    def describe_images(self, repositoryName: str, imageIds: list[dict[str, str]]):
+        if repositoryName not in self.pushed:
+            raise self.exceptions.ImageNotFoundException
+        return {"imageDetails": [{"imageDigest": "sha256:" + "a" * 64}]}
+
+
+def test_share_pushes_the_base_and_scanner_a_repository_lacks() -> None:
+    commands, run = _recorder(present=True)
+    registry = "111111111111.dkr.ecr.us-east-1.amazonaws.com"
+
+    al2023_base.Base("arm64", run).share(
+        REPO_ROOT, _Ecr({"agentic-platform/al2023-base"}), registry, "agentic-platform"
+    )
+
+    pushes = [command[2] for command in commands if command[:2] == ["docker", "push"]]
+    assert len(pushes) == 1
+    assert pushes[0].startswith(f"{registry}/agentic-platform/al2023-openscap:")
+
+
+def test_seed_pulls_the_shared_images_under_their_local_names() -> None:
+    commands, run = _recorder(present=True)
+    registry = "111111111111.dkr.ecr.us-east-1.amazonaws.com"
+
+    al2023_base.Base("arm64", run).seed(REPO_ROOT, registry, "agentic-platform")
+
+    tags = [command[2:] for command in commands if command[:2] == ["docker", "tag"]]
+    assert [local.split(":")[0] for _, local in tags] == [
+        "agentic-dev-platform-al2023-base",
+        "agentic-dev-platform-al2023-openscap",
+    ]
+    assert all(shared.split(":")[1] == local.split(":")[1] for shared, local in tags)
+
+
+def test_a_group_job_does_not_scan_a_seeded_base_again(tmp_path) -> None:
+    commands, run = _recorder(present=True)
+
+    al2023_base.Base("arm64", run, evidence=tmp_path, record_base=False).reference(REPO_ROOT)
+
+    assert not any(command[:3] == ["docker", "buildx", "build"] for command in commands)
