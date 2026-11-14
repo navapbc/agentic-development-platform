@@ -464,7 +464,7 @@ flowchart LR
                 end
 
                 subgraph MGMT["Management subnets, two AZs"]
-                    JHOST["Bedrock Jump-Host<br/><i>Alpine, ECS Exec,<br/>Fargate task on its own cluster</i>"]
+                    JHOST["Bedrock Jump-Host<br/><i>Amazon Linux 2023, ECS Exec,<br/>Fargate task on its own cluster</i>"]
                     ALB["Temporal Web UI Load Balancer<br/><i>internal Application Load Balancer</i>"]
                     TUI["Temporal Web UI"]
                     TADM["Temporal Schema and Namespace Setup<br/><i>Temporal admin-tools</i>"]

@@ -933,7 +933,7 @@ def cbm_build(c, source="", ref="", dest="vendor/bin"):
     help={
         "tag": "Image tag to build and push (default v1). Bump to ship a new image.",
         "arch": "Target architecture, arm64 or amd64 (default arm64).",
-        "base_image": "Override the Dockerfile base image, for an approved registry.",
+        "base_image": "A registry copy of the hardened base to build from, else a local build.",
         "repo": "ECR repository name (default agentic-platform/jumphost-base).",
         "region": "AWS region (empty uses AWS_REGION).",
     }
@@ -943,8 +943,13 @@ def publish_jumphost_image(c, tag="v1", arch="arm64", base_image="", repo="", re
     from scripts.config import get_settings
 
     settings = get_settings()
-    flags = f"-t {tag} -a {arch}"
-    flags += f" -b {base_image}" if base_image else ""
+    if not base_image:
+        from scripts.al2023_base import Base
+        from scripts.publish_platform_images import REPO_ROOT, build_context
+
+        with build_context(REPO_ROOT) as context:
+            base_image = Base(arch).reference(context)
+    flags = f"-t {tag} -a {arch} -b {shlex.quote(base_image)}"
     flags += f" -r {repo}" if repo else ""
     flags += f" -R {region}" if region else ""
     env = {"AWS_PROFILE": settings.aws_profile, "AWS_REGION": settings.aws_region}

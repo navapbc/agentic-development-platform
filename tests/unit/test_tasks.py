@@ -416,3 +416,19 @@ def test_operator_done_reads_the_workspace_artifacts_at_their_host_directory(mon
             tmp_path / ".agent-workspaces" / ".agent-publish"
         )
     }
+
+
+def test_the_jumphost_image_builds_from_the_hardened_base(monkeypatch) -> None:
+    from scripts import al2023_base
+
+    calls: list[str] = []
+
+    class _Context(Context):
+        def run(self, command, **kwargs):
+            calls.append(command)
+
+    monkeypatch.setattr(al2023_base.Base, "reference", lambda self, context: "hardened:1")
+
+    tasks_module.publish_jumphost_image(_Context())
+
+    assert calls == ["bash infra/bin/publish_jumphost_image.sh -t v1 -a arm64 -b hardened:1"]
