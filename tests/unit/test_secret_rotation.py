@@ -201,7 +201,8 @@ def test_bootstrap_creates_absent_service_databases_and_reowns_existing_ones():
     assert 'CREATE DATABASE "temporal" OWNER "temporal"' in statements
     assert 'CREATE DATABASE "temporal_visibility" OWNER "temporal"' in statements
     assert 'ALTER DATABASE "langfuse" OWNER TO "langfuse"' in statements
-    for database in ("temporal", "temporal_visibility", "langfuse", "agent_platform"):
+    assert 'CREATE DATABASE "litellm" OWNER "litellm"' in statements
+    for database in ("temporal", "temporal_visibility", "langfuse", "litellm", "agent_platform"):
         assert f'REVOKE ALL ON DATABASE "{database}" FROM PUBLIC' in statements
 
 
@@ -210,6 +211,7 @@ def test_bootstrap_creates_only_the_absent_roles_and_resets_every_password():
 
     assert 'CREATE ROLE "temporal" LOGIN' not in role_step.statements
     assert 'CREATE ROLE "langfuse" LOGIN' in role_step.statements
+    assert 'CREATE ROLE "litellm" LOGIN' in role_step.statements
     for key in rotation.ROLE_KEYS:
         assert any(sql.startswith(f'ALTER ROLE "{key}" WITH LOGIN') for sql in role_step.statements)
         assert f'GRANT "{key}" TO CURRENT_USER' in role_step.statements
@@ -222,7 +224,7 @@ def test_bootstrap_installs_pgaudit_in_every_service_database():
         if step.statements == ("CREATE EXTENSION IF NOT EXISTS pgaudit",)
     }
 
-    assert audited == {"agent_platform", "temporal", "temporal_visibility", "langfuse"}
+    assert audited == {"agent_platform", "temporal", "temporal_visibility", "langfuse", "litellm"}
 
 
 def test_bootstrap_runs_the_platform_schema_grants_as_the_migrator_in_one_transaction():
@@ -244,11 +246,12 @@ def test_bootstrap_never_sends_a_plaintext_password():
         assert not any(f"{key}-pw" in sql for sql in statements)
 
 
-def test_bootstrap_requires_every_service_credential():
+@pytest.mark.parametrize("key", [rotation.LANGFUSE, rotation.LITELLM])
+def test_bootstrap_requires_every_service_credential(key):
     credentials = _credentials()
-    del credentials[rotation.LANGFUSE]
+    del credentials[key]
 
-    with pytest.raises(rotation.RotationError):
+    with pytest.raises(rotation.RotationError, match=key):
         rotation.bootstrap_plan(
             credentials,
             existing_roles=frozenset(),

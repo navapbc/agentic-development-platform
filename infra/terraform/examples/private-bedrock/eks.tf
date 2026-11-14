@@ -8,7 +8,7 @@ locals {
     litellm = {
       service_account = "litellm"
       policy_arns     = [module.bedrock_iam.invoke_policy_arn]
-      secrets         = ["litellm_master_key", "langfuse_public_key", "langfuse_secret_key"]
+      secrets         = ["database_litellm", "litellm_master_key", "langfuse_public_key", "langfuse_secret_key"]
     }
     mcp_gateway = {
       service_account = "mcp-gateway"
@@ -82,7 +82,11 @@ locals {
       GATE_ENGINE_IMAGES           = jsonencode(var.eks_gate_engine_images)
       RUNTIME_IMAGES               = jsonencode(var.eks_runtime_images)
     }
-    settings             = { LANGFUSE_HOST = "https://langfuse.${var.container_internal_domain}" }
+    settings = {
+      LANGFUSE_HOST         = "https://langfuse.${var.container_internal_domain}"
+      LITELLM_DATABASE_HOST = coalesce(module.aurora_postgresql.endpoint, "")
+      LITELLM_DATABASE_PORT = tostring(module.aurora_postgresql.port)
+    }
     platform_environment = coalesce(module.container_services.platform_environment, {})
     environment_config   = merge(local.container_environment_config, local.registry_environment_config, local.image_environment_config)
     security_groups = {
@@ -121,7 +125,10 @@ locals {
     subnet_ids         = local.management_subnet_ids
     security_group_ids = [module.eks_deployer.security_group_id]
     pass_role_arns     = [module.eks_deployer.execution_role_arn, module.eks_deployer.task_role_arn]
-    deployments        = { database_platform_app = ["tenant-workers", "inbound-webhook", "mcp-gateway"] }
+    deployments = {
+      database_platform_app = ["tenant-workers", "inbound-webhook", "mcp-gateway"]
+      database_litellm      = ["litellm"]
+    }
   } : null
 }
 

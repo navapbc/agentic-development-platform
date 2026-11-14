@@ -18,14 +18,21 @@ BUILD_ID = "0.3.0.20261028093000"
 
 
 class _DatabaseContext(Context):
-    """Answers the schema_version queries from a fixed map and records every other command."""
+    """Answers the schema_version and pg_database queries and records every other command."""
 
-    def __init__(self, versions: dict[str, str | None]) -> None:
+    def __init__(self, versions: dict[str, str | None], databases: set[str] | None = None) -> None:
         super().__init__()
         self.versions = versions
+        self.databases = {"litellm"} if databases is None else databases
+        self.created: list[str] = []
         self.commands: list[tuple[str, dict[str, str]]] = []
 
     def run(self, command: str, **kwargs: object) -> Result:  # pyright: ignore[reportIncompatibleMethodOverride]
+        if "psql" in command and "-d postgres" in command:
+            if "create database litellm" in command:
+                self.created.append("litellm")
+                return Result()
+            return Result(stdout="1" if "litellm" in self.databases else "")
         if "psql" in command:
             database = next(name for name in ("temporal_visibility", "temporal") if name in command)
             version = self.versions.get(database)
@@ -124,6 +131,15 @@ def test_local_up_starts_compose_then_the_cluster_with_credentials_and_repositor
         f"{tasks_module.HOST_PYTHON} -m scripts.aws_login",
         f"{tasks_module.HOST_PYTHON} -m scripts.repos_sync",
     ]
+
+
+@pytest.mark.parametrize(("databases", "created"), [(set(), ["litellm"]), ({"litellm"}, [])])
+def test_local_up_creates_the_litellm_database_only_when_absent(project, databases, created):
+    context = _DatabaseContext({"temporal": None, "temporal_visibility": None}, databases)
+
+    tasks_module.local_up(context)
+
+    assert context.created == created
 
 
 def test_local_up_accepts_a_database_at_the_target_schema(project):

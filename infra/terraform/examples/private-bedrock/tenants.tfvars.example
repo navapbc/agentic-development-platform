@@ -17,7 +17,8 @@ tenants = {
   }
 
   # A Java team with its own GitHub organization token and Jira project, whose sandbox namespace
-  # is capped at 16 CPUs and 40 pods.
+  # is capped at 16 CPUs and 40 pods, and whose model use is capped at 500 US dollars a month,
+  # 200000 tokens a minute, and 5 US dollars a run.
   claims = {
     description = "The claims team's Spring Boot services."
     config_repository = {
@@ -25,6 +26,7 @@ tenants = {
       allowed_refs      = ["refs/heads/main", "refs/tags/v*"]
     }
     settings      = { TICKET_BACKEND = "jira" }
+    model_limits  = { monthly_budget_usd = 500, tpm_limit = 200000, run_budget_usd = 5 }
     sandbox_quota = { "requests.cpu" = "16", pods = "40" }
   }
 

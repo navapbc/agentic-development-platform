@@ -90,6 +90,7 @@ locals {
     platform_app      = "Platform application role, with DML on the platform schema and read on alembic_version."
     temporal          = "Temporal server role, which owns the temporal and temporal_visibility databases."
     langfuse          = "Langfuse role, which owns the langfuse database."
+    litellm           = "LiteLLM role, which owns the litellm database."
   }
 
   secret_catalog = merge(

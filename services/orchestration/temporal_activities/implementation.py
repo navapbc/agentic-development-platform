@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -110,7 +110,29 @@ def _build_materializer():
     return WorkspaceMaterializer.from_settings(PostgresOrphanRegistry())
 
 
-def _build_runtime(repo: str = ""):
+async def _run_model_key(execution_id: str) -> str:
+    from services.integration.litellm_admin import ensure_run_model_key
+
+    return await ensure_run_model_key(execution_id)
+
+
+async def _model_budget_stop(execution_id: str, failure_text: str) -> str:
+    from services.integration.litellm_admin import run_model_budget_stop
+
+    return await run_model_budget_stop(execution_id, failure_text=failure_text)
+
+
+async def _budget_stopped_outcome(execution_id: str, outcome: Any) -> Any:
+    """Rename a failed sandbox conversation's reason when LiteLLM refused it for budget."""
+    from openhands.runtime.conversation import FAILED
+
+    if outcome.status != FAILED:
+        return outcome
+    reason = await _model_budget_stop(execution_id, outcome.summary)
+    return replace(outcome, terminal_reason=reason) if reason else outcome
+
+
+def _build_runtime(repo: str = "", *, model_api_key: str):
     from openhands.runtime.conversation import RemoteConversationDriver
     from openhands.runtime.provisioner import (
         KubernetesSandboxProvisioner,
@@ -126,7 +148,7 @@ def _build_runtime(repo: str = ""):
     driver = RemoteConversationDriver(
         model=settings.coding_model,
         litellm_base_url=litellm_base_url,
-        api_key=settings.litellm_master_key,
+        api_key=model_api_key,
     )
     inner = KubernetesSandboxProvisioner(
         in_cluster=settings.openhands_in_cluster,
@@ -261,7 +283,7 @@ async def _run_implementation_stage(
     )
     if clean_workspace:
         await materializer.discard_changes(workspace)
-    runtime = _build_runtime(req.repo)
+    runtime = _build_runtime(req.repo, model_api_key=await _run_model_key(req.execution_id))
     from services.orchestration.gates.image_admission import admit_sandbox_image
 
     await admit_sandbox_image(runtime.image, get_settings())
@@ -272,6 +294,7 @@ async def _run_implementation_stage(
         workspace_source=str(Path(workspace.path).resolve()),
         task_id=req.task_id,
     )
+    outcome = await _budget_stopped_outcome(req.execution_id, outcome)
     staged = await materializer.stage(workspace)
     return ImplementationResult(
         status=outcome.status,

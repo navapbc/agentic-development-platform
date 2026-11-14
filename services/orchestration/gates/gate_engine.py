@@ -180,6 +180,7 @@ class AiReviewScanner:
         pod_runner: Any | None = None,
         tls_verify: bool = True,
         review_model: str = "",
+        run_model_access: Any | None = None,
     ) -> None:
         self._name = name
         self._config = config
@@ -190,6 +191,7 @@ class AiReviewScanner:
         self._source = source
         self._pod_runner = pod_runner
         self._tls_verify = tls_verify
+        self._run_model_access = run_model_access
         # The model actually sent to the gateway, resolved by the caller to a client-recognized id.
         # Falls back to the config value when the caller does not resolve.
         self._review_model = review_model or config.review_model
@@ -210,13 +212,32 @@ class AiReviewScanner:
             raise GateEngineError(f"gate {self._name!r} engine is not enabled")
         return resolved
 
+    def _pod_model_access(self) -> Any | None:
+        """The per-run key resolution, which applies only to a model-driven engine in a pod."""
+        if self._pod_runner is None or not self._config.needs_model:
+            return None
+        return self._run_model_access
+
+    async def _gateway_api_key(self, execution_id: str) -> str:
+        access = self._pod_model_access()
+        if access is None:
+            return self._litellm_api_key
+        from adapters.interfaces.security_scanner import ScannerUnavailableError
+
+        from services.integration.litellm_admin import LiteLLMAdminError
+
+        try:
+            return await access.key_for(execution_id)
+        except LiteLLMAdminError as exc:
+            raise ScannerUnavailableError(str(exc)) from exc
+
     async def scan(self, target: ScanTarget) -> list[ScanFinding]:
         source = await self._resolve()
         env = _engine_env(
             config=self._config,
             profile=self._profile,
             gateway_base_url=self._litellm_base_url,
-            gateway_api_key=self._litellm_api_key,
+            gateway_api_key=await self._gateway_api_key(target.execution_id),
             execution_id=target.execution_id,
             generation_name=self._name,
             model=self._review_model,
@@ -274,6 +295,16 @@ class AiReviewScanner:
         try:
             return await runner.run_engine(spec)
         except PodEngineError as exc:
+            access = self._pod_model_access()
+            reason = (
+                await access.budget_stop(target.execution_id, failure_text=str(exc))
+                if access is not None
+                else ""
+            )
+            if reason:
+                from services.integration.litellm_admin import ModelBudgetExceededError
+
+                raise ModelBudgetExceededError(reason) from exc
             raise ScannerUnavailableError(str(exc)) from exc
 
 

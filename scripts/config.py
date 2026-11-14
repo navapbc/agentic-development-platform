@@ -44,6 +44,12 @@ class Settings(BaseSettings):
 
     litellm_base_url: str = "http://localhost:4000"
     litellm_master_key: str = "change-me-locally"
+    run_model_budget_usd: float = 10.0
+    run_model_access_ttl_seconds: int = 86400
+    tenant_model_budget_usd: float = 0.0
+    tenant_model_budget_duration: str = "30d"
+    tenant_model_rpm_limit: int = 0
+    tenant_model_tpm_limit: int = 0
 
     rebar_llm_base_url: str = "http://localhost:4000"
     rebar_llm_api_key: str = "change-me-locally"

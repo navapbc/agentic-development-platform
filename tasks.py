@@ -166,6 +166,7 @@ def local_up(c, force=False):
     files = _compose_files()
     _compose_build(c, files, build_id)
     db_migrate(c)
+    _ensure_litellm_database(c)
     _require_temporal_schema_at_target(c)
     _temporal_admin(c, "schema", build=True)
     c.run(f"{COMPOSE} {files} up -d --wait --wait-timeout 600 temporal")
@@ -197,6 +198,7 @@ def k8s_reload(c, force=False):
     files = _compose_files()
     _compose_build(c, files, build_id)
     c.run(f"{COMPOSE} {files} up -d --wait --wait-timeout 600 --remove-orphans")
+    _ensure_litellm_database(c)
     _k8s(c, "reload", build_id)
 
 
@@ -344,6 +346,8 @@ TEMPORAL_UPGRADE_PATH = (
 )
 TEMPORAL_TARGET = TemporalRelease("1.32.2", (1, 19), (1, 14))
 TEMPORAL_DATABASES = ("temporal", "temporal_visibility")
+LITELLM_DATABASE_EXISTS = "select 1 from pg_database where datname = 'litellm'"
+CREATE_LITELLM_DATABASE = "create database litellm"
 
 
 def _report_exceptions_setup() -> None:
@@ -404,6 +408,15 @@ def _psql(c, database: str, query: str) -> str:
     return c.run(
         f"{COMPOSE} {_compose_files()} exec -T postgres sh -c {sql}", hide=True
     ).stdout.strip()
+
+
+def _ensure_litellm_database(c) -> None:
+    """Create the LiteLLM database on a Postgres volume that predates it.
+
+    The compose init script creates the service databases only on a fresh volume.
+    """
+    if not _psql(c, "postgres", LITELLM_DATABASE_EXISTS):
+        _psql(c, "postgres", CREATE_LITELLM_DATABASE)
 
 
 def _temporal_schema_version(c, database: str) -> tuple[int, int] | None:
@@ -580,7 +593,10 @@ def schedules_install(c):
 
 @task
 def db_reset(c):
-    """Drop and recreate the ``agent_platform`` schema, then re-migrate."""
+    """Drop and recreate the ``agent_platform`` schema, then re-migrate.
+
+    The LiteLLM database, with its virtual keys and spend, is left in place.
+    """
     c.run(
         f"{COMPOSE} {_compose_files()} run --rm --build --entrypoint python "
         "db-migrate -m scripts.db_reset",
@@ -1477,6 +1493,7 @@ def k8s_deploy(c, build=False):
     if build:
         k8s_reload(c)
         return
+    _ensure_litellm_database(c)
     _k8s(c, "deploy", recorded_build_id())
 
 

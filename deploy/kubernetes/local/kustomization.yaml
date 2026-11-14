@@ -203,6 +203,11 @@ patches:
                 env:
                   - name: AWS_CONFIG_FILE
                     value: /etc/aws/config
+                  - name: DATABASE_URL
+                    valueFrom:
+                      secretKeyRef:
+                        name: agentic-platform
+                        key: litellm_database_url
                 volumeMounts:
                   - name: aws-credential-process
                     mountPath: /etc/aws

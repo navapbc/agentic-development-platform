@@ -2,7 +2,8 @@
 
 The in-cluster workers read the settings the compose services read from `.env`, with each
 compose service address replaced by the address the pods reach the compose stack on and the
-port compose publishes. LiteLLM runs in the cluster under the same Service name, and OPA runs
+port compose publishes. LiteLLM runs in the cluster under the same Service name and keeps its
+keys and spend in the litellm database on the compose Postgres server, and OPA runs
 beside the activity worker on loopback. Settings that only name a workstation resource, such
 as the AWS profile or a kubeconfig, are dropped.
 """
@@ -13,6 +14,7 @@ import json
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from urllib.parse import urlsplit, urlunsplit
 
 from services import process
 
@@ -20,6 +22,7 @@ from scripts.config import Settings
 
 IN_CLUSTER_SERVICES = frozenset({"litellm"})
 LOOPBACK_SERVICES = frozenset({"opa"})
+LITELLM_DATABASE = "litellm"
 WORKSTATION_SETTINGS = frozenset(
     {
         "AWS_PROFILE",
@@ -117,12 +120,21 @@ def endpoint_values(settings: Settings, network: ComposeNetwork, address: str) -
     }
 
 
+def litellm_database_url(database_url: str) -> str:
+    """Return the Prisma URL of the LiteLLM database on the server and role of database_url."""
+    if not database_url:
+        return ""
+    parts = urlsplit(database_url)
+    return urlunsplit(("postgresql", parts.netloc, f"/{LITELLM_DATABASE}", "", ""))
+
+
 def workload_secret_values(
     env: Mapping[str, str], network: ComposeNetwork, address: str
 ) -> dict[str, str]:
     database_url, _ = rewrite_address(env.get("DATABASE_URL", ""), network, address)
     return {
         "database_url": database_url,
+        "litellm_database_url": litellm_database_url(database_url),
         "github_webhook_secret": env.get("GITHUB_WEBHOOK_SECRET") or "local-demo-secret",
         "jira_webhook_secret": env.get("JIRA_WEBHOOK_SECRET") or "local-demo-secret",
         "coordination_shared_secret": env.get("COORDINATION_SHARED_SECRET", ""),

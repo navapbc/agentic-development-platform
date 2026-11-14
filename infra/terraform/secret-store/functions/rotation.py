@@ -44,7 +44,8 @@ PLATFORM_MIGRATOR = "platform_migrator"
 PLATFORM_APP = "platform_app"
 TEMPORAL = "temporal"
 LANGFUSE = "langfuse"
-ROLE_KEYS = (PLATFORM_MIGRATOR, PLATFORM_APP, TEMPORAL, LANGFUSE)
+LITELLM = "litellm"
+ROLE_KEYS = (PLATFORM_MIGRATOR, PLATFORM_APP, TEMPORAL, LANGFUSE, LITELLM)
 
 _IDENTIFIER = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
 
@@ -317,6 +318,7 @@ def bootstrap_plan(
         "temporal": names[TEMPORAL],
         "temporal_visibility": names[TEMPORAL],
         "langfuse": names[LANGFUSE],
+        "litellm": names[LITELLM],
     }
     database_sql: list[str] = []
     for database, owner in service_databases.items():

@@ -4,11 +4,17 @@ import base64
 import json
 import shutil
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 import yaml
 from scripts import k8s_render
-from scripts.cluster_env import compose_network, rewrite_address, rewrite_env
+from scripts.cluster_env import (
+    compose_network,
+    litellm_database_url,
+    rewrite_address,
+    rewrite_env,
+)
 from scripts.k8s_cluster import delete_retired, deployments, exec_argv, one_off_argv, removable
 from scripts.k8s_render import RenderInputs, render
 from services import process
@@ -342,6 +348,33 @@ def test_the_gateway_token_reaches_the_workload_secret(tmp_path: Path) -> None:
     workload = _named(_rendered(tmp_path), "Secret", "agentic-platform")["data"]
 
     assert base64.b64decode(workload["mcp_gateway_token"]) == b"gateway-token"
+
+
+def test_litellm_reads_its_own_database_on_the_compose_postgres(tmp_path: Path) -> None:
+    documents = _rendered(tmp_path)
+    workload = _named(documents, "Secret", "agentic-platform")["data"]
+    platform = base64.b64decode(workload["database_url"]).decode()
+    litellm = base64.b64decode(workload["litellm_database_url"]).decode()
+    container = _named(documents, "Deployment", "litellm")["spec"]["template"]["spec"][
+        "containers"
+    ][0]
+    env = {e["name"]: e for e in container["env"]}
+
+    assert urlsplit(litellm).scheme == "postgresql"
+    assert urlsplit(litellm).netloc == urlsplit(platform).netloc
+    assert litellm.endswith("@host.docker.internal:5432/litellm")
+    assert env["DATABASE_URL"]["valueFrom"]["secretKeyRef"] == {
+        "name": "agentic-platform",
+        "key": "litellm_database_url",
+    }
+
+
+def test_the_litellm_database_url_drops_the_driver_and_the_platform_query() -> None:
+    assert litellm_database_url("") == ""
+    assert (
+        litellm_database_url("postgresql+asyncpg://u:p@h:5432/agent_platform?ssl=disable")
+        == "postgresql://u:p@h:5432/litellm"
+    )
 
 
 def test_each_tenant_worker_rolls_in_its_own_namespace() -> None:

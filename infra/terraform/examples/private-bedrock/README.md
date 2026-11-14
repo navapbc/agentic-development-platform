@@ -66,7 +66,7 @@ A created network also enables the Route 53 Resolver DNS Firewall, which resolve
 
 ## Secret store
 
-`create_secret_store = true` provisions the [secret-store](../../secret-store) module. It creates the platform secrets in Secrets Manager under a dedicated KMS key and adds the `secretsmanager` interface endpoint. With `create_aurora` it also enables the Aurora Data API, adds the `rds-data` endpoint, and creates the per-service database credentials with their rotation function in the management tier. With `create_cache` it encrypts the cache user secret with the same key, adds the `elasticache` endpoint, and rotates the cache user.
+`create_secret_store = true` provisions the [secret-store](../../secret-store) module. It creates the platform secrets in Secrets Manager under a dedicated KMS key and adds the `secretsmanager` interface endpoint. With `create_aurora` it also enables the Aurora Data API, adds the `rds-data` endpoint, and creates the per-service database credentials with their rotation function in the management tier. One of them, `database_litellm`, is the role that owns the `litellm` database, where the EKS LiteLLM proxy keeps its virtual keys, budgets, and spend. The LiteLLM pod mounts it as `DATABASE_USERNAME` and `DATABASE_PASSWORD`, reads the Aurora writer endpoint and port from the `LITELLM_DATABASE_HOST` and `LITELLM_DATABASE_PORT` keys of the `agentic-platform-eks` ConfigMap, and verifies the server certificate and host name against the RDS CA bundle its image carries. A rotation of the secret restarts the `litellm` deployment through the eks-deployer. With `create_cache` it encrypts the cache user secret with the same key, adds the `elasticache` endpoint, and rotates the cache user.
 
 `secret_readers` grants read access per secret to the workload roles, and `secret_restart_services` names the ECS services to redeploy after each secret changes. The module README lists the secret keys, the rotation schedule, and the manual rotation runbook.
 
@@ -140,6 +140,15 @@ For each tenant the root creates the following.
 
 A tenant's `settings` reach only that tenant's worker and override `container_platform_settings`, for example `TICKET_BACKEND = "jira"` for a tenant whose tickets live in Jira. The same name rules apply, and `TENANT`, `TENANTS`, `TENANT_CONFIG_BUCKET`, and the namespaces and paths the deployment derives from the tenant name are refused. `sandbox_quota` sets the hard limits of a ResourceQuota on the tenant's sandbox namespace, such as `"requests.cpu" = "16"` or `pods = "40"`.
 
+A tenant's `model_limits` sets the LiteLLM limits its runs work under. The worker receives each value as an environment variable and applies it to the tenant's LiteLLM team and to the virtual key it creates for each run. Each value is 0 or greater, `rpm_limit` and `tpm_limit` are whole numbers, and the four variable names are refused in `settings`.
+
+| Attribute | Worker variable | Default | Meaning |
+|---|---|---|---|
+| `monthly_budget_usd` | `TENANT_MODEL_BUDGET_USD` | 0 | The tenant team's spend limit per month in US dollars. 0 sets no team budget. |
+| `rpm_limit` | `TENANT_MODEL_RPM_LIMIT` | 0 | The tenant team's requests per minute. 0 sets no limit. |
+| `tpm_limit` | `TENANT_MODEL_TPM_LIMIT` | 0 | The tenant team's tokens per minute. 0 sets no limit. |
+| `run_budget_usd` | `RUN_MODEL_BUDGET_USD` | 10 | The spend limit of each run's virtual key in US dollars. |
+
 The EKS deploy renders, for each tenant, the `tenant-<tenant>` namespace with the tenant's activity worker, its secret provider, its ticket store profiles, and its workspace claim at `/tenants/<tenant>`, and the `tenant-<tenant>-sandbox` namespace with the agent, gate, checks, and scanner pod permissions. The review worker mounts the `/tenants` root read-only at the same path, so it reads each tenant's checkouts where the tenant's worker wrote them. Each tenant's worker installs its own intake and reap schedules on its task queue, `agent-platform-<tenant>`, when it starts, and the `schedule-bootstrap` task removes the schedules of a deployment without tenants.
 
 ### Image governance
@@ -153,7 +162,7 @@ The root writes `image_policy.yaml` into the platform config the EKS deploy rend
 1. Push the jumphost image to the repository shown in the `jumphost_ecr_repository_url` output with `inv publish-jumphost-image --tag v1`.
 2. Attach the `bedrock_invoke_policy_arn` output to any workload role outside the composition that signs Bedrock inference. The composition attaches it to the review worker.
 3. Bring up the platform and open the tunnel with `inv tunnel-start --detach`.
-4. With the secret store and Aurora enabled, create the per-service database roles before the first migration with `inv db-bootstrap-roles --function-name "$(terraform output -raw role_bootstrap_function_name)"`. Then set each external secret, such as `github_token`, with `aws secretsmanager put-secret-value`.
+4. With the secret store and Aurora enabled, create the per-service database roles before the first migration with `inv db-bootstrap-roles --function-name "$(terraform output -raw role_bootstrap_function_name)"`. Run it again after an apply that adds a role, such as `litellm`, to an existing cluster, before the next `inv eks-deploy`. Then set each external secret, such as `github_token`, with `aws secretsmanager put-secret-value`.
 
 ## Toggles for existing infrastructure
 

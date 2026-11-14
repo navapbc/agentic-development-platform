@@ -244,8 +244,11 @@ patches:
               - name: tmp
                 emptyDir: {}
   # The LiteLLM image has no platform entrypoint, so the container exports the mounted
-  # secret files and trusts the platform CA beside the system roots before it starts LiteLLM.
-  # It takes only the settings it names, because LiteLLM treats DATABASE_URL as its own store.
+  # secret files whose names are variable names and trusts the platform CA beside the system
+  # roots before it starts LiteLLM. It takes only the settings it names, because LiteLLM treats
+  # DATABASE_URL as its own store. LiteLLM assembles that URL from DATABASE_HOST and the other
+  # DATABASE settings, and turns verify-full with the RDS CA bundle the image carries into the
+  # Prisma parameters that verify Aurora's certificate and host name.
   - target:
       kind: Deployment
       name: litellm
@@ -265,7 +268,12 @@ patches:
                   - |
                     set -eu
                     for file in /mnt/secrets/*; do
-                      [ -f "$file" ] && export "${file##*/}=$(cat "$file")"
+                      [ -f "$file" ] || continue
+                      name="${file##*/}"
+                      case "$name" in
+                        [!A-Za-z_]* | *[!A-Za-z0-9_]*) continue ;;
+                      esac
+                      export "$name=$(cat "$file")"
                     done
                     if [ -n "${PLATFORM_CA_PEM:-}" ]; then
                       cat /etc/ssl/certs/ca-certificates.crt > /tmp/ca-bundle.pem
@@ -297,6 +305,22 @@ patches:
                       configMapKeyRef:
                         name: agentic-platform-eks
                         key: LANGFUSE_HOST
+                  - name: DATABASE_HOST
+                    valueFrom:
+                      configMapKeyRef:
+                        name: agentic-platform-eks
+                        key: LITELLM_DATABASE_HOST
+                  - name: DATABASE_PORT
+                    valueFrom:
+                      configMapKeyRef:
+                        name: agentic-platform-eks
+                        key: LITELLM_DATABASE_PORT
+                  - name: DATABASE_NAME
+                    value: litellm
+                  - name: DATABASE_SSLMODE
+                    value: verify-full
+                  - name: DATABASE_SSLROOTCERT
+                    value: /etc/ssl/rds-global-bundle.pem
                   - name: LITELLM_LOCAL_MODEL_COST_MAP
                     value: "True"
                   - name: HOME

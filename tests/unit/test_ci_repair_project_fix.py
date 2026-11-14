@@ -415,14 +415,26 @@ class _FakeMaterializer:
 
 
 class _FakeRuntime:
-    def __init__(self) -> None:
+    def __init__(self, status: str = "finished", summary: str = "") -> None:
         self.task = ""
+        self._status = status
+        self._summary = summary
 
     async def run_implementation(self, *, execution_id, task, context, workspace_source, task_id):
-        from types import SimpleNamespace
+        from openhands.runtime.conversation import ImplementationOutcome
 
         self.task = task
-        return SimpleNamespace(cost=0.1, tokens=10, cache_read_tokens=1, llm_calls=2)
+        return ImplementationOutcome(
+            status=self._status,
+            terminal_reason="completed" if self._status == "finished" else "error",
+            tool_calls=1,
+            elapsed_seconds=1.0,
+            cost=0.1,
+            tokens=10,
+            cache_read_tokens=1,
+            llm_calls=2,
+            summary=self._summary,
+        )
 
 
 def _repair_request(**overrides) -> ApplyCIRepairRequest:
@@ -441,16 +453,33 @@ def _repair_request(**overrides) -> ApplyCIRepairRequest:
     return ApplyCIRepairRequest(**base)
 
 
-def _run_repair(monkeypatch, materializer, runtime):
+def _run_repair(
+    monkeypatch, materializer, runtime, *, budget_stop="", runtime_keys=None, failure_texts=None
+):
     from services.orchestration.temporal_activities import implementation as impl_module
     from services.orchestration.temporal_activities import repair as repair_module
 
     async def no_autofix(*args, **kwargs):
         return False
 
+    async def run_model_key(execution_id):
+        return f"sk-run-{execution_id}"
+
+    async def model_budget_stop(execution_id, failure_text):
+        if failure_texts is not None:
+            failure_texts.append(failure_text)
+        return budget_stop
+
+    def build_runtime(repo="", *, model_api_key):
+        if runtime_keys is not None:
+            runtime_keys.append(model_api_key)
+        return runtime
+
     monkeypatch.setattr(repair_module, "_project_autofix", no_autofix)
     monkeypatch.setattr(impl_module, "_build_materializer", lambda *a, **k: materializer)
-    monkeypatch.setattr(impl_module, "_build_runtime", lambda *a, **k: runtime)
+    monkeypatch.setattr(impl_module, "_build_runtime", build_runtime)
+    monkeypatch.setattr(impl_module, "_run_model_key", run_model_key)
+    monkeypatch.setattr(impl_module, "_model_budget_stop", model_budget_stop)
     return asyncio.run(repair_module.apply_ci_repair(_repair_request()))
 
 
@@ -481,3 +510,32 @@ def test_the_repair_agent_is_told_which_task_it_must_not_undo(monkeypatch):
 
     assert "Fix the failing test." in runtime.task
     assert "Remove the Heading size prop" in runtime.task
+
+
+def test_the_repair_sandbox_is_given_the_run_key(monkeypatch):
+    materializer = _FakeMaterializer(changed=("portal/a.tsx",), surviving=("portal/a.tsx",))
+    keys: list[str] = []
+
+    _run_repair(monkeypatch, materializer, _FakeRuntime(), runtime_keys=keys)
+
+    assert keys == ["sk-run-e"]
+
+
+def test_a_repair_refused_for_budget_reports_the_budget_reason(monkeypatch):
+    from services.integration.litellm_admin import TENANT_MODEL_BUDGET_EXCEEDED
+
+    materializer = _FakeMaterializer(changed=(), surviving=())
+    refusal = "Budget has been exceeded! Team=acme Current cost: 20.1, Max budget: 20.0"
+    failure_texts: list[str] = []
+
+    result = _run_repair(
+        monkeypatch,
+        materializer,
+        _FakeRuntime(status="failed", summary=refusal),
+        budget_stop=TENANT_MODEL_BUDGET_EXCEEDED,
+        failure_texts=failure_texts,
+    )
+
+    assert result.applied is False
+    assert result.terminal_reason == TENANT_MODEL_BUDGET_EXCEEDED
+    assert failure_texts == [refusal]

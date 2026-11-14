@@ -63,6 +63,7 @@ locals {
       secrets          = local.tenant_records[name].secret_arns
       platform_secrets = distinct(concat(local.tenant_platform_secrets, tenant.shared_secrets, local.temporal_deployed ? ["temporal_ca"] : []))
       settings         = tenant.settings
+      model_limits     = tenant.model_limits
       sandbox_quota    = tenant.sandbox_quota
       image_prefixes   = local.image_prefixes[name]
       config_bucket    = module.tenant_config_store.bucket

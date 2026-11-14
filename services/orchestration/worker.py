@@ -36,6 +36,7 @@ from services.orchestration.temporal_activities import (
     commit_and_push,
     count_tick,
     create_draft_pr,
+    delete_run_model_key,
     detect_dependency,
     evaluate_gate,
     evaluate_promotion,
@@ -164,6 +165,7 @@ _ACTIVITIES = [
     reconcile_intake_pass,
     sign_authorship,
     verify_authorship_merge,
+    delete_run_model_key,
 ]
 
 

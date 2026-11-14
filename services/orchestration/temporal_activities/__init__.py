@@ -33,6 +33,7 @@ from services.orchestration.temporal_activities.intake import (
     reconcile_intake_pass,
 )
 from services.orchestration.temporal_activities.manifest import record_manifest
+from services.orchestration.temporal_activities.model_access import delete_run_model_key
 from services.orchestration.temporal_activities.notify import alert_human_intervention
 from services.orchestration.temporal_activities.persistence import (
     persist_execution_state,
@@ -91,6 +92,7 @@ __all__ = [
     "commit_and_push",
     "count_tick",
     "create_draft_pr",
+    "delete_run_model_key",
     "detect_dependency",
     "evaluate_gate",
     "load_gate_plan",

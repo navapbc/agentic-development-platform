@@ -771,7 +771,7 @@ variable "github_publish_refs" {
 }
 
 variable "tenants" {
-  description = "Tenants that share the deployment, keyed by a name of 2 to 16 lowercase letters and digits. Each tenant is a trust boundary with its own activity worker identity, secrets, image prefix, config bundle prefix, ticket store, and workspace. secrets lists the secrets created empty under <name_prefix>/tenants/<tenant>/ for the tenant to fill. shared_secrets lists secret store keys the tenant's worker may also read. config_repository names the GitHub repository whose workflows publish the tenant's config bundle and images. ticket_store sets the operators, admins, and GitHub OIDC writer of the tenant's rebar store. settings are environment variables only the tenant's worker receives, such as TICKET_BACKEND, and override container_platform_settings. sandbox_quota is the ResourceQuota hard limits of the tenant's sandbox namespace, such as requests.cpu or pods. create_eks requires at least one tenant."
+  description = "Tenants that share the deployment, keyed by a name of 2 to 16 lowercase letters and digits. Each tenant is a trust boundary with its own activity worker identity, secrets, image prefix, config bundle prefix, ticket store, and workspace. secrets lists the secrets created empty under <name_prefix>/tenants/<tenant>/ for the tenant to fill. shared_secrets lists secret store keys the tenant's worker may also read. config_repository names the GitHub repository whose workflows publish the tenant's config bundle and images. ticket_store sets the operators, admins, and GitHub OIDC writer of the tenant's rebar store. settings are environment variables only the tenant's worker receives, such as TICKET_BACKEND, and override container_platform_settings. model_limits sets the tenant's LiteLLM spend and rate limits in the worker environment. monthly_budget_usd is the tenant team's monthly budget in US dollars, rpm_limit and tpm_limit are the tenant team's requests and tokens per minute, and 0 sets no limit for each of the three. run_budget_usd is the budget of each run's virtual key in US dollars. sandbox_quota is the ResourceQuota hard limits of the tenant's sandbox namespace, such as requests.cpu or pods. create_eks requires at least one tenant."
   type = map(object({
     description    = string
     secrets        = optional(list(string), ["github_token", "jira_api_token", "jira_pat", "authorship_signing_key", "registry_token", "slack_webhook_url"])
@@ -794,7 +794,13 @@ variable "tenants" {
         audience          = optional(string, "sts.amazonaws.com")
       }))
     }), {})
-    settings      = optional(map(string), {})
+    settings = optional(map(string), {})
+    model_limits = optional(object({
+      monthly_budget_usd = optional(number, 0)
+      rpm_limit          = optional(number, 0)
+      tpm_limit          = optional(number, 0)
+      run_budget_usd     = optional(number, 10)
+    }), {})
     sandbox_quota = optional(map(string), {})
   }))
   default = {}
@@ -813,8 +819,19 @@ variable "tenants" {
     condition = alltrue(flatten([for tenant in values(var.tenants) : [for name in keys(tenant.settings) : !contains([
       "TENANT", "TENANTS", "TENANT_CONFIG_BUCKET", "OPENHANDS_SANDBOX_NAMESPACE", "GATE_ENGINE_NAMESPACE",
       "REPOSITORY_ROOT", "EXECUTION_WORKSPACE_ROOT", "GATE_ENGINE_ROOT",
+      "TENANT_MODEL_BUDGET_USD", "TENANT_MODEL_RPM_LIMIT", "TENANT_MODEL_TPM_LIMIT", "RUN_MODEL_BUDGET_USD",
     ], name)]]))
-    error_message = "A tenant setting may not set TENANT, TENANTS, TENANT_CONFIG_BUCKET, or the namespaces and paths the deployment derives from the tenant name."
+    error_message = "A tenant setting may not set TENANT, TENANTS, TENANT_CONFIG_BUCKET, the model limits model_limits sets, or the namespaces and paths the deployment derives from the tenant name."
+  }
+
+  validation {
+    condition     = alltrue(flatten([for tenant in values(var.tenants) : [for value in values(tenant.model_limits) : value >= 0]]))
+    error_message = "A tenant's model_limits values are 0 or greater."
+  }
+
+  validation {
+    condition     = alltrue([for tenant in values(var.tenants) : floor(tenant.model_limits.rpm_limit) == tenant.model_limits.rpm_limit && floor(tenant.model_limits.tpm_limit) == tenant.model_limits.tpm_limit])
+    error_message = "A tenant's model_limits rpm_limit and tpm_limit are whole numbers."
   }
 }
 

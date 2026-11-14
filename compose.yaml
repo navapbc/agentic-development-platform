@@ -18,7 +18,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-platform}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-locally}
       POSTGRES_DB: ${POSTGRES_DB:-agent_platform}
-      POSTGRES_MULTIPLE_DATABASES: agent_platform,temporal,temporal_visibility,langfuse
+      POSTGRES_MULTIPLE_DATABASES: agent_platform,temporal,temporal_visibility,langfuse,litellm
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./database/init/00-create-multiple-databases.sh:/docker-entrypoint-initdb.d/00-create-multiple-databases.sh:ro

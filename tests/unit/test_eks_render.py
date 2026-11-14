@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,7 @@ pytestmark = pytest.mark.skipif(shutil.which("kubectl") is None, reason="kubectl
 def _inputs() -> dict[str, Any]:
     keys = {
         "database_platform_app",
+        "database_litellm",
         "coordination_shared_secret",
         "litellm_master_key",
         "review_attestation_secret",
@@ -53,7 +55,11 @@ def _inputs() -> dict[str, Any]:
                 "TRIVY_IMAGE",
             )
         },
-        "settings": {"LANGFUSE_HOST": "https://langfuse.example.internal"},
+        "settings": {
+            "LANGFUSE_HOST": "https://langfuse.example.internal",
+            "LITELLM_DATABASE_HOST": "aurora.cluster-x.us-west-2.rds.amazonaws.com",
+            "LITELLM_DATABASE_PORT": "5432",
+        },
         "platform_environment": {"DATABASE_URL": "postgresql+asyncpg://db:5432/agent_platform"},
         "environment_config": {"repositories.yaml": "version: 1\n"},
         "security_groups": {
@@ -94,6 +100,12 @@ def _tenant(name: str) -> dict[str, Any]:
             "temporal_ca",
         ],
         "settings": {"TICKET_BACKEND": "rebar"},
+        "model_limits": {
+            "monthly_budget_usd": 250,
+            "rpm_limit": 0,
+            "tpm_limit": 200000,
+            "run_budget_usd": 2.5,
+        },
         "sandbox_quota": {"requests.cpu": "8", "pods": "20"},
         "config_bucket": "agentic-platform-tenant-config-abc",
     }
@@ -174,6 +186,31 @@ def test_providers_name_the_secret_arns_and_leave_out_unset_ones(overlay) -> Non
     assert [p["objectAlias"] for p in database["jmesPath"]] == ["PGUSER", "PGPASSWORD"]
 
 
+def test_litellm_reads_its_own_database_credential_over_verified_tls(overlay) -> None:
+    documents, _ = eks_render.render(overlay, _inputs(), REPOSITORY)
+    provider = _named(documents, "SecretProviderClass", "litellm")
+    objects = json.loads(provider["spec"]["parameters"]["objects"])
+    database = next(e for e in objects if e["objectName"].endswith("database_litellm"))
+    litellm = _named(documents, "Deployment", "litellm")["spec"]["template"]["spec"]
+    container = next(c for c in litellm["containers"] if c["name"] == "litellm")
+    env = {e["name"]: e for e in container["env"]}
+    eks = _named(documents, "ConfigMap", "agentic-platform-eks")["data"]
+
+    assert [p["objectAlias"] for p in database["jmesPath"]] == [
+        "DATABASE_USERNAME",
+        "DATABASE_PASSWORD",
+    ]
+    assert not [e for e in objects if e["objectName"].endswith("database_platform_app")]
+    assert "DATABASE_URL" not in env
+    assert env["DATABASE_HOST"]["valueFrom"]["configMapKeyRef"]["key"] == "LITELLM_DATABASE_HOST"
+    assert env["DATABASE_PORT"]["valueFrom"]["configMapKeyRef"]["key"] == "LITELLM_DATABASE_PORT"
+    assert eks["LITELLM_DATABASE_HOST"] == "aurora.cluster-x.us-west-2.rds.amazonaws.com"
+    assert eks["LITELLM_DATABASE_PORT"] == "5432"
+    assert env["DATABASE_NAME"]["value"] == "litellm"
+    assert env["DATABASE_SSLMODE"]["value"] == "verify-full"
+    assert env["DATABASE_SSLROOTCERT"]["value"] == "/etc/ssl/rds-global-bundle.pem"
+
+
 def test_an_ingress_without_a_certificate_is_left_out(overlay) -> None:
     documents, _ = eks_render.render(overlay, _inputs(), REPOSITORY, mcp_hostname="mcp.example")
     ingresses = {d["metadata"]["name"]: d for d in documents if d["kind"] == "Ingress"}
@@ -252,6 +289,7 @@ def test_an_image_outside_the_overlay_registry_is_refused(overlay) -> None:
     ("name", "key"),
     [
         ("agentic-platform/database/platform-app", "database_platform_app"),
+        ("agentic-platform/database/litellm", "database_litellm"),
         ("agentic-platform/generated/mcp-gateway-token", "mcp_gateway_token"),
         ("agentic-platform/external/github-token", "github_token"),
         ("agentic-platform/temporal/tls-ca", "temporal_ca"),
@@ -323,11 +361,39 @@ def test_a_tenant_worker_runs_on_its_namespaces_paths_and_settings(overlay) -> N
     assert env["REPOSITORY_ROOT"] == "/tenants/adp/repositories"
     assert env["TENANT_CONFIG_BUCKET"] == "agentic-platform-tenant-config-abc"
     assert env["TICKET_BACKEND"] == "rebar"
+    assert env["TENANT_MODEL_BUDGET_USD"] == "250"
+    assert env["TENANT_MODEL_RPM_LIMIT"] == "0"
+    assert env["TENANT_MODEL_TPM_LIMIT"] == "200000"
+    assert env["RUN_MODEL_BUDGET_USD"] == "2.5"
     assert env["LITELLM_BASE_URL"] == "http://litellm.agentic-dev-platform.svc.cluster.local:4000"
     assert mounts["workspaces"] == "/tenants/adp"
     assert worker["metadata"]["labels"]["agentic-dev-platform/tenant"] == "adp"
     claim = _named(documents, "PersistentVolumeClaim", "workspaces", "tenant-adp")
     assert claim["spec"]["volumeName"] == "tenant-adp-workspace"
+
+
+def test_a_tenant_without_model_limits_leaves_the_worker_defaults(overlay) -> None:
+    inputs = _inputs()
+    del inputs["tenants"][0]["model_limits"]
+    documents, _ = eks_render.render(overlay, inputs, REPOSITORY)
+    worker = _named(documents, "Deployment", "activity-worker", "tenant-adp")["spec"]["template"]
+    container = next(c for c in worker["spec"]["containers"] if c["name"] == "activity-worker")
+    names = {e["name"] for e in container["env"]}
+
+    assert names.isdisjoint(eks_render.MODEL_LIMIT_ENV.values())
+
+
+def test_the_tenants_variable_declares_and_reserves_each_model_limit() -> None:
+    variables = (REPOSITORY / "infra/terraform/examples/private-bedrock/variables.tf").read_text()
+    tenants = variables[variables.index('variable "tenants"') :]
+    tenants = tenants[: tenants.index('\nvariable "')]
+    match = re.search(r"model_limits = optional\(object\(\{(.*?)\}\)", tenants, re.S)
+    assert match is not None
+    limits = match.group(1)
+
+    assert set(re.findall(r"^\s*(\w+)\s*=", limits, re.M)) == set(eks_render.MODEL_LIMIT_ENV)
+    for name in eks_render.MODEL_LIMIT_ENV.values():
+        assert f'"{name}"' in tenants
 
 
 def test_only_a_tenants_worker_reaches_its_sandboxes(overlay) -> None:

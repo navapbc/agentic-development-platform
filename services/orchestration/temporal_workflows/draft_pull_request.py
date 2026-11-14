@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field, replace
 from datetime import timedelta
 from typing import Any
@@ -13,6 +14,7 @@ from temporalio.exceptions import ActivityError
 with workflow.unsafe.imports_passed_through():
     from adapters.interfaces.git_host import PublishResult
 
+    from services.integration.litellm_admin import MODEL_BUDGET_REASONS
     from services.orchestration.change_narrative import (
         PullRequestNarrative,
         compose_pull_request_body,
@@ -70,6 +72,10 @@ with workflow.unsafe.imports_passed_through():
     from services.orchestration.temporal_activities.manifest import (
         RecordManifestRequest,
         record_manifest,
+    )
+    from services.orchestration.temporal_activities.model_access import (
+        DeleteRunModelKeyRequest,
+        delete_run_model_key,
     )
     from services.orchestration.temporal_activities.notify import (
         AlertHumanInterventionRequest,
@@ -225,6 +231,11 @@ _ACCEPTANCE = "acceptance"
 _REVIEW = "REVIEW"
 _REVIEW_KIND = "review"
 
+# Patch ids that keep executions started before these branches existed replaying deterministically.
+_DELETE_RUN_MODEL_KEY_PATCH = "delete-run-model-key"
+_RUN_MODEL_BUDGET_STOP_PATCH = "run-model-budget-stop"
+_FINALIZE_ON_CANCEL_PATCH = "finalize-on-cancel"
+
 
 @dataclass
 class DraftPullRequestInput:
@@ -347,6 +358,10 @@ def _project_from_issue(issue_key: str) -> str:
     return issue_key.split("-", 1)[0] if "-" in issue_key else ""
 
 
+def _model_budget_reason(terminal_reason: str) -> str:
+    return terminal_reason if terminal_reason in MODEL_BUDGET_REASONS else ""
+
+
 def _scanner_unavailable_result(plan: GatePlan) -> ScanChangeResult:
     names = [node.name for node in plan.scanner]
     findings = [
@@ -419,6 +434,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         self._authorship: dict[str, dict] = {}
         self._claim_owner_workflow_id: str = ""
         self._claim_completed: bool = False
+        self._run_model_key_deleted: bool = False
 
     async def _sign_authorship(
         self,
@@ -487,6 +503,12 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         """
         try:
             outcome = await self._orchestrate(params)
+        except asyncio.CancelledError:
+            # Temporal delivers a workflow cancel to the run task once, so the activities the
+            # cleanup schedules after catching it run to completion and are not cancelled.
+            if workflow.patched(_FINALIZE_ON_CANCEL_PATCH):
+                await self._finalize_claim(params)
+            raise
         except Exception:
             await self._finalize_claim(params)
             raise
@@ -494,6 +516,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         return outcome
 
     async def _finalize_claim(self, params: DraftPullRequestInput) -> None:
+        await self._delete_run_model_key(params)
         owner = self._claim_owner_workflow_id
         if not owner:
             return
@@ -518,6 +541,22 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         except Exception:
             # Neither settling the claim nor recording the attempt may replace the run's
             # own outcome. A claim left unsettled is recoverable with inv restart.
+            return
+
+    async def _delete_run_model_key(self, params: DraftPullRequestInput) -> None:
+        if self._run_model_key_deleted or not workflow.patched(_DELETE_RUN_MODEL_KEY_PATCH):
+            return
+        self._run_model_key_deleted = True
+        try:
+            await workflow.execute_activity(
+                delete_run_model_key,
+                DeleteRunModelKeyRequest(execution_id=params.execution_id),
+                start_to_close_timeout=timedelta(seconds=30),
+                schedule_to_close_timeout=timedelta(minutes=5),
+                retry_policy=RetryPolicy(maximum_attempts=3),
+            )
+        except Exception:
+            # The key expires at the access TTL, so a failed delete never replaces the outcome.
             return
 
     def _settlement_event(
@@ -968,7 +1007,9 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             repair = await self._repair(params, impl, result, workflow_id, attempt)
             if repair is None:
                 break
-            budget_reason = self._budget_breach(params, impl)
+            budget_reason = self._budget_breach(params, impl) or _model_budget_reason(
+                repair.terminal_reason
+            )
             if not repair.applied:
                 break
             repairs = attempt
@@ -1085,6 +1126,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             COST_BUDGET_EXCEEDED,
             TOKEN_BUDGET_EXCEEDED,
             LLM_CALLS_EXCEEDED,
+            *MODEL_BUDGET_REASONS,
         ):
             reason = outcome.terminal_reason
         await self._terminal_alert(
@@ -2088,6 +2130,10 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             }
             for finding in scan.findings
         ]
+        if scan.budget_stop and workflow.patched(_RUN_MODEL_BUDGET_STOP_PATCH):
+            return await self._model_budget_stop(
+                params, outcome, workflow_id, scan, scan_findings, commit_sha
+            )
 
         gates: list[PolicyGate] = []
         for node in plan.review:
@@ -2185,6 +2231,55 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             policy_bundle_version=decision.bundle_version,
             policy_next_action=decision.next_action,
             policy_reasons=list(decision.reasons),
+            scan_blocking_findings=scan.blocking_count,
+            scan_findings=scan_findings,
+            scan_severity_counts=dict(scan.severity_counts),
+        )
+
+    async def _model_budget_stop(
+        self,
+        params: DraftPullRequestInput,
+        outcome: DraftPullRequestOutput,
+        workflow_id: str,
+        scan: ScanChangeResult,
+        scan_findings: list[dict[str, Any]],
+        commit_sha: str,
+    ) -> DraftPullRequestOutput:
+        reason = scan.budget_stop
+        await workflow.execute_activity(
+            persist_execution_state,
+            ExecutionState(
+                execution_id=params.execution_id,
+                task_id=params.task_id,
+                state="FAILED",
+                workflow_id=workflow_id,
+                repository=params.repo or None,
+                repository_sha=commit_sha or None,
+            ),
+            start_to_close_timeout=timedelta(seconds=30),
+            retry_policy=RetryPolicy(maximum_attempts=3),
+        )
+        await self._audit(
+            AuditEvent(
+                event_id=f"{params.execution_id}:MODEL_BUDGET_EXCEEDED:policy",
+                task_id=params.task_id,
+                execution_id=params.execution_id,
+                event_type="MODEL_BUDGET_EXCEEDED",
+                stage="policy",
+                prev_state=POLICY_EVALUATION,
+                new_state="FAILED",
+                workflow_id=workflow_id,
+                decision="cap_breach",
+                reason=reason,
+            )
+        )
+        await self._terminal_alert(params, workflow_id, reason=reason, stage="policy")
+        return replace(
+            outcome,
+            status=POLICY_DENIED,
+            terminal_reason=reason,
+            policy_status="denied",
+            policy_reasons=[reason],
             scan_blocking_findings=scan.blocking_count,
             scan_findings=scan_findings,
             scan_severity_counts=dict(scan.severity_counts),
