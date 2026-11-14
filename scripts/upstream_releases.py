@@ -15,6 +15,7 @@ import json
 import os
 import re
 import sys
+import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -25,6 +26,15 @@ from scripts import base_versions
 GO_FEED = "go.dev"
 GITHUB_API = "https://api.github.com"
 GO_DOWNLOADS = "https://go.dev/dl/?mode=json"
+# Amazon Linux 2023 publishes no GitHub release. Each release is an image tag in ECR Public, which
+# answers a tag list with an anonymous pull token.
+AL2023_FEED = "public.ecr.aws/amazonlinux/amazonlinux"
+AL2023_TOKEN = "https://public.ecr.aws/token/?scope=repository:amazonlinux/amazonlinux:pull"
+AL2023_TAGS = "https://public.ecr.aws/v2/amazonlinux/amazonlinux/tags/list?n=1000"
+_AL2023_RELEASE_TAG = re.compile(r"(2023\.\d+\.\d{8})\.\d+")
+_STABLE_TAG = re.compile(r"v?\d+(?:\.\d+)+")
+_RATE_LIMITED = (403, 429)
+_FETCH_ATTEMPTS = 4
 BUILD = "build"
 SOURCE = "source"
 CLEAN = "clean"
@@ -54,7 +64,7 @@ class Component:
 
 
 COMPONENTS = (
-    Component("al2023", "amazonlinux/amazon-linux-2023", "AL2023_RELEASE"),
+    Component("al2023", AL2023_FEED, "AL2023_RELEASE"),
     Component("go", GO_FEED, "GO_VERSION"),
     Component("uv", "astral-sh/uv", "UV_IMAGE"),
     Component("kubectl", "kubernetes/kubernetes", "KUBECTL_VERSION", "KUBECTL"),
@@ -238,8 +248,32 @@ def newest_release(component: Component, fetch: Fetch) -> tuple[str, str]:
                 version = str(release["version"])
                 return version, f"https://go.dev/doc/devel/release#{version}"
         raise ValueError("go.dev lists no stable release")
-    document = fetch(f"{GITHUB_API}/repos/{component.repository}/releases/latest")
+    if component.repository == AL2023_FEED:
+        token = fetch(AL2023_TOKEN)["token"]
+        tags = fetch(f"{AL2023_TAGS}#{token}")["tags"]
+        releases = {match.group(1) for tag in tags if (match := _AL2023_RELEASE_TAG.fullmatch(tag))}
+        if not releases:
+            raise ValueError("ECR Public lists no Amazon Linux 2023 release tag")
+        newest = max(releases, key=lambda release: _key(release) or ())
+        return (
+            newest,
+            f"https://docs.aws.amazon.com/linux/al2023/release-notes/relnotes-{newest}.html",
+        )
+    try:
+        document = fetch(f"{GITHUB_API}/repos/{component.repository}/releases/latest")
+    except LookupError:
+        return newest_tag(component.repository, fetch)
     return str(document["tag_name"]), str(document.get("html_url", ""))
+
+
+def newest_tag(repository: str, fetch: Fetch) -> tuple[str, str]:
+    """Return the highest stable version tag of a repository that publishes no GitHub release."""
+    tags = [str(tag["name"]) for tag in fetch(f"{GITHUB_API}/repos/{repository}/tags?per_page=100")]
+    stable = [tag for tag in tags if _STABLE_TAG.fullmatch(tag)]
+    if not stable:
+        raise ValueError(f"{repository} has no release and no version tag")
+    newest = max(stable, key=lambda tag: _key(tag) or ())
+    return newest, f"https://github.com/{repository}/tree/{newest}"
 
 
 def check(
@@ -289,18 +323,36 @@ def _one_line(exc: BaseException) -> str:
     return text if text.endswith(".") else f"{text}."
 
 
-def fetch_json(url: str) -> Any:
+def fetch_json(url: str, sleep: Callable[[float], None] = time.sleep) -> Any:
+    """GET a JSON document, retrying a rate-limited answer and raising LookupError on a 404.
+
+    A URL fragment carries a bearer token for a registry API, which never reaches the server.
+    """
     import httpx
 
+    address, _, bearer = url.partition("#")
     headers = {"Accept": "application/vnd.github+json"}
-    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
-    if token and url.startswith(GITHUB_API):
-        headers["Authorization"] = f"Bearer {token}"
-    response = httpx.get(
-        url, headers=headers, timeout=_FETCH_TIMEOUT_SECONDS, follow_redirects=True
-    )
+    token = bearer or os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or ""
+    if bearer or (token and address.startswith(GITHUB_API)):
+        headers["Authorization"] = "Bearer " + token
+    for attempt in range(_FETCH_ATTEMPTS):
+        response = httpx.get(
+            address, headers=headers, timeout=_FETCH_TIMEOUT_SECONDS, follow_redirects=True
+        )
+        if response.status_code not in _RATE_LIMITED or attempt == _FETCH_ATTEMPTS - 1:
+            break
+        sleep(retry_delay(response.headers, attempt))
+    if response.status_code == 404:
+        raise LookupError(f"{address} answered 404")
     response.raise_for_status()
     return response.json()
+
+
+def retry_delay(headers: Mapping[str, str], attempt: int) -> float:
+    """Return how long to wait before retrying a rate-limited request, at most a minute."""
+    if headers.get("retry-after", "").isdigit():
+        return min(float(headers["retry-after"]), 60.0)
+    return float(min(2 ** (attempt + 2), 60))
 
 
 def scan_targets(releases: Iterable[Release]) -> list[dict[str, str]]:

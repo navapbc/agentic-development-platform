@@ -192,7 +192,9 @@ jobs:
       - name: Scan the upstream releases and the excepted images
         continue-on-error: true
         run: |
-          set -uo pipefail
+          # The runner's default shell adds -e, and a scan that reports findings exits non-zero,
+          # which the loop records rather than stopping on.
+          set +e -uo pipefail
           shopt -s nullglob
           mkdir -p image-report/scans
           : > image-report/scans.jsonl

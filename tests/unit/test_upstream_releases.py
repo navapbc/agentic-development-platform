@@ -259,6 +259,105 @@ def test_every_component_names_a_repository_and_a_pin_the_versions_file_holds() 
     assert {"kubectl", "trivy", "semgrep", "litellm", "langfuse-web", "clickhouse"} <= set(held)
     for component in upstream_releases.COMPONENTS:
         assert (
-            component.repository == upstream_releases.GO_FEED
+            component.repository in (upstream_releases.GO_FEED, upstream_releases.AL2023_FEED)
             or component.repository.count("/") == 1
         )
+
+
+def test_amazon_linux_reads_its_newest_release_from_the_ecr_public_tags() -> None:
+    documents = {
+        upstream_releases.AL2023_TOKEN: {"token": "anonymous"},
+        f"{upstream_releases.AL2023_TAGS}#anonymous": {
+            "tags": ["latest", "2023", "2023.12.20261109.0", "2023.12.20261112.0", "2.0.20260101.0"]
+        },
+    }
+    component = Component("al2023", upstream_releases.AL2023_FEED, "AL2023_RELEASE")
+
+    (release,) = upstream_releases.check(
+        {"AL2023_RELEASE": "2023.12.20261109"}, fetcher(documents), (component,)
+    )
+
+    assert (release.newest, release.newer, release.target) == (
+        "2023.12.20261112",
+        True,
+        "2023.12.20261112",
+    )
+
+
+def test_a_repository_without_releases_is_read_from_its_version_tags() -> None:
+    documents = {
+        f"{upstream_releases.GITHUB_API}/repos/sourcegraph/scip-python/releases/latest": (
+            LookupError("404")
+        ),
+        f"{upstream_releases.GITHUB_API}/repos/sourcegraph/scip-python/tags?per_page=100": [
+            {"name": "v0.6.8"},
+            {"name": "v0.6.10"},
+            {"name": "v0.7.0-rc.1"},
+        ],
+    }
+    component = Component("scip-python", "sourcegraph/scip-python", "SCIP_PYTHON_VERSION")
+
+    (release,) = upstream_releases.check(
+        {"SCIP_PYTHON_VERSION": "0.6.8"}, fetcher(documents), (component,)
+    )
+
+    assert (release.newest, release.newer) == ("v0.6.10", True)
+    assert release.url == "https://github.com/sourcegraph/scip-python/tree/v0.6.10"
+
+
+class _Response:
+    def __init__(self, status: int, headers: dict[str, str] | None = None) -> None:
+        self.status_code = status
+        self.headers = headers or {}
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+    def json(self) -> dict[str, str]:
+        return {"tag_name": "v1"}
+
+
+def test_a_rate_limited_request_is_retried_after_the_wait_the_api_names(monkeypatch) -> None:
+    import httpx
+
+    answers = [_Response(403, {"retry-after": "7"}), _Response(429), _Response(200)]
+    requests: list[dict[str, str]] = []
+    waits: list[float] = []
+
+    def get(url, headers, **_):
+        requests.append(headers)
+        return answers.pop(0)
+
+    monkeypatch.setattr(httpx, "get", get)
+    monkeypatch.setenv("GH_TOKEN", "workflow-token")
+
+    document = upstream_releases.fetch_json(f"{upstream_releases.GITHUB_API}/x", waits.append)
+
+    assert document == {"tag_name": "v1"}
+    assert waits == [7.0, 8.0]
+    assert requests[0]["Authorization"] == "Bearer workflow-token"
+
+
+def test_a_missing_document_raises_lookup_error_and_a_fragment_carries_the_bearer(
+    monkeypatch,
+) -> None:
+    import httpx
+
+    seen: list[tuple[str, dict[str, str]]] = []
+
+    def get(url, headers, **_):
+        seen.append((url, headers))
+        return _Response(404)
+
+    monkeypatch.setattr(httpx, "get", get)
+
+    with pytest.raises(LookupError):
+        upstream_releases.fetch_json("https://public.ecr.aws/v2/x/tags/list#anonymous")
+
+    assert seen == [
+        (
+            "https://public.ecr.aws/v2/x/tags/list",
+            {"Accept": "application/vnd.github+json", "Authorization": "Bearer anonymous"},
+        )
+    ]
