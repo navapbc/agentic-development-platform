@@ -18,7 +18,7 @@ bash /engine/bin/scan --against <base ref> --json-out <file>
 - The engine compares the checkout with the merge base of `--against` and `HEAD`, uncommitted and untracked files included, and writes its result to the `--json-out` file.
 - Exit status 0 means the engine ran, with or without findings, and 2 means it could not load its rules. The platform accepts 0 and 1 and treats any other status as an engine failure.
 - In a gate pod the engine runs as a non-root user with the checkout at `/workspace`, `git` ownership checks disabled, and no AWS identity or source-control token.
-- A `review-json` engine also receives the model gateway in `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`, and `AI_REVIEW_MODEL`, and the Langfuse headers of the run in `ANTHROPIC_CUSTOM_HEADERS`.
+- A `review-json` engine also receives the model gateway in `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`, and `AI_REVIEW_MODEL`, and the Langfuse headers of the run and the `x-litellm-tags` header that names its tenant in `ANTHROPIC_CUSTOM_HEADERS`, one `name: value` header per line.
 
 ## security-policy
 

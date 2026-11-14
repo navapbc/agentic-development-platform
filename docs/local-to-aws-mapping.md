@@ -57,6 +57,7 @@ These modules provision the shared AWS infrastructure the components above consu
 | Outbound destination filtering | Route 53 Resolver DNS Firewall allowlist with query logging | [dns-firewall](../infra/terraform/dns-firewall) |
 | Terraform state | Versioned, encrypted S3 bucket with S3 native locking | [tf-state](../infra/terraform/tf-state) through [bootstrap](../infra/terraform/bootstrap) |
 | Bucket access logging | S3 bucket receiving server access logs from every platform bucket | [access-logs](../infra/terraform/access-logs) through [bootstrap](../infra/terraform/bootstrap) |
+| Tenant cost attribution | The `tenant` tag on every tenant resource, activated once per payer account as a cost allocation tag in AWS Billing. Locally the tenant appears only in the LiteLLM spend logs, the Langfuse trace tags, and `inv cost-rollup --tenant` | [tenant](../infra/terraform/tenant), activation in [private-bedrock](../infra/terraform/examples/private-bedrock#cost-attribution) |
 
 ## Secret material
 

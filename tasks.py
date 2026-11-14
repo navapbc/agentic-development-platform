@@ -802,20 +802,31 @@ def context_eval(c, out=""):
     c.run(f"{HOST_PYTHON} -m services.repository_intelligence.eval.consolidate{flags}", pty=True)
 
 
-@task(help={"execution-id": "The execution id to roll up."})
-def cost_rollup(c, execution_id=""):
-    """Print the per-stage cost, token, and budget rollup for one execution."""
-    if not execution_id:
-        raise Exit("provide --execution-id")
-    c.run(f"{HOST_PYTHON} -m scripts.cost_rollup --execution-id {execution_id}", pty=True)
+def _usage_flags(execution_id: str, tenant: str) -> str:
+    flags = f" --execution-id {shlex.quote(execution_id)}" if execution_id else ""
+    return flags + (f" --tenant {shlex.quote(tenant)}" if tenant else "")
 
 
-@task(help={"execution-id": "The execution id to reconcile."})
-def reconcile_usage(c, execution_id=""):
-    """Reconcile an execution's Langfuse generations against its usage metrics."""
-    if not execution_id:
-        raise Exit("provide --execution-id")
-    c.run(f"{HOST_PYTHON} -m scripts.reconcile_usage --execution-id {execution_id}", pty=True)
+@task(
+    help={
+        "execution-id": "The execution id to roll up. Omit it to roll up every execution.",
+        "tenant": "Roll up only the executions recorded under this tenant.",
+    }
+)
+def cost_rollup(c, execution_id="", tenant=""):
+    """Print the cost, token, and budget rollup for one execution or per tenant."""
+    c.run(f"{HOST_PYTHON} -m scripts.cost_rollup{_usage_flags(execution_id, tenant)}", pty=True)
+
+
+@task(
+    help={
+        "execution-id": "The execution id to reconcile. Omit it to reconcile every execution.",
+        "tenant": "Reconcile only the executions recorded under this tenant.",
+    }
+)
+def reconcile_usage(c, execution_id="", tenant=""):
+    """Reconcile Langfuse generations against usage metrics per execution and tenant."""
+    c.run(f"{HOST_PYTHON} -m scripts.reconcile_usage{_usage_flags(execution_id, tenant)}", pty=True)
 
 
 @task

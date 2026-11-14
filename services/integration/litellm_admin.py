@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import httpx
+from observability.gateway import tenant_tag
 
 RUN_MODEL_BUDGET_EXCEEDED = "run_model_budget_exceeded"
 TENANT_MODEL_BUDGET_EXCEEDED = "tenant_model_budget_exceeded"
@@ -187,7 +188,7 @@ class LiteLLMAdminClient:
         team_id: str,
         max_budget: float,
         duration: str,
-        metadata: Mapping[str, str],
+        metadata: Mapping[str, Any],
     ) -> None:
         await self._request(
             "POST",
@@ -261,6 +262,11 @@ def derive_run_model_key(master_key: str, execution_id: str) -> str:
 
 def run_key_alias(execution_id: str) -> str:
     return f"run-{execution_id}"
+
+
+def run_key_metadata(tenant: str, execution_id: str) -> dict[str, Any]:
+    """The run key's metadata. LiteLLM merges the key's tags into every request the key makes."""
+    return {"tenant": tenant, "execution_id": execution_id, "tags": [tenant_tag(tenant)]}
 
 
 def tenant_team_limits(settings: Any) -> TeamLimits:
@@ -351,7 +357,7 @@ async def ensure_run_model_key(
             team_id=tenant,
             max_budget=resolved.run_model_budget_usd,
             duration=duration,
-            metadata={"tenant": tenant, "execution_id": execution_id},
+            metadata=run_key_metadata(tenant, execution_id),
         )
     except LiteLLMAdminError as exc:
         # A concurrent activity of the same run issued the key first.

@@ -18,6 +18,8 @@ from adapters.interfaces.security_scanner import (
     ScanFinding,
     ScanTarget,
 )
+from observability import current_tenant, tenant_tag
+from observability.generation import GENERATION_NAME_HEADER, SESSION_HEADER, TAGS_HEADER
 
 from services.orchestration.gates.engine_source import (
     SARIF,
@@ -90,6 +92,7 @@ def _engine_env(
     execution_id: str = "",
     generation_name: str = "",
     model: str = "",
+    tenant: str = "",
 ) -> dict[str, str]:
     """The environment the engine harness reads, shared by the subprocess and pod paths.
 
@@ -98,7 +101,8 @@ def _engine_env(
     SARIF tool needs no gateway or model configuration. When an execution id is present, the
     ``langfuse_`` join headers are injected through the CLI's ``ANTHROPIC_CUSTOM_HEADERS`` so the
     engine's model calls group under the execution and its stage in Langfuse, the same headers the
-    platform stamps on its own calls to the gateway.
+    platform stamps on its own calls to the gateway. The tenant rides in the same variable as the
+    ``x-litellm-tags`` header, which tags each call with ``tenant:<tenant>``.
     """
     env = {"AI_REVIEW_SCM": "github"}
     if profile:
@@ -117,10 +121,14 @@ def _engine_env(
         )
         if config.tool == "claude" and config.max_output_tokens > 0:
             env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(config.max_output_tokens)
+        headers: list[str] = []
         if execution_id:
-            headers = [f"langfuse_session_id: {execution_id}"]
+            headers.append(f"{SESSION_HEADER}: {execution_id}")
             if generation_name:
-                headers.append(f"langfuse_generation_name: {generation_name}")
+                headers.append(f"{GENERATION_NAME_HEADER}: {generation_name}")
+        if tenant:
+            headers.append(f"{TAGS_HEADER}: {tenant_tag(tenant)}")
+        if headers:
             env["ANTHROPIC_CUSTOM_HEADERS"] = "\n".join(headers)
     return env
 
@@ -241,6 +249,7 @@ class AiReviewScanner:
             execution_id=target.execution_id,
             generation_name=self._name,
             model=self._review_model,
+            tenant=current_tenant(),
         )
         against = target.base_ref or target.ref
         if self._pod_runner is not None:
@@ -429,6 +438,7 @@ class AiTestClassifier:
             gateway_api_key=self._litellm_api_key,
             execution_id=target.execution_id,
             generation_name=self._name,
+            tenant=current_tenant(),
         )
         payload = await _run_engine_json(
             name=self._name,

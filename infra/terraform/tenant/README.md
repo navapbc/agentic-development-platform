@@ -11,7 +11,7 @@ Reusable module that provisions the AWS resources of one tenant of a shared depl
 - With `config_publisher`, a publisher role trusted by the workflows of one GitHub repository on `allowed_refs` through the account's GitHub OIDC provider. It lists, writes, and deletes `tenants/<tenant>/` of the config store, without reading another object, and creates and pushes repositories under the tenant's image prefix.
 - A rebar ticket store through the [rebar-ticket-store](../rebar-ticket-store) module, in a bucket named `<tenant>-rebar-tickets-<suffix>`, whose reader and writer roles trust the worker and `ticket_store.operators`.
 
-Every resource carries a `tenant` tag, which a deployment activates as a cost allocation tag to split the bill by tenant.
+Every resource carries a `tenant` tag, which a deployment activates as a cost allocation tag to split the bill by tenant, as [Cost attribution](../examples/private-bedrock/README.md#cost-attribution) describes.
 
 ## Names
 

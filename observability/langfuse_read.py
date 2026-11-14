@@ -2,15 +2,21 @@
 
 The v4 events_only deployment disables the legacy trace and session read
 endpoints. The Observations API v2 stays available in that mode and returns per
-generation usage and cost, so reconciliation reads the generations from it and
-selects the ones whose session matches the execution.
+generation usage and cost, so reconciliation reads the generations of each
+execution session from it with a server side session filter.
 """
 
 from __future__ import annotations
 
+import json
+from collections.abc import Callable, Collection
+from dataclasses import dataclass
 from typing import Any
 
 _ENDPOINT = "/api/public/v2/observations"
+_PAGE_LIMIT = 50
+# The API returns only the core field group unless asked, which carries no usage, cost, or model.
+_FIELDS = "core,basic,usage,model"
 
 
 def generation_usage(observation: dict[str, Any]) -> dict[str, float]:
@@ -51,27 +57,75 @@ def generation_row(observation: dict[str, Any]) -> dict[str, Any]:
     return row
 
 
-def _iter_session_observations(
+def observation_params(session_id: str = "") -> dict[str, Any]:
+    """The Observations API query for generations, narrowed server side to one session.
+
+    The ``filter`` parameter takes precedence over the simple query parameters, so the
+    session filter repeats the generation type condition.
+    """
+    params: dict[str, Any] = {"type": "GENERATION", "limit": _PAGE_LIMIT, "fields": _FIELDS}
+    if session_id:
+        params["filter"] = json.dumps(
+            [
+                {"type": "string", "column": "type", "operator": "=", "value": "GENERATION"},
+                {"type": "string", "column": "sessionId", "operator": "=", "value": session_id},
+            ]
+        )
+    return params
+
+
+def _iter_observations(
     *,
     client: Any,
-    session_id: str,
     page_cap: int,
-) -> list[dict[str, Any]]:
+    keep: Callable[[dict[str, Any]], bool],
+    session_id: str = "",
+) -> tuple[list[dict[str, Any]], bool]:
+    """Return the kept observations and whether the read reached the last page."""
     observations: list[dict[str, Any]] = []
     cursor: str | None = None
     for _ in range(page_cap):
-        params: dict[str, Any] = {"type": "GENERATION", "limit": 50}
+        params = observation_params(session_id)
         if cursor:
             params["cursor"] = cursor
         response = client.get(_ENDPOINT, params=params)
         response.raise_for_status()
         body = response.json()
         data = body.get("data") or []
-        observations.extend(item for item in data if item.get("sessionId") == session_id)
+        observations.extend(item for item in data if keep(item))
         cursor = (body.get("meta") or {}).get("cursor")
         if not cursor or not data:
-            break
-    return observations
+            return observations, True
+    return observations, False
+
+
+def _client(host: str, public_key: str, secret_key: str, timeout: float) -> Any:
+    import httpx
+
+    return httpx.Client(base_url=host.rstrip("/"), timeout=timeout, auth=(public_key, secret_key))
+
+
+def _read_session(
+    *,
+    host: str,
+    public_key: str,
+    secret_key: str,
+    timeout: float,
+    page_cap: int,
+    client: Any | None,
+    session_id: str,
+) -> tuple[list[dict[str, Any]], bool]:
+    session = client or _client(host, public_key, secret_key, timeout)
+    try:
+        return _iter_observations(
+            client=session,
+            page_cap=page_cap,
+            keep=lambda item: item.get("sessionId") == session_id,
+            session_id=session_id,
+        )
+    finally:
+        if client is None:
+            session.close()
 
 
 def fetch_session_generations(
@@ -85,20 +139,15 @@ def fetch_session_generations(
     client: Any | None = None,
 ) -> list[dict[str, float]]:
     """Return the per-generation usage for one execution session from Langfuse."""
-    import httpx
-
-    owns_client = client is None
-    if owns_client:
-        client = httpx.Client(
-            base_url=host.rstrip("/"), timeout=timeout, auth=(public_key, secret_key)
-        )
-    try:
-        observations = _iter_session_observations(
-            client=client, session_id=session_id, page_cap=page_cap
-        )
-    finally:
-        if owns_client:
-            client.close()
+    observations, _complete = _read_session(
+        host=host,
+        public_key=public_key,
+        secret_key=secret_key,
+        timeout=timeout,
+        page_cap=page_cap,
+        client=client,
+        session_id=session_id,
+    )
     return [generation_usage(observation) for observation in observations]
 
 
@@ -113,18 +162,59 @@ def fetch_session_generation_rows(
     client: Any | None = None,
 ) -> list[dict[str, Any]]:
     """Return the per-generation usage with stage and model for one execution session."""
-    import httpx
-
-    owns_client = client is None
-    if owns_client:
-        client = httpx.Client(
-            base_url=host.rstrip("/"), timeout=timeout, auth=(public_key, secret_key)
-        )
-    try:
-        observations = _iter_session_observations(
-            client=client, session_id=session_id, page_cap=page_cap
-        )
-    finally:
-        if owns_client:
-            client.close()
+    observations, _complete = _read_session(
+        host=host,
+        public_key=public_key,
+        secret_key=secret_key,
+        timeout=timeout,
+        page_cap=page_cap,
+        client=client,
+        session_id=session_id,
+    )
     return [generation_row(observation) for observation in observations]
+
+
+@dataclass(frozen=True)
+class SessionGenerations:
+    """The generation rows of several sessions, and the sessions whose read stopped early.
+
+    A session in ``incomplete`` had more pages than the page cap allows, so its rows are a
+    prefix of its generations and cannot be compared against recorded usage.
+    """
+
+    rows: dict[str, list[dict[str, Any]]]
+    incomplete: frozenset[str]
+
+
+def fetch_generation_rows_by_session(
+    *,
+    host: str,
+    public_key: str,
+    secret_key: str,
+    session_ids: Collection[str],
+    timeout: float = 15.0,
+    page_cap: int = 200,
+    client: Any | None = None,
+) -> SessionGenerations:
+    """Return the per-generation rows of several execution sessions, one filtered read each."""
+    session = client or _client(host, public_key, secret_key, timeout)
+    rows: dict[str, list[dict[str, Any]]] = {}
+    incomplete: set[str] = set()
+    try:
+        for session_id in sorted(set(session_ids)):
+            observations, complete = _read_session(
+                host=host,
+                public_key=public_key,
+                secret_key=secret_key,
+                timeout=timeout,
+                page_cap=page_cap,
+                client=session,
+                session_id=session_id,
+            )
+            rows[session_id] = [generation_row(observation) for observation in observations]
+            if not complete:
+                incomplete.add(session_id)
+    finally:
+        if client is None:
+            session.close()
+    return SessionGenerations(rows=rows, incomplete=frozenset(incomplete))

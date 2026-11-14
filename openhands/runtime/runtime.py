@@ -5,6 +5,7 @@ from __future__ import annotations
 import secrets
 from dataclasses import dataclass, replace
 
+from observability.context import current_tenant
 from openhands.runtime.caps import RuntimeCaps
 from openhands.runtime.conversation import ConversationDriver, ImplementationOutcome
 from openhands.runtime.provisioner import SandboxProvisioner, SandboxSpec, WorkspaceBinding
@@ -75,6 +76,9 @@ class SandboxRuntime:
         metadata = {"execution_id": execution_id, "stage": "implementing"}
         if task_id:
             metadata["ticket"] = task_id
+        tenant = current_tenant()
+        if tenant:
+            metadata["tenant"] = tenant
         project_dir = f"{self.workspace_mount_path.rstrip('/')}/project" if binding else ""
         handle = await self.provisioner.provision(spec)
         try:

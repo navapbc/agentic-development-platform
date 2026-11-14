@@ -151,6 +151,17 @@ A tenant's `model_limits` sets the LiteLLM limits its runs work under. The worke
 
 The EKS deploy renders, for each tenant, the `tenant-<tenant>` namespace with the tenant's activity worker, its secret provider, its ticket store profiles, and its workspace claim at `/tenants/<tenant>`, and the `tenant-<tenant>-sandbox` namespace with the agent, gate, checks, and scanner pod permissions. The review worker mounts the `/tenants` root read-only at the same path, so it reads each tenant's checkouts where the tenant's worker wrote them. Each tenant's worker installs its own intake and reap schedules on its task queue, `agent-platform-<tenant>`, when it starts, and the `schedule-bootstrap` task removes the schedules of a deployment without tenants.
 
+### Cost attribution
+
+The tenant module tags each resource it creates with `tenant = <tenant>`, and the root tags each tenant's workspace access point the same way. AWS Billing splits the bill by that tag only after the tag is activated as a cost allocation tag, once per payer account. The tag key appears in the Billing console only after a tagged resource exists, and a newly activated tag can take up to 24 hours to appear in Cost Explorer and the Cost and Usage Report. Activation applies from that point forward and does not tag earlier usage.
+
+1. Apply the root with at least one tenant, so the `tenant` tag key exists on a resource.
+2. Activate the key from the payer account with `aws ce update-cost-allocation-tags-status --cost-allocation-tags-status TagKey=tenant,Status=Active`, or under Billing and Cost Management, Cost allocation tags, User-defined cost allocation tags.
+3. Confirm it with `aws ce list-cost-allocation-tags --tag-keys tenant --type UserDefined`, which reports `Status` as `Active`.
+4. Group Cost Explorer or the Cost and Usage Report by the `tenant` tag.
+
+The tag splits the tenant's own resources, which are its key, secrets, image repositories, ticket store bucket, and workspace access point. Model spend does not carry it, because LiteLLM calls Bedrock under one role for every tenant. LiteLLM attributes model spend to the tenant instead, through the tenant's team and the `tenant:<tenant>` tag on every request, and `inv cost-rollup --tenant <tenant>` reports a tenant's recorded model spend per execution.
+
 ### Image governance
 
 The root writes `image_policy.yaml` into the platform config the EKS deploy renders. It admits the catalog repositories, each tenant's prefix under `<name_prefix>/tenants/<tenant>/`, the pull-through caches, and `image_policy_registries`, and each tenant's sandbox namespace receives the same list for its admission policy. It also creates an AWS Signer profile for the platform, whose ARN the `image_signing_profile_arn` output names, and one per tenant, which only the tenant's publisher role may sign with.

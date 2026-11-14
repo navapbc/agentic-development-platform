@@ -138,7 +138,11 @@ async def test_a_new_run_key_is_issued_under_the_tenant_team(server, client):
     assert issued["key_alias"] == "run-exec-1"
     assert issued["max_budget"] == 4.5
     assert issued["duration"] == "3600s"
-    assert issued["metadata"] == {"tenant": "acme", "execution_id": "exec-1"}
+    assert issued["metadata"] == {
+        "tenant": "acme",
+        "execution_id": "exec-1",
+        "tags": ["tenant:acme"],
+    }
     assert server.teams["acme"]["team_alias"] == "acme"
 
 

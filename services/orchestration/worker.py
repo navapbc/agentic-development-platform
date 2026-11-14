@@ -206,12 +206,13 @@ def build_worker(client: Client, task_queue: str, role: str) -> Worker:
             interceptors=[heartbeat],
             **versioning,
         )
+    attribution = _tenant_attribution(role, settings)
     if role == WORKER_ROLE_ACTIVITY:
         return Worker(
             client,
             task_queue=task_queue,
             activities=_ACTIVITIES,
-            interceptors=[heartbeat, *_tenant_interceptors()],
+            interceptors=[heartbeat, attribution, *_tenant_interceptors()],
             **versioning,
         )
     if role == WORKER_ROLE_REVIEW:
@@ -219,7 +220,7 @@ def build_worker(client: Client, task_queue: str, role: str) -> Worker:
             client,
             task_queue=task_queue,
             activities=_REVIEW_ACTIVITIES,
-            interceptors=[heartbeat],
+            interceptors=[heartbeat, attribution],
             **versioning,
         )
     return Worker(
@@ -228,9 +229,20 @@ def build_worker(client: Client, task_queue: str, role: str) -> Worker:
         workflows=_WORKFLOWS,
         activities=_all_activities(),
         workflow_runner=runner,
-        interceptors=[heartbeat, *_tenant_interceptors()],
+        interceptors=[heartbeat, attribution, *_tenant_interceptors()],
         **versioning,
     )
+
+
+def _tenant_attribution(role: str, settings: Any) -> Any:
+    from services.orchestration.tenant_attribution import (
+        TenantAttributionInterceptor,
+        recorded_execution_tenant,
+    )
+
+    if role == WORKER_ROLE_REVIEW:
+        return TenantAttributionInterceptor(lookup=recorded_execution_tenant)
+    return TenantAttributionInterceptor(settings.tenant)
 
 
 def _tenant_interceptors() -> list[Any]:

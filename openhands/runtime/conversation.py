@@ -7,6 +7,7 @@ import threading
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
+from observability.gateway import tenant_tag
 from openhands.runtime.caps import (
     COMPLETED,
     ERROR,
@@ -208,7 +209,8 @@ def _coding_extra_body(metadata: dict[str, str] | None) -> dict[str, object]:
 
     The Bedrock ``requestMetadata`` carries the AWS-side attribution. The LiteLLM
     ``metadata`` carries the Langfuse join keys, so the coding generation groups
-    under the execution session with its stage and prompt version.
+    under the execution session with its stage and prompt version, and the tenant
+    tag, which LiteLLM records with the request and Langfuse stores as a trace tag.
     """
     if not metadata:
         return {}
@@ -221,10 +223,11 @@ def _coding_extra_body(metadata: dict[str, str] | None) -> dict[str, object]:
     version = _coding_agent_version()
     if version:
         join["version"] = version
-    if metadata.get("execution_id") or metadata.get("ticket"):
-        join["trace_metadata"] = {
-            key: metadata[key] for key in ("execution_id", "ticket") if metadata.get(key)
-        }
+    trace_keys = ("execution_id", "ticket", "tenant")
+    if any(metadata.get(key) for key in trace_keys):
+        join["trace_metadata"] = {key: metadata[key] for key in trace_keys if metadata.get(key)}
+    if metadata.get("tenant"):
+        join["tags"] = [tenant_tag(metadata["tenant"])]
     if join:
         extra_body["metadata"] = join
     return extra_body

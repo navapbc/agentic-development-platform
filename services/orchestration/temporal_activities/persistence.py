@@ -9,7 +9,7 @@ from database.engine import shared_platform_engine
 from database.models.schema import audit_events, executions, usage_metrics
 from observability import record_stage_cost, record_stage_latency
 from scripts.config import get_settings
-from sqlalchemy import func
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncEngine
 from temporalio import activity
@@ -68,6 +68,18 @@ async def persist_execution_state(payload: ExecutionState) -> str:
     async with engine.begin() as conn:
         await conn.execute(stmt)
     return payload.execution_id
+
+
+async def execution_tenant(execution_id: str, engine: AsyncEngine | None = None) -> str:
+    """Return the tenant the execution record names, or an empty string without one."""
+    resolved = engine or _get_engine()
+    async with resolved.connect() as conn:
+        tenant = (
+            await conn.execute(
+                select(executions.c.tenant).where(executions.c.execution_id == execution_id)
+            )
+        ).scalar_one_or_none()
+    return str(tenant or "")
 
 
 @dataclass
