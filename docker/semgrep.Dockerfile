@@ -12,9 +12,15 @@ FROM ${AL2023_IMAGE}
 ARG AL2023_RELEASE=2023.12.20261112
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 RUN dnf -y --releasever="${AL2023_RELEASE}" upgrade \
- && dnf -y --releasever="${AL2023_RELEASE}" install python3.13 git \
+ && dnf -y --releasever="${AL2023_RELEASE}" install python3.13 git shadow-utils \
+ && groupadd --gid 10001 semgrep \
+ && useradd --uid 10001 --gid 10001 --create-home --home-dir /home/semgrep --shell /sbin/nologin semgrep \
+ && dnf -y remove shadow-utils \
  && dnf clean all \
  && rm -rf /var/cache/dnf
+# The scanner pod copies the workspace in owned by root. Without a safe.directory entry, git refuses
+# that repository for the semgrep user, and semgrep then scans the files .gitignore excludes.
+RUN git config --system --add safe.directory '*'
 COPY docker/semgrep/requirements.txt /tmp/semgrep-requirements.txt
 RUN --mount=from=uv,source=/uv,target=/usr/local/bin/uv \
     uv venv --quiet --python /usr/bin/python3.13 /opt/semgrep \
@@ -24,4 +30,5 @@ RUN --mount=from=uv,source=/uv,target=/usr/local/bin/uv \
  && ln -s /opt/semgrep/bin/pysemgrep /usr/local/bin/pysemgrep
 WORKDIR /src
 RUN cis-harden
+USER 10001:10001
 CMD ["semgrep", "--help"]

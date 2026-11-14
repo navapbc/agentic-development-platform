@@ -27,8 +27,13 @@ RUN schema="$(python -c 'import litellm, os; print(os.path.join(os.path.dirname(
 FROM ${AL2023_IMAGE}
 ARG AL2023_RELEASE=2023.12.20261112
 LABEL org.opencontainers.image.licenses="MIT"
+# The Prisma client runs the openssl command to pick its query engine, and without it LiteLLM
+# cannot open its database.
 RUN dnf -y --releasever="${AL2023_RELEASE}" upgrade \
- && dnf -y --releasever="${AL2023_RELEASE}" install bash python3.13 nodejs24 libsndfile tzdata \
+ && dnf -y --releasever="${AL2023_RELEASE}" install bash python3.13 nodejs24 libsndfile openssl tzdata shadow-utils \
+ && groupadd --gid 10001 litellm \
+ && useradd --uid 10001 --gid 10001 --create-home --home-dir /home/litellm --shell /sbin/nologin litellm \
+ && dnf -y remove shadow-utils \
  && dnf clean all \
  && rm -rf /var/cache/dnf
 WORKDIR /app
@@ -41,7 +46,11 @@ COPY --from=build /app /app
 COPY --from=build /opt/prisma /opt/prisma
 COPY --chmod=0555 docker/litellm/prod_entrypoint.sh /app/docker/prod_entrypoint.sh
 RUN chmod -R a+rX /opt/prisma
+ARG RDS_CA_BUNDLE_URL=https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
+ARG RDS_CA_BUNDLE_SHA256=90a6f1a7978a1b1b096dca6c57511ca48d3b8cf052f8e704baf358f34ea2f21b
+ADD --checksum=sha256:${RDS_CA_BUNDLE_SHA256} --chmod=0444 ${RDS_CA_BUNDLE_URL} /etc/ssl/rds-global-bundle.pem
 EXPOSE 4000/tcp
 RUN cis-harden
+USER 10001:10001
 ENTRYPOINT ["docker/prod_entrypoint.sh"]
 CMD ["--port", "4000"]

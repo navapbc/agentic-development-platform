@@ -48,8 +48,13 @@ FROM ${AL2023_IMAGE}
 ARG AL2023_RELEASE=2023.12.20261112
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 RUN dnf -y --releasever="${AL2023_RELEASE}" upgrade \
+ && dnf -y --releasever="${AL2023_RELEASE}" install shadow-utils \
+ && groupadd --gid 10001 trivy \
+ && useradd --uid 10001 --gid 10001 --create-home --home-dir /home/trivy --shell /sbin/nologin trivy \
+ && dnf -y remove shadow-utils \
  && dnf clean all \
  && rm -rf /var/cache/dnf
 COPY --from=trivy /out/trivy /usr/local/bin/trivy
 RUN cis-harden
+USER 10001:10001
 ENTRYPOINT ["/usr/local/bin/trivy"]

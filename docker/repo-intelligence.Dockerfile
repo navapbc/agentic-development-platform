@@ -67,8 +67,8 @@ FROM go AS zoekt
 ARG ZOEKT_COMMIT=2cb19912a4073e5a9895658b7cb135ee4b35733b
 ARG ZOEKT_GO_GET=golang.org/x/net@v0.62.0,google.golang.org/grpc@v1.83.2
 # zoekt publishes no releases, so the pin is a commit.
-RUN git init --quiet /src \
- && cd /src \
+WORKDIR /src
+RUN git init --quiet \
  && git fetch --quiet --depth 1 https://github.com/sourcegraph/zoekt "${ZOEKT_COMMIT}" \
  && git checkout --quiet FETCH_HEAD \
  && GOFLAGS=-mod=mod go get $(printf '%s' "${ZOEKT_GO_GET}" | tr , ' ') \

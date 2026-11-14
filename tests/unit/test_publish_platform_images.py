@@ -99,15 +99,15 @@ def test_a_base_image_without_a_digest_is_refused() -> None:
         publisher.base_image_version("FROM openpolicyagent/opa:1.20.1\n", "openpolicyagent/opa")
 
 
-def test_the_platform_image_pins_the_rds_ca_bundle_the_temporal_images_pin() -> None:
+def test_the_platform_and_litellm_images_pin_the_rds_ca_bundle_the_temporal_images_pin() -> None:
     def checksum(path: str) -> str:
         text = (REPO_ROOT / path).read_text(encoding="utf-8")
         return re.search(r"^ARG RDS_CA_BUNDLE_SHA256=([0-9a-f]{64})$", text, re.M).group(1)
 
-    platform = (REPO_ROOT / "docker/Dockerfile").read_text(encoding="utf-8")
-
-    assert "ADD --checksum=sha256:${RDS_CA_BUNDLE_SHA256} --chmod=0444" in platform
-    assert checksum("docker/Dockerfile") == checksum("docker/temporal.Dockerfile")
+    for path in ("docker/Dockerfile", "docker/litellm.Dockerfile"):
+        text = (REPO_ROOT / path).read_text(encoding="utf-8")
+        assert "ADD --checksum=sha256:${RDS_CA_BUNDLE_SHA256} --chmod=0444" in text
+        assert checksum(path) == checksum("docker/temporal.Dockerfile")
 
 
 def test_the_source_hash_follows_the_architecture() -> None:

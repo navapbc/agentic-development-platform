@@ -28,6 +28,7 @@ RUN for tool in server client keeper local format compressor extract-from-config
  && chown clickhouse:clickhouse /var/lib/clickhouse /var/log/clickhouse-server \
  && chmod 0777 /var/lib/clickhouse
 RUN cis-harden
+USER 101:101
 ENV LANG=en_US.UTF-8 \
     TZ=UTC \
     CLICKHOUSE_CONFIG=/etc/clickhouse-server/config.xml
