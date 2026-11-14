@@ -61,18 +61,18 @@ Goal. The platform is technically FedRAMP Medium ready. It has documented local-
 | Platform ECS cluster | 3-5h | Jira ADP-145. The shared cluster the platform owns for the Temporal control plane, the ECS services, and other teams. |
 | Temporal control plane terraform | 15-21h | Jira ADP-97. [plan](docs/plans/2026-09-14-2152-feat-temporal-control-plane-terraform-plan.md) |
 | Off-hours Temporal scale-down and database pause | 5-8h | Jira ADP-146 |
-| Validated Go FIPS 140-3 module for the Temporal server and UI | Counted in ADP-180 | Jira ADP-153, folded into ADP-180. Builds the server, admin-tools, and UI binaries from source with `GOFIPS140` set to a CMVP-validated module version. |
-| Observability terraform | 6-10h | Jira ADP-95. [plan](docs/plans/2026-09-14-2153-feat-observability-terraform-plan.md) |
+| Validated Go FIPS 140-3 module for the Temporal server and UI | Counted in ADP-180 | Jira ADP-153, delivered by ADP-180. Builds the server, admin-tools, and UI binaries from source with `GOFIPS140` set to a CMVP-validated module version. |
+| Observability terraform | 3-5h | Jira ADP-95. Adds Managed Grafana and a query role on the Prometheus workspace that ADP-158 provisions. [plan](docs/plans/2026-09-14-2153-feat-observability-terraform-plan.md) |
 | Source control repositories in one per-environment file | 8-12h | Jira ADP-161. Moves the repository list into `config/<env>/repositories.yaml` and selects GitHub or a local repository per repository. |
 | Activity worker, review worker, LiteLLM, and OPA in the local cluster | 16-24h | Jira ADP-139, after ADP-161. Moves data in and out of the cluster through `inv` tasks over the Kubernetes API with no host mounts, and refreshes AWS credentials in place through `inv aws-login`. Also removes `langgraph-service`. |
-| Private-endpoint jump-host residual hardening | 1-2h | Jira ADP-104. [plan](docs/plans/2026-09-14-1900-feat-jumphost-residual-hardening-plan.md) |
+| Private-endpoint jump-host residual hardening | 2-4h | Jira ADP-104. Publishes the jump-host image through the Inspector and CIS scans and reviews its roles for least privilege. [plan](docs/plans/2026-09-14-1900-feat-jumphost-residual-hardening-plan.md) |
 | Full evidence artifact coverage | 4-6h | [plan](docs/plans/2026-09-14-1901-feat-full-evidence-artifact-coverage-plan.md) |
 | Remaining connectivity and sandbox confirmations | 3-6h (low) | Jira ADP-92. [plan](docs/plans/2026-09-14-1902-feat-connectivity-sandbox-confirmations-plan.md) |
 | MCP gateway client authentication | 3-5h | Jira ADP-140 |
 | Leaked OpenHands sandbox pods | 3-5h | Jira ADP-141 |
 | Slack escalation channel with approve, reject, retry, and abandon actions | 28-42h (low) | Jira ADP-160. [plan](docs/plans/2026-11-06-1000-feat-slack-escalation-channel-plan.md) |
 
-Version effort. 455-668h.
+Version effort. 453-665h.
 
 ## v0.4.0 Production serving and demo readiness
 
