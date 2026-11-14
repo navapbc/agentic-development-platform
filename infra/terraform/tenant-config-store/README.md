@@ -6,12 +6,16 @@ Reusable module that provisions the bucket that holds each tenant's config bundl
 
 - A bucket named `<name_prefix>-tenant-config-<suffix>` with bucket-owner-enforced ownership, a public-access block, versioning, and server access logging to `access_log_bucket`.
 - SSE-KMS under a dedicated customer managed key with yearly automatic rotation and an S3 Bucket Key. The key policy names only the account, and the tenant roles receive the key through IAM policies limited to the S3 service, so the key policy holds no role that may not exist yet.
+- The platform finding exceptions file `platform/image_exceptions.yaml`, created once as `config_version: 1` with `exceptions: []`. The object ignores later changes to its content, so an apply never overwrites the entries the `image-exception` workflow and the daily review write with conditional puts.
+- When `publish_image_policy` is true, `platform/image_policy.yaml` with the content of `image_policy`, which the exception writers outside the cluster read to check the scope of each entry.
+- An IAM policy, output as `platform_exceptions_read_policy_arn`, that reads `platform/image_exceptions.yaml` for each tenant worker's pull gate.
 - A lifecycle rule that keeps replaced versions for `noncurrent_version_retention_days`, 365 by default, which is how far back a tenant's config history reaches in the bucket, and expires abandoned multipart uploads after 7 days.
 - A bucket policy that denies the following.
   - Any request without TLS, and any request below TLS 1.2.
-  - Any object written outside `tenants/`.
+  - Any object written outside `tenants/` and the two platform keys.
   - A write or delete under a tenant's prefix by a principal other than that tenant's `publishers` and `admin_principals`.
-  - A read under a tenant's prefix by a principal other than that tenant's `readers`, `publishers`, and `admin_principals`, so one tenant's worker cannot read another tenant's bundle even with a broader IAM policy.
+  - A read under a tenant's prefix by a principal other than that tenant's `readers`, `publishers`, `admin_principals`, and the `exception_reviewers`, so one tenant's worker cannot read another tenant's bundle even with a broader IAM policy.
+  - A read by an `exception_reviewers` principal of any object other than `tenants/<tenant>/image_exceptions.yaml` and the `platform/` keys.
   - Any upload that names an encryption other than SSE-KMS, or a KMS key other than the bucket key.
 
 The tenant principals appear only in policy conditions, so the bucket can be created before the roles. The [tenant](../tenant) module grants each tenant's worker and publisher the matching IAM permissions.

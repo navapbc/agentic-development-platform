@@ -17,14 +17,6 @@ from services.integration.tickets import (
 )
 
 
-@pytest.fixture(autouse=True)
-def _no_acli_auth(monkeypatch):
-    monkeypatch.setattr(
-        "services.integration.jira.adapter.ensure_acli_authenticated_cached",
-        lambda *args, **kwargs: False,
-    )
-
-
 def _resolver(mode: str = "cloud") -> JiraCredentialResolver:
     return build_single_project_resolver(
         url="https://jira.example",

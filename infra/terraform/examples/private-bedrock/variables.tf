@@ -474,7 +474,7 @@ variable "eks_gate_engine_images" {
 }
 
 variable "eks_runtime_images" {
-  description = "Image of each catalog sandbox image beside the agent-server image, agent-server-jvm and agent-server-go, by catalog name, for RUNTIME_IMAGES, which runtime profiles name as catalog:<name>. inv publish-platform-images writes it to images.auto.tfvars.json."
+  description = "Image of each catalog image beside the agent-server image, the agent-server-jvm and agent-server-go sandbox images and the checks-python, checks-node, checks-jvm, and checks-go checks images, by catalog name, for RUNTIME_IMAGES, which runtime profiles name as catalog:<name>. inv publish-platform-images writes it to images.auto.tfvars.json."
   type        = map(string)
   default     = {}
 }
@@ -528,7 +528,7 @@ variable "container_environment" {
 }
 
 variable "container_config_dir" {
-  description = "Directory outside the repository holding the environment's config files, such as tickets.yaml, which the tasks receive. Empty sends none."
+  description = "Directory outside the repository holding the environment's config files, such as tickets.yaml, which the tasks receive. Empty sends none. The plan fails when it holds image_exceptions.yaml, because platform finding exceptions live in the tenant config bucket and are added through the image-exception workflow."
   type        = string
   default     = ""
 }
@@ -836,7 +836,7 @@ variable "container_platform_settings" {
 }
 
 variable "image_scanning_enabled" {
-  description = "Turn on Amazon Inspector enhanced scanning for every ECR repository in the account and region, and refuse a tenant pod image that Inspector has not scanned or that carries an active finding at image_finding_severity or above, unless image_exceptions.yaml in container_config_dir accepts it. Enhanced scanning is an account setting, billed per image scanned."
+  description = "Turn on Amazon Inspector enhanced scanning for every ECR repository in the account and region, and refuse a tenant pod image that Inspector has not scanned or that carries an active finding at image_finding_severity or above, unless an entry of platform/image_exceptions.yaml or the tenant's bundle image_exceptions.yaml in the tenant config bucket accepts it. Enhanced scanning is an account setting, billed per image scanned."
   type        = bool
   default     = false
 }

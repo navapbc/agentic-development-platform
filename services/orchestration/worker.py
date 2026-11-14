@@ -239,34 +239,6 @@ def _tenant_interceptors() -> list[Any]:
     return [] if config is None else [TenantConfigInterceptor(config)]
 
 
-def _warm_acli_auth(settings) -> None:
-    """Authenticate the cloud Jira acli client once at worker startup.
-
-    The acli credential lives in an ephemeral container path that an image
-    rebuild or task replacement discards, so ticket activities re-authenticate
-    from the configured credential here rather than failing on first use.
-    """
-    from services.integration.jira.acli_auth import ensure_acli_authenticated
-    from services.integration.jira.credentials import (
-        CLOUD,
-        build_jira_credential_resolver,
-    )
-    from services.integration.tickets import JIRA, resolve_ticket_backend_name
-
-    if resolve_ticket_backend_name(settings) != JIRA:
-        return
-    try:
-        resolver = build_jira_credential_resolver(settings)
-        for project in sorted(resolver.projects()):
-            cred = resolver.resolve(project)
-            if cred is not None and cred.auth_mode == CLOUD:
-                ensure_acli_authenticated(cred, acli_path=settings.jira_acli_path)
-                log.info("acli authenticated for cloud Jira at startup")
-                return
-    except Exception as exc:  # noqa: BLE001
-        log.warning("acli startup authentication skipped: %s", exc)
-
-
 async def _scrub_workspace_credentials(workspace_root: str) -> None:
     """Clear the credential releases before the per-invocation helper left in every checkout.
 
@@ -300,7 +272,6 @@ async def main() -> None:
     configure_logging(service_name)
     instrument_llm_tracing()
     install_litellm_header_propagation(settings.rebar_llm_base_url)
-    _warm_acli_auth(settings)
     from scripts.aws_clients import configure_aws_fips
 
     configure_aws_fips(settings)

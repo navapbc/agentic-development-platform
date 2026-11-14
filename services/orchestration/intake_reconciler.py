@@ -127,6 +127,8 @@ class IntakeBaseResolver(Protocol):
 class IntakeExecutionSeeder(Protocol):
     async def seed(self, *, execution_id: str, task_id: str, repo: str) -> None: ...
 
+    async def abandon(self, *, execution_id: str, reason: str) -> None: ...
+
 
 class IntakeActiveGuard(Protocol):
     async def active_workflow(self, *, issue_key: str, repo: str) -> str | None: ...
@@ -415,38 +417,46 @@ async def _start(
     async def _launch() -> dict[str, str]:
         execution_id = f"intake-{uuid.uuid4().hex[:8]}"
         await ctx.execution_seeder.seed(execution_id=execution_id, task_id=issue_key, repo=repo)
-        if candidate.source_backend in JIRA_SOURCES:
-            snapshot = await capture_task_snapshot(
-                candidate.raw,
-                execution_id=execution_id,
-                jira_source=candidate.source_backend,
-                settings=ctx.settings,
-                store=ctx.snapshot_store,
+        try:
+            if candidate.source_backend in JIRA_SOURCES:
+                snapshot = await capture_task_snapshot(
+                    candidate.raw,
+                    execution_id=execution_id,
+                    jira_source=candidate.source_backend,
+                    settings=ctx.settings,
+                    store=ctx.snapshot_store,
+                )
+            else:
+                snapshot = await capture_candidate_snapshot(
+                    candidate.stored_payload,
+                    execution_id=execution_id,
+                    task_id=issue_key,
+                    project=project,
+                    source=candidate.source_backend,
+                    store=ctx.snapshot_store,
+                )
+            workflow_id = await ctx.starter.start(
+                IntakeStart(
+                    task_id=issue_key,
+                    execution_id=execution_id,
+                    repo=repo,
+                    issue_key=issue_key,
+                    summary=candidate.summary,
+                    description=candidate.description,
+                    jira_project=project,
+                    stored_issue=candidate.stored_payload,
+                    base=base,
+                    snapshot_version=snapshot.version,
+                    file_impact=candidate.file_impact,
+                )
             )
-        else:
-            snapshot = await capture_candidate_snapshot(
-                candidate.stored_payload,
-                execution_id=execution_id,
-                task_id=issue_key,
-                project=project,
-                source=candidate.source_backend,
-                store=ctx.snapshot_store,
+        except BaseException as exc:
+            # The seeded row would otherwise read as an active run, and a retried pass would count
+            # the ticket as a duplicate and move past it.
+            await ctx.execution_seeder.abandon(
+                execution_id=execution_id, reason=f"intake start failed: {exc!r}"[:500]
             )
-        workflow_id = await ctx.starter.start(
-            IntakeStart(
-                task_id=issue_key,
-                execution_id=execution_id,
-                repo=repo,
-                issue_key=issue_key,
-                summary=candidate.summary,
-                description=candidate.description,
-                jira_project=project,
-                stored_issue=candidate.stored_payload,
-                base=base,
-                snapshot_version=snapshot.version,
-                file_impact=candidate.file_impact,
-            )
-        )
+            raise
         return {"workflow_id": workflow_id}
 
     try:

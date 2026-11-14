@@ -59,6 +59,27 @@ variable "signing_profile_arn" {
   default     = ""
 }
 
+variable "config_store" {
+  description = "The tenant config bucket and its KMS key. The publish role then prunes platform/image_exceptions.yaml and reads every tenant's image_exceptions.yaml for the daily review, and the image-exception role is created to write platform/image_exceptions.yaml. Null grants neither."
+  type = object({
+    bucket_arn  = string
+    kms_key_arn = string
+  })
+  default = null
+}
+
+variable "exception_environment" {
+  description = "The GitHub environment the image-exception workflow runs in. The image-exception role trusts only jobs of this environment, whose required reviewers approve each exception."
+  type        = string
+  default     = "image-exception"
+}
+
+variable "pull_repository_arns" {
+  description = "ECR repository ARNs the image-exception role may pull from to scan an image, besides repository_arns, such as the pull-through cache repositories."
+  type        = list(string)
+  default     = []
+}
+
 variable "tags" {
   description = "Tags applied to every resource."
   type        = map(string)

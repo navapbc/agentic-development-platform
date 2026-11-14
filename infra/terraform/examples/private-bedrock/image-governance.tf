@@ -13,6 +13,10 @@ locals {
     "openhands-agent-server",
     "agent-server-jvm",
     "agent-server-go",
+    "checks-python",
+    "checks-node",
+    "checks-jvm",
+    "checks-go",
     "buildah",
   ]
   image_catalog = [for name in local.image_catalog_repositories : "${local.registry_host}/${var.name_prefix}/${name}"]

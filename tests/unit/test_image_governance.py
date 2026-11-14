@@ -97,20 +97,29 @@ def test_a_tenant_mirror_may_not_point_into_another_tenants_prefix() -> None:
 
 
 def test_an_exception_needs_a_digest_and_an_expiry() -> None:
-    with pytest.raises(ConfigError, match="needs reason, expires"):
-        parse_exceptions({"exceptions": [{"image": f"python@{DIGEST}", "finding": "CVE-1"}]})
+    with pytest.raises(ConfigError, match="needs reason, created, expires"):
+        parse_exceptions(
+            {
+                "config_version": 1,
+                "exceptions": [{"image": f"python@{DIGEST}", "finding": "CVE-1"}],
+            },
+            scope="tenant",
+        )
     with pytest.raises(ConfigError, match="must carry an @sha256: digest"):
         parse_exceptions(
             {
+                "config_version": 1,
                 "exceptions": [
                     {
                         "image": "python:3",
                         "finding": "CVE-1",
                         "reason": "r",
+                        "created": "2026-12-15",
                         "expires": "2027-01-01",
                     }
-                ]
-            }
+                ],
+            },
+            scope="tenant",
         )
 
 
@@ -301,7 +310,7 @@ def test_the_trust_policy_file_is_the_one_the_pinned_notation_reads() -> None:
     from pathlib import Path
 
     dockerfile = (Path(__file__).resolve().parents[2] / "docker/buildah.Dockerfile").read_text()
-    version = re.search(r"^ARG NOTATION_VERSION=(\S+)$", dockerfile, re.M).group(1)
+    version = re.search(r"^ARG NOTATION_VERSION=v?(\S+)$", dockerfile, re.M).group(1)
 
     # notation 1.3 reads trustpolicy.json and ignores trustpolicy.oci.json, so upgrading notation
     # means confirming which file the new release reads and changing TRUST_POLICY_FILE with it.

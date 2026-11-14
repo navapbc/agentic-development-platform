@@ -37,6 +37,6 @@ echo "[publish] target ${image} for ${platform}" >&2
 
 aws ecr get-login-password --region "$region" | docker login --username AWS --password-stdin "$registry"
 
-docker buildx build --platform "$platform" --provenance=false --sbom=false --build-context repo="$repo_root" ${base_image:+--build-arg BASE_IMAGE="$base_image"} -t "$image" --push "$context_dir"
+docker buildx build --platform "$platform" --provenance=false --sbom=false --build-context repo="$repo_root" ${base_image:+--build-arg AL2023_IMAGE="$base_image"} -t "$image" --push "$context_dir"
 
 echo "[publish] pushed ${image}" >&2

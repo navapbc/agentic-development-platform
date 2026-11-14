@@ -5,10 +5,8 @@ x-python-service: &python-service
     context: .
     dockerfile: docker/Dockerfile
     args:
-      INSTALL_ACLI: ${INSTALL_ACLI:-false}
-      ACLI_VERSION: ${ACLI_VERSION:-}
-      ACLI_SHA256: ${ACLI_SHA256:-}
-      AGENT_BUILD_ID: ${AGENT_BUILD_ID:-0.3.0}
+      - AGENT_BUILD_ID=${AGENT_BUILD_ID:-0.3.0}
+      - AL2023_IMAGE
   env_file: [.env]
   restart: unless-stopped
 
@@ -32,10 +30,11 @@ services:
       retries: 10
 
   temporal:
+    image: agentic-dev-platform-temporal:local
     build:
       context: .
       dockerfile: docker/temporal.Dockerfile
-      args: [TEMPORAL_SERVER_IMAGE]
+      args: [AL2023_IMAGE]
     restart: unless-stopped
     depends_on:
       postgres:
@@ -55,7 +54,11 @@ services:
     ports: ["${TEMPORAL_HOST_PORT:-7233}:7233"]
 
   temporal-admin-tools:
-    image: ${TEMPORAL_ADMIN_TOOLS_IMAGE:-docker.io/temporalio/admin-tools:1.32.1@sha256:9ef0dc5b063bf4ffd5c1512de72e0e73e225bd2c7006a18ce69bd592a8862a83}
+    image: agentic-dev-platform-temporal-admin-tools:local
+    build:
+      context: .
+      dockerfile: docker/temporal-admin-tools.Dockerfile
+      args: [AL2023_IMAGE]
     entrypoint: ["/bin/sh", "/usr/local/libexec/temporal-admin-tools.sh"]
     command: ["schema"]
     restart: "no"
@@ -77,14 +80,19 @@ services:
         condition: service_healthy
 
   temporal-ui:
-    image: docker.io/temporalio/ui:2.58.0@sha256:d36185e811d0ce1720b8d3ca4d9ac4dac504b67181e9b5e3d3ca72b2294f3590
+    image: agentic-dev-platform-temporal-ui:local
+    build:
+      context: .
+      dockerfile: docker/temporal-ui.Dockerfile
+      args: [AL2023_IMAGE]
+    entrypoint: ["./ui-server", "--env", "docker", "start"]
     depends_on: [temporal]
     environment:
       TEMPORAL_ADDRESS: temporal:7233
       TEMPORAL_CORS_ORIGINS: http://localhost:3001
     ports: ["3001:8080"]
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/"]
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:8080/"]
       interval: 30s
       timeout: 10s
       start_period: 60s
@@ -120,7 +128,6 @@ services:
       HEALTH_HEARTBEAT_FILE: /tmp/worker.heartbeat
       REPO_INTELLIGENCE_URL: http://repo-intelligence:8120
       COORDINATION_URL: http://coordination-service:8130
-      JIRA_ACLI_PATH: /app/vendor/bin/acli
       EXECUTION_WORKSPACE_ROOT: /home/appuser/agent-workspaces
       AWS_USE_FIPS_ENDPOINT: ${AWS_USE_FIPS_ENDPOINT:-false}
     depends_on:
@@ -153,7 +160,11 @@ services:
         condition: service_healthy
 
   clickhouse:
-    image: docker.io/clickhouse/clickhouse-server:26.9.19.9@sha256:bdb5c911a23d92fd364e246ab20b5a0a485f00112f3663fa626b083fb46c146b
+    image: agentic-dev-platform-clickhouse:local
+    build:
+      context: .
+      dockerfile: docker/clickhouse.Dockerfile
+      args: [AL2023_IMAGE]
     user: "101:101"
     environment:
       CLICKHOUSE_DB: default
@@ -220,7 +231,12 @@ services:
     restart: unless-stopped
 
   langfuse-worker: &langfuse-service
-    image: docker.langfuse.com/langfuse/langfuse-worker:4.59.0@sha256:246a3a0fab57810734080d302492aa99d7ed0b6acc909c84b58832074b564175
+    image: agentic-dev-platform-langfuse-worker:local
+    build:
+      context: .
+      dockerfile: docker/langfuse.Dockerfile
+      args: [AL2023_IMAGE]
+      target: langfuse-worker
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3030/api/health"]
       interval: 30s
@@ -271,7 +287,12 @@ services:
 
   langfuse-web:
     <<: *langfuse-service
-    image: docker.langfuse.com/langfuse/langfuse:4.59.0@sha256:48ecae32cd74d3a567588602c144de0ec626daf32dc5f2e831a03cebd0bb2d34
+    image: agentic-dev-platform-langfuse-web:local
+    build:
+      context: .
+      dockerfile: docker/langfuse.Dockerfile
+      args: [AL2023_IMAGE]
+      target: langfuse-web
     ports: ["${LANGFUSE_WEB_HOST_PORT:-3000}:3000"]
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3000/api/public/health"]
@@ -295,9 +316,11 @@ services:
     build:
       context: .
       dockerfile: docker/otel-collector.Dockerfile
+      args: [AL2023_IMAGE]
     command: ["--config=/etc/otel/config.yaml"]
     volumes:
       - ./observability/otel/otel-collector-config.yaml:/etc/otel/config.yaml:ro
+      - otel-logs:/var/lib/otelcol/logs
     ports:
       - "${OTEL_GRPC_HOST_PORT:-4317}:4317"
       - "${OTEL_HTTP_HOST_PORT:-4318}:4318"
@@ -367,6 +390,7 @@ services:
     build:
       context: .
       dockerfile: docker/repo-intelligence.Dockerfile
+      args: [AL2023_IMAGE]
     env_file: [.env]
     ports: ["8120:8120"]
     healthcheck:
@@ -385,6 +409,7 @@ services:
     build:
       context: .
       dockerfile: docker/repo-intelligence.Dockerfile
+      args: [AL2023_IMAGE]
     command: ["python", "-m", "services.repository_intelligence.indexing.worker"]
     healthcheck:
       test: ["CMD", "python", "-m", "services.healthcheck", "heartbeat", "/tmp/worker.heartbeat", "--max-age", "120"]
@@ -427,3 +452,4 @@ volumes:
   grafana-data:
   prometheus-data:
   registry-data:
+  otel-logs:

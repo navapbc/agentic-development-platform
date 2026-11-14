@@ -24,7 +24,7 @@ images:
     newName: 123456789012.dkr.ecr.us-east-1.amazonaws.com/agentic-platform/platform
   - name: 123456789012.dkr.ecr.us-east-1.amazonaws.com/agentic-dev-platform/opa
     newName: 123456789012.dkr.ecr.us-east-1.amazonaws.com/agentic-platform/opa
-  - name: ghcr.io/berriai/litellm
+  - name: 123456789012.dkr.ecr.us-east-1.amazonaws.com/agentic-dev-platform/litellm
     newName: 123456789012.dkr.ecr.us-east-1.amazonaws.com/agentic-platform/litellm
 
 generatorOptions:
@@ -243,7 +243,7 @@ patches:
                     secretProviderClass: mcp-gateway
               - name: tmp
                 emptyDir: {}
-  # The upstream LiteLLM image has no platform entrypoint, so the container exports the mounted
+  # The LiteLLM image has no platform entrypoint, so the container exports the mounted
   # secret files and trusts the platform CA beside the system roots before it starts LiteLLM.
   # It takes only the settings it names, because LiteLLM treats DATABASE_URL as its own store.
   - target:

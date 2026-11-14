@@ -45,6 +45,7 @@ locals {
     { for policy in aws_iam_policy.image_scan_read : "image-scan-read" => policy.arn },
     { for policy in aws_iam_policy.eks_temporal_ca : "temporal-ca" => policy.arn },
     { for policy in aws_iam_policy.eks_registry_cache_fill : "registry-cache-fill" => policy.arn },
+    local.tenants_enabled && length(var.tenants) > 0 ? { "platform-exceptions-read" = module.tenant_config_store.platform_exceptions_read_policy_arn } : {},
   )
   tenant_worker_policies = {
     for pair in setproduct(keys(local.tenants), keys(local.tenant_worker_policy_arns)) :
@@ -99,6 +100,9 @@ module "tenant_config_store" {
   name_prefix                = var.name_prefix
   access_log_bucket          = var.access_log_bucket
   admin_principals           = var.tenant_config_admin_principals
+  exception_reviewers        = var.create_github_image_publisher ? ["arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:role/${var.name_prefix}-github-image-publisher"] : []
+  publish_image_policy       = local.image_governance
+  image_policy               = local.image_governance ? yamlencode(local.image_policy) : ""
   tenants = {
     for name, tenant in local.tenants : name => {
       publishers = tenant.config_repository == null ? [] : ["arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:role/${var.name_prefix}-tenant-${name}-publisher"]

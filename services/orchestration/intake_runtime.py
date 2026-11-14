@@ -165,7 +165,27 @@ class PostgresExecutionSeeder:
         async with self._get_engine().begin() as conn:
             await conn.execute(stmt)
 
+    async def abandon(self, *, execution_id: str, reason: str) -> None:
+        from database.models.schema import executions
+        from sqlalchemy import update
+
+        stmt = (
+            update(executions)
+            .where(executions.c.execution_id == execution_id)
+            .where(executions.c.workflow_id.is_(None))
+            .values(state="FAILED")
+        )
+        async with self._get_engine().begin() as conn:
+            await conn.execute(stmt)
+        _log.info("intake_execution_abandoned", execution_id=execution_id, reason=reason)
+
     async def active_workflow(self, *, issue_key: str, repo: str) -> str | None:
+        """Return the workflow of a running execution, ignoring rows no workflow was started for.
+
+        An execution is seeded before its workflow starts. A row without a workflow is a start
+        in progress, which the intake ledger reports as in flight, or one that failed, which the
+        orphan reclaimer closes, so neither is a run to treat the ticket as a duplicate of.
+        """
         from database.models.schema import executions
         from sqlalchemy import select
 
@@ -173,6 +193,7 @@ class PostgresExecutionSeeder:
             select(executions.c.workflow_id)
             .where(executions.c.task_id == issue_key)
             .where(executions.c.repository == repo)
+            .where(executions.c.workflow_id.is_not(None))
             .where(executions.c.state.not_in(("COMPLETED", "FAILED", "CANCELLED")))
             .where(*_this_tenant(executions))
             .order_by(executions.c.updated_at.desc())
@@ -180,9 +201,7 @@ class PostgresExecutionSeeder:
         )
         async with self._get_engine().connect() as conn:
             row = (await conn.execute(stmt)).first()
-        if row is None:
-            return None
-        return row.workflow_id or ""
+        return None if row is None else row.workflow_id
 
     async def count_active_runs(self) -> int:
         from database.models.schema import executions

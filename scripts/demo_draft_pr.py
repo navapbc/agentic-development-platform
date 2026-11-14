@@ -30,7 +30,6 @@ from services.integration.jira import (
     CLOUD,
     DATACENTER,
     TaskSnapshot,
-    ensure_acli_authenticated,
 )
 from services.integration.jira.adapter import build_jira_adapter_for_issue, project_of
 from services.integration.jira.credentials import (
@@ -450,9 +449,6 @@ async def main() -> int:
     existing_pr = await mediator.find_open_pr(repo, task_id)
     if _jira_configured(settings, task_id):
         jira_resolver = build_jira_credential_resolver(settings)
-        cloud_cred = jira_resolver.resolve(project_of(task_id))
-        if cloud_cred is not None:
-            ensure_acli_authenticated(cloud_cred, acli_path=settings.jira_acli_path)
         adapter = build_jira_adapter_for_issue(task_id, settings, resolver=jira_resolver)
         ok, detail = _jira_task_actionable(adapter, task_id, settings.jira_parked_status)
         print(f"[demo] jira preflight {task_id}: [{'ok' if ok else 'FAIL'}] {detail}")

@@ -24,6 +24,10 @@ ENGINE_IMAGES = {
     "test-policy": "registry.example/gate-engine-test-policy:1@sha256:" + "b" * 64,
 }
 JVM = "registry.example/agent-server-jvm:1@sha256:" + "c" * 64
+CHECKS = {
+    name: f"registry.example/{name}:1@sha256:" + "e" * 64
+    for name in ("checks-python", "checks-node", "checks-jvm", "checks-go")
+}
 REPOSITORIES = """config_version: 1
 defaults:
   backend: github
@@ -90,19 +94,24 @@ def _settings(**overrides):
         "ticket_backend": "rebar",
         "tenant_config_bucket": "",
         "gate_engine_images": ENGINE_IMAGES,
-        "runtime_images": {"agent-server-jvm": JVM},
+        "runtime_images": {"agent-server-jvm": JVM, **CHECKS},
     }
     values.update(overrides)
     return get_settings().model_copy(update=values)
 
 
-def test_the_catalog_offers_a_profile_per_stack_with_pinned_checks_images() -> None:
+def test_the_catalog_offers_a_profile_per_stack_with_a_catalog_checks_image() -> None:
     profiles = catalog_profiles()
 
     assert set(profiles) == {"python-fastapi", "node-react", "java-spring", "go-service"}
     assert profiles["node-react"].sandbox_image == "catalog:agent-server-python-node"
     assert profiles["java-spring"].sandbox_image == "catalog:agent-server-jvm"
-    assert all("@sha256:" in profile.checks["image"] for profile in profiles.values())
+    assert {name: profile.checks["image"] for name, profile in profiles.items()} == {
+        "python-fastapi": "catalog:checks-python",
+        "node-react": "catalog:checks-node",
+        "java-spring": "catalog:checks-jvm",
+        "go-service": "catalog:checks-go",
+    }
 
 
 def test_catalog_images_resolve_and_another_reference_passes_through() -> None:
@@ -139,6 +148,20 @@ def test_a_profile_supplies_checks_unless_the_repository_has_its_own(environment
     assert required_checks_repos(settings) == frozenset({"api", "portal", "claims"})
 
 
+def test_a_catalog_checks_image_resolves_through_the_runtime_images(environment) -> None:
+    from services.orchestration.checks.config import checks_for_repo
+
+    settings = _settings()
+    (environment / "checks.yaml").write_text(
+        "config_version: 1\nchecks:\n  api:\n    image: catalog:checks-go\n    command: go test\n"
+    )
+
+    assert checks_for_repo("api", settings).image == CHECKS["checks-go"]
+    assert checks_for_repo("claims", settings).image == CHECKS["checks-jvm"]
+    with pytest.raises(ConfigError, match="checks-jvm is not published"):
+        checks_for_repo("claims", _settings(runtime_images={"agent-server-jvm": JVM}))
+
+
 def test_the_bound_repositorys_profile_overrides_the_tenant_gates(environment) -> None:
     from services.orchestration.gates.config import load_gates_config
 
@@ -169,7 +192,9 @@ def test_a_bundle_whose_repository_cannot_run_its_profile_is_refused(environment
 
     validate_bundle(bundle, _settings())
     with pytest.raises(ConfigError, match="agent-server-jvm is not published"):
-        validate_bundle(bundle, _settings(runtime_images={}))
+        validate_bundle(bundle, _settings(runtime_images=CHECKS))
+    with pytest.raises(ConfigError, match="checks-python is not published"):
+        validate_bundle(bundle, _settings(runtime_images={"agent-server-jvm": JVM}))
     with pytest.raises(ConfigError, match="'security-policy' is enabled but not registered"):
         validate_bundle(bundle, _settings(gate_engine_images={}))
     (bundle / "repositories.yaml").write_text(REPOSITORIES.replace("java-spring", "cobol"))

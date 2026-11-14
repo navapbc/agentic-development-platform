@@ -140,6 +140,13 @@ def test_the_workers_run_the_build_image_and_report_its_build_id(tmp_path: Path)
     assert "--addr=127.0.0.1:8181" in opa["args"]
 
 
+def test_litellm_runs_the_image_built_from_the_litellm_dockerfile(tmp_path: Path) -> None:
+    litellm = _named(_rendered(tmp_path), "Deployment", "litellm")
+
+    container = litellm["spec"]["template"]["spec"]["containers"][0]
+    assert container["image"] == "agentic-dev-platform-litellm:0.3.0.1"
+
+
 def test_no_service_exposes_opa(tmp_path: Path) -> None:
     services = [d for d in _rendered(tmp_path) if d["kind"] == "Service"]
 

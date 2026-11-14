@@ -117,6 +117,7 @@ def scan_script(
     image: str,
     args: Sequence[str],
     registry: registry_auth_script.RegistrySetup = registry_auth_script.NO_REGISTRY,
+    tls_verify: bool = True,
 ) -> str:
     """Build the scanner in its own image and keep the tool's JSON alone on stdout.
 
@@ -130,10 +131,11 @@ def scan_script(
     tell a registry that could not be reached from the scanner reporting a vulnerability.
     """
     command = " ".join(shlex.quote(arg) for arg in args)
+    tls_flag = "" if tls_verify else "--tls-verify=false "
     return (
         f"out=$(mktemp) || exit {SCRATCH_FILE_EXIT}\n"
         f"{registry.before_pull()}"
-        f"ctr=$(buildah from {shlex.quote(image)}) || exit {IMAGE_PULL_EXIT}\n"
+        f"ctr=$(buildah from {tls_flag}{shlex.quote(image)}) || exit {IMAGE_PULL_EXIT}\n"
         f"{registry.after_pull()}"
         f"buildah run --net host -v {_WORKSPACE_MOUNT}:{_WORKSPACE_MOUNT} "
         f'"$ctr" -- {command} > "$out"\n'
@@ -158,9 +160,11 @@ class PodCommandRunner:
         builder_image: str = DEFAULT_BUILDER_IMAGE,
         privileged: bool = False,
         node_pool: str = "",
+        tls_verify: bool = True,
     ) -> None:
         self._image = image
         self._scanner = scanner
+        self._tls_verify = tls_verify
         self._execution_id = execution_id
         self._ops = ops or KubectlPodOps()
         self._namespace = namespace
@@ -201,7 +205,7 @@ class PodCommandRunner:
                 code, stdout, stderr = await self._ops.exec_capture(
                     pod,
                     self._namespace,
-                    scan_script(self._image, remap_paths(args, cwd), registry),
+                    scan_script(self._image, remap_paths(args, cwd), registry, self._tls_verify),
                 )
                 if code == IMAGE_PULL_EXIT:
                     self._unavailable(f"could not pull {self._image}: {stderr.strip()[:400]}")
@@ -242,4 +246,5 @@ def pod_command_runner(scanner: str, settings, execution_id: str = "") -> PodCom
         builder_image=settings.gate_engine_builder_image,
         privileged=settings.gate_engine_privileged,
         node_pool=settings.sandbox_node_pool,
+        tls_verify=settings.gate_registry_tls_verify,
     )

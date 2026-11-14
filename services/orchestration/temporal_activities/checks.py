@@ -95,6 +95,7 @@ async def run_checks(req: RunChecksRequest) -> RunChecksResult:
             builder_image=settings.gate_engine_builder_image,
             privileged=settings.gate_engine_privileged,
             node_pool=settings.sandbox_node_pool,
+            tls_verify=settings.gate_registry_tls_verify,
         )
         result = await runner.run_checks(
             ChecksSpec(

@@ -118,3 +118,30 @@ def test_a_refused_image_is_not_pushed_and_is_reported(monkeypatch) -> None:
     assert pub.refused and "CVE-9" in pub.refused[0]
     assert not any(command[:2] == ["docker", "push"] for command in commands)
     assert any("--load" in command for command in commands)
+
+
+def test_a_finding_names_each_component_it_affects() -> None:
+    from scripts.image_scan import ScanResult, _merged
+
+    findings = _merged(
+        [
+            Finding("CVE-1", "high", ("/usr/local/bin/kubectl go 1.26.8 fixed in 1.26.9",)),
+            Finding("CVE-1", "high", ("/app/bin/acli go 1.26.4 fixed in 1.26.9",)),
+            Finding("CVE-2", "critical", ()),
+        ]
+    )
+    result = ScanResult("img", tuple(findings), ())
+
+    assert result.detail() == [
+        "CVE-1 (high) /usr/local/bin/kubectl go 1.26.8 fixed in 1.26.9",
+        "CVE-1 (high) /app/bin/acli go 1.26.4 fixed in 1.26.9",
+        "CVE-2 (critical)",
+    ]
+
+
+def test_a_dockerfile_finding_names_the_instruction_lines() -> None:
+    from scripts.image_scan import _affected
+
+    assert _affected({"file": "dockerfile:comp-1.Dockerfile", "lines": "25-25"}) == (
+        "dockerfile:comp-1.Dockerfile lines 25-25"
+    )

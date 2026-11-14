@@ -17,8 +17,17 @@ hosts outside the entries, so a tenant cannot reach another tenant's prefix thro
 An entry ending in `/` admits every repository under it, and any other entry admits exactly that
 repository. Every image reference must carry an `@sha256:` digest.
 
-`config/<environment>/image_exceptions.yaml` lists the scan findings the platform accepts, each
-for one image digest and one finding, with a reason and an expiry date.
+An image_exceptions.yaml lists scan findings accepted for one image digest each, with a reason,
+the day the entry was written, and an expiry at most EXCEPTION_WINDOW_DAYS after that day. Two
+levels exist, and each accepts findings only within its owner's scope:
+
+- the platform file, for the images the platform publishes or defines, the `catalog` entries and
+  every repository under a `platform_registries` host outside the tenant prefix. Its entries also
+  name the requester and the approver.
+- a tenant's file, one more file of the tenant's bundle, for the images under the tenant's prefix
+  or under a mirror of the tenant's own registries.yaml outside the platform's scope
+
+`services.integration.image_exceptions` reads and writes both files.
 """
 
 from __future__ import annotations
@@ -32,6 +41,8 @@ from typing import Any
 
 from services.integration.credentials import (
     ConfigError,
+    config_version,
+    current_config_version,
     env_config_path,
     load_env_config,
     require_current_config,
@@ -48,6 +59,10 @@ OFF = "off"
 SCAN_GATES = (INSPECTOR, OFF)
 SEVERITIES = ("LOW", "MEDIUM", "HIGH", "CRITICAL")
 DOCKER_HUB = "docker.io"
+PLATFORM_SCOPE = "platform"
+TENANT_SCOPE = "tenant"
+EXCEPTION_SCOPES = (PLATFORM_SCOPE, TENANT_SCOPE)
+EXCEPTION_WINDOW_DAYS = 30
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
@@ -192,43 +207,193 @@ class FindingException:
     finding: str
     reason: str
     expires: date
+    created: date | None = None
+    requester: str = ""
+    approver: str = ""
+
+    def describe(self) -> str:
+        return f"{self.finding} in {self.image}"
+
+    def to_entry(self) -> dict[str, Any]:
+        entry: dict[str, Any] = {
+            "image": self.image,
+            "finding": self.finding,
+            "reason": self.reason,
+            "created": self.created,
+            "expires": self.expires,
+            "requester": self.requester,
+            "approver": self.approver,
+        }
+        return {key: value for key, value in entry.items() if value}
 
 
-def parse_exceptions(raw: Mapping[str, Any]) -> tuple[FindingException, ...]:
+def _required_fields(scope: str) -> tuple[str, ...]:
+    common = ("image", "finding", "reason", "created", "expires")
+    return (*common, "requester", "approver") if scope == PLATFORM_SCOPE else common
+
+
+def _date(value: Any, context: str, key: str) -> date:
+    if isinstance(value, date):
+        return value
+    try:
+        return date.fromisoformat(str(value))
+    except ValueError as exc:
+        raise ConfigError(f"{context} {key} must be a YYYY-MM-DD date") from exc
+
+
+def parse_exception(
+    entry: Any, *, scope: str = PLATFORM_SCOPE, context: str = "image_exceptions.yaml entry"
+) -> FindingException:
+    """Parse one entry, which needs every field its scope requires and a bounded expiry."""
+    if scope not in EXCEPTION_SCOPES:
+        raise ConfigError(f"the exception scope must be one of {', '.join(EXCEPTION_SCOPES)}")
+    if not isinstance(entry, Mapping):
+        raise ConfigError(f"{context} must be a mapping")
+    missing = [key for key in _required_fields(scope) if not str(entry.get(key) or "").strip()]
+    if missing:
+        raise ConfigError(f"{context} needs {', '.join(missing)}")
+    image = parse_reference(str(entry["image"]))
+    if not image.digest:
+        raise ConfigError(f"{context} image must carry an @sha256: digest")
+    created = _date(entry["created"], context, "created")
+    expires = _date(entry["expires"], context, "expires")
+    if expires < created:
+        raise ConfigError(f"{context} expires on {expires}, before it was created on {created}")
+    if (expires - created).days > EXCEPTION_WINDOW_DAYS:
+        raise ConfigError(
+            f"{context} expires on {expires}, more than {EXCEPTION_WINDOW_DAYS} days after it "
+            f"was created on {created}"
+        )
+    return FindingException(
+        image=f"{image.name}@{image.digest}",
+        finding=str(entry["finding"]).strip(),
+        reason=str(entry["reason"]).strip(),
+        expires=expires,
+        created=created,
+        requester=str(entry.get("requester") or "").strip(),
+        approver=str(entry.get("approver") or "").strip(),
+    )
+
+
+def parse_exceptions(
+    raw: Mapping[str, Any], *, scope: str = PLATFORM_SCOPE, source: str = "image_exceptions.yaml"
+) -> tuple[FindingException, ...]:
+    """Parse an image_exceptions.yaml of either scope, checking its version and every entry.
+
+    The scanner, the pull gate, the review, and every writer share this parser. It checks the
+    fields only, and `require_scope` checks which images the entries may name.
+    """
+    expected = current_config_version(EXCEPTIONS)
+    if config_version(raw) != expected:
+        raise ConfigError(f"{source} config_version must be {expected}")
     entries = raw.get("exceptions") or []
     if not isinstance(entries, list):
-        raise ConfigError("image_exceptions.yaml exceptions must be a list")
-    parsed = []
+        raise ConfigError(f"{source} exceptions must be a list")
+    parsed: list[FindingException] = []
+    seen: set[tuple[str, str]] = set()
     for index, entry in enumerate(entries):
-        context = f"image_exceptions.yaml exceptions[{index}]"
-        missing = [key for key in ("image", "finding", "reason", "expires") if not entry.get(key)]
-        if missing:
-            raise ConfigError(f"{context} needs {', '.join(missing)}")
-        image = parse_reference(str(entry["image"]))
-        if not image.digest:
-            raise ConfigError(f"{context} image must carry an @sha256: digest")
-        expires = entry["expires"]
-        if not isinstance(expires, date):
-            try:
-                expires = date.fromisoformat(str(expires))
-            except ValueError as exc:
-                raise ConfigError(f"{context} expires must be a YYYY-MM-DD date") from exc
-        parsed.append(
-            FindingException(
-                image=f"{image.name}@{image.digest}",
-                finding=str(entry["finding"]).strip(),
-                reason=str(entry["reason"]).strip(),
-                expires=expires,
-            )
-        )
+        context = f"{source} exceptions[{index}]"
+        exception = parse_exception(entry, scope=scope, context=context)
+        key = (exception.image, exception.finding)
+        if key in seen:
+            raise ConfigError(f"{context} accepts {exception.describe()} a second time")
+        seen.add(key)
+        parsed.append(exception)
     return tuple(parsed)
 
 
+def require_new_entry(exception: FindingException, today: date) -> None:
+    """Refuse an entry being written unless it was created today and expires within the window."""
+    if exception.created != today:
+        raise ConfigError(f"a new exception must be created on {today}, the day it is written")
+    if exception.expires < today:
+        raise ConfigError(f"the exception for {exception.describe()} expires before {today}")
+
+
+def _under(name: str, prefix: str) -> bool:
+    stem = prefix.rstrip("/")
+    return name == stem or name.startswith(f"{stem}/")
+
+
+def _any_tenant_prefix(policy: ImagePolicy) -> re.Pattern[str] | None:
+    if not policy.tenant_prefix:
+        return None
+    head, _, tail = policy.tenant_prefix.partition("{tenant}")
+    return re.compile(f"^{re.escape(head)}[^/]+{re.escape(tail)}")
+
+
+def in_platform_scope(name: str, policy: ImagePolicy) -> bool:
+    """Return whether the platform file may accept findings in the repository `name`."""
+    if any(_matches(name, entry) for entry in policy.catalog):
+        return True
+    if name.split("/", 1)[0] not in policy.platform_registries:
+        return False
+    tenant_prefix = _any_tenant_prefix(policy)
+    return tenant_prefix is None or tenant_prefix.match(name) is None
+
+
+def in_tenant_scope(
+    name: str, policy: ImagePolicy, tenant: str, mirrors: Mapping[str, str] | None = None
+) -> bool:
+    """Return whether a tenant's file may accept findings in the repository `name`.
+
+    `mirrors` are the tenant's own registries.yaml mirrors. A mirror into a platform registry
+    host widens nothing, so a tenant reaches only its own prefix inside the platform's hosts.
+    """
+    if in_platform_scope(name, policy):
+        return False
+    own_prefix = policy.tenant_prefix.replace("{tenant}", tenant) if tenant else ""
+    if own_prefix and _matches(name, own_prefix):
+        return True
+    for upstream, location in (mirrors or {}).items():
+        if location.split("/", 1)[0] in policy.platform_registries:
+            continue
+        if _under(name, upstream) or _under(name, location):
+            return True
+    return False
+
+
+def require_scope(
+    exceptions: Iterable[FindingException],
+    scope: str,
+    policy: ImagePolicy,
+    *,
+    tenant: str = "",
+    mirrors: Mapping[str, str] | None = None,
+    source: str = "image_exceptions.yaml",
+) -> None:
+    """Refuse the first entry that names an image outside the scope of the file's owner."""
+    for index, exception in enumerate(exceptions):
+        name = exception.image.partition("@")[0]
+        if scope == PLATFORM_SCOPE:
+            if in_platform_scope(name, policy):
+                continue
+            hosts = ", ".join(policy.platform_registries) or "no host"
+            raise ConfigError(
+                f"{source} exceptions[{index}] accepts {exception.describe()}, outside the "
+                f"platform's scope. The platform file accepts findings only in the catalog and "
+                f"in repositories under {hosts} outside the tenant prefix."
+            )
+        if in_tenant_scope(name, policy, tenant, mirrors):
+            continue
+        prefix = policy.tenant_prefix.replace("{tenant}", tenant) or "(none)"
+        raise ConfigError(
+            f"{source} exceptions[{index}] accepts {exception.describe()}, outside the scope of "
+            f"tenant {tenant or '(none)'}. A tenant file accepts findings only in images under "
+            f"{prefix} or under a mirror of the tenant's own registries.yaml outside the "
+            "platform's registries."
+        )
+
+
 def load_exceptions(environment: str) -> tuple[FindingException, ...]:
-    if not env_config_path(EXCEPTIONS, environment=environment).exists():
-        return ()
-    require_current_config(EXCEPTIONS, environment=environment)
-    return parse_exceptions(load_env_config(EXCEPTIONS, environment=environment))
+    """Return the entries the pull gate honours, the platform's and the run tenant's.
+
+    Each file's entries are limited to its scope. A missing or unusable file contributes no
+    entry, so every finding it would have accepted blocks.
+    """
+    from services.integration.image_exceptions import gate_exceptions
+
+    return gate_exceptions(environment)
 
 
 def accepted(
@@ -315,7 +480,7 @@ def configured_images(settings: Any) -> dict[str, str]:
             images[f"gate engine {engine.name}"] = engine.image
     for repo, config in load_checks_configs(settings).items():
         if config.image:
-            images[f"checks of {repo}"] = config.image
+            images[f"checks of {repo}"] = resolve_image(config.image, settings)
     profiles = load_profiles(settings)
     for repository in load_repository_registry(settings).repositories.values():
         profile = profiles.get(repository.profile) if repository.profile else None
@@ -327,18 +492,22 @@ def configured_images(settings: Any) -> dict[str, str]:
             )
         checks_image = str((profile.checks or {}).get("image") or "")
         if checks_image:
-            images[f"profile {profile.name} checks"] = checks_image
+            images[f"profile {profile.name} checks"] = resolve_image(checks_image, settings)
     return {where: image for where, image in images.items() if image}
 
 
 def image_problems(settings: Any) -> list[str]:
-    """Return why the effective config names an image the policy does not admit."""
+    """Return why the effective config names an image the policy does not admit.
+
+    The tenant's own image_exceptions.yaml must parse and stay within the tenant's scope.
+    """
+    from services.integration.image_exceptions import read_tenant
     from services.orchestration.gates import registry_mirrors
 
     try:
         policy = load_policy(settings.environment)
         registries = registry_mirrors.current()
-        load_exceptions(settings.environment)
+        read_tenant(settings, policy)
     except ConfigError as exc:
         return [str(exc)]
     mirrors = dict(registries.mirrors) if registries else {}

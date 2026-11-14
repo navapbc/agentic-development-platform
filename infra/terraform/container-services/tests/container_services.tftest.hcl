@@ -53,12 +53,16 @@ run "repositories_hold_every_image_the_services_run" {
       "agentic-platform/gate-engine-test-policy",
       "agentic-platform/agent-server-jvm",
       "agentic-platform/agent-server-go",
+      "agentic-platform/checks-python",
+      "agentic-platform/checks-node",
+      "agentic-platform/checks-jvm",
+      "agentic-platform/checks-go",
     ])
     error_message = "A repository is missing or misnamed."
   }
 
   assert {
-    condition     = keys(output.repository_urls) == sort(["platform", "repo-intelligence", "otel-collector", "langfuse-web", "langfuse-worker", "clickhouse", "tls-sidecar", "opa", "litellm", "openhands-agent-server", "buildah", "semgrep", "trivy", "eks-deployer", "gate-engine-security-policy", "gate-engine-test-policy", "agent-server-jvm", "agent-server-go"])
+    condition     = keys(output.repository_urls) == sort(["platform", "repo-intelligence", "otel-collector", "langfuse-web", "langfuse-worker", "clickhouse", "tls-sidecar", "opa", "litellm", "openhands-agent-server", "buildah", "semgrep", "trivy", "eks-deployer", "gate-engine-security-policy", "gate-engine-test-policy", "agent-server-jvm", "agent-server-go", "checks-python", "checks-node", "checks-jvm", "checks-go"])
     error_message = "The repository_urls output does not name every image."
   }
 }

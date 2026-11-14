@@ -21,9 +21,16 @@ platform_registries:
 catalog:
   - host.docker.internal:5001/gate-engine-security-policy
   - host.docker.internal:5001/gate-engine-test-policy
+  - docker.io/library/openhands-agent-server
   - docker.io/library/agent-server-jvm
   - docker.io/library/agent-server-go
+  - host.docker.internal:5001/checks-python
+  - host.docker.internal:5001/checks-node
+  - host.docker.internal:5001/checks-jvm
+  - host.docker.internal:5001/checks-go
   - docker.io/library/agentic-dev-platform-buildah
+  - host.docker.internal:5001/semgrep
+  - host.docker.internal:5001/trivy
 
 tenant_prefix: host.docker.internal:5001/tenants/{tenant}/
 
@@ -35,6 +42,7 @@ registries:
   - docker.io/aquasec/trivy
   - docker.io/library/
   - public.ecr.aws/docker/library/
+  - public.ecr.aws/amazonlinux/
 
 scan:
   gate: off

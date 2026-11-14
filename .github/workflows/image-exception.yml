@@ -1,0 +1,93 @@
+# Accepts one scan finding in one platform image by writing platform/image_exceptions.yaml in the
+# config bucket. The job runs in the image-exception GitHub environment, whose required reviewers
+# are configured in the repository settings under Environments. Enable "Prevent self-review" there
+# so the requester cannot approve the run. The job records the requester and the approving
+# reviewer in the entry.
+name: image-exception
+
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: The image as repository@sha256:digest.
+        required: true
+        type: string
+      finding:
+        description: The finding ID, such as a CVE.
+        required: true
+        type: string
+      reason:
+        description: Why the platform accepts the finding.
+        required: true
+        type: string
+      expiry:
+        description: The last day the exception applies, as YYYY-MM-DD, no more than 30 days from today.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: image-exception
+  cancel-in-progress: false
+
+jobs:
+  except:
+    runs-on: ubuntu-24.04-arm
+    environment: image-exception
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    env:
+      ARCH: arm64
+      TENANT_CONFIG_BUCKET: ${{ vars.AWS_CONFIG_BUCKET }}
+      IMAGE: ${{ inputs.image }}
+      FINDING: ${{ inputs.finding }}
+      REASON: ${{ inputs.reason }}
+      EXPIRY: ${{ inputs.expiry }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: "0.13.3"
+      - run: uv sync --locked --all-extras --python 3.12
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_IMAGE_EXCEPTION_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_PUBLISH_REGION }}
+          role-session-name: image-exception-${{ github.run_id }}
+      - name: Read the approval of this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p image-exception
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/approvals" > image-exception/approvals.json
+      - name: Validate the scope and the expiry of the entry
+        run: uv run --no-sync python -m scripts.image_exceptions add --dry-run --image "$IMAGE" --finding "$FINDING" --reason "$REASON" --expires "$EXPIRY" --requester "$GITHUB_ACTOR" --approvals image-exception/approvals.json
+      - uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
+      - name: Scan the image for the finding
+        run: |
+          set -uo pipefail
+          docker pull --platform "linux/$ARCH" "$IMAGE" > image-exception/scan.log 2>&1 || { cat image-exception/scan.log; exit 1; }
+          uv run --no-sync inv image-scan --image "$IMAGE" --arch "$ARCH" >> image-exception/scan.log 2>&1 < /dev/null
+          echo "inv image-scan exited with $?. A blocking finding exits nonzero."
+          cat image-exception/scan.log
+      - name: Write the entry
+        run: |
+          set -euo pipefail
+          uv run --no-sync python -m scripts.image_exceptions add --image "$IMAGE" --finding "$FINDING" --reason "$REASON" --expires "$EXPIRY" --requester "$GITHUB_ACTOR" --approvals image-exception/approvals.json --scan-log image-exception/scan.log | tee image-exception/result.txt
+          {
+            echo "## Image exception"
+            echo
+            echo '```'
+            cat image-exception/result.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

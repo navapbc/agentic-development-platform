@@ -30,6 +30,7 @@ config/*/image_policy.yaml
 !config/*/image_policy.yaml.example
 config/*/image_exceptions.yaml
 !config/*/image_exceptions.yaml.example
+config/*/tenants/*/image_exceptions.yaml
 config/*/review-trust-root.yaml
 !config/*/review-trust-root.yaml.example
 config/*/review-signing-key
@@ -103,3 +104,6 @@ crash.*.log
 
 # Audit artifacts written by rebar bridge sync (snapshots, manifests, sync logs)
 bridge_state/
+
+# CIS benchmark scan results written by the image publish
+/cis-evidence/

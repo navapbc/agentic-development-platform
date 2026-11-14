@@ -17,7 +17,7 @@ import os
 import sys
 import tempfile
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -37,6 +37,8 @@ Runner = Callable[..., process.CompletedProcess[Any]]
 class Finding:
     id: str
     severity: str
+    # Each affected component as "path installed fixed", which locates the finding in the image.
+    affects: tuple[str, ...] = field(default=(), compare=False)
 
 
 @dataclass(frozen=True)
@@ -57,6 +59,14 @@ class ScanResult:
         more = len(self.blocking) - 10
         rest = f" and {more} more" if more > 0 else ""
         return f"{self.image} carries {len(self.blocking)} blocking finding(s): {listed}{rest}"
+
+    def detail(self) -> list[str]:
+        """Return one line per blocking finding and affected component."""
+        return [
+            f"{finding.id} ({finding.severity}) {affected}".rstrip()
+            for finding in self.blocking
+            for affected in finding.affects or ("",)
+        ]
 
 
 def scanner_image(arch: str, run: Runner = process.run) -> str:
@@ -141,7 +151,11 @@ class ImageScanner:
         client = self.session.client("inspector-scan")
         document = client.scan_sbom(sbom=sbom, outputFormat="INSPECTOR")["sbom"]
         return [
-            Finding(str(entry["id"]), str(entry.get("severity", "")).lower())
+            Finding(
+                str(entry["id"]),
+                str(entry.get("severity", "")).lower(),
+                tuple(_affected(item) for item in entry.get("affects") or ()),
+            )
             for entry in document.get("vulnerabilities") or []
         ]
 
@@ -152,7 +166,7 @@ class ImageScanner:
         references = [parse_reference(key) for key in keys]
         today = datetime.now(UTC).date()
         blocking, excepted = [], []
-        for finding in sorted(set(self.findings(self.sbom(image))), key=lambda f: f.id):
+        for finding in _merged(self.findings(self.sbom(image))):
             if finding.severity not in self.blocking:
                 continue
             if any(accepted(self.exceptions, ref, finding.id, today) for ref in references):
@@ -162,13 +176,33 @@ class ImageScanner:
         return ScanResult(image, tuple(blocking), tuple(excepted))
 
 
-def load_exceptions(path: str) -> tuple[Any, ...]:
+def _merged(findings: Iterable[Finding]) -> list[Finding]:
+    """Return one finding per ID and severity, with every component it affects."""
+    merged: dict[tuple[str, str], list[str]] = {}
+    for finding in findings:
+        affects = merged.setdefault((finding.id, finding.severity), [])
+        affects.extend(item for item in finding.affects if item not in affects)
+    return [Finding(i, s, tuple(a)) for (i, s), a in sorted(merged.items())]
+
+
+def _affected(item: dict[str, Any]) -> str:
+    if "file" in item:
+        # A Dockerfile finding names the build instruction, not a package.
+        return f"{item['file']} lines {item.get('lines', '')}".strip()
+    installed = str(item.get("installed_version", ""))
+    fixed = str(item.get("fixed_version", "") or "no fix")
+    return " ".join(
+        part for part in (str(item.get("path", "")), installed, f"fixed in {fixed}") if part
+    )
+
+
+def load_exceptions(path: str, scope: str = "platform") -> tuple[Any, ...]:
+    """Parse an image_exceptions.yaml with the parser the pull gate and the review share."""
     if not path:
         return ()
-    import yaml
-    from services.integration.image_policy import parse_exceptions
+    from services.integration.image_exceptions import load_file
 
-    return parse_exceptions(yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {})
+    return load_file(path, scope)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -197,6 +231,8 @@ def main(argv: list[str] | None = None) -> int:
     for image in args.image:
         result = scanner.scan(image, [image])
         print(f"{LOG} {result.describe()}")
+        for line in result.detail():
+            print(f"{LOG}   {line}")
         failed += 0 if result.passed else 1
     return 1 if failed else 0
 

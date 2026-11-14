@@ -35,7 +35,7 @@ Certificate material never passes through Terraform, so a plan or apply needs no
 
 ## Server
 
-Each server task runs every Temporal service, so `server_count` tasks form one cluster through their membership ports. The task starts through `/etc/temporal/platform-start.sh`, which writes the injected TLS material and the dynamic configuration to files in a task volume, removes them from the environment, and execs the upstream entrypoint with `/etc/temporal/platform-config.yaml`. That file is the upstream configuration template, fetched at build time and checked against a pinned SHA-256, with the frontend listener reading its own client authentication setting. The internode listeners require a client certificate from the CA, and the frontend requires none. The root filesystem is read-only, and a container that runs before the main one opens the task volume to the image's unprivileged user.
+Each server task runs every Temporal service, so `server_count` tasks form one cluster through their membership ports. The task starts through `/etc/temporal/platform-start.sh`, which writes the injected TLS material and the dynamic configuration to files in a task volume, removes them from the environment, and execs the upstream entrypoint with `/etc/temporal/platform-config.yaml`. That file is the configuration template of the release tag the image builds, with the frontend listener reading its own client authentication setting. The internode listeners require a client certificate from the CA, and the frontend requires none. The root filesystem is read-only, and a container that runs before the main one opens the task volume to the image's unprivileged user.
 
 The server connects to Aurora as the `temporal` role with TLS and host verification against the RDS CA bundle, and creates `num_history_shards` shards on first start, 512 by default. Temporal refuses a different count afterwards. `dynamic_config` sets Temporal dynamic configuration and refuses the Worker Versioning V1 keys. The ECS health check requests `/api/v1/namespaces/temporal-system` over HTTPS on port 7243 and verifies it against the CA.
 
@@ -54,7 +54,7 @@ Every task group reaches the VPC endpoints and S3 over 443, and the server and a
 
 ## FIPS 140-3 mode
 
-`fips_140_mode = true` sets `GODEBUG=fips140=on` in the server, admin-tools, and UI containers. Go then restricts their TLS and other cryptography to FIPS-approved algorithms, so the frontend and internode listeners refuse a client that offers only ChaCha20-Poly1305 or only X25519. The load balancers enforce FIPS policies in either setting. The upstream binaries carry the in-tree Go Cryptographic Module rather than a CMVP-validated snapshot, because they are compiled without a `GOFIPS140` setting. Changing the setting registers new task definitions, so run `inv temporal-deploy` after the apply.
+`fips_140_mode = true` sets `GODEBUG=fips140=on` in the server, admin-tools, and UI containers. Go then restricts their TLS and other cryptography to FIPS-approved algorithms, so the frontend and internode listeners refuse a client that offers only ChaCha20-Poly1305 or only X25519. The load balancers enforce FIPS policies in either setting. Every Go binary in the three images is built with `GOFIPS140=v1.0.0`, which selects the CMVP-certified Go Cryptographic Module snapshot `v1.0.0-c2097c7c`, so FIPS mode runs on that module, and `go version -m` on a binary reports the setting. The server, the admin-tools actions, and the UI also start and serve under `GODEBUG=fips140=only`, which refuses every non-approved algorithm. Changing the setting registers new task definitions, so run `inv temporal-deploy` after the apply.
 
 ## Deploy
 
@@ -64,23 +64,23 @@ The secret store redeploys the server after a rotation of the `temporal` role pa
 
 ## UI
 
-The UI runs Temporal UI 2.58.0. It connects to the frontend through the NLB over TLS with host verification and serves HTTPS on port 8080 with a certificate it issues at start. The load balancer does not verify that certificate, and the UI key never leaves the task. The load balancer presents `ui_acm_certificate_arn` under the TLS 1.3 FIPS policy. `inv temporal-certs generate --ui-name NAME` issues a certificate for it from the generated CA, which `aws acm import-certificate` imports. `--internal-name` issues the certificate of the container services' internal load balancer the same way.
+The UI runs Temporal UI 2.58.1. It connects to the frontend through the NLB over TLS with host verification and serves HTTPS on port 8080 with a certificate it issues at start. The load balancer does not verify that certificate, and the UI key never leaves the task. The load balancer presents `ui_acm_certificate_arn` under the TLS 1.3 FIPS policy. `inv temporal-certs generate --ui-name NAME` issues a certificate for it from the generated CA, which `aws acm import-certificate` imports. `--internal-name` issues the certificate of the container services' internal load balancer the same way.
 
 Operators reach the ALB from a security group in `ui_operator_security_group_ids`, to which the module adds egress on 443 to the ALB, or from a network in `ui_allowed_cidr_blocks`, such as a VPN client range. The `private-bedrock` root passes the jumphost task group. `inv temporal-ui` starts a jumphost task and forwards `localhost:8443`, or `--port`, to the ALB until it is interrupted. The browser verifies the ALB certificate against the name it was issued for, so map that name to `127.0.0.1` in `/etc/hosts`, trust the CA that issued it, and open `https://<certificate name>:8443`.
 
 ## Images
 
-`docker/temporal.Dockerfile` builds the server image, `docker/temporal-admin-tools.Dockerfile` the admin-tools image, and `docker/temporal-ui.Dockerfile` the UI image. Each starts from the upstream digest the local stack pins in `compose.yaml`.
+`docker/temporal.Dockerfile` builds the server image, `docker/temporal-admin-tools.Dockerfile` the admin-tools image, and `docker/temporal-ui.Dockerfile` the UI image, each on Amazon Linux 2023 minimal from the release tags and module pins in `docker/al2023/versions.env`. The build raises each module that `TEMPORAL_GO_GET`, `TEMPORAL_CLI_GO_GET`, or `TEMPORAL_UI_GO_GET` names to its fixed version before it compiles.
 
-| Image | Upstream base | Additions |
+| Image | Source | Contents |
 |---|---|---|
-| server | `temporalio/server:1.32.1@sha256:acecbab5b0b8ae9cf4012b508866ca97feda3709577bf157b537239f40029049` | RDS CA bundle, health probe, start script, and the configuration template from `v1.32.1` checked against SHA-256 `8dc9ea0acf7f94b609fa4d1a11aa6d3c3e2c8afd8e7c6c72e50728d4f1fe1129` |
-| admin-tools | `temporalio/admin-tools:1.32.1@sha256:9ef0dc5b063bf4ffd5c1512de72e0e73e225bd2c7006a18ce69bd592a8862a83` | RDS CA bundle and `docker/temporal-admin-tools.sh` |
-| UI | `temporalio/ui:2.58.0@sha256:d36185e811d0ce1720b8d3ca4d9ac4dac504b67181e9b5e3d3ca72b2294f3590` | `openssl` and the start script that issues the UI server certificate |
+| server | `temporalio/temporal` `v1.32.2` | `temporal-server`, the upstream entrypoint, the configuration template of the same tag with a separate frontend client-auth variable, the RDS CA bundle, the health probe, and the start script |
+| admin-tools | `temporalio/temporal` `v1.32.2` and `temporalio/cli` `v1.10.0` | `temporal-sql-tool`, `tdbg`, the `temporal` CLI, the PostgreSQL schemas, the RDS CA bundle, and `docker/temporal-admin-tools.sh` |
+| UI | `temporalio/ui-server` `v2.58.1`, which carries the built web assets | `ui-server`, its `docker.yaml` configuration, `openssl`, and the start script that issues the UI server certificate |
 
 The server and admin-tools images add the RDS global CA bundle at `/etc/ssl/rds-global-bundle.pem`. The build fetches the bundle from `RDS_CA_BUNDLE_URL` and fails unless its SHA-256 matches `RDS_CA_BUNDLE_SHA256`. Set both build arguments to use a regional or GovCloud bundle. RDS publishes a new bundle when it adds a CA, so a bundle bump updates the checksum in both Dockerfiles. The admin-tools image also carries `docker/temporal-admin-tools.sh` as its entrypoint, with `schema` as the default command and `namespace` as the other action.
 
-`inv publish-temporal-images` builds the three images for `linux/arm64`, or `--arch amd64`, and pushes them. Each tag is `<upstream version>-<content hash>-<arch>`, where the hash covers the Dockerfile and every file it copies. An image whose tag is already in its repository is not rebuilt. The task prints each image reference with its digest.
+`inv publish-temporal-images` builds the three images for `linux/arm64`, or `--arch amd64`, scans each with Amazon Inspector before the push as [image governance](../../../docs/image-governance.md) describes, and pushes the images that carry no HIGH or CRITICAL finding that `--exceptions` does not accept. Each tag is `<Temporal version>-<content hash>-<arch>`, where the hash covers the Dockerfile and every file it copies. An image whose tag is already in its repository is not rebuilt. The task prints each image reference with its digest, and exits 1 without printing them when it refuses an image.
 
 The admin-tools task connects to Aurora with `SQL_TLS=true` and `SQL_TLS_CA_FILE=/etc/ssl/rds-global-bundle.pem`. `temporal-sql-tool` verifies the certificate against that bundle and the host name against `SQL_HOST`, so a connection to the cluster endpoint fails on any other CA.
 

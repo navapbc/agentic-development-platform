@@ -21,4 +21,4 @@ export TEMPORAL_UI_SERVER_TLS_CERT="$runtime/ui.pem"
 export TEMPORAL_UI_SERVER_TLS_KEY="$runtime/ui-key.pem"
 
 cd /home/ui-server
-exec ./start-ui-server.sh
+exec ./ui-server --env docker start

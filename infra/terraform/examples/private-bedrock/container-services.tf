@@ -5,7 +5,7 @@ locals {
     ? ["*.${var.container_internal_domain}"] : []
   )
   container_environment_config = var.container_config_dir == "" ? {} : {
-    for name in fileset(var.container_config_dir, "*.yaml") : name => file("${var.container_config_dir}/${name}")
+    for name in fileset(var.container_config_dir, "*.yaml") : name => file("${var.container_config_dir}/${name}") if name != "image_exceptions.yaml"
   }
 
   reader_sets = [var.secret_readers, local.temporal_secret_readers, module.container_services.secret_readers, local.eks_secret_readers, local.tenant_secret_readers, local.tenant_platform_secret_readers]
@@ -26,6 +26,17 @@ locals {
   secret_restart_services = {
     for key in distinct(flatten([for services in local.restart_sets : keys(services)])) :
     key => flatten([for services in local.restart_sets : lookup(services, key, [])])
+  }
+}
+
+resource "terraform_data" "container_config_guard" {
+  count = var.container_config_dir != "" ? 1 : 0
+
+  lifecycle {
+    precondition {
+      condition     = !contains(fileset(var.container_config_dir, "*"), "image_exceptions.yaml")
+      error_message = "container_config_dir holds image_exceptions.yaml. Platform finding exceptions belong in platform/image_exceptions.yaml in the tenant config bucket, added through the image-exception workflow, and tenant exceptions belong in each tenant's config bundle. Remove the file from container_config_dir."
+    }
   }
 }
 

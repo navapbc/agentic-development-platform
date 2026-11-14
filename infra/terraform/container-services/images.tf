@@ -20,6 +20,10 @@ locals {
     "gate-engine-test-policy",
     "agent-server-jvm",
     "agent-server-go",
+    "checks-python",
+    "checks-node",
+    "checks-jvm",
+    "checks-go",
   ])
 }
 

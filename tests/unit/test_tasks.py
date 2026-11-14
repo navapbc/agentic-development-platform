@@ -28,6 +28,7 @@ EXPECTED_TASKS = {
     "local-stop",
     "local-destroy",
     "logs",
+    "platform-logs",
     "db-migrate",
     "schedules-install",
     "db-reset",
@@ -53,7 +54,6 @@ EXPECTED_TASKS = {
     "workflow-status",
     "durability-proof",
     "prune-worker-versions",
-    "fetch-acli",
     "cbm-build",
     "publish-jumphost-image",
     "publish-temporal-images",
@@ -95,6 +95,8 @@ EXPECTED_TASKS = {
     "tenant-config-publish",
     "webhook-setup",
     "webhook-teardown",
+    "image-exceptions-add",
+    "image-exceptions-prune",
 }
 
 

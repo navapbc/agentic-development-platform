@@ -5,6 +5,10 @@ bundle holds any of them and layers over config/<environment>, so a file the bun
 from the environment directory. Every other config file belongs to the platform and is read only
 from the environment directory.
 
+A bundle may also hold BUNDLE_ONLY_FILES, which never layer over the environment's copy. Its
+image_exceptions.yaml accepts findings only in the tenant's own images, and validation refuses an
+entry outside that scope or without the fields every entry needs.
+
 The bundle comes from the directory config/<environment>/tenants/<tenant>/, or from the prefix
 tenants/<tenant>/ of TENANT_CONFIG_BUCKET when that is set. A configured process copies each
 bundle it activates into a local store keyed by the bundle's identity, the version of each file,
@@ -47,6 +51,7 @@ TENANT_FILES = (
     "tickets",
     "profiles",
 )
+BUNDLE_ONLY_FILES = ("image_exceptions",)
 DIRECTORY = "directory"
 S3 = "s3"
 IDENTITY_FILE = "bundle.json"
@@ -352,18 +357,25 @@ def validate_bundle(directory: Path, settings: Settings) -> None:
 
     Every file the bundle holds must be a tenant file, every file the effective config holds
     must parse with the loader the platform uses, and the required content must be present.
+    A problem with the platform's exceptions file is logged as a warning and refuses nothing,
+    since it is not the tenant's to fix.
     """
+    allowed = (*TENANT_FILES, *BUNDLE_ONLY_FILES)
     unknown = sorted(
         entry.name
         for entry in directory.iterdir()
         if entry.is_file()
         and entry.name != IDENTITY_FILE
-        and (bundle_file_name(entry.name) not in TENANT_FILES)
+        and (bundle_file_name(entry.name) not in allowed)
     )
     problems = [
-        f"{name} is not a tenant config file. A bundle holds {', '.join(TENANT_FILES)}."
+        f"{name} is not a tenant config file. A bundle holds {', '.join(allowed)}."
         for name in unknown
     ]
+    from services.integration.image_exceptions import exceptions_setup_problems
+
+    for warning in exceptions_setup_problems(settings):
+        log.warning("%s", warning)
     with pinned(directory):
         try:
             problems.extend(_required_content(settings))

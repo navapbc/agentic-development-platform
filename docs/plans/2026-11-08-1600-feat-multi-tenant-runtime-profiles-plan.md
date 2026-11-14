@@ -108,7 +108,7 @@ Validate every image in a bundle against the tenant's allowed registries and req
 
 ### U5b. Image vulnerability remediation (ADP-180)
 
-Rebuild or replace every published image until the publish scan and the ECR scan report no unaccepted HIGH or CRITICAL finding. Rebuild the images the platform builds on current bases with an OS upgrade layer and current toolchains, bump the repository-intelligence dependencies, move the mirrored upstream images to newer releases or derived builds, build the platform's own agent-server-python-node image, and record each finding with no fix in `image_exceptions.yaml` with a reason and an expiry. Estimate 24-40h, low confidence.
+Rebuild or replace every published image until the publish scan and the ECR scan report no HIGH or CRITICAL finding, with no exception, and harden every image to the CIS Amazon Linux 2023 benchmark. The [image vulnerability remediation plan](2026-11-12-1500-feat-image-vulnerability-remediation-plan.md) records the decisions and the units. Estimate 97-151h, low confidence.
 
 ### U6. LiteLLM database and per-run keys (ADP-177)
 

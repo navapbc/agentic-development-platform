@@ -40,6 +40,7 @@ PLATFORM_NAMESPACE = "agentic-dev-platform"
 SANDBOX_NAMESPACE = "agent-sandbox"
 PLATFORM_IMAGE = "agentic-dev-platform-local"
 OPA_IMAGE = "agentic-dev-platform-opa"
+LITELLM_IMAGE = "agentic-dev-platform-litellm"
 LOCAL_TAG = "local"
 BEDROCK_CLIENT = "agentic-dev-platform/bedrock-client"
 CONFIG_HASH = "agentic-dev-platform/config-hash"
@@ -167,7 +168,7 @@ def set_images(documents: list[dict[str, Any]], tag: str, registry: str = "") ->
         if spec is None:
             continue
         for container in [*spec.get("initContainers", []), *spec.get("containers", [])]:
-            for image in (PLATFORM_IMAGE, OPA_IMAGE):
+            for image in (PLATFORM_IMAGE, OPA_IMAGE, LITELLM_IMAGE):
                 if container.get("image") == f"{image}:{LOCAL_TAG}":
                     container["image"] = f"{prefix}{image}:{tag}"
 

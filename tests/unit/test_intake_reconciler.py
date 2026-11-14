@@ -66,9 +66,13 @@ class _Alerter:
 class _Seeder:
     def __init__(self) -> None:
         self.seeded: list[tuple[str, str, str]] = []
+        self.abandoned: list[tuple[str, str]] = []
 
     async def seed(self, *, execution_id: str, task_id: str, repo: str) -> None:
         self.seeded.append((execution_id, task_id, repo))
+
+    async def abandon(self, *, execution_id: str, reason: str) -> None:
+        self.abandoned.append((execution_id, reason))
 
 
 class _RecordingStore:
@@ -775,3 +779,65 @@ def test_a_local_repository_satisfies_the_checks_requirement_beside_a_github_one
     )
 
     assert required_checks_repos(hermetic_settings()) == frozenset({"notes"})
+
+
+class _Executions:
+    """The executions table as the Postgres seeder and active guard read and write it."""
+
+    def __init__(self) -> None:
+        self.rows: dict[str, dict[str, str | None]] = {}
+
+    async def seed(self, *, execution_id: str, task_id: str, repo: str) -> None:
+        self.rows[execution_id] = {
+            "task_id": task_id,
+            "repo": repo,
+            "state": "TASK_RECEIVED",
+            "workflow_id": None,
+        }
+
+    async def abandon(self, *, execution_id: str, reason: str) -> None:
+        row = self.rows[execution_id]
+        if row["workflow_id"] is None:
+            row["state"] = "FAILED"
+
+    async def active_workflow(self, *, issue_key: str, repo: str) -> str | None:
+        for row in self.rows.values():
+            running = row["state"] not in ("COMPLETED", "FAILED", "CANCELLED")
+            if (
+                running
+                and row["workflow_id"]
+                and (row["task_id"], row["repo"]) == (issue_key, repo)
+            ):
+                return row["workflow_id"]
+        return None
+
+
+class _FailingOnceStarter(_Starter):
+    def __init__(self, executions: _Executions) -> None:
+        super().__init__()
+        self.executions = executions
+        self.failures = 1
+
+    async def start(self, start: IntakeStart) -> str:
+        if self.failures:
+            self.failures -= 1
+            raise RuntimeError("git ls-remote failed")
+        workflow_id = await super().start(start)
+        self.executions.rows[start.execution_id]["workflow_id"] = workflow_id
+        return workflow_id
+
+
+async def test_a_retried_pass_after_a_failed_start_starts_the_ticket():
+    read = _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV")]})
+    executions = _Executions()
+    starter = _FailingOnceStarter(executions)
+    _, alerter, ledger, store, resolver = _defaults()
+
+    with pytest.raises(RuntimeError, match="ls-remote"):
+        await _run(read, starter, alerter, ledger, store, resolver, executions, executions)
+    report = await _run(read, starter, alerter, ledger, store, resolver, executions, executions)
+
+    assert [(record.duplicate, record.workflow_id) for record in report.started] == [
+        (False, "wf-ADEV-1-repo-a")
+    ]
+    assert sorted(row["state"] for row in executions.rows.values()) == ["FAILED", "TASK_RECEIVED"]

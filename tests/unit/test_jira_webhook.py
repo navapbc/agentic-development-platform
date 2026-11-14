@@ -71,9 +71,13 @@ class _Alerter:
 class _Seeder:
     def __init__(self) -> None:
         self.seeded: list[tuple[str, str, str]] = []
+        self.abandoned: list[tuple[str, str]] = []
 
     async def seed(self, *, execution_id: str, task_id: str, repo: str) -> None:
         self.seeded.append((execution_id, task_id, repo))
+
+    async def abandon(self, *, execution_id: str, reason: str) -> None:
+        self.abandoned.append((execution_id, reason))
 
 
 class _RecordingStore:

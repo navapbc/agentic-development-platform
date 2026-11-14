@@ -35,7 +35,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: litellm
-          image: ghcr.io/berriai/litellm:v1.97.0@sha256:468c25f35f3e5ec4e414974f00deab93337b1b4d9953cabcfd3722e59415f834
+          image: 123456789012.dkr.ecr.us-east-1.amazonaws.com/agentic-dev-platform/litellm:0.3.0
           args:
             - --config
             - /app/config/litellm-config.yaml

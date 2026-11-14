@@ -92,6 +92,15 @@ def test_checks_script_build_mode_builds_dockerfile():
     assert "buildah bud -f /workspace/Dockerfile.test" in script
 
 
+def test_checks_script_pulls_without_tls_verification_only_when_told_to():
+    image = _spec()
+    built = ChecksSpec(repo="r", execution_id="e", checkout_dir="/w", command="x", build="D")
+
+    assert "--tls-verify=false" in _checks_script(image, tls_verify=False)
+    assert "--tls-verify=false" not in _checks_script(image)
+    assert "--tls-verify=false" not in _checks_script(built, tls_verify=False)
+
+
 def test_checks_pod_name_is_sanitised_and_bounded():
     name = checks_pod_name("Owner/Repo", "intake-1")
     assert name.startswith("project-checks-")
@@ -215,6 +224,7 @@ def _fake_settings():
         gate_engine_builder_image="builder",
         gate_engine_privileged=False,
         sandbox_node_pool="",
+        gate_registry_tls_verify=True,
     )
 
 

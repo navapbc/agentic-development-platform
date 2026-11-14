@@ -1,4 +1,4 @@
-"""Build the platform container images, mirror the upstream ones, and push them to ECR.
+"""Build the platform container images and the third-party components, and push them to ECR.
 
 The ECS tasks and the EKS pods pull only from ECR, because DNS Firewall resolves no public
 registry.
@@ -9,11 +9,12 @@ registry.
   instead of minting a new Worker Deployment version.
 - The repository-intelligence, collector, TLS sidecar, OPA, eks-deployer, and buildah builder
   images, the example gate engine images under `examples/gate-engines`, and the catalog sandbox
-  images `agent-server-jvm` and `agent-server-go` are tagged `<version>-<content hash>-<arch>`.
-- Langfuse web, Langfuse worker, and ClickHouse are copied by the digest `compose.yaml` pins,
-  LiteLLM by the digest its cluster manifest pins, and the OpenHands agent-server, semgrep, and
-  trivy images by the digests their settings default to. Each copy is tagged with its upstream
-  version and must keep the pinned digest.
+  images `agent-server-jvm`, `agent-server-go`, and `checks-*` are tagged
+  `<version>-<content hash>-<arch>`.
+- trivy, semgrep, ClickHouse, LiteLLM, and Langfuse web and worker are built from the versions
+  `docker/al2023/versions.env` pins and tagged `<version>-<content hash>-<arch>`. A component whose
+  `<NAME>_IMAGE_MODE` pin is `release` is copied from its pinned upstream image instead, tagged
+  with its upstream version, and must keep the pinned digest.
 
 The images are built from the files git tracks or would track, so ignored local artifacts such
 as the binaries under `vendor/bin` never reach an image.
@@ -22,9 +23,12 @@ The references are written to `images.auto.tfvars.json` in the `private-bedrock`
 root, which Terraform loads with no flag, and optionally to a manifest that marks the images
 this run pushed.
 
-Every image is scanned with the Amazon Inspector SBOM generator and the Inspector Scan API before
-it is pushed, as `scripts.image_scan` describes. An image with an unaccepted finding at
-`--block-severity` or above is not pushed, and the run writes no references.
+Every image whose Dockerfile starts FROM ${AL2023_IMAGE} builds on the hardened base that
+`scripts.al2023_base` describes. Every image is scanned with the Amazon Inspector SBOM generator
+and the Inspector Scan API, as `scripts.image_scan` describes, and against the CIS benchmark
+before it is pushed, and the results of each CIS scan are written under `--cis-evidence`. An
+image with an unaccepted finding at `--block-severity` or above, or a CIS rule that neither passes
+nor is accepted, is not pushed, and the run writes no references.
 
 With a signing profile, every image a tenant pod may run from the platform catalog is signed with
 it through notation and the AWS Signer plugin, run from the buildah builder image this publish
@@ -40,14 +44,14 @@ import json
 import re
 import shutil
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-import yaml
 from services import process
 
+from scripts import base_versions
 from scripts.build_id import generate_build_id, release_version, source_digest
 from scripts.publish_temporal_images import (
     BUILD_TIMEOUT_SECONDS,
@@ -96,14 +100,22 @@ REPO_INTELLIGENCE = ImageSpec(
         "database",
         "scripts",
         "docker/platform-entrypoint.sh",
+        "docker/al2023/go-component.sh",
     ),
 )
-COLLECTOR = ImageSpec("otel-collector", "docker/otel-collector.Dockerfile", ("docker/healthprobe",))
-OPA = ImageSpec("opa", "docker/opa.Dockerfile", ("docker/healthprobe",))
+COLLECTOR = ImageSpec(
+    "otel-collector",
+    "docker/otel-collector.Dockerfile",
+    ("docker/healthprobe", "docker/al2023/go-component.sh"),
+)
+OPA = ImageSpec(
+    "opa", "docker/opa.Dockerfile", ("docker/healthprobe", "docker/al2023/go-component.sh")
+)
 EKS_DEPLOYER = ImageSpec(
     "eks-deployer",
     "docker/eks-deployer.Dockerfile",
     (
+        "docker/al2023/go-component.sh",
         "LICENSE",
         "NOTICE",
         "scripts/__init__.py",
@@ -119,7 +131,7 @@ EKS_DEPLOYER = ImageSpec(
         "config/policies",
     ),
 )
-BUILDAH = ImageSpec("buildah", "docker/buildah.Dockerfile", ())
+BUILDAH = ImageSpec("buildah", "docker/buildah.Dockerfile", ("docker/al2023/go-component.sh",))
 TLS_SIDECAR = ImageSpec(
     "tls-sidecar", "docker/tls-sidecar.Dockerfile", ("docker/tls-sidecar", "docker/healthprobe")
 )
@@ -130,19 +142,55 @@ GATE_ENGINES = {
     for name in ("security-policy", "test-policy")
 }
 RUNTIME_IMAGES_KEY = "eks_runtime_images"
+TRIVY = ImageSpec("trivy", "docker/trivy.Dockerfile", ("docker/al2023/go-component.sh",))
+SEMGREP = ImageSpec("semgrep", "docker/semgrep.Dockerfile", ("docker/semgrep",))
+CLICKHOUSE = ImageSpec("clickhouse", "docker/clickhouse.Dockerfile", ())
+LITELLM = ImageSpec("litellm", "docker/litellm.Dockerfile", ("docker/litellm",))
+LANGFUSE_WEB = ImageSpec(
+    "langfuse-web",
+    "docker/langfuse.Dockerfile",
+    ("docker/al2023/go-component.sh",),
+    target="langfuse-web",
+)
+LANGFUSE_WORKER = ImageSpec(
+    "langfuse-worker",
+    "docker/langfuse.Dockerfile",
+    ("docker/al2023/go-component.sh",),
+    target="langfuse-worker",
+)
+BUILD = "build"
+RELEASE = "release"
+# Third-party images the platform builds, or mirrors from the pinned upstream image when the
+# component's <NAME>_IMAGE_MODE pin in docker/al2023/versions.env is release.
+IMAGE_COMPONENTS = {
+    "trivy": (TRIVY, "TRIVY_UPSTREAM_IMAGE"),
+    "semgrep": (SEMGREP, "SEMGREP_UPSTREAM_IMAGE"),
+    "clickhouse": (CLICKHOUSE, "CLICKHOUSE_IMAGE"),
+    "litellm": (LITELLM, "LITELLM_UPSTREAM_IMAGE"),
+    "langfuse-web": (LANGFUSE_WEB, "LANGFUSE_WEB_UPSTREAM_IMAGE"),
+    "langfuse-worker": (LANGFUSE_WORKER, "LANGFUSE_WORKER_UPSTREAM_IMAGE"),
+}
+AGENT_SERVER_DOCKERFILE = "docker/agent-server.Dockerfile"
+AGENT_SERVER_INPUTS = ("docker/agent-server", "docker/al2023/go-component.sh")
+# The repository keeps the name the mirrored upstream image used, so its signatures and the
+# eks_agent_server_image variable carry over.
+AGENT_SERVER = ImageSpec(
+    "openhands-agent-server",
+    AGENT_SERVER_DOCKERFILE,
+    AGENT_SERVER_INPUTS,
+    target="agent-server-python-node",
+)
+CHECKS_DOCKERFILE = "docker/checks.Dockerfile"
+# The catalog images beside the agent-server image that runtime profiles name as catalog:<name>.
 RUNTIME_IMAGES = {
-    name: ImageSpec(name, f"docker/{name}.Dockerfile", ())
-    for name in ("agent-server-jvm", "agent-server-go")
-}
-MIRRORED_SERVICES = {
-    "langfuse-web": "langfuse-web",
-    "langfuse-worker": "langfuse-worker",
-    "clickhouse": "clickhouse",
-}
-MIRRORED_SETTINGS = {
-    "openhands-agent-server": "openhands_agent_server_image",
-    "semgrep": "semgrep_image",
-    "trivy": "trivy_image",
+    **{
+        name: ImageSpec(name, AGENT_SERVER_DOCKERFILE, AGENT_SERVER_INPUTS, target=name)
+        for name in ("agent-server-jvm", "agent-server-go")
+    },
+    **{
+        name: ImageSpec(name, CHECKS_DOCKERFILE, (), target=name)
+        for name in ("checks-python", "checks-node", "checks-jvm", "checks-go")
+    },
 }
 # The catalog repositories a tenant pod may run, which the platform signs.
 SIGNED_CATALOG = frozenset(
@@ -154,12 +202,14 @@ SIGNED_CATALOG = frozenset(
         "openhands-agent-server",
         "agent-server-jvm",
         "agent-server-go",
+        "checks-python",
+        "checks-node",
+        "checks-jvm",
+        "checks-go",
         "buildah",
     }
 )
 SIGNER_PLUGIN = "com.amazonaws.signer.notation.plugin"
-LITELLM = "litellm"
-LITELLM_MANIFEST = "deploy/kubernetes/litellm.yaml"
 _PINNED_REFERENCE = re.compile(
     r"^(?P<source>[^@\s]+):(?P<tag>[\w.-]+)@(?P<digest>sha256:[0-9a-f]{64})$"
 )
@@ -178,18 +228,6 @@ class Mirror:
     origin: str = "compose.yaml"
 
 
-@dataclass(frozen=True)
-class AcliBuild:
-    install: bool = False
-    version: str = ""
-    sha256: str = ""
-
-    def build_args(self) -> dict[str, str]:
-        if not self.install:
-            return {"INSTALL_ACLI": "false"}
-        return {"INSTALL_ACLI": "true", "ACLI_VERSION": self.version, "ACLI_SHA256": self.sha256}
-
-
 def pinned(name: str, reference: str, origin: str) -> Mirror:
     match = _PINNED_REFERENCE.match(reference)
     if match is None:
@@ -197,49 +235,39 @@ def pinned(name: str, reference: str, origin: str) -> Mirror:
     return Mirror(name, match["source"], match["tag"], match["digest"], origin)
 
 
-def mirrors(compose: str) -> list[Mirror]:
-    """Read the pinned upstream image of each mirrored service from `compose.yaml`."""
-    services = yaml.safe_load(compose)["services"]
+def component_mode(pins: Mapping[str, str], name: str) -> str:
+    return pins.get(f"{name.upper().replace('-', '_')}_IMAGE_MODE", BUILD)
+
+
+def release_mirrors(pins: Mapping[str, str]) -> list[Mirror]:
+    """Return the upstream image of each component whose IMAGE_MODE pin is release."""
     return [
-        pinned(name, services[service]["image"], "compose.yaml")
-        for name, service in MIRRORED_SERVICES.items()
+        pinned(name, pins[upstream], "docker/al2023/versions.env")
+        for name, (_, upstream) in IMAGE_COMPONENTS.items()
+        if component_mode(pins, name) == RELEASE
     ]
-
-
-def litellm_reference(manifest: str) -> str:
-    for document in yaml.safe_load_all(manifest):
-        if document and document.get("kind") == "Deployment":
-            for container in document["spec"]["template"]["spec"]["containers"]:
-                if container["name"] == LITELLM:
-                    return container["image"]
-    raise PublishError(f"{LITELLM_MANIFEST} has no {LITELLM} container")
-
-
-def cluster_mirrors(root: Path) -> list[Mirror]:
-    """Read the pinned upstream images the EKS pods run from their settings and manifests."""
-    from scripts.config import Settings
-
-    found = [
-        pinned(name, Settings.model_fields[field].default, f"the {field} setting")
-        for name, field in MIRRORED_SETTINGS.items()
-    ]
-    manifest = (root / LITELLM_MANIFEST).read_text(encoding="utf-8")
-    found.append(pinned(LITELLM, litellm_reference(manifest), LITELLM_MANIFEST))
-    return found
 
 
 def base_image_version(dockerfile: str, image: str) -> str:
-    """Return the version of the pinned base `image` the Dockerfile's FROM line names."""
-    match = re.search(rf"^FROM \S*{re.escape(image)}:([0-9.]+)@sha256:", dockerfile, re.M)
+    """Return the version of the pinned `image` a FROM line or an ARG default names."""
+    match = re.search(
+        rf"^(?:FROM \S*|ARG \w+=\S*){re.escape(image)}:([0-9.]+)@sha256:", dockerfile, re.M
+    )
     if match is None:
         raise PublishError(f"the Dockerfile pins no {image} image by version and digest")
     return match.group(1)
 
 
-def platform_source_hash(root: Path, acli: AcliBuild, arch: str) -> str:
+def pinned_version(dockerfile: str, name: str) -> str:
+    """Return the version an `ARG <name>=v<version>` default pins, without its leading v."""
+    match = re.search(rf"^ARG {re.escape(name)}=v?([0-9][0-9.]*)$", dockerfile, re.M)
+    if match is None:
+        raise PublishError(f"the Dockerfile pins no {name}")
+    return match.group(1)
+
+
+def platform_source_hash(root: Path, arch: str) -> str:
     digest = hashlib.sha256(source_digest(root).encode())
-    for name, value in sorted(acli.build_args().items()):
-        digest.update(f"\0{name}={value}".encode())
     digest.update(f"\0{arch}".encode())
     return digest.hexdigest()[:12]
 
@@ -288,8 +316,18 @@ def build_context(root: Path) -> Iterator[Path]:
 
 class Publisher:
     def __init__(
-        self, ecr, registry: str, name_prefix: str, arch: str, scanner=None, run=None
+        self,
+        ecr,
+        registry: str,
+        name_prefix: str,
+        arch: str,
+        scanner=None,
+        run=None,
+        log=LOG,
+        base=None,
     ) -> None:
+        self.log = log
+        self.base = base
         self.ecr = ecr
         self.registry = registry
         self.name_prefix = name_prefix
@@ -305,10 +343,24 @@ class Publisher:
         if self.scanner is None:
             return True
         result = self.scanner.scan(local, keys)
-        print(f"{LOG} {result.describe()}")
+        print(f"{self.log} {result.describe()}")
+        for line in result.detail():
+            print(f"{self.log}   {line}")
         if not result.passed:
             self.refused.append(result.describe())
         return result.passed
+
+    def _passes_cis(self, context: Path, image: str, name: str) -> bool:
+        """Scan an image against the CIS benchmark, recording it as refused when it fails."""
+        if self.base is None:
+            return True
+        problems = self.base.scan(context, image, name)
+        print(f"{self.log} {image} {'fails' if problems else 'passes'} the CIS benchmark scan")
+        for problem in problems:
+            print(f"{self.log}   {problem}")
+        if problems:
+            self.refused.append(f"{image} fails {len(problems)} CIS benchmark check(s)")
+        return not problems
 
     def _local_digest(self, image: str) -> str:
         return self.run(
@@ -334,11 +386,14 @@ class Publisher:
         image = f"{self.registry}/{repository}:{tag}"
         digest = _pushed_digest(self.ecr, repository, tag)
         if digest:
-            print(f"{LOG} {image} is already pushed")
+            print(f"{self.log} {image} is already pushed")
             return f"{image}@{digest}"
         self._login()
-        print(f"{LOG} building {image} for {PLATFORMS[self.arch]}")
-        if self.scanner is None:
+        if self.base is not None:
+            dockerfile = (context / spec.dockerfile).read_text(encoding="utf-8")
+            build_args = {**self.base.build_args(context, dockerfile), **(build_args or {})}
+        print(f"{self.log} building {image} for {PLATFORMS[self.arch]}")
+        if self.scanner is None and self.base is None:
             self.run(
                 build_command(spec, context, image, self.arch, build_args),
                 timeout=BUILD_TIMEOUT_SECONDS,
@@ -352,21 +407,23 @@ class Publisher:
             )
             if not self._passes_scan(image, [f"{image}@{self._local_digest(image)}"]):
                 return f"{image}@refused"
+            if not self._passes_cis(context, image, spec.name):
+                return f"{image}@refused"
             self.run(["docker", "push", image], timeout=BUILD_TIMEOUT_SECONDS, check=True)
         digest = _pushed_digest(self.ecr, repository, tag)
         self.pushed.append(f"{image}@{digest}")
         return f"{image}@{digest}"
 
-    def platform(self, context: Path, acli: AcliBuild) -> str:
+    def platform(self, context: Path) -> str:
         repository = self._repository(PLATFORM.name)
-        source_hash = platform_source_hash(context, acli, self.arch)
+        source_hash = platform_source_hash(context, self.arch)
         tag, digest = published_platform_tag(self.ecr, repository, source_hash, self.arch)
         if tag:
             image = f"{self.registry}/{repository}:{tag}"
-            print(f"{LOG} {image} is already pushed, build ID {build_id_of(tag)}")
+            print(f"{self.log} {image} is already pushed, build ID {build_id_of(tag)}")
             return f"{image}@{digest}"
         build_id = generate_build_id()
-        build_args = {"AGENT_BUILD_ID": build_id, **acli.build_args()}
+        build_args = {"AGENT_BUILD_ID": build_id}
         return self._build(PLATFORM, context, f"{build_id}-{source_hash}-{self.arch}", build_args)
 
     def built(self, spec: ImageSpec, context: Path, version: str) -> str:
@@ -377,7 +434,7 @@ class Publisher:
         image = f"{self.registry}/{repository}:{mirror.tag}"
         digest = _pushed_digest(self.ecr, repository, mirror.tag)
         if digest:
-            print(f"{LOG} {image} is already pushed")
+            print(f"{self.log} {image} is already pushed")
         else:
             self._login()
             upstream = f"{mirror.source}@{mirror.digest}"
@@ -389,7 +446,7 @@ class Publisher:
                 )
                 if not self._passes_scan(upstream, [upstream, f"{image}@{mirror.digest}"]):
                     return f"{image}@refused"
-            print(f"{LOG} copying {upstream} to {image}")
+            print(f"{self.log} copying {upstream} to {image}")
             self.run(
                 [
                     "docker",
@@ -413,11 +470,12 @@ class Publisher:
         return f"{image}@{digest}"
 
 
-def publish(publisher: Publisher, acli: AcliBuild, root: Path = REPO_ROOT) -> list[str]:
+def publish(publisher: Publisher, root: Path = REPO_ROOT) -> list[str]:
     """Push every image whose tag is not yet in its repository, returning each reference."""
+    pins = base_versions.load(root / "docker" / "al2023" / "versions.env")
     with build_context(root) as context:
         references = [
-            publisher.platform(context, acli),
+            publisher.platform(context),
             publisher.built(REPO_INTELLIGENCE, context, release_version()),
             publisher.built(
                 COLLECTOR,
@@ -438,17 +496,21 @@ def publish(publisher: Publisher, acli: AcliBuild, root: Path = REPO_ROOT) -> li
                 publisher.built(spec, context, release_version())
                 for spec in RUNTIME_IMAGES.values()
             ],
+            publisher.built(AGENT_SERVER, context, release_version()),
             publisher.built(
                 OPA,
                 context,
-                base_image_version(
-                    (context / OPA.dockerfile).read_text(encoding="utf-8"), "openpolicyagent/opa"
+                pinned_version(
+                    (context / OPA.dockerfile).read_text(encoding="utf-8"), "OPA_VERSION"
                 ),
             ),
+            *[
+                publisher.built(spec, context, release_version())
+                for name, (spec, _) in IMAGE_COMPONENTS.items()
+                if component_mode(pins, name) != RELEASE
+            ],
         ]
-    compose = (root / "compose.yaml").read_text(encoding="utf-8")
-    references += [publisher.mirror(mirror) for mirror in mirrors(compose)]
-    references += [publisher.mirror(mirror) for mirror in cluster_mirrors(root)]
+    references += [publisher.mirror(mirror) for mirror in release_mirrors(pins)]
     return references
 
 
@@ -572,15 +634,20 @@ def build_locally(
 ) -> None:
     """Build each (spec, image, build args) into the local image store with the publish command.
 
-    The build context and the build command are the ones a publish uses, so a cluster that runs
-    these images runs what the registry would receive.
+    The build context, the hardened base, and the build command are the ones a publish uses, so a
+    cluster that runs these images runs what the registry would receive.
     """
+    from scripts.al2023_base import Base
+
     run = run or process.run
+    base = Base(arch, run)
     with build_context(root) as context:
         for spec, image, build_args in images:
+            dockerfile = (context / spec.dockerfile).read_text(encoding="utf-8")
+            arguments = {**base.build_args(context, dockerfile), **build_args}
             print(f"{LOG} building {image} for {PLATFORMS[arch]} into the local image store")
             run(
-                build_command(spec, context, image, arch, build_args, output="--load"),
+                build_command(spec, context, image, arch, arguments, output="--load"),
                 timeout=BUILD_TIMEOUT_SECONDS,
                 check=True,
             )
@@ -624,23 +691,39 @@ def registry_digest(image: str, run=None) -> str:
     return f"sha256:{hashlib.sha256(raw).hexdigest()}"
 
 
+def push_locally(
+    images: Mapping[str, tuple[ImageSpec, Path]], registry: str, arch: str, run=None
+) -> dict[str, str]:
+    """Build each (spec, context) on the hardened base, push it to a registry, and pin it.
+
+    Returns each image by its key, as `<registry>/<spec name>:<tag>@<digest>`.
+    """
+    from scripts.al2023_base import Base
+
+    run = run or process.run
+    base = Base(arch, run)
+    pushed = {}
+    for key, (spec, context) in images.items():
+        tag = f"{release_version()}-{content_hash(spec, context)}-{arch}"
+        image = f"{registry}/{spec.name}:{tag}"
+        dockerfile = (context / spec.dockerfile).read_text(encoding="utf-8")
+        print(f"{LOG} building {image} for {PLATFORMS[arch]}")
+        run(
+            build_command(spec, context, image, arch, base.build_args(context, dockerfile)),
+            timeout=BUILD_TIMEOUT_SECONDS,
+            check=True,
+        )
+        pushed[key] = f"{image}@{registry_digest(image, run)}"
+    return pushed
+
+
 def push_engines_locally(registry: str, arch: str, root: Path = REPO_ROOT, run=None) -> dict:
     """Build each example gate engine, push it to a local registry, and return it by digest."""
-    run = run or process.run
-    pushed = {}
     with build_context(root) as context:
-        for name, spec in GATE_ENGINES.items():
-            engine = context / GATE_ENGINE_ROOT / name
-            tag = f"{release_version()}-{content_hash(spec, engine)}-{arch}"
-            image = f"{registry}/{spec.name}:{tag}"
-            print(f"{LOG} building {image} for {PLATFORMS[arch]}")
-            run(
-                build_command(spec, engine, image, arch),
-                timeout=BUILD_TIMEOUT_SECONDS,
-                check=True,
-            )
-            pushed[name] = f"{image}@{registry_digest(image, run)}"
-    return pushed
+        engines = {
+            name: (spec, context / GATE_ENGINE_ROOT / name) for name, spec in GATE_ENGINES.items()
+        }
+        return push_locally(engines, registry, arch, run)
 
 
 def manifest(references: list[str], pushed: list[str]) -> list[dict[str, object]]:
@@ -670,9 +753,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--name-prefix", default="agentic-platform", help="Repository prefix.")
     parser.add_argument("--arch", choices=sorted(PLATFORMS), default="arm64")
     parser.add_argument("--region", default="", help="Registry region. Defaults to AWS_REGION.")
-    parser.add_argument("--install-acli", action="store_true", help="Install acli in the image.")
-    parser.add_argument("--acli-version", default="")
-    parser.add_argument("--acli-sha256", default="")
     parser.add_argument(
         "--images-file", type=Path, default=IMAGES_FILE, help="Where to write the tfvars JSON."
     )
@@ -704,7 +784,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--exceptions",
         default="",
-        help="An image_exceptions.yaml whose unexpired entries accept a finding in an image.",
+        help="A local image_exceptions.yaml to read in place of the platform exceptions file.",
+    )
+    parser.add_argument(
+        "--cis-evidence",
+        type=Path,
+        default=Path("cis-evidence"),
+        help="Directory for the CIS benchmark scan results of the base and of each image.",
     )
     args = parser.parse_args(argv)
 
@@ -729,18 +815,28 @@ def main(argv: list[str] | None = None) -> int:
     session = boto3.Session(region_name=region)
     account = session.client("sts").get_caller_identity()["Account"]
     registry = f"{account}.dkr.ecr.{region}.amazonaws.com"
-    from scripts.image_scan import ImageScanner, load_exceptions
+    from services.integration.image_exceptions import platform_exceptions
+
+    from scripts.image_scan import ImageScanner
 
     scanner = ImageScanner(
         session,
         args.arch,
         block=args.block_severity,
-        exceptions=load_exceptions(args.exceptions),
+        exceptions=platform_exceptions(settings, args.exceptions),
     )
-    publisher = Publisher(session.client("ecr"), registry, args.name_prefix, args.arch, scanner)
-    acli = AcliBuild(args.install_acli, args.acli_version, args.acli_sha256)
+    from scripts.al2023_base import Base
+
+    publisher = Publisher(
+        session.client("ecr"),
+        registry,
+        args.name_prefix,
+        args.arch,
+        scanner,
+        base=Base(args.arch, evidence=args.cis_evidence),
+    )
     try:
-        references = publish(publisher, acli)
+        references = publish(publisher)
         if publisher.refused:
             for refusal in publisher.refused:
                 print(f"{LOG} not pushed: {refusal}")

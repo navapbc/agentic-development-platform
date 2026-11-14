@@ -2,18 +2,23 @@
 
 from __future__ import annotations
 
-import os
-import stat
 from pathlib import Path
 
+import httpx
 import pytest
-from services.integration.intake_readiness import acli_blocker, intake_blocker
+from services.integration.intake_readiness import intake_blocker
+from services.integration.jira.cloud_client import JiraCloudClient, JiraCloudError
 from tests.support import hermetic_settings
 
 TOKEN = "INTAKE_READINESS_TEST_TOKEN"
 
 
-def _jira_config(monkeypatch: pytest.MonkeyPatch, directory: Path, auth_mode: str) -> None:
+def _jira_config(
+    monkeypatch: pytest.MonkeyPatch,
+    directory: Path,
+    auth_mode: str,
+    email: str = "agent@example.com",
+) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "jira.yaml").write_text(
         f"""config_version: 1
@@ -25,7 +30,7 @@ sites:
     auth_mode: {auth_mode}
 default:
   site: main
-  email: agent@example.com
+  email: "{email}"
   token_ref: {TOKEN}
   board: ADP
 projects: {{}}
@@ -33,12 +38,6 @@ projects: {{}}
         encoding="utf-8",
     )
     monkeypatch.setenv("PLATFORM_ENV_CONFIG_DIR", str(directory))
-
-
-def _executable(path: Path, body: bytes) -> str:
-    path.write_bytes(body)
-    path.chmod(path.stat().st_mode | stat.S_IXUSR)
-    return str(path)
 
 
 def test_a_rebar_source_needs_no_secret() -> None:
@@ -59,21 +58,44 @@ def test_a_datacenter_site_with_its_token_is_ready(monkeypatch, tmp_path) -> Non
     assert intake_blocker("jira", hermetic_settings()) == ""
 
 
-def test_a_cloud_site_also_needs_a_runnable_acli(monkeypatch, tmp_path) -> None:
+def test_a_cloud_site_whose_credential_authenticates_is_ready(monkeypatch, tmp_path) -> None:
     _jira_config(monkeypatch, tmp_path / "config", "cloud")
     monkeypatch.setenv(TOKEN, "token")
-    missing = str(tmp_path / "missing-acli")
-    acli = _executable(tmp_path / "acli", b"#!/bin/sh\nexit 0\n")
+    monkeypatch.setattr(JiraCloudClient, "myself", lambda self: {"accountId": "a"})
 
-    blocked = intake_blocker("jira", hermetic_settings(jira_acli_path=missing))
-    ready = intake_blocker("jira", hermetic_settings(jira_acli_path=acli))
-
-    assert blocked == f"acli is not installed at {missing}, which the Jira Cloud path needs"
-    assert ready == ""
+    assert intake_blocker("jira", hermetic_settings()) == ""
 
 
-@pytest.mark.skipif(os.name != "posix", reason="exec format errors are a POSIX behavior")
-def test_an_acli_built_for_another_platform_blocks_intake(tmp_path) -> None:
-    foreign = _executable(tmp_path / "acli", b"\xcf\xfa\xed\xfe" + b"\0" * 64)
+def test_a_cloud_site_that_refuses_the_credential_blocks_intake(monkeypatch, tmp_path) -> None:
+    _jira_config(monkeypatch, tmp_path / "config", "cloud")
+    monkeypatch.setenv(TOKEN, "token")
 
-    assert acli_blocker(foreign).startswith(f"acli at {foreign} cannot run on this platform")
+    def _refuse(self):
+        raise JiraCloudError("Jira Cloud answered 401", 401)
+
+    monkeypatch.setattr(JiraCloudClient, "myself", _refuse)
+
+    assert intake_blocker("jira", hermetic_settings()) == (
+        "Jira Cloud at https://example.atlassian.net refused the credential with 401"
+    )
+
+
+def test_an_unreachable_cloud_site_does_not_block_intake(monkeypatch, tmp_path) -> None:
+    _jira_config(monkeypatch, tmp_path / "config", "cloud")
+    monkeypatch.setenv(TOKEN, "token")
+
+    def _unreachable(self):
+        raise httpx.ConnectError("name resolution failed")
+
+    monkeypatch.setattr(JiraCloudClient, "myself", _unreachable)
+
+    assert intake_blocker("jira", hermetic_settings()) == ""
+
+
+def test_a_cloud_site_without_an_email_blocks_intake(monkeypatch, tmp_path) -> None:
+    _jira_config(monkeypatch, tmp_path / "config", "cloud", email="")
+    monkeypatch.setenv(TOKEN, "token")
+
+    assert intake_blocker("jira", hermetic_settings()) == (
+        "jira.yaml names no allowlisted project with a site, token, and board"
+    )

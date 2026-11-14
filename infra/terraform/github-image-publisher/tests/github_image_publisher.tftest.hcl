@@ -28,6 +28,82 @@ run "disabled_creates_nothing" {
     condition     = length(aws_iam_role.publisher) == 0 && length(aws_iam_openid_connect_provider.github) == 0 && output.role_arn == null
     error_message = "A disabled publisher created a resource."
   }
+
+  assert {
+    condition     = length(aws_iam_role.exception) == 0 && output.exception_role_arn == null
+    error_message = "A disabled publisher created the image-exception role."
+  }
+}
+
+run "without_a_config_store_neither_role_reaches_the_exceptions" {
+  command = apply
+
+  assert {
+    condition = (
+      length(aws_iam_role.exception) == 0 &&
+      length([for statement in jsondecode(aws_iam_role_policy.push[0].policy).Statement : statement if startswith(statement.Sid, "PruneThe")]) == 0
+    )
+    error_message = "The module granted exception access without a config store."
+  }
+}
+
+run "the_publish_role_prunes_the_platform_exceptions_and_reads_the_tenant_ones" {
+  command = apply
+
+  variables {
+    config_store = {
+      bucket_arn  = "arn:aws:s3:::agentic-platform-tenant-config-abc"
+      kms_key_arn = "arn:aws:kms:us-east-1:111111111111:key/config"
+    }
+  }
+
+  assert {
+    condition = (
+      one([for statement in jsondecode(aws_iam_role_policy.push[0].policy).Statement : statement.Resource if statement.Sid == "PruneThePlatformExceptions"]) == "arn:aws:s3:::agentic-platform-tenant-config-abc/platform/image_exceptions.yaml" &&
+      one([for statement in jsondecode(aws_iam_role_policy.push[0].policy).Statement : statement.Action if statement.Sid == "PruneThePlatformExceptions"]) == ["s3:GetObject", "s3:GetObjectVersion", "s3:PutObject"] &&
+      one([for statement in jsondecode(aws_iam_role_policy.push[0].policy).Statement : statement.Resource if statement.Sid == "ReadTheImagePolicyAndTheTenantExceptions"]) == [
+        "arn:aws:s3:::agentic-platform-tenant-config-abc/platform/image_policy.yaml",
+        "arn:aws:s3:::agentic-platform-tenant-config-abc/tenants/*/image_exceptions.yaml",
+      ] &&
+      one([for statement in jsondecode(aws_iam_role_policy.push[0].policy).Statement : statement.Condition.StringEquals["kms:ViaService"] if statement.Sid == "UseTheConfigKeyThroughS3"]) == "s3.us-east-1.amazonaws.com"
+    )
+    error_message = "The publish role cannot prune the platform exceptions, or reaches beyond the exceptions files."
+  }
+
+  assert {
+    condition     = jsonencode([for statement in jsondecode(aws_iam_role_policy.push[0].policy).Statement : statement.Action if jsonencode(statement.Resource) == jsonencode("*")]) == jsonencode(["ecr:GetAuthorizationToken", "inspector-scan:ScanSbom"])
+    error_message = "The publish role holds a wildcard beyond the ECR token and the SBOM scan."
+  }
+}
+
+run "the_exception_role_trusts_only_the_image_exception_environment" {
+  command = apply
+
+  variables {
+    config_store = {
+      bucket_arn  = "arn:aws:s3:::agentic-platform-tenant-config-abc"
+      kms_key_arn = "arn:aws:kms:us-east-1:111111111111:key/config"
+    }
+    pull_repository_arns = ["arn:aws:ecr:us-east-1:111111111111:repository/agentic-platform-ecr-public/*"]
+  }
+
+  assert {
+    condition = (
+      jsondecode(aws_iam_role.exception[0].assume_role_policy).Statement[0].Condition.StringEquals["token.actions.githubusercontent.com:sub"] == "repo:navapbc/agentic-development-platform:environment:image-exception" &&
+      jsondecode(aws_iam_role.exception[0].assume_role_policy).Statement[0].Condition.StringEquals["token.actions.githubusercontent.com:aud"] == "sts.amazonaws.com" &&
+      length(keys(jsondecode(aws_iam_role.exception[0].assume_role_policy).Statement[0].Condition)) == 1
+    )
+    error_message = "The image-exception role trusts a subject other than the image-exception environment."
+  }
+
+  assert {
+    condition = (
+      one([for statement in jsondecode(aws_iam_role_policy.exception[0].policy).Statement : statement.Resource if statement.Sid == "WriteThePlatformExceptions"]) == "arn:aws:s3:::agentic-platform-tenant-config-abc/platform/image_exceptions.yaml" &&
+      jsonencode(one([for statement in jsondecode(aws_iam_role_policy.exception[0].policy).Statement : statement.Resource if statement.Sid == "PullThePlatformImages"])) == jsonencode(concat(var.repository_arns, var.pull_repository_arns)) &&
+      jsonencode([for statement in jsondecode(aws_iam_role_policy.exception[0].policy).Statement : statement.Action if jsonencode(statement.Resource) == jsonencode("*")]) == jsonencode(["ecr:GetAuthorizationToken", "inspector-scan:ScanSbom"])
+    )
+    error_message = "The image-exception role writes beyond the platform exceptions file or pulls beyond the given repositories."
+  }
 }
 
 run "the_role_trusts_only_this_repository_on_main_and_release_tags" {

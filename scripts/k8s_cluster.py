@@ -1,6 +1,6 @@
 """Deploy the in-cluster platform workloads to the local Kubernetes cluster.
 
-The platform and OPA images are built through the build command the image publisher uses,
+The platform, OPA, and LiteLLM images are built through the build command the publisher uses,
 loaded into the cluster the way K8S_IMAGE_LOAD names, and rolled out from the rendered
 manifests. Every kubectl call names K8S_CONTEXT, so a workstation with several clusters
 configured deploys to the one the settings select.
@@ -131,25 +131,15 @@ def image_ref(settings: Settings, name: str, build_id: str) -> str:
     return f"{registry.rstrip('/')}/{name}:{build_id}" if registry else f"{name}:{build_id}"
 
 
-def build_images(
-    settings: Settings, build_id: str, env: Mapping[str, str | None], run: Runner = process.run
-) -> list[str]:
-    """Build the platform and OPA images into the local image store, returning their refs."""
-    from scripts.k8s_render import OPA_IMAGE, PLATFORM_IMAGE
-    from scripts.publish_platform_images import OPA, PLATFORM, AcliBuild, build_locally
+def build_images(settings: Settings, build_id: str, run: Runner = process.run) -> list[str]:
+    """Build the platform, OPA, and LiteLLM images into the local image store and return them."""
+    from scripts.k8s_render import LITELLM_IMAGE, OPA_IMAGE, PLATFORM_IMAGE
+    from scripts.publish_platform_images import LITELLM, OPA, PLATFORM, build_locally
 
-    acli = AcliBuild(
-        (env.get("INSTALL_ACLI") or "false").lower() == "true",
-        env.get("ACLI_VERSION") or "",
-        env.get("ACLI_SHA256") or "",
-    )
     images = [
-        (
-            PLATFORM,
-            image_ref(settings, PLATFORM_IMAGE, build_id),
-            {"AGENT_BUILD_ID": build_id, **acli.build_args()},
-        ),
+        (PLATFORM, image_ref(settings, PLATFORM_IMAGE, build_id), {"AGENT_BUILD_ID": build_id}),
         (OPA, image_ref(settings, OPA_IMAGE, build_id), {}),
+        (LITELLM, image_ref(settings, LITELLM_IMAGE, build_id), {}),
     ]
     build_locally(images, local_arch(), REPO_ROOT, run)
     return [image for _, image, _ in images]
@@ -309,8 +299,6 @@ def scale(settings: Settings, replicas: int, run: Runner = process.run) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    from dotenv import dotenv_values
-
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("reload", "deploy", "delete", "stop", "one-off"))
     parser.add_argument("--build-id", default="")
@@ -332,7 +320,7 @@ def main(argv: list[str] | None = None) -> int:
         delete(settings, documents, volumes=args.volumes)
         return 0
     if args.action == "reload":
-        images = build_images(settings, args.build_id, dotenv_values(REPO_ROOT / ".env"))
+        images = build_images(settings, args.build_id)
         load_images(settings, images)
     apply(settings, documents)
     delete_retired(settings)

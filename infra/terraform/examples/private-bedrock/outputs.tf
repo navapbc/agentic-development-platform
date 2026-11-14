@@ -228,6 +228,16 @@ output "github_image_publisher_role_arn" {
   value       = module.github_image_publisher.role_arn
 }
 
+output "github_image_exception_role_arn" {
+  description = "The role the image-exception workflow assumes. Set it as the AWS_IMAGE_EXCEPTION_ROLE_ARN repository variable. Null without the image publisher and tenants."
+  value       = module.github_image_publisher.exception_role_arn
+}
+
+output "config_bucket" {
+  description = "The tenant config bucket, which holds platform/image_exceptions.yaml. Set it as the AWS_CONFIG_BUCKET repository variable. Null without tenants."
+  value       = module.tenant_config_store.bucket
+}
+
 output "eks" {
   description = "Cluster name, private endpoint, Pod Identity roles, security groups, workspace file system, node scheduling, Load Balancer Controller settings, and each tenant's secrets that the EKS deploy reads. Null without create_eks."
   value = local.eks_enabled ? {

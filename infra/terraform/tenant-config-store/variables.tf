@@ -24,6 +24,24 @@ variable "admin_principals" {
   default     = []
 }
 
+variable "exception_reviewers" {
+  description = "Principal ARNs of the daily exception review, which reads every tenant's tenants/<tenant>/image_exceptions.yaml and no other object under tenants/. Its write access to platform/image_exceptions.yaml comes from its IAM policy."
+  type        = list(string)
+  default     = []
+}
+
+variable "publish_image_policy" {
+  description = "Write image_policy to platform/image_policy.yaml, where the exception writers outside the cluster read the scope of each exceptions file."
+  type        = bool
+  default     = false
+}
+
+variable "image_policy" {
+  description = "Content of platform/image_policy.yaml when publish_image_policy is true, the image_policy.yaml the deployment's workers read."
+  type        = string
+  default     = ""
+}
+
 variable "noncurrent_version_retention_days" {
   description = "Days a replaced bundle file stays restorable, which bounds how far back a tenant's config history reaches in the bucket."
   type        = number

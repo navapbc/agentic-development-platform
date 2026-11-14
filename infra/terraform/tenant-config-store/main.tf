@@ -18,6 +18,9 @@ locals {
 
   bucket_arn  = try(aws_s3_bucket.this[0].arn, "")
   kms_key_arn = try(aws_kms_key.this[0].arn, "")
+
+  platform_exceptions_key = "platform/image_exceptions.yaml"
+  platform_policy_key     = "platform/image_policy.yaml"
 }
 
 resource "aws_kms_key" "this" {
@@ -124,4 +127,71 @@ resource "aws_s3_bucket_policy" "this" {
   policy = local.bucket_policy
 
   depends_on = [aws_s3_bucket_public_access_block.this]
+}
+
+# The platform exceptions file starts empty. The daily review and the image-exception workflow
+# replace it through conditional writes, so a later apply must never write it again.
+resource "aws_s3_object" "platform_exceptions" {
+  count = local.enabled ? 1 : 0
+
+  bucket                 = aws_s3_bucket.this[0].id
+  key                    = local.platform_exceptions_key
+  content                = "config_version: 1\nexceptions: []\n"
+  content_type           = "application/yaml"
+  server_side_encryption = "aws:kms"
+  kms_key_id             = aws_kms_key.this[0].arn
+
+  lifecycle {
+    ignore_changes = [content, etag]
+  }
+
+  depends_on = [
+    aws_s3_bucket_versioning.this,
+    aws_s3_bucket_server_side_encryption_configuration.this,
+    aws_s3_bucket_policy.this,
+  ]
+}
+
+resource "aws_s3_object" "platform_image_policy" {
+  count = local.enabled && var.publish_image_policy ? 1 : 0
+
+  bucket                 = aws_s3_bucket.this[0].id
+  key                    = local.platform_policy_key
+  content                = var.image_policy
+  content_type           = "application/yaml"
+  server_side_encryption = "aws:kms"
+  kms_key_id             = aws_kms_key.this[0].arn
+
+  depends_on = [
+    aws_s3_bucket_versioning.this,
+    aws_s3_bucket_server_side_encryption_configuration.this,
+    aws_s3_bucket_policy.this,
+  ]
+}
+
+resource "aws_iam_policy" "platform_exceptions_read" {
+  count = local.enabled ? 1 : 0
+
+  name        = "${var.name_prefix}-platform-exceptions-read"
+  description = "Reads the platform image exceptions file, for the pull gate of every tenant worker."
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "ReadThePlatformExceptions"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject", "s3:GetObjectVersion"]
+        Resource = "${local.bucket_arn}/${local.platform_exceptions_key}"
+      },
+      {
+        Sid       = "DecryptThroughS3"
+        Effect    = "Allow"
+        Action    = "kms:Decrypt"
+        Resource  = local.kms_key_arn
+        Condition = { StringEquals = { "kms:ViaService" = "s3.${local.region}.amazonaws.com" } }
+      },
+    ]
+  })
+
+  tags = var.tags
 }

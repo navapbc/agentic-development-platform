@@ -11,7 +11,7 @@ A repo with no entry has no declared checks and the gate skips with a warning.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 
 @dataclass(frozen=True)
@@ -89,16 +89,21 @@ def load_checks_configs(
 def checks_for_repo(
     repo: str, settings=None, *, environment: str | None = None
 ) -> ChecksConfig | None:
-    """Return the repository's checks.yaml entry, or else its runtime profile's default checks."""
-    from services.integration.runtime_profiles import repository_profile
+    """Return the repository's checks.yaml entry, or else its runtime profile's default checks.
 
-    explicit = load_checks_configs(settings, environment=environment).get(repo)
-    if explicit is not None:
-        return explicit
-    profile = repository_profile(repo, settings)
-    if profile is None or profile.checks is None:
-        return None
-    return parse_checks_config(repo, dict(profile.checks))
+    An image written catalog:<name> is returned resolved through RUNTIME_IMAGES.
+    """
+    from services.integration.runtime_profiles import repository_profile, resolve_image
+
+    config = load_checks_configs(settings, environment=environment).get(repo)
+    if config is None:
+        profile = repository_profile(repo, settings)
+        if profile is None or profile.checks is None:
+            return None
+        config = parse_checks_config(repo, dict(profile.checks))
+    if not config.image:
+        return config
+    return replace(config, image=resolve_image(config.image, settings))
 
 
 def required_checks_repos(

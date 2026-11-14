@@ -167,10 +167,6 @@ async def test_two_tenants_reach_a_draft_pr_with_no_shared_credential(
 
     monkeypatch.setattr(transport, "_jira_client_class", lambda: _FakeJira)
     monkeypatch.setattr(
-        "services.integration.jira.adapter.ensure_acli_authenticated_cached",
-        lambda *args, **kwargs: False,
-    )
-    monkeypatch.setattr(
         "services.integration.jira.credentials.acceptance_field", lambda *args, **kwargs: ""
     )
     remotes = {
@@ -268,7 +264,7 @@ async def test_two_tenants_reach_a_draft_pr_with_no_shared_credential(
     assert cloud.token != dc.token
     cloud_adapter = build_jira_adapter_for_issue("CLOUDP-1", settings, resolver=jira)
     dc_adapter = build_jira_adapter_for_issue("DCP-1", settings, resolver=jira)
-    assert type(cloud_adapter.client).__name__ == "AcliClient"
+    assert type(cloud_adapter.client).__name__ == "JiraCloudClient"
     assert type(dc_adapter.client).__name__ == "JiraDataCenterTransport"
 
 

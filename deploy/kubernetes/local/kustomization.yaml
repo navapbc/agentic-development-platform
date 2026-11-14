@@ -24,6 +24,9 @@ images:
   - name: 123456789012.dkr.ecr.us-east-1.amazonaws.com/agentic-dev-platform/opa
     newName: agentic-dev-platform-opa
     newTag: local
+  - name: 123456789012.dkr.ecr.us-east-1.amazonaws.com/agentic-dev-platform/litellm
+    newName: agentic-dev-platform-litellm
+    newTag: local
 
 generatorOptions:
   disableNameSuffixHash: true

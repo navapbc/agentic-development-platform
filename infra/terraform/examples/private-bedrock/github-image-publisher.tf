@@ -9,5 +9,10 @@ module "github_image_publisher" {
   allowed_refs                  = var.github_publish_refs
   repository_arns               = values(module.container_services.repository_arns)
   signing_profile_arn           = try(aws_signer_signing_profile.platform[0].arn, "")
-  tags                          = var.tags
+  pull_repository_arns          = local.registry_cache_repository_arns
+  config_store = local.tenants_enabled && length(var.tenants) > 0 ? {
+    bucket_arn  = module.tenant_config_store.bucket_arn
+    kms_key_arn = module.tenant_config_store.kms_key_arn
+  } : null
+  tags = var.tags
 }

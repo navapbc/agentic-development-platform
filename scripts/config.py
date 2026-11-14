@@ -193,7 +193,6 @@ class Settings(BaseSettings):
     repo_index_poll_interval_seconds: float = 30.0
     repo_index_worker_concurrency: int = 2
 
-    jira_acli_path: str = ""
     jira_parked_status: str = ""
 
     ticket_backend: str = "jira"

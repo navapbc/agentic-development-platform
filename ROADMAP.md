@@ -55,13 +55,13 @@ Goal. The platform is technically FedRAMP Medium ready. It has documented local-
 | Platform image builds in CI | 6-10h | Jira ADP-162, a sub-task of ADP-61. Builds and publishes the images in GitHub Actions through the same `inv` tasks a developer runs. |
 | EKS cluster for the pod-orchestrating workloads | 59-85h (low) | Jira ADP-137, ADP-164, ADP-165, ADP-166, ADP-167, ADP-169, ADP-170, and ADP-168, sub-tasks of ADP-61 for the cluster module, the composition wiring, the images, the production overlay, the in-VPC deploy task, the registry provider for the gate pods, the example gate engines, and the verification. [plan](docs/plans/2026-09-14-2151-feat-container-platform-services-terraform-plan.md) |
 | Multi-tenant runtime profiles | 82-112h | Jira ADP-171 with sub-tasks ADP-172 to ADP-179 for tenants, config bundles, runtime profiles, worker pools, image governance, per-run model keys, attribution, and verification. ADP-168 runs its ticket through a tenant. [plan](docs/plans/2026-11-08-1600-feat-multi-tenant-runtime-profiles-plan.md) |
-| Image vulnerability remediation | 24-40h (low) | Jira ADP-180, a sub-task of ADP-171 that blocks ADP-177 and ADP-168. Rebuilds or replaces every published image until the publish scan and the ECR scan report no unaccepted HIGH or CRITICAL finding, and records each finding with no fix as an exception. |
+| Image vulnerability remediation | 97-151h (low) | Jira ADP-180, a sub-task of ADP-171 that blocks ADP-177 and ADP-168, with ADP-153 folded in. Moves every image to Amazon Linux 2023, replaces the Atlassian CLI with a Jira Cloud REST client, builds third-party software from source when its release carries a finding, builds Temporal with the validated Go FIPS module, hardens every image to the CIS benchmark, and rebuilds daily, until the publish scan and the ECR scan report no HIGH or CRITICAL finding with no exception. [plan](docs/plans/2026-11-12-1500-feat-image-vulnerability-remediation-plan.md) |
 | Sandbox teardown | 2-4h | Jira ADP-163, a sub-task of ADP-61. Destroys the composition root and keeps the bootstrap, to stop the sandbox's standing cost between work sessions. |
 | Local Temporal server upgrade to 1.32.1 | 6-10h | Jira ADP-138. [plan](docs/plans/2026-10-30-1330-feat-temporal-server-upgrade-plan.md) |
 | Platform ECS cluster | 3-5h | Jira ADP-145. The shared cluster the platform owns for the Temporal control plane, the ECS services, and other teams. |
 | Temporal control plane terraform | 15-21h | Jira ADP-97. [plan](docs/plans/2026-09-14-2152-feat-temporal-control-plane-terraform-plan.md) |
 | Off-hours Temporal scale-down and database pause | 5-8h | Jira ADP-146 |
-| Validated Go FIPS 140-3 module for the Temporal server and UI | 8-12h, low confidence | Jira ADP-153. Builds the server, admin-tools, and UI binaries from source with `GOFIPS140` set to a CMVP-validated module version. |
+| Validated Go FIPS 140-3 module for the Temporal server and UI | Counted in ADP-180 | Jira ADP-153, folded into ADP-180. Builds the server, admin-tools, and UI binaries from source with `GOFIPS140` set to a CMVP-validated module version. |
 | Observability terraform | 6-10h | Jira ADP-95. [plan](docs/plans/2026-09-14-2153-feat-observability-terraform-plan.md) |
 | Source control repositories in one per-environment file | 8-12h | Jira ADP-161. Moves the repository list into `config/<env>/repositories.yaml` and selects GitHub or a local repository per repository. |
 | Activity worker, review worker, LiteLLM, and OPA in the local cluster | 16-24h | Jira ADP-139, after ADP-161. Moves data in and out of the cluster through `inv` tasks over the Kubernetes API with no host mounts, and refreshes AWS credentials in place through `inv aws-login`. Also removes `langgraph-service`. |
@@ -72,7 +72,7 @@ Goal. The platform is technically FedRAMP Medium ready. It has documented local-
 | Leaked OpenHands sandbox pods | 3-5h | Jira ADP-141 |
 | Slack escalation channel with approve, reject, retry, and abandon actions | 28-42h (low) | Jira ADP-160. [plan](docs/plans/2026-11-06-1000-feat-slack-escalation-channel-plan.md) |
 
-Version effort. 390-569h.
+Version effort. 455-668h.
 
 ## v0.4.0 Production serving and demo readiness
 

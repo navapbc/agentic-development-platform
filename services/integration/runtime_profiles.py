@@ -6,9 +6,9 @@ platform ships catalog profiles in config/platform/runtime-profiles.yaml, and a 
 own in its profiles.yaml, under names the catalog does not use. A repository names its profile in
 repositories.yaml.
 
-A sandbox image written catalog:<name> resolves through RUNTIME_IMAGES, which maps each catalog
-image the deployment publishes to its reference, except catalog:agent-server-python-node, which is
-the platform's own OPENHANDS_AGENT_SERVER_IMAGE. Any other value is used as written.
+A sandbox or checks image written catalog:<name> resolves through RUNTIME_IMAGES, which maps each
+catalog image the deployment publishes to its reference, except catalog:agent-server-python-node,
+which is the platform's own OPENHANDS_AGENT_SERVER_IMAGE. Any other value is used as written.
 
 The run's repository is bound for the duration of each activity, so the gate, checks, and
 sandbox lookups resolve the profile of the repository the run works on.
@@ -205,7 +205,9 @@ def profile_problems(settings: Settings) -> list[str]:
             if profile.sandbox_image:
                 resolve_image(profile.sandbox_image, settings)
             if profile.checks is not None:
-                parse_checks_config(repository.name, dict(profile.checks))
+                checks = parse_checks_config(repository.name, dict(profile.checks))
+                if checks.image:
+                    resolve_image(checks.image, settings)
             if profile.name not in checked_gates:
                 checked_gates.add(profile.name)
                 with bound_repository(repository.name):

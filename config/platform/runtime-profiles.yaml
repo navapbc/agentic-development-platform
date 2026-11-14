@@ -1,8 +1,8 @@
 # Catalog runtime profiles every tenant may assign to a repository by name in repositories.yaml.
 # A profile names the sandbox image the coding agent runs in, the default checks of a repository
 # without its own checks.yaml entry, and gate overrides applied over the tenant's gates.yaml.
-# sandbox_image catalog:<name> resolves through RUNTIME_IMAGES, which the platform's publish step
-# writes. See docs/runtime-profiles.md for the images and why Python and Node share one.
+# A sandbox or checks image catalog:<name> resolves through RUNTIME_IMAGES, which the platform's
+# publish step writes. See docs/runtime-profiles.md for the images and why Python and Node share one.
 config_version: 1
 
 profiles:
@@ -10,7 +10,7 @@ profiles:
     description: Python services such as FastAPI, on Python 3.13.
     sandbox_image: catalog:agent-server-python-node
     checks:
-      image: docker.io/library/python:3.13-slim@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf1070bc106ee9ed90
+      image: catalog:checks-python
       command: "pip install -r requirements-dev.txt && pytest -q"
     gates:
       - name: security-policy
@@ -24,7 +24,7 @@ profiles:
     description: Node and ReactJS applications, on Node 24, in the sandbox image shared with Python.
     sandbox_image: catalog:agent-server-python-node
     checks:
-      image: docker.io/library/node:24-slim@sha256:01d566e8d94d8c619591d78652babfccd3c6992a3dffa9ed5ab39e11cf6c70e9
+      image: catalog:checks-node
       command: "npm ci && npm test -- --watchAll=false"
     gates:
       - name: security-policy
@@ -38,7 +38,7 @@ profiles:
     description: Java services such as Spring Boot, on JDK 21 with Maven. Gradle projects use their wrapper.
     sandbox_image: catalog:agent-server-jvm
     checks:
-      image: docker.io/library/maven:3.9.11-eclipse-temurin-21@sha256:6fdc855a6ed81d288ca7ca37ac6ff5e9308b612485c0801d70b25a858c83d237
+      image: catalog:checks-jvm
       command: "mvn -B -q verify"
     gates:
       - name: security-policy
@@ -49,10 +49,10 @@ profiles:
         required: false
 
   go-service:
-    description: Go services, on Go 1.27.
+    description: Go services, on Go 1.26.
     sandbox_image: catalog:agent-server-go
     checks:
-      image: docker.io/library/golang:1.27-trixie@sha256:6212da3924947f4b6a939df02ea627c13f338f1a41d6c3fcb0dd9d076eef46c4
+      image: catalog:checks-go
       command: "go vet ./... && go test ./..."
     gates:
       - name: security-policy

@@ -20,7 +20,7 @@ from services.integration.tenant_config import (
     pinned,
     validate_bundle,
 )
-from tests.support import write_image_policy
+from tests.support import PERMISSIVE_IMAGE_POLICY, write_image_policy
 
 REPOSITORIES = """config_version: 1
 defaults:
@@ -153,6 +153,50 @@ def test_a_rebar_tenant_needs_a_tickets_file_from_the_bundle_or_the_environment(
     with pytest.raises(ConfigError, match="tickets.yaml is required with TICKET_BACKEND=rebar"):
         validate_bundle(_bundle(tmp_path, {}), _settings())
     validate_bundle(_bundle(tmp_path, {"tickets.yaml": TICKETS}), _settings())
+
+
+def _tenant_exceptions(image: str) -> str:
+    from datetime import UTC, datetime, timedelta
+
+    today = datetime.now(UTC).date()
+    return (
+        "config_version: 1\n"
+        "exceptions:\n"
+        f"  - image: {image}@sha256:{'a' * 64}\n"
+        "    finding: CVE-1\n"
+        "    reason: Vendor fix pending.\n"
+        f"    created: {today.isoformat()}\n"
+        f"    expires: {(today + timedelta(days=7)).isoformat()}\n"
+    )
+
+
+def test_a_bundle_exceptions_file_is_held_only_within_the_tenants_scope(
+    environment, tmp_path, caplog
+) -> None:
+    write_image_policy(
+        environment,
+        PERMISSIVE_IMAGE_POLICY + "platform_registries: [ecr.example]\n"
+        "tenant_prefix: ecr.example/tenants/{tenant}/\n",
+    )
+
+    bundle = _bundle(
+        tmp_path, {"image_exceptions.yaml": _tenant_exceptions("ecr.example/tenants/adp/app")}
+    )
+
+    with caplog.at_level("WARNING"):
+        validate_bundle(bundle, _settings())
+    assert f"{environment / 'image_exceptions.yaml'} is missing" in caplog.text
+    with pinned(bundle):
+        assert env_config_path("image_exceptions", environment="test") == (
+            environment / "image_exceptions.yaml"
+        )
+    with pytest.raises(ConfigError, match=r"image_exceptions.yaml exceptions\[0\] accepts CVE-1"):
+        validate_bundle(
+            _bundle(
+                tmp_path, {"image_exceptions.yaml": _tenant_exceptions("ecr.example/platform/x")}
+            ),
+            _settings(),
+        )
 
 
 def test_a_new_valid_bundle_activates_and_an_invalid_one_keeps_the_last(

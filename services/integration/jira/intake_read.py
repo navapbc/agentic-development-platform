@@ -7,9 +7,8 @@ from typing import Any
 
 from scripts.config import Settings
 
-from services.integration.jira.acli_auth import ensure_acli_authenticated
 from services.integration.jira.adapter import build_jira_adapter
-from services.integration.jira.credentials import CLOUD, JiraCredentialResolver
+from services.integration.jira.credentials import JiraCredentialResolver
 
 
 def _candidate_jql(project: str, intake_label: str = "") -> str:
@@ -26,8 +25,6 @@ class JiraPollReadSource:
 
     async def list_candidate_issues(self, project: str) -> list[dict[str, Any]]:
         cred = self.resolver.resolve(project)
-        if cred is not None and cred.auth_mode == CLOUD:
-            ensure_acli_authenticated(cred, acli_path=self.settings.jira_acli_path)
         adapter = build_jira_adapter(self.settings, project=project, resolver=self.resolver)
         label = cred.intake_label if cred is not None else ""
         return adapter.search_issues(_candidate_jql(project, label))

@@ -1,10 +1,12 @@
-"""Tagging and publishing of the Temporal server and admin-tools images."""
+"""Tagging, scanning, and publishing of the Temporal server, admin-tools, and UI images."""
 
 from __future__ import annotations
 
 import base64
 import re
+import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from scripts import publish_temporal_images as publisher
@@ -13,28 +15,17 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 REGISTRY = "111111111111.dkr.ecr.us-east-1.amazonaws.com"
 
 
-def _digest_pin(text: str, image: str) -> str:
-    match = re.search(rf"{re.escape(image)}:([0-9.]+@sha256:[0-9a-f]{{64}})", text)
-    assert match, f"{image} is not pinned by version and digest"
-    return match.group(1)
-
-
 def _bundle_checksum(dockerfile: str) -> str:
     return re.search(r"^ARG RDS_CA_BUNDLE_SHA256=([0-9a-f]{64})$", dockerfile, re.M).group(1)
 
 
-def test_the_admin_tools_image_pins_the_digest_compose_runs() -> None:
-    compose = (REPO_ROOT / "compose.yaml").read_text(encoding="utf-8")
-    dockerfile = (REPO_ROOT / "docker/temporal-admin-tools.Dockerfile").read_text(encoding="utf-8")
-
-    assert _digest_pin(dockerfile, "temporalio/admin-tools") == _digest_pin(
-        compose, "temporalio/admin-tools"
-    )
+def _dockerfile(name: str) -> str:
+    return (REPO_ROOT / "docker" / name).read_text(encoding="utf-8")
 
 
 def test_both_images_pin_the_same_rds_ca_bundle() -> None:
-    server = (REPO_ROOT / "docker/temporal.Dockerfile").read_text(encoding="utf-8")
-    admin_tools = (REPO_ROOT / "docker/temporal-admin-tools.Dockerfile").read_text(encoding="utf-8")
+    server = _dockerfile("temporal.Dockerfile")
+    admin_tools = _dockerfile("temporal-admin-tools.Dockerfile")
 
     assert _bundle_checksum(server) == _bundle_checksum(admin_tools)
     for dockerfile in (server, admin_tools):
@@ -44,36 +35,34 @@ def test_both_images_pin_the_same_rds_ca_bundle() -> None:
 
 @pytest.mark.parametrize(
     ("spec", "version"),
-    list(zip(publisher.IMAGES, ["1.32.1", "1.32.1", "2.58.0"], strict=True)),
+    list(zip(publisher.IMAGES, ["1.32.2", "1.32.2", "2.58.1"], strict=True)),
     ids=lambda value: getattr(value, "name", value),
 )
-def test_the_tag_carries_the_upstream_version_and_architecture(spec, version) -> None:
+def test_the_tag_carries_the_source_version_and_architecture(spec, version) -> None:
     tag = publisher.image_tag(spec, REPO_ROOT, "arm64")
 
     assert re.fullmatch(rf"{re.escape(version)}-[0-9a-f]{{12}}-arm64", tag)
 
 
-def test_the_ui_image_pins_the_digest_compose_runs() -> None:
-    compose = (REPO_ROOT / "compose.yaml").read_text(encoding="utf-8")
-    dockerfile = (REPO_ROOT / "docker/temporal-ui.Dockerfile").read_text(encoding="utf-8")
-
-    assert _digest_pin(dockerfile, "temporalio/ui") == _digest_pin(compose, "temporalio/ui")
-
-
-def test_the_server_config_template_matches_the_server_version() -> None:
-    dockerfile = (REPO_ROOT / "docker/temporal.Dockerfile").read_text(encoding="utf-8")
-    version = publisher.upstream_version(dockerfile)
-
-    assert (
-        f"/temporalio/temporal/v{version}/common/config/config_template_embedded.yaml" in dockerfile
+def test_the_server_and_admin_tools_build_the_same_release() -> None:
+    assert publisher.source_version(_dockerfile("temporal.Dockerfile")) == (
+        publisher.source_version(_dockerfile("temporal-admin-tools.Dockerfile"))
     )
+
+
+@pytest.mark.parametrize("spec", publisher.IMAGES, ids=lambda spec: spec.name)
+def test_every_binary_builds_with_the_validated_go_module(spec) -> None:
+    dockerfile = _dockerfile(spec.dockerfile.removeprefix("docker/"))
+
+    assert "ARG GOFIPS140=v1.0.0\n" in dockerfile
+    builds = dockerfile.count("go build")
+    assert builds and dockerfile.count('GOFIPS140="${GOFIPS140}" go build') == builds
 
 
 def _project(tmp_path: Path) -> Path:
     (tmp_path / "docker").mkdir()
     (tmp_path / "docker/temporal-admin-tools.Dockerfile").write_text(
-        "ARG TEMPORAL_ADMIN_TOOLS_IMAGE=temporalio/admin-tools:1.32.1@sha256:" + "a" * 64 + "\n",
-        encoding="utf-8",
+        "ARG TEMPORAL_VERSION=v1.32.2\n", encoding="utf-8"
     )
     (tmp_path / "docker/temporal-admin-tools.sh").write_text("echo schema\n", encoding="utf-8")
     return tmp_path
@@ -100,20 +89,16 @@ def test_the_tag_is_stable_for_unchanged_inputs(tmp_path) -> None:
 
 
 @pytest.mark.parametrize(
-    "reference",
-    [
-        "temporalio/server:1.32.1@sha256:" + "a" * 64,
-        "docker.io/temporalio/server:1.32.1@sha256:" + "a" * 64,
-        "mirror.example.com/temporalio/server:1.32.1@sha256:" + "a" * 64,
-    ],
+    ("line", "version"),
+    [("ARG TEMPORAL_VERSION=v1.32.2", "1.32.2"), ("ARG TEMPORAL_UI_VERSION=v2.58.1", "2.58.1")],
 )
-def test_the_version_is_read_with_or_without_a_registry(reference) -> None:
-    assert publisher.upstream_version(f"ARG TEMPORAL_SERVER_IMAGE={reference}\n") == "1.32.1"
+def test_the_version_is_read_from_the_source_tag(line, version) -> None:
+    assert publisher.source_version(f"ARG TEMPORAL_CLI_VERSION=v1.10.0\n{line}\n") == version
 
 
-def test_a_dockerfile_without_a_pinned_upstream_image_is_refused() -> None:
-    with pytest.raises(ValueError, match="pins no temporalio image"):
-        publisher.upstream_version("FROM temporalio/server:latest\n")
+def test_a_dockerfile_without_a_source_tag_is_refused() -> None:
+    with pytest.raises(ValueError, match="pins no TEMPORAL_VERSION"):
+        publisher.source_version("FROM temporalio/server:1.32.1\n")
 
 
 class _ImageNotFound(Exception):
@@ -138,7 +123,34 @@ class _FakeEcr:
         return {"authorizationData": [{"authorizationToken": token}]}
 
 
-def test_publish_builds_only_the_images_not_yet_pushed(monkeypatch) -> None:
+class _Scanner:
+    def __init__(self, refused: set[str]) -> None:
+        self.refused = refused
+        self.scanned: list[str] = []
+
+    def scan(self, image: str, keys: list[str]):
+        self.scanned.append(image)
+        passed = not any(name in image for name in self.refused)
+        return SimpleNamespace(
+            passed=passed, describe=lambda: f"{image} scanned", detail=lambda: []
+        )
+
+
+def _publisher(ecr, scanner, commands):
+    from scripts.publish_platform_images import Publisher
+
+    def run(argv, **options):
+        commands.append(list(argv))
+        if argv[:2] == ["docker", "push"]:
+            image = argv[2]
+            repository, _, tag = image.removeprefix(f"{REGISTRY}/").partition(":")
+            ecr.pushed[(repository, tag)] = "sha256:" + repository.rsplit("/", 1)[1]
+        return subprocess.CompletedProcess(argv, 0, "sha256:local\n", "")
+
+    return Publisher(ecr, REGISTRY, "agentic-platform", "arm64", scanner, run, log=publisher.LOG)
+
+
+def test_publish_scans_and_pushes_only_the_images_not_yet_pushed(monkeypatch) -> None:
     server_tag = publisher.image_tag(publisher.IMAGES[0], REPO_ROOT, "arm64")
     admin_tag = publisher.image_tag(ADMIN_TOOLS, REPO_ROOT, "arm64")
     ui_tag = publisher.image_tag(publisher.IMAGES[2], REPO_ROOT, "arm64")
@@ -148,44 +160,48 @@ def test_publish_builds_only_the_images_not_yet_pushed(monkeypatch) -> None:
             ("agentic-platform/temporal-ui", ui_tag): "sha256:ui",
         }
     )
-    commands: list[tuple[list[str], dict]] = []
+    monkeypatch.setattr("scripts.publish_platform_images._docker_login", lambda ecr, registry: None)
+    commands: list[list[str]] = []
+    scanner = _Scanner(set())
 
-    def run(argv, *, timeout, **options):
-        commands.append((list(argv), options))
-        if argv[:3] == ["docker", "buildx", "build"]:
-            ecr.pushed[("agentic-platform/temporal-admin-tools", admin_tag)] = "sha256:admin"
+    references = publisher.publish(_publisher(ecr, scanner, commands), REPO_ROOT)
 
-    monkeypatch.setattr(publisher.process, "run", run)
-
-    references = publisher.publish(ecr, REGISTRY, "agentic-platform", "arm64", REPO_ROOT)
-
+    admin_image = f"{REGISTRY}/agentic-platform/temporal-admin-tools:{admin_tag}"
     assert references == [
         f"{REGISTRY}/agentic-platform/temporal-server:{server_tag}@sha256:server",
-        f"{REGISTRY}/agentic-platform/temporal-admin-tools:{admin_tag}@sha256:admin",
+        f"{admin_image}@sha256:temporal-admin-tools",
         f"{REGISTRY}/agentic-platform/temporal-ui:{ui_tag}@sha256:ui",
     ]
-    login, build = commands
-    assert login[0] == ["docker", "login", "--username", "AWS", "--password-stdin", REGISTRY]
-    assert login[1]["input"] == b"secret"
-    assert build[0] == publisher.build_command(
-        ADMIN_TOOLS,
-        REPO_ROOT,
-        f"{REGISTRY}/agentic-platform/temporal-admin-tools:{admin_tag}",
-        "arm64",
-    )
+    assert scanner.scanned == [admin_image]
+    build = next(command for command in commands if command[:3] == ["docker", "buildx", "build"])
+    assert build[build.index("--tag") + 1] == admin_image
+    assert "--load" in build
+    assert ["docker", "push", admin_image] in commands
 
 
-def test_publish_skips_the_login_when_every_image_is_pushed(monkeypatch) -> None:
+def test_an_image_with_a_blocking_finding_is_not_pushed(monkeypatch) -> None:
+    ecr = _FakeEcr({})
+    monkeypatch.setattr("scripts.publish_platform_images._docker_login", lambda ecr, registry: None)
+    commands: list[list[str]] = []
+    platform = _publisher(ecr, _Scanner({"temporal-ui"}), commands)
+
+    references = publisher.publish(platform, REPO_ROOT)
+
+    assert references[2].endswith("@refused")
+    assert not any(c[:2] == ["docker", "push"] and "temporal-ui" in c[2] for c in commands)
+    assert len(platform.refused) == 1
+
+
+def test_publish_skips_the_build_when_every_image_is_pushed() -> None:
     pushed = {
-        (f"agentic-platform/{spec.name}", publisher.image_tag(spec, REPO_ROOT, "amd64")): "sha256:x"
+        (f"agentic-platform/{spec.name}", publisher.image_tag(spec, REPO_ROOT, "arm64")): "sha256:x"
         for spec in publisher.IMAGES
     }
     commands: list[list[str]] = []
-    monkeypatch.setattr(publisher.process, "run", lambda argv, **_: commands.append(list(argv)))
 
-    publisher.publish(_FakeEcr(pushed), REGISTRY, "agentic-platform", "amd64", REPO_ROOT)
+    publisher.publish(_publisher(_FakeEcr(pushed), _Scanner(set()), commands), REPO_ROOT)
 
-    assert commands == []
+    assert not any(command[0] == "docker" for command in commands)
 
 
 def test_the_build_targets_the_requested_platform_without_attestations() -> None:

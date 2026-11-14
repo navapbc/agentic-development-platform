@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
 from pathlib import Path
 
 import pytest
 import tasks as tasks_module
+import yaml
 from invoke import Exit
 from invoke.context import Context
 from invoke.runners import Result
@@ -42,6 +45,8 @@ def fixed_build_id(monkeypatch):
     case these tests exercise."""
     monkeypatch.setattr(tasks_module, "resolve_build_id", lambda: BUILD_ID)
     monkeypatch.setattr(tasks_module, "recorded_build_id", lambda: BUILD_ID)
+    monkeypatch.setattr(tasks_module, "_use_hardened_base", lambda: None)
+    monkeypatch.setattr(tasks_module, "_report_exceptions_setup", lambda: None)
 
 
 @pytest.fixture
@@ -59,9 +64,9 @@ def _versions(steps: list[tasks_module.TemporalRelease]) -> list[str]:
 @pytest.mark.parametrize(
     ("schema", "visibility", "expected"),
     [
-        ((1, 18), (1, 9), ["1.30.8", "1.31.4", "1.32.1"]),
-        ((1, 18), (1, 13), ["1.31.4", "1.32.1"]),
-        ((1, 19), (1, 14), ["1.32.1"]),
+        ((1, 18), (1, 9), ["1.30.8", "1.31.4", "1.32.2"]),
+        ((1, 18), (1, 13), ["1.31.4", "1.32.2"]),
+        ((1, 19), (1, 14), ["1.32.2"]),
     ],
 )
 def test_upgrade_runs_each_minor_release_after_the_current_one(schema, visibility, expected):
@@ -76,26 +81,29 @@ def test_upgrade_refuses_a_schema_off_the_path(schema, visibility):
         tasks_module._temporal_upgrade_steps(schema, visibility)
 
 
-def test_only_the_intermediate_releases_override_the_compose_images():
+def test_only_the_intermediate_releases_override_the_compose_builds():
     *intermediate, target = tasks_module._temporal_upgrade_steps((1, 18), (1, 9))
 
-    assert target.image_env() == {}
+    assert target.compose_override() == ""
     for release in intermediate:
-        env = release.image_env()
+        override = yaml.safe_load(release.compose_override().replace("!reset null", "null"))
+        services = override["services"]
         pin = f":{release.version}@sha256:"
-        repository = "docker.io/temporalio"
-        assert env["TEMPORAL_SERVER_IMAGE"].startswith(f"{repository}/server{pin}")
-        assert env["TEMPORAL_ADMIN_TOOLS_IMAGE"].startswith(f"{repository}/admin-tools{pin}")
+        assert services["temporal"]["image"].startswith(f"docker.io/temporalio/server{pin}")
+        assert services["temporal-admin-tools"]["image"].startswith(
+            f"docker.io/temporalio/admin-tools{pin}"
+        )
+        assert "build: !reset null" in release.compose_override()
+        assert services["temporal"]["healthcheck"]["test"][:2] == ["CMD", "wget"]
 
 
-def test_the_target_matches_the_compose_pins():
+def test_the_target_matches_the_release_the_dockerfiles_build():
+    from scripts.publish_temporal_images import source_version
+
     root = Path(tasks_module.__file__).parent
-    version = tasks_module.TEMPORAL_TARGET.version
-    dockerfile = (root / "docker" / "temporal.Dockerfile").read_text(encoding="utf-8")
-    compose = (root / "compose.yaml").read_text(encoding="utf-8")
-
-    assert f"docker.io/temporalio/server:{version}@sha256:" in dockerfile
-    assert f"docker.io/temporalio/admin-tools:{version}@sha256:" in compose
+    for name in ("temporal.Dockerfile", "temporal-admin-tools.Dockerfile"):
+        dockerfile = (root / "docker" / name).read_text(encoding="utf-8")
+        assert source_version(dockerfile) == tasks_module.TEMPORAL_TARGET.version
 
 
 def test_local_up_starts_compose_then_the_cluster_with_credentials_and_repositories(project):
@@ -107,7 +115,7 @@ def test_local_up_starts_compose_then_the_cluster_with_credentials_and_repositor
         f"{tasks_module.HOST_PYTHON} -m scripts.repositories_compose",
         f"{COMPOSE} build --provenance=false --build-arg AGENT_BUILD_ID={BUILD_ID}",
         f"{COMPOSE} run --rm --build db-migrate",
-        f"{COMPOSE} run --rm temporal-admin-tools schema",
+        f"{COMPOSE} run --rm --build temporal-admin-tools schema",
         f"{COMPOSE} up -d --wait --wait-timeout 600 temporal",
         f"{COMPOSE} run --rm temporal-admin-tools namespace",
         f"{COMPOSE} up -d --wait --wait-timeout 600 --remove-orphans",
@@ -143,25 +151,43 @@ def test_local_up_refuses_a_schema_newer_than_the_target(project):
         tasks_module.local_up(context)
 
 
-def test_temporal_upgrade_walks_each_release_with_its_images(project):
+def test_temporal_upgrade_walks_each_release_with_its_images(project, monkeypatch):
     context = _DatabaseContext({"temporal": "1.18", "temporal_visibility": "1.9"})
+    overrides: list[str] = []
+    real_run = context.run
+
+    def run(command, **kwargs):
+        compose_file = (kwargs.get("env") or {}).get("COMPOSE_FILE", "")
+        if compose_file:
+            override = compose_file.split(os.pathsep)[-1]
+            overrides.append(Path(override).read_text(encoding="utf-8"))
+        return real_run(command, **kwargs)
+
+    monkeypatch.setattr(context, "run", run)
 
     tasks_module.temporal_upgrade(context, skip_backup=True)
 
-    server_up = f"{COMPOSE} up -d --build --no-deps --wait --wait-timeout 600 temporal"
-    commands = [command for command, _ in context.commands]
-    assert commands == [
+    bare = tasks_module.COMPOSE
+    server_up = "up -d --build --no-deps --wait --wait-timeout 600 temporal"
+    assert [command for command, _ in context.commands] == [
         f"{COMPOSE} up -d --wait postgres",
-        *[f"{COMPOSE} run --rm temporal-admin-tools schema", server_up] * 3,
+        *[f"{bare} run --rm temporal-admin-tools schema", f"{bare} {server_up}"] * 2,
+        f"{COMPOSE} run --rm --build temporal-admin-tools schema",
+        f"{COMPOSE} {server_up}",
         f"{COMPOSE} run --rm temporal-admin-tools namespace",
     ]
-    server_images = [env.get("TEMPORAL_SERVER_IMAGE", "") for command, env in context.commands]
-    assert [image.partition("@")[0] for image in server_images if image] == [
+    files = [env.get("COMPOSE_FILE", "") for _, env in context.commands]
+    assert [entry.split(os.pathsep)[0] for entry in files if entry] == ["compose.yaml"] * 4
+    images = [
+        line.split()[-1] for text in overrides for line in text.splitlines() if "image:" in line
+    ]
+    assert [image.partition("@")[0] for image in images[::2]] == [
         "docker.io/temporalio/server:1.30.8",
         "docker.io/temporalio/server:1.30.8",
         "docker.io/temporalio/server:1.31.4",
         "docker.io/temporalio/server:1.31.4",
     ]
+    assert not list(Path(tempfile.gettempdir()).glob("temporal-1.3*-*.yaml"))
 
 
 def test_temporal_upgrade_backs_up_both_databases_before_any_schema_change(project, tmp_path):
@@ -177,7 +203,7 @@ def test_temporal_upgrade_backs_up_both_databases_before_any_schema_change(proje
         str(backups / "temporal_visibility.dump"),
     ]
     assert commands.index(dumps[-1]) < commands.index(
-        f"{COMPOSE} run --rm temporal-admin-tools schema"
+        f"{COMPOSE} run --rm --build temporal-admin-tools schema"
     )
     assert backups.is_dir()
 

@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import shlex
 import sys
+import tempfile
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -34,6 +37,14 @@ def _env_file_value(name: str, path: str = ".env") -> str:
             if key.strip() == name:
                 return value.strip().strip("\"'")
     return ""
+
+
+def _compose_file_list() -> list[str]:
+    configured = os.environ.get("COMPOSE_FILE") or _env_file_value("COMPOSE_FILE")
+    if configured:
+        return configured.split(os.environ.get("COMPOSE_PATH_SEPARATOR", os.pathsep))
+    overlays = ("compose.override.yaml", _REPOSITORIES_COMPOSE)
+    return ["compose.yaml", *(overlay for overlay in overlays if os.path.exists(overlay))]
 
 
 def _compose_files() -> str:
@@ -126,6 +137,7 @@ def config_check(c):
 
 
 def _compose_build(c, files: str, build_id: str) -> None:
+    _use_hardened_base()
     # BuildKit's default provenance attestation records the build time, so a rebuild of an
     # unchanged image is a new image index under the containerd image store, and `up` would
     # recreate Temporal and the other built services under the running workers. The compose
@@ -155,13 +167,14 @@ def local_up(c, force=False):
     _compose_build(c, files, build_id)
     db_migrate(c)
     _require_temporal_schema_at_target(c)
-    _temporal_admin(c, "schema")
+    _temporal_admin(c, "schema", build=True)
     c.run(f"{COMPOSE} {files} up -d --wait --wait-timeout 600 temporal")
     _temporal_admin(c, "namespace")
     c.run(f"{COMPOSE} {files} up -d --wait --wait-timeout 600 --remove-orphans")
     _k8s(c, "reload", build_id)
     aws_login(c)
     repos_sync(c)
+    _report_exceptions_setup()
 
 
 @task(
@@ -210,12 +223,18 @@ def gate_engine_images(c, registry="", pull_registry=""):
     """Build the example gate engines, push them to the local registry, and write their digests."""
     flags = f" --registry {shlex.quote(registry)}" if registry else ""
     flags += f" --pull-registry {shlex.quote(pull_registry)}" if pull_registry else ""
+    _start_local_registry(c)
     c.run(f"{HOST_PYTHON} -m scripts.gate_engine_images{flags}", pty=True)
+
+
+def _start_local_registry(c) -> None:
+    c.run(f"{COMPOSE} {_compose_files()} --profile registry up -d --wait registry")
 
 
 @task
 def runtime_images(c):
-    """Build the catalog sandbox images and the builder locally, and write their digests."""
+    """Build the catalog, builder, and scanner images for the local cluster and write digests."""
+    _start_local_registry(c)
     c.run(f"{HOST_PYTHON} -m scripts.runtime_images", pty=True)
 
 
@@ -277,13 +296,31 @@ class TemporalRelease:
     server_image: str = ""
     admin_tools_image: str = ""
 
-    def image_env(self) -> dict[str, str]:
+    def compose_override(self) -> str:
+        """Return a Compose file that runs this release's upstream images in place of the builds.
+
+        The target release returns none, because Compose builds it from the Dockerfiles. An
+        upstream server image has no health probe, so the override checks the same endpoint with
+        its busybox wget.
+        """
         if not self.server_image:
-            return {}
-        return {
-            "TEMPORAL_SERVER_IMAGE": self.server_image,
-            "TEMPORAL_ADMIN_TOOLS_IMAGE": self.admin_tools_image,
-        }
+            return ""
+        health = "http://127.0.0.1:7243/api/v1/namespaces/temporal-system"
+        return (
+            "services:\n"
+            "  temporal:\n"
+            f"    image: {self.server_image}\n"
+            "    build: !reset null\n"
+            "    healthcheck:\n"
+            f'      test: ["CMD", "wget", "-q", "-O", "/dev/null", "{health}"]\n'
+            "      interval: 15s\n"
+            "      timeout: 10s\n"
+            "      start_period: 30s\n"
+            "      retries: 15\n"
+            "  temporal-admin-tools:\n"
+            f"    image: {self.admin_tools_image}\n"
+            "    build: !reset null\n"
+        )
 
 
 # Temporal upgrades only between consecutive minor releases, from the highest patch of each.
@@ -305,16 +342,61 @@ TEMPORAL_UPGRADE_PATH = (
         "docker.io/temporalio/admin-tools:1.31.4@sha256:c286fe515148587228d692806bc6f7652be5febc384a73dfd16379aed69f7d87",
     ),
 )
-TEMPORAL_TARGET = TemporalRelease("1.32.1", (1, 19), (1, 14))
+TEMPORAL_TARGET = TemporalRelease("1.32.2", (1, 19), (1, 14))
 TEMPORAL_DATABASES = ("temporal", "temporal_visibility")
 
 
-def _temporal_admin(c, action: str, env: dict[str, str] | None = None) -> None:
+def _report_exceptions_setup() -> None:
+    from scripts.config import get_settings
+    from services.integration.image_exceptions import exceptions_setup_problems
+
+    for problem in exceptions_setup_problems(get_settings()):
+        print(f"[local-up] warning: {problem}")
+
+
+def _use_hardened_base() -> None:
+    """Build the hardened base when it is absent and point the Compose builds at it.
+
+    The reference is also written to .env, so a `docker compose build` run outside the tasks
+    starts from the same base instead of the minimal image, which has no cis-harden.
+    """
+    from scripts.al2023_base import Base
+    from scripts.env_file import set_values
+    from scripts.k8s_cluster import local_arch
+    from scripts.publish_platform_images import REPO_ROOT, build_context
+
+    with build_context(REPO_ROOT) as context:
+        base = Base(local_arch()).reference(context)
+    os.environ["AL2023_IMAGE"] = base
+    set_values({"AL2023_IMAGE": base})
+
+
+def _temporal_admin(c, action: str, env: dict[str, str] | None = None, build: bool = False) -> None:
+    files = "" if env else f" {_compose_files()}"
+    flag = " --build" if build else ""
     c.run(
-        f"{COMPOSE} {_compose_files()} run --rm temporal-admin-tools {action}",
+        f"{COMPOSE}{files} run --rm{flag} temporal-admin-tools {action}",
         pty=True,
         env=env or {},
     )
+
+
+@contextlib.contextmanager
+def _release_compose_env(release: TemporalRelease) -> Iterator[dict[str, str]]:
+    """Yield the environment that points Compose at the release's images, empty for the target."""
+    override = release.compose_override()
+    if not override:
+        yield {}
+        return
+    with tempfile.NamedTemporaryFile(
+        "w", suffix=".yaml", prefix=f"temporal-{release.version}-", delete=False
+    ) as handle:
+        handle.write(override)
+    try:
+        separator = os.environ.get("COMPOSE_PATH_SEPARATOR", os.pathsep)
+        yield {"COMPOSE_FILE": separator.join([*_compose_file_list(), handle.name])}
+    finally:
+        os.unlink(handle.name)
 
 
 def _psql(c, database: str, query: str) -> str:
@@ -385,6 +467,7 @@ def temporal_upgrade(c, backup_dir="", skip_backup=False):
     if schema is None or visibility is None:
         raise Exit("No Temporal schema to upgrade. Run inv local-up to set up a new database.")
     steps = _temporal_upgrade_steps(schema, visibility)
+    _use_hardened_base()
     if not skip_backup:
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         _backup_temporal_databases(
@@ -392,12 +475,13 @@ def temporal_upgrade(c, backup_dir="", skip_backup=False):
         )
     for release in steps:
         print(f"[temporal-upgrade] applying the schema and starting server {release.version}")
-        env = release.image_env()
-        _temporal_admin(c, "schema", env)
-        c.run(
-            f"{COMPOSE} {files} up -d --build --no-deps --wait --wait-timeout 600 temporal",
-            env=env,
-        )
+        with _release_compose_env(release) as env:
+            _temporal_admin(c, "schema", env, build=not env)
+            step_files = "" if env else f" {files}"
+            c.run(
+                f"{COMPOSE}{step_files} up -d --build --no-deps --wait --wait-timeout 600 temporal",
+                env=env,
+            )
     _temporal_admin(c, "namespace")
 
 
@@ -458,6 +542,13 @@ def local_destroy(c):
     """Remove the stack and its volumes, including the cluster workspace volume."""
     _k8s(c, "delete", recorded_build_id(), " --volumes")
     c.run(f"{COMPOSE} {_compose_files()} down --volumes --remove-orphans")
+
+
+@task(help={"match": "Print only records whose body holds this text."})
+def platform_logs(c, match=""):
+    """Print the platform log records the local collector stored, which survive a redeploy."""
+    flag = f" --match {shlex.quote(match)}" if match else ""
+    c.run(f"{HOST_PYTHON} -m scripts.platform_logs{flag}", pty=True)
 
 
 @task(help={"service": "Optional single service to tail."})
@@ -824,12 +915,6 @@ def durability_proof(c):
     c.run(f"{HOST_PYTHON} -m scripts.durability_proof", pty=True)
 
 
-@task(help={"dest": "Output path for the vendored binary (default vendor/bin/acli)."})
-def fetch_acli(c, dest="vendor/bin/acli"):
-    """Fetch and vendor the Atlassian acli binary (configurable URL, pinned sha256)."""
-    c.run(f"{HOST_PYTHON} -m scripts.fetch_acli --dest {dest}", pty=True)
-
-
 @task(
     help={
         "source": "Existing CBM source checkout to build from (default clones upstream).",
@@ -871,16 +956,18 @@ def publish_jumphost_image(c, tag="v1", arch="arm64", base_image="", repo="", re
         "name_prefix": "Repository prefix (default agentic-platform).",
         "arch": "Target architecture, arm64 or amd64 (default arm64).",
         "region": "AWS region (empty uses AWS_REGION).",
+        "exceptions": "image_exceptions.yaml whose entries the pre-push scan accepts.",
     }
 )
-def publish_temporal_images(c, name_prefix="", arch="arm64", region=""):
-    """Build and push the Temporal server and admin-tools images to the account ECR repositories."""
+def publish_temporal_images(c, name_prefix="", arch="arm64", region="", exceptions=""):
+    """Build the Temporal server, admin-tools, and UI images, scan them, and push them to ECR."""
     from scripts.config import get_settings
 
     settings = get_settings()
     flags = f" --arch {shlex.quote(arch)}"
     flags += f" --name-prefix {shlex.quote(name_prefix)}" if name_prefix else ""
     flags += f" --region {shlex.quote(region)}" if region else ""
+    flags += f" --exceptions {shlex.quote(exceptions)}" if exceptions else ""
     env = {"AWS_PROFILE": settings.aws_profile, "AWS_REGION": settings.aws_region}
     c.run(f"{HOST_PYTHON} -m scripts.publish_temporal_images{flags}", pty=True, env=env)
 
@@ -890,9 +977,6 @@ def publish_temporal_images(c, name_prefix="", arch="arm64", region=""):
         "name_prefix": "Repository prefix (default agentic-platform).",
         "arch": "Target architecture, arm64 or amd64 (default arm64).",
         "region": "AWS region (empty uses AWS_REGION).",
-        "install_acli": "Install acli in the platform image, as INSTALL_ACLI does locally.",
-        "acli_version": "acli version (empty uses the version scripts/fetch_acli.py pins).",
-        "acli_sha256": "SHA-256 of that acli version, required with --acli-version.",
         "manifest": "Also write each image's repository, digest, and whether this run pushed it.",
         "exceptions": "image_exceptions.yaml whose entries the pre-push scan accepts.",
         "unsigned": "Publish without signing, for a deployment that does not verify signatures.",
@@ -903,14 +987,11 @@ def publish_platform_images(
     name_prefix="",
     arch="arm64",
     region="",
-    install_acli=False,
-    acli_version="",
-    acli_sha256="",
     manifest="",
     exceptions="",
     unsigned=False,
 ):
-    """Build the platform images, mirror Langfuse and ClickHouse, scan each, push them to ECR,
+    """Build the platform and third-party component images, scan each, push them to ECR,
     and write their references to images.auto.tfvars.json in the composition root."""
     from scripts.config import get_settings
 
@@ -918,9 +999,6 @@ def publish_platform_images(
     flags = f" --arch {shlex.quote(arch)}"
     flags += f" --name-prefix {shlex.quote(name_prefix)}" if name_prefix else ""
     flags += f" --region {shlex.quote(region)}" if region else ""
-    flags += " --install-acli" if install_acli else ""
-    flags += f" --acli-version {shlex.quote(acli_version)}" if acli_version else ""
-    flags += f" --acli-sha256 {shlex.quote(acli_sha256)}" if acli_sha256 else ""
     flags += f" --manifest {shlex.quote(manifest)}" if manifest else ""
     flags += f" --exceptions {shlex.quote(exceptions)}" if exceptions else ""
     flags += " --unsigned" if unsigned else ""
@@ -1407,6 +1485,43 @@ def webhook_teardown(c, repo=""):
     c.run(f"{HOST_PYTHON} -m scripts.webhook_forward {repo_flag} --remove".strip(), pty=True)
 
 
+@task(
+    help={
+        "scope": "platform for config/<env>/image_exceptions.yaml, tenant for the tenant's file.",
+        "image": "The image as repository@sha256:digest.",
+        "finding": "The finding ID, such as a CVE.",
+        "reason": "Why the finding is accepted.",
+        "expires": "The last day the entry applies, YYYY-MM-DD, within 30 days.",
+        "tenant": "Tenant name for the tenant scope. Defaults to TENANT.",
+        "requester": "Who requests the entry. Defaults to the operating system user.",
+        "approver": "Who approves a platform entry.",
+    }
+)
+def image_exceptions_add(
+    c, scope, image, finding, reason, expires, tenant="", requester="", approver=""
+):
+    """Add or renew a local image finding exception after validating its fields and scope."""
+    flags = f" --scope {shlex.quote(scope)} --image {shlex.quote(image)}"
+    flags += f" --finding {shlex.quote(finding)} --reason {shlex.quote(reason)}"
+    flags += f" --expires {shlex.quote(expires)}"
+    for name, value in (("tenant", tenant), ("requester", requester), ("approver", approver)):
+        flags += f" --{name} {shlex.quote(value)}" if value else ""
+    c.run(f"{HOST_PYTHON} -m scripts.image_exceptions add --local{flags}", pty=True)
+
+
+@task(
+    help={
+        "scope": "platform for config/<env>/image_exceptions.yaml, tenant for the tenant's file.",
+        "tenant": "Tenant name for the tenant scope. Defaults to TENANT.",
+    }
+)
+def image_exceptions_prune(c, scope, tenant=""):
+    """Remove the expired entries from a local image exceptions file."""
+    flags = f" --scope {shlex.quote(scope)}"
+    flags += f" --tenant {shlex.quote(tenant)}" if tenant else ""
+    c.run(f"{HOST_PYTHON} -m scripts.image_exceptions prune --local{flags}", pty=True)
+
+
 ns = Collection()
 for _t in (
     tunnel_start,
@@ -1421,6 +1536,7 @@ for _t in (
     local_stop,
     local_destroy,
     logs,
+    platform_logs,
     db_migrate,
     schedules_install,
     db_reset,
@@ -1444,7 +1560,6 @@ for _t in (
     workflow_status,
     durability_proof,
     prune_worker_versions,
-    fetch_acli,
     sast,
     terraform_test,
     go_test,
@@ -1488,5 +1603,7 @@ for _t in (
     fetch_results,
     webhook_setup,
     webhook_teardown,
+    image_exceptions_add,
+    image_exceptions_prune,
 ):
     ns.add_task(_t)

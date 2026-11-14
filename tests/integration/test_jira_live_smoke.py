@@ -3,9 +3,8 @@
 Configure the Cloud and Data Center sites in config/<env>/jira.yaml and export the tokens the
 config references, for example JIRA_API_TOKEN and JIRA_PAT, in .env.
 
-Cloud smokes run when RUN_LIVE_JIRA_CLOUD=1 and a vendored acli is present. They authenticate
-acli non-interactively when it is not already logged in. Data Center smokes run when
-RUN_LIVE_JIRA_DC=1. The read smokes are non-mutating.
+Cloud smokes run when RUN_LIVE_JIRA_CLOUD=1 and call the REST API with the site's account email
+and API token. Data Center smokes run when RUN_LIVE_JIRA_DC=1. The read smokes are non-mutating.
 
 RUN_LIVE_JIRA_CLOUD_WRITE=1 additionally runs a mutating Cloud smoke that creates an issue. It
 runs before the read smoke, which reads that issue when no JIRA_SMOKE_ISSUE_KEY is set. The read
@@ -20,9 +19,9 @@ from uuid import uuid4
 
 import pytest
 from scripts.config import Settings
-from services.integration.jira import build_jira_adapter, ensure_acli_authenticated
+from services.integration.jira import build_jira_adapter
 from services.integration.jira.adapter import project_of
-from services.integration.jira.credentials import allowed_projects, build_jira_credential_resolver
+from services.integration.jira.credentials import allowed_projects
 from services.integration.jira.normalize import normalize_issue
 
 _SMOKE_ISSUE_KEY = os.environ.get("JIRA_SMOKE_ISSUE_KEY", "")
@@ -39,15 +38,9 @@ def _live_adapter(settings: Settings, project: str):
     return build_jira_adapter(settings, project=project)
 
 
-def _acli_login(settings: Settings, project: str) -> None:
-    cred = build_jira_credential_resolver(settings).resolve(project)
-    if cred is not None:
-        ensure_acli_authenticated(cred, acli_path=settings.jira_acli_path)
-
-
 requires_live_cloud = pytest.mark.skipif(
     os.environ.get("RUN_LIVE_JIRA_CLOUD") != "1",
-    reason="set RUN_LIVE_JIRA_CLOUD=1 with Cloud credentials and acli to run the Cloud smoke",
+    reason="set RUN_LIVE_JIRA_CLOUD=1 with Cloud credentials to run the Cloud smoke",
 )
 requires_live_cloud_write = pytest.mark.skipif(
     os.environ.get("RUN_LIVE_JIRA_CLOUD_WRITE") != "1",
@@ -80,7 +73,6 @@ def test_cloud_creates_and_reads_issue():
     global _created_key, _created_description
     settings = Settings()
     project = _smoke_project(settings)
-    _acli_login(settings, project)
     adapter = _live_adapter(settings, project)
     marker = uuid4()
     summary = f"agentic-dev-platform cloud smoke {marker}"
@@ -136,7 +128,6 @@ def test_cloud_issue_reads_and_normalizes():
     if not issue_key:
         pytest.skip("set JIRA_SMOKE_ISSUE_KEY or enable RUN_LIVE_JIRA_CLOUD_WRITE")
     settings = Settings()
-    _acli_login(settings, project_of(issue_key))
     adapter = _live_adapter(settings, project_of(issue_key))
     raw = _read_created_issue(adapter, issue_key) if _created_key else adapter.get_issue(issue_key)
     task = normalize_issue(raw)

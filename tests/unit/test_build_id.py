@@ -19,6 +19,7 @@ from scripts.build_id import (
     resolve_build_id,
     source_digest,
 )
+from scripts.publish_temporal_images import HARDENED_BASE_FILES
 from services.orchestration.suspension import is_newer_build
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -138,7 +139,7 @@ def test_the_digest_covers_every_path_the_image_copies():
     }
 
     assert uncovered == set()
-    assert digested - {"docker/Dockerfile"} <= copied
+    assert digested - {"docker/Dockerfile", *HARDENED_BASE_FILES} <= copied
 
 
 def test_the_image_bakes_the_identifier_and_defaults_to_the_release_version():
@@ -147,8 +148,9 @@ def test_the_image_bakes_the_identifier_and_defaults_to_the_release_version():
 
     assert f"ARG AGENT_BUILD_ID={release_version()}" in dockerfile
     assert "ENV AGENT_BUILD_ID=${AGENT_BUILD_ID}" in dockerfile
-    assert compose["services"]["workflow-worker"]["build"]["args"]["AGENT_BUILD_ID"] == (
-        "${AGENT_BUILD_ID:-" + release_version() + "}"
+    assert (
+        "AGENT_BUILD_ID=${AGENT_BUILD_ID:-" + release_version() + "}"
+        in (compose["services"]["workflow-worker"]["build"]["args"])
     )
 
 
@@ -185,7 +187,9 @@ def test_local_up_passes_the_resolved_identifier_as_a_build_argument(monkeypatch
     monkeypatch.setattr(tasks, "recorded_build_id", lambda: "0.3.0.20261028093000")
     monkeypatch.setattr(tasks, "db_migrate", lambda c: None)
     monkeypatch.setattr(tasks, "_require_temporal_schema_at_target", lambda c: None)
-    monkeypatch.setattr(tasks, "_temporal_admin", lambda c, step: None)
+    monkeypatch.setattr(tasks, "_temporal_admin", lambda c, step, **_: None)
+    monkeypatch.setattr(tasks, "_use_hardened_base", lambda: None)
+    monkeypatch.setattr(tasks, "_report_exceptions_setup", lambda: None)
     monkeypatch.delenv("AGENT_BUILD_ID", raising=False)
 
     from invoke import Context
@@ -229,7 +233,9 @@ def _pin_builds(monkeypatch, outgoing: str, incoming: str, stranded: list[str]) 
     monkeypatch.setattr(tasks, "recorded_build_id", lambda: outgoing)
     monkeypatch.setattr(tasks, "db_migrate", lambda c: None)
     monkeypatch.setattr(tasks, "_require_temporal_schema_at_target", lambda c: None)
-    monkeypatch.setattr(tasks, "_temporal_admin", lambda c, step: None)
+    monkeypatch.setattr(tasks, "_temporal_admin", lambda c, step, **_: None)
+    monkeypatch.setattr(tasks, "_use_hardened_base", lambda: None)
+    monkeypatch.setattr(tasks, "_report_exceptions_setup", lambda: None)
 
     commands: list[str] = []
     monkeypatch.setattr(Context, "run", lambda self, command, **kwargs: commands.append(command))

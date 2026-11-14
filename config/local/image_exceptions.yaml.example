@@ -1,11 +1,20 @@
-# Scan findings the platform accepts, which the platform owns and a tenant bundle never overrides.
-# Each entry accepts one finding in one image digest until it expires. The image may name the
-# reference as configured or the pull-through cache reference it resolves to.
+# Scan findings the platform accepts in the images it publishes or defines, the catalog of
+# image_policy.yaml and the repositories under platform_registries outside the tenant prefix.
+# A tenant accepts findings in its own images in tenants/<tenant>/image_exceptions.yaml, which
+# needs the same fields except requester and approver.
+#
+# Each entry accepts one finding in one image digest until it expires, no more than 30 days after
+# the day it was created. Write entries with inv image-exceptions-add, which records the created
+# date and refuses an entry outside the file's scope, and remove expired ones with
+# inv image-exceptions-prune.
 
 config_version: 1
 
 exceptions: []
-  # - image: docker.io/library/python@sha256:<digest>
+  # - image: docker.io/library/checks-python@sha256:<digest>
   #   finding: CVE-2025-12345
   #   reason: The vulnerable package is not reachable from the checks command.
+  #   created: 2027-01-05
   #   expires: 2027-01-31
+  #   requester: alice
+  #   approver: bob

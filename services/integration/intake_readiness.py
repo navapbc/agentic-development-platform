@@ -9,8 +9,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from services import process
-
 
 def intake_blocker(source: str, settings: Any) -> str:
     """Return why the source cannot read tickets here, or an empty string when it can."""
@@ -30,29 +28,35 @@ def _jira_blocker(settings: Any) -> str:
         projects = sorted(resolver.projects())
         if not projects:
             return "jira.yaml names no allowlisted project with a site, token, and board"
-        cloud = False
-        for project in projects:
-            credential = resolver.resolve(project)
-            cloud = cloud or (credential is not None and credential.auth_mode == CLOUD)
+        credentials = [resolver.resolve(project) for project in projects]
     except SecretNotFoundError as exc:
         return f"the Jira token {exc.args[0]} has no value"
     except ConfigError as exc:
         return f"jira.yaml is not usable: {exc}"
-    return acli_blocker(settings.jira_acli_path) if cloud else ""
+    for credential in credentials:
+        if credential is not None and credential.auth_mode == CLOUD:
+            refused = _cloud_refusal(credential)
+            if refused:
+                return refused
+    return ""
 
 
-def acli_blocker(acli_path: str) -> str:
-    """Return why acli cannot run, or an empty string when it runs."""
-    command = acli_path or "acli"
+def _cloud_refusal(credential: Any) -> str:
+    """Return why Jira Cloud refuses the credential, or an empty string when it accepts it.
+
+    Only a refusal by the site counts. A network error or a server error is transient, and
+    pausing the schedule for one would hold intake until the next worker start.
+    """
+    import httpx
+
+    from services.integration.jira.cloud_client import JiraCloudClient, JiraCloudError
+
+    client = JiraCloudClient(credential.url, credential.email, credential.token)
     try:
-        process.run(
-            [command, "--version"],
-            timeout=process.SHORT_COMMAND_TIMEOUT_SECONDS,
-            capture_output=True,
-            text=True,
-        )
-    except FileNotFoundError:
-        return f"acli is not installed at {command}, which the Jira Cloud path needs"
-    except OSError as exc:
-        return f"acli at {command} cannot run on this platform ({exc.strerror})"
+        client.myself()
+    except JiraCloudError as exc:
+        if exc.status is not None and 400 <= exc.status < 500:
+            return f"Jira Cloud at {credential.url} refused the credential with {exc.status}"
+    except httpx.HTTPError:
+        return ""
     return ""

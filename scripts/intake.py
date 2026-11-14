@@ -139,6 +139,18 @@ async def install_schedule(source: str, client: Any = None) -> int:
     return 0
 
 
+def _export_logs() -> None:
+    """Export this command's log records, the retry audit event among them, like a worker's."""
+    import logging
+
+    from observability.logs import configure_logging
+
+    from scripts.config import configured_log_level
+
+    logging.basicConfig(level=configured_log_level())
+    configure_logging("operator.intake")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Reconcile ticket intake from Jira or rebar into draft PR executions."
@@ -165,6 +177,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Scope a --retry to one repository when the ticket fanned out to several.",
     )
     args = parser.parse_args(argv)
+    _export_logs()
     source = resolve_intake_source(args.source, get_settings())
     if args.retry:
         return asyncio.run(_retry(source, args.retry, args.repo))
@@ -174,6 +187,10 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    from observability.logs import force_flush_logs
     from services.temporal_client import exit_without_finalization
 
-    exit_without_finalization(main())
+    code = main()
+    # exit_without_finalization skips the interpreter's shutdown, which would flush the batch.
+    force_flush_logs()
+    exit_without_finalization(code)
