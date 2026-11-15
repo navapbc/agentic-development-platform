@@ -21,7 +21,31 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  source:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      ref: ${{ steps.ref.outputs.ref }}
+    steps:
+      - name: Choose the source to publish
+        id: ref
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != schedule ]; then
+            echo "ref=$GITHUB_REF" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          release=$(gh api --paginate "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v" --jq '.[].ref' | { grep -E '^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$' || true; } | sort -V | tail -n 1)
+          [ -n "$release" ] || echo "::notice::No release tag exists, so the scheduled run publishes nothing."
+          echo "ref=$release" >> "$GITHUB_OUTPUT"
+
   base:
+    needs: source
+    if: needs.source.outputs.ref != ''
     runs-on: ${{ (inputs.arch || 'arm64') == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     permissions:
       contents: read
@@ -33,6 +57,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.source.outputs.ref }}
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -58,7 +83,7 @@ jobs:
           if-no-files-found: error
 
   images:
-    needs: base
+    needs: [source, base]
     runs-on: ${{ (inputs.arch || 'arm64') == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     permissions:
       contents: read
@@ -72,6 +97,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.source.outputs.ref }}
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -99,7 +125,7 @@ jobs:
           if-no-files-found: warn
 
   publish:
-    needs: images
+    needs: [source, images]
     runs-on: ${{ (inputs.arch || 'arm64') == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     permissions:
       contents: read
@@ -111,6 +137,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.source.outputs.ref }}
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -150,8 +177,8 @@ jobs:
           if-no-files-found: error
 
   report:
-    needs: [images, publish]
-    if: ${{ !cancelled() }}
+    needs: [source, images, publish]
+    if: ${{ !cancelled() && needs.source.outputs.ref != '' }}
     runs-on: ${{ (inputs.arch || 'arm64') == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     permissions:
       contents: read
@@ -162,6 +189,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.source.outputs.ref }}
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -222,6 +250,7 @@ jobs:
       - name: Write the run report
         if: ${{ !cancelled() }}
         env:
+          SOURCE_REF: ${{ needs.source.outputs.ref }}
           IMAGES_RESULT: ${{ needs.images.result }}
           PUBLISH_RESULT: ${{ needs.publish.result }}
         run: |
@@ -231,6 +260,7 @@ jobs:
             echo "# Image run report for linux/$ARCH"
             echo
             [ ! -s image-report/warnings.md ] || { cat image-report/warnings.md; echo; }
+            echo "- Source: $SOURCE_REF"
             echo "- Image group jobs: $IMAGES_RESULT"
             echo "- Publish job: $PUBLISH_RESULT"
             echo "- Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
