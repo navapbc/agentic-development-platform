@@ -13,20 +13,24 @@ Reusable module that provisions the bucket that holds each tenant's config bundl
 - A bucket policy that denies the following.
   - Any request without TLS, and any request below TLS 1.2.
   - Any object written outside `tenants/` and the two platform keys.
-  - A write or delete under a tenant's prefix by a principal other than that tenant's `publishers` and `admin_principals`.
-  - A read under a tenant's prefix by a principal other than that tenant's `readers`, `publishers`, `admin_principals`, and the `exception_reviewers`, so one tenant's worker cannot read another tenant's bundle even with a broader IAM policy.
+  - A write or delete under `tenants/<tenant>/` by a principal other than `admin_principals` and those tagged `tenant-config-publisher = <tenant>`.
+  - A read under `tenants/<tenant>/` by a principal other than `shared_readers`, `exception_reviewers`, `admin_principals`, and those tagged `tenant-config-reader = <tenant>` or `tenant-config-publisher = <tenant>`, so one tenant's worker cannot read another tenant's bundle even with a broader IAM policy.
   - A read by an `exception_reviewers` principal of any object other than `tenants/<tenant>/image_exceptions.yaml` and the `platform/` keys.
   - Any upload that names an encryption other than SSE-KMS, or a KMS key other than the bucket key.
 
-The tenant principals appear only in policy conditions, so the bucket can be created before the roles. The [tenant](../tenant) module grants each tenant's worker and publisher the matching IAM permissions.
+The two tenant denies are fixed statements that resolve the tenant from the caller's principal tag, `${aws:PrincipalTag/tenant-config-reader}` and `${aws:PrincipalTag/tenant-config-publisher}` in their `NotResource`, so the policy does not grow with the tenant count and stays far below the 20 KB limit of a bucket policy. A principal without the tag matches neither entry and is denied every tenant prefix. The `tenant_principal_tag_keys` output names both keys. A tenant's worker role carries the reader tag and its publisher role the publisher tag, each with the tenant name as its value, and a principal that reads every tenant, such as repository intelligence or the inbound webhook, is listed in `shared_readers` instead. The denies also cover keys outside `tenants/` and `platform/`, where the bucket admits no object.
+
+The tags decide which tenant a principal reaches, so grant `iam:TagRole` and `iam:UntagRole` on the two keys to administrators only, and let no role that reads the bucket accept them as session tags. EKS Pod Identity sets only its own `kubernetes-*` and `eks-*` session tags, and the GitHub OIDC publisher roles do not allow `sts:TagSession`.
+
+The shared readers, reviewers, and admins appear only in policy conditions, so the bucket can be created before the roles. The [tenant](../tenant) module grants each tenant's worker and publisher the matching IAM permissions and tags the publisher role.
 
 ## FIPS 140 and FedRAMP
 
-S3 encrypts with AWS-LC, and the data keys are protected by the AWS KMS HSM, as the [rebar-ticket-store](../rebar-ticket-store/README.md#fips-140-and-fedramp) README describes. The module supports CM-3 and CM-5, because every change to a bundle is a new object version written by the tenant's publisher role, and AU-2 and AU-12 when the bucket is passed to the `cloudtrail` module's `data_event_bucket_arns`. It also supports SC-28, SC-8, and AC-3 through the per-prefix denies.
+S3 encrypts with AWS-LC, and the data keys are protected by the AWS KMS HSM, as the [rebar-ticket-store](../rebar-ticket-store/README.md#fips-140-and-fedramp) README describes. The module supports CM-3 and CM-5, because every change to a bundle is a new object version written by the tenant's publisher role, and AU-2 and AU-12 when the bucket is passed to the `cloudtrail` module's `data_event_bucket_arns`. It also supports SC-28, SC-8, and AC-3 through the tenant prefix denies.
 
 ## Tests
 
-`tests/tenant_config_store.tftest.hcl` plans the module against a mocked provider and asserts on the bucket settings and the per-prefix denies. Run it with `inv terraform-test`.
+`tests/tenant_config_store.tftest.hcl` plans the module against a mocked provider and asserts on the bucket settings, the tag-based tenant denies, and that the policy for 200 tenants holds eight fixed statements and no tenant name. Run it with `inv terraform-test`.
 
 ## Teardown
 
@@ -42,11 +46,7 @@ module "tenant_config_store" {
   name_prefix                = "agentic-platform"
   access_log_bucket          = "agentic-platform-access-logs-111111111111"
   admin_principals           = ["arn:aws:iam::111111111111:role/platform-admin"]
-  tenants = {
-    adp = {
-      publishers = ["arn:aws:iam::111111111111:role/agentic-platform-tenant-adp-publisher"]
-      readers    = ["arn:aws:iam::111111111111:role/agentic-platform-eks-tenant-adp"]
-    }
-  }
+  tenants                    = ["adp", "payments"]
+  shared_readers             = ["arn:aws:iam::111111111111:role/agentic-platform-repo-intelligence-task"]
 }
 ```

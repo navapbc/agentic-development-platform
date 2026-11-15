@@ -206,8 +206,18 @@ run "pod_identity_roles_are_bound_to_their_service_accounts" {
       activity_worker = { service_account = "activity-worker", policy_arns = ["arn:aws:iam::111111111111:policy/rebar-ticket-store"] }
       litellm         = { service_account = "litellm", policy_arns = ["arn:aws:iam::111111111111:policy/agentic-platform-bedrock-invoke"] }
       inbound_webhook = { service_account = "inbound-webhook" }
-      tenant_adp      = { service_account = "activity-worker", namespace = "tenant-adp" }
+      tenant_adp      = { service_account = "activity-worker", namespace = "tenant-adp", tags = { "tenant-config-reader" = "adp" } }
     }
+    tags = { project = "agentic-platform" }
+  }
+
+  assert {
+    condition = (
+      aws_iam_role.pod_identity["tenant_adp"].tags == tomap({ project = "agentic-platform", "tenant-config-reader" = "adp" }) &&
+      aws_iam_role.pod_identity["litellm"].tags == tomap({ project = "agentic-platform" }) &&
+      aws_iam_role.pod_identity["vpc_cni"].tags == tomap({ project = "agentic-platform" })
+    )
+    error_message = "A Pod Identity role does not carry the module tags and exactly its own workload tags."
   }
 
   assert {

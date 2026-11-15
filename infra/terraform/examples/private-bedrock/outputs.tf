@@ -239,7 +239,7 @@ output "config_bucket" {
 }
 
 output "eks" {
-  description = "Cluster name, private endpoint, Pod Identity roles, security groups, workspace file system, node scheduling, Load Balancer Controller settings, and each tenant's secrets that the EKS deploy reads. Null without create_eks."
+  description = "Cluster name, private endpoint, Pod Identity roles, security groups, workspace file system, node scheduling, Load Balancer Controller settings, each tenant's secrets, and the MCP gateway zone and each tenant's gateway host name that the EKS deploy reads. Null without create_eks."
   value = local.eks_enabled ? {
     cluster_name              = module.eks_cluster.cluster_name
     region                    = var.region
@@ -264,6 +264,9 @@ output "eks" {
     webhook_certificate_arn     = var.eks_webhook_certificate_arn
     mcp_gateway_certificate_arn = var.eks_mcp_gateway_certificate_arn
     mcp_gateway_client_cidrs    = var.eks_mcp_gateway_client_cidrs
+    mcp_gateway_zone_id         = try(aws_route53_zone.mcp_gateway[0].zone_id, null)
+    mcp_gateway_domain          = var.eks_mcp_gateway_domain
+    mcp_gateway_hosts           = local.eks_mcp_gateway_hosts
     temporal_ca_secret_arn      = module.temporal_control_plane.client_ca_secret_arn
     deployer                    = module.eks_deployer.deploy
     secret_arns                 = try(local.eks_deploy_inputs.secrets, {})

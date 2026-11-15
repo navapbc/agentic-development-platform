@@ -128,3 +128,67 @@ async def test_an_issue_the_poll_would_not_take_is_skipped(monkeypatch):
 
     assert "not an intake candidate" in report.skipped
     assert processed == []
+
+
+async def _run_intake_workflow(*activities) -> Any:
+    import asyncio
+    import uuid
+
+    from services.orchestration.temporal_workflows.issue_intake import (
+        JiraIssueIntakeInput,
+        JiraIssueIntakeWorkflow,
+    )
+    from temporalio.testing import WorkflowEnvironment
+    from temporalio.worker import UnsandboxedWorkflowRunner, Worker
+
+    task_queue = f"agent-platform-beta-{uuid.uuid4().hex[:8]}"
+    async with (
+        await WorkflowEnvironment.start_time_skipping() as env,
+        Worker(
+            env.client,
+            task_queue=task_queue,
+            workflows=[JiraIssueIntakeWorkflow],
+            activities=list(activities),
+            workflow_runner=UnsandboxedWorkflowRunner(),
+        ),
+    ):
+        run = env.client.execute_workflow(
+            JiraIssueIntakeWorkflow.run,
+            JiraIssueIntakeInput(issue_key="BETA-12"),
+            id=f"jira-intake-{uuid.uuid4().hex[:8]}",
+            task_queue=task_queue,
+        )
+        return await asyncio.wait_for(run, timeout=60)
+
+
+async def test_an_intake_no_activity_worker_takes_fails_the_workflow_naming_its_queue(
+    monkeypatch,
+):
+    from datetime import timedelta
+
+    from services.orchestration.temporal_workflows import issue_intake
+    from temporalio.client import WorkflowFailureError
+
+    monkeypatch.setattr(issue_intake, "INTAKE_TIMEOUT", timedelta(seconds=1))
+
+    with pytest.raises(WorkflowFailureError) as failed:
+        await _run_intake_workflow()
+
+    cause = failed.value.cause
+    assert isinstance(cause, ApplicationError)
+    assert cause.type == issue_intake.INTAKE_NOT_STARTED
+    assert cause.non_retryable is True
+    assert "BETA-12" in cause.message
+    assert "agent-platform-beta-" in cause.message
+
+
+async def test_an_intake_an_activity_worker_takes_completes():
+    from temporalio import activity
+
+    @activity.defn(name="intake_jira_issue")
+    async def taken(req: JiraIssueIntakeRequest) -> JiraIssueIntakeReport:
+        return JiraIssueIntakeReport(started=1, skipped=req.issue_key)
+
+    report = await _run_intake_workflow(taken)
+
+    assert report == JiraIssueIntakeReport(started=1, skipped="BETA-12")

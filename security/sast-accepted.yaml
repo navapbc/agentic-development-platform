@@ -102,7 +102,7 @@
   rule: DS-0002
   path: docker/al2023/base.Dockerfile
   match: ''
-  justification: The file builds the hardened base and the OpenSCAP scanner, which are build inputs and never run as a service. Every platform Dockerfile starts FROM the base, runs dnf and cis-harden as root in its own steps, and sets its own USER in its final stage, so a non-root USER in the base would force each image to switch back to root. The OpenSCAP stages install packages and scan a mounted root file system, which also needs root.
+  justification: The file builds the hardened base and the OpenSCAP scanner, which are build inputs and never run as a service. Every platform Dockerfile starts FROM the base and runs dnf and cis-harden as root in its own steps, so a non-root USER in the base would force each image to switch back to root. Each image that runs as a service sets its own non-root USER in its final stage. The checks image and the buildah builder image set no USER and run as root, which the DS-0002 entries for docker/checks.Dockerfile and docker/buildah.Dockerfile accept. The OpenSCAP stages install packages and scan a mounted root file system, which also needs root.
 - tool: trivy
   rule: DS-0026
   path: docker/al2023/base.Dockerfile
@@ -246,18 +246,18 @@
 - tool: trivy
   rule: KSV-0048
   path: deploy/kubernetes/sandbox.yaml
-  match: '- apiGroups: [""]'
-  justification: The activity worker creates and deletes one OpenHands sandbox pod per execution and one pod per external review gate, which is the function of the Role. It is a namespaced Role bound only to the activity-worker ServiceAccount, so it grants nothing outside agent-sandbox, and it covers pods alone, with no Deployment, Job, Secret, or RBAC resource.
+  match: '- resources: [pods]'
+  justification: The activity worker creates and deletes short-lived pods, which is the function of the Role. They are the OpenHands sandbox pod of each execution, the image verification pod that checks the signature of the sandbox image before the sandbox pod pulls it when image signature verification is on, one pod per external review gate, which builds the gate engine image when the gate names no image, the project checks pod and the project fix pod, which run the checks image or build it from the repository, and the semgrep and trivy scanner pods. Every pod but the sandbox pod runs the buildah builder image. The tenant renderer copies the namespaced Role into each tenant sandbox namespace and binds it only to that tenant's activity-worker ServiceAccount, so it grants nothing outside that namespace, and it covers pods alone, with no Deployment, Job, Secret, or RBAC resource.
 - tool: trivy
   rule: KSV-0053
   path: deploy/kubernetes/sandbox.yaml
-  match: '- apiGroups: [""]'
-  justification: The activity worker copies the execution checkout into each sandbox and gate pod and reads the patch back through pods/exec, the same tar-over-exec transport the pod runner uses. The grant is limited to the agent-sandbox namespace and the activity-worker ServiceAccount, and the pods it reaches are the ephemeral ones that worker created.
+  match: '- resources: [pods/exec]'
+  justification: The activity worker copies the execution checkout and the registry credentials into the pods it creates, runs their scripts, and reads their results back through pods/exec, the tar-over-exec transport the pod runner uses. The tenant renderer copies the Role into each tenant sandbox namespace and binds it only to that tenant's activity-worker ServiceAccount, and the pods it reaches are the short-lived ones that worker created.
 - tool: semgrep
   rule: terraform.lang.security.iam.no-iam-creds-exposure.no-iam-creds-exposure
   path: infra/terraform/examples/private-bedrock/eks.tf
   match: Action = "ecr:GetAuthorizationToken"
-  justification: The gate, checks, and scanner pods carry no AWS identity, so the activity worker requests the ECR token their in-pod pulls use and copies it into the pod over the exec stream, and the action supports no resource-level scoping. The token authorizes only the pulls the role's other statement grants, which are limited to the semgrep and trivy repositories and the listed gate image repositories, and the pod deletes it after the pull.
+  justification: The gate, checks, scanner, and image verification pods carry no AWS identity that may pull from ECR, so the tenant's activity worker requests the ECR token their in-pod pulls use and copies it into the pod over the exec stream. The action supports no resource-level scoping. The token authorizes only the pulls the PullTheSandboxImages statement grants, which covers every platform catalog repository in local.image_catalog_repositories, the gate engine repositories in var.eks_gate_image_repository_arns, and every repository under each ECR pull-through cache prefix in local.registry_cache_repository_arns, which exist only in the aws registry mode. The pod deletes the token after the pull and before any project or scanner code runs.
 - tool: semgrep
   rule: terraform.aws.security.aws-secretsmanager-secret-unencrypted.aws-secretsmanager-secret-unencrypted
   path: infra/terraform/examples/private-bedrock/registry.tf
@@ -271,23 +271,23 @@
 - tool: semgrep
   rule: terraform.lang.security.iam.no-iam-creds-exposure.no-iam-creds-exposure
   path: infra/terraform/github-image-publisher/main.tf
-  match: Action = "ecr:GetAuthorizationToken"
-  justification: The image-exception workflow pulls the platform image it records an exception for and scans it, and Docker signs in to ECR with the token this action returns. ECR authorizes GetAuthorizationToken only on the * resource. The token authorizes only the pulls the role's PullThePlatformImages statement grants, which are limited to the platform repositories, and only the workflows of the repository's exception environment can assume the role.
+  match: 'Action = "ecr:GetAuthorizationToken" # sast-accepted: image-exception role'
+  justification: The image-exception workflow pulls the platform image it records an exception for and scans it, and Docker signs in to ECR with the token this action returns. ECR authorizes GetAuthorizationToken only on the * resource. The token authorizes only the pulls the role's PullThePlatformImages statement grants, which are limited to the platform repositories, and only a workflow of the repository's exception environment running on exception_ref, refs/heads/main by default, can assume the role.
 - tool: semgrep
   rule: terraform.lang.security.iam.no-iam-data-exfiltration.no-iam-data-exfiltration
   path: infra/terraform/github-image-publisher/main.tf
-  match: Action = ["s3:GetObject", "s3:GetObjectVersion", "s3:PutObject"]
+  match: 'Action = ["s3:GetObject", "s3:GetObjectVersion", "s3:PutObject"] # sast-accepted: image-exception role'
   justification: The rule reports every S3 read action in a policy that holds any statement on the * resource, and the exception policy holds two, for ecr:GetAuthorizationToken and inspector-scan:ScanSbom, which AWS authorizes only on *. This statement names one object, platform/image_exceptions.yaml in the config bucket, which the workflow reads and rewrites to record the exception.
 - tool: semgrep
   rule: terraform.lang.security.iam.no-iam-data-exfiltration.no-iam-data-exfiltration
   path: infra/terraform/github-image-publisher/main.tf
-  match: Action = ["s3:GetObject", "s3:GetObjectVersion"]
+  match: 'Action = ["s3:GetObject", "s3:GetObjectVersion"] # sast-accepted: image-exception role'
   justification: The rule reports every S3 read action in a policy that holds any statement on the * resource, and the exception policy holds two, for ecr:GetAuthorizationToken and inspector-scan:ScanSbom, which AWS authorizes only on *. This statement names one object, platform/image_policy.yaml in the config bucket, which the workflow reads to validate the exception against the image policy.
 - tool: trivy
   rule: KSV-0037
-  path: deploy/kubernetes/aws/network-policies.yaml
+  path: deploy/kubernetes/aws/kube-system-network-policies.yaml
   match: 'app.kubernetes.io/part-of: agentic-dev-platform'
-  justification: The kube-system NetworkPolicies select CoreDNS, the EFS CSI controller, and the Load Balancer Controller, which strict network policy mode denies until a policy in their own namespace selects them. A NetworkPolicy applies only in its namespace, so these must live in kube-system. They grant traffic to the system pods and run nothing there.
+  justification: Trivy reports each NetworkPolicy in this file because it sits in kube-system, at the spec, labels, or part-of label line its parser maps the object to, and each of those lines repeats in every object of the file. The file holds only the kube-system policies of strict network policy mode, system-baseline, coredns-ingress, and load-balancer-controller-webhook, and a unit test keeps it that way. They let CoreDNS, the EFS CSI controller, the Load Balancer Controller, and the other kube-system pods run in strict mode, and a NetworkPolicy applies only in its own namespace, so they must live in kube-system. They grant traffic to the system pods and run nothing there.
 - tool: trivy
   rule: DS-0026
   path: docker/eks-deployer.Dockerfile
@@ -295,14 +295,14 @@
   justification: The eks-deployer runs as a one-shot ECS Fargate task that deploys and exits, so it serves nothing to check, and ECS ignores a Dockerfile HEALTHCHECK.
 - tool: trivy
   rule: KSV-0037
-  path: deploy/kubernetes/aws/network-policies.yaml
+  path: deploy/kubernetes/aws/kube-system-network-policies.yaml
   match: 'spec:'
-  justification: Trivy reports each kube-system NetworkPolicy of strict network policy mode, at the line its parser maps the object to. A NetworkPolicy applies only in its namespace, so the policies that let CoreDNS, the EFS CSI controller, and the Load Balancer Controller run in strict mode must live in kube-system. They grant traffic to the system pods and run nothing there.
+  justification: Trivy reports each NetworkPolicy in this file because it sits in kube-system, at the spec, labels, or part-of label line its parser maps the object to, and each of those lines repeats in every object of the file. The file holds only the kube-system policies of strict network policy mode, system-baseline, coredns-ingress, and load-balancer-controller-webhook, and a unit test keeps it that way. They let CoreDNS, the EFS CSI controller, the Load Balancer Controller, and the other kube-system pods run in strict mode, and a NetworkPolicy applies only in its own namespace, so they must live in kube-system. They grant traffic to the system pods and run nothing there.
 - tool: trivy
   rule: KSV-0037
-  path: deploy/kubernetes/aws/network-policies.yaml
+  path: deploy/kubernetes/aws/kube-system-network-policies.yaml
   match: 'labels:'
-  justification: Trivy reports each kube-system NetworkPolicy of strict network policy mode, at the line its parser maps the object to. A NetworkPolicy applies only in its namespace, so the policies that let CoreDNS, the EFS CSI controller, and the Load Balancer Controller run in strict mode must live in kube-system. They grant traffic to the system pods and run nothing there.
+  justification: Trivy reports each NetworkPolicy in this file because it sits in kube-system, at the spec, labels, or part-of label line its parser maps the object to, and each of those lines repeats in every object of the file. The file holds only the kube-system policies of strict network policy mode, system-baseline, coredns-ingress, and load-balancer-controller-webhook, and a unit test keeps it that way. They let CoreDNS, the EFS CSI controller, the Load Balancer Controller, and the other kube-system pods run in strict mode, and a NetworkPolicy applies only in its own namespace, so they must live in kube-system. They grant traffic to the system pods and run nothing there.
 - tool: bandit
   rule: B404
   path: examples/gate-engines/security-policy/policy.py
@@ -373,11 +373,6 @@
   path: docker/image-scan.Dockerfile
   match: ''
   justification: The image runs the SBOM generator once against an image archive and exits, so it serves nothing to check.
-- tool: semgrep
-  rule: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
-  path: services/orchestration/webhook/tenants.py
-  match: log.error(
-  justification: The rule fires on the word secret in the format string. The arguments are the names of the tenants whose signing secrets all verified the delivery and the repository name from the payload. The secret values stay in the verify_signature call and are not in the log arguments.
 - tool: bandit
   rule: B105
   path: scripts/webhook_eks_render.py

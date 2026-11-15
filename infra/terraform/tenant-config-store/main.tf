@@ -21,6 +21,11 @@ locals {
 
   platform_exceptions_key = "platform/image_exceptions.yaml"
   platform_policy_key     = "platform/image_policy.yaml"
+
+  tenant_tag_keys = {
+    reader    = "tenant-config-reader"
+    publisher = "tenant-config-publisher"
+  }
 }
 
 resource "aws_kms_key" "this" {

@@ -33,6 +33,8 @@ locals {
     ["eks-auth.${var.region}.api.aws"],
     # The AWS Signer plugin checks revocation at this public name, which no interface endpoint serves.
     var.image_signature_verification ? ["verification.signer.${var.region}.amazonaws.com"] : [],
+    # DNS Firewall already resolves *.internal.
+    local.eks_mcp_gateway_exposed && var.eks_mcp_gateway_domain != "" && !endswith(var.eks_mcp_gateway_domain, ".internal") ? ["*.${var.eks_mcp_gateway_domain}"] : [],
   ) : []
 
   # The tenant workers and the inbound webhook start and signal Temporal workflows.
@@ -89,7 +91,7 @@ locals {
       temporal_client = coalesce(module.temporal_control_plane.client_security_group_id, "")
       internal_client = try(module.container_services.internal_endpoints.client_security_group_id, "")
     }
-    tenants      = local.eks_tenant_inputs
+    tenants      = [for entry in local.eks_tenant_inputs : merge(entry, { mcp_gateway_host = lookup(local.eks_mcp_gateway_hosts, entry.name, "") })]
     secrets      = merge(module.secret_store.secret_arns, { temporal_ca = coalesce(module.temporal_control_plane.client_ca_secret_arn, "") })
     vpc_cidr     = data.aws_vpc.eks[0].cidr_block
     service_cidr = module.eks_cluster.service_cidr
@@ -167,8 +169,9 @@ module "eks_deployer" {
   tags = var.tags
 }
 
-# The gate, checks, and scanner pods carry no AWS identity, so the tenant's activity worker
-# requests the ECR token their in-pod pulls use, and its role bounds what that token can pull.
+# The gate, checks, scanner, and image verification pods carry no AWS identity, so the tenant's
+# activity worker requests the ECR token their in-pod pulls use, and its role bounds what that
+# token can pull.
 resource "aws_iam_policy" "eks_sandbox_image_pull" {
   count = local.eks_enabled && var.create_container_services ? 1 : 0
 

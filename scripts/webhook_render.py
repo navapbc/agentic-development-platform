@@ -8,7 +8,9 @@ webhook receives them as GITHUB_WEBHOOK_SECRET_<TENANT> and JIRA_WEBHOOK_SECRET_
 other value of any tenant's settings file. Two tenants may not share a secret, because either
 could then sign the other's deliveries.
 
-With one tenant, the webhook keeps the platform's secrets and config and is left unchanged.
+Every webhook receives TENANTS, the tenants the local cluster runs. With one tenant, the webhook
+keeps the platform's secrets and config, and that tenant signs with the GITHUB_WEBHOOK_SECRET and
+JIRA_WEBHOOK_SECRET of `.env`.
 """
 
 from __future__ import annotations
@@ -103,21 +105,27 @@ def _project_routing_files(pod: dict[str, Any], files: Iterable[str]) -> None:
 def localize_webhook(
     documents: list[dict[str, Any]], inputs: RenderInputs, names: Sequence[str]
 ) -> list[dict[str, Any]]:
-    """Add the webhook's tenant secrets and routing files when it serves more than one tenant."""
+    """Name the webhook's tenants, and add their secrets and routing files for more than one.
+
+    The webhook always receives TENANTS, so a single-tenant webhook serves the tenant whose
+    worker polls its task queue rather than the platform tenant "".
+    """
     from scripts.tenant_config import read_tenant_settings
 
     webhook = webhook_deployment(documents)
-    if webhook is None or len(names) < 2:
+    if webhook is None:
+        return documents
+    template = webhook["spec"]["template"]
+    pod = template["spec"]
+    container = next(c for c in pod["containers"] if c["name"] == WEBHOOK)
+    container.setdefault("env", []).append({"name": "TENANTS", "value": ",".join(names)})
+    if len(names) < 2:
         return documents
     tenants_dir = inputs.root / "config" / inputs.settings.environment / "tenants"
     own = {tenant: read_tenant_settings(tenants_dir, tenant) for tenant in names}
     home = home_tenant(inputs.settings, names)
     secrets = webhook_secret_values(names, home, own, inputs.env)
     files = webhook_routing_files(tenants_dir, names)
-    template = webhook["spec"]["template"]
-    pod = template["spec"]
-    container = next(c for c in pod["containers"] if c["name"] == WEBHOOK)
-    container.setdefault("env", []).append({"name": "TENANTS", "value": ",".join(names)})
     container.setdefault("envFrom", []).append({"secretRef": {"name": WEBHOOK_TENANT_ENV}})
     if files:
         _project_routing_files(pod, files)

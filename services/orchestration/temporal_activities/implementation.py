@@ -15,6 +15,7 @@ IMPLEMENTATION_PROMPT_VERSION = IMPLEMENTATION_VERSION
 
 COORDINATION_AUTH_ERROR_TYPE = "CoordinationAuth"
 IMPLEMENTATION_TIMED_OUT_ERROR_TYPE = "ImplementationTimedOut"
+_RETRYABLE_BEFORE_AGENT = frozenset({"ImageScanPendingError", "LiteLLMAdminError"})
 
 
 @dataclass
@@ -226,14 +227,16 @@ async def finalize_work_claim(req: FinalizeClaimRequest) -> FinalizeClaimResult:
 
 @activity.defn
 async def run_implementation_stage(req: ImplementationRequest) -> ImplementationResult:
-    """Run the coding agent once, retrying only an attempt whose worker stopped.
+    """Run the coding agent once, retrying only an attempt whose agent never ran or lost its worker.
 
-    Every failure raised here is non-retryable, so Temporal schedules a second attempt only after
-    a timeout. A previous attempt that ran for its whole start-to-close timeout timed out on its
-    own, and the second attempt refuses to run it again. One that ended sooner lost its worker
-    and heartbeats, and the second attempt starts the stage over on a clean workspace. A worker
-    lost within the heartbeat timeout of the stage timeout looks like a full timeout, so that
-    attempt is not retried. The second attempt starts with the stage's whole cost budget.
+    A pending image scan and a LiteLLM admin API failure stop the stage before its agent runs, and
+    they are retryable. Every other failure raised here is non-retryable, so Temporal schedules a
+    second attempt otherwise only after a timeout. A previous attempt that ran for its whole
+    start-to-close timeout timed out on its own, and the second attempt refuses to run it again.
+    One that ended sooner lost its worker and heartbeats, or stopped before its agent ran, and the
+    second attempt starts the stage over on a clean workspace. A worker lost within the heartbeat
+    timeout of the stage timeout looks like a full timeout, so that attempt is not retried. The
+    second attempt starts with the stage's whole cost budget.
     """
     retry_after_lost_worker = False
     if activity.in_activity():
@@ -250,13 +253,35 @@ async def run_implementation_stage(req: ImplementationRequest) -> Implementation
     try:
         return await _run_implementation_stage(req, clean_workspace=retry_after_lost_worker)
     except ApplicationError as exc:
-        if exc.non_retryable:
+        if exc.non_retryable or exc.type in _RETRYABLE_BEFORE_AGENT:
             raise
         raise ApplicationError(
             exc.message, *exc.details, type=exc.type, non_retryable=True
         ) from exc
     except Exception as exc:
         raise ApplicationError(str(exc), type=type(exc).__name__, non_retryable=True) from exc
+
+
+async def _admitted_runtime(repo: str, execution_id: str):
+    """Build the run's sandbox runtime and admit its image, before the agent runs.
+
+    A scan still pending and a LiteLLM admin API that refused or was unreachable clear on a later
+    attempt, so they fail the activity retryably.
+    """
+    from scripts.config import get_settings
+
+    from services.integration.litellm_admin import LiteLLMAdminError
+    from services.orchestration.gates.image_admission import (
+        ImageScanPendingError,
+        admit_sandbox_image,
+    )
+
+    try:
+        runtime = _build_runtime(repo, model_api_key=await _run_model_key(execution_id))
+        await admit_sandbox_image(runtime.image, get_settings())
+    except (ImageScanPendingError, LiteLLMAdminError) as exc:
+        raise ApplicationError(str(exc), type=type(exc).__name__) from exc
+    return runtime
 
 
 async def _run_implementation_stage(
@@ -283,10 +308,7 @@ async def _run_implementation_stage(
     )
     if clean_workspace:
         await materializer.discard_changes(workspace)
-    runtime = _build_runtime(req.repo, model_api_key=await _run_model_key(req.execution_id))
-    from services.orchestration.gates.image_admission import admit_sandbox_image
-
-    await admit_sandbox_image(runtime.image, get_settings())
+    runtime = await _admitted_runtime(req.repo, req.execution_id)
     outcome = await runtime.run_implementation(
         execution_id=req.execution_id,
         task=req.task,

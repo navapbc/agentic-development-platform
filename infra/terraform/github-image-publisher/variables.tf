@@ -74,6 +74,17 @@ variable "exception_environment" {
   default     = "image-exception"
 }
 
+variable "exception_ref" {
+  description = "The full git ref whose image-exception runs may assume the image-exception role, matched against the ref claim of the job's OIDC token. A job in an environment carries the environment in its sub claim and the branch it runs on only in its ref claim."
+  type        = string
+  default     = "refs/heads/main"
+
+  validation {
+    condition     = (startswith(var.exception_ref, "refs/heads/") || startswith(var.exception_ref, "refs/tags/")) && !strcontains(var.exception_ref, "*")
+    error_message = "exception_ref must name one ref under refs/heads/ or refs/tags/, without a wildcard, because the trust policy compares it with StringEquals."
+  }
+}
+
 variable "pull_repository_arns" {
   description = "ECR repository ARNs the image-exception role may pull from to scan an image, besides repository_arns, such as the pull-through cache repositories."
   type        = list(string)

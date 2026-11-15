@@ -1318,6 +1318,30 @@ def webhook_certs(c, action, dir, name="", days=397, force=False):  # noqa: A002
     c.run(f"{HOST_PYTHON} -m scripts.webhook_certs {action}{flags}", pty=True, env=env)
 
 
+@task(
+    help={
+        "action": "issue to sign the certificate with an existing CA, or import to import it.",
+        "dir": "Directory holding ca.pem and ca-key.pem from temporal-certs --internal-name.",
+        "domain": "issue: eks_mcp_gateway_domain (default the eks output's mcp_gateway_domain).",
+        "days": "issue: validity in days (default 397).",
+        "force": "issue: replace an MCP gateway certificate already in the directory.",
+    }
+)
+def mcp_gateway_certs(c, action, dir, domain="", days=397, force=False):  # noqa: A002
+    """Issue the MCP gateway certificate from the platform CA, or import it into ACM."""
+    from scripts.config import get_settings
+
+    if action not in ("issue", "import"):
+        raise Exit("action must be issue or import")
+    flags = f" --dir {shlex.quote(dir)}"
+    if action == "issue":
+        flags += f" --days {int(days)}" + (f" --domain {shlex.quote(domain)}" if domain else "")
+        flags += " --force" if force else ""
+    settings = get_settings()
+    env = {"AWS_PROFILE": settings.aws_profile, "AWS_REGION": settings.aws_region}
+    c.run(f"{HOST_PYTHON} -m scripts.mcp_gateway_certs {action}{flags}", pty=True, env=env)
+
+
 @task(help={"apply": "Perform real deletions instead of a dry-run."})
 def reap(c, apply=False):
     """Reap expired platform orphan artifacts (dry-run by default)."""
@@ -1655,6 +1679,7 @@ for _t in (
     temporal_certs,
     clickhouse_certs,
     webhook_certs,
+    mcp_gateway_certs,
     eks_deploy,
     tenant_verify_aws,
     langfuse_ui,

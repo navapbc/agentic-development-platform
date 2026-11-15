@@ -13,7 +13,7 @@ from typing import Any, Protocol
 from database.engine import shared_platform_engine
 from database.models.schema import executions
 from scripts.config import Settings, get_settings, to_host_hostport
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from services.orchestration.webhook.inbound import DispatchNotReady
@@ -166,14 +166,13 @@ class PrClosedHandler:
 class PostgresWorkflowResolver:
     """Find the open workflow of the event's task among the executions of the event's tenant.
 
-    An event without a tenant, the platform's, matches by task id alone. The executions recorded
-    before executions carried a tenant have none, and they match only unattributed_tenant, the one
-    tenant a single-tenant webhook serves.
+    An event without a tenant, the platform's, matches by task id alone. An event of a tenant
+    matches only the executions recorded for that tenant, so an execution recorded without a
+    tenant resolves to no workflow.
     """
 
-    def __init__(self, engine: AsyncEngine | None = None, *, unattributed_tenant: str = "") -> None:
+    def __init__(self, engine: AsyncEngine | None = None) -> None:
         self._engine = engine
-        self._unattributed_tenant = unattributed_tenant
 
     def _get_engine(self) -> AsyncEngine:
         if self._engine is None:
@@ -204,8 +203,6 @@ class PostgresWorkflowResolver:
     def _tenant_scope(self, tenant: str | None) -> list[Any]:
         if not tenant:
             return []
-        if tenant == self._unattributed_tenant:
-            return [or_(executions.c.tenant == tenant, executions.c.tenant.is_(None))]
         return [executions.c.tenant == tenant]
 
 

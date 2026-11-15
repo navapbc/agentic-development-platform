@@ -65,6 +65,7 @@ EXPECTED_TASKS = {
     "temporal-certs",
     "clickhouse-certs",
     "webhook-certs",
+    "mcp-gateway-certs",
     "eks-deploy",
     "langfuse-ui",
     "temporal-deploy",
@@ -278,6 +279,34 @@ def test_temporal_certs_refuses_an_incomplete_request(project, action, options, 
 
     with pytest.raises(Exit, match=message):
         tasks_module.temporal_certs(_RecordingContext(), action, **options)
+
+
+def test_mcp_gateway_certs_passes_the_domain_and_the_profile_to_the_script(project, monkeypatch):
+    recorded: list[tuple[str, dict]] = []
+
+    class _EnvContext(Context):
+        def run(self, command: str, **kwargs: object) -> None:  # pyright: ignore[reportIncompatibleMethodOverride]
+            recorded.append((command, kwargs["env"]))
+
+    monkeypatch.setenv("AWS_PROFILE", "sandbox")
+    from scripts.config import get_settings
+
+    get_settings.cache_clear()
+    tasks_module.mcp_gateway_certs(
+        _EnvContext(), "issue", dir="~/tls", domain="mcp.sandbox.internal", force=True
+    )
+    tasks_module.mcp_gateway_certs(_EnvContext(), "import", dir="~/tls", domain="ignored")
+    get_settings.cache_clear()
+
+    [(issue, issue_env), (imported, import_env)] = recorded
+    assert issue.endswith(
+        "-m scripts.mcp_gateway_certs issue --dir '~/tls' --days 397"
+        " --domain mcp.sandbox.internal --force"
+    )
+    assert imported.endswith("-m scripts.mcp_gateway_certs import --dir '~/tls'")
+    assert issue_env["AWS_PROFILE"] == import_env["AWS_PROFILE"] == "sandbox"
+    with pytest.raises(Exit, match="issue or import"):
+        tasks_module.mcp_gateway_certs(_RecordingContext(), "put", dir="~/tls")
 
 
 class _TerraformContext(Context):

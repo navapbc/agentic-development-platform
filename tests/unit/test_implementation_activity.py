@@ -234,6 +234,58 @@ async def test_a_stage_failure_is_not_retried(tmp_path, monkeypatch):
     assert "terminal phase Failed" in failed.value.message
 
 
+async def test_a_pending_image_scan_is_retried_and_runs_no_agent(tmp_path, monkeypatch):
+    runtime = _FakeRuntime()
+
+    async def scan_pending(image, settings, ops=None):
+        raise image_admission.ImageScanPendingError(f"{image} has no completed scan")
+
+    monkeypatch.setattr(impl, "_build_materializer", lambda: _FakeMaterializer(tmp_path))
+    monkeypatch.setattr(impl, "_build_runtime", lambda repo="", **_: runtime)
+    monkeypatch.setattr(image_admission, "admit_sandbox_image", scan_pending)
+
+    with pytest.raises(ApplicationError) as pending:
+        await ActivityEnvironment().run(run_implementation_stage, _request())
+
+    assert pending.value.non_retryable is False
+    assert pending.value.type == "ImageScanPendingError"
+    assert runtime.received == {}
+
+
+async def test_a_run_key_the_litellm_admin_api_refused_is_retried(tmp_path, monkeypatch):
+    from services.integration.litellm_admin import LiteLLMAdminError
+
+    async def refused(execution_id):
+        raise LiteLLMAdminError("LiteLLM admin API returned 503", status=503)
+
+    monkeypatch.setattr(impl, "_build_materializer", lambda: _FakeMaterializer(tmp_path))
+    monkeypatch.setattr(impl, "_run_model_key", refused)
+    monkeypatch.setattr(image_admission, "admit_sandbox_image", _admit_any)
+
+    with pytest.raises(ApplicationError) as failed:
+        await ActivityEnvironment().run(run_implementation_stage, _request())
+
+    assert failed.value.non_retryable is False
+    assert failed.value.type == "LiteLLMAdminError"
+
+
+async def test_a_litellm_admin_failure_after_the_agent_ran_is_not_retried(tmp_path, monkeypatch):
+    from services.integration.litellm_admin import LiteLLMAdminError
+
+    class _AdminFailingRuntime(_FakeRuntime):
+        async def run_implementation(self, **kwargs):
+            raise LiteLLMAdminError("LiteLLM admin API returned 503", status=503)
+
+    monkeypatch.setattr(impl, "_build_materializer", lambda: _FakeMaterializer(tmp_path))
+    monkeypatch.setattr(impl, "_build_runtime", lambda repo="", **_: _AdminFailingRuntime())
+    monkeypatch.setattr(image_admission, "admit_sandbox_image", _admit_any)
+
+    with pytest.raises(ApplicationError) as failed:
+        await ActivityEnvironment().run(run_implementation_stage, _request())
+
+    assert failed.value.non_retryable is True
+
+
 async def test_the_sandbox_runtime_is_given_the_run_key_and_never_the_master_key(
     tmp_path, monkeypatch, _run_model_access
 ):

@@ -218,45 +218,65 @@ def test_litellm_reads_its_own_database_credential_over_verified_tls(overlay) ->
 
 
 def test_an_ingress_without_a_certificate_is_left_out(overlay) -> None:
-    documents, _ = eks_render.render(
-        overlay, _inputs(), REPOSITORY, mcp_hostnames={"adp": "mcp.example"}
-    )
+    inputs = _inputs()
+    inputs["tenants"][0]["mcp_gateway_host"] = "mcp-adp.mcp.example.internal"
+    documents, _ = eks_render.render(overlay, inputs, REPOSITORY)
     ingresses = {d["metadata"]["name"]: d for d in documents if d["kind"] == "Ingress"}
+    gateway = _named(documents, "Deployment", "mcp-gateway", "tenant-adp")
+    env = {e["name"]: e.get("value") for e in _containers(gateway)[0]["env"]}
 
     assert list(ingresses) == ["inbound-webhook"]
     annotations = ingresses["inbound-webhook"]["metadata"]["annotations"]
     assert annotations["alb.ingress.kubernetes.io/certificate-arn"].endswith("/webhook")
+    assert env["MCP_ALLOWED_HOSTS"] == ""
+    assert "mcp.internal.example" not in json.dumps(documents)
 
 
-def test_each_tenant_gateway_accepts_only_its_load_balancer_host(overlay) -> None:
+def _exposed_gateways(*tenants: str) -> dict[str, Any]:
     inputs = _inputs()
-    inputs["tenants"].append(_tenant("payments"))
+    inputs["tenants"] = [_tenant(tenant) for tenant in tenants]
+    for entry in inputs["tenants"]:
+        entry["mcp_gateway_host"] = f"mcp-{entry['name']}.mcp.example.internal"
     inputs["ingress"]["mcp_gateway_certificate_arn"] = "arn:aws:acm:us-west-2:9:certificate/mcp"
     inputs["ingress"]["mcp_gateway_client_cidrs"] = ["10.42.21.0/24"]
-    documents, _ = eks_render.render(
-        overlay, inputs, REPOSITORY, mcp_hostnames={"adp": "adp.example", "payments": ""}
-    )
+    return inputs
 
-    for tenant, hosts in (("adp", "adp.example,adp.example:443"), ("payments", "")):
+
+def test_each_tenant_gateway_is_named_and_admits_only_its_own_host(overlay) -> None:
+    documents, _ = eks_render.render(overlay, _exposed_gateways("adp", "payments"), REPOSITORY)
+
+    for tenant in ("adp", "payments"):
         namespace = f"tenant-{tenant}"
+        host = f"mcp-{tenant}.mcp.example.internal"
         gateway = _named(documents, "Deployment", "mcp-gateway", namespace)
         env = {e["name"]: e.get("value") for e in _containers(gateway)[0]["env"]}
         ingress = _named(documents, "Ingress", "mcp-gateway", namespace)
         annotations = ingress["metadata"]["annotations"]
 
-        assert env["MCP_ALLOWED_HOSTS"] == hosts
+        assert env["MCP_ALLOWED_HOSTS"] == f"{host},{host}:443"
+        assert [rule["host"] for rule in ingress["spec"]["rules"]] == [host]
         assert annotations["alb.ingress.kubernetes.io/inbound-cidrs"] == "10.42.21.0/24"
         assert annotations["alb.ingress.kubernetes.io/certificate-arn"].endswith("/mcp")
         assert ingress["spec"]["rules"][0]["http"]["paths"][0]["backend"]["service"] == {
             "name": "mcp-gateway",
             "port": {"name": "http"},
         }
+    assert "mcp.internal.example" not in json.dumps(documents)
+    assert "elb.amazonaws.com" not in json.dumps(documents)
     assert not [
         d
         for d in documents
         if d["metadata"]["name"] == "mcp-gateway"
         and d["metadata"].get("namespace") == "agentic-dev-platform"
     ]
+
+
+def test_a_gateway_ingress_without_a_host_name_is_refused(overlay) -> None:
+    inputs = _exposed_gateways("adp", "payments")
+    del inputs["tenants"][1]["mcp_gateway_host"]
+
+    with pytest.raises(eks_render.RenderError, match="payments mcp-gateway Ingress has no host"):
+        eks_render.render(overlay, inputs, REPOSITORY)
 
 
 def _containers(deployment: dict[str, Any]) -> list[dict[str, Any]]:

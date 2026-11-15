@@ -9,7 +9,11 @@ from typing import Any, Protocol
 
 from scripts.config import Settings, get_settings
 
-from services.coordination.idempotency import SideEffectLedger, SideEffectRef
+from services.coordination.idempotency import (
+    SideEffectLedger,
+    SideEffectRef,
+    intake_start_target,
+)
 from services.integration.jira.credentials import (
     JiraCredentialResolver,
     acceptance_field,
@@ -293,8 +297,7 @@ async def route_candidate(
             project,
             declaration.conflict,
             digest,
-            ctx.alerter,
-            ctx.ledger,
+            ctx,
             report,
         )
         return
@@ -306,15 +309,13 @@ async def route_candidate(
         component_map=component_map,
     )
     if not resolution.routable:
-        await _hold(
-            candidate.task_id, project, resolution.reason, digest, ctx.alerter, ctx.ledger, report
-        )
+        await _hold(candidate.task_id, project, resolution.reason, digest, ctx, report)
         return
     if ctx.checks_repos is not None:
         unchecked = [repo for repo in resolution.repos if repo not in ctx.checks_repos]
         if unchecked:
             reason = checks_not_configured_reason(unchecked)
-            await _hold(candidate.task_id, project, reason, digest, ctx.alerter, ctx.ledger, report)
+            await _hold(candidate.task_id, project, reason, digest, ctx, report)
             # The fix lands in operator config rather than the ticket, so a watermark poll
             # must re-read the ticket on the next pass instead of treating it as settled.
             report.deferred.append(candidate.task_id)
@@ -331,27 +332,30 @@ async def route_candidate(
         )
 
 
+def _alert_target(digest: str, tenant: str) -> str:
+    return f"{digest}@{tenant}" if tenant else digest
+
+
 async def _hold(
     issue_key: str,
     project: str,
     reason: str,
     digest: str,
-    alerter: IntakeAlerter,
-    ledger: SideEffectLedger,
+    ctx: IntakeContext,
     report: IntakeReport,
 ) -> None:
     ref = SideEffectRef(
         task_id=issue_key,
         execution_id="",
         operation="intake_unroutable_alert",
-        target=digest,
+        target=_alert_target(digest, ctx.settings.tenant.strip()),
     )
 
     async def _send() -> dict[str, str]:
-        await alerter.unroutable(issue_key=issue_key, project=project, reason=reason)
+        await ctx.alerter.unroutable(issue_key=issue_key, project=project, reason=reason)
         return {"issue_key": issue_key}
 
-    outcome = await ledger.run_once(ref, _send)
+    outcome = await ctx.ledger.run_once(ref, _send)
     report.held.append(
         IntakeHoldRecord(
             issue_key=issue_key,
@@ -399,8 +403,7 @@ async def _start(
             project,
             unresolvable_base_reason(base, repo),
             digest,
-            ctx.alerter,
-            ctx.ledger,
+            ctx,
             report,
         )
         return
@@ -411,7 +414,7 @@ async def _start(
         task_id=issue_key,
         execution_id="",
         operation="intake_start",
-        target=f"{issue_key}:{repo}",
+        target=intake_start_target(issue_key, repo, ctx.settings.tenant.strip()),
     )
 
     async def _launch() -> dict[str, str]:
@@ -462,7 +465,7 @@ async def _start(
     try:
         outcome = await ctx.ledger.run_once(ref, _launch)
     except UnresolvableBaseBranch as exc:
-        await _hold(issue_key, project, str(exc), digest, ctx.alerter, ctx.ledger, report)
+        await _hold(issue_key, project, str(exc), digest, ctx, report)
         return
     if outcome.in_flight:
         # Another pass, in this worker or another, is starting this ticket now. Deferring keeps

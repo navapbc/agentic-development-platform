@@ -3,7 +3,8 @@
 /webhook/pr admits the GitHub repositories of every served tenant and routes each delivery to the
 tenant that owns its repository. /webhook/jira/<tenant> admits the Jira projects of one tenant and
 hands the issue key to that tenant's task queue. /webhook/jira serves the one tenant of a
-single-tenant deployment, or the platform when no tenant is served.
+single-tenant deployment. A webhook that serves no tenant refuses to start while Jira intake is in
+webhook or hybrid mode, because no activity worker polls a task queue for the platform.
 """
 
 from __future__ import annotations
@@ -49,11 +50,7 @@ from services.orchestration.webhook.tenants import (
     secret_env_name,
     tenant_secrets,
 )
-from services.repository_intelligence.tenants import (
-    PLATFORM_TENANT,
-    home_tenant,
-    served_tenants,
-)
+from services.repository_intelligence.tenants import PLATFORM_TENANT, served_tenants
 
 logging.basicConfig(level=configured_log_level())
 log = logging.getLogger("inbound-webhook")
@@ -125,6 +122,23 @@ def require_webhook_secrets(settings: Settings, environ: Mapping[str, str] | Non
         raise SystemExit(f"set {' and '.join(missing)} to accept inbound deliveries")
 
 
+def require_intake_tenant(settings: Settings) -> None:
+    """Refuse to take Jira deliveries when no tenant's activity worker would take the intake.
+
+    Every activity worker polls the task queue of its own tenant only, so an intake started for
+    no tenant waits on a queue that no worker polls.
+    """
+    if not load_integrations_config(settings).webhook_enabled("jira_intake"):
+        return
+    if served_tenants(settings):
+        return
+    raise SystemExit(
+        "jira_intake is in webhook or hybrid mode, and the webhook serves no tenant. Set TENANT "
+        "or TENANTS to the tenants whose activity workers take the intake, or set the "
+        "jira_intake mode to polling."
+    )
+
+
 def pr_repositories(settings: Settings, routing: TenantRouting) -> RepositoryTenants:
     if routing.tenants() == [PLATFORM_TENANT]:
         return PlatformRepositories(settings.github_webhook_secret)
@@ -161,7 +175,7 @@ def build_routes_for(
 ) -> dict[str, Route]:
     pr_closed = PrClosedHandler(
         tenants=pr_repositories(settings, routing),
-        resolver=resolver or PostgresWorkflowResolver(unattributed_tenant=home_tenant(settings)),
+        resolver=resolver or PostgresWorkflowResolver(),
         signaller=signaller,
     )
     return {
@@ -251,6 +265,7 @@ def build_handler(
 def main() -> None:
     settings = get_settings()
     require_webhook_secrets(settings)
+    require_intake_tenant(settings)
     loop = asyncio.new_event_loop()
     threading.Thread(target=loop.run_forever, name="inbound-webhook-loop", daemon=True).start()
     routes = asyncio.run_coroutine_threadsafe(build_routes(settings), loop).result()

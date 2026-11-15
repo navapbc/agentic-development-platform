@@ -30,7 +30,7 @@ resource "aws_iam_role" "publisher" {
   })
   max_session_duration = 3600
 
-  tags = local.tags
+  tags = merge(local.tags, { (var.config_store.publisher_tag_key) = var.tenant })
 }
 
 resource "aws_iam_role_policy" "publisher" {

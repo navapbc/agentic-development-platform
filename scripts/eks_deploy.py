@@ -6,6 +6,12 @@ and starts the eks-deployer one-shot task on the platform ECS cluster with the `
 the secrets to leave out. A pod whose SecretProviderClass names a secret without a value never
 starts, so a workload runs without an external secret its environment has not set yet. The task's
 log is printed once it stops.
+
+When the output names MCP gateway hosts, the deploy first checks that the gateway certificate
+covers each host, and after the task succeeds it points each tenant's host in the gateway zone at
+the load balancer the AWS Load Balancer Controller created for that tenant's gateway Ingress. The
+task has no route to the Route 53 API and its role holds no AWS permission, so the workstation
+credentials write the records.
 """
 
 from __future__ import annotations
@@ -14,6 +20,7 @@ import argparse
 import json
 import os
 import sys
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -22,12 +29,15 @@ from services import process
 
 from scripts.eks_render import secret_key
 from scripts.temporal_certs import COMPOSITION_ROOT
+from scripts.tenant_render import GATEWAY, worker_namespace
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PROVIDERS = REPO_ROOT / "deploy" / "kubernetes" / "aws" / "secret-provider-classes.yaml"
 TASK = "eks-deployer"
 TASK_WAIT = {"Delay": 10, "MaxAttempts": 180}
 LOG = "[eks-deploy]"
+CLUSTER_TAG = "elbv2.k8s.aws/cluster"
+INGRESS_STACK_TAG = "ingress.k8s.aws/stack"
 
 
 class DeployError(Exception):
@@ -147,10 +157,91 @@ def _terraform_eks(env: dict[str, str]) -> dict[str, Any] | None:
     return json.loads(result.stdout or "null")
 
 
+def certificate_covers(names: Iterable[str], host: str) -> bool:
+    """Return whether a certificate for `names` covers `host`. A wildcard covers one label."""
+    host = host.lower().rstrip(".")
+    parent = host.partition(".")[2]
+    return any(
+        name in (host, f"*.{parent}") if parent else name == host
+        for name in (name.lower().rstrip(".") for name in names)
+    )
+
+
+def check_gateway_certificate(acm: Any, arn: str, hosts: Mapping[str, str]) -> None:
+    """Refuse a gateway certificate that does not cover each tenant's gateway host."""
+    certificate = acm.describe_certificate(CertificateArn=arn)["Certificate"]
+    names = [certificate["DomainName"], *certificate.get("SubjectAlternativeNames", [])]
+    uncovered = sorted(host for host in hosts.values() if not certificate_covers(names, host))
+    if uncovered:
+        raise DeployError(
+            f"the MCP gateway certificate {arn} covers {', '.join(sorted(set(names)))} "
+            f"and not {', '.join(uncovered)}"
+        )
+
+
+def gateway_load_balancers(
+    elbv2: Any, cluster: str, vpc_id: str, tenants: Iterable[str]
+) -> dict[str, dict[str, Any]]:
+    """Return the load balancer of each tenant's gateway Ingress, by tenant."""
+    stacks = {f"{worker_namespace(tenant)}/{GATEWAY}": tenant for tenant in tenants}
+    balancers = [
+        balancer
+        for page in elbv2.get_paginator("describe_load_balancers").paginate()
+        for balancer in page["LoadBalancers"]
+        if balancer.get("VpcId") == vpc_id
+    ]
+    found: dict[str, dict[str, Any]] = {}
+    for start in range(0, len(balancers), 20):
+        by_arn = {b["LoadBalancerArn"]: b for b in balancers[start : start + 20]}
+        for description in elbv2.describe_tags(ResourceArns=list(by_arn))["TagDescriptions"]:
+            tags = {tag["Key"]: tag["Value"] for tag in description.get("Tags", [])}
+            if tags.get(CLUSTER_TAG) == cluster and tags.get(INGRESS_STACK_TAG) in stacks:
+                found[stacks[tags[INGRESS_STACK_TAG]]] = by_arn[description["ResourceArn"]]
+    return found
+
+
+def publish_gateway_hosts(
+    route53: Any,
+    zone_id: str,
+    hosts: Mapping[str, str],
+    balancers: Mapping[str, Mapping[str, Any]],
+) -> None:
+    """Point each tenant's gateway host at its load balancer with an alias record."""
+    missing = sorted(set(hosts) - set(balancers))
+    if missing:
+        raise DeployError(f"no load balancer serves the MCP gateway of {', '.join(missing)}")
+    route53.change_resource_record_sets(
+        HostedZoneId=zone_id,
+        ChangeBatch={
+            "Comment": "MCP gateway load balancer of each tenant",
+            "Changes": [
+                {
+                    "Action": "UPSERT",
+                    "ResourceRecordSet": {
+                        "Name": hosts[tenant],
+                        "Type": "A",
+                        "AliasTarget": {
+                            "HostedZoneId": balancers[tenant]["CanonicalHostedZoneId"],
+                            "DNSName": balancers[tenant]["DNSName"],
+                            "EvaluateTargetHealth": False,
+                        },
+                    },
+                }
+                for tenant in sorted(hosts)
+            ],
+        },
+    )
+    for tenant in sorted(hosts):
+        print(f"{LOG} {hosts[tenant]} names the {tenant} MCP gateway load balancer")
+
+
 def deploy(session: Any, eks: dict[str, Any] | None, command: list[str]) -> int:
     if not eks or not eks.get("deployer"):
         print(f"{LOG} the composition root has no EKS cluster or eks-deployer image, skipping")
         return 0
+    hosts = (eks.get("mcp_gateway_hosts") or {}) if command[0] == "deploy" else {}
+    if hosts:
+        check_gateway_certificate(session.client("acm"), eks["mcp_gateway_certificate_arn"], hosts)
     if command[0] == "deploy":
         secretsmanager = session.client("secretsmanager")
         tenants = eks.get("tenants") or []
@@ -160,7 +251,17 @@ def deploy(session: Any, eks: dict[str, Any] | None, command: list[str]) -> int:
         for key in unset:
             print(f"{LOG} {key} has no value, so the pods that mount it start without it")
         command = command + [part for key in unset for part in ("--omit-secret", key)]
-    return run_deployer(session.client("ecs"), session.client("logs"), eks["deployer"], command)
+    exit_code = run_deployer(
+        session.client("ecs"), session.client("logs"), eks["deployer"], command
+    )
+    if hosts:
+        balancers = gateway_load_balancers(
+            session.client("elbv2"), eks["cluster_name"], eks["vpc_id"], hosts
+        )
+        publish_gateway_hosts(
+            session.client("route53"), eks["mcp_gateway_zone_id"], hosts, balancers
+        )
+    return exit_code
 
 
 def main(argv: list[str] | None = None) -> int:

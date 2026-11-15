@@ -7,9 +7,9 @@ aws-iam-authenticator token helper, the vendored AWS Load Balancer Controller ch
 overlay, so the workstation needs none of them.
 
 - `deploy` installs or upgrades the Load Balancer Controller, renders the overlay for the
-  environment, applies it, waits for each deployment, and sets each tenant's MCP gateway host list
-  once that gateway's load balancer exists. It ends by listing every pod that is not
-  host-networked and that no NetworkPolicy selects, which strict network policy mode would deny.
+  environment, applies it, waits for each deployment, and waits for the load balancer of each
+  tenant's MCP gateway Ingress. It ends by listing every pod that is not host-networked and that
+  no NetworkPolicy selects, which strict network policy mode would deny.
 - `restart` rolls the named deployments, `namespace/name` or a platform deployment by name,
   `tenant-workers` for every tenant's activity worker, and `mcp-gateway` for every tenant's MCP
   gateway, so their pods read the current secret values.
@@ -313,40 +313,31 @@ def deploy(inputs: Mapping[str, Any], omit_secrets: list[str]) -> None:
     from scripts.tenant_render import GATEWAY, worker_namespace
 
     install_controller(inputs)
-    tenants = [entry["name"] for entry in inputs.get("tenants") or []]
-    hostnames = {tenant: ingress_hostname(GATEWAY, worker_namespace(tenant)) for tenant in tenants}
-    documents, skipped = render(
-        overlay_documents(), inputs, ROOT, omit_secrets=omit_secrets, mcp_hostnames=hostnames
-    )
+    documents, skipped = render(overlay_documents(), inputs, ROOT, omit_secrets=omit_secrets)
     for alias in skipped:
         print(f"{LOG} {alias} has no current value, so the workload starts without it")
     apply(documents)
     delete_retired()
     rollout([*DEPLOYMENTS, *tenant_workers(inputs), *tenant_gateways(inputs)])
-    exposed = [
-        tenant
-        for tenant in tenants
-        if any(
-            d.get("kind") == "Ingress"
-            and d["metadata"]["name"] == GATEWAY
-            and d["metadata"].get("namespace") == worker_namespace(tenant)
-            for d in documents
-        )
-    ]
-    if exposed:
-        for tenant in exposed:
-            hostnames[tenant] = wait_for_hostname(GATEWAY, worker_namespace(tenant))
-            if not hostnames[tenant]:
-                raise DeployError(
-                    f"the {tenant} mcp-gateway load balancer has no host name after five minutes"
-                )
-        documents, _ = render(
-            overlay_documents(), inputs, ROOT, omit_secrets=omit_secrets, mcp_hostnames=hostnames
-        )
-        apply(documents)
-        rollout([f"{worker_namespace(tenant)}/{GATEWAY}" for tenant in exposed])
-        for tenant in exposed:
-            print(f"{LOG} the {tenant} MCP gateway accepts the host {hostnames[tenant]}")
+    tenants = {
+        worker_namespace(entry["name"]): entry["name"] for entry in inputs.get("tenants") or []
+    }
+    for document in documents:
+        namespace = document["metadata"].get("namespace", "")
+        if (
+            document.get("kind") != "Ingress"
+            or document["metadata"]["name"] != GATEWAY
+            or namespace not in tenants
+        ):
+            continue
+        tenant = tenants[namespace]
+        balancer = wait_for_hostname(GATEWAY, namespace)
+        if not balancer:
+            raise DeployError(
+                f"the {tenant} mcp-gateway load balancer has no host name after five minutes"
+            )
+        host = document["spec"]["rules"][0]["host"]
+        print(f"{LOG} the {tenant} MCP gateway serves https://{host}/mcp from {balancer}")
     report_unselected()
 
 

@@ -76,7 +76,7 @@ run "the_publish_role_prunes_the_platform_exceptions_and_reads_the_tenant_ones" 
   }
 }
 
-run "the_exception_role_trusts_only_the_image_exception_environment" {
+run "the_exception_role_trusts_only_the_image_exception_environment_on_main" {
   command = apply
 
   variables {
@@ -94,6 +94,11 @@ run "the_exception_role_trusts_only_the_image_exception_environment" {
       length(keys(jsondecode(aws_iam_role.exception[0].assume_role_policy).Statement[0].Condition)) == 1
     )
     error_message = "The image-exception role trusts a subject other than the image-exception environment."
+  }
+
+  assert {
+    condition     = jsondecode(aws_iam_role.exception[0].assume_role_policy).Statement[0].Condition.StringEquals["token.actions.githubusercontent.com:ref"] == "refs/heads/main"
+    error_message = "The image-exception role trusts a job of the image-exception environment on a branch other than main."
   }
 
   assert {
@@ -211,4 +216,41 @@ run "a_signing_profile_lets_the_role_sign_with_it_only" {
     condition     = one([for statement in jsondecode(aws_iam_role_policy.push[0].policy).Statement : statement.Resource if statement.Sid == "SignThePlatformImages"]) == var.signing_profile_arn
     error_message = "The role signs with another profile than the platform's."
   }
+}
+
+run "the_exception_ref_is_configurable" {
+  command = apply
+
+  variables {
+    config_store = {
+      bucket_arn  = "arn:aws:s3:::agentic-platform-tenant-config-abc"
+      kms_key_arn = "arn:aws:kms:us-east-1:111111111111:key/config"
+    }
+    exception_ref = "refs/heads/release"
+  }
+
+  assert {
+    condition     = jsondecode(aws_iam_role.exception[0].assume_role_policy).Statement[0].Condition.StringEquals["token.actions.githubusercontent.com:ref"] == "refs/heads/release"
+    error_message = "The image-exception role ignores exception_ref."
+  }
+}
+
+run "an_exception_ref_with_a_wildcard_is_refused" {
+  command = plan
+
+  variables {
+    exception_ref = "refs/heads/*"
+  }
+
+  expect_failures = [var.exception_ref]
+}
+
+run "an_exception_ref_outside_heads_and_tags_is_refused" {
+  command = plan
+
+  variables {
+    exception_ref = "refs/pull/1/merge"
+  }
+
+  expect_failures = [var.exception_ref]
 }

@@ -29,6 +29,8 @@ output "token_rotation" {
     function_arn = aws_lambda_function.rotation["token"].arn
     role_arn     = aws_iam_role.token[0].arn
   } : null
+
+  depends_on = [aws_lambda_permission.token]
 }
 
 output "restart_document_name" {

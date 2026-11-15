@@ -88,6 +88,20 @@ def rewrite_address(value: str, network: ComposeNetwork, address: str) -> tuple[
     return _ADDRESS.sub(replace, value), unreachable
 
 
+def qualify_in_cluster_services(value: str, namespace: str) -> str:
+    """Name each in-cluster service in value by its cluster DNS name in the platform namespace.
+
+    A pod outside the platform namespace, such as a tenant's worker, resolves only that name.
+    """
+
+    def replace(match: re.Match[str]) -> str:
+        if match["host"] not in IN_CLUSTER_SERVICES:
+            return match[0]
+        return f"{match['lead']}{match['host']}.{namespace}.svc.cluster.local:{match['port']}"
+
+    return _ADDRESS.sub(replace, value)
+
+
 def rewrite_env(env: Mapping[str, str | None], network: ComposeNetwork, address: str) -> Rewrite:
     result = Rewrite()
     for key, raw in env.items():

@@ -113,7 +113,7 @@ class _FakeEngine:
         return self._connection
 
 
-def _stored_row(record: EvidenceRecord, tenant: str) -> dict[str, Any]:
+def _stored_row(record: EvidenceRecord, tenant: str | None) -> dict[str, Any]:
     """Mirror the columns PostgresEvidenceSink writes for one record, plus its tenant."""
     return {
         "tenant": tenant,
@@ -129,7 +129,7 @@ def _stored_row(record: EvidenceRecord, tenant: str) -> dict[str, Any]:
 
 
 def _reader(
-    records: list[EvidenceRecord], tenant: str = "adp", owner: str = "adp"
+    records: list[EvidenceRecord], tenant: str = "adp", owner: str | None = "adp"
 ) -> PostgresEvidenceReader:
     rows = {record.artifact_id: _stored_row(record, owner) for record in records}
     engine = cast(AsyncEngine, _FakeEngine(_FakeConnection(rows)))
@@ -193,6 +193,22 @@ async def test_security_findings_resolve_only_for_the_reader_tenant(monkeypatch)
 
     assert own == {"finding_count": 1}
     assert other is None
+
+
+async def test_the_evidence_of_an_execution_recorded_without_a_tenant_resolves_to_none(
+    monkeypatch,
+):
+    record = await PRODUCERS["plan"](monkeypatch)
+    findings = replace(
+        record,
+        artifact_id="art-security",
+        source_component=SECURITY_COMPONENT,
+        metadata={"finding_count": 1},
+    )
+    reader = _reader([record, findings], tenant="adp", owner=None)
+
+    assert await reader.get_artifact(record.artifact_id) is None
+    assert await reader.get_security_findings(findings.execution_id) is None
 
 
 def test_the_reader_refuses_to_serve_no_tenant():

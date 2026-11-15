@@ -109,11 +109,12 @@ variable "platform_namespace" {
 }
 
 variable "workloads" {
-  description = "Platform workloads that receive a Pod Identity role, keyed by a static name, each with its service account, its namespace, platform_namespace unless set, and the IAM policies attached to its role, such as the bedrock:InvokeModel policy of bedrock-iam for litellm."
+  description = "Platform workloads that receive a Pod Identity role, keyed by a static name, each with its service account, its namespace, platform_namespace unless set, the IAM policies attached to its role, such as the bedrock:InvokeModel policy of bedrock-iam for litellm, and tags added to its role beside tags, such as a principal tag a bucket policy matches."
   type = map(object({
     service_account = string
     namespace       = optional(string)
     policy_arns     = optional(list(string), [])
+    tags            = optional(map(string), {})
   }))
   default = {
     activity_worker = { service_account = "activity-worker" }

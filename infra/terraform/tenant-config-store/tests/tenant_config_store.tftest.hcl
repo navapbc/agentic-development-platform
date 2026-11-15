@@ -29,16 +29,11 @@ variables {
   name_prefix       = "agentic-platform"
   access_log_bucket = "agentic-platform-access-logs-111111111111"
   admin_principals  = ["arn:aws:iam::111111111111:user/platform-admin"]
-  tenants = {
-    adp = {
-      publishers = ["arn:aws:iam::111111111111:role/agentic-platform-tenant-adp-config-publisher"]
-      readers    = ["arn:aws:iam::111111111111:role/agentic-platform-eks-tenant-adp"]
-    }
-    payments = {
-      publishers = ["arn:aws:iam::111111111111:role/agentic-platform-tenant-payments-config-publisher"]
-      readers    = ["arn:aws:iam::111111111111:role/agentic-platform-eks-tenant-payments"]
-    }
-  }
+  tenants           = ["adp", "payments"]
+  shared_readers = [
+    "arn:aws:iam::111111111111:role/agentic-platform-repo-intelligence-task",
+    "arn:aws:iam::111111111111:role/agentic-platform-eks-inbound-webhook",
+  ]
 }
 
 run "disabled_module_creates_nothing" {
@@ -73,7 +68,7 @@ run "the_bucket_is_versioned_encrypted_private_and_logged" {
   }
 }
 
-run "each_tenant_prefix_admits_only_its_own_principals" {
+run "each_tenant_prefix_admits_only_principals_tagged_with_the_tenant" {
   command = plan
 
   variables {
@@ -82,21 +77,43 @@ run "each_tenant_prefix_admits_only_its_own_principals" {
 
   assert {
     condition = (
-      one([for s in jsondecode(aws_s3_bucket_policy.this[0].policy).Statement : s if s.Sid == "DenyWritesOutsideTheAdpPublishers"]).Resource == "arn:aws:s3:::agentic-platform-tenant-config-abc/tenants/adp/*" &&
-      one([for s in jsondecode(aws_s3_bucket_policy.this[0].policy).Statement : s if s.Sid == "DenyWritesOutsideTheAdpPublishers"]).Condition.ArnNotLike["aws:PrincipalArn"] == [
-        "arn:aws:iam::111111111111:role/agentic-platform-tenant-adp-config-publisher",
+      one([for s in jsondecode(aws_s3_bucket_policy.this[0].policy).Statement : s if s.Sid == "DenyTenantWritesOutsideThePublisherTenant"]).NotResource == [
+        "arn:aws:s3:::agentic-platform-tenant-config-abc/tenants/$${aws:PrincipalTag/tenant-config-publisher}/*",
+        "arn:aws:s3:::agentic-platform-tenant-config-abc/platform/*",
+      ] &&
+      one([for s in jsondecode(aws_s3_bucket_policy.this[0].policy).Statement : s if s.Sid == "DenyTenantWritesOutsideThePublisherTenant"]).Condition.ArnNotLike["aws:PrincipalArn"] == ["arn:aws:iam::111111111111:user/platform-admin"] &&
+      one([for s in jsondecode(aws_s3_bucket_policy.this[0].policy).Statement : s if s.Sid == "DenyTenantWritesOutsideThePublisherTenant"]).Action == ["s3:PutObject*", "s3:DeleteObject*", "s3:RestoreObject", "s3:AbortMultipartUpload"]
+    )
+    error_message = "A tenant prefix admits a writer other than a principal tagged as its publisher and the admins."
+  }
+
+  assert {
+    condition = (
+      one([for s in jsondecode(aws_s3_bucket_policy.this[0].policy).Statement : s if s.Sid == "DenyTenantReadsOutsideThePrincipalTenant"]).NotResource == [
+        "arn:aws:s3:::agentic-platform-tenant-config-abc/tenants/$${aws:PrincipalTag/tenant-config-reader}/*",
+        "arn:aws:s3:::agentic-platform-tenant-config-abc/tenants/$${aws:PrincipalTag/tenant-config-publisher}/*",
+        "arn:aws:s3:::agentic-platform-tenant-config-abc/platform/*",
+      ] &&
+      one([for s in jsondecode(aws_s3_bucket_policy.this[0].policy).Statement : s if s.Sid == "DenyTenantReadsOutsideThePrincipalTenant"]).Condition.ArnNotLike["aws:PrincipalArn"] == [
+        "arn:aws:iam::111111111111:role/agentic-platform-repo-intelligence-task",
+        "arn:aws:iam::111111111111:role/agentic-platform-eks-inbound-webhook",
         "arn:aws:iam::111111111111:user/platform-admin",
       ]
     )
-    error_message = "The adp prefix admits a writer other than its publisher and the admins."
+    error_message = "A tenant prefix admits a reader other than a principal tagged with the tenant, the shared readers, and the admins."
   }
 
   assert {
     condition = !contains(
-      one([for s in jsondecode(aws_s3_bucket_policy.this[0].policy).Statement : s if s.Sid == "DenyReadsOutsideThePaymentsReaders"]).Condition.ArnNotLike["aws:PrincipalArn"],
-      "arn:aws:iam::111111111111:role/agentic-platform-eks-tenant-adp",
+      one([for s in jsondecode(aws_s3_bucket_policy.this[0].policy).Statement : s if s.Sid == "DenyTenantWritesOutsideThePublisherTenant"]).NotResource,
+      "arn:aws:s3:::agentic-platform-tenant-config-abc/tenants/$${aws:PrincipalTag/tenant-config-reader}/*",
     )
-    error_message = "The adp worker may read the payments prefix."
+    error_message = "A principal tagged as a tenant's reader may write the tenant's bundle."
+  }
+
+  assert {
+    condition     = output.tenant_principal_tag_keys == { reader = "tenant-config-reader", publisher = "tenant-config-publisher" }
+    error_message = "The module does not report the principal tag keys its bucket policy matches."
   }
 
   assert {
@@ -111,6 +128,47 @@ run "each_tenant_prefix_admits_only_its_own_principals" {
   assert {
     condition     = output.tenant_prefixes == { adp = "tenants/adp/", payments = "tenants/payments/" }
     error_message = "The tenant prefixes output does not name each tenant's prefix."
+  }
+}
+
+run "the_bucket_policy_does_not_grow_with_the_tenant_count" {
+  command = plan
+
+  variables {
+    create_tenant_config_store = true
+    exception_reviewers        = ["arn:aws:iam::111111111111:role/agentic-platform-github-image-publisher"]
+    tenants                    = [for index in range(200) : format("tenant%010d", index)]
+  }
+
+  assert {
+    condition = (
+      length(jsondecode(aws_s3_bucket_policy.this[0].policy).Statement) == 8 &&
+      !strcontains(aws_s3_bucket_policy.this[0].policy, "tenant0000000199") &&
+      length(aws_s3_bucket_policy.this[0].policy) < 4096
+    )
+    error_message = "The bucket policy grows with the tenant count, toward the 20 KB limit of a bucket policy."
+  }
+
+  assert {
+    condition     = length(output.tenant_prefixes) == 200
+    error_message = "The tenant prefixes output does not name every tenant."
+  }
+}
+
+run "without_admins_or_shared_readers_the_tenant_denies_carry_no_empty_condition" {
+  command = plan
+
+  variables {
+    create_tenant_config_store = true
+    admin_principals           = []
+    shared_readers             = []
+  }
+
+  assert {
+    condition = alltrue([
+      for s in jsondecode(aws_s3_bucket_policy.this[0].policy).Statement : !contains(keys(s), "Condition") if contains(["DenyTenantWritesOutsideThePublisherTenant", "DenyTenantReadsOutsideThePrincipalTenant"], s.Sid)
+    ])
+    error_message = "A tenant deny carries a condition with no principal, which IAM refuses."
   }
 }
 
@@ -174,11 +232,17 @@ run "an_exception_reviewer_reads_only_the_exceptions_files_and_the_platform_keys
   }
 
   assert {
-    condition = contains(
-      one([for s in jsondecode(aws_s3_bucket_policy.this[0].policy).Statement : s if s.Sid == "DenyReadsOutsideTheAdpReaders"]).Condition.ArnNotLike["aws:PrincipalArn"],
-      "arn:aws:iam::111111111111:role/agentic-platform-github-image-publisher",
+    condition = (
+      contains(
+        one([for s in jsondecode(aws_s3_bucket_policy.this[0].policy).Statement : s if s.Sid == "DenyTenantReadsOutsideThePrincipalTenant"]).Condition.ArnNotLike["aws:PrincipalArn"],
+        "arn:aws:iam::111111111111:role/agentic-platform-github-image-publisher",
+      ) &&
+      !contains(
+        one([for s in jsondecode(aws_s3_bucket_policy.this[0].policy).Statement : s if s.Sid == "DenyTenantWritesOutsideThePublisherTenant"]).Condition.ArnNotLike["aws:PrincipalArn"],
+        "arn:aws:iam::111111111111:role/agentic-platform-github-image-publisher",
+      )
     )
-    error_message = "The exception reviewer cannot read the adp prefix."
+    error_message = "The exception reviewer cannot read the tenant prefixes, or may write them."
   }
 
   assert {

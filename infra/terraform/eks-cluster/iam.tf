@@ -9,6 +9,7 @@ locals {
       service_account = workload.service_account
       addon           = null
       policy_arns     = workload.policy_arns
+      tags            = workload.tags
     }
   }
 
@@ -18,24 +19,28 @@ locals {
       service_account = "aws-load-balancer-controller"
       addon           = null
       policy_arns     = []
+      tags            = {}
     }
     vpc_cni = {
       namespace       = "kube-system"
       service_account = "aws-node"
       addon           = "vpc-cni"
       policy_arns     = ["${local.managed_policy_prefix}/AmazonEKS_CNI_Policy"]
+      tags            = {}
     }
     efs_csi_controller = {
       namespace       = "kube-system"
       service_account = "efs-csi-controller-sa"
       addon           = "aws-efs-csi-driver"
       policy_arns     = ["${local.managed_policy_prefix}/service-role/AmazonEFSCSIDriverPolicy"]
+      tags            = {}
     }
     efs_csi_node = {
       namespace       = "kube-system"
       service_account = "efs-csi-node-sa"
       addon           = "aws-efs-csi-driver"
       policy_arns     = var.efs_csi_node_policy_arns
+      tags            = {}
     }
   })
 
@@ -130,7 +135,7 @@ resource "aws_iam_role" "pod_identity" {
     }]
   })
 
-  tags = var.tags
+  tags = merge(var.tags, each.value.tags)
 }
 
 resource "aws_iam_role_policy_attachment" "pod_identity" {

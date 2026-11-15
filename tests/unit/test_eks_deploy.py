@@ -122,19 +122,21 @@ def test_the_platform_gateway_is_retired(monkeypatch) -> None:
         assert ["-n", "agentic-dev-platform", "delete", kind, "mcp-gateway"] in deleted
 
 
-def test_each_tenant_gateway_gets_its_own_load_balancer_host(monkeypatch) -> None:
+def _gateway_ingress(tenant: str) -> dict:
+    return {
+        "kind": "Ingress",
+        "metadata": {"name": "mcp-gateway", "namespace": f"tenant-{tenant}"},
+        "spec": {"rules": [{"host": f"mcp-{tenant}.mcp.example.internal"}]},
+    }
+
+
+def _deploy_without_a_cluster(monkeypatch, balancers: dict[str, str]) -> list[list[str]]:
     rendered: list[dict] = []
     rolled: list[list[str]] = []
-    ingress = {"kind": "Ingress", "metadata": {"name": "mcp-gateway"}}
-    hosts = {"tenant-adp": "adp.elb.example", "tenant-beta": "beta.elb.example"}
 
-    def render(*_, mcp_hostnames, **__):
-        rendered.append(dict(mcp_hostnames))
-        documents = [
-            {**ingress, "metadata": {**ingress["metadata"], "namespace": namespace}}
-            for namespace in hosts
-        ]
-        return documents, []
+    def render(_overlay, inputs, _root, **_):
+        rendered.append(inputs)
+        return [_gateway_ingress(entry["name"]) for entry in inputs["tenants"]], []
 
     monkeypatch.setattr(eks_deploy_task, "install_controller", lambda inputs: None)
     monkeypatch.setattr(eks_deploy_task, "overlay_documents", list)
@@ -143,20 +145,32 @@ def test_each_tenant_gateway_gets_its_own_load_balancer_host(monkeypatch) -> Non
     monkeypatch.setattr(eks_deploy_task, "delete_retired", lambda: None)
     monkeypatch.setattr(eks_deploy_task, "rollout", lambda targets: rolled.append(list(targets)))
     monkeypatch.setattr(eks_deploy_task, "report_unselected", lambda: [])
-    monkeypatch.setattr(eks_deploy_task, "ingress_hostname", lambda name, namespace: "")
     monkeypatch.setattr(
-        eks_deploy_task, "wait_for_hostname", lambda name, namespace: hosts[namespace]
+        eks_deploy_task, "wait_for_hostname", lambda name, namespace: balancers[namespace]
+    )
+    eks_deploy_task.deploy({"tenants": [{"name": "adp"}, {"name": "beta"}]}, [])
+    assert len(rendered) == 1
+    return rolled
+
+
+def test_each_tenant_gateway_is_rendered_once_and_its_load_balancer_awaited(
+    monkeypatch, capsys
+) -> None:
+    rolled = _deploy_without_a_cluster(
+        monkeypatch, {"tenant-adp": "adp.elb.example", "tenant-beta": "beta.elb.example"}
     )
 
-    eks_deploy_task.deploy({"tenants": [{"name": "adp"}, {"name": "beta"}]}, [])
-
-    assert rendered == [
-        {"adp": "", "beta": ""},
-        {"adp": "adp.elb.example", "beta": "beta.elb.example"},
-    ]
     assert "tenant-adp/mcp-gateway" in rolled[0] and "tenant-beta/mcp-gateway" in rolled[0]
     assert "mcp-gateway" not in rolled[0]
-    assert rolled[1] == ["tenant-adp/mcp-gateway", "tenant-beta/mcp-gateway"]
+    assert len(rolled) == 1
+    out = capsys.readouterr().out
+    assert "https://mcp-adp.mcp.example.internal/mcp from adp.elb.example" in out
+    assert "https://mcp-beta.mcp.example.internal/mcp from beta.elb.example" in out
+
+
+def test_a_gateway_load_balancer_that_never_appears_fails_the_deploy(monkeypatch) -> None:
+    with pytest.raises(eks_deploy_task.DeployError, match="beta mcp-gateway load balancer"):
+        _deploy_without_a_cluster(monkeypatch, {"tenant-adp": "adp.elb.example", "tenant-beta": ""})
 
 
 def test_the_retired_objects_are_deleted_when_present(monkeypatch) -> None:
@@ -356,3 +370,217 @@ def test_apply_sends_each_workload_after_the_secret_providers_its_pods_mount(
 
     kinds = [item["kind"] for item in json.loads(sent[0])["items"]]
     assert kinds == ["SecretProviderClass", "ConfigMap", "Deployment"]
+
+
+@pytest.mark.parametrize(
+    ("names", "host", "covered"),
+    [
+        (["*.mcp.example.internal"], "mcp-adp.mcp.example.internal", True),
+        (["mcp-adp.mcp.example.internal"], "mcp-adp.mcp.example.internal", True),
+        (["*.MCP.example.internal."], "mcp-adp.mcp.example.internal", True),
+        (["*.example.internal"], "mcp-adp.mcp.example.internal", False),
+        (["*.us-east-1.elb.amazonaws.com"], "mcp-adp.mcp.example.internal", False),
+        (["mcp-beta.mcp.example.internal"], "mcp-adp.mcp.example.internal", False),
+    ],
+)
+def test_a_wildcard_certificate_covers_one_label(names, host, covered) -> None:
+    assert eks_deploy.certificate_covers(names, host) is covered
+
+
+class _FakeAcm:
+    def __init__(self, domain: str, alternatives: list[str]) -> None:
+        self.certificate = {"DomainName": domain, "SubjectAlternativeNames": alternatives}
+
+    def describe_certificate(self, CertificateArn):  # noqa: N803 - the boto3 parameter name
+        return {"Certificate": self.certificate}
+
+
+HOSTS = {"adp": "mcp-adp.mcp.example.internal", "beta": "mcp-beta.mcp.example.internal"}
+
+
+def test_a_certificate_that_misses_a_gateway_host_is_refused() -> None:
+    acm = _FakeAcm("mcp-adp.mcp.example.internal", ["mcp-adp.mcp.example.internal"])
+
+    with pytest.raises(eks_deploy.DeployError, match="not mcp-beta.mcp.example.internal"):
+        eks_deploy.check_gateway_certificate(acm, "arn:cert", HOSTS)
+
+
+def test_a_wildcard_certificate_for_the_domain_is_accepted() -> None:
+    acm = _FakeAcm("*.mcp.example.internal", ["*.mcp.example.internal"])
+
+    eks_deploy.check_gateway_certificate(acm, "arn:cert", HOSTS)
+
+
+def _balancer(name: str, vpc: str = "vpc-1") -> dict:
+    return {
+        "LoadBalancerArn": f"arn:lb/{name}",
+        "DNSName": f"internal-{name}.us-east-1.elb.amazonaws.com",
+        "CanonicalHostedZoneId": "Z35SXDOTRQ7X7K",
+        "VpcId": vpc,
+    }
+
+
+class _FakeElb:
+    def __init__(self, balancers: list[dict], tags: dict[str, dict[str, str]]) -> None:
+        self.balancers = balancers
+        self.tags = tags
+
+    def get_paginator(self, name):
+        assert name == "describe_load_balancers"
+        balancers = self.balancers
+
+        class _Pages:
+            def paginate(self):
+                yield {"LoadBalancers": balancers}
+
+        return _Pages()
+
+    def describe_tags(self, ResourceArns):  # noqa: N803 - the boto3 parameter name
+        assert len(ResourceArns) <= 20
+        return {
+            "TagDescriptions": [
+                {
+                    "ResourceArn": arn,
+                    "Tags": [{"Key": k, "Value": v} for k, v in self.tags.get(arn, {}).items()],
+                }
+                for arn in ResourceArns
+            ]
+        }
+
+
+def _stack(namespace: str, cluster: str = "platform-eks") -> dict[str, str]:
+    return {"elbv2.k8s.aws/cluster": cluster, "ingress.k8s.aws/stack": f"{namespace}/mcp-gateway"}
+
+
+def test_each_gateway_load_balancer_is_found_by_its_ingress_tags() -> None:
+    elb = _FakeElb(
+        [
+            _balancer("adp"),
+            _balancer("beta"),
+            _balancer("other-cluster"),
+            _balancer("webhook"),
+            _balancer("other-vpc", vpc="vpc-2"),
+        ],
+        {
+            "arn:lb/adp": _stack("tenant-adp"),
+            "arn:lb/beta": _stack("tenant-beta"),
+            "arn:lb/other-cluster": _stack("tenant-adp", cluster="other"),
+            "arn:lb/webhook": {
+                "elbv2.k8s.aws/cluster": "platform-eks",
+                "ingress.k8s.aws/stack": "agentic-dev-platform/inbound-webhook",
+            },
+            "arn:lb/other-vpc": _stack("tenant-beta"),
+        },
+    )
+
+    found = eks_deploy.gateway_load_balancers(elb, "platform-eks", "vpc-1", ["adp", "beta"])
+
+    assert {tenant: b["LoadBalancerArn"] for tenant, b in found.items()} == {
+        "adp": "arn:lb/adp",
+        "beta": "arn:lb/beta",
+    }
+
+
+class _FakeRoute53:
+    def __init__(self) -> None:
+        self.changes: list[dict] = []
+
+    def change_resource_record_sets(self, HostedZoneId, ChangeBatch):  # noqa: N803
+        self.changes.append({"zone": HostedZoneId, **ChangeBatch})
+        return {"ChangeInfo": {"Id": "/change/1", "Status": "PENDING"}}
+
+
+def test_each_gateway_host_is_an_alias_of_its_tenants_load_balancer() -> None:
+    route53 = _FakeRoute53()
+    balancers = {"adp": _balancer("adp"), "beta": _balancer("beta")}
+
+    eks_deploy.publish_gateway_hosts(route53, "Z0MCP", HOSTS, balancers)
+
+    assert len(route53.changes) == 1
+    assert route53.changes[0]["zone"] == "Z0MCP"
+    records = [change["ResourceRecordSet"] for change in route53.changes[0]["Changes"]]
+    assert {change["Action"] for change in route53.changes[0]["Changes"]} == {"UPSERT"}
+    assert records == [
+        {
+            "Name": f"mcp-{tenant}.mcp.example.internal",
+            "Type": "A",
+            "AliasTarget": {
+                "HostedZoneId": "Z35SXDOTRQ7X7K",
+                "DNSName": f"internal-{tenant}.us-east-1.elb.amazonaws.com",
+                "EvaluateTargetHealth": False,
+            },
+        }
+        for tenant in ("adp", "beta")
+    ]
+
+
+def test_a_gateway_without_a_load_balancer_writes_no_record() -> None:
+    route53 = _FakeRoute53()
+
+    with pytest.raises(eks_deploy.DeployError, match="MCP gateway of beta"):
+        eks_deploy.publish_gateway_hosts(route53, "Z0MCP", HOSTS, {"adp": _balancer("adp")})
+    assert route53.changes == []
+
+
+class _FakeSession:
+    def __init__(self, clients: dict) -> None:
+        self.clients = clients
+        self.order: list[str] = []
+
+    def client(self, name):
+        self.order.append(name)
+        return self.clients[name]
+
+
+def _eks() -> dict:
+    return {
+        "deployer": DEPLOYER,
+        "cluster_name": "platform-eks",
+        "vpc_id": "vpc-1",
+        "secret_arns": {},
+        "tenants": [],
+        "mcp_gateway_certificate_arn": "arn:cert",
+        "mcp_gateway_zone_id": "Z0MCP",
+        "mcp_gateway_hosts": HOSTS,
+    }
+
+
+def test_the_deploy_checks_the_certificate_then_names_each_gateway(monkeypatch) -> None:
+    monkeypatch.setattr(eks_deploy, "mounted_secret_keys", lambda: [])
+    route53 = _FakeRoute53()
+    session = _FakeSession(
+        {
+            "acm": _FakeAcm("*.mcp.example.internal", []),
+            "secretsmanager": _FakeSecrets({}),
+            "ecs": _FakeEcs(0),
+            "logs": _FakeLogs(),
+            "elbv2": _FakeElb(
+                [_balancer("adp"), _balancer("beta")],
+                {"arn:lb/adp": _stack("tenant-adp"), "arn:lb/beta": _stack("tenant-beta")},
+            ),
+            "route53": route53,
+        }
+    )
+
+    assert eks_deploy.deploy(session, _eks(), ["deploy"]) == 0
+
+    assert session.order.index("acm") < session.order.index("ecs")
+    assert session.order.index("ecs") < session.order.index("route53")
+    names = [change["ResourceRecordSet"]["Name"] for change in route53.changes[0]["Changes"]]
+    assert names == list(HOSTS.values())
+
+
+def test_an_uncovered_gateway_host_stops_the_deploy_before_the_task(monkeypatch) -> None:
+    ecs = _FakeEcs(0)
+    session = _FakeSession({"acm": _FakeAcm("*.us-east-1.elb.amazonaws.com", []), "ecs": ecs})
+
+    with pytest.raises(eks_deploy.DeployError, match="MCP gateway certificate"):
+        eks_deploy.deploy(session, _eks(), ["deploy"])
+    assert ecs.started == {}
+
+
+def test_a_restart_leaves_the_gateway_names_alone() -> None:
+    session = _FakeSession({"ecs": _FakeEcs(0), "logs": _FakeLogs()})
+
+    assert eks_deploy.deploy(session, _eks(), ["restart", "mcp-gateway"]) == 0
+    assert session.order == ["ecs", "logs"]

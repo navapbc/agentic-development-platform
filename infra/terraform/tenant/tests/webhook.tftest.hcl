@@ -53,12 +53,6 @@ override_resource {
 }
 
 override_resource {
-  target          = aws_iam_policy.webhook
-  override_during = plan
-  values          = { arn = "arn:aws:iam::111111111111:policy/agentic-platform-tenant-adp-webhook-a" }
-}
-
-override_resource {
   target          = module.ticket_store.aws_s3_bucket.this
   override_during = plan
   values          = { id = "agentic-platform-tenant-adp-rebar-tickets-abc", arn = "arn:aws:s3:::agentic-platform-tenant-adp-rebar-tickets-abc" }
@@ -86,7 +80,7 @@ run "a_tenant_has_no_webhook_secrets_by_default" {
   }
 
   assert {
-    condition     = length(aws_secretsmanager_secret.webhook) == 0 && length(aws_iam_policy.webhook) == 0 && output.webhook == null
+    condition     = length(aws_secretsmanager_secret.webhook) == 0 && output.webhook == null
     error_message = "A tenant without create_webhook_secrets planned webhook secrets."
   }
 }
@@ -142,32 +136,14 @@ run "only_the_inbound_webhook_reads_the_tenant_webhook_secrets" {
         github_webhook_secret = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/tenants/adp/webhook-secret-a"
         jira_webhook_secret   = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/tenants/adp/webhook-secret-a"
       } &&
-      output.webhook.reader_policy_arn == "arn:aws:iam::111111111111:policy/agentic-platform-tenant-adp-webhook-a"
+      output.webhook.kms_key_arn == "arn:aws:kms:us-east-1:111111111111:key/tenant-adp"
     )
-    error_message = "The webhook output does not name the secrets and the reader policy."
-  }
-}
-
-run "the_webhook_reads_only_the_tenant_webhook_secrets_and_bundle" {
-  command = plan
-
-  variables {
-    create_tenant          = true
-    create_webhook_secrets = true
+    error_message = "The webhook output does not name the secrets and the tenant key that encrypts them."
   }
 
   assert {
-    condition = (
-      jsondecode(aws_iam_policy.webhook[0].policy).Statement[0].Resource == [
-        "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/tenants/adp/webhook-secret-a",
-        "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/tenants/adp/webhook-secret-a",
-      ] &&
-      jsondecode(aws_iam_policy.webhook[0].policy).Statement[1].Resource == "arn:aws:kms:us-east-1:111111111111:key/tenant-adp" &&
-      jsondecode(aws_iam_policy.webhook[0].policy).Statement[2].Condition.StringLike["s3:prefix"] == ["tenants/adp/*"] &&
-      jsondecode(aws_iam_policy.webhook[0].policy).Statement[3].Resource == "arn:aws:s3:::agentic-platform-tenant-config-abc/tenants/adp/*" &&
-      jsondecode(aws_iam_policy.webhook[0].policy).Statement[4].Resource == "arn:aws:kms:us-east-1:111111111111:key/config"
-    )
-    error_message = "The webhook policy reaches beyond the tenant's webhook secrets and bundle."
+    condition     = keys(output.webhook) == ["kms_key_arn", "secret_arns"]
+    error_message = "The webhook output names a policy, which would attach one managed policy per tenant to the inbound webhook role."
   }
 }
 

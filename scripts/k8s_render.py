@@ -22,6 +22,11 @@ Each tenant's worker receives its own repository intelligence token as REPO_INTE
 the token repository intelligence expects of that tenant, which it derives from
 REPO_INTELLIGENCE_TOKEN_KEY unless `.env` sets REPO_INTELLIGENCE_TOKEN_<TENANT>. No cluster pod
 receives the key, and no tenant's worker receives another tenant's token.
+
+No tenant's worker receives a webhook signing secret, GITHUB_WEBHOOK_SECRET, JIRA_WEBHOOK_SECRET,
+or a per-tenant variant of either, because only the inbound webhook reads them, from Secrets of
+its own. A tenant's settings name an in-cluster service such as LiteLLM by its cluster DNS name in
+the platform namespace, which the worker resolves from the tenant's namespace.
 """
 
 from __future__ import annotations
@@ -44,6 +49,7 @@ from scripts.cluster_env import (
     WORKSTATION_SETTINGS,
     ComposeNetwork,
     endpoint_values,
+    qualify_in_cluster_services,
     rewrite_address,
     rewrite_env,
     workload_secret_values,
@@ -96,6 +102,7 @@ TENANT_OWNED_FILES = frozenset({"authorship-signing-key", "authorship-signing-ke
 # activity worker identity can read it in AWS.
 REVIEW_WORKER_FILES = frozenset({"review-signing-key"})
 REPO_INTELLIGENCE_CALLER_ENV = "REPO_INTELLIGENCE_TOKEN"
+WEBHOOK_SECRET_SETTINGS = ("GITHUB_WEBHOOK_SECRET", "JIRA_WEBHOOK_SECRET")
 
 
 @dataclass(frozen=True)
@@ -184,7 +191,7 @@ def generated_objects(inputs: RenderInputs) -> list[dict[str, Any]]:
     platform_env = {
         key: value
         for key, value in rewrite_env(inputs.env, network, address).values.items()
-        if not _repo_intelligence_credential(key)
+        if not _withheld_from_pods(key)
     }
     return [
         secret(PLATFORM_ENV, platform_env),
@@ -593,6 +600,20 @@ def _repo_intelligence_credential(name: str) -> bool:
     return name == REPO_INTELLIGENCE_CALLER_ENV or name.startswith(ENV_PREFIX)
 
 
+def _webhook_secret(name: str) -> bool:
+    return any(
+        name == setting or name.startswith(f"{setting}_") for setting in WEBHOOK_SECRET_SETTINGS
+    )
+
+
+def _withheld_from_pods(name: str) -> bool:
+    """Return whether no pod's settings Secret may carry the setting.
+
+    The inbound webhook reads the webhook signing secrets from Secrets of its own.
+    """
+    return _repo_intelligence_credential(name) or _webhook_secret(name)
+
+
 def _refuse_tenant_tokens(own: Mapping[str, Mapping[str, str] | None], environment: str) -> None:
     for name, values in own.items():
         refused = sorted(key for key in values or {} if _repo_intelligence_credential(key))
@@ -695,7 +716,7 @@ def localize_tenants(
     workstation = {
         key: value
         for key, value in rewrite_env(inputs.env, network, address).values.items()
-        if not _repo_intelligence_credential(key)
+        if not _withheld_from_pods(key)
     }
     shared = {key: value for key, value in workstation.items() if key not in owned}
     present = {key: value for key, value in inputs.env.items() if value is not None}
@@ -732,8 +753,14 @@ def localize_tenants(
             hashed: dict[str, str] | None = None
         else:
             withheld = REVIEW_WORKER_FILES | TENANT_OWNED_FILES
-            hashed = values or {}
+            hashed = {
+                key: value for key, value in (values or {}).items() if not _webhook_secret(key)
+            }
             pod_env[name] = {**shared, **_pod_settings(hashed, network, address)}
+        pod_env[name] = {
+            key: qualify_in_cluster_services(value, settings.k8s_namespace)
+            for key, value in pod_env[name].items()
+        }
         if name in tokens:
             pod_env[name][REPO_INTELLIGENCE_CALLER_ENV] = tokens[name]
             hashed = {**(hashed or {}), REPO_INTELLIGENCE_CALLER_ENV: tokens[name]}

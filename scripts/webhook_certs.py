@@ -118,7 +118,8 @@ def import_certificate(directory: Path, tracked_arn: str, acm: Any) -> str:
     return acm.import_certificate(**request)["CertificateArn"]
 
 
-def _tracked_arn(env: dict[str, str]) -> str:
+def eks_output(env: dict[str, str]) -> dict[str, Any]:
+    """Return the composition's `eks` output, or an empty map before an apply creates it."""
     result = process.run(
         ["terraform", f"-chdir={COMPOSITION_ROOT}", "output", "-json", "eks"],
         timeout=process.SHORT_COMMAND_TIMEOUT_SECONDS,
@@ -127,8 +128,12 @@ def _tracked_arn(env: dict[str, str]) -> str:
         env=env,
     )
     if result.returncode != 0:
-        return ""
-    return (json.loads(result.stdout or "null") or {}).get("webhook_certificate_arn") or ""
+        return {}
+    return json.loads(result.stdout or "null") or {}
+
+
+def _tracked_arn(env: dict[str, str]) -> str:
+    return eks_output(env).get("webhook_certificate_arn") or ""
 
 
 def main(argv: list[str] | None = None) -> int:

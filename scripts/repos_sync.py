@@ -1,12 +1,14 @@
 """Copy the local-backend repositories and local-mode gate engines into the cluster.
 
-Nothing on the workstation is mounted into a pod. Each repository with backend local in
-config/<env>/repositories.yaml is sent as a git bundle over `kubectl exec` and fetched into its
-copy at $REPOSITORY_ROOT/<name> on the workspace volume. The bundle leaves out the agent/*
-branches and every commit the copy already holds, and the fetch only fast-forwards, so a sync
-adds commits and never replaces a branch the agent wrote. Each local-mode engine in
-gate_engine.yaml is sent as its working tree, uncommitted edits included, to
-$GATE_ENGINE_ROOT/<name>.
+Nothing on the workstation is mounted into a pod. Each repository with backend local in the
+registry of the tenant whose activity worker receives the copies is sent as a git bundle over
+`kubectl exec` and fetched into its copy at $REPOSITORY_ROOT/<name> on the workspace volume. That
+tenant is TENANT, or the first tenant TENANTS names, and its registry is
+config/<env>/tenants/<tenant>/repositories.yaml, or config/<env>/repositories.yaml for the home
+tenant without one. The bundle leaves out the agent/* branches and every commit the copy already
+holds, and the fetch only fast-forwards, so a sync adds commits and never replaces a branch the
+agent wrote. Each local-mode engine in gate_engine.yaml is sent as its working tree, uncommitted
+edits included, to $GATE_ENGINE_ROOT/<name>.
 """
 
 from __future__ import annotations
@@ -160,7 +162,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--repo", default="", help="Sync only this repository or engine.")
     args = parser.parse_args(argv)
 
-    from services.integration.repositories import LOCAL, load_repository_registry
+    from services.integration.repositories import LOCAL
     from services.orchestration.gates.engine_source import (
         LOCAL as LOCAL_ENGINE,
     )
@@ -169,10 +171,10 @@ def main(argv: list[str] | None = None) -> int:
         load_gate_engine_configs,
     )
 
-    from scripts.k8s_cluster import REPO_ROOT
+    from scripts.k8s_cluster import REPO_ROOT, worker_registry, worker_tenant
 
     settings = get_settings()
-    registry = load_repository_registry(settings)
+    registry = worker_registry(settings, REPO_ROOT)
     synced = 0
     for name in sorted(registry.names(LOCAL)):
         if args.repo and name != args.repo:
@@ -193,7 +195,10 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         print(f"{LOG} engine {engine.name}: {sync_engine(settings, engine.name, host)}")
         synced += 1
-    print(f"{LOG} synced {synced} source(s) into the activity worker of tenant {settings.tenant}")
+    print(
+        f"{LOG} synced {synced} source(s) into the activity worker of tenant "
+        f"{worker_tenant(settings)}"
+    )
     return 0
 
 

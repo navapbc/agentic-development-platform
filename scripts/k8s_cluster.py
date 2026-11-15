@@ -14,11 +14,14 @@ import json
 import platform
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from services import process
 
 from scripts.config import Settings, get_settings
+
+if TYPE_CHECKING:
+    from services.integration.repositories import RepositoryRegistry
 
 LOG = "[k8s]"
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -46,14 +49,44 @@ def tenants(settings: Settings) -> list[str]:
     return tenant_names(settings) or ([settings.tenant] if settings.tenant else [])
 
 
+def worker_tenant(settings: Settings) -> str:
+    """Return TENANT, or the first tenant TENANTS names, whose activity worker host tasks reach."""
+    names = tenants(settings)
+    if not names:
+        raise SystemExit(f"{LOG} set TENANT or TENANTS, because every activity worker serves one")
+    return settings.tenant or names[0]
+
+
 def in_worker_namespace(settings: Settings, *args: str) -> list[str]:
     """Address the activity worker of TENANT, or of the first tenant TENANTS names."""
     from scripts.tenant_render import worker_namespace
 
+    return kubectl(settings, "--namespace", worker_namespace(worker_tenant(settings)), *args)
+
+
+def worker_registry(settings: Settings, root: Path) -> RepositoryRegistry:
+    """Load the repositories of the tenant whose activity worker host tasks reach.
+
+    The tenant's bundle names them. Only the home tenant, the one TENANT of `.env` names or else
+    the first tenant TENANTS names, falls back to config/<env>/repositories.yaml, as the cluster
+    render allows. A host task run as `TENANT=<tenant> inv ...` does not make that tenant home.
+    """
+    from dotenv import dotenv_values
+    from services.integration.repositories import load_repository_registry
+
+    from scripts.repositories_compose import registry_config_dir
+
+    tenant = worker_tenant(settings)
     names = tenants(settings)
-    if not names:
-        raise SystemExit(f"{LOG} set TENANT or TENANTS, because every activity worker serves one")
-    return kubectl(settings, "--namespace", worker_namespace(settings.tenant or names[0]), *args)
+    configured = (dotenv_values(root / ".env").get("TENANT") or "").strip()
+    home = configured if configured in names else names[0]
+    config_dir = registry_config_dir(settings.environment, tenant, root=root)
+    if config_dir == settings.environment and tenant != home:
+        raise SystemExit(
+            f"{LOG} tenant {tenant} names no repositories of its own in "
+            f"config/{settings.environment}/tenants/{tenant}/repositories.yaml"
+        )
+    return load_repository_registry(settings, environment=config_dir, root=root)
 
 
 def deployments(settings: Settings) -> list[tuple[str, str]]:
@@ -269,8 +302,12 @@ def delete_retired(settings: Settings, run: Runner = process.run) -> None:
 
 
 def removable(documents: Sequence[dict], *, volumes: bool) -> list[dict]:
-    """Return the resources a delete removes, keeping the namespaces and, unless asked, the PVC."""
-    kept = {"Namespace"} if volumes else {"Namespace", "PersistentVolumeClaim"}
+    """Return the resources a delete removes, keeping the namespaces and, unless asked, volumes.
+
+    A PersistentVolume bound to a kept claim holds its pv-protection finalizer until the claim
+    goes, so a delete that keeps the claims keeps their volumes too.
+    """
+    kept = {"Namespace"} if volumes else {"Namespace", "PersistentVolumeClaim", "PersistentVolume"}
     return [document for document in documents if document["kind"] not in kept]
 
 

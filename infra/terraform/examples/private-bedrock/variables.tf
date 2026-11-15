@@ -362,9 +362,25 @@ variable "eks_webhook_certificate_arn" {
 }
 
 variable "eks_mcp_gateway_certificate_arn" {
-  description = "ACM certificate the internal MCP gateway load balancer presents."
+  description = "ACM certificate the internal load balancer of each tenant's MCP gateway presents. It must cover mcp-<tenant>.<eks_mcp_gateway_domain>, or the tenant's mcp_gateway_host, for every tenant, such as with *.<eks_mcp_gateway_domain>, and inv eks-deploy refuses one that does not. It may not be eks_webhook_certificate_arn. inv mcp-gateway-certs issues one from the platform CA and imports it. Empty renders no gateway Ingress."
   type        = string
   default     = ""
+}
+
+variable "eks_mcp_gateway_domain" {
+  description = "Private DNS domain each tenant's MCP gateway is named under, as mcp-<tenant>.<domain>. With eks_mcp_gateway_certificate_arn, the root creates a private hosted zone of this name in the VPC, and inv eks-deploy points each tenant's name at the load balancer of the tenant's gateway. It may not be container_internal_domain, whose zone the internal load balancer uses."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.eks_mcp_gateway_domain == "" || can(regex("^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$", var.eks_mcp_gateway_domain))
+    error_message = "eks_mcp_gateway_domain is a lowercase DNS name of two or more labels, such as mcp.example.internal."
+  }
+
+  validation {
+    condition     = var.eks_mcp_gateway_domain != var.container_internal_domain
+    error_message = "eks_mcp_gateway_domain may not be container_internal_domain, because a VPC takes one private hosted zone per name."
+  }
 }
 
 variable "eks_mcp_gateway_client_cidrs" {
@@ -771,7 +787,7 @@ variable "github_publish_refs" {
 }
 
 variable "tenants" {
-  description = "Tenants that share the deployment, keyed by a name of 2 to 16 lowercase letters and digits. Each tenant is a trust boundary with its own activity worker identity, secrets, image prefix, config bundle prefix, ticket store, and workspace. secrets lists the secrets created empty under <name_prefix>/tenants/<tenant>/ for the tenant to fill. shared_secrets lists secret store keys the tenant's worker may also read. config_repository names the GitHub repository whose workflows publish the tenant's config bundle and images. ticket_store sets the operators, admins, and GitHub OIDC writer of the tenant's rebar store. mcp_gateway_token_readers are the principals besides the tenant's gateway that may read its MCP gateway token, such as the operators who give it to the tenant's MCP clients. settings are environment variables only the tenant's worker receives, such as TICKET_BACKEND, and override container_platform_settings. model_limits sets the tenant's LiteLLM spend and rate limits in the worker environment. monthly_budget_usd is the tenant team's monthly budget in US dollars, rpm_limit and tpm_limit are the tenant team's requests and tokens per minute, and 0 sets no limit for each of the three. run_budget_usd is the budget of each run's virtual key in US dollars. sandbox_quota is the ResourceQuota hard limits of the tenant's sandbox namespace, such as requests.cpu or pods. create_eks requires at least one tenant."
+  description = "Tenants that share the deployment, keyed by a name of 2 to 16 lowercase letters and digits. Each tenant is a trust boundary with its own activity worker identity, secrets, image prefix, config bundle prefix, ticket store, and workspace. secrets lists the secrets created empty under <name_prefix>/tenants/<tenant>/ for the tenant to fill. shared_secrets lists secret store keys the tenant's worker may also read. config_repository names the GitHub repository whose workflows publish the tenant's config bundle and images. ticket_store sets the operators, admins, and GitHub OIDC writer of the tenant's rebar store. mcp_gateway_token_readers are the principals besides the tenant's gateway that may read its MCP gateway token, such as the operators who give it to the tenant's MCP clients. mcp_gateway_host replaces mcp-<tenant>.<eks_mcp_gateway_domain> as the host name of the tenant's MCP gateway with another <label>.<eks_mcp_gateway_domain>. settings are environment variables only the tenant's worker receives, such as TICKET_BACKEND, and override container_platform_settings. model_limits sets the tenant's LiteLLM spend and rate limits in the worker environment. monthly_budget_usd is the tenant team's monthly budget in US dollars, rpm_limit and tpm_limit are the tenant team's requests and tokens per minute, and 0 sets no limit for each of the three. run_budget_usd is the budget of each run's virtual key in US dollars. sandbox_quota is the ResourceQuota hard limits of the tenant's sandbox namespace, such as requests.cpu or pods. create_eks requires at least one tenant."
   type = map(object({
     description    = string
     secrets        = optional(list(string), ["github_token", "jira_api_token", "jira_pat", "authorship_signing_key", "registry_token", "slack_webhook_url"])
@@ -795,6 +811,7 @@ variable "tenants" {
       }))
     }), {})
     mcp_gateway_token_readers = optional(list(string), [])
+    mcp_gateway_host          = optional(string, "")
     settings                  = optional(map(string), {})
     model_limits = optional(object({
       monthly_budget_usd = optional(number, 0)

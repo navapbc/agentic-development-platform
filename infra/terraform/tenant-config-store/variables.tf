@@ -10,12 +10,15 @@ variable "name_prefix" {
 }
 
 variable "tenants" {
-  description = "Principal ARNs of each tenant's prefix, tenants/<tenant>/. publishers write and delete the tenant's bundle, and readers read it. Every other principal except admin_principals is denied the prefix. The ARNs appear only in policy conditions, so a role may be created after the bucket."
-  type = map(object({
-    publishers = list(string)
-    readers    = list(string)
-  }))
-  default = {}
+  description = "Names of the tenants whose bundles the bucket holds, each under tenants/<tenant>/."
+  type        = set(string)
+  default     = []
+}
+
+variable "shared_readers" {
+  description = "Principal ARNs that read every tenant's prefix, such as the repository intelligence task roles and the inbound webhook role. They are exempt from the tenant read deny and still denied every tenant write. The ARNs appear only in policy conditions, so a role may be created after the bucket."
+  type        = list(string)
+  default     = []
 }
 
 variable "admin_principals" {

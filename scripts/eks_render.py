@@ -15,8 +15,8 @@ The inputs are the JSON the eks-deployer task definition carries in DEPLOY_INPUT
 - `secrets`, each secret store key, and `temporal_ca`, mapped to its secret ARN
 - `tenants`, each tenant's name, the volume handle of its workspace access point, its ticket store
   roles, its secret ARNs, the platform secret keys it reads, its settings, its model limits, its
-  sandbox quota, the image prefixes its sandbox pods may run, and the config bucket, from which
-  `scripts.tenant_render` renders its worker and sandbox namespaces
+  sandbox quota, the image prefixes its sandbox pods may run, the config bucket, and the host name
+  of its MCP gateway, from which `scripts.tenant_render` renders its worker and sandbox namespaces
 - `vpc_cidr`, `service_cidr`, `gate_egress_cidrs`, and `gate_egress_internet`
 - `ingress`, the webhook and gateway certificate ARNs and the gateway client CIDRs
 """
@@ -340,9 +340,9 @@ def _ports(rule: Mapping[str, Any]) -> list[int]:
 
 
 def set_ingress(
-    documents: list[dict[str, Any]], ingress: Mapping[str, Any], mcp_hostname: str = ""
+    documents: list[dict[str, Any]], ingress: Mapping[str, Any]
 ) -> list[dict[str, Any]]:
-    """Set each Ingress's certificate and the gateway's clients and host list.
+    """Set each Ingress's certificate and the gateway's clients.
 
     An Ingress whose certificate the environment has not set is left out, because the controller
     refuses to reconcile one whose certificate does not resolve.
@@ -362,30 +362,48 @@ def set_ingress(
             if name == "mcp-gateway":
                 cidrs = ingress.get("mcp_gateway_client_cidrs") or []
                 annotations["alb.ingress.kubernetes.io/inbound-cidrs"] = ",".join(cidrs)
-        if document.get("kind") == "Deployment" and document["metadata"]["name"] == "mcp-gateway":
-            for container in document["spec"]["template"]["spec"]["containers"]:
-                for entry in container.get("env", []):
-                    if entry["name"] == "MCP_ALLOWED_HOSTS":
-                        entry["value"] = (
-                            f"{mcp_hostname},{mcp_hostname}:443" if mcp_hostname else ""
-                        )
         kept.append(document)
     return kept
 
 
-def set_gateway_hosts(documents: list[dict[str, Any]], hostnames: Mapping[str, str]) -> None:
-    """Set each tenant gateway's host list to its own Ingress hostname, empty until it has one."""
+def gateway_hosts(inputs: Mapping[str, Any]) -> dict[str, str]:
+    """Return the host name each tenant's MCP gateway clients connect to, by tenant."""
+    return {
+        entry["name"]: entry.get("mcp_gateway_host") or "" for entry in inputs.get("tenants") or []
+    }
+
+
+def set_gateway_hosts(documents: list[dict[str, Any]], hosts: Mapping[str, str]) -> None:
+    """Name each tenant's gateway Ingress after its host, and admit only that host.
+
+    A tenant whose gateway has no Ingress keeps an empty host list.
+    """
     from scripts.tenant_render import GATEWAY, worker_namespace
 
-    namespaces = {worker_namespace(tenant): hostname for tenant, hostname in hostnames.items()}
+    namespaces = {worker_namespace(tenant): (tenant, host) for tenant, host in hosts.items()}
+    exposed: dict[str, str] = {}
+    for document in documents:
+        namespace = document["metadata"].get("namespace", "")
+        if (
+            document.get("kind") != "Ingress"
+            or document["metadata"]["name"] != GATEWAY
+            or namespace not in namespaces
+        ):
+            continue
+        tenant, host = namespaces[namespace]
+        if not host:
+            raise RenderError(f"the {tenant} mcp-gateway Ingress has no host name")
+        for rule in document["spec"]["rules"]:
+            rule["host"] = host
+        exposed[namespace] = host
     for document in documents:
         if document.get("kind") != "Deployment" or document["metadata"]["name"] != GATEWAY:
             continue
-        hostname = namespaces.get(document["metadata"].get("namespace", ""), "")
+        host = exposed.get(document["metadata"].get("namespace", ""), "")
         for container in document["spec"]["template"]["spec"]["containers"]:
             for entry in container.get("env", []):
                 if entry["name"] == "MCP_ALLOWED_HOSTS":
-                    entry["value"] = f"{hostname},{hostname}:443" if hostname else ""
+                    entry["value"] = f"{host},{host}:443" if host else ""
 
 
 def generated_objects(inputs: Mapping[str, Any], root: Path) -> list[dict[str, Any]]:
@@ -439,12 +457,8 @@ def render(
     root: Path,
     *,
     omit_secrets: Iterable[str] = (),
-    mcp_hostnames: Mapping[str, str] | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    """Return the environment's manifests and the secret aliases left out of them.
-
-    `mcp_hostnames` maps each tenant to the load balancer hostname of its gateway's Ingress.
-    """
+    """Return the environment's manifests and the secret aliases left out of them."""
     from scripts.tenant_render import tenantize
     from scripts.webhook_eks_render import route_webhook_tenants
 
@@ -465,7 +479,7 @@ def render(
     if not tenants:
         raise RenderError("the inputs name no tenant, and every activity worker serves one")
     documents = tenantize(documents + generated, tenants)
-    set_gateway_hosts(documents, mcp_hostnames or {})
+    set_gateway_hosts(documents, gateway_hosts(inputs))
     omit_secrets = list(omit_secrets)
     skipped = set_tenant_secrets(documents, inputs, omit_secrets)
     skipped += route_webhook_tenants(documents, inputs, omit_secrets)

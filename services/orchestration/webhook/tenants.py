@@ -227,7 +227,7 @@ class RoutedRepositories:
             return matches[0]
         if len(matches) > 1:
             log.error(
-                "tenants %s share a webhook secret for repository %s, so the delivery is refused",
+                "tenants %s share a signing key for repository %s, so the delivery is refused",
                 ", ".join(matches),
                 repository,
             )

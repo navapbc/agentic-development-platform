@@ -2,9 +2,10 @@
 
 The local backend commits to agent/* branches and refs/agent-results/* in its copy of each
 repository on the workspace volume. This streams those refs as a git bundle over `kubectl exec`
-and fetches them into the host checkout. An agent branch only fast-forwards, so a host edit to
-one is reported instead of overwritten. The results refs are replaced, because the copy in the
-cluster is their only writer.
+and fetches them into the host checkout. The repositories are those of the tenant whose activity
+worker host tasks reach, read from its registry as inv repos-sync reads it. An agent branch only
+fast-forwards, so a host edit to one is reported instead of overwritten. The results refs are
+replaced, because the copy in the cluster is their only writer.
 """
 
 from __future__ import annotations
@@ -81,12 +82,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--repo", default="", help="Fetch only this repository.")
     args = parser.parse_args(argv)
 
-    from services.integration.repositories import LOCAL, load_repository_registry
+    from services.integration.repositories import LOCAL
 
-    from scripts.k8s_cluster import REPO_ROOT
+    from scripts.k8s_cluster import REPO_ROOT, worker_registry
 
     settings = get_settings()
-    registry = load_repository_registry(settings)
+    registry = worker_registry(settings, REPO_ROOT)
     names = [args.repo] if args.repo else sorted(registry.names(LOCAL))
     for name in names:
         if registry.require(name).backend != LOCAL:

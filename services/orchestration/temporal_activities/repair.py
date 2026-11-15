@@ -80,10 +80,9 @@ async def analyze_ci_failure(req: AnalyzeCIFailureRequest) -> AnalyzeCIFailureRe
 async def apply_ci_repair(req: ApplyCIRepairRequest) -> ApplyCIRepairResult:
     from services.orchestration.langgraph.ci_repair import instruction_for_task
     from services.orchestration.temporal_activities.implementation import (
+        _admitted_runtime,
         _budget_stopped_outcome,
         _build_materializer,
-        _build_runtime,
-        _run_model_key,
     )
 
     materializer = _build_materializer()
@@ -98,7 +97,7 @@ async def apply_ci_repair(req: ApplyCIRepairRequest) -> ApplyCIRepairResult:
         changed = await materializer.changed_paths(workspace)
         if changed and await _keeps_task_change(materializer, workspace, req.base_commit):
             return ApplyCIRepairResult(applied=True, changed_files=changed)
-    runtime = _build_runtime(model_api_key=await _run_model_key(req.execution_id))
+    runtime = await _admitted_runtime(req.repo, req.execution_id)
     outcome = await runtime.run_implementation(
         execution_id=req.execution_id,
         task=instruction_for_task(req.instruction, req.task),

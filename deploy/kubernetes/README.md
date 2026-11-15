@@ -52,7 +52,7 @@ Nothing derived is written to disk. The renderer pipes the manifests to `kubectl
 - Each tenant's worker reads the tenant's ticket store through the `rebar-tickets-reader` and `rebar-tickets-writer` profiles in its namespace's `rebar-store-aws-config`, whose `credential_source = EcsContainer` the Pod Identity credential endpoint satisfies.
 - With `SANDBOX_NODE_POOL=sandbox`, the sandbox, gate, checks, and scanner pods the activity worker creates select the `sandbox` node group and tolerate its taint.
 - The gate, checks, and scanner pods carry no AWS identity, and buildah inside them pulls their images. For an image in ECR, the activity worker requests an ECR authorization token with its Pod Identity role and copies a containers auth file into the pod over the exec stream, so the token stays out of every command line and the API server audit log. The pod reads it as `REGISTRY_AUTH_FILE` for the pull and deletes it before any project or scanner code runs. The role pulls only from the semgrep, trivy, and example gate engine repositories and the repositories in `eks_gate_image_repository_arns`, so the token reaches nothing else.
-- `network-policies.yaml` selects every pod that is not host-networked in `kube-system`, `aws-secrets-manager`, `agentic-dev-platform`, and `agent-sandbox`, so the cluster runs in strict network policy mode, where a pod no policy selects is denied. The baselines admit DNS, HTTPS, and the EKS Pod Identity agent at `169.254.170.23` on 80, the platform pods also reach the database, Temporal, LiteLLM, and the sandbox agent-server, and only CoreDNS, the controller webhook, LiteLLM, and the load balancer targets accept ingress. The load balancer targets are the inbound webhook and each tenant's MCP gateway, which accepts the VPC on port 8150 only.
+- `network-policies.yaml` and `kube-system-network-policies.yaml` select every pod that is not host-networked in `kube-system`, `aws-secrets-manager`, `agentic-dev-platform`, and `agent-sandbox`, so the cluster runs in strict network policy mode, where a pod no policy selects is denied. `kube-system-network-policies.yaml` holds only the `kube-system` policies, which must live in that namespace because a NetworkPolicy applies only in its own namespace. The baselines admit DNS, HTTPS, and the EKS Pod Identity agent at `169.254.170.23` on 80, the platform pods also reach the database, Temporal, LiteLLM, and the sandbox agent-server, and only CoreDNS, the controller webhook, LiteLLM, and the load balancer targets accept ingress. The load balancer targets are the inbound webhook and each tenant's MCP gateway, which accepts the VPC on port 8150 only.
 - The `gate-engine-egress` policy admits DNS, LiteLLM, the Pod Identity agent, which serves the `image-verifier` credential, and HTTPS to the application subnets, which hold the ECR interface endpoints, and to the S3 ranges that carry the image layers through the S3 gateway endpoint. In the `aws` registry mode, or with image signature verification on, it also admits HTTPS to every address outside the VPC, for the package indexes and the Signer revocation host DNS Firewall resolves, and in the `external` mode HTTPS to the registry's ranges.
 - With a `registries.yaml` in `platform-config`, the activity worker copies a buildah `registries.conf` drop-in into each gate, checks, and scanner pod that sends every mirrored upstream prefix to its mirror, so an image named `python:3.12-slim` is pulled from the mirror unchanged. In the `external` mode the pod also receives the package index variables and a netrc and npmrc built from `REGISTRY_TOKEN`, which the activity worker mounts from the `registry_token` secret.
 
@@ -64,7 +64,7 @@ Four values in the base manifests are synthetic and must be replaced for every e
 
 - The container image registry `123456789012.dkr.ecr.us-east-1.amazonaws.com`, replaced through the kustomize `images` transformer.
 - The ACM certificate ARN `arn:aws:acm:us-east-1:123456789012:certificate/00000000-0000-0000-0000-000000000000` on each Ingress, replaced through an overlay patch.
-- The `MCP_ALLOWED_HOSTS` value `mcp.internal.example,mcp.internal.example:443` on the `mcp-gateway` Deployment, replaced through an overlay patch.
+- The host `mcp.internal.example` of the `mcp-gateway` Ingress rule and the `MCP_ALLOWED_HOSTS` value `mcp.internal.example,mcp.internal.example:443` on the `mcp-gateway` Deployment, both replaced through overlay patches with the hostname the gateway's clients resolve. See [MCP gateway host header](#mcp-gateway-host-header).
 - The `alb.ingress.kubernetes.io/inbound-cidrs` value `192.0.2.0/24` on the `mcp-gateway` Ingress, a documentation range that admits no client, replaced through an overlay patch with the CIDRs of the subnets that hold the gateway's clients. See [MCP gateway authentication](#mcp-gateway-authentication).
 
 The `aws/` overlay adds these synthetic values, each of which the `eks` output of `private-bedrock` names for the environment.
@@ -75,7 +75,7 @@ The `aws/` overlay adds these synthetic values, each of which the `eks` output o
 - The role ARNs in `rebar-store-aws-config`, which each tenant's copy replaces with the reader and writer roles of the tenant's ticket store.
 - The `agentic-platform/` prefix of each `SecretProviderClass` object, the `name_prefix` of the root.
 - The application subnets `10.0.1.0/24` and `10.0.2.0/24` and the documentation range `192.0.2.0/24` in `gate-engine-egress`, replaced with the application subnet CIDRs and the ranges of the region's S3 prefix list.
-- The certificate ARNs, the gateway client CIDRs, and the gateway host list of the base manifests, from `webhook_certificate_arn`, `mcp_gateway_certificate_arn`, and `mcp_gateway_client_cidrs`. Every tenant's gateway Ingress takes the same certificate and client CIDRs, and the deploy sets each tenant gateway's host list to the hostname of that tenant's load balancer once it exists. In an environment without a public domain, `inv webhook-certs issue --dir DIR` writes a self-signed certificate for `*.<region>.elb.amazonaws.com`, and `inv webhook-certs import --dir DIR` imports it into ACM for `eks_webhook_certificate_arn`. A sender then delivers to the webhook only with TLS verification turned off for it.
+- The certificate ARNs and the gateway client CIDRs of the base manifests, from `webhook_certificate_arn`, `mcp_gateway_certificate_arn`, and `mcp_gateway_client_cidrs`, and the gateway host, from each tenant's `mcp_gateway_host`. Every tenant's gateway Ingress takes the same certificate and client CIDRs. The deploy sets the host of each tenant's gateway Ingress rule to the tenant's host, `mcp-<tenant>.<eks_mcp_gateway_domain>` unless the tenant's `mcp_gateway_host` names another `<label>.<eks_mcp_gateway_domain>`, and its `MCP_ALLOWED_HOSTS` to that host bare and with `:443`, and `inv eks-deploy` points the host at the tenant's load balancer in the gateway's private hosted zone. In an environment without a public domain, `inv webhook-certs issue --dir DIR` writes a self-signed certificate for `*.<region>.elb.amazonaws.com`, and `inv webhook-certs import --dir DIR` imports it into ACM for `eks_webhook_certificate_arn`. A sender then delivers to the webhook only with TLS verification turned off for it. `inv mcp-gateway-certs` signs the gateway certificate with the platform CA instead, as [Issuing the MCP gateway certificate](#issuing-the-mcp-gateway-certificate-in-an-environment-without-a-public-domain) describes.
 
 Both Ingress resources declare an HTTPS-only listener through `alb.ingress.kubernetes.io/listen-ports` and pin `alb.ingress.kubernetes.io/ssl-policy` to `ELBSecurityPolicy-TLS13-1-2-2021-06`, which negotiates TLS 1.3 and TLS 1.2 only. The controller refuses to reconcile an Ingress whose `certificate-arn` does not resolve in the account, so an unreplaced value fails provisioning instead of falling back to a plaintext listener.
 
@@ -107,7 +107,19 @@ patches:
           alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:<region>:<account-id>:certificate/<gateway-certificate-id>
 ```
 
-`inbound-webhook` fronts an internet-facing ALB, so its certificate must cover the public hostname registered as the GitHub webhook URL. `mcp-gateway` fronts an internal ALB, one per tenant, so its certificate must cover the in-VPC hostname each tenant's clients resolve.
+`inbound-webhook` fronts an internet-facing ALB, so its certificate must cover the public hostname registered as the GitHub webhook URL. `mcp-gateway` fronts an internal ALB, one per tenant, so its certificate must cover the in-VPC hostname each tenant's clients resolve. In AWS that hostname is `mcp-<tenant>.<eks_mcp_gateway_domain>`, so a certificate for `*.<eks_mcp_gateway_domain>` covers every tenant, and `inv eks-deploy` refuses a certificate that does not cover each tenant's host before it starts the deploy task. A certificate for the load balancer's `*.elb.amazonaws.com` name does not serve, because the gateway refuses that `Host` with 421, so the gateway may not share the inbound webhook certificate, and the private-bedrock plan refuses the same ARN for both.
+
+### Issuing the MCP gateway certificate in an environment without a public domain
+
+`inv mcp-gateway-certs` signs the gateway certificate with the platform CA that `inv temporal-certs generate --internal-name` wrote, which MCP clients already trust through `container_platform_ca_file`. It writes `mcp-gateway.pem` and `mcp-gateway-key.pem` next to `ca.pem` and refuses a directory inside the repository. `import` checks the certificate against the CA and each tenant's host in the `eks` output, and imports it into ACM with the CA as its chain. It re-imports into the `mcp_gateway_certificate_arn` of the `eks` output, so a renewal keeps the ARN. When that ARN is unset or is the inbound webhook certificate, it creates a new ARN and prints the tfvars line to set, and it never imports into the webhook ARN. For the sandbox, whose CA directory is `~/.agentic-platform/internal-tls-sandbox`, the steps are:
+
+1. `inv mcp-gateway-certs issue --dir ~/.agentic-platform/internal-tls-sandbox --domain <eks_mcp_gateway_domain>`. Without `--domain`, the task reads `mcp_gateway_domain` from the `eks` output.
+2. `inv mcp-gateway-certs import --dir ~/.agentic-platform/internal-tls-sandbox`.
+3. Set `eks_mcp_gateway_domain` and the `eks_mcp_gateway_certificate_arn` it prints in the tfvars file.
+4. Apply.
+5. `inv eks-deploy`, which checks the certificate, deploys, and points each tenant's host at its ALB.
+
+To renew, run `issue` with `--force` and `import` again. The ARN stays the same, so neither the tfvars file nor the Ingress changes.
 
 ## Target group health checks
 
@@ -137,18 +149,25 @@ patches:
 
 ## MCP gateway host header
 
-The MCP gateway enables the FastMCP DNS rebinding protection from `MCP_ALLOWED_HOSTS`, a comma-separated list of the `Host` header values it accepts. The base manifest sets the synthetic value `mcp.internal.example,mcp.internal.example:443` on the Deployment, so replace it with the hostname its clients resolve. List the hostname both bare and with `:443`, because a client that connects on the default port sends the `Host` header without a port and one that names the port explicitly sends it with the port. A value of `host:*` accepts any port on that hostname. Each entry also contributes an allowed `Origin` of `https://<entry>`, which matches the HTTPS-only listener. In AWS, `inv eks-deploy` sets each tenant gateway's value to the hostname of that tenant's load balancer once it exists, and leaves it empty until then.
+The MCP gateway enables the FastMCP DNS rebinding protection from `MCP_ALLOWED_HOSTS`, a comma-separated list of the `Host` header values it accepts. The base manifest sets the synthetic value `mcp.internal.example,mcp.internal.example:443` on the Deployment, so replace it with the hostname its clients resolve. List the hostname both bare and with `:443`, because a client that connects on the default port sends the `Host` header without a port and one that names the port explicitly sends it with the port. A value of `host:*` accepts any port on that hostname. Each entry also contributes an allowed `Origin` of `https://<entry>`, which matches the HTTPS-only listener. In AWS, the deploy sets each tenant gateway's value to the tenant's host, `mcp-<tenant>.<eks_mcp_gateway_domain>`, which is also the host of the gateway's Ingress rule, so the load balancer forwards only that host and the gateway accepts only it. Without `eks_mcp_gateway_certificate_arn` the gateway has no Ingress and its value is empty.
 
 A request whose `Host` header is outside the list is refused with 421, and one whose `Origin` header is outside the derived list is refused with 403. The health paths are served outside that check and answer whatever `Host` the ALB target group health check sends.
 
 FastMCP turns the protection on by itself only when the server binds a loopback address, and the platform image sets `BIND_HOST=0.0.0.0`. Leaving `MCP_ALLOWED_HOSTS` empty in a deployed pod therefore leaves the gateway accepting every `Host` value.
 
-The `local/` overlay patches `MCP_ALLOWED_HOSTS` to an empty value, so the sandbox gateway accepts any `Host`. A sandbox client reaches it through `kubectl port-forward` or the in-cluster service name, and the `Host` header those produce varies with the forwarded port and the DNS form the client uses, so a fixed list would refuse valid sandbox traffic with 421 while the health paths kept the pod green. An environment overlay that fronts the gateway with an ALB sets the hostname instead, as below. Changing the base value means checking `local/` as well, because the overlay inherits anything it does not patch.
+The `local/` overlay patches `MCP_ALLOWED_HOSTS` to an empty value, so the sandbox gateway accepts any `Host`. A sandbox client reaches it through `kubectl port-forward` or the in-cluster service name, and the `Host` header those produce varies with the forwarded port and the DNS form the client uses, so a fixed list would refuse valid sandbox traffic with 421 while the health paths kept the pod green. An environment overlay that fronts the gateway with an ALB sets the hostname on both the Ingress rule and the Deployment instead, as below. Changing the base value means checking `local/` as well, because the overlay inherits anything it does not patch.
 
-Patch the value from the environment overlay `kustomization.yaml`.
+Patch both values from the environment overlay `kustomization.yaml`.
 
 ```yaml
 patches:
+  - target:
+      kind: Ingress
+      name: mcp-gateway
+    patch: |
+      - op: replace
+        path: /spec/rules/0/host
+        value: mcp.<environment>.<domain>
   - target:
       kind: Deployment
       name: mcp-gateway

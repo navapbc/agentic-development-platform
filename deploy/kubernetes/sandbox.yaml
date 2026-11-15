@@ -6,14 +6,14 @@ metadata:
   labels:
     app.kubernetes.io/part-of: agentic-dev-platform
 rules:
-  - apiGroups: [""]
-    resources: [pods]
+  - resources: [pods]
+    apiGroups: [""]
     verbs: [get, list, watch, create, patch, delete]
-  - apiGroups: [""]
-    resources: [pods/exec]
+  - resources: [pods/exec]
+    apiGroups: [""]
     verbs: [get, create]
-  - apiGroups: [""]
-    resources: [pods/log]
+  - resources: [pods/log]
+    apiGroups: [""]
     verbs: [get]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

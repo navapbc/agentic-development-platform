@@ -104,6 +104,12 @@ def render(
     return {"services": services}
 
 
+def registry_config_dir(environment: str, tenant: str, *, root: Path) -> str:
+    """Return the tenant's bundle directory if it holds repositories.yaml, else the environment."""
+    bundle = f"{environment}/tenants/{tenant}"
+    return bundle if (root / "config" / bundle / REGISTRY_FILE).is_file() else environment
+
+
 def tenant_registries(
     settings: Settings, tenants: Sequence[str], *, root: Path
 ) -> list[RepositoryRegistry]:
@@ -115,9 +121,7 @@ def tenant_registries(
 
     registries = []
     for tenant in tenants:
-        bundle = f"{settings.environment}/tenants/{tenant}"
-        has_own = (root / "config" / bundle / f"{CONFIG_NAME}.yaml").is_file()
-        config_dir = bundle if has_own else settings.environment
+        config_dir = registry_config_dir(settings.environment, tenant, root=root)
         require_current_config(CONFIG_NAME, environment=config_dir, root=root)
         raw = load_env_config(CONFIG_NAME, environment=config_dir, root=root)
         registries.append(parse_repositories(raw, root=worker_env(tenant)["REPOSITORY_ROOT"]))

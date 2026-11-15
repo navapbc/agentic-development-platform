@@ -138,7 +138,8 @@ metadata:
 spec:
   ingressClassName: alb
   rules:
-    - http:
+    - host: mcp.internal.example
+      http:
         paths:
           - path: /mcp
             pathType: Prefix

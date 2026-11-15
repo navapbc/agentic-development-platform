@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 from scripts import fetch_results, repos_sync
+from scripts.k8s_cluster import worker_registry
 from services import process
 from tests.support import hermetic_settings
 
@@ -125,3 +126,70 @@ def test_an_engine_sync_carries_uncommitted_edits_and_the_git_directory(cluster)
     assert (copy / "new.md").read_text() == "untracked\n"
     assert not (copy / "ignored.md").exists()
     assert _git(copy, "rev-parse", "HEAD") == _git(host, "rev-parse", "HEAD")
+
+
+def _registry_root(tmp_path: Path, *, beta: bool = True, env_tenant: str = "adp") -> Path:
+    root = tmp_path / "checkout"
+    config = root / "config" / "local"
+    (config / "tenants" / "beta").mkdir(parents=True)
+    (root / ".env").write_text(f"TENANT={env_tenant}\n")
+    (config / "repositories.yaml").write_text(
+        "config_version: 1\nrepositories:\n  adp-web:\n    backend: local\n    path: /src/adp-web\n"
+    )
+    if beta:
+        (config / "tenants" / "beta" / "repositories.yaml").write_text(
+            "config_version: 1\nrepositories:\n  beta-web:\n    backend: local\n"
+            "    path: /src/beta-web\n"
+        )
+    return root
+
+
+def test_a_host_task_reads_the_repositories_of_the_tenant_whose_worker_it_reaches(
+    tmp_path: Path,
+) -> None:
+    root = _registry_root(tmp_path)
+
+    beta = worker_registry(hermetic_settings(tenants="adp,beta", tenant="beta"), root)
+    adp = worker_registry(hermetic_settings(tenants="adp,beta", tenant="adp"), root)
+
+    assert sorted(beta.repositories) == ["beta-web"]
+    assert sorted(adp.repositories) == ["adp-web"]
+
+
+def test_only_the_home_tenant_falls_back_to_the_environment_registry(tmp_path: Path) -> None:
+    root = _registry_root(tmp_path, beta=False)
+
+    with pytest.raises(SystemExit, match="tenant beta names no repositories of its own"):
+        worker_registry(hermetic_settings(tenants="adp,beta", tenant="beta"), root)
+    home = worker_registry(hermetic_settings(tenants="adp,beta", tenant=""), root)
+    single = worker_registry(hermetic_settings(tenants="", tenant="beta"), root)
+
+    assert sorted(home.repositories) == ["adp-web"]
+    assert sorted(single.repositories) == ["adp-web"]
+
+
+@pytest.mark.parametrize("module", [repos_sync, fetch_results])
+def test_sync_and_fetch_send_the_target_tenants_repositories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, module
+) -> None:
+    from scripts import k8s_cluster
+    from services.orchestration.gates import engine_source
+
+    root = _registry_root(tmp_path)
+    checkout = tmp_path / "beta-web"
+    (checkout / ".git").mkdir(parents=True)
+    (root / "config" / "local" / "tenants" / "beta" / "repositories.yaml").write_text(
+        f"config_version: 1\nrepositories:\n  beta-web:\n    backend: local\n    path: {checkout}\n"
+    )
+    sent: list[str] = []
+    monkeypatch.setattr(k8s_cluster, "REPO_ROOT", root)
+    monkeypatch.setattr(
+        module, "get_settings", lambda: hermetic_settings(tenants="adp,beta", tenant="beta")
+    )
+    monkeypatch.setattr(engine_source, "load_gate_engine_configs", lambda settings: ())
+    for name in ("sync_repository", "fetch_repository"):
+        if hasattr(module, name):
+            monkeypatch.setattr(module, name, lambda settings, repo, *_: sent.append(repo) or "ok")
+
+    assert module.main([]) == 0
+    assert sent == ["beta-web"]

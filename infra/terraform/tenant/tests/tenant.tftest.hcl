@@ -183,9 +183,91 @@ run "the_publisher_trusts_one_repository_and_writes_one_prefix" {
       one([for s in jsondecode(aws_iam_role_policy.publisher[0].policy).Statement : s if s.Sid == "PublishTheTenantBundle"]).Resource == "arn:aws:s3:::agentic-platform-tenant-config-abc/tenants/adp/*" &&
       one([for s in jsondecode(aws_iam_role_policy.publisher[0].policy).Statement : s if s.Sid == "PushTheTenantImages"]).Resource == "arn:aws:ecr:us-east-1:111111111111:repository/agentic-platform/tenants/adp/*" &&
       one([for s in jsondecode(aws_iam_role_policy.publisher[0].policy).Statement : s if s.Sid == "SignTheTenantImages"]).Resource == "arn:aws:signer:us-east-1:111111111111:/signing-profiles/agentic_platform_tenant_adp_abc" &&
-      startswith(aws_signer_signing_profile.this[0].name_prefix, "agentic_platform_tenant_adp_")
+      aws_signer_signing_profile.this[0].name_prefix == "agentic_platform_tenant_adp_"
     )
     error_message = "The publisher trusts another repository, reaches beyond the tenant's prefixes, or signs with another profile."
+  }
+
+  assert {
+    condition     = aws_iam_role.publisher[0].tags["tenant-config-publisher"] == "adp" && aws_iam_role.publisher[0].tags.tenant == "adp"
+    error_message = "The publisher role does not carry the principal tag that admits it to the tenant's config prefix."
+  }
+}
+
+run "the_publisher_tag_key_follows_the_config_store" {
+  command = plan
+
+  variables {
+    create_tenant = true
+    config_store = {
+      bucket_arn        = "arn:aws:s3:::agentic-platform-tenant-config-abc"
+      kms_key_arn       = "arn:aws:kms:us-east-1:111111111111:key/config"
+      publisher_tag_key = "config-publisher"
+    }
+    config_publisher = {
+      oidc_provider_arn = "arn:aws:iam::111111111111:oidc-provider/token.actions.githubusercontent.com"
+      github_repository = "navapbc/adp-tenant-config"
+    }
+  }
+
+  assert {
+    condition     = aws_iam_role.publisher[0].tags["config-publisher"] == "adp" && !contains(keys(aws_iam_role.publisher[0].tags), "tenant-config-publisher")
+    error_message = "The publisher role is not tagged with the config store's publisher tag key."
+  }
+}
+
+run "the_signing_profile_prefix_fits_signer_for_the_longest_tenant_name" {
+  command = plan
+
+  variables {
+    create_tenant = true
+    tenant        = "abcdefghijklmnop"
+  }
+
+  assert {
+    condition     = can(regex("^[0-9A-Za-z_]{0,38}$", aws_signer_signing_profile.this[0].name_prefix))
+    error_message = "The signing profile name_prefix is longer than 38 characters or holds a character Signer refuses."
+  }
+
+  assert {
+    condition = (
+      aws_signer_signing_profile.this[0].name_prefix == "agentic_pla_${substr(sha256("agentic-platform"), 0, 8)}_abcdefghijklmnop_" &&
+      length(aws_signer_signing_profile.this[0].name_prefix) == 38
+    )
+    error_message = "A truncated signing profile prefix does not keep the whole tenant name behind the hashed name_prefix."
+  }
+}
+
+run "the_signing_profile_prefix_fits_signer_at_the_first_tenant_length_past_the_limit" {
+  command = plan
+
+  variables {
+    create_tenant = true
+    tenant        = "abcdefghijklmn"
+  }
+
+  assert {
+    condition     = can(regex("^[0-9A-Za-z_]{0,38}$", aws_signer_signing_profile.this[0].name_prefix)) && endswith(aws_signer_signing_profile.this[0].name_prefix, "_abcdefghijklmn_")
+    error_message = "The signing profile name_prefix of a 14 character tenant does not fit Signer's limit or loses the tenant name."
+  }
+}
+
+run "the_signing_profile_prefix_fits_signer_for_a_long_name_prefix" {
+  command = plan
+
+  variables {
+    create_tenant = true
+    name_prefix   = "a-long-deployment-name-prefix1"
+    tenant        = "beta"
+  }
+
+  assert {
+    condition = (
+      can(regex("^[0-9A-Za-z_]{0,38}$", aws_signer_signing_profile.this[0].name_prefix)) &&
+      endswith(aws_signer_signing_profile.this[0].name_prefix, "_beta_") &&
+      startswith(aws_signer_signing_profile.this[0].name_prefix, "a_long_deployment_name_")
+    )
+    error_message = "The signing profile name_prefix of a long name_prefix does not fit Signer's limit or loses the tenant name."
   }
 }
 

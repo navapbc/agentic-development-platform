@@ -11,6 +11,9 @@ from services.coordination.idempotency import (
     InMemorySideEffectLedger,
     PostgresSideEffectLedger,
     SideEffectRef,
+    intake_start_target,
+    intake_start_target_repo,
+    intake_start_target_tenant,
     side_effect_key,
 )
 from sqlalchemy.dialects import postgresql
@@ -567,3 +570,71 @@ async def test_the_in_memory_ledger_refuses_a_concurrent_run_of_the_same_effect(
         return {"workflow_id": "wf"}
 
     assert (await ledger.run_once(ref, start_outer)).result == {"workflow_id": "wf"}
+
+
+def _completed_row(ref: SideEffectRef, workflow_id: str) -> _SideEffectRow:
+    return _SideEffectRow(
+        side_effect_key=side_effect_key(ref),
+        task_id=ref.task_id,
+        execution_id=ref.execution_id,
+        operation=ref.operation,
+        target=ref.target,
+        status="completed",
+        result={"workflow_id": workflow_id},
+    )
+
+
+def _tenant_start(tenant: str) -> SideEffectRef:
+    return SideEffectRef(
+        "ADEV-1", "", "intake_start", intake_start_target("ADEV-1", "repo-a", tenant)
+    )
+
+
+def test_the_intake_start_target_keeps_the_repository_last_and_names_the_tenant():
+    target = intake_start_target("ADEV-1", "repo-a", "beta")
+
+    assert intake_start_target_repo("intake_start", target) == "repo-a"
+    assert intake_start_target_tenant(target) == "beta"
+    assert intake_start_target_tenant(intake_start_target("ADEV-1", "repo-a")) == ""
+    assert intake_start_target_tenant("digest-1:repo-a") == ""
+
+
+@pytest.mark.parametrize("ledger_kind", ["memory", "postgres"])
+async def test_two_tenants_start_the_same_issue_in_the_same_repository(ledger_kind):
+    ledger: Any = (
+        InMemorySideEffectLedger()
+        if ledger_kind == "memory"
+        else PostgresSideEffectLedger(cast(AsyncEngine, _FakeEngine([])))
+    )
+    calls: list[str] = []
+
+    def start(tenant: str):
+        async def effect():
+            calls.append(tenant)
+            return {"workflow_id": f"wf-{tenant}"}
+
+        return effect
+
+    adp = await ledger.run_once(_tenant_start("adp"), start("adp"))
+    beta = await ledger.run_once(_tenant_start("beta"), start("beta"))
+
+    assert adp.replayed is False
+    assert beta.replayed is False
+    assert calls == ["adp", "beta"]
+
+
+@pytest.mark.parametrize("untenanted_target", ["ADEV-1:repo-a", "digest-1:repo-a"])
+async def test_a_tenant_does_not_replay_a_start_recorded_without_a_tenant(untenanted_target):
+    untenanted = SideEffectRef("ADEV-1", "", "intake_start", untenanted_target)
+    engine = _FakeEngine([_completed_row(untenanted, "wf-before-tenants")])
+    ledger = PostgresSideEffectLedger(cast(AsyncEngine, engine))
+    calls: list[str] = []
+
+    async def start():
+        calls.append("adp")
+        return {"workflow_id": "wf-adp"}
+
+    outcome = await ledger.run_once(_tenant_start("adp"), start)
+
+    assert outcome.replayed is False
+    assert calls == ["adp"]

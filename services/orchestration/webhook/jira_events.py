@@ -173,8 +173,15 @@ class TemporalIssueIntake:
         self._settings = settings
 
     def task_queue(self, tenant: str) -> str:
+        """Return the task queue of the tenant.
+
+        No activity worker polls the base queue, so a delivery that names no tenant is refused.
+        """
         if not tenant:
-            return self._settings.temporal_task_queue
+            raise DispatchNotReady(
+                "the Jira delivery names no tenant, so no activity worker polls a task queue for "
+                "its intake"
+            )
         return tenant_task_queue(self._settings, tenant)
 
     async def start(self, event: TenantIssueEvent) -> dict[str, Any]:

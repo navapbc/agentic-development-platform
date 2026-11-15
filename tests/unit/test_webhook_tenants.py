@@ -23,7 +23,9 @@ from services.orchestration.webhook.pr_events import (
     PrClosedHandler,
 )
 from services.orchestration.webhook.server import (
+    Route,
     build_routes_for,
+    require_intake_tenant,
     require_webhook_secrets,
     route_inbound,
 )
@@ -196,12 +198,13 @@ def test_a_shared_repository_routes_each_delivery_by_its_signature():
     assert tenants.select_tenant("shared", body, _sign("neither-key", body)) is None
 
 
-def test_two_tenants_that_share_a_secret_are_refused():
+def test_two_tenants_that_share_a_secret_are_refused(caplog: pytest.LogCaptureFixture):
     routing = _routing({"adp": {"shared": GITHUB}, "beta": {"shared": GITHUB}})
     tenants = RoutedRepositories(routing, {"adp": "same-key", "beta": "same-key"})
     body = _pr_body("shared")
 
     assert tenants.select_tenant("shared", body, _sign("same-key", body)) is None
+    assert "tenants adp, beta share a signing key for repository shared" in caplog.text
 
 
 def test_a_tenant_secret_is_its_own_and_the_platform_secret_serves_one_tenant_only():
@@ -299,9 +302,9 @@ class _Engine:
         return self.connection
 
 
-async def _resolved_sql(event: PrClosedEvent, unattributed: str) -> str:
+async def _resolved_sql(event: PrClosedEvent) -> str:
     engine = _Engine()
-    resolver = PostgresWorkflowResolver(cast(AsyncEngine, engine), unattributed_tenant=unattributed)
+    resolver = PostgresWorkflowResolver(cast(AsyncEngine, engine))
     await resolver.resolve(event)
     return str(
         engine.connection.statements[0].compile(
@@ -317,21 +320,22 @@ def _event(tenant: str | None) -> PrClosedEvent:
 
 
 async def test_the_resolver_matches_the_tenant_and_the_task():
-    sql = await _resolved_sql(_event("beta"), "adp")
+    sql = await _resolved_sql(_event("beta"))
 
     assert "executions.task_id = 'T-7'" in sql
     assert "executions.tenant = 'beta'" in sql
     assert "IS NULL" not in sql
 
 
-async def test_the_home_tenant_also_matches_executions_recorded_without_a_tenant():
-    sql = await _resolved_sql(_event("adp"), "adp")
+async def test_a_tenant_event_does_not_match_executions_recorded_without_a_tenant():
+    sql = await _resolved_sql(_event("adp"))
 
-    assert "executions.tenant = 'adp' OR agent_platform.executions.tenant IS NULL" in sql
+    assert "executions.tenant = 'adp'" in sql
+    assert "IS NULL" not in sql
 
 
 async def test_the_platform_resolves_by_task_alone():
-    sql = await _resolved_sql(_event(""), "")
+    sql = await _resolved_sql(_event(""))
 
     assert "executions.tenant" not in sql
 
@@ -483,3 +487,102 @@ def test_one_tenant_with_a_secret_lets_the_webhook_start(monkeypatch):
         hermetic_settings(tenants="adp,beta"),
         environ={"GITHUB_WEBHOOK_SECRET_ADP": "a", "JIRA_WEBHOOK_SECRET_BETA": "b"},
     )
+
+
+async def test_a_single_tenant_webhook_starts_a_bare_route_delivery_on_the_tenant_queue(
+    monkeypatch,
+):
+    monkeypatch.setenv("JIRA_WEBHOOK_SECRET", "one-key")
+    client = _Client()
+    settings = hermetic_settings(temporal_task_queue="q", tenant="adp")
+    routes = build_routes_for(
+        settings,
+        routing=_routing({"adp": {}}, {"adp": _jira_yaml("ADP")}, settings=settings),
+        signaller=_Signaller(),
+        starter=TemporalIssueIntake(client, settings),
+    )
+    body = _jira_body("ADP-12")
+
+    status, _ = await route_inbound(
+        routes["/webhook/jira"],
+        body,
+        {"X-Hub-Signature": _sign("one-key", body)},
+        ledger=InMemorySideEffectLedger(),
+        mode=WEBHOOK,
+    )
+
+    assert status == 200
+    assert [start["task_queue"] for start in client.starts] == ["q-adp"]
+
+
+async def test_a_delivery_no_tenant_owns_starts_nothing_and_is_not_recorded():
+    client = _Client()
+    starter = TemporalIssueIntake(client, hermetic_settings(temporal_task_queue="q"))
+    route = Route(
+        handler=TenantJiraIntakeHandler(tenant="", secret="one-key", starter=starter),
+        allowed=lambda: frozenset({"ADP"}),
+    )
+    ledger = InMemorySideEffectLedger()
+    body = _jira_body("ADP-12")
+    headers = {"X-Hub-Signature": _sign("one-key", body)}
+
+    first = await route_inbound(route, body, headers, ledger=ledger, mode=WEBHOOK)
+    again = await route_inbound(route, body, headers, ledger=ledger, mode=WEBHOOK)
+
+    assert first[0] == again[0] == 404
+    assert "no activity worker" in first[1]["error"]
+    assert client.starts == []
+
+
+class _Mode:
+    def __init__(self, enabled: bool) -> None:
+        self._enabled = enabled
+
+    def webhook_enabled(self, name: str) -> bool:
+        return self._enabled and name == "jira_intake"
+
+
+def test_a_webhook_without_a_tenant_refuses_to_start_jira_intake(monkeypatch):
+    monkeypatch.setattr(
+        "services.orchestration.webhook.server.load_integrations_config", lambda s: _Mode(True)
+    )
+
+    with pytest.raises(SystemExit, match="TENANT or TENANTS"):
+        require_intake_tenant(hermetic_settings())
+
+
+@pytest.mark.parametrize(
+    ("enabled", "overrides"),
+    [(True, {"tenant": "adp"}), (True, {"tenants": "adp,beta"}), (False, {})],
+)
+def test_a_webhook_with_a_tenant_or_without_jira_intake_starts(monkeypatch, enabled, overrides):
+    monkeypatch.setattr(
+        "services.orchestration.webhook.server.load_integrations_config",
+        lambda s: _Mode(enabled),
+    )
+
+    require_intake_tenant(hermetic_settings(**overrides))
+
+
+async def test_the_webhook_resolves_no_workflow_for_an_execution_recorded_without_a_tenant(
+    monkeypatch,
+):
+    for name, value in ENVIRON.items():
+        monkeypatch.setenv(name, value)
+    settings = hermetic_settings(tenant="adp")
+    routing = _routing({"adp": {"adp-web": GITHUB}}, settings=settings)
+
+    routes = build_routes_for(settings, routing=routing, signaller=_Signaller(), starter=_Starter())
+
+    resolver = routes["/webhook/pr"].handler._resolver  # noqa: SLF001  # pyright: ignore[reportAttributeAccessIssue]
+    engine = _Engine()
+    resolver._engine = engine  # noqa: SLF001
+
+    assert await resolver.resolve(_event("adp")) is None
+    sql = str(
+        engine.connection.statements[0].compile(
+            dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+        )
+    )
+    assert "executions.tenant = 'adp'" in sql
+    assert "IS NULL" not in sql

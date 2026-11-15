@@ -1,5 +1,5 @@
 variable "create_webhook_secrets" {
-  description = "Create the tenant's GitHub and Jira webhook signing secrets, which only webhook_reader_arn reads, and the policy that lets that role read them and the tenant's config bundle. The platform's inbound webhook verifies the tenant's deliveries with them when it serves more than one tenant."
+  description = "Create the tenant's GitHub and Jira webhook signing secrets, which only webhook_reader_arn reads. The platform's inbound webhook verifies the tenant's deliveries with them when it serves more than one tenant, and the deployment grants its role every tenant's secrets, keys, and bundles in one policy."
   type        = bool
   default     = false
 }
@@ -71,61 +71,10 @@ resource "aws_secretsmanager_secret_policy" "webhook" {
   })
 }
 
-# Attached to the inbound webhook's role. The webhook reads the tenant's repositories.yaml and
-# jira.yaml from the bundle to route deliveries, and the bundle source lists and reads every file.
-resource "aws_iam_policy" "webhook" {
-  count = local.webhook_enabled ? 1 : 0
-
-  name_prefix = "${local.name}-webhook-"
-  description = "Lets the platform's inbound webhook read the ${var.tenant} tenant's webhook signing secrets and config bundle."
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid      = "ReadTheTenantWebhookSecrets"
-        Effect   = "Allow"
-        Action   = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
-        Resource = [for secret in aws_secretsmanager_secret.webhook : secret.arn]
-      },
-      {
-        Sid       = "DecryptTheTenantWebhookSecrets"
-        Effect    = "Allow"
-        Action    = "kms:Decrypt"
-        Resource  = local.kms_key_arn
-        Condition = { StringEquals = { "kms:ViaService" = "secretsmanager.${local.region}.amazonaws.com" } }
-      },
-      {
-        Sid       = "ListTheTenantBundle"
-        Effect    = "Allow"
-        Action    = ["s3:ListBucket", "s3:ListBucketVersions"]
-        Resource  = var.config_store.bucket_arn
-        Condition = { StringLike = { "s3:prefix" = ["${local.config_prefix}*"] } }
-      },
-      {
-        Sid      = "ReadTheTenantBundle"
-        Effect   = "Allow"
-        Action   = ["s3:GetObject", "s3:GetObjectVersion"]
-        Resource = "${var.config_store.bucket_arn}/${local.config_prefix}*"
-      },
-      {
-        Sid       = "DecryptTheTenantBundle"
-        Effect    = "Allow"
-        Action    = "kms:Decrypt"
-        Resource  = var.config_store.kms_key_arn
-        Condition = { StringEquals = { "kms:ViaService" = "s3.${local.region}.amazonaws.com" } }
-      },
-    ]
-  })
-
-  tags = local.tags
-
-  depends_on = [terraform_data.webhook_guard]
-}
-
 output "webhook" {
-  description = "The tenant's webhook signing secret ARNs, keyed github_webhook_secret and jira_webhook_secret, and the policy for the inbound webhook's role, or null without create_webhook_secrets."
+  description = "The tenant's webhook signing secret ARNs, keyed github_webhook_secret and jira_webhook_secret, and the tenant key that encrypts them, which the inbound webhook's role needs through Secrets Manager, or null without create_webhook_secrets."
   value = local.webhook_enabled ? {
-    secret_arns       = { for key, secret in aws_secretsmanager_secret.webhook : key => secret.arn }
-    reader_policy_arn = aws_iam_policy.webhook[0].arn
+    secret_arns = { for key, secret in aws_secretsmanager_secret.webhook : key => secret.arn }
+    kms_key_arn = local.kms_key_arn
   } : null
 }

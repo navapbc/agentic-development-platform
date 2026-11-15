@@ -433,6 +433,7 @@ class _FakeMaterializer:
 
 class _FakeRuntime:
     def __init__(self, status: str = "finished", summary: str = "") -> None:
+        self.image = "registry.example/sandbox@sha256:profile"
         self.task = ""
         self._status = status
         self._summary = summary
@@ -471,8 +472,18 @@ def _repair_request(**overrides) -> ApplyCIRepairRequest:
 
 
 def _run_repair(
-    monkeypatch, materializer, runtime, *, budget_stop="", runtime_keys=None, failure_texts=None
+    monkeypatch,
+    materializer,
+    runtime,
+    *,
+    budget_stop="",
+    runtime_keys=None,
+    failure_texts=None,
+    runtime_repos=None,
+    admitted=None,
+    admit=None,
 ):
+    from services.orchestration.gates import image_admission
     from services.orchestration.temporal_activities import implementation as impl_module
     from services.orchestration.temporal_activities import repair as repair_module
 
@@ -490,13 +501,20 @@ def _run_repair(
     def build_runtime(repo="", *, model_api_key):
         if runtime_keys is not None:
             runtime_keys.append(model_api_key)
+        if runtime_repos is not None:
+            runtime_repos.append(repo)
         return runtime
+
+    async def admit_sandbox_image(image, settings, ops=None):
+        if admitted is not None:
+            admitted.append(image)
 
     monkeypatch.setattr(repair_module, "_project_autofix", no_autofix)
     monkeypatch.setattr(impl_module, "_build_materializer", lambda *a, **k: materializer)
     monkeypatch.setattr(impl_module, "_build_runtime", build_runtime)
     monkeypatch.setattr(impl_module, "_run_model_key", run_model_key)
     monkeypatch.setattr(impl_module, "_model_budget_stop", model_budget_stop)
+    monkeypatch.setattr(image_admission, "admit_sandbox_image", admit or admit_sandbox_image)
     return asyncio.run(repair_module.apply_ci_repair(_repair_request()))
 
 
@@ -536,6 +554,31 @@ def test_the_repair_sandbox_is_given_the_run_key(monkeypatch):
     _run_repair(monkeypatch, materializer, _FakeRuntime(), runtime_keys=keys)
 
     assert keys == ["sk-run-e"]
+
+
+def test_the_repair_sandbox_runs_the_admitted_image_of_the_repository_profile(monkeypatch):
+    materializer = _FakeMaterializer(changed=("portal/a.tsx",), surviving=("portal/a.tsx",))
+    repos: list[str] = []
+    admitted: list[str] = []
+
+    _run_repair(monkeypatch, materializer, _FakeRuntime(), runtime_repos=repos, admitted=admitted)
+
+    assert repos == ["org/app"]
+    assert admitted == ["registry.example/sandbox@sha256:profile"]
+
+
+def test_a_repair_whose_sandbox_image_is_refused_runs_no_agent(monkeypatch):
+    from services.orchestration.gates.image_admission import ImageRefusedError
+
+    async def refuse(image, settings, ops=None):
+        raise ImageRefusedError(f"{image} is not allowed")
+
+    runtime = _FakeRuntime()
+
+    with pytest.raises(ImageRefusedError):
+        _run_repair(monkeypatch, _FakeMaterializer(changed=(), surviving=()), runtime, admit=refuse)
+
+    assert runtime.task == ""
 
 
 def test_a_repair_refused_for_budget_reports_the_budget_reason(monkeypatch):

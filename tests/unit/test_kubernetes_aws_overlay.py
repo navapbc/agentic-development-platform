@@ -192,3 +192,13 @@ def test_gate_pods_reach_only_dns_litellm_the_registry_and_the_pod_identity_agen
     registry = next(rule for rule in egress if rule["ports"][0]["port"] == 443)
     assert all("except" not in peer["ipBlock"] for peer in registry["to"])
     assert "0.0.0.0/0" not in {peer["ipBlock"]["cidr"] for peer in registry["to"]}
+
+
+def test_the_overlay_renders_the_kube_system_policies_strict_mode_needs(documents) -> None:
+    kube_system = {
+        d["metadata"]["name"]
+        for d in documents
+        if d["kind"] == "NetworkPolicy" and d["metadata"].get("namespace") == "kube-system"
+    }
+
+    assert kube_system == {"system-baseline", "coredns-ingress", "load-balancer-controller-webhook"}

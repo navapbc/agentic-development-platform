@@ -142,11 +142,11 @@ resource "aws_iam_role" "exception" {
   count = local.exceptions_enabled ? 1 : 0
 
   name        = "${var.name_prefix}-github-image-exception"
-  description = "Assumed by the image-exception workflow of ${var.github_repository} in the ${var.exception_environment} environment to accept a finding in a platform image."
+  description = "Assumed by the image-exception workflow of ${var.github_repository} in the ${var.exception_environment} environment on ${var.exception_ref} to accept a finding in a platform image."
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Sid       = "GitHubWorkflowsOfOneRepositoryAndEnvironment"
+      Sid       = "GitHubWorkflowsOfOneRepositoryEnvironmentAndRef"
       Effect    = "Allow"
       Action    = "sts:AssumeRoleWithWebIdentity"
       Principal = { Federated = local.provider_arn }
@@ -154,6 +154,7 @@ resource "aws_iam_role" "exception" {
         StringEquals = {
           "${local.issuer}:aud" = "sts.amazonaws.com"
           "${local.issuer}:sub" = local.exception_subject
+          "${local.issuer}:ref" = var.exception_ref
         }
       }
     }]
@@ -173,7 +174,7 @@ resource "aws_iam_role_policy" "exception" {
       {
         Sid      = "EcrAuthorization"
         Effect   = "Allow"
-        Action   = "ecr:GetAuthorizationToken"
+        Action   = "ecr:GetAuthorizationToken" # sast-accepted: image-exception role
         Resource = "*"
       },
       {
@@ -191,13 +192,13 @@ resource "aws_iam_role_policy" "exception" {
       {
         Sid      = "WriteThePlatformExceptions"
         Effect   = "Allow"
-        Action   = ["s3:GetObject", "s3:GetObjectVersion", "s3:PutObject"]
+        Action   = ["s3:GetObject", "s3:GetObjectVersion", "s3:PutObject"] # sast-accepted: image-exception role
         Resource = local.platform_exceptions
       },
       {
         Sid      = "ReadTheImagePolicy"
         Effect   = "Allow"
-        Action   = ["s3:GetObject", "s3:GetObjectVersion"]
+        Action   = ["s3:GetObject", "s3:GetObjectVersion"] # sast-accepted: image-exception role
         Resource = local.platform_policy
       },
       {

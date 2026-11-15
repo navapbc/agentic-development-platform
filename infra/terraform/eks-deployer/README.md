@@ -16,7 +16,7 @@ Reusable module that provisions the one-shot ECS task that deploys the EKS workl
 
 The task's commands are below.
 
-- `deploy` installs or upgrades the controller from the regional EKS registry, restarts it onto its webhook certificate, renders and applies the overlay, waits for each deployment, sets each tenant's MCP gateway host list once that gateway's load balancer exists, and lists the pods no NetworkPolicy selects. A deployment that does not roll out has its pods, warnings, and recent log printed.
+- `deploy` installs or upgrades the controller from the regional EKS registry, restarts it onto its webhook certificate, renders and applies the overlay with each tenant's MCP gateway host on its Ingress rule and in its `MCP_ALLOWED_HOSTS`, waits for each deployment and for the load balancer of each gateway Ingress, and lists the pods no NetworkPolicy selects. The task role holds no Route 53 permission, so `inv eks-deploy` writes each gateway host's record with the operator's credentials after the task succeeds. A deployment that does not roll out has its pods, warnings, and recent log printed.
 - `restart DEPLOYMENT...` rolls the named deployments, each a platform deployment by name or `namespace/name`. `tenant-workers` names every tenant's activity worker, and `mcp-gateway` names every tenant's MCP gateway, because the platform namespace runs no gateway.
 - `check-policies` lists the pods no NetworkPolicy selects and exits 1 when there are any.
 

@@ -12,6 +12,7 @@ from scripts import k8s_render
 from scripts.cluster_env import (
     compose_network,
     litellm_database_url,
+    qualify_in_cluster_services,
     rewrite_address,
     rewrite_env,
 )
@@ -100,6 +101,13 @@ def test_a_remapped_port_follows_the_published_one() -> None:
     value, _ = rewrite_address("http://minio:9000", NETWORK, "host.docker.internal")
 
     assert value == "http://host.docker.internal:9090"
+
+
+def test_an_in_cluster_service_is_qualified_with_its_namespace_and_others_are_kept() -> None:
+    assert qualify_in_cluster_services("http://litellm:4000/v1", "platform") == (
+        "http://litellm.platform.svc.cluster.local:4000/v1"
+    )
+    assert qualify_in_cluster_services("http://minio:9000", "platform") == "http://minio:9000"
 
 
 def test_litellm_keeps_its_service_name_and_opa_moves_to_loopback() -> None:
@@ -323,12 +331,14 @@ def test_the_local_render_refuses_a_workstation_without_a_tenant(tmp_path: Path)
 def test_a_delete_keeps_the_namespaces_and_the_volume_unless_asked() -> None:
     documents = [
         {"kind": "Namespace"},
+        {"kind": "PersistentVolume"},
         {"kind": "PersistentVolumeClaim"},
         {"kind": "Deployment"},
     ]
 
     assert [d["kind"] for d in removable(documents, volumes=False)] == ["Deployment"]
     assert [d["kind"] for d in removable(documents, volumes=True)] == [
+        "PersistentVolume",
         "PersistentVolumeClaim",
         "Deployment",
     ]
@@ -909,3 +919,60 @@ def test_apply_sends_each_workload_after_the_secrets_and_config_its_pods_read() 
 
     kinds = [document["kind"] for document in yaml.safe_load_all(sent[0])]
     assert kinds == ["Namespace", "Secret", "ConfigMap", "Deployment"]
+
+
+WEBHOOK_SECRETS = {
+    "GITHUB_WEBHOOK_SECRET": "adp-github-signing",
+    "JIRA_WEBHOOK_SECRET": "adp-jira-signing",
+    "GITHUB_WEBHOOK_SECRET_ADP": "adp-github-own",
+}
+
+
+@pytest.mark.parametrize("tenants", ["adp", "adp,beta"])
+def test_no_tenant_pod_receives_a_webhook_signing_secret(tmp_path: Path, tenants: str) -> None:
+    files = _beta_files(
+        **{
+            "tenants/beta.env": "MCP_GATEWAY_TOKEN=beta-gateway-token\n"
+            "GITHUB_WEBHOOK_SECRET=beta-github-signing\n"
+        }
+    )
+
+    documents = _rendered(tmp_path, files, {**ADP_ENV, **WEBHOOK_SECRETS}, tenants=tenants)
+
+    for tenant in tenants.split(","):
+        values = _secret_values(documents, f"tenant-{tenant}", k8s_render.PLATFORM_ENV)
+        assert not any("WEBHOOK_SECRET" in key for key in values)
+        assert not {*WEBHOOK_SECRETS.values(), "beta-github-signing"} & set(values.values())
+    platform = _secret_values(documents, "agentic-dev-platform", "agentic-platform")
+    assert platform["github_webhook_secret"] == "adp-github-signing"
+    assert platform["jira_webhook_secret"] == "adp-jira-signing"
+    if "beta" in tenants:
+        webhook = _secret_values(documents, "agentic-dev-platform", "inbound-webhook-tenants")
+        assert webhook["GITHUB_WEBHOOK_SECRET_ADP"] == "adp-github-signing"
+        assert webhook["GITHUB_WEBHOOK_SECRET_BETA"] == "beta-github-signing"
+
+
+def test_a_tenant_worker_reaches_litellm_by_the_name_its_header_propagation_matches(
+    tmp_path: Path,
+) -> None:
+    env = {**ADP_ENV, "REBAR_LLM_BASE_URL": "http://litellm:4000"}
+    files = _beta_files(
+        **{
+            "tenants/beta.env": "MCP_GATEWAY_TOKEN=beta-gateway-token\n"
+            "LITELLM_BASE_URL=http://litellm:4000\n"
+        }
+    )
+
+    documents = _rendered(tmp_path, files, env, tenants="adp,beta", k8s_namespace="platform")
+
+    for tenant in ("adp", "beta"):
+        values = _secret_values(documents, f"tenant-{tenant}", k8s_render.PLATFORM_ENV)
+        rebar = urlsplit(values["REBAR_LLM_BASE_URL"])
+        assert rebar.hostname == "litellm.platform.svc.cluster.local"
+        assert (
+            rebar.hostname == urlsplit(_worker_env(documents, tenant)["LITELLM_BASE_URL"]).hostname
+        )
+    beta = _secret_values(documents, "tenant-beta", k8s_render.PLATFORM_ENV)
+    assert beta["LITELLM_BASE_URL"] == "http://litellm.platform.svc.cluster.local:4000"
+    platform = _secret_values(documents, "platform", k8s_render.PLATFORM_ENV)
+    assert platform["REBAR_LLM_BASE_URL"] == "http://litellm:4000"

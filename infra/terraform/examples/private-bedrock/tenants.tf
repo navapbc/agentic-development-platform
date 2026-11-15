@@ -4,12 +4,13 @@ locals {
 
   # Each tenant's activity worker runs as the activity-worker service account of its own
   # namespace. Its policies are attached below, outside the cluster module, because the tenant
-  # module needs the role first.
+  # module needs the role first. Its reader tag admits it to its own prefix of the config bucket.
   tenant_workloads = merge(
     {
       for name in keys(local.tenants) : "tenant_${name}" => {
         service_account = "activity-worker"
         namespace       = "tenant-${name}"
+        tags            = { (module.tenant_config_store.tenant_principal_tag_keys.reader) = name }
       }
     },
     var.image_signature_verification ? {
@@ -104,16 +105,11 @@ module "tenant_config_store" {
   exception_reviewers        = var.create_github_image_publisher ? ["arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:role/${var.name_prefix}-github-image-publisher"] : []
   publish_image_policy       = local.image_governance
   image_policy               = local.image_governance ? yamlencode(local.image_policy) : ""
-  tenants = {
-    for name, tenant in local.tenants : name => {
-      publishers = tenant.config_repository == null ? [] : ["arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:role/${var.name_prefix}-tenant-${name}-publisher"]
-      readers = concat(
-        [module.eks_cluster.pod_identity_role_arns["tenant_${name}"]],
-        try(module.container_services.repository_intelligence_roles.task_role_arns, []),
-        local.tenant_webhooks ? [module.eks_cluster.pod_identity_role_arns["inbound_webhook"]] : [],
-      )
-    }
-  }
+  tenants                    = keys(local.tenants)
+  shared_readers = concat(
+    try(module.container_services.repository_intelligence_roles.task_role_arns, []),
+    local.tenant_webhooks ? [module.eks_cluster.pod_identity_role_arns["inbound_webhook"]] : [],
+  )
   tags = var.tags
 }
 
@@ -135,8 +131,9 @@ module "tenant" {
   access_log_bucket             = var.access_log_bucket
   ticket_store                  = each.value.ticket_store
   config_store = {
-    bucket_arn  = module.tenant_config_store.bucket_arn
-    kms_key_arn = module.tenant_config_store.kms_key_arn
+    bucket_arn        = module.tenant_config_store.bucket_arn
+    kms_key_arn       = module.tenant_config_store.kms_key_arn
+    publisher_tag_key = module.tenant_config_store.tenant_principal_tag_keys.publisher
   }
   config_publisher = each.value.config_repository == null ? null : {
     oidc_provider_arn     = local.github_oidc_provider_arn

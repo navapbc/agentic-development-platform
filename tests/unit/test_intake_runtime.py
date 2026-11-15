@@ -4,11 +4,14 @@ from subprocess import CalledProcessError
 from typing import Any
 
 import pytest
+from database.models.schema import executions
 from services.orchestration import intake_runtime
 from services.orchestration.intake_base import UnresolvableBaseBranch
 from services.orchestration.intake_reconciler import IntakeStart
 from services.orchestration.intake_runtime import TemporalStarter
 from services.orchestration.usage_rollup import BudgetCaps
+from sqlalchemy.sql import operators
+from sqlalchemy.sql.elements import BinaryExpression
 from tests.support import configure_repositories, hermetic_settings
 
 
@@ -414,3 +417,28 @@ async def test_intake_falls_back_to_the_default_caps(
         caps.max_tokens,
         caps.max_cost_usd,
     )
+
+
+def _tenant_filter_selects(predicates: list[Any], row: dict[str, Any]) -> bool:
+    for predicate in predicates:
+        assert isinstance(predicate, BinaryExpression)
+        assert predicate.operator is operators.eq
+        if row.get(predicate.left.name) != predicate.right.value:
+            return False
+    return True
+
+
+def test_the_tenant_filter_excludes_executions_recorded_without_a_tenant(monkeypatch):
+    monkeypatch.setattr("scripts.config.get_settings", lambda: hermetic_settings(tenant="adp"))
+
+    predicates = intake_runtime._this_tenant(executions)  # noqa: SLF001
+
+    assert _tenant_filter_selects(predicates, {"tenant": "adp"})
+    assert not _tenant_filter_selects(predicates, {"tenant": None})
+    assert not _tenant_filter_selects(predicates, {"tenant": "beta"})
+
+
+def test_a_process_without_a_tenant_does_not_filter_executions(monkeypatch):
+    monkeypatch.setattr("scripts.config.get_settings", lambda: hermetic_settings())
+
+    assert intake_runtime._this_tenant(executions) == []  # noqa: SLF001

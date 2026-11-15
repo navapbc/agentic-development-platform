@@ -1,7 +1,8 @@
 # Accepts one scan finding in one platform image by writing platform/image_exceptions.yaml in the
 # config bucket. The job runs in the image-exception GitHub environment, whose required reviewers
 # are configured in the repository settings under Environments. Enable "Prevent self-review" there
-# so the requester cannot approve the run. The job records the requester and the approving
+# so the requester cannot approve the run, and limit its deployment branches to main, because the
+# AWS role trusts the job only on refs/heads/main. The job records the requester and the approving
 # reviewer in the entry.
 name: image-exception
 

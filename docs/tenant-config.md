@@ -106,3 +106,65 @@ inv tenant-config-publish --tenant adp --bundle-dir path/to/bundle --bucket <con
 ```
 
 `inv tenant-config-publish` validates the bundle, uploads every file, deletes the files under the tenant's prefix the bundle no longer holds, and prints each file's new version. In a tenant's CI, the workflow assumes the tenant's publisher role through GitHub OIDC and passes `--environment-dir` at a copy of the deployment's environment files, so validation layers over the same environment the workers use. The workers validate the bundle again before they activate it.
+
+## Upgrading a v0.2.x database to v0.3.0
+
+A v0.2.x database records executions and orphan artifacts without a tenant. The migrations `0012_execution_tenant` and `0013_orphan_tenant` add the tenant column, leave `executions.tenant` NULL on every existing row, and set `orphan_artifacts.tenant` to the empty string on every existing row. The upgrade assigns none of these rows to a tenant.
+
+### Before the upgrade
+
+1. Pause intake. Pause the intake schedule, which `INTAKE_SCHEDULE_ID` names and which is `jira-intake` by default, in the Temporal UI, at `localhost:3001` locally or through `inv temporal-ui` in AWS. Do not run `inv intake` until the upgrade is complete.
+2. Let every in-flight run finish, or cancel its workflow in the Temporal UI. `inv workflow-status` lists the recent workflow executions.
+3. Run `inv reap` to list the orphaned branches and pull requests whose TTL has passed, then `inv reap --apply` to delete them. The reaper deletes only orphans whose TTL has passed, so close any remaining agent branch or pull request in the repository host before the upgrade.
+
+### After the upgrade
+
+The rows recorded before the upgrade belong to no tenant. Every tenant-scoped query matches its tenant exactly, so these executions do not count toward a tenant's `MAX_CONCURRENT_RUNS` limit, the reaper does not reclaim these orphan artifacts, and the MCP gateway evidence tools do not return the evidence of these executions. A pull request event for one of these executions resolves to no workflow, and the inbound webhook answers it as it answers any event without a workflow.
+
+The intake idempotency records in `agent_platform.side_effects` name an issue and a repository without a tenant, and the intake of a tenant matches only records that name the tenant. Intake therefore treats a ticket it started before the upgrade as not started. Intake selects every ticket that carries the intake label and is not in a Done status, so before resuming intake, move each ticket whose run finished or was cancelled to a Done status or remove its intake label. An unroutable ticket that was alerted before the upgrade alerts once more for each tenant.
+
+### Optional backfill
+
+A one-time backfill assigns the rows recorded before the upgrade to one tenant. It consists of the following two statements.
+
+```sql
+UPDATE agent_platform.executions SET tenant = '<tenant>' WHERE tenant IS NULL;
+UPDATE agent_platform.orphan_artifacts SET tenant = '<tenant>' WHERE tenant = '';
+```
+
+No `inv` task runs SQL against the platform database. Locally, run the statements in the Compose `postgres` service, the database `inv db-migrate` migrates.
+
+```bash
+docker compose exec -T postgres sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d agent_platform' <<'EOF'
+BEGIN;
+UPDATE agent_platform.executions SET tenant = '<tenant>' WHERE tenant IS NULL;
+UPDATE agent_platform.orphan_artifacts SET tenant = '<tenant>' WHERE tenant = '';
+COMMIT;
+EOF
+```
+
+In AWS, run the statements from the activity worker of the tenant, which holds the platform `DATABASE_URL`, through the same `kubectl exec` path the `inv` worker tasks use.
+
+```bash
+kubectl -n tenant-<tenant> exec -i deploy/activity-worker -c activity-worker -- python - <<'EOF'
+import asyncio
+
+from database.engine import create_platform_engine
+from scripts.config import get_settings
+from sqlalchemy import text
+
+
+async def backfill() -> None:
+    engine = create_platform_engine(get_settings().database_url)
+    async with engine.begin() as conn:
+        executions = await conn.execute(text("UPDATE agent_platform.executions SET tenant = '<tenant>' WHERE tenant IS NULL"))
+        orphans = await conn.execute(text("UPDATE agent_platform.orphan_artifacts SET tenant = '<tenant>' WHERE tenant = ''"))
+    await engine.dispose()
+    print(f"executions {executions.rowcount}, orphan artifacts {orphans.rowcount}")
+
+
+asyncio.run(backfill())
+EOF
+```
+
+The backfill does not rewrite the intake idempotency records, so after it a ticket started before the upgrade still reads as not started to the tenant's intake. Pausing intake and finishing or cancelling every run before the upgrade is what keeps intake from starting a second run of such a ticket.

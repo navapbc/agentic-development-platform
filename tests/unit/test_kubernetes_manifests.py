@@ -108,3 +108,21 @@ def test_the_gateway_load_balancer_admits_only_the_declared_client_cidrs():
     ingress = next(d for d in _gateway_documents() if d["kind"] == "Ingress")
 
     assert ingress["metadata"]["annotations"]["alb.ingress.kubernetes.io/inbound-cidrs"]
+
+
+def _aws_overlay_documents(name: str) -> list[dict[str, Any]]:
+    text = (MANIFESTS / "aws" / name).read_text(encoding="utf-8")
+    return [document for document in yaml.safe_load_all(text) if document]
+
+
+def test_the_kube_system_policies_sit_alone_in_their_own_manifest():
+    kube_system = _aws_overlay_documents("kube-system-network-policies.yaml")
+    others = _aws_overlay_documents("network-policies.yaml")
+    overlay = yaml.safe_load((MANIFESTS / "aws" / "kustomization.yaml").read_text())
+
+    assert kube_system
+    assert {(d["kind"], d["metadata"]["namespace"]) for d in kube_system} == {
+        ("NetworkPolicy", "kube-system")
+    }
+    assert "kube-system" not in {d["metadata"]["namespace"] for d in others}
+    assert "kube-system-network-policies.yaml" in overlay["resources"]

@@ -175,6 +175,7 @@ def _run(
     active_guard=None,
     base_resolver=None,
     checks_repos=None,
+    settings=None,
 ):
     return reconcile_intake(
         read_source=read_source,
@@ -182,7 +183,7 @@ def _run(
         alerter=alerter,
         ledger=ledger,
         execution_seeder=seeder or _Seeder(),
-        settings=hermetic_settings(),
+        settings=settings or hermetic_settings(),
         jira_resolver=resolver,
         snapshot_store=store,
         active_guard=active_guard,
@@ -841,3 +842,66 @@ async def test_a_retried_pass_after_a_failed_start_starts_the_ticket():
         (False, "wf-ADEV-1-repo-a")
     ]
     assert sorted(row["state"] for row in executions.rows.values()) == ["FAILED", "TASK_RECEIVED"]
+
+
+async def test_two_tenants_that_share_a_repository_each_start_the_same_issue_key():
+    read = _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV")]})
+    starter, alerter, _, store, resolver = _defaults()
+    ledger = _RecordingLedger()
+
+    for tenant in ("adp", "beta"):
+        await _run(
+            read,
+            starter,
+            alerter,
+            ledger,
+            store,
+            resolver,
+            settings=hermetic_settings(tenants="adp,beta", tenant=tenant),
+        )
+
+    assert [(s.issue_key, s.repo) for s in starter.starts] == [("ADEV-1", "repo-a")] * 2
+    assert [ref.target for ref in ledger.refs if ref.operation == "intake_start"] == [
+        "ADEV-1@adp:repo-a",
+        "ADEV-1@beta:repo-a",
+    ]
+
+
+async def test_a_tenant_starts_its_own_run_of_an_issue_started_without_a_tenant():
+    read = _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV")]})
+    starter, alerter, ledger, store, resolver = _defaults()
+    await _run(read, starter, alerter, ledger, store, resolver)
+
+    report = await _run(
+        read,
+        starter,
+        alerter,
+        ledger,
+        store,
+        resolver,
+        settings=hermetic_settings(tenant="adp"),
+    )
+
+    assert len(starter.starts) == 2
+    assert not report.started[0].duplicate
+
+
+async def test_each_tenant_alerts_once_for_the_same_unroutable_issue():
+    read = _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV", description="repos: ghost-repo")]})
+    starter, alerter, _, store, resolver = _defaults()
+    ledger = _RecordingLedger()
+
+    for tenant in ("adp", "beta", "beta"):
+        await _run(
+            read,
+            starter,
+            alerter,
+            ledger,
+            store,
+            resolver,
+            settings=hermetic_settings(tenants="adp,beta", tenant=tenant),
+        )
+
+    assert len(alerter.alerts) == 2
+    targets = [ref.target for ref in ledger.refs if ref.operation == "intake_unroutable_alert"]
+    assert [target.rpartition("@")[2] for target in targets] == ["adp", "beta", "beta"]

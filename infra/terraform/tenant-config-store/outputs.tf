@@ -15,7 +15,12 @@ output "kms_key_arn" {
 
 output "tenant_prefixes" {
   description = "Key prefix of each tenant's bundle."
-  value       = { for tenant in keys(var.tenants) : tenant => "tenants/${tenant}/" }
+  value       = { for tenant in var.tenants : tenant => "tenants/${tenant}/" }
+}
+
+output "tenant_principal_tag_keys" {
+  description = "Principal tag keys whose value, a tenant name, admits the principal to that tenant's prefix. A principal tagged with the reader key reads tenants/<tenant>/, and one tagged with the publisher key reads, writes, and deletes it. Grant iam:TagRole on these keys to administrators only, and let no caller pass them as session tags to a role that reads the bucket."
+  value       = local.tenant_tag_keys
 }
 
 output "platform_exceptions_key" {

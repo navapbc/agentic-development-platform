@@ -90,10 +90,11 @@ variable "secret_recovery_window_days" {
 }
 
 variable "config_store" {
-  description = "Bucket and key of the tenant config store, whose tenants/<tenant>/ prefix holds the tenant's config bundle."
+  description = "Bucket and key of the tenant config store, whose tenants/<tenant>/ prefix holds the tenant's config bundle, and the principal tag key whose value, the tenant name, lets the publisher role write that prefix past the bucket policy, the publisher key of the tenant-config-store module's tenant_principal_tag_keys output."
   type = object({
-    bucket_arn  = string
-    kms_key_arn = string
+    bucket_arn        = string
+    kms_key_arn       = string
+    publisher_tag_key = optional(string, "tenant-config-publisher")
   })
   default = null
 }

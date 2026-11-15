@@ -22,6 +22,7 @@ _PENDING = "pending"
 CLAIM_LEASE_SECONDS = 300
 _INTAKE_START = "intake_start"
 _UNIT_SEPARATOR = "\x1f"
+_TENANT_MARK = "@"
 
 Effect = Callable[[], Any] | Callable[[], Awaitable[Any]]
 
@@ -54,6 +55,12 @@ def side_effect_key(ref: SideEffectRef) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
+def intake_start_target(issue_key: str, repo: str, tenant: str = "") -> str:
+    """Return the intake start target of an issue in a repository, scoped to the tenant."""
+    scope = f"{issue_key}{_TENANT_MARK}{tenant}" if tenant else issue_key
+    return f"{scope}:{repo}"
+
+
 def intake_start_target_repo(operation: str, target: str) -> str:
     if operation != _INTAKE_START:
         return ""
@@ -63,18 +70,34 @@ def intake_start_target_repo(operation: str, target: str) -> str:
     return repo
 
 
+def intake_start_target_tenant(target: str) -> str:
+    scope, separator, _ = target.rpartition(":")
+    if not separator:
+        return ""
+    _, mark, tenant = scope.rpartition(_TENANT_MARK)
+    return tenant if mark else ""
+
+
 def _intake_start_repo(ref: SideEffectRef) -> str:
     return intake_start_target_repo(ref.operation, ref.target)
 
 
-def _same_intake_start_scope(left: SideEffectRef, right: SideEffectRef) -> bool:
-    left_repo = _intake_start_repo(left)
+def _in_intake_start_scope(ref: SideEffectRef, target: str) -> bool:
+    """Whether a recorded target starts the ref's issue in the same repository for its tenant."""
+    repo = _intake_start_repo(ref)
     return (
-        bool(left_repo)
-        and left.task_id == right.task_id
+        bool(repo)
+        and intake_start_target_repo(ref.operation, target) == repo
+        and intake_start_target_tenant(target) == intake_start_target_tenant(ref.target)
+    )
+
+
+def _same_intake_start_scope(left: SideEffectRef, right: SideEffectRef) -> bool:
+    return (
+        left.task_id == right.task_id
         and left.execution_id == right.execution_id
         and left.operation == right.operation
-        and left_repo == _intake_start_repo(right)
+        and _in_intake_start_scope(left, right.target)
     )
 
 
@@ -125,9 +148,8 @@ class PostgresSideEffectLedger:
                     ).where(side_effects.c.side_effect_key == key)
                 )
             ).first()
-            repo = _intake_start_repo(ref)
-            if existing is None and repo:
-                legacy_rows = (
+            if existing is None and _intake_start_repo(ref):
+                scoped_rows = (
                     await conn.execute(
                         select(
                             side_effects.c.side_effect_key,
@@ -142,11 +164,7 @@ class PostgresSideEffectLedger:
                     )
                 ).all()
                 existing = next(
-                    (
-                        row
-                        for row in legacy_rows
-                        if intake_start_target_repo(ref.operation, str(row.target)) == repo
-                    ),
+                    (row for row in scoped_rows if _in_intake_start_scope(ref, str(row.target))),
                     None,
                 )
             if existing is not None and existing.status == _COMPLETED:
@@ -241,10 +259,9 @@ class PostgresSideEffectLedger:
         ).first()
         if row is not None:
             return key, row.result
-        repo = _intake_start_repo(ref)
-        if not repo:
+        if not _intake_start_repo(ref):
             return None
-        legacy_rows = (
+        scoped_rows = (
             await conn.execute(
                 select(side_effects.c.side_effect_key, side_effects.c.result, side_effects.c.target)
                 .where(side_effects.c.task_id == ref.task_id)
@@ -254,9 +271,9 @@ class PostgresSideEffectLedger:
                 .order_by(side_effects.c.updated_at.desc())
             )
         ).all()
-        for legacy in legacy_rows:
-            if intake_start_target_repo(ref.operation, str(legacy.target)) == repo:
-                return legacy.side_effect_key, legacy.result
+        for scoped in scoped_rows:
+            if _in_intake_start_scope(ref, str(scoped.target)):
+                return scoped.side_effect_key, scoped.result
         return None
 
     async def release(self, ref: SideEffectRef) -> None:

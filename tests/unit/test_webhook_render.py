@@ -109,9 +109,19 @@ def test_two_tenants_may_not_share_a_webhook_secret() -> None:
         )
 
 
-def test_a_single_tenant_webhook_renders_as_before(tmp_path: Path, monkeypatch) -> None:
+def test_a_single_tenant_webhook_serves_its_tenant_with_the_platform_secrets(
+    tmp_path: Path, monkeypatch
+) -> None:
     localized = _rendered(tmp_path / "a", env={**ADP_ENV, **WEBHOOK_ENV}, tenant="adp")
     monkeypatch.setattr(webhook_render, "localize_webhook", lambda documents, *_: documents)
     before = _rendered(tmp_path / "b", env={**ADP_ENV, **WEBHOOK_ENV}, tenant="adp")
 
+    container = _webhook(localized)["spec"]["template"]["spec"]["containers"][0]
+    assert {"name": "TENANTS", "value": "adp"} in container["env"]
+    assert "envFrom" not in container
+    assert (
+        _in(localized, "Secret", "agentic-dev-platform", webhook_render.WEBHOOK_TENANT_ENV) is None
+    )
+    expected = _webhook(before)["spec"]["template"]["spec"]["containers"][0]
+    expected["env"].append({"name": "TENANTS", "value": "adp"})
     assert localized == before
