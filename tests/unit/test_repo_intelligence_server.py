@@ -20,6 +20,7 @@ from services.repository_intelligence.tenant_tokens import (
     tenant_for_token as server_tenant_for_token,
 )
 from services.repository_intelligence.tenants import TenantRegistries
+from services.repository_intelligence.token_secrets import StaticTokens
 from tests.support import hermetic_settings
 
 
@@ -137,7 +138,8 @@ def served(tmp_path, monkeypatch):
 
     monkeypatch.setattr(server, "get_settings", lambda: settings)
     monkeypatch.setattr(server, "tenant_registries", lambda: registries)
-    monkeypatch.setattr(server, "request_tokens", lambda: {"adp": ADP_TOKEN, "beta": BETA_TOKEN})
+    tokens = StaticTokens({"adp": (ADP_TOKEN,), "beta": (BETA_TOKEN,)})
+    monkeypatch.setattr(server, "token_source", lambda: tokens)
     monkeypatch.setattr(server, "_registry", RepositoryIntelligenceRegistry([], builder=builder))
     return built
 
@@ -218,11 +220,70 @@ def test_the_server_resolves_the_token_through_tenant_for_token(served, monkeypa
     recorder = _post("/context_package", {"repo": "web", "focus": "health"}, BETA_TOKEN)
 
     assert recorder._status == 200
-    assert seen == [({"adp": ADP_TOKEN, "beta": BETA_TOKEN}, BETA_TOKEN)]
+    assert seen == [({"adp": (ADP_TOKEN,), "beta": (BETA_TOKEN,)}, BETA_TOKEN)]
+
+
+class _RotatingTokens:
+    """A token source whose read after a miss returns the tokens of a completed rotation."""
+
+    def __init__(self, before: dict, after: dict | None) -> None:
+        self.before = before
+        self.after = after
+        self.misses = 0
+
+    def accepted(self):
+        return self.before
+
+    def reload_after_miss(self):
+        self.misses += 1
+        return self.after
+
+
+def test_the_previous_and_the_current_token_of_a_tenant_are_both_accepted(served, monkeypatch):
+    tokens = StaticTokens({"adp": ("adp-new", ADP_TOKEN), "beta": (BETA_TOKEN,)})
+    monkeypatch.setattr(server, "token_source", lambda: tokens)
+
+    for presented in ("adp-new", ADP_TOKEN):
+        recorder = _post("/context_package", {"repo": "adp-api", "focus": "health"}, presented)
+        assert recorder._status == 200
+
+
+def test_an_unknown_token_reads_the_tokens_again_and_accepts_a_newly_rotated_one(
+    served, monkeypatch
+):
+    source = _RotatingTokens(
+        {"adp": (ADP_TOKEN,)}, {"adp": ("adp-rotated", ADP_TOKEN), "beta": (BETA_TOKEN,)}
+    )
+    monkeypatch.setattr(server, "token_source", lambda: source)
+
+    recorder = _post("/context_package", {"repo": "adp-api", "focus": "health"}, "adp-rotated")
+
+    assert recorder._status == 200
+    assert source.misses == 1
+
+
+def test_a_known_token_does_not_read_the_tokens_again(served, monkeypatch):
+    source = _RotatingTokens({"adp": (ADP_TOKEN,)}, None)
+    monkeypatch.setattr(server, "token_source", lambda: source)
+
+    recorder = _post("/context_package", {"repo": "adp-api", "focus": "health"}, ADP_TOKEN)
+
+    assert recorder._status == 200
+    assert source.misses == 0
+
+
+def test_an_unknown_token_is_refused_when_no_new_read_is_due(served, monkeypatch):
+    source = _RotatingTokens({"adp": (ADP_TOKEN,)}, None)
+    monkeypatch.setattr(server, "token_source", lambda: source)
+
+    recorder = _post("/context_package", {"repo": "adp-api", "focus": "health"}, "adp-rotated")
+
+    assert recorder._status == 401
+    assert source.misses == 1
 
 
 def test_no_configured_token_refuses_every_request(served, monkeypatch):
-    monkeypatch.setattr(server, "request_tokens", lambda: {})
+    monkeypatch.setattr(server, "token_source", lambda: StaticTokens({}))
 
     recorder = _post("/context_package", {"repo": "web", "focus": "health"}, ADP_TOKEN)
 

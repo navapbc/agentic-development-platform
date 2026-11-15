@@ -5,9 +5,11 @@ from __future__ import annotations
 import hashlib
 import hmac
 
+import pytest
 from services.repository_intelligence import tenant_tokens
 from services.repository_intelligence.tenant_tokens import (
     derive_token,
+    single_tokens,
     tenant_for_token,
     token_env_name,
 )
@@ -39,11 +41,29 @@ def test_tenant_tokens_prefer_the_variable_then_the_key_and_skip_a_tenant_withou
 
 
 def test_tenant_for_token_returns_the_matching_tenant_or_none():
-    tokens = {"adp": "token-a", "beta": "token-b"}
+    tokens = {"adp": ("token-a",), "beta": ("token-b",)}
 
     assert tenant_for_token(tokens, "token-b") == "beta"
     assert tenant_for_token(tokens, "token-c") is None
     assert tenant_for_token({}, "token-a") is None
+
+
+def test_tenant_for_token_accepts_every_token_of_a_tenant():
+    tokens = {"adp": ("current-a", "previous-a"), "beta": ("current-b",)}
+
+    assert tenant_for_token(tokens, "current-a") == "adp"
+    assert tenant_for_token(tokens, "previous-a") == "adp"
+    assert tenant_for_token(tokens, "current-b") == "beta"
+    assert tenant_for_token({"adp": ()}, "current-a") is None
+
+
+def test_tenant_for_token_refuses_a_bare_string_in_place_of_a_token_sequence():
+    with pytest.raises(TypeError):
+        tenant_for_token({"adp": "token-a"}, "t")
+
+
+def test_single_tokens_makes_each_token_the_only_accepted_one():
+    assert single_tokens({"adp": "token-a"}) == {"adp": ("token-a",)}
 
 
 def test_tenant_for_token_compares_every_token_in_constant_time(monkeypatch):
@@ -56,5 +76,12 @@ def test_tenant_for_token_compares_every_token_in_constant_time(monkeypatch):
 
     monkeypatch.setattr(tenant_tokens.hmac, "compare_digest", recording)
 
-    assert tenant_for_token({"adp": "token-a", "beta": "token-b"}, "token-a") == "adp"
-    assert compared == [(b"token-a", b"token-a"), (b"token-b", b"token-a")]
+    tokens = {"adp": ("token-a", "token-a0"), "beta": ("token-b", "token-b0")}
+
+    assert tenant_for_token(tokens, "token-a") == "adp"
+    assert compared == [
+        (b"token-a", b"token-a"),
+        (b"token-a0", b"token-a"),
+        (b"token-b", b"token-a"),
+        (b"token-b0", b"token-a"),
+    ]

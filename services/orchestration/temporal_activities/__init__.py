@@ -32,6 +32,7 @@ from services.orchestration.temporal_activities.intake import (
     IntakeReconcileRequest,
     reconcile_intake_pass,
 )
+from services.orchestration.temporal_activities.issue_intake import intake_jira_issue
 from services.orchestration.temporal_activities.manifest import record_manifest
 from services.orchestration.temporal_activities.model_access import delete_run_model_key
 from services.orchestration.temporal_activities.notify import alert_human_intervention
@@ -99,6 +100,7 @@ __all__ = [
     "evaluate_promotion",
     "find_open_pr",
     "gather_repo_context",
+    "intake_jira_issue",
     "invoke_model",
     "link_pr_to_issue",
     "mark_task_parked",

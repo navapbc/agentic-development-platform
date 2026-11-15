@@ -40,7 +40,6 @@ locals {
       spec.database ? [name == "db-migrate" ? var.database_migrator_secret_arn : var.database_app_secret_arn] : [],
       spec.temporal && local.ca_secret != null ? [local.ca_secret] : [],
       [for key in local.workload_secret_names[name] : lookup(local.secret_arn_lookup, key, "")],
-      [for token in values(lookup(local.tenant_token_reads, name, {})) : token.secret_arn],
     ))
   }
   workload_secret_keys = {
@@ -48,8 +47,28 @@ locals {
       spec.database ? [var.secret_kms_key_arn] : [],
       [for key in local.workload_secret_names[name] : lookup(local.secret_kms_keys, key, "")],
       spec.temporal && local.ca_secret != null ? [try(var.temporal.ca_kms_key_arn, "")] : [],
-      [for token in values(lookup(local.tenant_token_reads, name, {})) : token.kms_key_arn],
     )))
+  }
+
+  # Repository intelligence reads each tenant's current and previous token at runtime, so a
+  # rotation never refuses a worker that still holds the previous token.
+  tenant_token_statements = {
+    repo-intelligence = [
+      for statement in [
+        {
+          Sid      = "ReadTheTenantTokens"
+          Effect   = "Allow"
+          Action   = "secretsmanager:GetSecretValue"
+          Resource = [for token in values(var.repo_intelligence_tokens) : token.secret_arn]
+        },
+        {
+          Sid       = "DecryptTheTenantTokens"
+          Effect    = "Allow"
+          Action    = "kms:Decrypt"
+          Resource  = distinct([for token in values(var.repo_intelligence_tokens) : token.kms_key_arn])
+          Condition = { StringEquals = { "kms:ViaService" = "secretsmanager.${local.region}.amazonaws.com" } }
+        },
+    ] : statement if length(var.repo_intelligence_tokens) > 0]
   }
 
   tenant_config_statements = concat(
@@ -151,6 +170,7 @@ locals {
         ] : [],
         [for statement in local.tenant_config_statements : statement if contains(local.tenant_config_readers, name)],
         lookup(local.extra_task_statements, name, []),
+        lookup(local.tenant_token_statements, name, []),
       )
     })
   }
@@ -187,7 +207,7 @@ resource "aws_iam_role" "workload_task" {
 resource "aws_iam_role_policy" "workload_task" {
   for_each = {
     for name, spec in local.all_workloads : name => spec
-    if length(spec.mounts) > 0 || (name == "review-worker" && var.evidence_bucket_arn != "") || length(lookup(local.extra_task_statements, name, [])) > 0
+    if length(spec.mounts) > 0 || (name == "review-worker" && var.evidence_bucket_arn != "") || length(lookup(local.extra_task_statements, name, [])) > 0 || length(lookup(local.tenant_token_statements, name, [])) > 0
   }
 
   name   = "task"

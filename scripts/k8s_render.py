@@ -11,12 +11,12 @@ review worker mounts that root read-only at /tenants, the layout the EFS access 
 workers in AWS.
 
 config/<environment>/tenants/ holds what belongs to one tenant. The files of <tenant>/ are that
-tenant's config bundle, which only its activity worker mounts, at the path its directory config
-source reads. <tenant>.env holds the settings and credentials only that tenant's worker receives.
-`.env` belongs to the home tenant, TENANT or else the first tenant TENANTS names, which without a
-settings file of its own receives every setting of `.env`. Every other tenant gets none of the
-TENANT_OWNED_SETTINGS from `.env` and none of the values any tenant's file sets, so one tenant's
-credentials never reach another tenant's worker.
+tenant's config bundle, which only its activity worker and MCP gateway mount, at the path their
+directory config source reads. <tenant>.env holds the settings and credentials only that
+tenant's worker and gateway receive. `.env` belongs to the home tenant, TENANT or else the first
+tenant TENANTS names, which without a settings file of its own receives every setting of `.env`.
+Every other tenant gets none of the TENANT_OWNED_SETTINGS from `.env` and none of the values any
+tenant's file sets, so one tenant's credentials never reach another tenant's pods.
 
 Each tenant's worker receives its own repository intelligence token as REPO_INTELLIGENCE_TOKEN,
 the token repository intelligence expects of that tenant, which it derives from
@@ -88,6 +88,7 @@ TENANT_OWNED_SETTINGS = frozenset(
         "AUTHORSHIP_SIGNING_KEY",
         "AUTHORSHIP_SIGNING_KEY_PATH",
         "AUTHORSHIP_IDENTITY_ID",
+        "MCP_GATEWAY_TOKEN",
     }
 )
 TENANT_OWNED_FILES = frozenset({"authorship-signing-key", "authorship-signing-key.pub"})
@@ -603,6 +604,54 @@ def _refuse_tenant_tokens(own: Mapping[str, Mapping[str, str] | None], environme
             )
 
 
+def _find_document(
+    documents: list[dict[str, Any]], kind: str, namespace: str, name: str
+) -> dict[str, Any] | None:
+    return next(
+        (
+            d
+            for d in documents
+            if d["kind"] == kind
+            and d["metadata"].get("namespace") == namespace
+            and d["metadata"]["name"] == name
+        ),
+        None,
+    )
+
+
+def _refuse_gateway_tokens(
+    pod_env: Mapping[str, Mapping[str, str]],
+    home: str,
+    own: Mapping[str, Mapping[str, str] | None],
+    environment: str,
+) -> None:
+    """Refuse a tenant without its own MCP gateway token, or two tenants sharing one.
+
+    Each tenant's gateway accepts only its tenant's token, so a shared token would open every
+    sharing tenant's gateway to the holder.
+    """
+    holders: dict[str, list[str]] = {}
+    for name, values in pod_env.items():
+        token = (values.get("MCP_GATEWAY_TOKEN") or "").strip()
+        if not token:
+            source = (
+                ".env"
+                if name == home and own.get(name) is None
+                else f"config/{environment}/tenants/{name}.env"
+            )
+            raise ValueError(
+                f"tenant {name} has no MCP_GATEWAY_TOKEN. Set a token of its own in {source}, "
+                "for example the output of `openssl rand -hex 32`"
+            )
+        holders.setdefault(token, []).append(name)
+    shared = [sorted(names) for names in holders.values() if len(names) > 1]
+    if shared:
+        raise ValueError(
+            f"tenants {', '.join(shared[0])} share one MCP_GATEWAY_TOKEN. Give each tenant a "
+            f"token of its own in config/{environment}/tenants/<tenant>.env"
+        )
+
+
 def localize_tenants(
     documents: list[dict[str, Any]], inputs: RenderInputs, names: Iterable[str]
 ) -> list[dict[str, Any]]:
@@ -613,6 +662,9 @@ def localize_tenants(
     With more than one tenant, each tenant other than the home tenant must name its own
     repositories, and each rebar tenant's store must lie in its own workspace and sync to its
     own bucket location.
+
+    Each tenant's MCP gateway reads the same settings and bundle as its worker, so each tenant
+    must hold an MCP_GATEWAY_TOKEN of its own, which no other tenant shares.
 
     Every tenant's worker, the home tenant's included, receives its own repository intelligence
     token and none of the repository intelligence tokens or the key of `.env`. A tenant's
@@ -626,7 +678,7 @@ def localize_tenants(
     from services.repository_intelligence.tenant_tokens import tenant_tokens
 
     from scripts.tenant_config import apply_tenant_settings, read_tenant_settings
-    from scripts.tenant_render import WORKER, worker_namespace
+    from scripts.tenant_render import GATEWAY, WORKER, worker_namespace
 
     settings, network = inputs.settings, inputs.network
     address = settings.k8s_compose_address
@@ -664,11 +716,14 @@ def localize_tenants(
                 f"config/{settings.environment}/tenants/{name}/ and edit its repositories.yaml"
             )
         worker = _document(result, "Deployment", namespace, WORKER)
+        gateway = _find_document(result, "Deployment", namespace, GATEWAY)
+        pods = [worker] if gateway is None else [worker, gateway]
         if bundle:
             bundle_map = config_map(TENANT_BUNDLE, bundle)
             bundle_map["metadata"]["namespace"] = namespace
             result.append(bundle_map)
-            _project_bundle(worker, name, sorted(bundle))
+            for pod in pods:
+                _project_bundle(pod, name, sorted(bundle))
         values = own[name]
         files = _document(result, "Secret", namespace, CONFIG_SECRETS)
         if values is None and name == home:
@@ -686,8 +741,9 @@ def localize_tenants(
         env["data"] = secret(PLATFORM_ENV, pod_env[name])["data"]
         if hashed is not None:
             digest = hashlib.sha256(json.dumps(hashed, sort_keys=True).encode()).hexdigest()[:16]
-            template = worker["spec"]["template"].setdefault("metadata", {})
-            template.setdefault("annotations", {})[TENANT_SETTINGS_HASH] = digest
+            for pod in pods:
+                template = pod["spec"]["template"].setdefault("metadata", {})
+                template.setdefault("annotations", {})[TENANT_SETTINGS_HASH] = digest
         files["data"] = {key: value for key, value in files["data"].items() if key not in withheld}
         backend = pod_env[name].get("TICKET_BACKEND") or default_backend
         if backend.strip().lower() == REBAR:
@@ -695,12 +751,15 @@ def localize_tenants(
     if len(names) > 1:
         refuse_shared_stores(stores)
         _refuse_shared_schedules(pod_env)
+    if any(_find_document(result, "Deployment", worker_namespace(n), GATEWAY) for n in names):
+        _refuse_gateway_tokens(pod_env, home, own, settings.environment)
     return result
 
 
 def render(inputs: RenderInputs, overlay: Path = OVERLAY) -> list[dict[str, Any]]:
     """Return the namespaces, then the overlay, then the generated config, ready to apply."""
     from scripts.tenant_render import tenantize
+    from scripts.webhook_render import localize_webhook
 
     directory = inputs.root / overlay
     generated = generated_objects(inputs)
@@ -714,6 +773,7 @@ def render(inputs: RenderInputs, overlay: Path = OVERLAY) -> list[dict[str, Any]
         inputs,
         [tenant.name for tenant in tenants],
     )
+    documents = localize_webhook(documents, inputs, [tenant.name for tenant in tenants])
     stamp_config_hash(documents, generated)
     return retarget_namespaces(
         documents,

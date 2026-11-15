@@ -10,6 +10,17 @@ x-python-service: &python-service
   env_file: [.env]
   restart: unless-stopped
 
+# The repository intelligence services receive only these settings and the registry, tenant bundle,
+# and checkout mounts that inv repos-compose writes to compose.repositories.yaml. They never receive
+# .env or the whole config/local directory.
+x-repo-intelligence-env: &repo-intelligence-env
+  ENVIRONMENT: ${ENVIRONMENT:-local}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  TENANT: ${TENANT:-}
+  TENANTS: ${TENANTS:-}
+  TENANT_CONFIG_REFRESH_SECONDS: ${TENANT_CONFIG_REFRESH_SECONDS:-60}
+  REPOSITORY_ROOT: ${REPOSITORY_ROOT:-/repos}
+
 services:
   postgres:
     image: public.ecr.aws/docker/library/postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
@@ -391,7 +402,11 @@ services:
       context: .
       dockerfile: docker/repo-intelligence.Dockerfile
       args: [AL2023_IMAGE]
-    env_file: [.env]
+    environment:
+      <<: *repo-intelligence-env
+      REPO_INTELLIGENCE_CBM_BINARY: ${REPO_INTELLIGENCE_CBM_BINARY:-}
+      REPO_INTELLIGENCE_TOKEN: ${REPO_INTELLIGENCE_TOKEN:-}
+      REPO_INTELLIGENCE_TOKEN_KEY: ${REPO_INTELLIGENCE_TOKEN_KEY:-}
     ports: ["8120:8120"]
     healthcheck:
       test: ["CMD", "python", "-m", "services.healthcheck", "http", "8120"]
@@ -401,8 +416,6 @@ services:
       retries: 3
     volumes:
       - repo-index-data:/app/repository_indexes
-      - ./config/local:/app/config/local:ro
-      - ./config/platform:/app/config/platform:ro
     restart: unless-stopped
 
   repo-index-worker:
@@ -418,11 +431,12 @@ services:
       start_period: 120s
       retries: 3
     environment:
+      <<: *repo-intelligence-env
       HEALTH_HEARTBEAT_FILE: /tmp/worker.heartbeat
-    env_file: [.env]
+      REPO_INDEX_POLL_INTERVAL_SECONDS: ${REPO_INDEX_POLL_INTERVAL_SECONDS:-30}
+      REPO_INDEX_WORKER_CONCURRENCY: ${REPO_INDEX_WORKER_CONCURRENCY:-2}
     volumes:
       - repo-index-data:/app/repository_indexes
-      - ./config/local:/app/config/local:ro
     restart: unless-stopped
 
   # Local stand-in for ECR that gate pods pull the engine image from in image mode. It serves

@@ -402,24 +402,38 @@ run "repository_intelligence_reads_each_tenant_checkouts_and_bundle" {
 
   assert {
     condition = (
-      { for secret in jsondecode(aws_ecs_task_definition.workload["repo-intelligence"].container_definitions)[1].secrets : secret.name => secret.valueFrom } == {
-        REPO_INTELLIGENCE_TOKEN_ADP      = var.repo_intelligence_tokens.adp.secret_arn
-        REPO_INTELLIGENCE_TOKEN_PAYMENTS = var.repo_intelligence_tokens.payments.secret_arn
+      jsondecode(one([for variable in jsondecode(aws_ecs_task_definition.workload["repo-intelligence"].container_definitions)[1].environment : variable.value if variable.name == "REPO_INTELLIGENCE_TOKEN_SECRET_ARNS"])) == {
+        adp      = var.repo_intelligence_tokens.adp.secret_arn
+        payments = var.repo_intelligence_tokens.payments.secret_arn
       } &&
+      length(try(jsondecode(aws_ecs_task_definition.workload["repo-intelligence"].container_definitions)[1].secrets, [])) == 0 &&
+      alltrue([for variable in jsondecode(aws_ecs_task_definition.workload["repo-index-worker"].container_definitions)[1].environment : !startswith(variable.name, "REPO_INTELLIGENCE_TOKEN")]) &&
       length(try(jsondecode(aws_ecs_task_definition.workload["repo-index-worker"].container_definitions)[1].secrets, [])) == 0
     )
-    error_message = "Repository intelligence does not receive each tenant's token, or the index worker receives one."
+    error_message = "Repository intelligence does not receive each tenant's token secret ARN in place of an injected token, or the index worker receives one."
   }
 
   assert {
     condition = (
-      toset(one([for statement in jsondecode(aws_iam_role_policy.workload_execution["repo-intelligence"].policy).Statement : statement.Resource if statement.Sid == "ReadTheInjectedSecrets"])) ==
+      toset(one([for statement in jsondecode(aws_iam_role_policy.workload_task["repo-intelligence"].policy).Statement : statement.Resource if statement.Sid == "ReadTheTenantTokens"])) ==
       toset([var.repo_intelligence_tokens.adp.secret_arn, var.repo_intelligence_tokens.payments.secret_arn]) &&
-      toset(one([for statement in jsondecode(aws_iam_role_policy.workload_execution["repo-intelligence"].policy).Statement : statement.Resource if statement.Sid == "DecryptTheInjectedSecrets"])) ==
+      one([for statement in jsondecode(aws_iam_role_policy.workload_task["repo-intelligence"].policy).Statement : statement.Action if statement.Sid == "ReadTheTenantTokens"]) == "secretsmanager:GetSecretValue" &&
+      toset(one([for statement in jsondecode(aws_iam_role_policy.workload_task["repo-intelligence"].policy).Statement : statement.Resource if statement.Sid == "DecryptTheTenantTokens"])) ==
       toset([var.repo_intelligence_tokens.adp.kms_key_arn, var.repo_intelligence_tokens.payments.kms_key_arn]) &&
-      alltrue([for statement in jsondecode(aws_iam_role_policy.workload_execution["repo-index-worker"].policy).Statement : statement.Sid != "ReadTheInjectedSecrets"])
+      one([for statement in jsondecode(aws_iam_role_policy.workload_task["repo-intelligence"].policy).Statement : statement if statement.Sid == "DecryptTheTenantTokens"]).Condition.StringEquals["kms:ViaService"] == "secretsmanager.us-east-1.amazonaws.com" &&
+      alltrue([for statement in jsondecode(aws_iam_role_policy.workload_task["repo-index-worker"].policy).Statement : statement.Sid != "ReadTheTenantTokens"])
     )
-    error_message = "The repository intelligence execution role does not read exactly the tenant tokens and their keys, or the index worker reads a secret."
+    error_message = "The repository intelligence task role does not read exactly the tenant tokens and their keys through Secrets Manager, or the index worker reads a token."
+  }
+
+  assert {
+    condition = alltrue([
+      for name in ["repo-intelligence", "repo-index-worker"] : alltrue([
+        for statement in jsondecode(aws_iam_role_policy.workload_execution[name].policy).Statement :
+        statement.Sid != "ReadTheInjectedSecrets" || length(setintersection(toset(flatten([statement.Resource])), toset([var.repo_intelligence_tokens.adp.secret_arn, var.repo_intelligence_tokens.payments.secret_arn]))) == 0
+      ])
+    ])
+    error_message = "An execution role still injects a tenant token."
   }
 
   assert {
@@ -440,8 +454,25 @@ run "repository_intelligence_reads_each_tenant_checkouts_and_bundle" {
   }
 
   assert {
-    condition     = length([for statement in jsondecode(aws_iam_role_policy.workload_task["review-worker"].policy).Statement : statement if can(regex("TenantBundles$", statement.Sid))]) == 0
-    error_message = "The review worker reads the tenant config bucket."
+    condition = (
+      one([for statement in jsondecode(aws_iam_role_policy.workload_task["review-worker"].policy).Statement : statement if statement.Sid == "ListTheTenantBundles"]).Condition.StringLike["s3:prefix"] == ["tenants/*"] &&
+      one([for statement in jsondecode(aws_iam_role_policy.workload_task["review-worker"].policy).Statement : statement if statement.Sid == "ReadTheTenantBundles"]).Resource == "arn:aws:s3:::agentic-platform-tenant-config-abc/tenants/*" &&
+      one([for statement in jsondecode(aws_iam_role_policy.workload_task["review-worker"].policy).Statement : statement if statement.Sid == "ReadTheTenantBundles"]).Action == ["s3:GetObject", "s3:GetObjectVersion"] &&
+      one([for statement in jsondecode(aws_iam_role_policy.workload_task["review-worker"].policy).Statement : statement if statement.Sid == "DecryptTheTenantBundles"]).Resource == var.tenant_config_kms_key_arn &&
+      one([for statement in jsondecode(aws_iam_role_policy.workload_task["review-worker"].policy).Statement : statement if statement.Sid == "DecryptTheTenantBundles"]).Condition.StringEquals["kms:ViaService"] == "s3.us-east-1.amazonaws.com" &&
+      contains([for variable in jsondecode(aws_ecs_task_definition.workload["review-worker"].container_definitions)[1].environment : "${variable.name}=${variable.value}"], "TENANT_CONFIG_BUCKET=agentic-platform-tenant-config-abc") &&
+      contains(output.repository_intelligence_roles.task_role_arns, aws_iam_role.workload_task["review-worker"].arn)
+    )
+    error_message = "The review worker does not read the tenant bundles read-only through S3, does not receive the config bucket, or is not listed as a bundle reader."
+  }
+
+  assert {
+    condition = alltrue([
+      for statement in jsondecode(aws_iam_role_policy.workload_task["review-worker"].policy).Statement :
+      alltrue([for action in flatten([statement.Action]) : contains(["s3:ListBucket", "s3:ListBucketVersions", "s3:GetObject", "s3:GetObjectVersion", "kms:Decrypt"], action)])
+      if can(regex("TenantBundles$", statement.Sid))
+    ])
+    error_message = "The review worker holds a tenant bundle action beyond list, read, and decrypt."
   }
 
   assert {
@@ -455,8 +486,8 @@ run "repository_intelligence_reads_each_tenant_checkouts_and_bundle" {
   }
 
   assert {
-    condition     = output.repository_intelligence_roles.execution_role_arn != "" && length(output.repository_intelligence_roles.task_role_arns) == 2
-    error_message = "The output does not name the repository intelligence execution role and both task roles."
+    condition     = output.repository_intelligence_roles.execution_role_arn != "" && output.repository_intelligence_roles.token_reader_role_arn == aws_iam_role.workload_task["repo-intelligence"].arn && length(output.repository_intelligence_roles.task_role_arns) == 3
+    error_message = "The output does not name the repository intelligence execution role, its token reader task role, and the three bundle reader task roles."
   }
 }
 
@@ -472,6 +503,22 @@ run "without_tenants_repository_intelligence_reads_the_checkouts" {
       )
     ])
     error_message = "Without tenants, repository intelligence or the index worker does not mount the checkouts, or reads a config bucket."
+  }
+
+  assert {
+    condition = (
+      !contains([for variable in jsondecode(aws_ecs_task_definition.workload["review-worker"].container_definitions)[1].environment : variable.name], "TENANT_CONFIG_BUCKET") &&
+      length([for statement in jsondecode(aws_iam_role_policy.workload_task["review-worker"].policy).Statement : statement if can(regex("TenantBundles$", statement.Sid))]) == 0
+    )
+    error_message = "Without tenants, the review worker receives a config bucket or reads one."
+  }
+
+  assert {
+    condition = (
+      !contains([for variable in jsondecode(aws_ecs_task_definition.workload["repo-intelligence"].container_definitions)[1].environment : variable.name], "REPO_INTELLIGENCE_TOKEN_SECRET_ARNS") &&
+      length([for statement in jsondecode(aws_iam_role_policy.workload_task["repo-intelligence"].policy).Statement : statement if can(regex("TenantTokens$", statement.Sid))]) == 0
+    )
+    error_message = "Without tenants, repository intelligence receives a token secret map or reads a tenant token."
   }
 }
 

@@ -44,12 +44,43 @@ variable "secrets" {
     condition     = !contains(var.secrets, "repo_intelligence_token")
     error_message = "repo_intelligence_token is the generated secret the module creates for every tenant, so secrets may not name it."
   }
+
+  validation {
+    condition     = !contains(var.secrets, "mcp_gateway_token")
+    error_message = "mcp_gateway_token is the generated secret the module creates for every tenant, so secrets may not name it."
+  }
 }
 
 variable "repo_intelligence_reader_arns" {
-  description = "Principals besides the tenant worker that read the tenant's repository intelligence token, the execution role of the repository intelligence service that injects every tenant's token."
+  description = "Principals besides the tenant worker that read the tenant's repository intelligence token, the task role of the repository intelligence service that reads every tenant's current and previous token at runtime."
   type        = list(string)
   default     = []
+}
+
+variable "mcp_gateway_token_reader_arns" {
+  description = "Principals besides the tenant worker that read the tenant's MCP gateway token, such as the operators who hand it to the tenant's MCP clients."
+  type        = list(string)
+  default     = []
+}
+
+variable "repo_intelligence_token_rotation" {
+  description = "The rotation function of the repository intelligence token and its execution role, such as the token_rotation output of the secret-store module. The token's secret policy admits the role, whose identity policy grants the tenant key through Secrets Manager. Null leaves the token unrotated."
+  type = object({
+    function_arn = string
+    role_arn     = string
+  })
+  default = null
+}
+
+variable "repo_intelligence_token_rotation_days" {
+  description = "Days between rotations of the repository intelligence token when repo_intelligence_token_rotation is set."
+  type        = number
+  default     = 30
+
+  validation {
+    condition     = var.repo_intelligence_token_rotation_days >= 1 && var.repo_intelligence_token_rotation_days <= 1000 && floor(var.repo_intelligence_token_rotation_days) == var.repo_intelligence_token_rotation_days
+    error_message = "repo_intelligence_token_rotation_days is a whole number from 1 to 1000."
+  }
 }
 
 variable "secret_recovery_window_days" {

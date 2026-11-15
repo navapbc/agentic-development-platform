@@ -1,4 +1,4 @@
-"""Read-only MCP Gateway serving verified read tools over streamable HTTP."""
+"""Read-only MCP Gateway serving one tenant's verified read tools over streamable HTTP."""
 
 from __future__ import annotations
 
@@ -76,9 +76,17 @@ def build_app(server: FastMCP, token: str) -> ASGIApp:
 def main() -> None:
     import uvicorn
 
-    token = get_settings().mcp_gateway_token
+    from services.integration.tenant_config import configure
+
+    settings = get_settings()
+    token = settings.mcp_gateway_token
     if not token:
         raise SystemExit(f"the MCP gateway has no {AUTH_ENV_VAR}. {AUTH_REMEDY}")
+    if not settings.tenant:
+        raise SystemExit("the MCP gateway has no TENANT. Each gateway serves one tenant.")
+    # The readers load the allowlisted projects and repositories once, so the gateway serves the
+    # bundle active at its start until it restarts.
+    configure(settings)
     server = build_server()
     uvicorn.run(
         build_app(server, token),

@@ -60,7 +60,7 @@ locals {
         reader = local.tenant_records[name].ticket_store.reader_role_arn
         writer = local.tenant_records[name].ticket_store.writer_role_arn
       }
-      secrets          = local.tenant_records[name].secret_arns
+      secrets          = merge(local.tenant_records[name].secret_arns, try(module.tenant[name].webhook.secret_arns, {}))
       platform_secrets = distinct(concat(local.tenant_platform_secrets, tenant.shared_secrets, local.temporal_deployed ? ["temporal_ca"] : []))
       settings         = tenant.settings
       model_limits     = tenant.model_limits
@@ -110,6 +110,7 @@ module "tenant_config_store" {
       readers = concat(
         [module.eks_cluster.pod_identity_role_arns["tenant_${name}"]],
         try(module.container_services.repository_intelligence_roles.task_role_arns, []),
+        local.tenant_webhooks ? [module.eks_cluster.pod_identity_role_arns["inbound_webhook"]] : [],
       )
     }
   }
@@ -126,7 +127,10 @@ module "tenant" {
   description                   = each.value.description
   worker_role_arn               = module.eks_cluster.pod_identity_role_arns["tenant_${each.key}"]
   secrets                       = each.value.secrets
-  repo_intelligence_reader_arns = compact([try(module.container_services.repository_intelligence_roles.execution_role_arn, "")])
+  create_webhook_secrets        = local.tenant_webhooks
+  webhook_reader_arn            = local.tenant_webhooks ? module.eks_cluster.pod_identity_role_arns["inbound_webhook"] : ""
+  repo_intelligence_reader_arns = compact([try(module.container_services.repository_intelligence_roles.token_reader_role_arn, "")])
+  mcp_gateway_token_reader_arns = each.value.mcp_gateway_token_readers
   secret_recovery_window_days   = var.secret_recovery_window_days
   access_log_bucket             = var.access_log_bucket
   ticket_store                  = each.value.ticket_store
@@ -140,7 +144,8 @@ module "tenant" {
     allowed_refs          = each.value.config_repository.allowed_refs
     github_repository_ids = each.value.config_repository.github_repository_ids
   }
-  tags = var.tags
+  repo_intelligence_token_rotation = module.secret_store.token_rotation
+  tags                             = var.tags
 }
 
 # The shared EKS policies attach by role name here, as the tenant policy does, so the roles and

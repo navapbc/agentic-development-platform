@@ -71,7 +71,7 @@ def _beta_files(**extra: str) -> dict[str, str]:
         "tenants/beta/repositories.yaml": BETA_REPOSITORIES,
         "tenants/beta/tickets.yaml": _beta_tickets(),
         "tenants/beta.env": "GITHUB_TOKEN=beta-token\nREBAR_PROJECT=BETA\n"
-        "EVIDENCE_URL=http://minio:9000/evidence\n",
+        "EVIDENCE_URL=http://minio:9000/evidence\nMCP_GATEWAY_TOKEN=beta-gateway-token\n",
         **extra,
     }
 
@@ -272,9 +272,11 @@ def test_configured_namespaces_move_every_resource_and_reference(tmp_path: Path)
 def test_each_tenant_writes_its_own_host_directory_and_the_review_worker_reads_them_all(
     tmp_path: Path,
 ) -> None:
-    documents = _rendered(
-        tmp_path, {"tenants/claims/repositories.yaml": CLAIMS_REPOSITORIES}, tenants="adp,claims"
-    )
+    files = {
+        "tenants/claims/repositories.yaml": CLAIMS_REPOSITORIES,
+        "tenants/claims.env": "MCP_GATEWAY_TOKEN=claims-gateway-token\n",
+    }
+    documents = _rendered(tmp_path, files, tenants="adp,claims")
 
     for tenant in ("adp", "claims"):
         worker = next(
@@ -399,10 +401,10 @@ def test_a_config_change_changes_every_pod_template_and_a_rerender_does_not(
     assert all(changed[name] != first[name] for name in first)
 
 
-def test_the_gateway_token_reaches_the_workload_secret(tmp_path: Path) -> None:
+def test_the_platform_workload_secret_holds_no_gateway_token(tmp_path: Path) -> None:
     workload = _named(_rendered(tmp_path), "Secret", "agentic-platform")["data"]
 
-    assert base64.b64decode(workload["mcp_gateway_token"]) == b"gateway-token"
+    assert "mcp_gateway_token" not in workload
 
 
 def test_litellm_reads_its_own_database_on_the_compose_postgres(tmp_path: Path) -> None:
@@ -438,6 +440,9 @@ def test_each_tenant_worker_rolls_in_its_own_namespace() -> None:
     assert ("tenant-adp", "activity-worker") in deployments(settings)
     assert ("tenant-claims", "activity-worker") in deployments(settings)
     assert ("ns", "activity-worker") not in deployments(settings)
+    assert ("tenant-adp", "mcp-gateway") in deployments(settings)
+    assert ("tenant-claims", "mcp-gateway") in deployments(settings)
+    assert ("ns", "mcp-gateway") not in deployments(settings)
 
 
 def test_the_retired_objects_are_deleted_from_the_configured_namespaces() -> None:
@@ -485,6 +490,12 @@ def _secret_values(documents: list[dict], namespace: str, name: str) -> dict[str
 
 def _worker(documents: list[dict], tenant: str) -> dict:
     found = _in(documents, "Deployment", f"tenant-{tenant}", "activity-worker")
+    assert found is not None
+    return found
+
+
+def _gateway(documents: list[dict], tenant: str) -> dict:
+    found = _in(documents, "Deployment", f"tenant-{tenant}", "mcp-gateway")
     assert found is not None
     return found
 
@@ -579,13 +590,12 @@ def test_no_tenant_receives_another_tenants_settings_or_signing_key(tmp_path: Pa
 def test_a_tenant_without_a_settings_file_other_than_the_home_tenant_gets_no_owned_settings(
     tmp_path: Path,
 ) -> None:
-    files = _beta_files()
-    del files["tenants/beta.env"]
+    files = _beta_files(**{"tenants/beta.env": "MCP_GATEWAY_TOKEN=beta-gateway-token\n"})
 
     documents = _rendered(tmp_path, files, ADP_ENV, tenants="adp,beta", tenant="adp")
 
     beta = _secret_values(documents, "tenant-beta", k8s_render.PLATFORM_ENV)
-    assert not set(beta) & k8s_render.TENANT_OWNED_SETTINGS
+    assert set(beta) & k8s_render.TENANT_OWNED_SETTINGS == {"MCP_GATEWAY_TOKEN"}
     assert beta["TICKET_BACKEND"] == "rebar"
     assert _secret_values(documents, "tenant-adp", k8s_render.PLATFORM_ENV)["GITHUB_TOKEN"] == (
         "adp-token"
@@ -611,6 +621,8 @@ def test_the_home_tenant_without_tenant_files_renders_as_before_with_its_own_tok
     ).decode()
     annotations = _worker(localized, "adp")["spec"]["template"]["metadata"]["annotations"]
     assert annotations.pop(k8s_render.TENANT_SETTINGS_HASH)
+    gateway = _gateway(localized, "adp")["spec"]["template"]["metadata"]["annotations"]
+    assert gateway.pop(k8s_render.TENANT_SETTINGS_HASH)
 
     assert localized == before
 
@@ -713,7 +725,9 @@ def test_each_rebar_tenant_keeps_its_own_ticket_store(
 
 
 def test_a_jira_tenant_needs_no_ticket_store(tmp_path: Path) -> None:
-    files = _beta_files(**{"tenants/beta.env": "TICKET_BACKEND=jira\n"})
+    files = _beta_files(
+        **{"tenants/beta.env": "TICKET_BACKEND=jira\nMCP_GATEWAY_TOKEN=beta-gateway-token\n"}
+    )
     del files["tenants/beta/tickets.yaml"]
 
     documents = _rendered(tmp_path, files, ADP_ENV, tenants="adp,beta", tenant="adp")
@@ -760,3 +774,111 @@ def test_the_second_tenant_examples_render(tmp_path: Path) -> None:
     assert _secret_values(documents, "tenant-beta", k8s_render.PLATFORM_ENV)["TICKET_BACKEND"] == (
         "rebar"
     )
+
+
+def test_each_tenant_runs_its_own_gateway_with_only_its_own_settings(tmp_path: Path) -> None:
+    documents = _rendered(tmp_path, _beta_files(), ADP_ENV, tenants="adp,beta", tenant="adp")
+
+    assert not [
+        d
+        for d in documents
+        if d["metadata"]["name"] == "mcp-gateway"
+        and d["metadata"].get("namespace") == "agentic-dev-platform"
+    ]
+    for tenant in ("adp", "beta"):
+        namespace = f"tenant-{tenant}"
+        gateway = _gateway(documents, tenant)
+        spec = gateway["spec"]["template"]["spec"]
+        container = spec["containers"][0]
+        values = {e["name"]: e["value"] for e in container["env"] if "value" in e}
+        references = [e["valueFrom"] for e in container["env"] if "valueFrom" in e] + container[
+            "envFrom"
+        ]
+
+        assert spec["serviceAccountName"] == "activity-worker"
+        assert values["TENANT"] == tenant
+        assert container["envFrom"] == [{"secretRef": {"name": k8s_render.PLATFORM_ENV}}]
+        assert all(
+            _in(documents, kind, namespace, ref.get("name", ""))
+            for reference in references
+            for kind, ref in (
+                ("Secret", reference.get("secretKeyRef") or reference.get("secretRef") or {}),
+                (
+                    "ConfigMap",
+                    reference.get("configMapKeyRef") or reference.get("configMapRef") or {},
+                ),
+            )
+            if ref
+        )
+        assert _in(documents, "Service", namespace, "mcp-gateway") is not None
+    adp = _secret_values(documents, "tenant-adp", k8s_render.PLATFORM_ENV)
+    beta = _secret_values(documents, "tenant-beta", k8s_render.PLATFORM_ENV)
+    assert adp["MCP_GATEWAY_TOKEN"] == "gateway-token"
+    assert beta["MCP_GATEWAY_TOKEN"] == "beta-gateway-token"
+    assert "gateway-token" not in beta.values() and "adp-token" not in beta.values()
+    assert "beta-gateway-token" not in adp.values() and "beta-token" not in adp.values()
+
+
+def test_each_tenant_gateway_reads_only_its_own_bundle(tmp_path: Path) -> None:
+    documents = _rendered(tmp_path, _beta_files(), ADP_ENV, tenants="adp,beta", tenant="adp")
+
+    def sources(tenant: str) -> list[dict]:
+        volumes = _gateway(documents, tenant)["spec"]["template"]["spec"]["volumes"]
+        config = next(v for v in volumes if v["name"] == k8s_render.CONFIG_VOLUME)
+        return [
+            source["configMap"]
+            for source in config["projected"]["sources"]
+            if source.get("configMap", {}).get("name") == k8s_render.TENANT_BUNDLE
+        ]
+
+    assert sources("beta") == _bundle_sources(documents, "beta")
+    assert sources("beta")[0]["items"][0]["path"].startswith("tenants/beta/")
+    assert sources("adp") == []
+
+
+@pytest.mark.parametrize(
+    ("beta_env", "env", "source"),
+    [
+        ("GITHUB_TOKEN=beta-token\n", {}, "config/local/tenants/beta.env"),
+        (None, {}, "config/local/tenants/beta.env"),
+        ("MCP_GATEWAY_TOKEN=beta-gateway-token\n", {"MCP_GATEWAY_TOKEN": ""}, ".env"),
+    ],
+)
+def test_a_tenant_without_its_own_gateway_token_is_refused(
+    tmp_path: Path, beta_env: str | None, env: dict[str, str], source: str
+) -> None:
+    files = _beta_files()
+    if beta_env is None:
+        del files["tenants/beta.env"]
+    else:
+        files["tenants/beta.env"] = beta_env
+    tenant = "adp" if source == ".env" else "beta"
+
+    with pytest.raises(ValueError, match=f"tenant {tenant} has no MCP_GATEWAY_TOKEN.*{source}"):
+        _rendered(tmp_path, files, {**ADP_ENV, **env}, tenants="adp,beta", tenant="adp")
+
+
+def test_two_tenants_may_not_share_a_gateway_token(tmp_path: Path) -> None:
+    files = _beta_files(**{"tenants/beta.env": "MCP_GATEWAY_TOKEN=gateway-token\n"})
+
+    with pytest.raises(ValueError, match="tenants adp, beta share one MCP_GATEWAY_TOKEN"):
+        _rendered(tmp_path, files, ADP_ENV, tenants="adp,beta", tenant="adp")
+
+
+def test_a_new_gateway_token_restarts_only_that_tenants_gateway(tmp_path: Path) -> None:
+    def hashes(token: str, directory: str) -> dict[str, str | None]:
+        files = _beta_files(**{"tenants/beta.env": f"MCP_GATEWAY_TOKEN={token}\n"})
+        documents = _rendered(
+            tmp_path / directory, files, ADP_ENV, tenants="adp,beta", tenant="adp"
+        )
+        return {
+            tenant: _gateway(documents, tenant)["spec"]["template"]["metadata"]["annotations"].get(
+                k8s_render.TENANT_SETTINGS_HASH
+            )
+            for tenant in ("adp", "beta")
+        }
+
+    first, second = hashes("beta-one", "a"), hashes("beta-two", "b")
+
+    assert first["adp"] == second["adp"]
+    assert first["beta"] != second["beta"]

@@ -19,8 +19,16 @@ output "role_bootstrap_function_name" {
 }
 
 output "rotation_function_arns" {
-  description = "Rotation function ARNs keyed by target, postgres and elasticache."
+  description = "Rotation function ARNs keyed by target, postgres, elasticache, and token."
   value       = { for key, function in aws_lambda_function.rotation : key => function.arn }
+}
+
+output "token_rotation" {
+  description = "The function that rotates the secrets rotated_token_secrets names and the role it runs as, or null without rotated_token_secrets. The module that owns such a secret attaches the function and grants the role on the secret and its key."
+  value = local.token_enabled ? {
+    function_arn = aws_lambda_function.rotation["token"].arn
+    role_arn     = aws_iam_role.token[0].arn
+  } : null
 }
 
 output "restart_document_name" {

@@ -70,6 +70,24 @@ def unset_tenant_secrets(tenants: list[dict[str, Any]], secretsmanager: Any) -> 
     ]
 
 
+def platform_mounted_keys(
+    mounted: list[str], arns: dict[str, str], tenants: list[dict[str, Any]]
+) -> list[str]:
+    """Return the mounted keys the platform secrets must cover.
+
+    A key the platform has no secret for, which every tenant holds as its own secret, mounts only
+    in tenant namespaces, such as the token of each tenant's MCP gateway.
+    """
+    tenant_owned = {
+        key
+        for key in mounted
+        if key not in arns
+        and tenants
+        and all(key in (tenant.get("secrets") or {}) for tenant in tenants)
+    }
+    return [key for key in mounted if key not in tenant_owned]
+
+
 def run_deployer(ecs: Any, logs: Any, deployer: dict[str, Any], command: list[str]) -> int:
     task = deployer["tasks"][TASK]
     started = ecs.run_task(
@@ -135,8 +153,10 @@ def deploy(session: Any, eks: dict[str, Any] | None, command: list[str]) -> int:
         return 0
     if command[0] == "deploy":
         secretsmanager = session.client("secretsmanager")
-        unset = unset_secrets(mounted_secret_keys(), eks["secret_arns"], secretsmanager)
-        unset += unset_tenant_secrets(eks.get("tenants") or [], secretsmanager)
+        tenants = eks.get("tenants") or []
+        keys = platform_mounted_keys(mounted_secret_keys(), eks["secret_arns"], tenants)
+        unset = unset_secrets(keys, eks["secret_arns"], secretsmanager)
+        unset += unset_tenant_secrets(tenants, secretsmanager)
         for key in unset:
             print(f"{LOG} {key} has no value, so the pods that mount it start without it")
         command = command + [part for key in unset for part in ("--omit-secret", key)]
@@ -150,7 +170,10 @@ def main(argv: list[str] | None = None) -> int:
         "command",
         nargs="*",
         default=["deploy"],
-        help="deploy, check-policies, or restart DEPLOYMENT... (namespace/name or tenant-workers)",
+        help=(
+            "deploy, check-policies, or restart DEPLOYMENT... "
+            "(namespace/name, tenant-workers, or mcp-gateway)"
+        ),
     )
     args = parser.parse_args(argv)
 

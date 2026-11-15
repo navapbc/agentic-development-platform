@@ -10,11 +10,6 @@ locals {
       policy_arns     = [module.bedrock_iam.invoke_policy_arn]
       secrets         = ["database_litellm", "litellm_master_key", "langfuse_public_key", "langfuse_secret_key"]
     }
-    mcp_gateway = {
-      service_account = "mcp-gateway"
-      policy_arns     = []
-      secrets         = ["database_platform_app", "mcp_gateway_token"]
-    }
     inbound_webhook = {
       service_account = "inbound-webhook"
       policy_arns     = aws_iam_policy.eks_temporal_ca[*].arn
@@ -116,9 +111,11 @@ locals {
   } : null
 }
 
-# The EKS deployments that hold a database connection restart after its credential rotates.
+# The EKS deployments that hold a database connection restart after its credential rotates, and
+# each tenant's activity worker and MCP gateway restart after its repository intelligence token
+# rotates.
 locals {
-  eks_restart = local.eks_deployer_enabled && var.eks_deployer_image != "" && local.secret_store_database ? {
+  eks_restart = local.eks_deployer_enabled && var.eks_deployer_image != "" && (local.secret_store_database || length(local.tenants) > 0) ? {
     cluster_arn        = module.ecs_cluster.cluster_arn
     task_family        = module.eks_deployer.family
     container          = module.eks_deployer.container
@@ -126,8 +123,16 @@ locals {
     security_group_ids = [module.eks_deployer.security_group_id]
     pass_role_arns     = [module.eks_deployer.execution_role_arn, module.eks_deployer.task_role_arn]
     deployments = {
-      database_platform_app = ["tenant-workers", "inbound-webhook", "mcp-gateway"]
-      database_litellm      = ["litellm"]
+      for key, deployments in {
+        database_platform_app = ["tenant-workers", "inbound-webhook", "mcp-gateway"]
+        database_litellm      = ["litellm"]
+      } : key => deployments if local.secret_store_database
+    }
+    external_secrets = {
+      for name, tenant in local.tenant_records : "tenant_${name}_ri_token" => {
+        secret_arn  = tenant.repo_intelligence_token_arn
+        deployments = ["${tenant.namespace}/activity-worker", "${tenant.namespace}/mcp-gateway"]
+      }
     }
   } : null
 }

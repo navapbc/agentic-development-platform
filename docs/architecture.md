@@ -42,7 +42,10 @@ flowchart LR
                 SBX["Agent sandboxes<br/>(OpenHands, one per execution)"]
             end
             subgraph NSP["Namespace agentic-dev-platform"]
-                FRONT["Inbound webhook<br/>and MCP gateway"]
+                FRONT["Inbound webhook"]
+            end
+            subgraph NST["Namespace tenant-*, one per tenant"]
+                MCPG["MCP gateway"]
             end
         end
     end
@@ -81,7 +84,10 @@ flowchart LR
     GH --> FRONT
     FRONT --> TEMPORAL
     FRONT --> PG
-    FRONT --> JIRA
+    MCPG --> PG
+    MCPG --> RIS
+    MCPG --> GH
+    MCPG --> JIRA
     PG ~~~ GH
     PG ~~~ JIRA
     MINIO ~~~ BR
@@ -94,11 +100,12 @@ flowchart LR
     style K8S fill:#CFE2F3,stroke:#6FA8DC
     style NSP fill:#A4C2F4,stroke:#3C78D8
     style NSS fill:#A4C2F4,stroke:#3C78D8
+    style NST fill:#A4C2F4,stroke:#3C78D8
     style EXT fill:#ffffff,stroke:#232F3E
     style AWS fill:#FCE5CD,stroke:#E69138
 ```
 
-- Temporal dispatches workflow and activity tasks to the workers, which hold long-poll connections to it. The inbound webhook signals Temporal when GitHub reports a closed pull request, and the MCP gateway reads from PostgreSQL, GitHub, and Jira.
+- Temporal dispatches workflow and activity tasks to the workers, which hold long-poll connections to it. The inbound webhook routes each GitHub pull request event to the tenant whose repositories list the repository and signals Temporal when the pull request closes. Each tenant namespace runs its own MCP gateway, which reads only that tenant's evidence from PostgreSQL and reads GitHub, Jira, and repository intelligence with that tenant's credentials.
 - Every worker exports traces and metrics to Observability. LiteLLM sends its generation traces to Langfuse.
 
 ### AWS, high level
@@ -272,6 +279,8 @@ flowchart LR
                 WORKSPACES[("Workspace Volume<br/><i>checkouts, repository copies,<br/>gate engines, ticket store</i>")]
                 AWSCRED[("AWS Credentials Secret")]
                 WEBHOOK["Inbound Webhook Receiver<br/><i>Python</i>"]
+            end
+            subgraph NSTEN["Namespace tenant-*, one per tenant"]
                 MCP["MCP Gateway<br/><i>Python, MCP SDK</i>"]
             end
             subgraph NSSBX["Namespace agent-sandbox"]
@@ -409,14 +418,14 @@ Component roles:
 | Open Policy Agent | Evaluates the pull request promotion policy. It runs as a sidecar of the activity worker, bound to the pod's loopback, so no Service exposes it. |
 | Review Gate Worker | Runs the plan, code, security, and acceptance review gates with rebar against the execution's checkout on the workspace volume. Native mode calls Bedrock directly through the relay sidecar. Proxied mode calls the model gateway. |
 | Coordination Service | Holds work claims, sequencing, and side-effect idempotency in PostgreSQL, and checks claim owners against Temporal. Every mutating call needs the shared bearer token. |
-| Repository Intelligence Service | Builds code context packages for planning from Zoekt search, SCIP symbol indexes, ast-grep, language servers, and codebase-memory-mcp. |
+| Repository Intelligence Service | Builds code context packages for planning from Zoekt search, SCIP symbol indexes, ast-grep, language servers, and codebase-memory-mcp. It and the index worker receive only the settings the `x-repo-intelligence-env` anchor of `compose.yaml` lists, not `.env`, and read the repository registry, each tenant's bundle directory, and the checkouts through the read-only mounts `inv repos-compose` writes to `compose.repositories.yaml`. After a registry edit, `inv repos-compose` and then `inv k8s-reload`, or `docker compose` with `compose.repositories.yaml` among its files, recreate both services. |
 | Repository Index Worker | Polls the target repositories for new commits and rebuilds the Zoekt and SCIP indexes on the shared volume. |
 | LiteLLM Model Gateway | Maps logical model names to Bedrock Claude models and sends generation traces to Langfuse with credential-shaped strings redacted. Compose services and host tasks reach it on host port 4000 through a `LoadBalancer` Service. |
 | Bedrock Relay and Bedrock Tunnel | Each relay answers on the `bedrock-runtime` hostname on its pod's loopback and forwards to the host tunnel, which forwards over an SSM session to the jump-host in AWS. |
 | AWS Credentials Secret | Holds the credentials `inv aws-login` writes. LiteLLM and the review worker reread it through `credential_process` before the credentials they hold expire. |
 | Workspace Volume | Holds the execution checkouts, the copies of the local-backend repositories and local gate engines that `inv repos-sync` sends, and the rebar ticket store seeded from MinIO. `inv fetch-results` brings the agent branches back to the host checkouts. |
-| Inbound Webhook Receiver | Receives GitHub pull request events from the GitHub CLI forwarder and signals the matching Temporal workflow when a pull request closes. |
-| MCP Gateway | Serves read-only Jira, GitHub, evidence, and repository context tools over the Model Context Protocol to clients that present its bearer token. |
+| Inbound Webhook Receiver | Receives GitHub pull request events from the GitHub CLI forwarder, verifies each with the secret of the tenant whose `repositories.yaml` lists the repository, and signals that tenant's workflow when the pull request closes. A Jira delivery to `/webhook/jira/<tenant>` is verified with that tenant's secret and project allowlist and starts a single-issue intake workflow on the tenant's task queue, where the tenant worker reads Jira, so the webhook holds no Jira credentials. With more than one tenant, the local cluster render gives it only each tenant's `GITHUB_WEBHOOK_SECRET` and `JIRA_WEBHOOK_SECRET` in the Secret `inbound-webhook-tenants`, and a secret change restarts the pod. |
+| MCP Gateway | One per tenant, in the tenant's namespace under the tenant worker's service account. It serves read-only Jira, GitHub, evidence, and repository context tools over the Model Context Protocol to clients that present the tenant's bearer token. Evidence and security-finding reads return only the executions recorded for the tenant, and the other tools read with the tenant's credentials, allowlists, and repository intelligence token. Its Service is ClusterIP, reached with `kubectl -n tenant-<tenant> port-forward svc/mcp-gateway 8150:80`. |
 | OpenHands Coding Sandbox | One agent-server pod per execution that performs the implementation stage. The activity worker reaches it on its pod IP with a per-sandbox session key. |
 | External Review Gate | One pod per configured external gate, running an AI CLI reviewer or a SARIF scanner. |
 | LLM Tracing | Langfuse records model generations from LiteLLM and from the workers. |
@@ -637,7 +646,7 @@ Component roles:
 | Bedrock Jump-Host | An ephemeral task that holds an ECS Exec session open for a fixed TTL. The developer forwards local ports through it to the Bedrock endpoint and to the Temporal Web UI load balancer. |
 | AWS Service Endpoints | Private endpoints for Bedrock Runtime, SSM Messages, ECR, CloudWatch Logs, KMS, Secrets Manager, the RDS Data API, and ElastiCache. |
 | Temporal Database | Holds the `temporal` and `temporal_visibility` databases and the per-role platform database credentials. |
-| Secret Rotation Function | Rotates the per-role database credentials through the RDS Data API and the Valkey RBAC user through the ElastiCache API. |
+| Secret Rotation Function | Rotates the per-role database credentials through the RDS Data API, the Valkey RBAC user through the ElastiCache API, and each tenant's repository intelligence token by staging a new random token, after which the tenant's activity worker and MCP gateway restart. |
 | Operator Access and Runbooks | Session Manager for the jump-host, Parameter Store for the jump-host settings, and the Automation runbook that force-deploys a service after its secret rotates. |
 | Rotation and Certificate Events | Starts the restart runbook after a rotation and publishes ACM certificate expiry warnings to SNS. |
 | Rebar Ticket Store | The S3 remote of the rebar tickets branch, read and written through `git-remote-s3` under separate reader and writer roles. |

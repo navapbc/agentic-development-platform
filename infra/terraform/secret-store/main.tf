@@ -10,7 +10,8 @@ locals {
   enabled          = var.create_secret_store
   database_enabled = local.enabled && var.create_database_credentials
   cache_enabled    = local.enabled && var.rotate_elasticache_user
-  rotation_enabled = local.database_enabled || local.cache_enabled
+  token_enabled    = local.enabled && length(var.rotated_token_secrets) > 0
+  rotation_enabled = local.database_enabled || local.cache_enabled || local.token_enabled
 
   account_id = try(data.aws_caller_identity.current[0].account_id, "")
   partition  = try(data.aws_partition.current[0].partition, "aws")
@@ -63,11 +64,6 @@ locals {
     }
     coordination_shared_secret = {
       description = "Bearer token for the coordination RPC, set as COORDINATION_SHARED_SECRET on the coordination service and on every worker."
-      prefix      = ""
-      hex         = false
-    }
-    mcp_gateway_token = {
-      description = "Bearer token every MCP gateway client presents, set as MCP_GATEWAY_TOKEN on the gateway and on each client."
       prefix      = ""
       hex         = false
     }

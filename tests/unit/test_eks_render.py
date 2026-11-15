@@ -35,7 +35,6 @@ def _inputs() -> dict[str, Any]:
         "registry_token",
         "github_webhook_secret",
         "jira_webhook_secret",
-        "mcp_gateway_token",
         "langfuse_public_key",
         "langfuse_secret_key",
         "temporal_ca",
@@ -81,7 +80,14 @@ def _inputs() -> dict[str, Any]:
 
 
 def _tenant(name: str) -> dict[str, Any]:
-    own = ("github_token", "jira_api_token", "jira_pat", "authorship_signing_key", "registry_token")
+    own = (
+        "github_token",
+        "jira_api_token",
+        "jira_pat",
+        "authorship_signing_key",
+        "registry_token",
+        "mcp_gateway_token",
+    )
     return {
         "name": name,
         "workspace_volume_handle": f"fs-1::fsap-{name}",
@@ -212,7 +218,9 @@ def test_litellm_reads_its_own_database_credential_over_verified_tls(overlay) ->
 
 
 def test_an_ingress_without_a_certificate_is_left_out(overlay) -> None:
-    documents, _ = eks_render.render(overlay, _inputs(), REPOSITORY, mcp_hostname="mcp.example")
+    documents, _ = eks_render.render(
+        overlay, _inputs(), REPOSITORY, mcp_hostnames={"adp": "mcp.example"}
+    )
     ingresses = {d["metadata"]["name"]: d for d in documents if d["kind"] == "Ingress"}
 
     assert list(ingresses) == ["inbound-webhook"]
@@ -220,17 +228,126 @@ def test_an_ingress_without_a_certificate_is_left_out(overlay) -> None:
     assert annotations["alb.ingress.kubernetes.io/certificate-arn"].endswith("/webhook")
 
 
-def test_the_gateway_accepts_only_its_load_balancer_host(overlay) -> None:
+def test_each_tenant_gateway_accepts_only_its_load_balancer_host(overlay) -> None:
     inputs = _inputs()
+    inputs["tenants"].append(_tenant("payments"))
     inputs["ingress"]["mcp_gateway_certificate_arn"] = "arn:aws:acm:us-west-2:9:certificate/mcp"
     inputs["ingress"]["mcp_gateway_client_cidrs"] = ["10.42.21.0/24"]
-    documents, _ = eks_render.render(overlay, inputs, REPOSITORY, mcp_hostname="mcp.example")
-    gateway = _named(documents, "Deployment", "mcp-gateway")["spec"]["template"]["spec"]
-    env = {e["name"]: e.get("value") for e in gateway["containers"][0]["env"]}
-    ingress = _named(documents, "Ingress", "mcp-gateway")["metadata"]["annotations"]
+    documents, _ = eks_render.render(
+        overlay, inputs, REPOSITORY, mcp_hostnames={"adp": "adp.example", "payments": ""}
+    )
 
-    assert env["MCP_ALLOWED_HOSTS"] == "mcp.example,mcp.example:443"
-    assert ingress["alb.ingress.kubernetes.io/inbound-cidrs"] == "10.42.21.0/24"
+    for tenant, hosts in (("adp", "adp.example,adp.example:443"), ("payments", "")):
+        namespace = f"tenant-{tenant}"
+        gateway = _named(documents, "Deployment", "mcp-gateway", namespace)
+        env = {e["name"]: e.get("value") for e in _containers(gateway)[0]["env"]}
+        ingress = _named(documents, "Ingress", "mcp-gateway", namespace)
+        annotations = ingress["metadata"]["annotations"]
+
+        assert env["MCP_ALLOWED_HOSTS"] == hosts
+        assert annotations["alb.ingress.kubernetes.io/inbound-cidrs"] == "10.42.21.0/24"
+        assert annotations["alb.ingress.kubernetes.io/certificate-arn"].endswith("/mcp")
+        assert ingress["spec"]["rules"][0]["http"]["paths"][0]["backend"]["service"] == {
+            "name": "mcp-gateway",
+            "port": {"name": "http"},
+        }
+    assert not [
+        d
+        for d in documents
+        if d["metadata"]["name"] == "mcp-gateway"
+        and d["metadata"].get("namespace") == "agentic-dev-platform"
+    ]
+
+
+def _containers(deployment: dict[str, Any]) -> list[dict[str, Any]]:
+    return deployment["spec"]["template"]["spec"]["containers"]
+
+
+def test_each_tenant_runs_its_own_gateway_as_its_worker(overlay) -> None:
+    inputs = _inputs()
+    inputs["tenants"].append(_tenant("payments"))
+    documents, _ = eks_render.render(overlay, inputs, REPOSITORY)
+    gateways = [
+        d for d in documents if d["kind"] == "Deployment" and d["metadata"]["name"] == "mcp-gateway"
+    ]
+
+    assert sorted(d["metadata"]["namespace"] for d in gateways) == ["tenant-adp", "tenant-payments"]
+    for gateway in gateways:
+        namespace = gateway["metadata"]["namespace"]
+        tenant = namespace.removeprefix("tenant-")
+        spec = gateway["spec"]["template"]["spec"]
+        env = {e["name"]: e.get("value") for e in _containers(gateway)[0]["env"]}
+        volumes = {v["name"]: v for v in spec["volumes"]}
+        service = _named(documents, "Service", "mcp-gateway", namespace)
+
+        assert spec["serviceAccountName"] == "activity-worker"
+        assert spec["automountServiceAccountToken"] is False
+        assert env["TENANT"] == tenant
+        assert (
+            gateway["spec"]["template"]["metadata"]["labels"]["agentic-dev-platform/tenant"]
+            == tenant
+        )
+        assert volumes["secrets"]["csi"]["volumeAttributes"]["secretProviderClass"] == "mcp-gateway"
+        assert service["spec"]["selector"] == {"app.kubernetes.io/name": "mcp-gateway"}
+
+
+def test_a_tenant_gateway_mounts_only_its_tenants_credentials(overlay) -> None:
+    inputs = _inputs()
+    inputs["tenants"].append(_tenant("payments"))
+    for tenant in inputs["tenants"]:
+        tenant["secrets"]["repo_intelligence_token"] = (
+            f"arn:aws:secretsmanager:us-west-2:9:secret:tenants/{tenant['name']}/repo_intelligence_token"
+        )
+    documents, skipped = eks_render.render(overlay, inputs, REPOSITORY)
+
+    assert skipped == []
+    for tenant, other in (("adp", "payments"), ("payments", "adp")):
+        provider = _named(documents, "SecretProviderClass", "mcp-gateway", f"tenant-{tenant}")
+        objects = {
+            entry["objectAlias"]: entry["objectName"]
+            for entry in json.loads(provider["spec"]["parameters"]["objects"])
+        }
+        own = f"arn:aws:secretsmanager:us-west-2:9:secret:tenants/{tenant}/"
+
+        assert sorted(objects) == [
+            "GITHUB_TOKEN",
+            "JIRA_API_TOKEN",
+            "JIRA_PAT",
+            "MCP_GATEWAY_TOKEN",
+            "REPO_INTELLIGENCE_TOKEN",
+            "database-platform-app",
+        ]
+        assert objects["MCP_GATEWAY_TOKEN"] == f"{own}mcp_gateway_token"
+        assert objects["REPO_INTELLIGENCE_TOKEN"] == f"{own}repo_intelligence_token"
+        assert objects["GITHUB_TOKEN"] == f"{own}github_token"
+        assert not [name for name in objects.values() if f"/{other}/" in name]
+        assert objects["database-platform-app"].endswith(":secret:database_platform_app")
+
+
+def test_a_tenant_gateway_is_admitted_from_the_vpc_and_reaches_the_platform(overlay) -> None:
+    documents, _ = eks_render.render(overlay, _inputs(), REPOSITORY)
+    targets = _named(documents, "NetworkPolicy", "mcp-gateway-load-balancer-targets", "tenant-adp")
+    groups = _named(documents, "SecurityGroupPolicy", "internal-clients", "tenant-adp")
+    baseline = _named(documents, "NetworkPolicy", "platform-baseline", "tenant-adp")
+    egress_ports = {
+        port["port"] for rule in baseline["spec"]["egress"] for port in rule.get("ports", [])
+    }
+
+    assert targets["spec"]["podSelector"] == {
+        "matchLabels": {"app.kubernetes.io/name": "mcp-gateway"}
+    }
+    assert targets["spec"]["ingress"] == [
+        {
+            "from": [{"ipBlock": {"cidr": "10.42.0.0/16"}}],
+            "ports": [{"port": 8150, "protocol": "TCP"}],
+        }
+    ]
+    assert groups["spec"]["podSelector"] == {
+        "matchLabels": {"app.kubernetes.io/name": "mcp-gateway"}
+    }
+    assert groups["spec"]["securityGroups"]["groupIds"] == ["sg-c", "sg-i"]
+    assert baseline["spec"]["podSelector"] == {}
+    assert {5432, 443} <= egress_ports
 
 
 def test_gate_pods_reach_only_the_listed_registry_ranges(overlay) -> None:

@@ -29,7 +29,8 @@ locals {
     TENANT_CONFIG_BUCKET  = var.tenant_config_bucket_arn != "" ? element(split(":", var.tenant_config_bucket_arn), 5) : ""
     PLATFORM_ENV_CONFIG   = local.platform_environment.PLATFORM_ENV_CONFIG
   }
-  tenant_config_readers = toset(["repo-intelligence", "repo-index-worker"])
+  # The review worker resolves its fallback checkout through the run tenant's repositories.yaml.
+  tenant_config_readers = toset(["repo-intelligence", "repo-index-worker", "review-worker"])
 
   # Each service names what it reaches. `database` injects the platform_app credentials,
   # `temporal` the Temporal client settings and group, `internal_client` the group that
@@ -76,6 +77,7 @@ locals {
         EVIDENCE_OBJECT_STORE_REGION  = local.region
         REVIEW_TRUST_ROOT_PATH        = contains(keys(var.environment_config), "review-trust-root.yaml") ? "${local.env_config_dir}/review-trust-root.yaml" : ""
         LANGFUSE_HOST                 = local.review_exports_to_langfuse ? "https://langfuse.${var.internal_domain}" : ""
+        TENANT_CONFIG_BUCKET          = local.repository_intelligence_environment.TENANT_CONFIG_BUCKET
       }
       health = ["CMD", "python", "-m", "services.healthcheck", "heartbeat", "/tmp/worker.heartbeat", "--max-age", "60"]
     }
@@ -230,8 +232,6 @@ locals {
   extra_secret_reads = {
     for name, keys in { review-worker = ["langfuse_public_key", "langfuse_secret_key"] } : name => keys if local.langfuse_enabled
   }
-  # Each tenant's token is a secret of the tenant module, so no secret store key names it.
-  tenant_token_reads = { repo-intelligence = var.repo_intelligence_tokens }
   extra_task_statements = merge(
     local.langfuse_task_statements,
     { for name in keys(local.collector_workloads) : name => local.collector_statements if length(local.collector_statements) > 0 },
@@ -355,8 +355,15 @@ locals {
       ] : [],
       spec.temporal && local.ca_secret != null ? [{ name = "TEMPORAL_TLS_CA", valueFrom = local.ca_secret }] : [],
       [for variable, reference in spec.secrets : { name = variable, valueFrom = local.secret_value_from[reference] }],
-      [for tenant, token in lookup(local.tenant_token_reads, name, {}) : { name = "REPO_INTELLIGENCE_TOKEN_${upper(tenant)}", valueFrom = token.secret_arn }],
     )
+  }
+
+  # Outside service_specs, which the secret store readers derive from, so the readers do not
+  # depend on the tenant secrets.
+  tenant_token_environment = {
+    repo-intelligence = {
+      REPO_INTELLIGENCE_TOKEN_SECRET_ARNS = length(var.repo_intelligence_tokens) > 0 ? jsonencode({ for tenant, token in var.repo_intelligence_tokens : tenant => token.secret_arn }) : ""
+    }
   }
 
   workload_environment = {
@@ -364,6 +371,7 @@ locals {
       for key, value in merge(
         spec.image == var.platform_image ? local.platform_environment : local.repository_intelligence_environment,
         spec.environment,
+        lookup(local.tenant_token_environment, name, {}),
         lookup(var.service_environment, name, {}),
       ) : { name = key, value = value } if value != ""
     ]

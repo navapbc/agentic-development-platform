@@ -24,11 +24,9 @@ from services.repository_intelligence.context_builder.registry import (
 from services.repository_intelligence.normalization.models import ContextPackage, RepoRef
 from services.repository_intelligence.normalization.serialization import context_package_to_dict
 from services.repository_intelligence.tenant_tokens import tenant_for_token
-from services.repository_intelligence.tenants import (
-    TenantRegistries,
-    configured_tokens,
-    migrate_home_indexes,
-)
+from services.repository_intelligence.tenants import TenantRegistries, migrate_home_indexes
+from services.repository_intelligence.token_secrets import ARN_MAP_ENV, TokenSource
+from services.repository_intelligence.token_secrets import token_source as build_token_source
 
 logging.basicConfig(level=configured_log_level())
 log = logging.getLogger("repository-intelligence")
@@ -38,7 +36,7 @@ PORT = 8120
 _state_lock = threading.Lock()
 _tenant_registries: TenantRegistries | None = None
 _registry: RepositoryIntelligenceRegistry | None = None
-_tokens: dict[str, str] | None = None
+_token_source: TokenSource | None = None
 
 
 def tenant_registries() -> TenantRegistries:
@@ -50,13 +48,13 @@ def tenant_registries() -> TenantRegistries:
         return _tenant_registries
 
 
-def request_tokens() -> dict[str, str]:
-    """Return each served tenant's bearer token, read once from settings and the environment."""
-    global _tokens
+def token_source() -> TokenSource:
+    """Return the token source singleton, built from settings and the environment on first use."""
+    global _token_source
     with _state_lock:
-        if _tokens is None:
-            _tokens = configured_tokens(get_settings())
-        return _tokens
+        if _token_source is None:
+            _token_source = build_token_source(get_settings())
+        return _token_source
 
 
 def build_registry() -> RepositoryIntelligenceRegistry:
@@ -130,7 +128,13 @@ class Handler(BaseHTTPRequestHandler):
         presented = presented.strip()
         if scheme.lower() != "bearer" or not presented:
             return None
-        return tenant_for_token(request_tokens(), presented)
+        source = token_source()
+        tenant = tenant_for_token(source.accepted(), presented)
+        if tenant is None:
+            reloaded = source.reload_after_miss()
+            if reloaded is not None:
+                tenant = tenant_for_token(reloaded, presented)
+        return tenant
 
     def _repository(self, tenant: str, repo: str) -> Repository | None:
         registry = tenant_registries().registry(tenant)
@@ -205,11 +209,12 @@ def main() -> None:
     from services.server_tls import wrap
 
     settings = get_settings()
-    if not request_tokens():
+    if not token_source().accepted():
         log.error(
             "no tenant token is configured, so every context and warm request is refused. "
-            "Set REPO_INTELLIGENCE_TOKEN_<TENANT> for each tenant or REPO_INTELLIGENCE_TOKEN_KEY, "
-            "or REPO_INTELLIGENCE_TOKEN when neither TENANTS nor TENANT is set."
+            f"Set {ARN_MAP_ENV} in AWS, REPO_INTELLIGENCE_TOKEN_<TENANT> for each tenant or "
+            "REPO_INTELLIGENCE_TOKEN_KEY on a workstation, or REPO_INTELLIGENCE_TOKEN when "
+            "neither TENANTS nor TENANT is set."
         )
     migrate_home_indexes(tenant_registries(), settings)
     server = ThreadingHTTPServer((settings.bind_host, PORT), Handler)

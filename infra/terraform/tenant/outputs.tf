@@ -7,8 +7,10 @@ output "tenant" {
     secret_arns = merge(
       { for name, secret in aws_secretsmanager_secret.this : name => secret.arn },
       { repo_intelligence_token = local.repo_intelligence_token_arn },
+      { mcp_gateway_token = local.mcp_gateway_token_arn },
     )
     repo_intelligence_token_arn = local.repo_intelligence_token_arn
+    mcp_gateway_token_arn       = local.mcp_gateway_token_arn
     worker_policy_arn           = aws_iam_policy.worker[0].arn
     image_prefix                = local.image_prefix
     config_prefix               = local.config_prefix

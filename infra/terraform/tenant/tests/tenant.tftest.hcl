@@ -41,6 +41,12 @@ override_resource {
 }
 
 override_resource {
+  target          = aws_secretsmanager_secret.mcp_gateway_token
+  override_during = plan
+  values          = { arn = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/tenants/adp/mcp-gateway-token-a" }
+}
+
+override_resource {
   target          = module.ticket_store.aws_s3_bucket.this
   override_during = plan
   values          = { id = "agentic-platform-tenant-adp-rebar-tickets-abc", arn = "arn:aws:s3:::agentic-platform-tenant-adp-rebar-tickets-abc" }
@@ -240,6 +246,98 @@ run "the_tenant_worker_and_repository_intelligence_read_its_generated_token" {
   }
 }
 
+run "the_token_is_unrotated_without_a_rotation_function" {
+  command = plan
+
+  variables {
+    create_tenant = true
+  }
+
+  assert {
+    condition     = length(aws_secretsmanager_secret_rotation.repo_intelligence_token) == 0
+    error_message = "The token rotates without a rotation function."
+  }
+
+  assert {
+    condition     = length(jsondecode(aws_secretsmanager_secret_policy.repo_intelligence_token[0].policy).Statement) == 2
+    error_message = "The token policy admits a rotation function that is not set."
+  }
+}
+
+run "the_rotation_function_rotates_the_token_on_a_schedule" {
+  command = plan
+
+  variables {
+    create_tenant                 = true
+    repo_intelligence_reader_arns = ["arn:aws:iam::111111111111:role/agentic-platform-repo-intel-task-abc"]
+    repo_intelligence_token_rotation = {
+      function_arn = "arn:aws:lambda:us-east-1:111111111111:function:agentic-platform-token-rotation"
+      role_arn     = "arn:aws:iam::111111111111:role/agentic-platform-token-rotation-abc"
+    }
+  }
+
+  assert {
+    condition = (
+      aws_secretsmanager_secret_rotation.repo_intelligence_token[0].rotation_lambda_arn == "arn:aws:lambda:us-east-1:111111111111:function:agentic-platform-token-rotation" &&
+      aws_secretsmanager_secret_rotation.repo_intelligence_token[0].rotation_rules[0].automatically_after_days == 30 &&
+      aws_secretsmanager_secret_rotation.repo_intelligence_token[0].rotate_immediately == false
+    )
+    error_message = "The token does not rotate every 30 days through the rotation function."
+  }
+
+  assert {
+    condition = (
+      jsondecode(aws_secretsmanager_secret_policy.repo_intelligence_token[0].policy).Statement[1].Condition.ArnNotEquals["aws:PrincipalArn"] == [
+        "arn:aws:iam::111111111111:role/agentic-platform-eks-tenant-adp",
+        "arn:aws:iam::111111111111:role/agentic-platform-repo-intel-task-abc",
+        "arn:aws:iam::111111111111:role/agentic-platform-token-rotation-abc",
+      ] &&
+      jsondecode(aws_secretsmanager_secret_policy.repo_intelligence_token[0].policy).Statement[0].Principal.AWS == [
+        "arn:aws:iam::111111111111:role/agentic-platform-eks-tenant-adp",
+        "arn:aws:iam::111111111111:role/agentic-platform-repo-intel-task-abc",
+      ]
+    )
+    error_message = "The rotation function is refused the token, or reads it as a consumer."
+  }
+
+  assert {
+    condition = (
+      jsondecode(aws_secretsmanager_secret_policy.repo_intelligence_token[0].policy).Statement[2].Principal.AWS == "arn:aws:iam::111111111111:role/agentic-platform-token-rotation-abc" &&
+      contains(jsondecode(aws_secretsmanager_secret_policy.repo_intelligence_token[0].policy).Statement[2].Action, "secretsmanager:PutSecretValue") &&
+      contains(jsondecode(aws_secretsmanager_secret_policy.repo_intelligence_token[0].policy).Statement[2].Action, "secretsmanager:UpdateSecretVersionStage")
+    )
+    error_message = "The token policy does not let the rotation function stage a new token."
+  }
+}
+
+run "the_rotation_schedule_is_configurable" {
+  command = plan
+
+  variables {
+    create_tenant                         = true
+    repo_intelligence_token_rotation_days = 7
+    repo_intelligence_token_rotation = {
+      function_arn = "arn:aws:lambda:us-east-1:111111111111:function:agentic-platform-token-rotation"
+      role_arn     = "arn:aws:iam::111111111111:role/agentic-platform-token-rotation-abc"
+    }
+  }
+
+  assert {
+    condition     = aws_secretsmanager_secret_rotation.repo_intelligence_token[0].rotation_rules[0].automatically_after_days == 7
+    error_message = "The rotation schedule ignores repo_intelligence_token_rotation_days."
+  }
+}
+
+run "a_rotation_schedule_is_whole_days" {
+  command = plan
+
+  variables {
+    repo_intelligence_token_rotation_days = 0
+  }
+
+  expect_failures = [var.repo_intelligence_token_rotation_days]
+}
+
 run "a_tenant_secret_may_not_name_the_generated_token" {
   command = plan
 
@@ -248,4 +346,82 @@ run "a_tenant_secret_may_not_name_the_generated_token" {
   }
 
   expect_failures = [var.secrets]
+}
+
+run "only_the_tenant_worker_identity_reads_its_gateway_token" {
+  command = plan
+
+  variables {
+    create_tenant                 = true
+    repo_intelligence_reader_arns = ["arn:aws:iam::111111111111:role/agentic-platform-repo-intel-exec-abc"]
+  }
+
+  assert {
+    condition = (
+      aws_secretsmanager_secret.mcp_gateway_token[0].name == "agentic-platform/tenants/adp/mcp-gateway-token" &&
+      aws_secretsmanager_secret.mcp_gateway_token[0].kms_key_id == "arn:aws:kms:us-east-1:111111111111:key/tenant-adp" &&
+      aws_secretsmanager_secret.mcp_gateway_token[0].recovery_window_in_days == 30 &&
+      aws_secretsmanager_secret.mcp_gateway_token[0].tags.tenant == "adp" &&
+      aws_secretsmanager_secret_version.mcp_gateway_token[0].secret_string_wo_version == 1
+    )
+    error_message = "The gateway token is not a generated secret under the tenant prefix, encrypted with the tenant key, and tagged."
+  }
+
+  assert {
+    condition = (
+      jsondecode(aws_secretsmanager_secret_policy.mcp_gateway_token[0].policy).Statement[0].Principal.AWS == ["arn:aws:iam::111111111111:role/agentic-platform-eks-tenant-adp"] &&
+      jsondecode(aws_secretsmanager_secret_policy.mcp_gateway_token[0].policy).Statement[1].Effect == "Deny" &&
+      jsondecode(aws_secretsmanager_secret_policy.mcp_gateway_token[0].policy).Statement[1].Condition.ArnNotEquals["aws:PrincipalArn"] == ["arn:aws:iam::111111111111:role/agentic-platform-eks-tenant-adp"]
+    )
+    error_message = "The gateway token admits a reader other than the tenant worker identity, such as repository intelligence."
+  }
+
+  assert {
+    condition     = contains(one([for s in jsondecode(aws_iam_policy.worker[0].policy).Statement : s if s.Sid == "ReadTheTenantSecrets"]).Resource, "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/tenants/adp/mcp-gateway-token-a")
+    error_message = "The worker policy does not read the tenant's gateway token."
+  }
+
+  assert {
+    condition = (
+      output.tenant.mcp_gateway_token_arn == "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/tenants/adp/mcp-gateway-token-a" &&
+      output.tenant.secret_arns.mcp_gateway_token == output.tenant.mcp_gateway_token_arn
+    )
+    error_message = "The tenant output does not name the gateway token among the secrets the tenant's pods mount."
+  }
+}
+
+run "the_gateway_token_admits_the_named_operators" {
+  command = plan
+
+  variables {
+    create_tenant                 = true
+    mcp_gateway_token_reader_arns = ["arn:aws:iam::111111111111:role/adp-operator"]
+  }
+
+  assert {
+    condition = (
+      jsondecode(aws_secretsmanager_secret_policy.mcp_gateway_token[0].policy).Statement[0].Principal.AWS == ["arn:aws:iam::111111111111:role/agentic-platform-eks-tenant-adp", "arn:aws:iam::111111111111:role/adp-operator"] &&
+      jsondecode(aws_secretsmanager_secret_policy.mcp_gateway_token[0].policy).Statement[1].Condition.ArnNotEquals["aws:PrincipalArn"] == ["arn:aws:iam::111111111111:role/agentic-platform-eks-tenant-adp", "arn:aws:iam::111111111111:role/adp-operator"]
+    )
+    error_message = "The gateway token does not admit exactly the tenant worker and the named operators."
+  }
+}
+
+run "a_tenant_secret_may_not_name_the_gateway_token" {
+  command = plan
+
+  variables {
+    secrets = ["github_token", "mcp_gateway_token"]
+  }
+
+  expect_failures = [var.secrets]
+}
+
+run "disabled_module_creates_no_gateway_token" {
+  command = plan
+
+  assert {
+    condition     = length(aws_secretsmanager_secret.mcp_gateway_token) == 0 && output.tenant == null
+    error_message = "A disabled tenant module creates a gateway token."
+  }
 }

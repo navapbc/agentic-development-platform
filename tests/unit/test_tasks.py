@@ -93,6 +93,7 @@ EXPECTED_TASKS = {
     "runtime-images",
     "tenant-config-validate",
     "tenant-config-publish",
+    "tenant-verify-aws",
     "webhook-setup",
     "webhook-teardown",
     "image-exceptions-add",
@@ -167,6 +168,26 @@ def test_restart_runs_in_the_activity_worker(project):
 
     assert container.commands == [_in_activity_worker("python -m scripts.restart T-1 --repo demo")]
     assert host.commands == [f"{tasks_module.HOST_PYTHON} -m scripts.restart T-1"]
+
+
+@pytest.mark.parametrize("service", ["mcp-gateway", "activity-worker"])
+def test_logs_follows_the_tenant_deployment_in_its_namespace(project, service):
+    context = _RecordingContext()
+
+    tasks_module.logs(context, service)
+
+    argv = shlex.split(context.commands[0])
+    assert argv[argv.index("--namespace") + 1] == "tenant-adp"
+    assert f"deployment/{service}" in argv
+
+
+def test_logs_follows_a_platform_deployment_in_the_platform_namespace(project):
+    context = _RecordingContext()
+
+    tasks_module.logs(context, "inbound-webhook")
+
+    argv = shlex.split(context.commands[0])
+    assert argv[argv.index("--namespace") + 1] == "agentic-dev-platform"
 
 
 def test_host_tasks_run_the_interpreter_that_runs_invoke(project):

@@ -69,7 +69,7 @@ _REPOSITORIES_COMPOSE = "compose.repositories.yaml"
 
 @task
 def repos_compose(c):
-    """Write compose.repositories.yaml, which mounts each repository in repositories.yaml."""
+    """Write compose.repositories.yaml, the registry, tenant bundle, and checkout mounts."""
     c.run(f"{HOST_PYTHON} -m scripts.repositories_compose", pty=True)
 
 
@@ -566,14 +566,19 @@ def platform_logs(c, match=""):
 
 @task(help={"service": "Optional single service to tail."})
 def logs(c, service=""):
-    """Follow logs for the compose stack, or for one compose service or cluster deployment."""
-    from scripts.k8s_cluster import DEPLOYMENTS
+    """Follow logs for the compose stack, or for one compose service or cluster deployment.
 
-    if service in DEPLOYMENTS:
+    The activity worker and the MCP gateway run per tenant, and TENANT selects whose to follow.
+    """
+    from scripts.k8s_cluster import DEPLOYMENTS, GATEWAY
+    from scripts.tenant_render import WORKER
+
+    if service in DEPLOYMENTS or service in (WORKER, GATEWAY):
         from scripts.config import get_settings
-        from scripts.k8s_cluster import namespaced
+        from scripts.k8s_cluster import in_worker_namespace, namespaced
 
-        argv = namespaced(get_settings(), "logs", "-f", f"deployment/{service}", "--all-containers")
+        address = namespaced if service in DEPLOYMENTS else in_worker_namespace
+        argv = address(get_settings(), "logs", "-f", f"deployment/{service}", "--all-containers")
         c.run(shlex.join(argv), pty=True)
         return
     c.run(f"{COMPOSE} {_compose_files()} logs -f {service}".strip(), pty=True)
@@ -1167,6 +1172,35 @@ def eks_deploy(c, command="deploy", region=""):
     c.run(f"{HOST_PYTHON} -m scripts.eks_deploy{flags} {words}", pty=True, env=env)
 
 
+@task(
+    help={
+        "context": "kubectl context of the EKS cluster (empty uses the current context).",
+        "outputs": "File holding `terraform output -json` (empty reads the composition root).",
+        "region": "AWS region (empty uses the eks output's region).",
+        "admin_role_arn": "Role that must read no tenant secret (default role/platform-admin).",
+        "repo": "TENANT=REPOSITORY to probe, repeatable (default the first indexed one).",
+        "only": "Comma-separated groups to run of iam, env, ri, mounts (default all).",
+    },
+    iterable=["repo"],
+)
+def tenant_verify_aws(c, context="", outputs="", region="", admin_role_arn="", repo=None, only=""):
+    """Check the AWS tenant boundary with read-only calls and print a pass or fail table."""
+    from scripts.config import get_settings
+
+    options = {
+        "--context": context,
+        "--outputs": outputs,
+        "--region": region,
+        "--admin-role-arn": admin_role_arn,
+        "--only": only,
+    }
+    flags = "".join(f" {flag} {shlex.quote(value)}" for flag, value in options.items() if value)
+    flags += "".join(f" --repo {shlex.quote(pair)}" for pair in repo or [])
+    c.run(
+        f"{HOST_PYTHON} -m scripts.tenant_verify_aws{flags}", pty=True, env=_aws_env(get_settings())
+    )
+
+
 @task(help={"port": "Local port forwarded to the UI load balancer (default 8443)."})
 def temporal_ui(c, port=8443):
     """Forward a local port to the Temporal UI load balancer through the jump-host."""
@@ -1622,6 +1656,7 @@ for _t in (
     clickhouse_certs,
     webhook_certs,
     eks_deploy,
+    tenant_verify_aws,
     langfuse_ui,
     temporal_deploy,
     platform_deploy,

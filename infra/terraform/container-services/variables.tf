@@ -128,19 +128,19 @@ variable "tenant_workspaces" {
 }
 
 variable "tenant_config_bucket_arn" {
-  description = "Tenant config bucket, whose tenants/<tenant>/ prefixes repository intelligence and the index worker read for each tenant's repositories.yaml. Its name reaches them as TENANT_CONFIG_BUCKET. Empty grants no read and leaves TENANT_CONFIG_BUCKET unset."
+  description = "Tenant config bucket, whose tenants/<tenant>/ prefixes repository intelligence, the index worker, and the review worker read for each tenant's repositories.yaml. Its name reaches them as TENANT_CONFIG_BUCKET. Empty grants no read and leaves TENANT_CONFIG_BUCKET unset."
   type        = string
   default     = ""
 }
 
 variable "tenant_config_kms_key_arn" {
-  description = "KMS key of the tenant config bucket, which repository intelligence and the index worker decrypt through S3. Empty grants no decrypt."
+  description = "KMS key of the tenant config bucket, which repository intelligence, the index worker, and the review worker decrypt through S3. Empty grants no decrypt."
   type        = string
   default     = ""
 }
 
 variable "repo_intelligence_tokens" {
-  description = "Each tenant's repository intelligence token, keyed by tenant, with the secret ARN and the tenant KMS key that encrypts it. Repository intelligence receives each as REPO_INTELLIGENCE_TOKEN_<TENANT>, the tenant name upper-cased."
+  description = "Each tenant's repository intelligence token, keyed by tenant, with the secret ARN and the tenant KMS key that encrypts it. Repository intelligence receives the secret ARNs as the JSON map REPO_INTELLIGENCE_TOKEN_SECRET_ARNS and reads each tenant's current and previous token with its task role."
   type = map(object({
     secret_arn  = string
     kms_key_arn = string

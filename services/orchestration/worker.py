@@ -43,6 +43,7 @@ from services.orchestration.temporal_activities import (
     finalize_work_claim,
     find_open_pr,
     gather_repo_context,
+    intake_jira_issue,
     invoke_model,
     link_pr_to_issue,
     load_gate_plan,
@@ -82,6 +83,7 @@ from services.orchestration.temporal_workflows import (
     DurableTaskWorkflow,
     ImplementationWorkflow,
     IntakeWorkflow,
+    JiraIssueIntakeWorkflow,
     PlanReviewWorkflow,
     PullRequestWorkflow,
     ReapWorkflow,
@@ -109,6 +111,7 @@ _WORKFLOWS = [
     DraftPullRequestWorkflow,
     ReapWorkflow,
     IntakeWorkflow,
+    JiraIssueIntakeWorkflow,
 ]
 
 _REVIEW_ACTIVITIES = [
@@ -163,6 +166,7 @@ _ACTIVITIES = [
     classify_test_failures,
     record_manifest,
     reconcile_intake_pass,
+    intake_jira_issue,
     sign_authorship,
     verify_authorship_merge,
     delete_run_model_key,

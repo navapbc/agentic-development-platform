@@ -5,9 +5,15 @@ This turns that shape into a template. For each tenant it renders tenant-<tenant
 of the worker with its ServiceAccount, secret provider, config, volume claim, security group
 policy, and network policies, and tenant-<tenant>-sandbox, holding a copy of the sandbox
 namespace's Role and network policies, with a ResourceQuota when the tenant sets one. The
-platform namespace keeps LiteLLM, the webhook, the gateway, and the shared config, and admits the
-tenant namespaces by label. The original worker and sandbox namespace are not rendered, and
-RETIRED lists them for the deployers to delete, because an apply does not prune.
+platform namespace keeps LiteLLM, the webhook, and the shared config, and admits the tenant
+namespaces by label. The original worker and sandbox namespace are not rendered, and RETIRED lists
+them for the deployers to delete, because an apply does not prune.
+
+The MCP gateway moves into the tenant namespaces the same way. Each tenant's gateway runs as its
+worker's ServiceAccount, whose identity alone reads the tenant's secrets, and reads the worker's
+settings and config in place of every platform ConfigMap and Secret the platform gateway read. It
+keeps its own secret provider, Service, Ingress, and the platform network and security group
+policies that select it by name.
 """
 
 from __future__ import annotations
@@ -21,6 +27,7 @@ from typing import Any
 PLATFORM_NAMESPACE = "agentic-dev-platform"
 SANDBOX_NAMESPACE = "agent-sandbox"
 WORKER = "activity-worker"
+GATEWAY = "mcp-gateway"
 WORKSPACE_CLAIM = "workspaces"
 NAME_LABEL = "app.kubernetes.io/name"
 PART_OF_LABEL = "app.kubernetes.io/part-of"
@@ -39,6 +46,11 @@ RETIRED = (
     ("configmap", PLATFORM_NAMESPACE, "rebar-store-aws-config"),
     ("configmap", PLATFORM_NAMESPACE, "promotion-policies"),
     ("namespace", "", SANDBOX_NAMESPACE),
+    ("deployment", PLATFORM_NAMESPACE, GATEWAY),
+    ("service", PLATFORM_NAMESPACE, GATEWAY),
+    ("serviceaccount", PLATFORM_NAMESPACE, GATEWAY),
+    ("ingress", PLATFORM_NAMESPACE, GATEWAY),
+    ("secretproviderclass", PLATFORM_NAMESPACE, GATEWAY),
 )
 
 
@@ -139,6 +151,20 @@ def _secret_provider(spec: Mapping[str, Any]) -> str:
         if attributes.get("secretProviderClass"):
             return attributes["secretProviderClass"]
     return ""
+
+
+def _names(selector: Mapping[str, Any] | None, name: str) -> bool:
+    """Return whether the selector picks the workload by its name label."""
+    if selector is None:
+        return False
+    if (selector.get("matchLabels") or {}).get(NAME_LABEL) == name:
+        return True
+    return any(
+        expression.get("key") == NAME_LABEL
+        and expression.get("operator") == "In"
+        and name in expression.get("values", [])
+        for expression in selector.get("matchExpressions") or []
+    )
 
 
 def _selects_worker(selector: Mapping[str, Any] | None) -> bool:
@@ -267,6 +293,102 @@ def _tenant_worker(deployment: dict[str, Any], tenant: Tenant, services: list[st
             if mount["name"] == WORKSPACE_CLAIM:
                 mount["mountPath"] = tenant.mount_path
     return worker
+
+
+def _volume_config(volume: Mapping[str, Any]) -> set[tuple[str, str]]:
+    return _referenced_config({"volumes": [volume]})
+
+
+def _variable_config(variable: Mapping[str, Any]) -> set[tuple[str, str]]:
+    return _referenced_config({"containers": [{"env": [variable]}]})
+
+
+def _tenant_gateway(
+    gateway: dict[str, Any],
+    worker: Mapping[str, Any],
+    tenant: Tenant,
+    copied: set[tuple[str, str]],
+    services: list[str],
+) -> dict[str, Any]:
+    """Copy the platform gateway into the tenant's namespace, reading the tenant's worker config.
+
+    A variable or volume of the platform gateway that reads a ConfigMap or Secret the tenant's
+    namespace does not hold is replaced by the worker's settings, the worker's volume at the same
+    mount path, or nothing.
+    """
+    gateway = copy.deepcopy(gateway)
+    gateway["metadata"]["namespace"] = tenant.namespace
+    gateway["metadata"].setdefault("labels", {})[TENANT_LABEL] = tenant.name
+    template = gateway["spec"]["template"]
+    template.setdefault("metadata", {}).setdefault("labels", {})[TENANT_LABEL] = tenant.name
+    spec = template["spec"]
+    worker_spec = worker["spec"]["template"]["spec"]
+    spec["serviceAccountName"] = worker_spec["serviceAccountName"]
+    container = next(c for c in worker_spec["containers"] if c["name"] == WORKER)
+    worker_volumes = {volume["name"]: volume for volume in worker_spec.get("volumes", [])}
+    worker_mounts = {mount["mountPath"]: mount for mount in container.get("volumeMounts", [])}
+    own_volumes = {volume["name"]: volume for volume in spec.get("volumes", [])}
+    volumes: dict[str, dict[str, Any]] = {}
+    for gateway_container in spec["containers"]:
+        sources = [
+            source
+            for source in gateway_container.get("envFrom", [])
+            if _referenced_config({"containers": [{"envFrom": [source]}]}) <= copied
+        ]
+        sources += [source for source in container.get("envFrom", []) if source not in sources]
+        gateway_container["envFrom"] = copy.deepcopy(sources)
+        env = [
+            {**variable, "value": _fqdn_services(variable["value"], services)}
+            if "value" in variable
+            else variable
+            for variable in gateway_container.get("env", [])
+            if variable["name"] not in tenant.env and _variable_config(variable) <= copied
+        ]
+        env += [{"name": name, "value": value} for name, value in sorted(tenant.env.items())]
+        gateway_container["env"] = env
+        mounts = []
+        for mount in gateway_container.get("volumeMounts", []):
+            volume = own_volumes[mount["name"]]
+            if _volume_config(volume) <= copied:
+                mounts.append(mount)
+                volumes[volume["name"]] = volume
+            elif mount["mountPath"] in worker_mounts:
+                shared = copy.deepcopy(worker_mounts[mount["mountPath"]])
+                mounts.append(shared)
+                volumes[shared["name"]] = copy.deepcopy(worker_volumes[shared["name"]])
+        gateway_container["volumeMounts"] = mounts
+    spec["volumes"] = list(volumes.values())
+    return gateway
+
+
+def _gateway_policy(
+    policy: dict[str, Any], tenant: Tenant, gateway: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Copy a platform policy that admits the gateway by name, for the tenant's gateway only.
+
+    Ingress ports the gateway does not listen on, such as the webhook's, are dropped, and so is
+    a rule left with no port, since a rule without ports admits every port.
+    """
+    policy = _worker_policy(policy, tenant)
+    policy["metadata"]["name"] = f"{GATEWAY}-{policy['metadata']['name']}"
+    policy["spec"]["podSelector"] = {"matchLabels": {NAME_LABEL: GATEWAY}}
+    listening = {
+        port[key]
+        for container in gateway["spec"]["template"]["spec"]["containers"]
+        for port in container.get("ports", [])
+        for key in ("containerPort", "name")
+        if key in port
+    }
+    rules = []
+    for rule in policy["spec"].get("ingress", []):
+        if "ports" in rule:
+            rule["ports"] = [port for port in rule["ports"] if port.get("port") in listening]
+            if not rule["ports"]:
+                continue
+        rules.append(rule)
+    if "ingress" in policy["spec"]:
+        policy["spec"]["ingress"] = rules
+    return policy
 
 
 def _namespace(name: str, tenant: str, role: str) -> dict[str, Any]:
@@ -411,6 +533,20 @@ def tenantize(documents: list[dict[str, Any]], tenants: Iterable[Tenant]) -> lis
     spec = _pod_spec(deployment)
     config = _referenced_config(spec)
     provider = _secret_provider(spec)
+    gateway = _find(documents, "Deployment", PLATFORM_NAMESPACE, GATEWAY)
+    gateway_spec = (_pod_spec(gateway) if gateway is not None else None) or {}
+    gateway_config = _referenced_config(gateway_spec)
+    gateway_provider = _secret_provider(gateway_spec)
+    gateway_objects = (
+        {("Service", GATEWAY), ("Ingress", GATEWAY), ("SecretProviderClass", gateway_provider)}
+        if gateway is not None
+        else set()
+    )
+    gateway_retired = (
+        gateway_objects | {("Deployment", GATEWAY), ("ServiceAccount", GATEWAY)}
+        if gateway is not None
+        else set()
+    )
     services = [name for kind, namespace, name in map(_key, documents) if kind == "Service"]
     shared = set().union(
         *(
@@ -418,10 +554,10 @@ def tenantize(documents: list[dict[str, Any]], tenants: Iterable[Tenant]) -> lis
             for d in documents
             if _pod_spec(d) is not None
             and d["metadata"].get("namespace") == PLATFORM_NAMESPACE
-            and d["metadata"]["name"] != WORKER
+            and d["metadata"]["name"] not in (WORKER, GATEWAY)
         )
     )
-    worker_only = config - shared
+    moved_config = (config | gateway_config) - shared
     claim = _find(documents, "PersistentVolumeClaim", PLATFORM_NAMESPACE, WORKSPACE_CLAIM)
     volume = (claim or {}).get("spec", {}).get("volumeName", "")
 
@@ -431,7 +567,7 @@ def tenantize(documents: list[dict[str, Any]], tenants: Iterable[Tenant]) -> lis
             return True
         if kind == "PersistentVolume" and volume and name == volume:
             return True
-        if namespace == PLATFORM_NAMESPACE and (kind, name) in worker_only:
+        if namespace == PLATFORM_NAMESPACE and (kind, name) in moved_config | gateway_retired:
             return True
         return namespace == PLATFORM_NAMESPACE and (kind, name) in {
             ("Deployment", WORKER),
@@ -489,7 +625,30 @@ def tenantize(documents: list[dict[str, Any]], tenants: Iterable[Tenant]) -> lis
                 copied["metadata"]["namespace"] = tenant.namespace
                 copied["spec"]["podSelector"] = {"matchLabels": {NAME_LABEL: WORKER}}
                 rendered.append(copied)
-        rendered.append(_tenant_worker(deployment, tenant, services))
+        worker = _tenant_worker(deployment, tenant, services)
+        rendered.append(worker)
+        if gateway is not None:
+            rendered.append(_tenant_gateway(gateway, worker, tenant, config, services))
+            for document in documents:
+                kind, namespace, name = _key(document)
+                if namespace != PLATFORM_NAMESPACE:
+                    continue
+                if (kind, name) in gateway_objects:
+                    copied = copy.deepcopy(document)
+                    copied["metadata"]["namespace"] = tenant.namespace
+                    copied["metadata"].setdefault("labels", {})[TENANT_LABEL] = tenant.name
+                    rendered.append(copied)
+                elif kind == "NetworkPolicy" and _names(
+                    document["spec"].get("podSelector"), GATEWAY
+                ):
+                    rendered.append(_gateway_policy(document, tenant, gateway))
+                elif kind == "SecurityGroupPolicy" and _names(
+                    document["spec"].get("podSelector"), GATEWAY
+                ):
+                    copied = copy.deepcopy(document)
+                    copied["metadata"]["namespace"] = tenant.namespace
+                    copied["spec"]["podSelector"] = {"matchLabels": {NAME_LABEL: GATEWAY}}
+                    rendered.append(copied)
         for document in tenant.workspace:
             rendered.append(copy.deepcopy(document))
         if tenant.quota:

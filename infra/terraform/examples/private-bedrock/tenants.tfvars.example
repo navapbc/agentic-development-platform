@@ -16,6 +16,7 @@ tenants = {
       operators = ["arn:aws:iam::123456789012:role/platform-operator"]
       admins    = ["arn:aws:iam::123456789012:role/platform-admin"]
     }
+    mcp_gateway_token_readers = ["arn:aws:iam::123456789012:role/platform-operator"]
   }
 
   # A Java team with its own GitHub organization token and Jira project, whose sandbox namespace

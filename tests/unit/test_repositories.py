@@ -164,15 +164,32 @@ def test_repos_compose_writes_the_mounts_of_every_tenant(
         beta=_local_repository("web", tmp_path / "beta-web"),
     )
 
+    config = tmp_path / "config" / "local"
+    (config / "tenants" / "beta.env").write_text("SECRET_SETTING=value\n", encoding="utf-8")
+    (config / "review-signing-key").write_text("key\n", encoding="utf-8")
+
     code, output = _compose_main(monkeypatch, tmp_path, tenants="adp,beta", tenant="adp")
 
     assert code == 0
     text = output.read_text(encoding="utf-8")
     assert text.startswith(repositories_compose.HEADER)
-    assert yaml.safe_load(text)["services"]["repo-index-worker"]["volumes"] == [
+    services = yaml.safe_load(text)["services"]
+    expected = [
+        f"{config / 'repositories.yaml'}:/app/config/local/repositories.yaml:ro",
+        f"{config / 'tenants' / 'beta'}:/app/config/local/tenants/beta:ro",
         f"{tmp_path / 'adp-web'}:/tenants/adp/repositories/web:ro",
         f"{tmp_path / 'beta-web'}:/tenants/beta/repositories/web:ro",
     ]
+    assert services["repo-intelligence"]["volumes"] == expected
+    assert services["repo-index-worker"]["volumes"] == expected
+    assert services["repo-intelligence"]["environment"] == {
+        "REPO_INTELLIGENCE_TOKEN_ADP": "${REPO_INTELLIGENCE_TOKEN_ADP:-}",
+        "REPO_INTELLIGENCE_TOKEN_BETA": "${REPO_INTELLIGENCE_TOKEN_BETA:-}",
+    }
+    assert "environment" not in services["repo-index-worker"]
+    label = repositories_compose.REGISTRY_LABEL
+    assert services["repo-intelligence"]["labels"] == services["repo-index-worker"]["labels"]
+    assert len(services["repo-intelligence"]["labels"][label]) == 64
 
 
 def test_repos_compose_refuses_a_tenant_repository_without_its_checkout(
@@ -196,14 +213,57 @@ def test_repos_compose_without_a_tenant_mounts_the_environment_repositories_at_t
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     (tmp_path / "web").mkdir()
-    repositories = _local_repository("web", tmp_path / "web")
-    configure_repositories(monkeypatch, tmp_path / "env", repositories)
+    registry = tmp_path / "config" / "local" / "repositories.yaml"
+    registry.parent.mkdir(parents=True)
+    registry.write_text(
+        "config_version: 1\n" + _local_repository("web", tmp_path / "web"), encoding="utf-8"
+    )
 
     code, output = _compose_main(
         monkeypatch, tmp_path, tenants="", tenant="", repository_root="/repos"
     )
 
     assert code == 0
-    assert yaml.safe_load(output.read_text(encoding="utf-8"))["services"]["repo-intelligence"][
-        "volumes"
-    ] == [f"{tmp_path / 'web'}:/repos/web:ro"]
+    service = yaml.safe_load(output.read_text(encoding="utf-8"))["services"]["repo-intelligence"]
+    assert service["volumes"] == [
+        f"{registry}:/app/config/local/repositories.yaml:ro",
+        f"{tmp_path / 'web'}:/repos/web:ro",
+    ]
+    assert "environment" not in service
+
+
+def _label(rendered: dict) -> str:
+    return rendered["services"]["repo-intelligence"]["labels"][repositories_compose.REGISTRY_LABEL]
+
+
+def test_the_registry_label_follows_the_content_of_every_mounted_registry(tmp_path: Path) -> None:
+    _tenant_config(tmp_path, platform="repositories: {}\n", beta="repositories: {}\n")
+    config = repositories_compose.config_paths("local", ["adp", "beta"], root=tmp_path)
+
+    first = _label(repositories_compose.render([], base=tmp_path, config=config))
+    again = _label(repositories_compose.render([], base=tmp_path, config=config))
+    platform = tmp_path / "config" / "local" / "repositories.yaml"
+    platform.write_text(platform.read_text(encoding="utf-8") + "# edited\n", encoding="utf-8")
+    after_platform = _label(repositories_compose.render([], base=tmp_path, config=config))
+    bundle = tmp_path / "config" / "local" / "tenants" / "beta" / "repositories.yaml"
+    bundle.write_text(bundle.read_text(encoding="utf-8") + "# edited\n", encoding="utf-8")
+    after_bundle = _label(repositories_compose.render([], base=tmp_path, config=config))
+
+    assert first == again
+    assert len({first, after_platform, after_bundle}) == 3
+
+
+def test_config_paths_mount_only_the_registry_and_the_bundles_that_exist(tmp_path: Path) -> None:
+    _tenant_config(tmp_path, platform="repositories: {}\n", beta="repositories: {}\n")
+    config = tmp_path / "config" / "local"
+    (config / "tenants" / "beta.env").write_text("SECRET_SETTING=value\n", encoding="utf-8")
+
+    paths = repositories_compose.config_paths("local", ["adp", "beta"], root=tmp_path)
+
+    assert paths == [config / "repositories.yaml", config / "tenants" / "beta"]
+
+
+def test_a_tenant_name_that_is_no_variable_name_passes_no_token_variable() -> None:
+    assert repositories_compose.token_environment(["beta", "pilot-two"]) == {
+        "REPO_INTELLIGENCE_TOKEN_BETA": "${REPO_INTELLIGENCE_TOKEN_BETA:-}"
+    }

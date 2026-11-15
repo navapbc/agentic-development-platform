@@ -19,6 +19,8 @@ EKS_ROOT = ROOT / "eks.tf"
 SERVICES = REPOSITORY / "infra" / "terraform" / "container-services" / "services.tf"
 PLATFORM_WORKLOADS = ("activity-worker", "inbound-webhook", "mcp-gateway")
 WORKLOADS = (*PLATFORM_WORKLOADS, "litellm")
+TENANT_WORKLOADS = ("activity-worker", "mcp-gateway")
+TENANT_GENERATED_SECRETS = {"mcp_gateway_token"}
 REGISTRY = "123456789012.dkr.ecr.us-east-1.amazonaws.com/agentic-platform/"
 
 pytestmark = pytest.mark.skipif(shutil.which("kubectl") is None, reason="kubectl renders it")
@@ -97,7 +99,7 @@ def test_every_workload_runs_as_the_service_account_its_pod_identity_binds(docum
 
     for name in WORKLOADS:
         assert _pod(documents, name)["serviceAccountName"] == name
-        assert name in terraform or name == "activity-worker"
+        assert name in terraform or name in TENANT_WORKLOADS
         _named(documents, "ServiceAccount", name)
     assert 'service_account = "activity-worker"' in (ROOT / "tenants.tf").read_text()
 
@@ -109,7 +111,11 @@ def test_each_workload_mounts_the_secrets_its_role_may_read(documents) -> None:
         volume = next(v for v in _pod(documents, name)["volumes"] if v["name"] == "secrets")
         assert volume["csi"]["driver"] == "secrets-store.csi.k8s.io"
         assert volume["csi"]["volumeAttributes"]["secretProviderClass"] == name
-        assert _provider_keys(documents, name) == terraform[name], name
+        if name == "mcp-gateway":
+            readable = terraform["activity-worker"] | TENANT_GENERATED_SECRETS
+            assert _provider_keys(documents, name) <= readable, name
+        else:
+            assert _provider_keys(documents, name) == terraform[name], name
         provider = _named(documents, "SecretProviderClass", name)
         assert provider["spec"]["provider"] == "aws"
         assert provider["spec"]["parameters"]["usePodIdentity"] == "true"

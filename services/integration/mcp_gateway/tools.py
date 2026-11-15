@@ -1,4 +1,9 @@
-"""Read-only tool catalog served by the MCP Gateway."""
+"""Read-only tool catalog served by one tenant's MCP Gateway.
+
+Each tenant runs its own gateway, which reads with that tenant's credentials, its allowlisted
+Jira projects and repositories, the evidence of its own executions, and its own repository
+intelligence token.
+"""
 
 from __future__ import annotations
 
@@ -8,6 +13,7 @@ from typing import Any, Protocol
 from adapters.interfaces.git_host import CodeHit, FileContent, PRFeedback
 from scripts.config import Settings, get_settings
 
+from services.integration.credentials import ConfigError
 from services.integration.jira.credentials import acceptance_field
 from services.integration.jira.edits import classify_edit
 from services.integration.jira.normalize import normalize_issue
@@ -36,10 +42,6 @@ READ_TOOL_DESCRIPTIONS = {
 }
 
 
-class ContextPackageRefusedError(RuntimeError):
-    """The gateway holds no tenant token, so it cannot choose among several tenants."""
-
-
 class IssueReader(Protocol):
     def get_issue(self, issue_key: str) -> dict[str, Any]: ...
 
@@ -63,28 +65,37 @@ class ReadOnlyToolset:
     evidence: EvidenceReader
     context_fetch: ContextFetch
     acceptance_field: str = ""
-    tenants: tuple[str, ...] = ()
+    tenant: str = ""
 
     @classmethod
     def from_settings(cls, settings: Settings | None = None) -> ReadOnlyToolset:
+        """Build the readers of the tenant TENANT names, from the settings of its deployment.
+
+        The deployment gives the gateway only its tenant's credentials and repository
+        intelligence token, and the tenant's active config bundle supplies the allowlisted Jira
+        projects and repositories.
+        """
         from services.coordination.idempotency import PostgresSideEffectLedger
         from services.coordination.sequencing import PostgresSequenceGate
         from services.integration.github.factory import build_git_host
         from services.integration.github.mediator import GitHubMediator
         from services.integration.jira.adapter import ProjectRoutingJiraReader
         from services.orchestration.repo_intelligence_client import fetch_context_package
-        from services.orchestration.task_queues import tenant_names
 
         resolved = settings or get_settings()
+        if not resolved.tenant:
+            raise ConfigError(
+                "TENANT is not set. Each MCP gateway serves one tenant, and there is no default."
+            )
         ledger = PostgresSideEffectLedger()
         gate = PostgresSequenceGate()
         return cls(
             jira=ProjectRoutingJiraReader(resolved),
             github=GitHubMediator.from_settings(build_git_host(resolved), ledger, gate, resolved),
-            evidence=PostgresEvidenceReader(),
+            evidence=PostgresEvidenceReader(resolved.tenant),
             context_fetch=fetch_context_package,
             acceptance_field=acceptance_field(resolved),
-            tenants=tuple(tenant_names(resolved)),
+            tenant=resolved.tenant,
         )
 
     async def jira_get_task(self, issue_key: str) -> dict[str, Any]:
@@ -126,10 +137,4 @@ class ReadOnlyToolset:
     async def repo_get_context_package(
         self, repo: str, focus: str, commit: str = ""
     ) -> dict[str, Any]:
-        if len(self.tenants) > 1:
-            raise ContextPackageRefusedError(
-                f"repo_get_context_package is refused because TENANTS names {len(self.tenants)} "
-                "tenants and the gateway cannot tell which tenant a client acts for. Fetch the "
-                "context package from the tenant's own run instead."
-            )
         return await self.context_fetch(repo, commit, focus)

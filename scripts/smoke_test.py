@@ -15,8 +15,8 @@ from sqlalchemy import create_engine, literal, select
 
 from scripts.config import Settings, get_settings, to_host_url
 from scripts.db_reset import _sync_url
-from scripts.k8s_cluster import DEPLOYMENTS, exec_argv, namespaced
-from scripts.tenant_render import sandbox_namespace
+from scripts.k8s_cluster import deployments, exec_argv, kubectl, namespaced
+from scripts.tenant_render import sandbox_namespace, worker_namespace
 
 
 def _check(label: str, fn) -> bool:
@@ -57,12 +57,20 @@ def _kubectl_output(argv: list[str]) -> str:
 
 
 def _deployments_ready(settings: Settings) -> None:
-    listing = json.loads(_kubectl_output(namespaced(settings, "get", "deployments", "-o", "json")))
+    listing = json.loads(
+        _kubectl_output(kubectl(settings, "get", "deployments", "-A", "-o", "json"))
+    )
     ready = {
-        item["metadata"]["name"]: item["status"].get("readyReplicas", 0)
+        (item["metadata"]["namespace"], item["metadata"]["name"]): item["status"].get(
+            "readyReplicas", 0
+        )
         for item in listing["items"]
     }
-    missing = [name for name in DEPLOYMENTS if not ready.get(name)]
+    missing = [
+        f"{namespace}/{name}"
+        for namespace, name in deployments(settings)
+        if not ready.get((namespace, name))
+    ]
     if missing:
         raise RuntimeError(f"not ready: {', '.join(missing)}")
 
@@ -100,11 +108,12 @@ def reach(host, port):
         return True
     except OSError:
         return False
-service = "{{}}.{platform}.svc.cluster.local"
+litellm = "litellm.{platform}.svc.cluster.local"
+gateway = "mcp-gateway.{tenant}.svc.cluster.local"
 deadline = time.monotonic() + {settle}
-while reach(service.format("mcp-gateway"), 80) and time.monotonic() < deadline:
+while reach(gateway, 80) and time.monotonic() < deadline:
     time.sleep(1)
-print(reach(service.format("litellm"), 4000), reach(service.format("mcp-gateway"), 80))
+print(reach(litellm, 4000), reach(gateway, 80))
 """
 
 # A new pod's address reaches the policy enforcer a few seconds after the pod starts, and the
@@ -113,15 +122,17 @@ print(reach(service.format("litellm"), 4000), reach(service.format("mcp-gateway"
 _POLICY_SETTLE_SECONDS = 20
 
 
-def sandbox_policy_status(settings: Settings, image: str, namespace: str) -> str:
+def sandbox_policy_status(
+    settings: Settings, image: str, namespace: str, tenant_namespace: str
+) -> str:
     """Probe from a pod the sandbox egress policy selects whether the cluster enforces it.
 
-    The policy admits LiteLLM and refuses the MCP gateway. A cluster whose CNI lacks network
-    policy support admits both for as long as the probe waits.
+    The policy admits LiteLLM and refuses the tenant's MCP gateway. A cluster whose CNI lacks
+    network policy support admits both for as long as the probe waits.
     """
-    from scripts.k8s_cluster import kubectl
-
-    probe = _POLICY_PROBE.format(platform=settings.k8s_namespace, settle=_POLICY_SETTLE_SECONDS)
+    probe = _POLICY_PROBE.format(
+        platform=settings.k8s_namespace, tenant=tenant_namespace, settle=_POLICY_SETTLE_SECONDS
+    )
     output = _kubectl_output(
         kubectl(
             settings,
@@ -178,7 +189,9 @@ def main() -> int:
         results.append(
             _check(
                 f"{namespace} network policies",
-                lambda namespace=namespace: sandbox_policy_status(settings, image, namespace),
+                lambda namespace=namespace, tenant=tenant: sandbox_policy_status(
+                    settings, image, namespace, worker_namespace(tenant)
+                ),
             )
         )
     results.append(_check("langfuse", lambda: http_check(langfuse_health)))

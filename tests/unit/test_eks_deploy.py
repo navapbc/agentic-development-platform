@@ -86,16 +86,77 @@ def test_restart_rolls_each_named_deployment(monkeypatch) -> None:
     calls: list[list[str]] = []
     monkeypatch.setattr(eks_deploy_task, "run", lambda args, **_: calls.append(args) or "")
 
-    eks_deploy_task.restart(["tenant-workers", "mcp-gateway"], {"tenants": [{"name": "adp"}]})
+    eks_deploy_task.restart(["tenant-workers", "inbound-webhook"], {"tenants": [{"name": "adp"}]})
 
     assert [c[1:6] for c in calls[:2]] == [
         ["-n", "tenant-adp", "rollout", "restart", "deployment/activity-worker"],
-        ["-n", "agentic-dev-platform", "rollout", "restart", "deployment/mcp-gateway"],
+        ["-n", "agentic-dev-platform", "rollout", "restart", "deployment/inbound-webhook"],
     ]
     assert [c[1:3] + c[5:6] for c in calls[2:]] == [
         ["-n", "tenant-adp", "deployment/activity-worker"],
-        ["-n", "agentic-dev-platform", "deployment/mcp-gateway"],
+        ["-n", "agentic-dev-platform", "deployment/inbound-webhook"],
     ]
+
+
+def test_restarting_the_gateway_rolls_every_tenant_gateway(monkeypatch) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(eks_deploy_task, "run", lambda args, **_: calls.append(args) or "")
+
+    eks_deploy_task.restart(["mcp-gateway"], {"tenants": [{"name": "adp"}, {"name": "beta"}]})
+
+    assert [c[1:6] for c in calls[:2]] == [
+        ["-n", "tenant-adp", "rollout", "restart", "deployment/mcp-gateway"],
+        ["-n", "tenant-beta", "rollout", "restart", "deployment/mcp-gateway"],
+    ]
+    assert not [c for c in calls if "agentic-dev-platform" in c]
+
+
+def test_the_platform_gateway_is_retired(monkeypatch) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(eks_deploy_task, "run", lambda args, **_: calls.append(args) or "")
+
+    eks_deploy_task.delete_retired()
+
+    deleted = [c[1:6] for c in calls]
+    for kind in ("deployment", "service", "ingress", "secretproviderclass", "serviceaccount"):
+        assert ["-n", "agentic-dev-platform", "delete", kind, "mcp-gateway"] in deleted
+
+
+def test_each_tenant_gateway_gets_its_own_load_balancer_host(monkeypatch) -> None:
+    rendered: list[dict] = []
+    rolled: list[list[str]] = []
+    ingress = {"kind": "Ingress", "metadata": {"name": "mcp-gateway"}}
+    hosts = {"tenant-adp": "adp.elb.example", "tenant-beta": "beta.elb.example"}
+
+    def render(*_, mcp_hostnames, **__):
+        rendered.append(dict(mcp_hostnames))
+        documents = [
+            {**ingress, "metadata": {**ingress["metadata"], "namespace": namespace}}
+            for namespace in hosts
+        ]
+        return documents, []
+
+    monkeypatch.setattr(eks_deploy_task, "install_controller", lambda inputs: None)
+    monkeypatch.setattr(eks_deploy_task, "overlay_documents", list)
+    monkeypatch.setattr(eks_deploy_task, "render", render)
+    monkeypatch.setattr(eks_deploy_task, "apply", lambda documents: None)
+    monkeypatch.setattr(eks_deploy_task, "delete_retired", lambda: None)
+    monkeypatch.setattr(eks_deploy_task, "rollout", lambda targets: rolled.append(list(targets)))
+    monkeypatch.setattr(eks_deploy_task, "report_unselected", lambda: [])
+    monkeypatch.setattr(eks_deploy_task, "ingress_hostname", lambda name, namespace: "")
+    monkeypatch.setattr(
+        eks_deploy_task, "wait_for_hostname", lambda name, namespace: hosts[namespace]
+    )
+
+    eks_deploy_task.deploy({"tenants": [{"name": "adp"}, {"name": "beta"}]}, [])
+
+    assert rendered == [
+        {"adp": "", "beta": ""},
+        {"adp": "adp.elb.example", "beta": "beta.elb.example"},
+    ]
+    assert "tenant-adp/mcp-gateway" in rolled[0] and "tenant-beta/mcp-gateway" in rolled[0]
+    assert "mcp-gateway" not in rolled[0]
+    assert rolled[1] == ["tenant-adp/mcp-gateway", "tenant-beta/mcp-gateway"]
 
 
 def test_the_retired_objects_are_deleted_when_present(monkeypatch) -> None:
@@ -119,6 +180,29 @@ def test_the_mounted_secrets_cover_every_provider_object() -> None:
     assert "database_platform_app" in keys
     assert "temporal_ca" in keys
     assert "mcp_gateway_token" in keys
+
+
+def test_a_key_every_tenant_holds_needs_no_platform_secret() -> None:
+    tenants = [
+        {"name": "adp", "secrets": {"mcp_gateway_token": "arn:adp", "github_token": "arn:a"}},
+        {"name": "beta", "secrets": {"mcp_gateway_token": "arn:beta"}},
+    ]
+    mounted = ["github_token", "jira_pat", "mcp_gateway_token"]
+
+    keys = eks_deploy.platform_mounted_keys(mounted, {"github_token": "arn:gh"}, tenants)
+
+    assert keys == ["github_token", "jira_pat"]
+
+
+def test_a_key_one_tenant_lacks_still_needs_a_platform_secret() -> None:
+    tenants = [
+        {"name": "adp", "secrets": {"mcp_gateway_token": "arn:adp"}},
+        {"name": "beta", "secrets": {}},
+    ]
+
+    keys = eks_deploy.platform_mounted_keys(["mcp_gateway_token"], {}, tenants)
+
+    assert keys == ["mcp_gateway_token"]
 
 
 class _FakeSecrets:

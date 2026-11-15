@@ -61,10 +61,10 @@ Document the tenant registry, the token, and the accepted cross-tenant read in t
 
 ## Related gaps
 
-The same audit of platform-namespace services found two more that read only platform configuration. They are recorded here so that each is scoped on its own.
+The same audit of platform-namespace services found two more that read only platform configuration. Both are closed, and the U8 verification record of the [multi-tenant plan](2026-11-08-1600-feat-multi-tenant-runtime-profiles-plan.md) records their verification.
 
-- The inbound webhook service admits `/webhook/pr` only for the GitHub repositories of the platform `repositories.yaml` in [server.py](../../services/orchestration/webhook/server.py), and its Jira intake uses the platform's Jira allowlist and credentials. A tenant's pull request or Jira event is refused or handled under the platform's configuration.
-- The MCP gateway holds the platform's Jira and GitHub credentials and reads evidence by artifact ID with no tenant, so with more than one tenant its other tools cross the tenant boundary as well.
+- The inbound webhook admits `/webhook/pr` for the GitHub repositories of every tenant's `repositories.yaml`, routes each delivery to the tenant that owns its repository, and verifies it with that tenant's secret. Each tenant's Jira deliveries arrive at `/webhook/jira/<tenant>`, are checked against that tenant's allowlist, and start a single-issue intake on the tenant's task queue, which the tenant's worker runs with the tenant's credentials.
+- Each tenant runs its own MCP gateway in its namespace with the tenant's credentials and token, and the gateway reads evidence and findings only for executions of its tenant.
 
 ## Verification
 

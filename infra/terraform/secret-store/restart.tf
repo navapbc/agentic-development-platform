@@ -11,9 +11,14 @@ locals {
   ]...) : {}
   restart_document_name = "${var.name_prefix}-secret-restart-service"
 
+  changed_secret_arns = merge(
+    local.secret_arns,
+    { for key, entry in local.eks_external_restarts : "external/${key}" => entry.secret_arn },
+  )
+
   # A completed rotation, or an operator update that does not stage a pending version.
   secret_changed_patterns = {
-    for key, arn in local.secret_arns : key => jsonencode({
+    for key, arn in local.changed_secret_arns : key => jsonencode({
       source = ["aws.secretsmanager"]
       detail = {
         eventSource = ["secretsmanager.amazonaws.com"]
@@ -213,6 +218,8 @@ locals {
   eks_restart_enabled  = local.enabled && var.restart_eks != null
   eks_restart_secrets  = local.eks_restart_enabled ? var.restart_eks.deployments : {}
   eks_restart_document = "${var.name_prefix}-secret-restart-eks"
+  # Secrets of other modules, such as each tenant's repository intelligence token.
+  eks_external_restarts = local.eks_restart_enabled ? var.restart_eks.external_secrets : {}
 }
 
 resource "aws_ssm_document" "restart_eks" {
@@ -409,5 +416,28 @@ resource "aws_cloudwatch_event_target" "restart_eks" {
   input = jsonencode({
     AutomationAssumeRole = [aws_iam_role.eks_automation[0].arn]
     Command              = concat(["restart"], each.value)
+  })
+}
+
+resource "aws_cloudwatch_event_rule" "restart_eks_external" {
+  for_each = local.eks_external_restarts
+
+  name          = "${var.name_prefix}-${replace(each.key, "_", "-")}-changed-eks"
+  description   = "Restarts the EKS deployments that read the ${each.key} secret after a completed rotation or an operator update."
+  event_pattern = local.secret_changed_patterns["external/${each.key}"]
+
+  tags = var.tags
+}
+
+resource "aws_cloudwatch_event_target" "restart_eks_external" {
+  for_each = local.eks_external_restarts
+
+  rule     = aws_cloudwatch_event_rule.restart_eks_external[each.key].name
+  arn      = "arn:${local.partition}:ssm:${var.region}:${local.account_id}:automation-definition/${aws_ssm_document.restart_eks[0].name}:$DEFAULT"
+  role_arn = aws_iam_role.eks_events[0].arn
+
+  input = jsonencode({
+    AutomationAssumeRole = [aws_iam_role.eks_automation[0].arn]
+    Command              = concat(["restart"], each.value.deployments)
   })
 }

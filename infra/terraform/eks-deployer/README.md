@@ -16,8 +16,8 @@ Reusable module that provisions the one-shot ECS task that deploys the EKS workl
 
 The task's commands are below.
 
-- `deploy` installs or upgrades the controller from the regional EKS registry, restarts it onto its webhook certificate, renders and applies the overlay, waits for each deployment, sets the MCP gateway's host list once its load balancer exists, and lists the pods no NetworkPolicy selects. A deployment that does not roll out has its pods, warnings, and recent log printed.
-- `restart DEPLOYMENT...` rolls the named deployments.
+- `deploy` installs or upgrades the controller from the regional EKS registry, restarts it onto its webhook certificate, renders and applies the overlay, waits for each deployment, sets each tenant's MCP gateway host list once that gateway's load balancer exists, and lists the pods no NetworkPolicy selects. A deployment that does not roll out has its pods, warnings, and recent log printed.
+- `restart DEPLOYMENT...` rolls the named deployments, each a platform deployment by name or `namespace/name`. `tenant-workers` names every tenant's activity worker, and `mcp-gateway` names every tenant's MCP gateway, because the platform namespace runs no gateway.
 - `check-policies` lists the pods no NetworkPolicy selects and exits 1 when there are any.
 
 ## FIPS 140 and FedRAMP

@@ -1,9 +1,11 @@
 """The bearer tokens that bind a repository intelligence request to one tenant.
 
 A tenant's activity worker sends its token as REPO_INTELLIGENCE_TOKEN. Repository intelligence
-holds every tenant's token, each in REPO_INTELLIGENCE_TOKEN_<TENANT> in AWS, or derives them from
-REPO_INTELLIGENCE_TOKEN_KEY on a workstation, and answers a request only for the repositories of
-the tenant whose token it carries.
+holds every tenant's accepted tokens and answers a request only for the repositories of the
+tenant whose token it carries. In AWS it reads the current and the previous version of each
+tenant's token secret from Secrets Manager, so a worker that has not restarted since a rotation
+keeps its access. On a workstation it reads REPO_INTELLIGENCE_TOKEN_<TENANT> or derives the
+token from REPO_INTELLIGENCE_TOKEN_KEY.
 """
 
 from __future__ import annotations
@@ -11,10 +13,12 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 
 ENV_PREFIX = "REPO_INTELLIGENCE_TOKEN_"
 _DERIVATION_LABEL = "repo-intelligence:"
+
+AcceptedTokens = Mapping[str, Sequence[str]]
 
 
 def token_env_name(tenant: str) -> str:
@@ -42,10 +46,23 @@ def tenant_tokens(
     return tokens
 
 
-def tenant_for_token(tokens: Mapping[str, str], presented: str) -> str | None:
-    """Return the tenant whose token was presented, comparing every token in constant time."""
+def single_tokens(tokens: Mapping[str, str]) -> dict[str, tuple[str, ...]]:
+    """Return each tenant's one token as the only token the tenant may present."""
+    return {tenant: (token,) for tenant, token in tokens.items()}
+
+
+def tenant_for_token(tokens: AcceptedTokens, presented: str) -> str | None:
+    """Return the tenant one of whose tokens was presented.
+
+    Every accepted token of every tenant is compared in constant time, so the time taken does
+    not reveal which tenant or which token version matched.
+    """
+    presented_bytes = presented.encode()
     match = None
-    for tenant, token in tokens.items():
-        if hmac.compare_digest(token.encode(), presented.encode()):
-            match = tenant
+    for tenant, accepted in tokens.items():
+        if isinstance(accepted, str):
+            raise TypeError(f"the accepted tokens of tenant {tenant} must be a sequence of tokens")
+        for token in accepted:
+            if hmac.compare_digest(token.encode(), presented_bytes):
+                match = tenant
     return match

@@ -771,7 +771,7 @@ variable "github_publish_refs" {
 }
 
 variable "tenants" {
-  description = "Tenants that share the deployment, keyed by a name of 2 to 16 lowercase letters and digits. Each tenant is a trust boundary with its own activity worker identity, secrets, image prefix, config bundle prefix, ticket store, and workspace. secrets lists the secrets created empty under <name_prefix>/tenants/<tenant>/ for the tenant to fill. shared_secrets lists secret store keys the tenant's worker may also read. config_repository names the GitHub repository whose workflows publish the tenant's config bundle and images. ticket_store sets the operators, admins, and GitHub OIDC writer of the tenant's rebar store. settings are environment variables only the tenant's worker receives, such as TICKET_BACKEND, and override container_platform_settings. model_limits sets the tenant's LiteLLM spend and rate limits in the worker environment. monthly_budget_usd is the tenant team's monthly budget in US dollars, rpm_limit and tpm_limit are the tenant team's requests and tokens per minute, and 0 sets no limit for each of the three. run_budget_usd is the budget of each run's virtual key in US dollars. sandbox_quota is the ResourceQuota hard limits of the tenant's sandbox namespace, such as requests.cpu or pods. create_eks requires at least one tenant."
+  description = "Tenants that share the deployment, keyed by a name of 2 to 16 lowercase letters and digits. Each tenant is a trust boundary with its own activity worker identity, secrets, image prefix, config bundle prefix, ticket store, and workspace. secrets lists the secrets created empty under <name_prefix>/tenants/<tenant>/ for the tenant to fill. shared_secrets lists secret store keys the tenant's worker may also read. config_repository names the GitHub repository whose workflows publish the tenant's config bundle and images. ticket_store sets the operators, admins, and GitHub OIDC writer of the tenant's rebar store. mcp_gateway_token_readers are the principals besides the tenant's gateway that may read its MCP gateway token, such as the operators who give it to the tenant's MCP clients. settings are environment variables only the tenant's worker receives, such as TICKET_BACKEND, and override container_platform_settings. model_limits sets the tenant's LiteLLM spend and rate limits in the worker environment. monthly_budget_usd is the tenant team's monthly budget in US dollars, rpm_limit and tpm_limit are the tenant team's requests and tokens per minute, and 0 sets no limit for each of the three. run_budget_usd is the budget of each run's virtual key in US dollars. sandbox_quota is the ResourceQuota hard limits of the tenant's sandbox namespace, such as requests.cpu or pods. create_eks requires at least one tenant."
   type = map(object({
     description    = string
     secrets        = optional(list(string), ["github_token", "jira_api_token", "jira_pat", "authorship_signing_key", "registry_token", "slack_webhook_url"])
@@ -794,7 +794,8 @@ variable "tenants" {
         audience          = optional(string, "sts.amazonaws.com")
       }))
     }), {})
-    settings = optional(map(string), {})
+    mcp_gateway_token_readers = optional(list(string), [])
+    settings                  = optional(map(string), {})
     model_limits = optional(object({
       monthly_budget_usd = optional(number, 0)
       rpm_limit          = optional(number, 0)

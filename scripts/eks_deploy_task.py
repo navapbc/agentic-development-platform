@@ -7,11 +7,12 @@ aws-iam-authenticator token helper, the vendored AWS Load Balancer Controller ch
 overlay, so the workstation needs none of them.
 
 - `deploy` installs or upgrades the Load Balancer Controller, renders the overlay for the
-  environment, applies it, waits for each deployment, and sets the MCP gateway's host list once
-  its load balancer exists. It ends by listing every pod that is not host-networked and that no
-  NetworkPolicy selects, which strict network policy mode would deny.
-- `restart` rolls the named deployments, `namespace/name` or a platform deployment by name, and
-  `tenant-workers` for every tenant's activity worker, so their pods read the current secret values.
+  environment, applies it, waits for each deployment, and sets each tenant's MCP gateway host list
+  once that gateway's load balancer exists. It ends by listing every pod that is not
+  host-networked and that no NetworkPolicy selects, which strict network policy mode would deny.
+- `restart` rolls the named deployments, `namespace/name` or a platform deployment by name,
+  `tenant-workers` for every tenant's activity worker, and `mcp-gateway` for every tenant's MCP
+  gateway, so their pods read the current secret values.
 - `check-policies` prints the pods no NetworkPolicy selects and exits 1 when there are any.
 """
 
@@ -37,7 +38,7 @@ AUTHENTICATOR = "/usr/local/bin/aws-iam-authenticator"
 ROOT = Path(os.environ.get("EKS_DEPLOYER_ROOT", "/opt/eks-deployer"))
 OVERLAY = ROOT / "deploy" / "kubernetes" / "aws"
 CHART = ROOT / "charts" / "aws-load-balancer-controller.tgz"
-DEPLOYMENTS = ("litellm", "inbound-webhook", "mcp-gateway")
+DEPLOYMENTS = ("litellm", "inbound-webhook")
 COMMAND_TIMEOUT = 300
 ROLLOUT_TIMEOUT = "10m"
 LOG = "[eks-deployer]"
@@ -182,6 +183,12 @@ def tenant_workers(inputs: Mapping[str, Any]) -> list[str]:
     return [f"{worker_namespace(entry['name'])}/{WORKER}" for entry in inputs.get("tenants") or []]
 
 
+def tenant_gateways(inputs: Mapping[str, Any]) -> list[str]:
+    from scripts.tenant_render import GATEWAY, worker_namespace
+
+    return [f"{worker_namespace(entry['name'])}/{GATEWAY}" for entry in inputs.get("tenants") or []]
+
+
 def rollout(targets: Iterable[str]) -> None:
     for target in targets:
         namespace, name = _namespaced(target)
@@ -233,20 +240,20 @@ def diagnose(name: str, namespace: str = PLATFORM_NAMESPACE) -> None:
             print(f"{LOG} {exc}")
 
 
-def ingress_hostname(name: str) -> str:
+def ingress_hostname(name: str, namespace: str = PLATFORM_NAMESPACE) -> str:
     try:
-        ingress = json.loads(
-            run([KUBECTL, "-n", PLATFORM_NAMESPACE, "get", "ingress", name, "-o", "json"])
-        )
+        ingress = json.loads(run([KUBECTL, "-n", namespace, "get", "ingress", name, "-o", "json"]))
     except DeployError:
         return ""
     entries = ingress.get("status", {}).get("loadBalancer", {}).get("ingress") or []
     return entries[0].get("hostname", "") if entries else ""
 
 
-def wait_for_hostname(name: str, attempts: int = 30, delay: int = 10) -> str:
+def wait_for_hostname(
+    name: str, namespace: str = PLATFORM_NAMESPACE, attempts: int = 30, delay: int = 10
+) -> str:
     for _ in range(attempts):
-        hostname = ingress_hostname(name)
+        hostname = ingress_hostname(name, namespace)
         if hostname:
             return hostname
         time.sleep(delay)
@@ -303,41 +310,54 @@ def report_unselected() -> list[str]:
 
 
 def deploy(inputs: Mapping[str, Any], omit_secrets: list[str]) -> None:
+    from scripts.tenant_render import GATEWAY, worker_namespace
+
     install_controller(inputs)
+    tenants = [entry["name"] for entry in inputs.get("tenants") or []]
+    hostnames = {tenant: ingress_hostname(GATEWAY, worker_namespace(tenant)) for tenant in tenants}
     documents, skipped = render(
-        overlay_documents(),
-        inputs,
-        ROOT,
-        omit_secrets=omit_secrets,
-        mcp_hostname=ingress_hostname("mcp-gateway"),
+        overlay_documents(), inputs, ROOT, omit_secrets=omit_secrets, mcp_hostnames=hostnames
     )
     for alias in skipped:
         print(f"{LOG} {alias} has no current value, so the workload starts without it")
     apply(documents)
     delete_retired()
-    rollout([*DEPLOYMENTS, *tenant_workers(inputs)])
-    if any(
-        d.get("kind") == "Ingress" and d["metadata"]["name"] == "mcp-gateway" for d in documents
-    ):
-        hostname = wait_for_hostname("mcp-gateway")
-        if not hostname:
-            raise DeployError("the mcp-gateway load balancer has no host name after five minutes")
+    rollout([*DEPLOYMENTS, *tenant_workers(inputs), *tenant_gateways(inputs)])
+    exposed = [
+        tenant
+        for tenant in tenants
+        if any(
+            d.get("kind") == "Ingress"
+            and d["metadata"]["name"] == GATEWAY
+            and d["metadata"].get("namespace") == worker_namespace(tenant)
+            for d in documents
+        )
+    ]
+    if exposed:
+        for tenant in exposed:
+            hostnames[tenant] = wait_for_hostname(GATEWAY, worker_namespace(tenant))
+            if not hostnames[tenant]:
+                raise DeployError(
+                    f"the {tenant} mcp-gateway load balancer has no host name after five minutes"
+                )
         documents, _ = render(
-            overlay_documents(), inputs, ROOT, omit_secrets=omit_secrets, mcp_hostname=hostname
+            overlay_documents(), inputs, ROOT, omit_secrets=omit_secrets, mcp_hostnames=hostnames
         )
         apply(documents)
-        rollout(["mcp-gateway"])
-        print(f"{LOG} the MCP gateway accepts the host {hostname}")
+        rollout([f"{worker_namespace(tenant)}/{GATEWAY}" for tenant in exposed])
+        for tenant in exposed:
+            print(f"{LOG} the {tenant} MCP gateway accepts the host {hostnames[tenant]}")
     report_unselected()
 
 
 def restart(targets: list[str], inputs: Mapping[str, Any]) -> None:
-    """Restart each deployment, where `tenant-workers` names every tenant's activity worker."""
-    expanded = [
-        worker
-        for target in targets
-        for worker in (tenant_workers(inputs) if target == "tenant-workers" else [target])
-    ]
+    """Restart each deployment.
+
+    `tenant-workers` names every tenant's activity worker and `mcp-gateway` every tenant's MCP
+    gateway, since the platform namespace runs no gateway.
+    """
+    groups = {"tenant-workers": tenant_workers(inputs), "mcp-gateway": tenant_gateways(inputs)}
+    expanded = [deployment for target in targets for deployment in groups.get(target, [target])]
     for target in expanded:
         namespace, name = _namespaced(target)
         run([KUBECTL, "-n", namespace, "rollout", "restart", f"deployment/{name}"])

@@ -202,14 +202,14 @@ Say over the second run:
 
 What happens: the same durable workflow now runs every gate before the pull request is promoted. It authors the change in the OpenHands sandbox pod on Kubernetes, runs continuous integration, repairs on a failure and reruns until the build is green, runs code and security review through the rebar kernel, runs Semgrep and Trivy scans, asks OPA for a promotion decision, then pauses for a human approval. An operator releases the pause with a second command. On approval the workflow re-checks the Jira ticket, promotes the draft to a ready pull request, and then parks for the pull-request-closed signal so the merge closes the loop. Every gate runs against a backend with no mock in the path.
 
-The pieces that need Kubernetes run on Kubernetes. The coding agent runs in a sandbox pod in the agent-sandbox namespace. The mcp-gateway and the inbound-webhook run as deployments in the agentic-dev-platform namespace on the local cluster.
+The pieces that need Kubernetes run on Kubernetes. The coding agent runs in a sandbox pod in the agent-sandbox namespace. The inbound-webhook runs as a deployment in the agentic-dev-platform namespace on the local cluster, and each tenant's mcp-gateway runs as a deployment in that tenant's tenant-<tenant> namespace.
 
 Prerequisite runbook for this act:
 
 1. Bring the stack up with `inv local-up` so Temporal, Postgres, and the workers are running.
 2. Bring the Bedrock path up with `inv tunnel-start --detach` and confirm it with `inv connectivity-check`.
-3. Deploy the Kubernetes pieces with `inv k8s-deploy --build`. This builds the local image, creates the agent-sandbox and agentic-dev-platform namespaces, and rolls out the mcp-gateway and inbound-webhook deployments. Confirm both are ready with `kubectl get pods -n agentic-dev-platform`.
-4. Port-forward the two services for the demo with `kubectl port-forward -n agentic-dev-platform svc/mcp-gateway 8150:80` and `kubectl port-forward -n agentic-dev-platform svc/inbound-webhook 8140:80` in separate terminals.
+3. Deploy the Kubernetes pieces with `inv k8s-deploy --build`. This builds the local image, creates the agent-sandbox and agentic-dev-platform namespaces, and rolls out the mcp-gateway and inbound-webhook deployments. Confirm both are ready with `kubectl get pods -n agentic-dev-platform` and `kubectl get pods -n tenant-<tenant>`, where `<tenant>` is the `TENANT` of `.env`.
+4. Port-forward the two services for the demo with `kubectl port-forward -n tenant-<tenant> svc/mcp-gateway 8150:80` and `kubectl port-forward -n agentic-dev-platform svc/inbound-webhook 8140:80` in separate terminals. A gateway client presents the `MCP_GATEWAY_TOKEN` of that tenant.
 5. Set the backend credentials the gates need. Jenkins or GitHub Actions for CI, Semgrep and Trivy on PATH for scans, OPA reachable for the policy decision, LiteLLM in front of Bedrock for review and authoring, a GitHub token with contents and pull-request write, and Jira Cloud credentials.
 6. Choose a not-done Jira ticket whose work is not already implemented and name it on the command.
 

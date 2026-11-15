@@ -23,7 +23,8 @@ from scripts.config import Settings, get_settings
 LOG = "[k8s]"
 REPO_ROOT = Path(__file__).resolve().parent.parent
 WORKER = "activity-worker"
-DEPLOYMENTS = ("litellm", "review-worker", "mcp-gateway", "inbound-webhook")
+DEPLOYMENTS = ("litellm", "review-worker", "inbound-webhook")
+GATEWAY = "mcp-gateway"
 ROLLOUT_TIMEOUT = "600s"
 _ARCHES = {"arm64": "arm64", "aarch64": "arm64", "x86_64": "amd64", "amd64": "amd64"}
 _PROBES = ("startupProbe", "readinessProbe", "livenessProbe")
@@ -60,7 +61,9 @@ def deployments(settings: Settings) -> list[tuple[str, str]]:
     from scripts.tenant_render import worker_namespace
 
     return [(settings.k8s_namespace, name) for name in DEPLOYMENTS] + [
-        (worker_namespace(name), WORKER) for name in tenants(settings)
+        (worker_namespace(name), deployment)
+        for name in tenants(settings)
+        for deployment in (WORKER, GATEWAY)
     ]
 
 

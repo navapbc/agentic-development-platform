@@ -357,3 +357,99 @@ def test_user_id_is_read_from_the_user_arn():
     assert rotation.user_id_from_arn(USER_ARN) == "platform-langfuse"
     with pytest.raises(rotation.RotationError):
         rotation.user_id_from_arn("arn:aws:elasticache:us-east-1:111111111111:cluster:x")
+
+
+class FakeTokenSecrets(FakeSecrets):
+    """A secret whose versions hold plain-text tokens in place of JSON credentials."""
+
+    def __init__(self, current: str, *, rotation_enabled: bool = True) -> None:
+        super().__init__({}, rotation_enabled=rotation_enabled)
+        self.tokens: dict[str, str] = {"v1": current}
+
+    def get_secret_value(
+        self,
+        SecretId: str,
+        VersionStage: str,
+        VersionId: str | None = None,
+    ) -> dict[str, str]:
+        for version, (stages, _) in self.versions.items():
+            if VersionStage in stages and VersionId in (None, version) and version in self.tokens:
+                return {"SecretString": self.tokens[version]}
+        raise _NotFound
+
+    def put_secret_value(self, **kwargs: Any) -> None:
+        self.puts.append(kwargs)
+        self.versions[kwargs["ClientRequestToken"]] = (set(kwargs["VersionStages"]), {})
+        self.tokens[kwargs["ClientRequestToken"]] = kwargs["SecretString"]
+
+
+def test_token_rotation_stages_a_new_random_token_as_pending():
+    client = FakeTokenSecrets("old-token")
+    client.stage("v2")
+
+    rotation.rotate_token(_event("createSecret"), client)
+
+    staged = client.puts[0]
+    assert staged["VersionStages"] == [rotation.AWSPENDING]
+    assert staged["ClientRequestToken"] == "v2"
+    assert re.fullmatch(r"[A-Za-z0-9]{48}", staged["SecretString"])
+    assert staged["SecretString"] != "old-token"
+
+
+def test_random_tokens_differ_and_use_letters_and_digits_only():
+    tokens = {rotation.random_token() for _ in range(20)}
+
+    assert len(tokens) == 20
+    assert all(re.fullmatch(r"[A-Za-z0-9]{48}", token) for token in tokens)
+
+
+def test_token_rotation_keeps_a_pending_token_that_exists():
+    client = FakeTokenSecrets("old-token")
+    client.stage("v2")
+    client.tokens["v2"] = "staged-token"
+
+    rotation.rotate_token(_event("createSecret"), client)
+
+    assert client.puts == []
+
+
+@pytest.mark.parametrize("step", ["setSecret", "testSecret"])
+def test_token_rotation_set_and_test_change_nothing(step):
+    client = FakeTokenSecrets("old-token")
+    client.stage("v2")
+    client.tokens["v2"] = "new-token"
+
+    rotation.rotate_token(_event(step), client)
+
+    assert client.puts == []
+    assert client.versions["v1"][0] == {rotation.AWSCURRENT}
+    assert client.versions["v2"][0] == {rotation.AWSPENDING}
+
+
+def test_token_rotation_finish_promotes_the_pending_token():
+    client = FakeTokenSecrets("old-token")
+    client.stage("v2")
+    client.tokens["v2"] = "new-token"
+
+    rotation.rotate_token(_event("finishSecret"), client)
+
+    assert rotation.AWSCURRENT in client.versions["v2"][0]
+    assert rotation.AWSCURRENT not in client.versions["v1"][0]
+
+
+def test_token_rotation_leaves_a_current_version_alone_and_refuses_unknown_steps():
+    client = FakeTokenSecrets("old-token")
+    rotation.rotate_token(_event("createSecret", token="v1"), client)
+    assert client.puts == []
+
+    client.stage("v2")
+    with pytest.raises(rotation.RotationError):
+        rotation.rotate_token(_event("bogusStep"), client)
+
+
+def test_token_rotation_refuses_a_secret_without_rotation_enabled():
+    client = FakeTokenSecrets("old-token", rotation_enabled=False)
+    client.stage("v2")
+
+    with pytest.raises(rotation.RotationError):
+        rotation.rotate_token(_event("createSecret"), client)

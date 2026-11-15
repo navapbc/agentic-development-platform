@@ -25,10 +25,11 @@ output "execution_role_arns" {
 }
 
 output "repository_intelligence_roles" {
-  description = "The repository intelligence execution role, which injects each tenant's repository intelligence token, and the task roles of repository intelligence and the index worker, which read each tenant's config bundle. Null without the services."
+  description = "The repository intelligence execution role, the repository intelligence task role, which reads each tenant's repository intelligence token at runtime, and the task roles of repository intelligence, the index worker, and the review worker, which read each tenant's config bundle. Null without the services."
   value = local.services_enabled ? {
-    execution_role_arn = aws_iam_role.workload_execution["repo-intelligence"].arn
-    task_role_arns     = [for name in sort(tolist(local.tenant_config_readers)) : aws_iam_role.workload_task[name].arn]
+    execution_role_arn    = aws_iam_role.workload_execution["repo-intelligence"].arn
+    token_reader_role_arn = aws_iam_role.workload_task["repo-intelligence"].arn
+    task_role_arns        = [for name in sort(tolist(local.tenant_config_readers)) : aws_iam_role.workload_task[name].arn]
   } : null
 }
 

@@ -68,6 +68,8 @@ module "secret_store" {
   secret_readers      = local.secret_readers
   restart_services    = local.secret_restart_services
   restart_eks         = local.eks_restart
+  # A name pattern, because each tenant's token secret policy names the rotation role this creates.
+  rotated_token_secrets = length(local.tenants) > 0 ? ["${var.name_prefix}/tenants/*/repo-intelligence-token"] : []
 
   recovery_window_days = var.secret_recovery_window_days
 

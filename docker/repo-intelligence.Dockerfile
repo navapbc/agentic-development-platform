@@ -134,7 +134,7 @@ COPY --from=uv /uv /usr/local/bin/uv
 COPY pyproject.toml uv.lock README.md LICENSE NOTICE ./
 # basedpyright, a type checker in the dev extra, ships a Node runtime the service never runs.
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked --extra=dev --no-install-project \
+    uv sync --locked --extra=dev --extra=storage --no-install-project \
       --no-install-package basedpyright --no-install-package nodejs-wheel-binaries
 COPY services ./services
 COPY adapters ./adapters
@@ -142,7 +142,7 @@ COPY schemas ./schemas
 COPY database ./database
 COPY scripts ./scripts
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked --extra=dev \
+    uv sync --locked --extra=dev --extra=storage \
       --no-install-package basedpyright --no-install-package nodejs-wheel-binaries \
  && rm /usr/local/bin/uv \
  && mkdir -p /app/repository_indexes \

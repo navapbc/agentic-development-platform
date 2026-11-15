@@ -45,6 +45,9 @@ LITELLM_FILES = ("litellm-config.yaml", "litellm_redaction.py")
 # Secrets the tenant module generates for every tenant, which no overlay provider lists. The
 # tenant's worker reads each as the upper-cased key.
 TENANT_GENERATED_SECRETS = ("repo_intelligence_token",)
+# The worker's secrets the tenant's MCP gateway also reads, for its Jira and GitHub readers and
+# its repository intelligence calls.
+GATEWAY_WORKER_SECRETS = ("github_token", "jira_api_token", "jira_pat", "repo_intelligence_token")
 MODEL_LIMIT_ENV = {
     "monthly_budget_usd": "TENANT_MODEL_BUDGET_USD",
     "rpm_limit": "TENANT_MODEL_RPM_LIMIT",
@@ -200,6 +203,7 @@ def set_tenant_secrets(
             and d["metadata"].get("namespace") == namespace
         ]
         add_generated_secrets(providers, own)
+        add_gateway_secrets(providers)
         mounted = {
             secret_key(item["objectName"]): item.get("objectAlias", "")
             for provider in providers
@@ -232,6 +236,25 @@ def add_generated_secrets(providers: list[dict[str, Any]], own: Mapping[str, str
             if key in own and key not in listed
         ]
         provider["spec"]["parameters"]["objects"] = json.dumps(objects)
+
+
+def add_gateway_secrets(providers: list[dict[str, Any]]) -> None:
+    """Add the worker's tenant credentials the gateway reads to the gateway's provider."""
+    from scripts.tenant_render import GATEWAY, WORKER
+
+    named = {provider["metadata"]["name"]: provider for provider in providers}
+    if GATEWAY not in named or WORKER not in named:
+        return
+    worker = json.loads(named[WORKER]["spec"]["parameters"]["objects"])
+    objects = json.loads(named[GATEWAY]["spec"]["parameters"]["objects"])
+    listed = {secret_key(entry["objectName"]) for entry in objects}
+    objects += [
+        copy.deepcopy(entry)
+        for entry in worker
+        if secret_key(entry["objectName"]) in GATEWAY_WORKER_SECRETS
+        and secret_key(entry["objectName"]) not in listed
+    ]
+    named[GATEWAY]["spec"]["parameters"]["objects"] = json.dumps(objects)
 
 
 def set_security_groups(documents: list[dict[str, Any]], groups: Mapping[str, str]) -> None:
@@ -338,6 +361,21 @@ def set_ingress(
     return kept
 
 
+def set_gateway_hosts(documents: list[dict[str, Any]], hostnames: Mapping[str, str]) -> None:
+    """Set each tenant gateway's host list to its own Ingress hostname, empty until it has one."""
+    from scripts.tenant_render import GATEWAY, worker_namespace
+
+    namespaces = {worker_namespace(tenant): hostname for tenant, hostname in hostnames.items()}
+    for document in documents:
+        if document.get("kind") != "Deployment" or document["metadata"]["name"] != GATEWAY:
+            continue
+        hostname = namespaces.get(document["metadata"].get("namespace", ""), "")
+        for container in document["spec"]["template"]["spec"]["containers"]:
+            for entry in container.get("env", []):
+                if entry["name"] == "MCP_ALLOWED_HOSTS":
+                    entry["value"] = f"{hostname},{hostname}:443" if hostname else ""
+
+
 def generated_objects(inputs: Mapping[str, Any], root: Path) -> list[dict[str, Any]]:
     policies = root / "config" / "policies"
     return [
@@ -389,10 +427,14 @@ def render(
     root: Path,
     *,
     omit_secrets: Iterable[str] = (),
-    mcp_hostname: str = "",
+    mcp_hostnames: Mapping[str, str] | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    """Return the environment's manifests and the secret aliases left out of them."""
+    """Return the environment's manifests and the secret aliases left out of them.
+
+    `mcp_hostnames` maps each tenant to the load balancer hostname of its gateway's Ingress.
+    """
     from scripts.tenant_render import tenantize
+    from scripts.webhook_render import route_webhook_tenants
 
     documents = copy.deepcopy(overlay_documents)
     set_images(documents, inputs["images"])
@@ -405,12 +447,15 @@ def render(
         inputs["gate_egress_cidrs"],
         bool(inputs.get("gate_egress_internet")),
     )
-    documents = set_ingress(documents, inputs.get("ingress") or {}, mcp_hostname)
+    documents = set_ingress(documents, inputs.get("ingress") or {})
     generated = generated_objects(inputs, root)
     tenants = tenant_specs(documents, inputs)
     if not tenants:
         raise RenderError("the inputs name no tenant, and every activity worker serves one")
     documents = tenantize(documents + generated, tenants)
+    set_gateway_hosts(documents, mcp_hostnames or {})
+    omit_secrets = list(omit_secrets)
     skipped = set_tenant_secrets(documents, inputs, omit_secrets)
+    skipped += route_webhook_tenants(documents, inputs, omit_secrets)
     stamp_config_hash(documents, [])
     return documents, skipped

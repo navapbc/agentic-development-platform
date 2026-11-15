@@ -1,6 +1,6 @@
 # eks-cluster
 
-Reusable module that provisions the EKS cluster for the workloads that need the Kubernetes API: the activity worker, which creates the OpenHands sandbox pods and the gate, checks, and scanner pods, LiteLLM, the inbound webhook, and the MCP gateway. Nothing is created unless `create_eks_cluster = true`.
+Reusable module that provisions the EKS cluster for the workloads that need the Kubernetes API: the activity worker, which creates the OpenHands sandbox pods and the gate, checks, and scanner pods, LiteLLM, the inbound webhook, and each tenant's MCP gateway. Nothing is created unless `create_eks_cluster = true`.
 
 ## What it provisions
 
