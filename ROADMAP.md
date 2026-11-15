@@ -41,7 +41,7 @@ Delivered, as the 0.3.0 section of the [changelog](CHANGELOG.md) records, are th
 
 Built and awaiting the ADP-168 sandbox verification session are the EKS cluster, the multi-tenant runtime profiles, and the image vulnerability remediation with the validated Go FIPS module. The image remediation also needs the merge to `main` and the first release tag before its daily run and catalog signing can be verified in CI.
 
-Open are the connectivity and sandbox confirmations of ADP-92, whose credential and sandbox checks run in the ADP-168 session, the observability terraform, the off-hours scale-down of the EKS deployments, the jump-host residual hardening, the leaked OpenHands sandbox pods, and the Slack escalation channel.
+Open are the connectivity and sandbox confirmations of ADP-92, whose credential and sandbox checks run in the ADP-168 session, the observability terraform, the off-hours scale-down of the EKS deployments, the jump-host residual hardening, the leaked OpenHands sandbox pods, the Slack escalation channel, the operator alert remedies, the tenant scoping of work claims and the sequence gate, and the evidence artifact deduplication per execution.
 
 Goal. The platform is technically FedRAMP Medium ready. It has documented local-to-AWS mappings, a control inheritance and shared-responsibility matrix, committed audit and evidence contracts, an S3-backed WORM evidence and audit store, and terraform that provisions the data tier, secret store, container-platform services, Temporal control plane, observability, and the rebar ticket bucket with encryption, least privilege, backups, and private networking, plus a hardened AWS security baseline. Organizational and operational control families remain the deploying organization's responsibility, recorded in the inheritance matrix.
 
@@ -78,8 +78,11 @@ Goal. The platform is technically FedRAMP Medium ready. It has documented local-
 | MCP gateway client authentication | 3-5h | Jira ADP-140 |
 | Leaked OpenHands sandbox pods | 3-5h | Jira ADP-141 |
 | Slack escalation channel with approve, reject, retry, and abandon actions | 28-42h (low) | Jira ADP-160. [plan](docs/plans/2026-11-06-1000-feat-slack-escalation-channel-plan.md) |
+| Operator alert remedies that name a next step | 4-8h (low) | Jira ADP-24, draft PR 54. Every human-intervention alert renders a remedy. Open is the decision on how a remedy stays runnable where the operator reads the alert. |
+| Tenant scoping of work claims and the sequence gate | 5-8h | Jira ADP-183. Adds a tenant column to `work_claims` and `sequence_gate`, so two tenants that submit the same ticket key keep separate claims and sequence counters. |
+| Evidence artifact deduplication per execution | 3-5h | Jira ADP-184. Moves the `evidence_artifacts` unique constraint from `content_hash` to `(execution_id, content_hash)` and records the tenant on each row. |
 
-Version effort. 453-665h.
+Version effort. 465-686h.
 
 ## v0.4.0 Production serving and demo readiness
 
