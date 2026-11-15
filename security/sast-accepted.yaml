@@ -191,7 +191,7 @@
 - tool: gitleaks-history
   rule: sourcegraph-access-token
   path: docker/repo-intelligence.Dockerfile
-  match: 54c54bcdac3b6a119ef26290034bc2193b5a2ee6:docker/repo-intelligence.Dockerfile:sourcegraph-access-token:67
+  match: 434ffc1b15c36cb08d71f76ecec0732a7287737f:docker/repo-intelligence.Dockerfile:sourcegraph-access-token:67
   justification: The commit added ARG ZOEKT_COMMIT, the 40-character hash of commit 2cb19912 in github.com/sourcegraph/zoekt, which the zoekt stage fetches and builds. The rule matches any 40-character hexadecimal string in a file that names sourcegraph, and the value is a public commit hash, not a credential.
 - tool: semgrep
   rule: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
