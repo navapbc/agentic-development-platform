@@ -144,8 +144,8 @@ def provision(worktree: Path, *, python_version: str = PYTHON_VERSION) -> None:
 
 
 def _add(root: Path, path: Path, branch: str, *, create: bool) -> None:
-    spec = ["-b", branch] if create else [branch]
-    _git(["worktree", "add", *spec, str(path)], cwd=root)
+    spec = ["-b", branch, str(path)] if create else [str(path), branch]
+    _git(["worktree", "add", *spec], cwd=root)
 
 
 def _remove(root: Path, path: Path) -> None:
