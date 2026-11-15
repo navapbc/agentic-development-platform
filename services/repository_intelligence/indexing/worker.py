@@ -1,8 +1,18 @@
-"""Background worker that keeps repository indexes fresh by polling for new commits."""
+"""Background worker that keeps repository indexes fresh by polling for new commits.
+
+The worker indexes every repository a served tenant marks for indexing, keyed by tenant and
+repository, and reloads the tenant registries before each poll so a bundle change takes effect.
+
+A pinned repository is indexed only once the HEAD of its checkout resolves to the pin. A bundle
+can name a new ``index_ref`` before the checkout has moved, and indexing at that moment would
+record the files of the previous commit under the new pin. The worker skips such a repository
+and checks it again on a later poll.
+"""
 
 from __future__ import annotations
 
 import logging
+import re
 import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -11,18 +21,20 @@ from pathlib import Path
 
 from scripts.config import configured_log_level, get_settings
 
+from services import process
 from services.healthcheck import touch
 from services.repository_intelligence.indexing import scip_builder
-from services.repository_intelligence.indexing.reindex import reindex_repo
+from services.repository_intelligence.indexing.reindex import IndexRoots, reindex_repo
 from services.repository_intelligence.normalization.models import RepoRef
+from services.repository_intelligence.tenants import TenantRegistries, migrate_home_indexes
 
 log = logging.getLogger("repo-index-worker")
 
 _DEFAULT_INTERVAL = 30.0
 _DEFAULT_CONCURRENCY = 2
+_FULL_OR_ABBREVIATED_SHA = re.compile(r"^[0-9a-fA-F]{7,64}$")
 
-CommitResolver = Callable[[Path], str]
-Reindexer = Callable[[Path, RepoRef, str | None], None]
+RepoKey = tuple[str, str]
 
 
 @dataclass(frozen=True)
@@ -30,10 +42,48 @@ class RepoTarget:
     name: str
     root: Path
     pin: str | None = None
+    tenant: str = ""
+    index_roots: IndexRoots | None = None
+
+    @property
+    def key(self) -> RepoKey:
+        return (self.tenant, self.name)
+
+    @property
+    def label(self) -> str:
+        return f"{self.tenant}/{self.name}" if self.tenant else self.name
 
 
-def _default_reindex(root: Path, repo: RepoRef, prior: str | None) -> None:
-    reindex_repo(root, repo, prior_commit=prior)
+CommitResolver = Callable[[Path], str]
+Reindexer = Callable[[RepoTarget, RepoRef, str | None], None]
+TargetLoader = Callable[[], list[RepoTarget]]
+PinCheck = Callable[[Path, str], bool]
+
+
+def checkout_at_pin(root: Path, pin: str) -> bool:
+    """Return whether the HEAD of the checkout at root resolves to the commit the pin names.
+
+    A full or abbreviated SHA is compared with HEAD directly. Any other pin must resolve to the
+    HEAD commit inside the checkout itself.
+    """
+    head = scip_builder.resolve_commit(root).lower()
+    if _FULL_OR_ABBREVIATED_SHA.match(pin):
+        return head.startswith(pin.lower())
+    if pin.startswith("-"):
+        return False
+    resolved = process.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"{pin}^{{commit}}"],
+        timeout=process.SHORT_COMMAND_TIMEOUT_SECONDS,
+        cwd=root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return resolved.returncode == 0 and resolved.stdout.strip().lower() == head
+
+
+def _default_reindex(target: RepoTarget, repo: RepoRef, prior: str | None) -> None:
+    reindex_repo(target.root, repo, prior_commit=prior, index_roots=target.index_roots)
 
 
 class RepoIndexWorker:
@@ -46,30 +96,39 @@ class RepoIndexWorker:
         commit_resolver: CommitResolver = scip_builder.resolve_commit,
         reindexer: Reindexer = _default_reindex,
         concurrency: int = _DEFAULT_CONCURRENCY,
+        target_loader: TargetLoader | None = None,
+        pin_check: PinCheck = checkout_at_pin,
     ) -> None:
-        self._targets = {target.name: target for target in targets}
+        self._targets = {target.key: target for target in targets}
         self._resolve = commit_resolver
         self._reindex = reindexer
-        self._indexed: dict[str, str] = {}
-        self._inflight: set[str] = set()
+        self._load_targets = target_loader
+        self._pin_check = pin_check
+        self._indexed: dict[RepoKey, str] = {}
+        self._inflight: set[RepoKey] = set()
         self._idle = threading.Condition()
         self._pool = ThreadPoolExecutor(max_workers=max(1, concurrency))
 
-    def repos(self) -> set[str]:
+    def repos(self) -> set[RepoKey]:
         return set(self._targets)
 
-    def poll_once(self) -> list[str]:
-        submitted: list[str] = []
-        for name, target in self._targets.items():
+    def poll_once(self) -> list[RepoKey]:
+        if self._load_targets is not None:
+            self._targets = {target.key: target for target in self._load_targets()}
+        submitted: list[RepoKey] = []
+        for key, target in self._targets.items():
             desired = target.pin or self._safe_resolve(target)
             if desired is None:
                 continue
             with self._idle:
-                if name in self._inflight or self._indexed.get(name) == desired:
+                if key in self._inflight or self._indexed.get(key) == desired:
                     continue
-                self._inflight.add(name)
+            if target.pin is not None and not self._checkout_reached_pin(target, target.pin):
+                continue
+            with self._idle:
+                self._inflight.add(key)
             self._pool.submit(self._run, target, desired)
-            submitted.append(name)
+            submitted.append(key)
         return submitted
 
     def wait_idle(self, timeout: float | None = None) -> bool:
@@ -94,48 +153,76 @@ class RepoIndexWorker:
         self._pool.shutdown(wait=True)
 
     def _run(self, target: RepoTarget, desired: str) -> None:
-        prior = self._indexed.get(target.name)
+        prior = self._indexed.get(target.key)
         ok = False
         try:
-            self._reindex(target.root, RepoRef(target.name, desired), prior)
+            self._reindex(target, RepoRef(target.name, desired), prior)
             ok = True
         except Exception:  # noqa: BLE001
-            log.exception("reindex failed for %s at %s", target.name, desired[:7])
+            log.exception("reindex failed for %s at %s", target.label, desired[:7])
         finally:
             with self._idle:
                 if ok:
-                    self._indexed[target.name] = desired
-                self._inflight.discard(target.name)
+                    self._indexed[target.key] = desired
+                self._inflight.discard(target.key)
                 self._idle.notify_all()
+
+    def _checkout_reached_pin(self, target: RepoTarget, pin: str) -> bool:
+        try:
+            reached = self._pin_check(target.root, pin)
+        except Exception:  # noqa: BLE001
+            reached = False
+        if not reached:
+            log.debug("checkout of %s is not at pin %s yet, skipping", target.label, pin)
+        return reached
 
     def _safe_resolve(self, target: RepoTarget) -> str | None:
         try:
             return self._resolve(target.root)
         except Exception:  # noqa: BLE001
-            log.warning("commit resolve failed for %s", target.name)
+            log.warning("commit resolve failed for %s", target.label)
             return None
 
 
-def build_worker() -> RepoIndexWorker | None:
-    from services.integration.repositories import load_repository_registry
-
-    settings = get_settings()
-    configured = load_repository_registry(settings).indexed()
-    if not configured:
-        return None
-    targets = [
-        RepoTarget(name=name, root=Path(path), pin=commit)
-        for name, (path, commit) in configured.items()
+def tenant_targets(registries: TenantRegistries) -> list[RepoTarget]:
+    """Return a target for every repository a served tenant indexes."""
+    return [
+        RepoTarget(
+            name=entry.name,
+            root=entry.root,
+            pin=entry.ref,
+            tenant=entry.tenant,
+            index_roots=entry.index_roots,
+        )
+        for entry in registries.indexed()
     ]
-    return RepoIndexWorker(targets, concurrency=settings.repo_index_worker_concurrency)
+
+
+def build_worker(registries: TenantRegistries | None = None) -> RepoIndexWorker | None:
+    settings = get_settings()
+    resolved = registries or TenantRegistries(settings)
+    targets = tenant_targets(resolved)
+    if not targets:
+        return None
+    return RepoIndexWorker(
+        targets,
+        concurrency=settings.repo_index_worker_concurrency,
+        target_loader=lambda: tenant_targets(resolved),
+    )
 
 
 def main() -> None:
-    worker = build_worker()
-    if worker is None:
-        log.warning("no repositories configured; repo-index-worker idle")
-        worker = RepoIndexWorker([])
     settings = get_settings()
+    registries = TenantRegistries(settings)
+    migrate_home_indexes(registries, settings)
+    worker = build_worker(registries)
+    if worker is None:
+        log.warning("no repositories configured, so repo-index-worker idles until one is")
+        worker = RepoIndexWorker(
+            [],
+            concurrency=settings.repo_index_worker_concurrency,
+            target_loader=lambda: tenant_targets(registries),
+        )
     interval = settings.repo_index_poll_interval_seconds
     log.info("repo-index-worker polling %d repos every %.0fs", len(worker.repos()), interval)
     heartbeat_file = (

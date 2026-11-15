@@ -9,6 +9,19 @@ worker and sandbox namespaces, and the namespaces the settings name.
 Each tenant's workspace is a hostPath directory on the node under TENANTS_HOST_ROOT, and the
 review worker mounts that root read-only at /tenants, the layout the EFS access points give the
 workers in AWS.
+
+config/<environment>/tenants/ holds what belongs to one tenant. The files of <tenant>/ are that
+tenant's config bundle, which only its activity worker mounts, at the path its directory config
+source reads. <tenant>.env holds the settings and credentials only that tenant's worker receives.
+`.env` belongs to the home tenant, TENANT or else the first tenant TENANTS names, which without a
+settings file of its own receives every setting of `.env`. Every other tenant gets none of the
+TENANT_OWNED_SETTINGS from `.env` and none of the values any tenant's file sets, so one tenant's
+credentials never reach another tenant's worker.
+
+Each tenant's worker receives its own repository intelligence token as REPO_INTELLIGENCE_TOKEN,
+the token repository intelligence expects of that tenant, which it derives from
+REPO_INTELLIGENCE_TOKEN_KEY unless `.env` sets REPO_INTELLIGENCE_TOKEN_<TENANT>. No cluster pod
+receives the key, and no tenant's worker receives another tenant's token.
 """
 
 from __future__ import annotations
@@ -16,9 +29,10 @@ from __future__ import annotations
 import base64
 import copy
 import hashlib
+import itertools
 import json
 import sys
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -27,6 +41,7 @@ import yaml
 from services import process
 
 from scripts.cluster_env import (
+    WORKSTATION_SETTINGS,
     ComposeNetwork,
     endpoint_values,
     rewrite_address,
@@ -56,6 +71,30 @@ TENANTS_HOST_ROOT = "/var/lib/agentic-dev-platform/tenants"
 TENANTS_CLAIM = "tenants"
 REVIEW_WORKER = "review-worker"
 APP_UID = 10001
+PLATFORM_ENV = "agentic-platform-env"
+CONFIG_VOLUME = "platform-config"
+CONFIG_SECRETS = "platform-config-secrets"
+TENANT_BUNDLE = "tenant-config"
+TENANT_SETTINGS_HASH = "agentic-dev-platform/tenant-settings-hash"
+# The secrets each tenant holds on its own in AWS, plus the identity it signs its own ticket
+# store with, which exists only in that store.
+TENANT_OWNED_SETTINGS = frozenset(
+    {
+        "GITHUB_TOKEN",
+        "JIRA_API_TOKEN",
+        "JIRA_PAT",
+        "REGISTRY_TOKEN",
+        "SLACK_WEBHOOK_URL",
+        "AUTHORSHIP_SIGNING_KEY",
+        "AUTHORSHIP_SIGNING_KEY_PATH",
+        "AUTHORSHIP_IDENTITY_ID",
+    }
+)
+TENANT_OWNED_FILES = frozenset({"authorship-signing-key", "authorship-signing-key.pub"})
+# The review worker signs verdicts, so no activity worker receives the private review key, as no
+# activity worker identity can read it in AWS.
+REVIEW_WORKER_FILES = frozenset({"review-signing-key"})
+REPO_INTELLIGENCE_CALLER_ENV = "REPO_INTELLIGENCE_TOKEN"
 
 
 @dataclass(frozen=True)
@@ -141,8 +180,13 @@ def generated_objects(inputs: RenderInputs) -> list[dict[str, Any]]:
             config_secret[REBAR_STORE_AWS_CONFIG], network, address
         )
     policies = root / "config" / "policies"
+    platform_env = {
+        key: value
+        for key, value in rewrite_env(inputs.env, network, address).values.items()
+        if not _repo_intelligence_credential(key)
+    }
     return [
-        secret("agentic-platform-env", rewrite_env(inputs.env, network, address).values),
+        secret(PLATFORM_ENV, platform_env),
         secret("agentic-platform", workload_secret_values(present, network, address)),
         config_map("agentic-platform", endpoint_values(settings, network, address)),
         config_map("platform-config", config_yaml),
@@ -423,6 +467,237 @@ def mount_tenants_on_review(documents: list[dict[str, Any]]) -> list[dict[str, A
     ]
 
 
+def tenant_bundle(directory: Path) -> dict[str, str]:
+    """Return the YAML files of a tenant's bundle directory, the files its config source reads."""
+    if not directory.is_dir():
+        return {}
+    return {
+        path.name: path.read_text(encoding="utf-8")
+        for path in sorted(directory.iterdir())
+        if path.is_file() and path.suffix == ".yaml"
+    }
+
+
+def home_tenant(settings: Settings, names: Sequence[str]) -> str:
+    """Return the tenant whose settings `.env` holds, TENANT or else the first TENANTS names."""
+    return settings.tenant if settings.tenant in names else names[0]
+
+
+def _pod_settings(
+    values: Mapping[str, str], network: ComposeNetwork, address: str
+) -> dict[str, str]:
+    return {
+        key: rewrite_address(value, network, address)[0]
+        for key, value in values.items()
+        if key not in WORKSTATION_SETTINGS
+    }
+
+
+def _document(documents: Iterable[dict[str, Any]], kind: str, namespace: str, name: str) -> dict:
+    return next(
+        d
+        for d in documents
+        if d["kind"] == kind
+        and d["metadata"].get("namespace") == namespace
+        and d["metadata"]["name"] == name
+    )
+
+
+def _project_bundle(worker: dict[str, Any], tenant: str, files: Iterable[str]) -> None:
+    """Add the bundle to the worker's operator config volume under tenants/<tenant>/.
+
+    Explicit items keep the bundle files out of the volume root, where they would replace the
+    environment's files of the same name.
+    """
+    items = [{"key": name, "path": f"tenants/{tenant}/{name}"} for name in files]
+    for volume in worker["spec"]["template"]["spec"]["volumes"]:
+        if volume["name"] == CONFIG_VOLUME:
+            volume["projected"]["sources"].append(
+                {"configMap": {"name": TENANT_BUNDLE, "items": items}}
+            )
+
+
+@dataclass(frozen=True)
+class TicketStore:
+    repo_root: str
+    bucket: str
+    prefix: str
+
+
+def ticket_store(bundle: Mapping[str, str], environment: Path) -> TicketStore:
+    """Return the rebar store that the tenant's bundle or the environment's tickets.yaml names."""
+    text = bundle.get("tickets.yaml")
+    if text is None:
+        path = environment / "tickets.yaml"
+        text = path.read_text(encoding="utf-8") if path.is_file() else ""
+    raw = yaml.safe_load(text) or {}
+    backend, store = raw.get("backend") or {}, raw.get("store") or {}
+    return TicketStore(
+        repo_root=str(backend.get("repo_root") or "").strip().rstrip("/"),
+        bucket=str(store.get("bucket") or "").strip(),
+        prefix=str(store.get("prefix") or "").strip().strip("/"),
+    )
+
+
+def _prefixes_overlap(first: str, second: str) -> bool:
+    return (
+        not first
+        or not second
+        or first == second
+        or first.startswith(f"{second}/")
+        or second.startswith(f"{first}/")
+    )
+
+
+def refuse_shared_stores(stores: Mapping[str, TicketStore]) -> None:
+    """Refuse a rebar ticket store outside its tenant's workspace or overlapping another's."""
+    from scripts.tenant_render import tenant_root
+
+    for tenant, store in stores.items():
+        root = tenant_root(tenant)
+        if not store.repo_root.startswith(f"{root}/"):
+            raise ValueError(
+                f"tenant {tenant} keeps its rebar ticket store at {store.repo_root or 'no path'}, "
+                f"outside its workspace {root}. Set backend.repo_root under {root} in its "
+                "tickets.yaml"
+            )
+    for (first, one), (second, other) in itertools.combinations(stores.items(), 2):
+        shared_bucket = one.bucket and one.bucket == other.bucket
+        if shared_bucket and _prefixes_overlap(one.prefix, other.prefix):
+            raise ValueError(
+                f"tenants {first} and {second} sync their rebar ticket stores to overlapping "
+                f"locations in bucket {one.bucket}, prefixes {one.prefix or '(root)'} and "
+                f"{other.prefix or '(root)'}. Give each tenant its own store.prefix"
+            )
+
+
+def _refuse_shared_schedules(pod_env: Mapping[str, Mapping[str, str]]) -> None:
+    seen: dict[str, str] = {}
+    for tenant, values in pod_env.items():
+        schedule = values.get("INTAKE_SCHEDULE_ID", "")
+        if not schedule:
+            continue
+        if schedule in seen:
+            raise ValueError(
+                f"tenants {seen[schedule]} and {tenant} share INTAKE_SCHEDULE_ID {schedule}, so "
+                "each worker would replace the other's intake schedule"
+            )
+        seen[schedule] = tenant
+
+
+def _repo_intelligence_credential(name: str) -> bool:
+    """Return whether the setting is a repository intelligence token or the token key."""
+    from services.repository_intelligence.tenant_tokens import ENV_PREFIX
+
+    return name == REPO_INTELLIGENCE_CALLER_ENV or name.startswith(ENV_PREFIX)
+
+
+def _refuse_tenant_tokens(own: Mapping[str, Mapping[str, str] | None], environment: str) -> None:
+    for name, values in own.items():
+        refused = sorted(key for key in values or {} if _repo_intelligence_credential(key))
+        if refused:
+            raise ValueError(
+                f"config/{environment}/tenants/{name}.env sets {', '.join(refused)}. The render "
+                "gives each tenant's worker its own repository intelligence token, so remove the "
+                "setting from that file"
+            )
+
+
+def localize_tenants(
+    documents: list[dict[str, Any]], inputs: RenderInputs, names: Iterable[str]
+) -> list[dict[str, Any]]:
+    """Give each tenant's worker its own config bundle and its own settings.
+
+    The home tenant without a settings file keeps every setting of `.env`, the single-tenant
+    behaviour. Every other tenant receives the shared settings plus its own file's values.
+    With more than one tenant, each tenant other than the home tenant must name its own
+    repositories, and each rebar tenant's store must lie in its own workspace and sync to its
+    own bucket location.
+
+    Every tenant's worker, the home tenant's included, receives its own repository intelligence
+    token and none of the repository intelligence tokens or the key of `.env`. A tenant's
+    settings file may not set them. The worker's settings hash covers the token, so a new token
+    restarts the worker.
+
+    The bundle is left out of the config hash, so an apply that changes only bundle contents
+    reaches the running worker through the kubelet's ConfigMap sync without a restart.
+    """
+    from services.integration.tickets.backend import REBAR
+    from services.repository_intelligence.tenant_tokens import tenant_tokens
+
+    from scripts.tenant_config import apply_tenant_settings, read_tenant_settings
+    from scripts.tenant_render import WORKER, worker_namespace
+
+    settings, network = inputs.settings, inputs.network
+    address = settings.k8s_compose_address
+    environment = inputs.root / "config" / settings.environment
+    directory = environment / "tenants"
+    names = list(names)
+    home = home_tenant(settings, names)
+    own = {name: read_tenant_settings(directory, name) for name in names}
+    _refuse_tenant_tokens(own, settings.environment)
+    for values in own.values():
+        if values:
+            apply_tenant_settings(settings, values)
+    owned = TENANT_OWNED_SETTINGS.union(*(values for values in own.values() if values))
+    workstation = {
+        key: value
+        for key, value in rewrite_env(inputs.env, network, address).values.items()
+        if not _repo_intelligence_credential(key)
+    }
+    shared = {key: value for key, value in workstation.items() if key not in owned}
+    present = {key: value for key, value in inputs.env.items() if value is not None}
+    tokens = tenant_tokens(
+        names, key=present.get("REPO_INTELLIGENCE_TOKEN_KEY", "").strip(), environ=present
+    )
+    default_backend = str(Settings.model_fields["ticket_backend"].default)
+    result = list(documents)
+    pod_env: dict[str, dict[str, str]] = {}
+    stores: dict[str, TicketStore] = {}
+    for name in names:
+        namespace = worker_namespace(name)
+        bundle = tenant_bundle(directory / name)
+        if len(names) > 1 and name != home and "repositories.yaml" not in bundle:
+            raise ValueError(
+                f"tenant {name} names no repositories of its own. Copy "
+                f"config/{settings.environment}/tenants/beta.example/ to "
+                f"config/{settings.environment}/tenants/{name}/ and edit its repositories.yaml"
+            )
+        worker = _document(result, "Deployment", namespace, WORKER)
+        if bundle:
+            bundle_map = config_map(TENANT_BUNDLE, bundle)
+            bundle_map["metadata"]["namespace"] = namespace
+            result.append(bundle_map)
+            _project_bundle(worker, name, sorted(bundle))
+        values = own[name]
+        files = _document(result, "Secret", namespace, CONFIG_SECRETS)
+        if values is None and name == home:
+            pod_env[name] = dict(workstation)
+            withheld = REVIEW_WORKER_FILES
+            hashed: dict[str, str] | None = None
+        else:
+            withheld = REVIEW_WORKER_FILES | TENANT_OWNED_FILES
+            hashed = values or {}
+            pod_env[name] = {**shared, **_pod_settings(hashed, network, address)}
+        if name in tokens:
+            pod_env[name][REPO_INTELLIGENCE_CALLER_ENV] = tokens[name]
+            hashed = {**(hashed or {}), REPO_INTELLIGENCE_CALLER_ENV: tokens[name]}
+        env = _document(result, "Secret", namespace, PLATFORM_ENV)
+        env["data"] = secret(PLATFORM_ENV, pod_env[name])["data"]
+        if hashed is not None:
+            digest = hashlib.sha256(json.dumps(hashed, sort_keys=True).encode()).hexdigest()[:16]
+            template = worker["spec"]["template"].setdefault("metadata", {})
+            template.setdefault("annotations", {})[TENANT_SETTINGS_HASH] = digest
+        files["data"] = {key: value for key, value in files["data"].items() if key not in withheld}
+        backend = pod_env[name].get("TICKET_BACKEND") or default_backend
+        if backend.strip().lower() == REBAR:
+            stores[name] = ticket_store(bundle, environment)
+    if len(names) > 1:
+        refuse_shared_stores(stores)
+        _refuse_shared_schedules(pod_env)
+    return result
+
+
 def render(inputs: RenderInputs, overlay: Path = OVERLAY) -> list[dict[str, Any]]:
     """Return the namespaces, then the overlay, then the generated config, ready to apply."""
     from scripts.tenant_render import tenantize
@@ -433,9 +708,11 @@ def render(inputs: RenderInputs, overlay: Path = OVERLAY) -> list[dict[str, Any]
     set_images(documents, inputs.build_id, inputs.image_registry)
     set_build_id(documents, inputs.build_id)
     add_bedrock_relay(documents, inputs.settings)
-    documents = tenantize(
-        mount_tenants_on_review(documents),
-        local_tenants(inputs.settings, documents, inputs.root),
+    tenants = local_tenants(inputs.settings, documents, inputs.root)
+    documents = localize_tenants(
+        tenantize(mount_tenants_on_review(documents), tenants),
+        inputs,
+        [tenant.name for tenant in tenants],
     )
     stamp_config_hash(documents, generated)
     return retarget_namespaces(

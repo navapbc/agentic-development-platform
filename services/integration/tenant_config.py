@@ -391,19 +391,24 @@ def validate_bundle(directory: Path, settings: Settings) -> None:
         raise ConfigError(f"the tenant config bundle is refused for these reasons:\n{reasons}")
 
 
-def build_source(settings: Settings) -> BundleSource:
+def tenant_source(settings: Settings, tenant: str) -> BundleSource:
+    """Return the bundle source of the named tenant, which this process only reads."""
     from services.integration.credentials import env_config_dir
 
-    if not settings.tenant:
-        raise ConfigError("TENANT is not set. Every run belongs to a tenant.")
     if settings.tenant_config_bucket:
         from scripts.aws_clients import configure_aws_fips, s3_client
 
         configure_aws_fips(settings)
         client = s3_client(region=settings.aws_region)
-        return S3Source(client, settings.tenant_config_bucket, settings.tenant)
-    path = env_config_dir(settings.environment) / "tenants" / settings.tenant
-    return DirectorySource(path, settings.tenant)
+        return S3Source(client, settings.tenant_config_bucket, tenant)
+    path = env_config_dir(settings.environment) / "tenants" / tenant
+    return DirectorySource(path, tenant)
+
+
+def build_source(settings: Settings) -> BundleSource:
+    if not settings.tenant:
+        raise ConfigError("TENANT is not set. Every run belongs to a tenant.")
+    return tenant_source(settings, settings.tenant)
 
 
 def _default_store_root() -> Path:

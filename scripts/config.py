@@ -191,6 +191,8 @@ class Settings(BaseSettings):
 
     repo_intelligence_url: str = "http://localhost:8120"
     repo_intelligence_cbm_binary: str = ""
+    repo_intelligence_token: str = ""
+    repo_intelligence_token_key: str = ""
 
     coordination_url: str = "http://localhost:8130"
     mcp_allowed_hosts: str = ""
@@ -257,6 +259,7 @@ class Settings(BaseSettings):
     tenants: str = ""
     tenant_config_bucket: str = ""
     tenant_config_refresh_seconds: int = 60
+    index_checkout_sync_seconds: int = 300
     gate_registry_tls_verify: bool = True
 
     reap_schedule_id: str = "orphan-reaper"

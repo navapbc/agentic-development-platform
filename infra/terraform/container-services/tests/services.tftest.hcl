@@ -359,3 +359,131 @@ run "a_platform_setting_may_not_override_the_module" {
 
   expect_failures = [terraform_data.platform_settings_guard]
 }
+
+run "repository_intelligence_reads_each_tenant_checkouts_and_bundle" {
+  command = apply
+
+  variables {
+    tenant_workspaces         = ["adp", "payments"]
+    tenant_config_bucket_arn  = "arn:aws:s3:::agentic-platform-tenant-config-abc"
+    tenant_config_kms_key_arn = "arn:aws:kms:us-east-1:111111111111:key/config"
+    repo_intelligence_tokens = {
+      adp      = { secret_arn = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/tenants/adp/repo-intelligence-token-a", kms_key_arn = "arn:aws:kms:us-east-1:111111111111:key/tenant-adp" }
+      payments = { secret_arn = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/tenants/payments/repo-intelligence-token-b", kms_key_arn = "arn:aws:kms:us-east-1:111111111111:key/tenant-payments" }
+    }
+  }
+
+  assert {
+    condition = alltrue([
+      for name in ["repo-intelligence", "repo-index-worker"] :
+      toset([for mount in jsondecode(aws_ecs_task_definition.workload[name].container_definitions)[1].mountPoints : "${mount.sourceVolume}:${mount.containerPath}:${try(mount.readOnly, false)}"]) ==
+      toset(["tmp:/tmp:false", "tenants:/tenants:true", "index:/app/repository_indexes:false"])
+    ])
+    error_message = "Repository intelligence or the index worker does not mount the tenants root read-only in place of the checkouts."
+  }
+
+  assert {
+    condition = contains(
+      [for mount in jsondecode(aws_ecs_task_definition.workload["review-worker"].container_definitions)[1].mountPoints : "${mount.sourceVolume}:${mount.containerPath}:${try(mount.readOnly, false)}"],
+      "checkouts:/repositories:true",
+    )
+    error_message = "The review worker lost its checkouts mount."
+  }
+
+  assert {
+    condition = alltrue([
+      for name in ["repo-intelligence", "repo-index-worker"] : alltrue([
+        for setting in ["TENANTS=adp,payments", "TENANT_CONFIG_BUCKET=agentic-platform-tenant-config-abc", "AWS_REGION=us-east-1", "AWS_USE_FIPS_ENDPOINT=true"] :
+        contains([for variable in jsondecode(aws_ecs_task_definition.workload[name].container_definitions)[1].environment : "${variable.name}=${variable.value}"], setting)
+      ])
+    ])
+    error_message = "Repository intelligence or the index worker does not receive the tenants, the config bucket, and the region."
+  }
+
+  assert {
+    condition = (
+      { for secret in jsondecode(aws_ecs_task_definition.workload["repo-intelligence"].container_definitions)[1].secrets : secret.name => secret.valueFrom } == {
+        REPO_INTELLIGENCE_TOKEN_ADP      = var.repo_intelligence_tokens.adp.secret_arn
+        REPO_INTELLIGENCE_TOKEN_PAYMENTS = var.repo_intelligence_tokens.payments.secret_arn
+      } &&
+      length(try(jsondecode(aws_ecs_task_definition.workload["repo-index-worker"].container_definitions)[1].secrets, [])) == 0
+    )
+    error_message = "Repository intelligence does not receive each tenant's token, or the index worker receives one."
+  }
+
+  assert {
+    condition = (
+      toset(one([for statement in jsondecode(aws_iam_role_policy.workload_execution["repo-intelligence"].policy).Statement : statement.Resource if statement.Sid == "ReadTheInjectedSecrets"])) ==
+      toset([var.repo_intelligence_tokens.adp.secret_arn, var.repo_intelligence_tokens.payments.secret_arn]) &&
+      toset(one([for statement in jsondecode(aws_iam_role_policy.workload_execution["repo-intelligence"].policy).Statement : statement.Resource if statement.Sid == "DecryptTheInjectedSecrets"])) ==
+      toset([var.repo_intelligence_tokens.adp.kms_key_arn, var.repo_intelligence_tokens.payments.kms_key_arn]) &&
+      alltrue([for statement in jsondecode(aws_iam_role_policy.workload_execution["repo-index-worker"].policy).Statement : statement.Sid != "ReadTheInjectedSecrets"])
+    )
+    error_message = "The repository intelligence execution role does not read exactly the tenant tokens and their keys, or the index worker reads a secret."
+  }
+
+  assert {
+    condition = alltrue([
+      for name in ["repo-intelligence", "repo-index-worker"] : (
+        one([for statement in jsondecode(aws_iam_role_policy.workload_task[name].policy).Statement : statement.Action if statement.Sid == "MountTenants"]) == ["elasticfilesystem:ClientMount"] &&
+        length([for statement in jsondecode(aws_iam_role_policy.workload_task[name].policy).Statement : statement if statement.Sid == "MountCheckouts"]) == 0 &&
+        one([for statement in jsondecode(aws_iam_role_policy.workload_task[name].policy).Statement : statement if statement.Sid == "ListTheTenantBundles"]).Resource == var.tenant_config_bucket_arn &&
+        one([for statement in jsondecode(aws_iam_role_policy.workload_task[name].policy).Statement : statement if statement.Sid == "ListTheTenantBundles"]).Action == ["s3:ListBucket", "s3:ListBucketVersions"] &&
+        one([for statement in jsondecode(aws_iam_role_policy.workload_task[name].policy).Statement : statement if statement.Sid == "ListTheTenantBundles"]).Condition.StringLike["s3:prefix"] == ["tenants/*"] &&
+        one([for statement in jsondecode(aws_iam_role_policy.workload_task[name].policy).Statement : statement if statement.Sid == "ReadTheTenantBundles"]).Resource == "arn:aws:s3:::agentic-platform-tenant-config-abc/tenants/*" &&
+        one([for statement in jsondecode(aws_iam_role_policy.workload_task[name].policy).Statement : statement if statement.Sid == "ReadTheTenantBundles"]).Action == ["s3:GetObject", "s3:GetObjectVersion"] &&
+        one([for statement in jsondecode(aws_iam_role_policy.workload_task[name].policy).Statement : statement if statement.Sid == "DecryptTheTenantBundles"]).Resource == var.tenant_config_kms_key_arn &&
+        one([for statement in jsondecode(aws_iam_role_policy.workload_task[name].policy).Statement : statement if statement.Sid == "DecryptTheTenantBundles"]).Condition.StringEquals["kms:ViaService"] == "s3.us-east-1.amazonaws.com"
+      )
+    ])
+    error_message = "Repository intelligence or the index worker does not mount the tenants root read-only, or reads the config bucket beyond tenants/."
+  }
+
+  assert {
+    condition     = length([for statement in jsondecode(aws_iam_role_policy.workload_task["review-worker"].policy).Statement : statement if can(regex("TenantBundles$", statement.Sid))]) == 0
+    error_message = "The review worker reads the tenant config bucket."
+  }
+
+  assert {
+    condition     = contains(keys(aws_vpc_security_group_ingress_rule.workspace_from_workloads), "repo-intelligence") && contains(keys(aws_vpc_security_group_ingress_rule.workspace_from_workloads), "repo-index-worker")
+    error_message = "The workspace mount targets do not admit NFS from repository intelligence and the index worker."
+  }
+
+  assert {
+    condition     = length([for key in keys(output.secret_readers) : key if startswith(key, "repo_intelligence_token")]) == 0 && length([for key in keys(output.secret_restart_services) : key if startswith(key, "repo_intelligence_token")]) == 0
+    error_message = "A tenant token reached the secret store's readers or restart services."
+  }
+
+  assert {
+    condition     = output.repository_intelligence_roles.execution_role_arn != "" && length(output.repository_intelligence_roles.task_role_arns) == 2
+    error_message = "The output does not name the repository intelligence execution role and both task roles."
+  }
+}
+
+run "without_tenants_repository_intelligence_reads_the_checkouts" {
+  command = apply
+
+  assert {
+    condition = alltrue([
+      for name in ["repo-intelligence", "repo-index-worker"] : (
+        contains([for mount in jsondecode(aws_ecs_task_definition.workload[name].container_definitions)[1].mountPoints : "${mount.sourceVolume}:${mount.containerPath}:${try(mount.readOnly, false)}"], "checkouts:/repositories:true") &&
+        !contains([for variable in jsondecode(aws_ecs_task_definition.workload[name].container_definitions)[1].environment : variable.name], "TENANT_CONFIG_BUCKET") &&
+        length([for statement in jsondecode(aws_iam_role_policy.workload_task[name].policy).Statement : statement if can(regex("TenantBundles$", statement.Sid))]) == 0
+      )
+    ])
+    error_message = "Without tenants, repository intelligence or the index worker does not mount the checkouts, or reads a config bucket."
+  }
+}
+
+run "the_token_tenants_match_the_workspaces" {
+  command = plan
+
+  variables {
+    tenant_workspaces = ["adp"]
+    repo_intelligence_tokens = {
+      payments = { secret_arn = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/tenants/payments/repo-intelligence-token-b", kms_key_arn = "arn:aws:kms:us-east-1:111111111111:key/tenant-payments" }
+    }
+  }
+
+  expect_failures = [terraform_data.services_guard]
+}

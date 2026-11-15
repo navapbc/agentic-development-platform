@@ -324,9 +324,11 @@ async def main() -> None:
             log.info("recorded review trust-root change: %s", change)
 
     tenant_refresh_task = None
+    index_checkout_task = None
     if role in (WORKER_ROLE_ACTIVITY, WORKER_ROLE_ALL):
         from services.integration.tickets.store_remote import tickets_store_preflight
         from services.orchestration.authorship import authorship_signing_preflight
+        from services.orchestration.index_checkouts import keep_index_checkouts
         from services.orchestration.tenant_pinning import (
             install_tenant_schedules,
             refresh_tenant_config,
@@ -334,12 +336,16 @@ async def main() -> None:
         )
 
         tenant_config = start_tenant_config(settings)
+        active_bundle = tenant_config.active
         log.info(
-            "serving tenant %s on config bundle %s", tenant_config.tenant, tenant_config.active.id
+            "serving tenant %s on config bundle %s",
+            tenant_config.tenant,
+            active_bundle.id if active_bundle else "none",
         )
         tenant_refresh_task = asyncio.create_task(
             refresh_tenant_config(tenant_config, settings.tenant_config_refresh_seconds)
         )
+        index_checkout_task = asyncio.create_task(keep_index_checkouts(settings))
         await install_tenant_schedules(client, settings)
         tickets_store_preflight(settings)
         authorship_signing_preflight(settings)
@@ -388,7 +394,7 @@ async def main() -> None:
     try:
         await asyncio.gather(*runners)
     finally:
-        for task in (heartbeat_task, watch_task, tenant_refresh_task):
+        for task in (heartbeat_task, watch_task, tenant_refresh_task, index_checkout_task):
             if task is not None:
                 task.cancel()
 

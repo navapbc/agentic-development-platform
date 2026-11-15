@@ -40,6 +40,7 @@ locals {
       spec.database ? [name == "db-migrate" ? var.database_migrator_secret_arn : var.database_app_secret_arn] : [],
       spec.temporal && local.ca_secret != null ? [local.ca_secret] : [],
       [for key in local.workload_secret_names[name] : lookup(local.secret_arn_lookup, key, "")],
+      [for token in values(lookup(local.tenant_token_reads, name, {})) : token.secret_arn],
     ))
   }
   workload_secret_keys = {
@@ -47,8 +48,38 @@ locals {
       spec.database ? [var.secret_kms_key_arn] : [],
       [for key in local.workload_secret_names[name] : lookup(local.secret_kms_keys, key, "")],
       spec.temporal && local.ca_secret != null ? [try(var.temporal.ca_kms_key_arn, "")] : [],
+      [for token in values(lookup(local.tenant_token_reads, name, {})) : token.kms_key_arn],
     )))
   }
+
+  tenant_config_statements = concat(
+    var.tenant_config_bucket_arn == "" ? [] : [
+      {
+        Sid       = "ListTheTenantBundles"
+        Effect    = "Allow"
+        Action    = ["s3:ListBucket", "s3:ListBucketVersions"]
+        Resource  = var.tenant_config_bucket_arn
+        Condition = { StringLike = { "s3:prefix" = ["tenants/*"] } }
+      },
+    ],
+    var.tenant_config_bucket_arn == "" ? [] : [
+      {
+        Sid      = "ReadTheTenantBundles"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject", "s3:GetObjectVersion"]
+        Resource = "${var.tenant_config_bucket_arn}/tenants/*"
+      },
+    ],
+    var.tenant_config_bucket_arn == "" || var.tenant_config_kms_key_arn == "" ? [] : [
+      {
+        Sid       = "DecryptTheTenantBundles"
+        Effect    = "Allow"
+        Action    = "kms:Decrypt"
+        Resource  = var.tenant_config_kms_key_arn
+        Condition = { StringEquals = { "kms:ViaService" = "s3.${local.region}.amazonaws.com" } }
+      },
+    ],
+  )
 
   workload_execution_policies = {
     for name, spec in local.all_workloads : name => jsonencode({
@@ -118,6 +149,7 @@ locals {
             Resource = var.evidence_kms_key_arn
           },
         ] : [],
+        [for statement in local.tenant_config_statements : statement if contains(local.tenant_config_readers, name)],
         lookup(local.extra_task_statements, name, []),
       )
     })

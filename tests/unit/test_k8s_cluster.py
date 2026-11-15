@@ -18,6 +18,7 @@ from scripts.cluster_env import (
 from scripts.k8s_cluster import delete_retired, deployments, exec_argv, one_off_argv, removable
 from scripts.k8s_render import RenderInputs, render
 from services import process
+from services.repository_intelligence.tenant_tokens import derive_token
 from tests.support import hermetic_settings
 
 REPOSITORY = Path(__file__).resolve().parents[2]
@@ -34,6 +35,49 @@ NETWORK = compose_network(
         }
     }
 )
+
+CLAIMS_REPOSITORIES = """config_version: 1
+repositories:
+  claims-web:
+    backend: local
+    path: /src/claims-web
+"""
+BETA_REPOSITORIES = """config_version: 1
+repositories:
+  beta-web:
+    backend: local
+    path: /src/beta-web
+    profile: node-react
+"""
+ADP_TICKETS = """config_version: 1
+backend:
+  repo_root: /tenants/adp/rebar-tickets
+store:
+  bucket: rebar-tickets
+  prefix: tickets/
+"""
+
+
+def _beta_tickets(repo_root: str = "/tenants/beta/rebar-tickets", prefix: str = "beta/tickets/"):
+    return ADP_TICKETS.replace("/tenants/adp/rebar-tickets", repo_root).replace(
+        "prefix: tickets/", f"prefix: {prefix}"
+    )
+
+
+def _beta_files(**extra: str) -> dict[str, str]:
+    return {
+        "tickets.yaml": ADP_TICKETS,
+        "authorship-signing-key": "adp-signing-key\n",
+        "tenants/beta/repositories.yaml": BETA_REPOSITORIES,
+        "tenants/beta/tickets.yaml": _beta_tickets(),
+        "tenants/beta.env": "GITHUB_TOKEN=beta-token\nREBAR_PROJECT=BETA\n"
+        "EVIDENCE_URL=http://minio:9000/evidence\n",
+        **extra,
+    }
+
+
+ADP_ENV = {"GITHUB_TOKEN": "adp-token", "TICKET_BACKEND": "rebar", "SLACK_WEBHOOK_URL": "adp-hook"}
+TOKEN_KEY = "workstation-token-key"
 
 
 def test_a_compose_address_becomes_the_published_port_on_the_pod_address() -> None:
@@ -78,7 +122,12 @@ def test_a_multi_line_value_is_refused() -> None:
         rewrite_env({"KEY": "a\nb"}, NETWORK, "h")
 
 
-def _rendered(tmp_path: Path, **settings: object) -> list[dict]:
+def _rendered(
+    tmp_path: Path,
+    files: dict[str, str] | None = None,
+    env: dict[str, str] | None = None,
+    **settings: object,
+) -> list[dict]:
     root = tmp_path / "checkout"
     root.mkdir(parents=True)
     for directory in ("deploy", "openhands/policies", "config/policies", "config/platform"):
@@ -95,6 +144,9 @@ def _rendered(tmp_path: Path, **settings: object) -> list[dict]:
         (config / name).write_text((REPOSITORY / "config/local" / f"{name}.example").read_text())
     (config / "review-signing-key").write_text("secret-key\n")
     (config / "rebar-store-aws-config").write_text("endpoint_url = http://minio:9000\n")
+    for name, text in (files or {}).items():
+        (config / name).parent.mkdir(parents=True, exist_ok=True)
+        (config / name).write_text(text)
     return render(
         RenderInputs(
             settings=hermetic_settings(**{"tenants": "adp", **settings}),
@@ -102,6 +154,7 @@ def _rendered(tmp_path: Path, **settings: object) -> list[dict]:
                 "DATABASE_URL": "postgresql://u:p@postgres:5432/db",
                 "AWS_PROFILE": "p",
                 "MCP_GATEWAY_TOKEN": "gateway-token",
+                **(env or {}),
             },
             network=NETWORK,
             build_id="0.3.0.1",
@@ -219,7 +272,9 @@ def test_configured_namespaces_move_every_resource_and_reference(tmp_path: Path)
 def test_each_tenant_writes_its_own_host_directory_and_the_review_worker_reads_them_all(
     tmp_path: Path,
 ) -> None:
-    documents = _rendered(tmp_path, tenants="adp,claims")
+    documents = _rendered(
+        tmp_path, {"tenants/claims/repositories.yaml": CLAIMS_REPOSITORIES}, tenants="adp,claims"
+    )
 
     for tenant in ("adp", "claims"):
         worker = next(
@@ -407,3 +462,301 @@ def test_the_retired_objects_are_deleted_from_the_configured_namespaces() -> Non
         c[3:8] for c in calls
     ]
     assert ["delete", "namespace", "sbx", "--ignore-not-found"] in [c[3:7] for c in calls]
+
+
+def _in(documents: list[dict], kind: str, namespace: str, name: str) -> dict | None:
+    return next(
+        (
+            d
+            for d in documents
+            if d["kind"] == kind
+            and d["metadata"].get("namespace") == namespace
+            and d["metadata"]["name"] == name
+        ),
+        None,
+    )
+
+
+def _secret_values(documents: list[dict], namespace: str, name: str) -> dict[str, str]:
+    found = _in(documents, "Secret", namespace, name)
+    assert found is not None
+    return {key: base64.b64decode(value).decode() for key, value in found["data"].items()}
+
+
+def _worker(documents: list[dict], tenant: str) -> dict:
+    found = _in(documents, "Deployment", f"tenant-{tenant}", "activity-worker")
+    assert found is not None
+    return found
+
+
+def _worker_env(documents: list[dict], tenant: str) -> dict[str, str]:
+    container = _worker(documents, tenant)["spec"]["template"]["spec"]["containers"][0]
+    return {e["name"]: e["value"] for e in container["env"] if "value" in e}
+
+
+def _bundle_sources(documents: list[dict], tenant: str) -> list[dict]:
+    volumes = _worker(documents, tenant)["spec"]["template"]["spec"]["volumes"]
+    config = next(v for v in volumes if v["name"] == k8s_render.CONFIG_VOLUME)
+    return [
+        source["configMap"]
+        for source in config["projected"]["sources"]
+        if source.get("configMap", {}).get("name") == k8s_render.TENANT_BUNDLE
+    ]
+
+
+def test_a_second_tenant_gets_its_own_namespaces_account_queue_and_workspace(
+    tmp_path: Path,
+) -> None:
+    from services.orchestration.task_queues import run_task_queue, tenant_schedule_id
+
+    documents = _rendered(tmp_path, _beta_files(), ADP_ENV, tenants="adp,beta", tenant="adp")
+
+    names = {d["metadata"]["name"] for d in documents if d["kind"] == "Namespace"}
+    assert {"tenant-adp", "tenant-adp-sandbox", "tenant-beta", "tenant-beta-sandbox"} <= names
+    assert _in(documents, "ServiceAccount", "tenant-beta", "activity-worker") is not None
+    binding = _in(documents, "RoleBinding", "tenant-beta-sandbox", "activity-worker-sandbox")
+    assert binding is not None and binding["subjects"][0]["namespace"] == "tenant-beta"
+    env = _worker_env(documents, "beta")
+    assert env["TENANT"] == "beta"
+    assert env["OPENHANDS_SANDBOX_NAMESPACE"] == "tenant-beta-sandbox"
+    assert env["REPOSITORY_ROOT"] == "/tenants/beta/repositories"
+    assert env["EXECUTION_WORKSPACE_ROOT"] == "/tenants/beta/workspaces"
+    beta = hermetic_settings(tenant=env["TENANT"])
+    assert run_task_queue(beta) == "agent-platform-beta"
+    assert tenant_schedule_id("rebar-intake", beta) == "rebar-intake-beta"
+    assert tenant_schedule_id(beta.reap_schedule_id, beta) == "orphan-reaper-beta"
+    claim = _in(documents, "PersistentVolumeClaim", "tenant-beta", "workspaces")
+    assert claim is not None
+    volume = _named(documents, "PersistentVolume", claim["spec"]["volumeName"])
+    assert volume["spec"]["hostPath"]["path"] == f"{k8s_render.TENANTS_HOST_ROOT}/beta"
+
+
+def test_each_tenant_mounts_only_its_own_bundle(tmp_path: Path) -> None:
+    documents = _rendered(tmp_path, _beta_files(), ADP_ENV, tenants="adp,beta", tenant="adp")
+
+    bundle = _in(documents, "ConfigMap", "tenant-beta", k8s_render.TENANT_BUNDLE)
+    assert bundle is not None
+    assert set(bundle["data"]) == {"repositories.yaml", "tickets.yaml"}
+    assert "beta-web" in bundle["data"]["repositories.yaml"]
+    assert _bundle_sources(documents, "beta") == [
+        {
+            "name": k8s_render.TENANT_BUNDLE,
+            "items": [
+                {"key": "repositories.yaml", "path": "tenants/beta/repositories.yaml"},
+                {"key": "tickets.yaml", "path": "tenants/beta/tickets.yaml"},
+            ],
+        }
+    ]
+    assert _in(documents, "ConfigMap", "tenant-adp", k8s_render.TENANT_BUNDLE) is None
+    assert _bundle_sources(documents, "adp") == []
+
+
+def test_no_tenant_receives_another_tenants_settings_or_signing_key(tmp_path: Path) -> None:
+    documents = _rendered(tmp_path, _beta_files(), ADP_ENV, tenants="adp,beta", tenant="adp")
+
+    adp = _secret_values(documents, "tenant-adp", k8s_render.PLATFORM_ENV)
+    beta = _secret_values(documents, "tenant-beta", k8s_render.PLATFORM_ENV)
+    assert adp["GITHUB_TOKEN"] == "adp-token" and adp["SLACK_WEBHOOK_URL"] == "adp-hook"
+    assert "REBAR_PROJECT" not in adp and "beta-token" not in adp.values()
+    assert beta["GITHUB_TOKEN"] == "beta-token" and beta["REBAR_PROJECT"] == "BETA"
+    assert "SLACK_WEBHOOK_URL" not in beta and "adp-token" not in beta.values()
+    assert beta["TICKET_BACKEND"] == "rebar"
+    assert beta["DATABASE_URL"].endswith("@host.docker.internal:5432/db")
+    assert beta["EVIDENCE_URL"] == "http://host.docker.internal:9090/evidence"
+    assert "AWS_PROFILE" not in beta
+    adp_files = _secret_values(documents, "tenant-adp", k8s_render.CONFIG_SECRETS)
+    beta_files = _secret_values(documents, "tenant-beta", k8s_render.CONFIG_SECRETS)
+    assert adp_files["authorship-signing-key"] == "adp-signing-key\n"
+    assert "authorship-signing-key" not in beta_files
+    assert "rebar-store-aws-config" in beta_files
+    assert "review-signing-key" not in adp_files and "review-signing-key" not in beta_files
+    review_files = _secret_values(documents, "agentic-dev-platform", k8s_render.CONFIG_SECRETS)
+    assert review_files["review-signing-key"] == "secret-key\n"
+    annotations = _worker(documents, "beta")["spec"]["template"]["metadata"]["annotations"]
+    assert k8s_render.TENANT_SETTINGS_HASH in annotations
+
+
+def test_a_tenant_without_a_settings_file_other_than_the_home_tenant_gets_no_owned_settings(
+    tmp_path: Path,
+) -> None:
+    files = _beta_files()
+    del files["tenants/beta.env"]
+
+    documents = _rendered(tmp_path, files, ADP_ENV, tenants="adp,beta", tenant="adp")
+
+    beta = _secret_values(documents, "tenant-beta", k8s_render.PLATFORM_ENV)
+    assert not set(beta) & k8s_render.TENANT_OWNED_SETTINGS
+    assert beta["TICKET_BACKEND"] == "rebar"
+    assert _secret_values(documents, "tenant-adp", k8s_render.PLATFORM_ENV)["GITHUB_TOKEN"] == (
+        "adp-token"
+    )
+
+
+def test_the_home_tenant_without_tenant_files_renders_as_before_with_its_own_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    files = {"tickets.yaml": ADP_TICKETS, "authorship-signing-key": "adp-signing-key\n"}
+    env = {**ADP_ENV, "REPO_INTELLIGENCE_TOKEN_KEY": TOKEN_KEY}
+    localized = _rendered(tmp_path / "a", files, env, tenant="adp")
+    monkeypatch.setattr(k8s_render, "localize_tenants", lambda documents, inputs, names: documents)
+    before = _rendered(tmp_path / "b", files, env, tenant="adp")
+    adp_files = _in(before, "Secret", "tenant-adp", k8s_render.CONFIG_SECRETS)
+    assert adp_files is not None
+    del adp_files["data"]["review-signing-key"]
+    adp_env = _in(before, "Secret", "tenant-adp", k8s_render.PLATFORM_ENV)
+    assert adp_env is not None
+    assert "REPO_INTELLIGENCE_TOKEN_KEY" not in adp_env["data"]
+    adp_env["data"]["REPO_INTELLIGENCE_TOKEN"] = base64.b64encode(
+        derive_token(TOKEN_KEY, "adp").encode()
+    ).decode()
+    annotations = _worker(localized, "adp")["spec"]["template"]["metadata"]["annotations"]
+    assert annotations.pop(k8s_render.TENANT_SETTINGS_HASH)
+
+    assert localized == before
+
+
+def test_each_tenant_worker_receives_its_own_token_and_no_pod_the_key(tmp_path: Path) -> None:
+    env = {**ADP_ENV, "REPO_INTELLIGENCE_TOKEN_KEY": TOKEN_KEY}
+    documents = _rendered(tmp_path, _beta_files(), env, tenants="adp,beta", tenant="adp")
+
+    adp = _secret_values(documents, "tenant-adp", k8s_render.PLATFORM_ENV)
+    beta = _secret_values(documents, "tenant-beta", k8s_render.PLATFORM_ENV)
+    assert adp["REPO_INTELLIGENCE_TOKEN"] == derive_token(TOKEN_KEY, "adp")
+    assert beta["REPO_INTELLIGENCE_TOKEN"] == derive_token(TOKEN_KEY, "beta")
+    assert adp["REPO_INTELLIGENCE_TOKEN"] != beta["REPO_INTELLIGENCE_TOKEN"]
+    assert "REPO_INTELLIGENCE_TOKEN_KEY" not in adp and "REPO_INTELLIGENCE_TOKEN_KEY" not in beta
+    assert TOKEN_KEY not in adp.values() and TOKEN_KEY not in beta.values()
+    platform = _secret_values(documents, "agentic-dev-platform", k8s_render.PLATFORM_ENV)
+    assert "REPO_INTELLIGENCE_TOKEN_KEY" not in platform
+    assert TOKEN_KEY not in platform.values()
+    assert "REPO_INTELLIGENCE_TOKEN" not in platform
+
+
+def test_a_tenant_token_set_in_env_replaces_the_derived_one_for_that_tenant_only(
+    tmp_path: Path,
+) -> None:
+    env = {
+        **ADP_ENV,
+        "REPO_INTELLIGENCE_TOKEN_KEY": TOKEN_KEY,
+        "REPO_INTELLIGENCE_TOKEN_BETA": "beta-ris-token",
+    }
+    documents = _rendered(tmp_path, _beta_files(), env, tenants="adp,beta", tenant="adp")
+
+    adp = _secret_values(documents, "tenant-adp", k8s_render.PLATFORM_ENV)
+    beta = _secret_values(documents, "tenant-beta", k8s_render.PLATFORM_ENV)
+    assert beta["REPO_INTELLIGENCE_TOKEN"] == "beta-ris-token"
+    assert adp["REPO_INTELLIGENCE_TOKEN"] == derive_token(TOKEN_KEY, "adp")
+    assert "beta-ris-token" not in adp.values()
+    assert "REPO_INTELLIGENCE_TOKEN_BETA" not in beta
+
+
+def test_a_new_token_key_restarts_every_tenant_worker(tmp_path: Path) -> None:
+    def settings_hashes(key: str, directory: str) -> dict[str, str]:
+        env = {**ADP_ENV, "REPO_INTELLIGENCE_TOKEN_KEY": key}
+        documents = _rendered(
+            tmp_path / directory, _beta_files(), env, tenants="adp,beta", tenant="adp"
+        )
+        return {
+            tenant: _worker(documents, tenant)["spec"]["template"]["metadata"]["annotations"][
+                k8s_render.TENANT_SETTINGS_HASH
+            ]
+            for tenant in ("adp", "beta")
+        }
+
+    first = settings_hashes(TOKEN_KEY, "a")
+
+    assert first == settings_hashes(TOKEN_KEY, "b")
+    assert all(hashed != first[tenant] for tenant, hashed in settings_hashes("other", "c").items())
+
+
+@pytest.mark.parametrize(
+    "setting",
+    ["REPO_INTELLIGENCE_TOKEN", "REPO_INTELLIGENCE_TOKEN_KEY", "REPO_INTELLIGENCE_TOKEN_ADP"],
+)
+def test_a_tenant_settings_file_may_not_set_a_repository_intelligence_token(
+    tmp_path: Path, setting: str
+) -> None:
+    files = _beta_files(**{"tenants/beta.env": f"{setting}=chosen-by-beta\n"})
+
+    with pytest.raises(ValueError, match=f"tenants/beta.env sets {setting}\\. The render"):
+        _rendered(tmp_path, files, ADP_ENV, tenants="adp,beta", tenant="adp")
+
+
+def test_a_second_tenant_must_name_its_own_repositories(tmp_path: Path) -> None:
+    files = _beta_files()
+    del files["tenants/beta/repositories.yaml"]
+
+    with pytest.raises(ValueError, match="tenant beta names no repositories"):
+        _rendered(tmp_path, files, ADP_ENV, tenants="adp,beta", tenant="adp")
+
+
+@pytest.mark.parametrize(
+    ("beta_tickets", "reason"),
+    [
+        (_beta_tickets(prefix="tickets/"), "overlapping locations in bucket rebar-tickets"),
+        (_beta_tickets(prefix="tickets/beta/"), "overlapping locations in bucket rebar-tickets"),
+        (_beta_tickets(repo_root="/tenants/adp/rebar-tickets"), "outside its workspace"),
+        (None, "outside its workspace /tenants/beta"),
+    ],
+)
+def test_each_rebar_tenant_keeps_its_own_ticket_store(
+    tmp_path: Path, beta_tickets: str | None, reason: str
+) -> None:
+    files = _beta_files()
+    if beta_tickets is None:
+        del files["tenants/beta/tickets.yaml"]
+    else:
+        files["tenants/beta/tickets.yaml"] = beta_tickets
+
+    with pytest.raises(ValueError, match=reason):
+        _rendered(tmp_path, files, ADP_ENV, tenants="adp,beta", tenant="adp")
+
+
+def test_a_jira_tenant_needs_no_ticket_store(tmp_path: Path) -> None:
+    files = _beta_files(**{"tenants/beta.env": "TICKET_BACKEND=jira\n"})
+    del files["tenants/beta/tickets.yaml"]
+
+    documents = _rendered(tmp_path, files, ADP_ENV, tenants="adp,beta", tenant="adp")
+
+    assert _secret_values(documents, "tenant-beta", k8s_render.PLATFORM_ENV)["TICKET_BACKEND"] == (
+        "jira"
+    )
+
+
+def test_two_tenants_may_not_share_an_intake_schedule(tmp_path: Path) -> None:
+    files = _beta_files(**{"tenants/beta.env": "INTAKE_SCHEDULE_ID=intake\n"})
+
+    with pytest.raises(ValueError, match="share INTAKE_SCHEDULE_ID intake"):
+        _rendered(
+            tmp_path,
+            files,
+            {**ADP_ENV, "INTAKE_SCHEDULE_ID": "intake"},
+            tenants="adp,beta",
+            tenant="adp",
+        )
+
+
+def test_an_invalid_tenant_setting_refuses_the_render(tmp_path: Path) -> None:
+    files = _beta_files(**{"tenants/beta.env": "LOG_LEVEL=loud\n"})
+
+    with pytest.raises(ValueError, match="LOG_LEVEL"):
+        _rendered(tmp_path, files, ADP_ENV, tenants="adp,beta", tenant="adp")
+
+
+def test_the_second_tenant_examples_render(tmp_path: Path) -> None:
+    examples = REPOSITORY / "config/local/tenants"
+    files = {
+        f"tenants/beta/{path.name}": path.read_text()
+        for path in sorted((examples / "beta.example").iterdir())
+    }
+    files["tenants/beta.env"] = (examples / "beta.env.example").read_text()
+    files["tickets.yaml"] = ADP_TICKETS
+
+    documents = _rendered(tmp_path, files, ADP_ENV, tenants="adp,beta", tenant="adp")
+
+    bundle = _in(documents, "ConfigMap", "tenant-beta", k8s_render.TENANT_BUNDLE)
+    assert bundle is not None
+    assert set(bundle["data"]) == {"checks.yaml", "gates.yaml", "repositories.yaml", "tickets.yaml"}
+    assert _secret_values(documents, "tenant-beta", k8s_render.PLATFORM_ENV)["TICKET_BACKEND"] == (
+        "rebar"
+    )

@@ -472,3 +472,47 @@ def test_each_tenant_sandbox_namespace_admits_only_its_image_prefixes(overlay) -
     prefixes = params["data"]["prefixes"].split("\n")
     assert "9.dkr.ecr.us-west-2.amazonaws.com/agentic-platform/tenants/adp/" in prefixes
     assert {"docker.io/library/python", "python", "library/python"} <= set(prefixes)
+
+
+def test_a_tenant_worker_receives_its_repository_intelligence_token(overlay) -> None:
+    inputs = _inputs()
+    inputs["tenants"].append(_tenant("payments"))
+    for tenant in inputs["tenants"]:
+        tenant["secrets"]["repo_intelligence_token"] = (
+            f"arn:aws:secretsmanager:us-west-2:9:secret:tenants/{tenant['name']}/token"
+        )
+    documents, skipped = eks_render.render(overlay, inputs, REPOSITORY)
+
+    assert skipped == []
+    for name in ("adp", "payments"):
+        provider = _named(documents, "SecretProviderClass", "activity-worker", f"tenant-{name}")
+        objects = json.loads(provider["spec"]["parameters"]["objects"])
+        tokens = [e for e in objects if e["objectAlias"] == "REPO_INTELLIGENCE_TOKEN"]
+        assert tokens == [
+            {
+                "objectName": f"arn:aws:secretsmanager:us-west-2:9:secret:tenants/{name}/token",
+                "objectType": "secretsmanager",
+                "objectAlias": "REPO_INTELLIGENCE_TOKEN",
+            }
+        ]
+
+
+def test_a_repository_intelligence_token_without_a_value_is_left_out(overlay) -> None:
+    inputs = _inputs()
+    inputs["tenants"][0]["secrets"]["repo_intelligence_token"] = "arn:token"
+    documents, skipped = eks_render.render(
+        overlay, inputs, REPOSITORY, omit_secrets=["adp:repo_intelligence_token"]
+    )
+    provider = _named(documents, "SecretProviderClass", "activity-worker", "tenant-adp")
+    aliases = [e["objectAlias"] for e in json.loads(provider["spec"]["parameters"]["objects"])]
+
+    assert skipped == ["tenant-adp:REPO_INTELLIGENCE_TOKEN"]
+    assert "REPO_INTELLIGENCE_TOKEN" not in aliases
+
+
+def test_a_tenant_without_a_token_mounts_none(overlay) -> None:
+    documents, _ = eks_render.render(overlay, _inputs(), REPOSITORY)
+    provider = _named(documents, "SecretProviderClass", "activity-worker", "tenant-adp")
+    aliases = [e["objectAlias"] for e in json.loads(provider["spec"]["parameters"]["objects"])]
+
+    assert "REPO_INTELLIGENCE_TOKEN" not in aliases

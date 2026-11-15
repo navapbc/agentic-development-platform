@@ -6,9 +6,11 @@ Reusable module that provisions the AWS resources of one tenant of a shared depl
 
 - A customer managed key, `alias/<name_prefix>-tenant-<tenant>`, with yearly rotation, that encrypts the tenant's secrets and images. Its policy lets the worker decrypt only through Secrets Manager.
 - An empty secret for each name in `secrets`, at `<name_prefix>/tenants/<tenant>/<name>` with underscores replaced by hyphens, which the tenant fills with `aws secretsmanager put-secret-value`. Each secret's resource policy denies `GetSecretValue` to every principal except `worker_role_arn`, so an operator or another tenant's worker cannot read it even with a broader IAM policy.
-- A worker policy for `worker_role_arn` that reads the tenant's secrets, lists and reads `tenants/<tenant>/` of the config store, and pulls from the tenant's image prefix. It cannot write the bundle.
+- A repository intelligence token at `<name_prefix>/tenants/<tenant>/repo-intelligence-token`, encrypted with the tenant key, whose value the module generates as 48 letters and digits and writes once through a write-only attribute, so the value never reaches the state. The tenant's worker sends it to repository intelligence, which maps it to the tenant. Its resource policy denies `GetSecretValue` to every principal except `worker_role_arn` and `repo_intelligence_reader_arns`, the execution role of the repository intelligence service that injects every tenant's token. The `tenant` output names it as `repo_intelligence_token_arn` and as `repo_intelligence_token` in `secret_arns`, which the EKS deploy mounts into the worker as `REPO_INTELLIGENCE_TOKEN`. `secrets` may not name `repo_intelligence_token`.
+- A worker policy for `worker_role_arn` that reads the tenant's secrets and its repository intelligence token, lists and reads `tenants/<tenant>/` of the config store, earlier object versions included, and pulls from the tenant's image prefix. It cannot write the bundle.
 - An ECR repository creation template for `<name_prefix>/tenants/<tenant>`, applied on push. A repository the tenant's CI creates by pushing gets immutable tags, the tenant key, the `tenant` tag, and a lifecycle rule that expires untagged images after `untagged_image_expiry_days`. ECR assumes a creation role, which the module creates, to apply the key and the tags.
-- With `config_publisher`, a publisher role trusted by the workflows of one GitHub repository on `allowed_refs` through the account's GitHub OIDC provider. It lists, writes, and deletes `tenants/<tenant>/` of the config store, without reading another object, and creates and pushes repositories under the tenant's image prefix.
+- With `config_publisher`, a publisher role trusted by the workflows of one GitHub repository on `allowed_refs` through the account's GitHub OIDC provider. It lists, writes, and deletes `tenants/<tenant>/` of the config store, without reading another object, creates and pushes repositories under the tenant's image prefix, and signs with the tenant's signing profile.
+- An AWS Signer signing profile on the `Notation-OCI-SHA384-ECDSA` platform, whose ARN the `signing_profile` attribute of the `tenant` output names. Signer never frees the name of a cancelled profile, so the name is generated, prefixed with `<name_prefix>-tenant-<tenant>_` with every hyphen replaced by an underscore. The deployment's image policy trusts this profile only for the tenant's image prefix.
 - A rebar ticket store through the [rebar-ticket-store](../rebar-ticket-store) module, in a bucket named `<tenant>-rebar-tickets-<suffix>`, whose reader and writer roles trust the worker and `ticket_store.operators`.
 
 Every resource carries a `tenant` tag, which a deployment activates as a cost allocation tag to split the bill by tenant, as [Cost attribution](../examples/private-bedrock/README.md#cost-attribution) describes.
@@ -19,7 +21,7 @@ The tenant's activity worker runs as the `activity-worker` service account of th
 
 ## Tests
 
-`tests/tenant.tftest.hcl` plans the module against a mocked provider and asserts that the secrets, the bundle prefix, the image prefix, and the ticket store each admit only the tenant's own principals. Run it with `inv terraform-test`.
+`tests/tenant.tftest.hcl` plans the module against a mocked provider and asserts that the secrets, the bundle prefix, the image prefix, and the ticket store each admit only the tenant's own principals, and that the repository intelligence token admits only the worker and `repo_intelligence_reader_arns`. Run it with `inv terraform-test`.
 
 ## Usage
 
@@ -34,6 +36,8 @@ module "tenant" {
   worker_role_arn   = module.eks_cluster.pod_identity_role_arns["tenant_payments"]
   secrets           = ["github_token", "jira_api_token"]
   access_log_bucket = "agentic-platform-access-logs-111111111111"
+
+  repo_intelligence_reader_arns = [module.container_services.repository_intelligence_roles.execution_role_arn]
   config_store = {
     bucket_arn  = module.tenant_config_store.bucket_arn
     kms_key_arn = module.tenant_config_store.kms_key_arn

@@ -36,6 +36,10 @@ READ_TOOL_DESCRIPTIONS = {
 }
 
 
+class ContextPackageRefusedError(RuntimeError):
+    """The gateway holds no tenant token, so it cannot choose among several tenants."""
+
+
 class IssueReader(Protocol):
     def get_issue(self, issue_key: str) -> dict[str, Any]: ...
 
@@ -59,6 +63,7 @@ class ReadOnlyToolset:
     evidence: EvidenceReader
     context_fetch: ContextFetch
     acceptance_field: str = ""
+    tenants: tuple[str, ...] = ()
 
     @classmethod
     def from_settings(cls, settings: Settings | None = None) -> ReadOnlyToolset:
@@ -68,6 +73,7 @@ class ReadOnlyToolset:
         from services.integration.github.mediator import GitHubMediator
         from services.integration.jira.adapter import ProjectRoutingJiraReader
         from services.orchestration.repo_intelligence_client import fetch_context_package
+        from services.orchestration.task_queues import tenant_names
 
         resolved = settings or get_settings()
         ledger = PostgresSideEffectLedger()
@@ -78,6 +84,7 @@ class ReadOnlyToolset:
             evidence=PostgresEvidenceReader(),
             context_fetch=fetch_context_package,
             acceptance_field=acceptance_field(resolved),
+            tenants=tuple(tenant_names(resolved)),
         )
 
     async def jira_get_task(self, issue_key: str) -> dict[str, Any]:
@@ -119,4 +126,10 @@ class ReadOnlyToolset:
     async def repo_get_context_package(
         self, repo: str, focus: str, commit: str = ""
     ) -> dict[str, Any]:
+        if len(self.tenants) > 1:
+            raise ContextPackageRefusedError(
+                f"repo_get_context_package is refused because TENANTS names {len(self.tenants)} "
+                "tenants and the gateway cannot tell which tenant a client acts for. Fetch the "
+                "context package from the tenant's own run instead."
+            )
         return await self.context_fetch(repo, commit, focus)

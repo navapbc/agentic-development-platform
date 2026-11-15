@@ -107,7 +107,10 @@ module "tenant_config_store" {
   tenants = {
     for name, tenant in local.tenants : name => {
       publishers = tenant.config_repository == null ? [] : ["arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:role/${var.name_prefix}-tenant-${name}-publisher"]
-      readers    = [module.eks_cluster.pod_identity_role_arns["tenant_${name}"]]
+      readers = concat(
+        [module.eks_cluster.pod_identity_role_arns["tenant_${name}"]],
+        try(module.container_services.repository_intelligence_roles.task_role_arns, []),
+      )
     }
   }
   tags = var.tags
@@ -117,15 +120,16 @@ module "tenant" {
   source   = "../../tenant"
   for_each = local.tenants
 
-  create_tenant               = true
-  name_prefix                 = var.name_prefix
-  tenant                      = each.key
-  description                 = each.value.description
-  worker_role_arn             = module.eks_cluster.pod_identity_role_arns["tenant_${each.key}"]
-  secrets                     = each.value.secrets
-  secret_recovery_window_days = var.secret_recovery_window_days
-  access_log_bucket           = var.access_log_bucket
-  ticket_store                = each.value.ticket_store
+  create_tenant                 = true
+  name_prefix                   = var.name_prefix
+  tenant                        = each.key
+  description                   = each.value.description
+  worker_role_arn               = module.eks_cluster.pod_identity_role_arns["tenant_${each.key}"]
+  secrets                       = each.value.secrets
+  repo_intelligence_reader_arns = compact([try(module.container_services.repository_intelligence_roles.execution_role_arn, "")])
+  secret_recovery_window_days   = var.secret_recovery_window_days
+  access_log_bucket             = var.access_log_bucket
+  ticket_store                  = each.value.ticket_store
   config_store = {
     bucket_arn  = module.tenant_config_store.bucket_arn
     kms_key_arn = module.tenant_config_store.kms_key_arn

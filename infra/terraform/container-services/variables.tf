@@ -117,12 +117,38 @@ variable "environment_config" {
 }
 
 variable "tenant_workspaces" {
-  description = "Tenants that receive their own workspace access point, rooted at /tenants/<tenant> on the workspace file system. The review worker mounts /tenants read-only, and the platform environment carries the list as TENANTS."
+  description = "Tenants that receive their own workspace access point, rooted at /tenants/<tenant> on the workspace file system. The review worker, repository intelligence, and the index worker mount /tenants read-only, and the platform and repository intelligence environments carry the list as TENANTS."
   type        = list(string)
   default     = []
 
   validation {
     condition     = alltrue([for tenant in var.tenant_workspaces : can(regex("^[a-z][a-z0-9]{1,15}$", tenant))])
+    error_message = "A tenant name is 2 to 16 lowercase letters and digits, starting with a letter."
+  }
+}
+
+variable "tenant_config_bucket_arn" {
+  description = "Tenant config bucket, whose tenants/<tenant>/ prefixes repository intelligence and the index worker read for each tenant's repositories.yaml. Its name reaches them as TENANT_CONFIG_BUCKET. Empty grants no read and leaves TENANT_CONFIG_BUCKET unset."
+  type        = string
+  default     = ""
+}
+
+variable "tenant_config_kms_key_arn" {
+  description = "KMS key of the tenant config bucket, which repository intelligence and the index worker decrypt through S3. Empty grants no decrypt."
+  type        = string
+  default     = ""
+}
+
+variable "repo_intelligence_tokens" {
+  description = "Each tenant's repository intelligence token, keyed by tenant, with the secret ARN and the tenant KMS key that encrypts it. Repository intelligence receives each as REPO_INTELLIGENCE_TOKEN_<TENANT>, the tenant name upper-cased."
+  type = map(object({
+    secret_arn  = string
+    kms_key_arn = string
+  }))
+  default = {}
+
+  validation {
+    condition     = alltrue([for tenant in keys(var.repo_intelligence_tokens) : can(regex("^[a-z][a-z0-9]{1,15}$", tenant))])
     error_message = "A tenant name is 2 to 16 lowercase letters and digits, starting with a letter."
   }
 }

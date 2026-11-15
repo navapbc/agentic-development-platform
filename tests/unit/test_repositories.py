@@ -100,7 +100,7 @@ def test_a_removed_setting_names_the_file_that_replaced_it(monkeypatch, tmp_path
 
 
 def test_the_compose_override_mounts_each_repository_with_a_path(tmp_path: Path) -> None:
-    rendered = repositories_compose.render(_registry(), base=tmp_path, container_root="/repos")
+    rendered = repositories_compose.render([_registry()], base=tmp_path)
     svc = f"{(tmp_path.parent / 'svc').resolve()}:/repos/svc"
 
     assert set(rendered["services"]) == {"repo-intelligence", "repo-index-worker"}
@@ -109,3 +109,101 @@ def test_the_compose_override_mounts_each_repository_with_a_path(tmp_path: Path)
         f"{svc}:ro",
     ]
     assert yaml.safe_load(yaml.safe_dump(rendered)) == rendered
+
+
+def _tenant_config(root: Path, *, platform: str, beta: str) -> None:
+    config = root / "config" / "local"
+    (config / "tenants" / "beta").mkdir(parents=True)
+    (config / "repositories.yaml").write_text(f"config_version: 1\n{platform}", encoding="utf-8")
+    (config / "tenants" / "beta" / "repositories.yaml").write_text(
+        f"config_version: 1\n{beta}", encoding="utf-8"
+    )
+
+
+def _local_repository(name: str, path: Path) -> str:
+    return f"repositories:\n  {name}:\n    backend: local\n    path: {path}\n"
+
+
+def test_each_tenant_mounts_its_repositories_under_its_own_directory(tmp_path: Path) -> None:
+    _tenant_config(
+        tmp_path,
+        platform=_local_repository("web", tmp_path / "adp-web"),
+        beta=_local_repository("web", tmp_path / "beta-web"),
+    )
+
+    registries = repositories_compose.tenant_registries(
+        hermetic_settings(), ["adp", "beta"], root=tmp_path
+    )
+    rendered = repositories_compose.render(registries, base=tmp_path)
+
+    expected = [
+        f"{tmp_path / 'adp-web'}:/tenants/adp/repositories/web:ro",
+        f"{tmp_path / 'beta-web'}:/tenants/beta/repositories/web:ro",
+    ]
+    assert rendered["services"]["repo-intelligence"]["volumes"] == expected
+    assert rendered["services"]["repo-index-worker"]["volumes"] == expected
+
+
+def _compose_main(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, **settings: object
+) -> tuple[int, Path]:
+    monkeypatch.setattr(repositories_compose, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(repositories_compose, "get_settings", lambda: hermetic_settings(**settings))
+    output = tmp_path / "compose.repositories.yaml"
+    return repositories_compose.main(["--output", str(output)]), output
+
+
+def test_repos_compose_writes_the_mounts_of_every_tenant(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    for name in ("adp-web", "beta-web"):
+        (tmp_path / name).mkdir()
+    _tenant_config(
+        tmp_path,
+        platform=_local_repository("web", tmp_path / "adp-web"),
+        beta=_local_repository("web", tmp_path / "beta-web"),
+    )
+
+    code, output = _compose_main(monkeypatch, tmp_path, tenants="adp,beta", tenant="adp")
+
+    assert code == 0
+    text = output.read_text(encoding="utf-8")
+    assert text.startswith(repositories_compose.HEADER)
+    assert yaml.safe_load(text)["services"]["repo-index-worker"]["volumes"] == [
+        f"{tmp_path / 'adp-web'}:/tenants/adp/repositories/web:ro",
+        f"{tmp_path / 'beta-web'}:/tenants/beta/repositories/web:ro",
+    ]
+
+
+def test_repos_compose_refuses_a_tenant_repository_without_its_checkout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / "adp-web").mkdir()
+    _tenant_config(
+        tmp_path,
+        platform=_local_repository("web", tmp_path / "adp-web"),
+        beta=_local_repository("beta-web", tmp_path / "beta-web"),
+    )
+
+    code, output = _compose_main(monkeypatch, tmp_path, tenants="adp,beta", tenant="adp")
+
+    assert code == 1
+    assert not output.exists()
+    assert f"checkouts not found: beta-web at {tmp_path / 'beta-web'}" in capsys.readouterr().out
+
+
+def test_repos_compose_without_a_tenant_mounts_the_environment_repositories_at_the_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    (tmp_path / "web").mkdir()
+    repositories = _local_repository("web", tmp_path / "web")
+    configure_repositories(monkeypatch, tmp_path / "env", repositories)
+
+    code, output = _compose_main(
+        monkeypatch, tmp_path, tenants="", tenant="", repository_root="/repos"
+    )
+
+    assert code == 0
+    assert yaml.safe_load(output.read_text(encoding="utf-8"))["services"]["repo-intelligence"][
+        "volumes"
+    ] == [f"{tmp_path / 'web'}:/repos/web:ro"]

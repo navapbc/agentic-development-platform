@@ -10,12 +10,13 @@ import httpx
 from database.models.schema import executions
 from services import process
 from services.aws_credentials import expiry_of, expiry_report
+from services.orchestration.task_queues import tenant_names
 from sqlalchemy import create_engine, literal, select
 
-from scripts.build_id import recorded_build_id
 from scripts.config import Settings, get_settings, to_host_url
 from scripts.db_reset import _sync_url
 from scripts.k8s_cluster import DEPLOYMENTS, exec_argv, namespaced
+from scripts.tenant_render import sandbox_namespace
 
 
 def _check(label: str, fn) -> bool:
@@ -112,7 +113,7 @@ print(reach(service.format("litellm"), 4000), reach(service.format("mcp-gateway"
 _POLICY_SETTLE_SECONDS = 20
 
 
-def sandbox_policy_status(settings: Settings, image: str) -> str:
+def sandbox_policy_status(settings: Settings, image: str, namespace: str) -> str:
     """Probe from a pod the sandbox egress policy selects whether the cluster enforces it.
 
     The policy admits LiteLLM and refuses the MCP gateway. A cluster whose CNI lacks network
@@ -127,7 +128,7 @@ def sandbox_policy_status(settings: Settings, image: str) -> str:
             "run",
             "sandbox-policy-probe",
             "--namespace",
-            settings.openhands_sandbox_namespace,
+            namespace,
             "--rm",
             "-i",
             "--quiet",
@@ -171,10 +172,15 @@ def main() -> int:
     results.append(_check("cluster deployments ready", lambda: _deployments_ready(settings)))
     results.append(_check("opa on loopback", lambda: _opa_on_loopback(settings)))
     results.append(_check("aws credentials", lambda: _credentials(settings)))
-    image = f"agentic-dev-platform-local:{recorded_build_id()}"
-    results.append(
-        _check("agent-sandbox network policies", lambda: sandbox_policy_status(settings, image))
-    )
+    image = settings.openhands_agent_server_image
+    for tenant in tenant_names(settings) or [settings.tenant]:
+        namespace = sandbox_namespace(tenant)
+        results.append(
+            _check(
+                f"{namespace} network policies",
+                lambda namespace=namespace: sandbox_policy_status(settings, image, namespace),
+            )
+        )
     results.append(_check("langfuse", lambda: http_check(langfuse_health)))
     results.append(_check("minio object store", lambda: http_check(minio_health)))
 

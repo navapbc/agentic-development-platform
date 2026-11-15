@@ -6,12 +6,28 @@ import os
 import shutil
 import tempfile
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from services import process
 from services.repository_intelligence.indexing import scip_builder, zoekt_builder
 from services.repository_intelligence.indexing.scip_builder import ScipIndexer
 from services.repository_intelligence.normalization.models import RepoRef
+
+
+@dataclass(frozen=True)
+class IndexRoots:
+    """The directories that hold one namespace's SCIP indexes and Zoekt shards."""
+
+    scip: Path
+    zoekt: Path
+
+    @classmethod
+    def default(cls) -> IndexRoots:
+        return cls(scip_builder.default_index_root(), zoekt_builder.default_index_root())
+
+    def for_tenant(self, tenant: str) -> IndexRoots:
+        return IndexRoots(self.scip / tenant, self.zoekt / tenant)
 
 
 def changed_paths(
@@ -46,17 +62,22 @@ def reindex_repo(
     *,
     prior_commit: str | None = None,
     index_root: Path | None = None,
+    index_roots: IndexRoots | None = None,
     indexer: ScipIndexer = scip_builder.SCIP_PYTHON_INDEXER,
     source_suffixes: tuple[str, ...] | None = None,
 ) -> None:
-    """Reindex repo at its target commit, reusing SCIP when no source file changed."""
+    """Reindex repo at its target commit, reusing SCIP when no source file changed.
+
+    index_roots places each backend under its own root and takes precedence over index_root,
+    which places both backends under one root.
+    """
     root = Path(repo_root).resolve()
     project = root.name
     target_sha = repo.commit_sha
     changed = changed_paths(root, prior_commit, target_sha)
     suffixes = source_suffixes if source_suffixes is not None else indexer.source_suffixes
 
-    scip_root = index_root or scip_builder.default_index_root()
+    scip_root = index_roots.scip if index_roots else index_root or scip_builder.default_index_root()
     reuse_scip = (
         changed is not None
         and prior_commit is not None
@@ -75,7 +96,9 @@ def reindex_repo(
             real_root=scip_root,
         )
 
-    zoekt_root = index_root or zoekt_builder.default_index_root()
+    zoekt_root = (
+        index_roots.zoekt if index_roots else index_root or zoekt_builder.default_index_root()
+    )
     _atomic_build(
         lambda staging: zoekt_builder.build_zoekt_index(
             root, commit=target_sha, index_root=staging, refresh=True

@@ -71,6 +71,7 @@ AWS transition and FedRAMP Medium readiness. The platform documents its local-to
 - The platform exceptions file accepts findings only in images the platform publishes or defines, the `catalog` entries and the `platform_registries` repositories outside `tenant_prefix`. Exceptions for tenant images belong in the tenant bundle's `image_exceptions.yaml`. An entry outside its file's scope is refused with an error that names it.
 - In AWS the worker and both publish commands read the platform exceptions from `platform/image_exceptions.yaml` in the tenant config bucket. The `private-bedrock` root no longer sends `image_exceptions.yaml` from `container_config_dir`, and the plan fails while that directory holds the file. `--exceptions` on the publish commands now names a local file read in place of it.
 - The tenant config bucket policy statement `DenyObjectsOutsideATenantPrefix` is renamed `DenyObjectsOutsideTheTenantAndPlatformKeys`, and it admits the `platform/image_exceptions.yaml` and `platform/image_policy.yaml` keys.
+- Repository intelligence answers `/context_package` and `/warm` only with the bearer token of a tenant, and only for the repositories of that tenant's config bundle, at `/tenants/<tenant>/repositories/<repo>`. It answers 401 without a known token and 403 for another tenant's repository. A workstation sets `REPO_INTELLIGENCE_TOKEN_KEY` in `.env`, which `inv config-check` requires, and in AWS the `tenant` module creates the secret `<name_prefix>/tenants/<tenant>/repo-intelligence-token` and the tenant worker receives it as `REPO_INTELLIGENCE_TOKEN`. The indexes move to `<index root>/<tenant>/<repo>@<commit>`, and repository intelligence moves the home tenant's existing indexes there on start. The MCP gateway refuses its context package tool when `TENANTS` names more than one tenant.
 
 ### Added
 
@@ -79,6 +80,13 @@ AWS transition and FedRAMP Medium readiness. The platform documents its local-to
 - Every model call carries the tenant of its run as the `tenant:<tenant>` LiteLLM request tag, which LiteLLM records in its spend logs and passes to Langfuse as a trace tag. The run key's metadata tags the sandbox, CI repair, and gate engine pod calls, the workers tag the calls they make with the master key, and the shared review worker reads the tenant from the execution record of each run it serves. Each span and Langfuse trace also carries the tenant as the `tenant` attribute and as trace metadata.
 - `inv cost-rollup` and `inv reconcile-usage` take `--tenant`, which keeps the executions recorded under that tenant. Without `--execution-id` they report every execution grouped by tenant. Each execution's generations are read from its Langfuse session with a server-side session filter, and `inv reconcile-usage` reports an execution whose read stops at the page cap as `unverified` without failing on it.
 - The private-bedrock README documents activating the `tenant` tag as a cost allocation tag in AWS Billing.
+- The private-bedrock README documents onboarding a tenant, from the `tenants` entry and its attributes through the secrets, the config repository OIDC trust, the first bundle published with `inv tenant-config-publish`, the deploy, and the cost allocation tag.
+- The README documents tenants, with the per-tenant names, the local tenants, the config bundles and runtime profiles, image governance, and the run, sandbox, and model limits.
+- The FedRAMP Medium hardening design documents the tenant boundary with its AC-4, AC-6, SC-7, CM-3, CM-5, CM-7, SI-7, and AU controls, and the control inheritance matrix lists the tenant controls in each family.
+- The local-to-AWS mapping documents each tenant item locally and in AWS.
+- `inv k8s-reload` runs a second local tenant from `config/local/tenants/<tenant>.env` and `config/local/tenants/<tenant>/`, which only that tenant's worker receives, and refuses a tenant without its own repositories, ticket store, or intake schedule. `config/local/tenants/beta.example/` and `beta.env.example` are the examples, and the README documents the procedure.
+- `inv tenant-config-validate` applies the tenant's settings file over `.env` before it validates the bundle.
+- The plan for tenant repository intelligence records the decisions and units that let repository intelligence serve each tenant's repositories to that tenant only.
 - The `tenants` map in `private-bedrock` takes `model_limits` with `monthly_budget_usd`, `rpm_limit`, `tpm_limit`, and `run_budget_usd`, rendered into the tenant worker as the model limit settings.
 - The local collector writes the exported platform log records to rotated JSON files on the `otel-logs` volume, and `inv platform-logs [--match TEXT]` prints them.
 - `inv intake --retry` records an `intake_retry` audit event listing the intake records, work claims, and stale executions it clears, before it clears them.
@@ -214,6 +222,8 @@ AWS transition and FedRAMP Medium readiness. The platform documents its local-to
 - `SANDBOX_NODE_POOL` places the OpenHands sandbox, gate, checks, and scanner pods on the node pool it names and tolerates the sandbox taint of the `eks-cluster` node group.
 - `inv webhook-certs` issues a self-signed certificate for the inbound webhook load balancer and imports it into ACM, re-importing into `eks_webhook_certificate_arn` when it is set.
 - The `eks` output of `private-bedrock` adds the platform environment, the config files, the Temporal CA secret, and the webhook and gateway certificates and client CIDRs, from the new `eks_webhook_certificate_arn`, `eks_mcp_gateway_certificate_arn`, and `eks_mcp_gateway_client_cidrs` variables, and `container-services` adds the `platform_environment` output.
+- Each tenant's activity worker keeps a checkout of every GitHub repository with `index: true` of its registry under `/tenants/<tenant>/repositories/<repo>`, at its `index_ref` or the tip of its default branch, at start and every `INDEX_CHECKOUT_SYNC_SECONDS`, and repository intelligence indexes it from there. The index worker indexes a pinned repository only once its checkout is at the pin.
+- In AWS, `repo-intelligence` and `repo-index-worker` mount the tenants access point read-only at `/tenants`, read each tenant's bundle from the tenant config bucket, and `repo-intelligence` receives every tenant's token as `REPO_INTELLIGENCE_TOKEN_<TENANT>`.
 
 ### Changed
 
@@ -293,6 +303,12 @@ AWS transition and FedRAMP Medium readiness. The platform documents its local-to
 
 ### Fixed
 
+- A run of a second tenant gathers repository context. Repository intelligence served only the platform `repositories.yaml`, so it refused every other tenant's repository with 403.
+- The review worker resolves a repository checkout only through the run's tenant and only under `/tenants/<tenant>/`.
+- `inv index-repo` sends the token of `TENANT`.
+- No local activity worker receives the private review signing key, which only the review worker uses, as in AWS.
+- `inv smoke-test` probes the network policies of each tenant's sandbox namespace from a pod running the agent-server image, which the tenant image policy admits, in place of the `agent-sandbox` namespace the local render no longer creates.
+- The `tenants.tfvars.example` header names `tenants.auto.tfvars`, because `inv aws-release` and `inv aws-destroy` pass one var file.
 - `inv reconcile-usage` and the `inv cost-rollup` backfill request the usage, cost, and model field groups from the Langfuse Observations API v2, which returns only its core fields by default, so every generation previously read as zero tokens and zero cost.
 - An intake pass whose workflow start failed after the execution row was seeded no longer drops the ticket. The failed start marks that execution failed, and the active-run check ignores an execution no workflow was started for, so the retried pass starts the ticket instead of counting it as a duplicate and moving the poll past it.
 - structlog events, among them the rebar poll audit events and the orphan reclaims, reach the OTLP log export, and `inv intake` exports its own records, so an operator command run in the worker pod is logged the same way. They previously printed to stdout only and were lost with the pod.

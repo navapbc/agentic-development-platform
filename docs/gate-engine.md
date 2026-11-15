@@ -203,6 +203,14 @@ Because the boundary is the invocation and JSON contract, another review or clas
 
 `gate_engine.yaml` takes a list, so add an entry per external tool you want to pin and run from config, for example the example security and test engines beside a Semgrep, Snyk, or SonarQube SARIF gate. Each entry backs its own named gate, enabled in `gates.yaml`, with no limit on how many run and no package to install.
 
+## Tenants and runtime profiles
+
+`gate_engine.yaml` and `gates.yaml` belong to the tenant an activity worker serves. Each tenant's config bundle may carry its own copy, which wins over the copy in `config/<env>/`, and the worker validates the bundle, including every engine image, before it activates it, as [tenant config](tenant-config.md) describes. The engine entries of one tenant never reach another tenant's worker, and a tenant entry may not reuse the name of a catalog engine.
+
+A repository's runtime profile may carry gate overrides in the `gates.yaml` entry format. The worker applies them after the tenant's `gates.yaml`, so a profile entry wins for that profile's repositories, as [runtime profiles](runtime-profiles.md#resolution) describes. A profile that enables an engine gate that does not register, such as a catalog engine whose image `GATE_ENGINE_IMAGES` does not name, is refused with its bundle.
+
+The gate, checks, and scanner pods run in the tenant's sandbox namespace, `tenant-<tenant>-sandbox`, whose RoleBinding grants pod creation to the tenant's own worker and to no other worker. They count against the namespace's ResourceQuota when the tenant sets one, and the namespace's admission policy refuses a pod whose image lacks a digest or comes from a repository the image policy does not admit. A tenant's own engine image goes under the tenant's image prefix, as [image governance](image-governance.md) describes.
+
 ## Runtime provisioning and AWS
 
 Config selects and runs a gate, but the tool's own executable must exist in the worker that runs it, because the gate runs as a subprocess inside the activity worker. This is the one operational step config cannot cover.

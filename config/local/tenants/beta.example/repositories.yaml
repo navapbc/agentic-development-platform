@@ -1,0 +1,13 @@
+config_version: 1
+
+# Tenant beta's repositories. Copy this directory to config/local/tenants/beta/ and set path to
+# the checkout on this machine. TENANT=beta inv repos-sync copies it into beta's worker.
+defaults:
+  backend: local
+  default_branch: main
+  index: false
+
+repositories:
+  beta-web:
+    path: ~/src/beta-web
+    profile: node-react

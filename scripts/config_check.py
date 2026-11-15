@@ -27,11 +27,15 @@ _CONFIGS = (
     "image_policy",
     "image_exceptions",
 )
-_REQUIRED_SECRETS = ("COORDINATION_SHARED_SECRET", "MCP_GATEWAY_TOKEN")
+_REQUIRED_SECRETS = (
+    "COORDINATION_SHARED_SECRET",
+    "MCP_GATEWAY_TOKEN",
+    "REPO_INTELLIGENCE_TOKEN_KEY",
+)
 
 
 def report_required_secrets(resolver: SecretResolver) -> int:
-    """Print the state of each secret a service refuses to start without, and count the absent."""
+    """Print the state of each secret a service cannot serve without, and count the absent."""
     missing = 0
     for ref in _REQUIRED_SECRETS:
         try:

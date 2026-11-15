@@ -24,6 +24,14 @@ output "execution_role_arns" {
   value       = { for name, role in aws_iam_role.workload_execution : name => role.arn }
 }
 
+output "repository_intelligence_roles" {
+  description = "The repository intelligence execution role, which injects each tenant's repository intelligence token, and the task roles of repository intelligence and the index worker, which read each tenant's config bundle. Null without the services."
+  value = local.services_enabled ? {
+    execution_role_arn = aws_iam_role.workload_execution["repo-intelligence"].arn
+    task_role_arns     = [for name in sort(tolist(local.tenant_config_readers)) : aws_iam_role.workload_task[name].arn]
+  } : null
+}
+
 output "temporal_client_role_arns" {
   description = "Execution roles of the workloads that connect to Temporal, which inject the Temporal CA."
   value       = [for name, spec in local.all_workloads : aws_iam_role.workload_execution[name].arn if spec.temporal]

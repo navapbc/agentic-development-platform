@@ -5,12 +5,31 @@ locals {
   region           = data.aws_region.current.region
   runtime_volume   = "tmp"
   checkouts_path   = "/repositories"
-  # Each tenant's worker writes its checkouts under /tenants/<tenant>, and the review worker reads
-  # them at the same path.
+  # Each tenant's worker writes its checkouts under /tenants/<tenant>, and the review worker,
+  # repository intelligence, and the index worker read them at the same path.
   tenants_path = "/tenants"
   index_path   = "/app/repository_indexes"
   # The platform image's entrypoint writes environment_config here, under TMPDIR.
   env_config_dir = "/tmp/platform-config"
+
+  repository_intelligence_mounts = concat(
+    length(var.tenant_workspaces) > 0
+    ? [{ volume = "tenants", path = local.tenants_path, read_only = true }]
+    : [{ volume = "checkouts", path = local.checkouts_path, read_only = true }],
+    [{ volume = "index", path = local.index_path, read_only = false }],
+  )
+  repository_intelligence_environment = {
+    ENVIRONMENT           = var.environment
+    LOG_LEVEL             = var.log_level
+    TMPDIR                = "/tmp"
+    AWS_REGION            = local.region
+    AWS_USE_FIPS_ENDPOINT = var.use_fips_endpoints ? "true" : "false"
+    REPOSITORY_ROOT       = local.checkouts_path
+    TENANTS               = join(",", var.tenant_workspaces)
+    TENANT_CONFIG_BUCKET  = var.tenant_config_bucket_arn != "" ? element(split(":", var.tenant_config_bucket_arn), 5) : ""
+    PLATFORM_ENV_CONFIG   = local.platform_environment.PLATFORM_ENV_CONFIG
+  }
+  tenant_config_readers = toset(["repo-intelligence", "repo-index-worker"])
 
   # Each service names what it reaches. `database` injects the platform_app credentials,
   # `temporal` the Temporal client settings and group, `internal_client` the group that
@@ -83,13 +102,10 @@ locals {
       temporal        = false
       internal_client = false
       target          = "repo-intelligence"
-      mounts = [
-        { volume = "checkouts", path = local.checkouts_path, read_only = true },
-        { volume = "index", path = local.index_path, read_only = false },
-      ]
-      secrets     = {}
-      environment = { SERVER_TLS = "true", BIND_HOST = "0.0.0.0" }
-      health      = ["CMD", "python", "-m", "services.healthcheck", "http", "8120", "--tls"]
+      mounts          = local.repository_intelligence_mounts
+      secrets         = {}
+      environment     = { SERVER_TLS = "true", BIND_HOST = "0.0.0.0" }
+      health          = ["CMD", "python", "-m", "services.healthcheck", "http", "8120", "--tls"]
     }
     repo-index-worker = {
       image           = var.repo_intelligence_image
@@ -100,13 +116,10 @@ locals {
       temporal        = false
       internal_client = false
       target          = ""
-      mounts = [
-        { volume = "checkouts", path = local.checkouts_path, read_only = true },
-        { volume = "index", path = local.index_path, read_only = false },
-      ]
-      secrets     = {}
-      environment = { HEALTH_HEARTBEAT_FILE = "/tmp/worker.heartbeat" }
-      health      = ["CMD", "python", "-m", "services.healthcheck", "heartbeat", "/tmp/worker.heartbeat", "--max-age", "120"]
+      mounts          = local.repository_intelligence_mounts
+      secrets         = {}
+      environment     = { HEALTH_HEARTBEAT_FILE = "/tmp/worker.heartbeat" }
+      health          = ["CMD", "python", "-m", "services.healthcheck", "heartbeat", "/tmp/worker.heartbeat", "--max-age", "120"]
     }
   }
 
@@ -217,6 +230,8 @@ locals {
   extra_secret_reads = {
     for name, keys in { review-worker = ["langfuse_public_key", "langfuse_secret_key"] } : name => keys if local.langfuse_enabled
   }
+  # Each tenant's token is a secret of the tenant module, so no secret store key names it.
+  tenant_token_reads = { repo-intelligence = var.repo_intelligence_tokens }
   extra_task_statements = merge(
     local.langfuse_task_statements,
     { for name in keys(local.collector_workloads) : name => local.collector_statements if length(local.collector_statements) > 0 },
@@ -272,6 +287,10 @@ resource "terraform_data" "services_guard" {
         alltrue([for key in ["coordination_shared_secret", "review_signing_key", "review_attestation_secret"] : lookup(var.secret_arns, key, "") != ""])
       )
       error_message = "The platform services need cluster_arn, the management and data subnets, endpoints_security_group_id, the database host, CIDRs, and the platform_app and platform_migrator secrets, secret_kms_key_arn, and the coordination_shared_secret, review_signing_key, and review_attestation_secret secret ARNs."
+    }
+    precondition {
+      condition     = length(var.repo_intelligence_tokens) == 0 || toset(keys(var.repo_intelligence_tokens)) == toset(var.tenant_workspaces)
+      error_message = "repo_intelligence_tokens must name the same tenants as tenant_workspaces."
     }
   }
 }
@@ -336,19 +355,14 @@ locals {
       ] : [],
       spec.temporal && local.ca_secret != null ? [{ name = "TEMPORAL_TLS_CA", valueFrom = local.ca_secret }] : [],
       [for variable, reference in spec.secrets : { name = variable, valueFrom = local.secret_value_from[reference] }],
+      [for tenant, token in lookup(local.tenant_token_reads, name, {}) : { name = "REPO_INTELLIGENCE_TOKEN_${upper(tenant)}", valueFrom = token.secret_arn }],
     )
   }
 
   workload_environment = {
     for name, spec in local.workloads : name => [
       for key, value in merge(
-        spec.image == var.platform_image ? local.platform_environment : {
-          ENVIRONMENT         = var.environment
-          LOG_LEVEL           = var.log_level
-          TMPDIR              = "/tmp"
-          REPOSITORY_ROOT     = local.checkouts_path
-          PLATFORM_ENV_CONFIG = local.platform_environment.PLATFORM_ENV_CONFIG
-        },
+        spec.image == var.platform_image ? local.platform_environment : local.repository_intelligence_environment,
         spec.environment,
         lookup(var.service_environment, name, {}),
       ) : { name = key, value = value } if value != ""

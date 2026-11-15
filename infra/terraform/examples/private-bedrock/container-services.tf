@@ -46,7 +46,15 @@ module "container_services" {
   create_container_services = var.create_container_services
   name_prefix               = var.name_prefix
   tenant_workspaces         = keys(local.tenants)
-  platform_settings         = var.container_platform_settings
+  tenant_config_bucket_arn  = module.tenant_config_store.bucket_arn == null ? "" : module.tenant_config_store.bucket_arn
+  tenant_config_kms_key_arn = module.tenant_config_store.kms_key_arn == null ? "" : module.tenant_config_store.kms_key_arn
+  repo_intelligence_tokens = {
+    for name, tenant in local.tenant_records : name => {
+      secret_arn  = tenant.repo_intelligence_token_arn
+      kms_key_arn = tenant.kms_key_arn
+    }
+  }
+  platform_settings = var.container_platform_settings
 
   vpc_id                       = local.vpc_id
   application_subnet_ids       = local.subnet_ids

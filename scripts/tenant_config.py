@@ -4,6 +4,10 @@ The bundle is a directory of tenant config files, by default config/<environment
 Validation layers it over the environment directory, which --environment-dir points at when the
 command runs outside a platform checkout, such as in a tenant's CI. The workers validate every
 bundle again against the deployment's environment before they activate it.
+
+On a workstation, config/<environment>/tenants/<tenant>.env holds the settings and credentials
+only that tenant's activity worker receives. Validation applies its settings over `.env`, so a
+tenant whose file sets TICKET_BACKEND is validated against its own ticket backend.
 """
 
 from __future__ import annotations
@@ -13,16 +17,51 @@ import os
 import shutil
 import sys
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from scripts.config import Settings
 
 LOG = "[tenant-config]"
 
 
+def read_tenant_settings(tenants_dir: Path, tenant: str) -> dict[str, str] | None:
+    """Return the values of the tenant's settings file in tenants_dir, or None without one."""
+    path = tenants_dir / f"{tenant}.env"
+    if not path.is_file():
+        return None
+    from dotenv import dotenv_values
+
+    return {key: value for key, value in dotenv_values(path).items() if value is not None}
+
+
+def apply_tenant_settings(settings: Settings, values: Mapping[str, str]) -> Settings:
+    """Return a copy of settings with the tenant file's values applied, each validated.
+
+    A key that names no setting is ignored, as in `.env`.
+    """
+    merged = settings.model_copy()
+    fields = type(settings).model_fields
+    for key, value in values.items():
+        if key.lower() in fields:
+            type(settings).__pydantic_validator__.validate_assignment(merged, key.lower(), value)
+    return merged
+
+
 def _settings(tenant: str):
+    from services.integration.credentials import env_config_dir
+
     from scripts.config import get_settings
 
     settings = get_settings()
-    return settings.model_copy(update={"tenant": tenant or settings.tenant})
+    name = tenant or settings.tenant
+    if name:
+        own = read_tenant_settings(env_config_dir(settings.environment) / "tenants", name)
+        if own:
+            settings = apply_tenant_settings(settings, own)
+    return settings.model_copy(update={"tenant": name})
 
 
 def bundle_files(directory: Path) -> dict[str, str]:

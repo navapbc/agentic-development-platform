@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -48,7 +49,7 @@ backend:
 
 
 @pytest.fixture
-def environment(tmp_path, monkeypatch) -> Path:
+def environment(tmp_path, monkeypatch) -> Iterator[Path]:
     env = tmp_path / "env"
     env.mkdir()
     (env / "repositories.yaml").write_text(REPOSITORIES)
@@ -224,6 +225,7 @@ def test_a_new_valid_bundle_activates_and_an_invalid_one_keeps_the_last(
 
     (source_dir / "repositories.yaml").write_text(REPOSITORIES.replace("svc", "web"))
     assert config.refresh() is True
+    assert config.active is not None and config.active_path is not None
     assert config.active.files.keys() == {"repositories"}
     assert "web:" in (config.active_path / "repositories.yaml").read_text()
 
@@ -245,6 +247,7 @@ def test_a_pinned_bundle_is_read_from_the_store_and_another_tenants_is_refused(
         _settings(), source=DirectorySource(source_dir, "adp"), store_root=tmp_path / "store"
     )
     pinned_identity = config.active
+    assert pinned_identity is not None
 
     (source_dir / "repositories.yaml").write_text(REPOSITORIES.replace("svc", "web"))
     config.refresh()
@@ -323,3 +326,63 @@ def test_a_worker_without_a_tenant_refuses_to_start() -> None:
 
     with pytest.raises(ConfigError, match="TENANT is not set"):
         start_tenant_config(_settings(tenant=""))
+
+
+def test_validation_settings_apply_the_tenant_file_over_the_base_settings(
+    environment, monkeypatch
+) -> None:
+    import scripts.config
+    from scripts import tenant_config as tenant_config_command
+    from tests.support import hermetic_settings
+
+    base = hermetic_settings(
+        tenant="adp", ticket_backend="jira", temporal_namespace="platform", log_level="INFO"
+    )
+    monkeypatch.setattr(scripts.config, "get_settings", lambda: base)
+    (environment / "tenants").mkdir()
+    (environment / "tenants" / "beta.env").write_text(
+        "TICKET_BACKEND=rebar\nLOG_LEVEL=debug\nNOT_A_SETTING=x\n"
+    )
+
+    beta = tenant_config_command._settings("beta")
+    adp = tenant_config_command._settings("")
+
+    assert (beta.tenant, beta.ticket_backend, beta.log_level) == ("beta", "rebar", "DEBUG")
+    assert beta.temporal_namespace == "platform"
+    assert (adp.tenant, adp.ticket_backend, adp.log_level) == ("adp", "jira", "INFO")
+    assert base.ticket_backend == "jira"
+
+
+def test_a_tenant_settings_value_is_validated_as_its_field() -> None:
+    from pydantic import ValidationError
+    from scripts.tenant_config import apply_tenant_settings
+    from tests.support import hermetic_settings
+
+    with pytest.raises(ValidationError, match="LOG_LEVEL"):
+        apply_tenant_settings(hermetic_settings(), {"LOG_LEVEL": "loud"})
+
+
+def test_tenant_source_reads_the_named_tenants_directory(monkeypatch, tmp_path) -> None:
+    from tests.support import hermetic_settings
+
+    monkeypatch.setenv("PLATFORM_ENV_CONFIG_DIR", str(tmp_path))
+    source = tenant_config.tenant_source(hermetic_settings(tenant="adp"), "beta")
+
+    assert isinstance(source, tenant_config.DirectorySource)
+    assert (source.path, source.tenant) == (tmp_path / "tenants" / "beta", "beta")
+
+
+def test_tenant_source_reads_the_named_tenants_bucket_prefix(monkeypatch) -> None:
+    import scripts.aws_clients
+    from tests.support import hermetic_settings
+
+    client = object()
+    monkeypatch.setattr(scripts.aws_clients, "configure_aws_fips", lambda settings: None)
+    monkeypatch.setattr(scripts.aws_clients, "s3_client", lambda region: client)
+    settings = hermetic_settings(tenant="adp", tenant_config_bucket="config-bucket")
+
+    source = tenant_config.tenant_source(settings, "beta")
+
+    assert isinstance(source, tenant_config.S3Source)
+    assert (source.client, source.bucket) == (client, "config-bucket")
+    assert source.prefix == "tenants/beta/"

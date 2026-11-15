@@ -25,7 +25,7 @@ variable "description" {
 }
 
 variable "worker_role_arn" {
-  description = "Pod Identity role of the tenant's activity worker, the only principal that reads the tenant's secrets."
+  description = "Pod Identity role of the tenant's activity worker, the only principal that reads the tenant's secrets apart from repo_intelligence_reader_arns on the repository intelligence token."
   type        = string
   default     = ""
 }
@@ -39,6 +39,17 @@ variable "secrets" {
     condition     = alltrue([for name in var.secrets : can(regex("^[a-z][a-z0-9_]*$", name))])
     error_message = "A secret name is lowercase letters, digits, and underscores, starting with a letter."
   }
+
+  validation {
+    condition     = !contains(var.secrets, "repo_intelligence_token")
+    error_message = "repo_intelligence_token is the generated secret the module creates for every tenant, so secrets may not name it."
+  }
+}
+
+variable "repo_intelligence_reader_arns" {
+  description = "Principals besides the tenant worker that read the tenant's repository intelligence token, the execution role of the repository intelligence service that injects every tenant's token."
+  type        = list(string)
+  default     = []
 }
 
 variable "secret_recovery_window_days" {

@@ -7,11 +7,11 @@ resource "aws_iam_policy" "worker" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = concat(
-      length(var.secrets) == 0 ? [] : [{
+      [{
         Sid      = "ReadTheTenantSecrets"
         Effect   = "Allow"
         Action   = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
-        Resource = [for secret in aws_secretsmanager_secret.this : secret.arn]
+        Resource = concat([for secret in aws_secretsmanager_secret.this : secret.arn], [local.repo_intelligence_token_arn])
       }],
       [
         {

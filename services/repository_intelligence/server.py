@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
+from collections.abc import Mapping
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO, cast
 
 from scripts.config import configured_log_level, get_settings
 
@@ -15,46 +16,71 @@ from services.http_front_door import (
     RequestRejected,
     read_bounded_body,
 )
-from services.integration.source_control import source_control_repos
+from services.integration.repositories import Repository
 from services.repository_intelligence.context_builder.registry import (
     RepositoryIntelligenceRegistry,
     RepoSpec,
 )
 from services.repository_intelligence.normalization.models import ContextPackage, RepoRef
 from services.repository_intelligence.normalization.serialization import context_package_to_dict
+from services.repository_intelligence.tenant_tokens import tenant_for_token
+from services.repository_intelligence.tenants import (
+    TenantRegistries,
+    configured_tokens,
+    migrate_home_indexes,
+)
 
 logging.basicConfig(level=configured_log_level())
 log = logging.getLogger("repository-intelligence")
 
 PORT = 8120
 
+_state_lock = threading.Lock()
+_tenant_registries: TenantRegistries | None = None
 _registry: RepositoryIntelligenceRegistry | None = None
+_tokens: dict[str, str] | None = None
 
 
-def build_registry() -> RepositoryIntelligenceRegistry | None:
-    """Return the warm registry singleton, building it from settings on first use."""
+def tenant_registries() -> TenantRegistries:
+    """Return the tenant registries singleton, building it from settings on first use."""
+    global _tenant_registries
+    with _state_lock:
+        if _tenant_registries is None:
+            _tenant_registries = TenantRegistries(get_settings())
+        return _tenant_registries
+
+
+def request_tokens() -> dict[str, str]:
+    """Return each served tenant's bearer token, read once from settings and the environment."""
+    global _tokens
+    with _state_lock:
+        if _tokens is None:
+            _tokens = configured_tokens(get_settings())
+        return _tokens
+
+
+def build_registry() -> RepositoryIntelligenceRegistry:
+    """Return the warm registry singleton, synced to the indexed repositories of every tenant."""
     global _registry
-    if _registry is not None:
-        return _registry
-    from services.integration.repositories import load_repository_registry
-
     settings = get_settings()
-    configured = load_repository_registry(settings).indexed()
-    if not configured:
-        return None
     cbm_binary = settings.repo_intelligence_cbm_binary or None
     specs = [
-        RepoSpec(name=name, root=Path(path), commit=commit, cbm_binary=cbm_binary)
-        for name, (path, commit) in configured.items()
+        RepoSpec(
+            name=entry.name,
+            root=entry.root,
+            commit=entry.ref,
+            cbm_binary=cbm_binary,
+            tenant=entry.tenant,
+            index_roots=entry.index_roots,
+        )
+        for entry in tenant_registries().indexed()
     ]
-    _registry = RepositoryIntelligenceRegistry(specs)
+    with _state_lock:
+        if _registry is None:
+            _registry = RepositoryIntelligenceRegistry(specs)
+            return _registry
+    _registry.replace_specs(specs)
     return _registry
-
-
-def _configured_for_indexing(repo: str) -> bool:
-    from services.integration.repositories import load_repository_registry
-
-    return repo in load_repository_registry(get_settings()).indexed()
 
 
 def unindexed_context_package(repo: str, focus: str) -> ContextPackage:
@@ -86,12 +112,31 @@ class Handler(BaseHTTPRequestHandler):
             self._respond(exc.status, {"error": exc.message})
 
     def _route(self) -> None:
-        if self.path == "/warm":
-            self._warm()
-            return
-        if self.path != "/context_package":
+        if self.path not in ("/context_package", "/warm"):
             self._respond(404, {"error": "not found"})
             return
+        tenant = self._authenticated_tenant()
+        if tenant is None:
+            self.close_connection = True
+            self._respond(401, {"error": "a known bearer token is required"})
+            return
+        if self.path == "/warm":
+            self._warm(tenant)
+        else:
+            self._context_package(tenant)
+
+    def _authenticated_tenant(self) -> str | None:
+        scheme, _, presented = (self.headers.get("Authorization") or "").partition(" ")
+        presented = presented.strip()
+        if scheme.lower() != "bearer" or not presented:
+            return None
+        return tenant_for_token(request_tokens(), presented)
+
+    def _repository(self, tenant: str, repo: str) -> Repository | None:
+        registry = tenant_registries().registry(tenant)
+        return registry.get(repo) if registry is not None else None
+
+    def _context_package(self, tenant: str) -> None:
         payload = self._read_json()
         if payload is None:
             self._respond(400, {"error": "invalid json"})
@@ -103,21 +148,21 @@ class Handler(BaseHTTPRequestHandler):
         if not repo or not focus:
             self._respond(400, {"error": "repo and focus are required"})
             return
-        if repo not in source_control_repos(get_settings()):
+        repository = self._repository(tenant, repo)
+        if repository is None:
             self._respond(403, {"error": "repo not allowlisted"})
             return
-        registry = build_registry()
-        service = registry.service(repo) if registry is not None else None
-        if service is None:
-            if _configured_for_indexing(repo):
-                self._respond(503, {"error": f"repository intelligence has no index for {repo}"})
-                return
+        if not repository.index:
             self._respond(200, context_package_to_dict(unindexed_context_package(repo, focus)))
+            return
+        service = build_registry().service(repo, tenant)
+        if service is None:
+            self._respond(503, {"error": f"repository intelligence has no index for {repo}"})
             return
         package = service.context_package(RepoRef(repo, commit), focus, detail)
         self._respond(200, context_package_to_dict(package))
 
-    def _warm(self) -> None:
+    def _warm(self, tenant: str) -> None:
         payload = self._read_json()
         if payload is None:
             self._respond(400, {"error": "invalid json"})
@@ -127,11 +172,10 @@ class Handler(BaseHTTPRequestHandler):
         if not repo:
             self._respond(400, {"error": "repo is required"})
             return
-        if repo not in source_control_repos(get_settings()):
+        if self._repository(tenant, repo) is None:
             self._respond(403, {"error": "repo not allowlisted"})
             return
-        registry = build_registry()
-        service = registry.service(repo) if registry is not None else None
+        service = build_registry().service(repo, tenant)
         if service is None:
             self._respond(503, {"error": "repository intelligence not configured"})
             return
@@ -139,7 +183,7 @@ class Handler(BaseHTTPRequestHandler):
         self._respond(200, {"repo": repo, "commit": commit, "reindexed": reindexed})
 
     def _read_json(self) -> dict[str, Any] | None:
-        raw = read_bounded_body(self.rfile, self.headers)
+        raw = read_bounded_body(cast(BinaryIO, self.rfile), cast(Mapping[str, str], self.headers))
         try:
             return json.loads(raw or b"{}")
         except json.JSONDecodeError:
@@ -161,6 +205,13 @@ def main() -> None:
     from services.server_tls import wrap
 
     settings = get_settings()
+    if not request_tokens():
+        log.error(
+            "no tenant token is configured, so every context and warm request is refused. "
+            "Set REPO_INTELLIGENCE_TOKEN_<TENANT> for each tenant or REPO_INTELLIGENCE_TOKEN_KEY, "
+            "or REPO_INTELLIGENCE_TOKEN when neither TENANTS nor TENANT is set."
+        )
+    migrate_home_indexes(tenant_registries(), settings)
     server = ThreadingHTTPServer((settings.bind_host, PORT), Handler)
     wrap(server, enabled=settings.server_tls, configured_dir=settings.server_tls_dir)
     scheme = "https" if settings.server_tls else "http"

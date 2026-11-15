@@ -42,6 +42,9 @@ SECURITY_GROUP_POLICIES = {
 }
 GATE_EGRESS_POLICY = "gate-engine-egress"
 LITELLM_FILES = ("litellm-config.yaml", "litellm_redaction.py")
+# Secrets the tenant module generates for every tenant, which no overlay provider lists. The
+# tenant's worker reads each as the upper-cased key.
+TENANT_GENERATED_SECRETS = ("repo_intelligence_token",)
 MODEL_LIMIT_ENV = {
     "monthly_budget_usd": "TENANT_MODEL_BUDGET_USD",
     "rpm_limit": "TENANT_MODEL_RPM_LIMIT",
@@ -196,6 +199,7 @@ def set_tenant_secrets(
             if d.get("kind") == "SecretProviderClass"
             and d["metadata"].get("namespace") == namespace
         ]
+        add_generated_secrets(providers, own)
         mounted = {
             secret_key(item["objectName"]): item.get("objectAlias", "")
             for provider in providers
@@ -207,6 +211,27 @@ def set_tenant_secrets(
         set_secrets(providers, arns, (set(mounted) - set(arns)) | unset)
         skipped += [f"{namespace}:{mounted[key] or key}" for key in sorted(unset & set(mounted))]
     return skipped
+
+
+def add_generated_secrets(providers: list[dict[str, Any]], own: Mapping[str, str]) -> None:
+    """Add each generated secret the tenant holds to its worker's provider."""
+    from scripts.tenant_render import WORKER
+
+    for provider in providers:
+        if provider["metadata"]["name"] != WORKER:
+            continue
+        objects = json.loads(provider["spec"]["parameters"]["objects"])
+        listed = {secret_key(entry["objectName"]) for entry in objects}
+        objects += [
+            {
+                "objectName": f"agentic-platform/tenant/{key.replace('_', '-')}",
+                "objectType": "secretsmanager",
+                "objectAlias": key.upper(),
+            }
+            for key in TENANT_GENERATED_SECRETS
+            if key in own and key not in listed
+        ]
+        provider["spec"]["parameters"]["objects"] = json.dumps(objects)
 
 
 def set_security_groups(documents: list[dict[str, Any]], groups: Mapping[str, str]) -> None:
