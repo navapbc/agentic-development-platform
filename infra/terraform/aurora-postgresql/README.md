@@ -23,7 +23,7 @@ The master user is for administration only. Each service connects as its own rol
 
 ## Bedtime
 
-`bedtime_tags` adds tags an organization scheduler such as Cloud Custodian reads, for example `CustodianRdsBedtime`. The platform's own off-hours schedule scales the services to zero so the cluster auto-pauses.
+`bedtime_tags` adds tags an organization scheduler such as Cloud Custodian reads, for example `CustodianRdsBedtime`. The [off-hours](../off-hours) module scales the platform services to zero overnight so the cluster auto-pauses once `seconds_until_auto_pause` passes without a connection.
 
 ## Usage
 

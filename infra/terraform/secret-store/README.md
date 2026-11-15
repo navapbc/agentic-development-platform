@@ -9,7 +9,9 @@ Reusable module that holds the platform's secret material in AWS Secrets Manager
 - A resource policy on every secret, including the cache user secret from the `elasticache` module. It allows `GetSecretValue` for the roles in `secret_readers` and denies it to every other principal except the secret's rotation function.
 - With `create_database_credentials`, one credential secret per service role, a PostgreSQL rotation function, and the role bootstrap that runs through the same function.
 - With `rotate_elasticache_user`, an ElastiCache rotation function attached to the cache user secret.
+- With `rotated_token_secrets`, a token rotation function for plain-text bearer tokens that other modules own, such as each tenant's repository intelligence token.
 - With `restart_services`, an SSM Automation document and one EventBridge rule per secret that redeploy the ECS services that read the secret.
+- With `restart_eks`, an SSM Automation document and EventBridge rules that restart the EKS deployments that read a secret of this module or, through `restart_eks.external_secrets`, a secret of another module.
 
 ## Secret catalog
 
@@ -24,6 +26,7 @@ Generated secrets get a random value from Terraform on the first apply. Terrafor
 | `langfuse_encryption_key` | generated | `ENCRYPTION_KEY` | None, see below |
 | `langfuse_public_key` | generated | `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_INIT_PROJECT_PUBLIC_KEY` | Manual, by generation |
 | `langfuse_secret_key` | generated | `LANGFUSE_SECRET_KEY`, `LANGFUSE_INIT_PROJECT_SECRET_KEY` | Manual, by generation |
+| `langfuse_admin_password` | generated | `LANGFUSE_INIT_USER_PASSWORD` | In the Langfuse UI, see below |
 | `clickhouse_password` | generated | `CLICKHOUSE_PASSWORD` | Manual, by generation |
 | `coordination_shared_secret` | generated | `COORDINATION_SHARED_SECRET` | Manual, by generation |
 | `github_token` | external | `GITHUB_TOKEN` | At the issuer |
@@ -34,10 +37,12 @@ Generated secrets get a random value from Terraform on the first apply. Terrafor
 | `slack_webhook_url` | external | `SLACK_WEBHOOK_URL` | At the issuer |
 | `review_signing_key` | external | `REVIEW_SIGNING_KEY` | With a trust-root change |
 | `authorship_signing_key` | external | `AUTHORSHIP_SIGNING_KEY` | With an identity key change |
+| `registry_token` | external | `REGISTRY_TOKEN` | At the issuer |
 | `database_platform_migrator` | database | `ALEMBIC_DATABASE_URL` user and password | Automatic |
 | `database_platform_app` | database | `DATABASE_URL` user and password | Automatic |
 | `database_temporal` | database | Temporal `POSTGRES_USER` and `POSTGRES_PWD` | Automatic |
 | `database_langfuse` | database | Langfuse `DATABASE_URL` user and password | Automatic |
+| `database_litellm` | database | LiteLLM `DATABASE_USERNAME` and `DATABASE_PASSWORD` | Automatic |
 | `elasticache_user` | the `elasticache` module | `REDIS_USERNAME` and `REDIS_AUTH` | Automatic |
 
 External secrets are created empty. Set each one before the first deployment that reads it, for example `aws secretsmanager put-secret-value --secret-id agentic-platform/external/github-token --secret-string file://token.txt`. ECS cannot start a task that references a secret with no value.
@@ -46,7 +51,7 @@ The trust-root bundle holds only public keys and stays in configuration. The Min
 
 ## Access
 
-`secret_readers` maps a secret key to the role ARNs that read it. For a secret that ECS injects into a task, pass the task execution role, because ECS reads the value when the task starts. The key policy lets those roles decrypt only through Secrets Manager. A secret with no readers denies `GetSecretValue` to everyone except its rotation function, which suits an external secret before its consumer exists. An operator still writes a value with `PutSecretValue`.
+`secret_readers` maps a secret key to the role or user ARNs that read it. For a secret that ECS injects into a task, pass the task execution role, because ECS reads the value when the task starts. The key policy lets those roles decrypt only through Secrets Manager. A secret with no readers denies `GetSecretValue` to everyone except its rotation function, which suits an external secret before its consumer exists. An operator still writes a value with `PutSecretValue`.
 
 ## Automatic rotation
 
@@ -58,12 +63,17 @@ The rotation functions run in the management tier. They have no ingress, and the
 |---|---|---|
 | PostgreSQL service roles | The function runs `ALTER ROLE ... PASSWORD` through the Data API as the RDS-managed master user. It sends a SCRAM-SHA-256 verifier, so the statement that `log_statement = ddl` writes to the cluster log carries no password. | Open connections stay open. A consumer that opens a new connection with the old password is refused until its restart. |
 | ElastiCache user | The function calls `ModifyUser` with the current and the new password. The next rotation drops the older one. | Consumers keep connecting with either password until their restart. |
+| Tokens in `rotated_token_secrets` | `rotation.token_handler` stages a random token of 48 letters and digits as `AWSPENDING` in `createSecret`, and keeps a pending version that already exists, so a retried step writes no second token. `setSecret` and `testSecret` do nothing, because no external system stores the token. `finishSecret` moves `AWSCURRENT` to the new version. | The service that checks the token accepts the `AWSCURRENT` and `AWSPREVIOUS` versions, so a client that holds the previous token keeps its access until the next rotation. |
+
+The [off-hours](../off-hours) module scales the consumers to zero across the default rotation window, so a scheduled rotation finds no running consumer and none of its connections is refused. A rotation started while the consumers run refuses their new connections until the restart rule replaces their tasks, so put them to sleep first with the off-hours sleep document.
+
+`rotated_token_secrets` lists name patterns of token secrets that other modules create, where `*` matches any characters, such as `agentic-platform/tenants/*/repo-intelligence-token`. The secrets exist outside this module, so the module that owns each secret attaches the function with its own rotation schedule and admits the function's role in the secret's resource policy. The `token_rotation` output names the function as `function_arn` and its role as `role_arn` for that module, and is null without `rotated_token_secrets`. The output depends on the Lambda permissions below, so a rotation the owning module attaches is created after Secrets Manager may invoke the function. The role's policy describes, reads, puts, and restages only the secrets whose ARN matches a pattern followed by the six random characters Secrets Manager appends, `<pattern>-??????`, and uses a KMS key only through Secrets Manager with a `kms:EncryptionContext:SecretARN` that matches the same ARNs. One Lambda permission per pattern admits Secrets Manager with that source ARN and the account as `source_account`. `rotation_function_arns` names the function under `token`.
 
 The RDS-managed master secret rotates every seven days through RDS itself and is used only by the bootstrap and the rotation function.
 
 ## Role bootstrap
 
-The PostgreSQL function also creates the service roles and databases when it is invoked with `{"action": "bootstrap"}`. Run it with `inv db-bootstrap-roles --function-name <role_bootstrap_function_name>` once after the first apply, before the first migration and before the first scheduled rotation. The bootstrap is idempotent and sets every role password to the current value of its secret, so it also repairs a role after a database restore. Run it again whenever the cluster is created anew, as after a destroy and apply, because the new cluster has none of the roles and every service login fails with `password authentication failed` until it runs.
+The PostgreSQL function also creates the service roles and databases when it is invoked with `{"action": "bootstrap"}`. Run it with `inv db-bootstrap-roles --function-name <role_bootstrap_function_name>` once after the first apply, before the first migration and before the first scheduled rotation. The bootstrap is idempotent and sets every role password to the current value of its secret, so it also repairs a role after a database restore. Run it again whenever the cluster is created anew, as after a destroy and apply, because the new cluster has none of the roles and every service login fails with `password authentication failed` until it runs. Run it again after an apply that adds a role, such as `litellm`, to a cluster that already exists, because the role and its database exist only after the bootstrap.
 
 | Role | Gets |
 |---|---|
@@ -71,6 +81,7 @@ The PostgreSQL function also creates the service roles and databases when it is 
 | `platform_app` | `CONNECT` on `agent_platform`, `SELECT`, `INSERT`, `UPDATE`, and `DELETE` on the schema's tables, sequence use, and only `SELECT` on `alembic_version`, which the startup schema check reads. |
 | `temporal` | Owns the `temporal` and `temporal_visibility` databases. Run the Temporal schema tool with `setup-schema` and `update-schema`, because the databases already exist. |
 | `langfuse` | Owns the `langfuse` database, where its migrations run. |
+| `litellm` | Owns the `litellm` database, where LiteLLM keeps its virtual keys, teams, budgets, and spend logs and runs its Prisma migrations at startup. |
 
 The bootstrap revokes `PUBLIC` access on each of these databases, so a role connects only to its own database. It runs `CREATE EXTENSION pgaudit` in each database. It pre-creates `agent_platform.alembic_version` as the migrator, so the application role never gains write access to it when Alembic later finds and uses the table. The bootstrap expects a cluster on which the platform migrations have not run as another role. It requires PostgreSQL 15 or later.
 
@@ -78,15 +89,21 @@ The bootstrap revokes `PUBLIC` access on each of these databases, so a role conn
 
 Each service reads its secrets once, when its task starts. `restart_services` maps a secret key to up to five ECS service ARNs. For each listed secret, an EventBridge rule starts the restart automation on a `RotationSucceeded` event or on a `PutSecretValue` that does not stage a pending version, which is an operator update. The automation calls `UpdateService` with `forceNewDeployment`, so ECS starts tasks that read the new value before it stops the old ones. The rules read CloudTrail management events, so the account needs a trail that records them, such as the one the `cloudtrail` module creates.
 
+`restart_eks` names a one-shot ECS task, such as the [eks-deployer](../eks-deployer), and maps a secret key to the EKS deployments that read it. For each listed secret, a separate EventBridge rule on the same events starts an automation that runs the task with `restart` and the deployment names, so the pods roll onto the new value. The rule is separate because an EventBridge rule takes at most five targets.
+
+`restart_eks.external_secrets` restarts the EKS deployments that read a secret of another module, such as a tenant's repository intelligence token. Each entry is keyed by a name of 1 to 32 lowercase letters, digits, and underscores, starting with a letter, that names its rule, and holds the `secret_arn` and the `deployments`, each as `namespace/name`. For each entry, a `restart_eks_external` EventBridge rule starts the same automation on a `RotationSucceeded` event or an operator update of that secret, which runs the task with `restart` and the entry's deployments.
+
 ## Manual rotation runbook
 
 | Secret | Procedure |
 |---|---|
 | Database and cache credentials | `aws secretsmanager rotate-secret --secret-id <arn>`. The restart rule redeploys the consumers when the rotation succeeds. |
-| Generated secrets | Increment the secret's entry in `generated_secret_versions` and apply. Terraform writes a new value as an operator update, so the restart rule redeploys the consumers. Rotating `review_attestation_secret` makes earlier HMAC attestations fail verification, so keep the old value with the evidence it verified. Rotating the Langfuse project keys requires the same keys in the Langfuse project. Rotating `coordination_shared_secret` refuses every coordination call from a worker that has not restarted, so list the coordination service and the workers under that key in `restart_services`. |
+| Generated secrets | Increment the secret's entry in `generated_secret_versions` and apply. Terraform writes a new value as an operator update, so the restart rule redeploys the consumers. Rotating `review_attestation_secret` makes earlier HMAC attestations fail verification, so keep the old value with the evidence it verified. Rotating the Langfuse project keys requires the same keys in the Langfuse project. Rotating `coordination_shared_secret` refuses every coordination call from a client that has not restarted, so every service that reads it belongs under that key in `restart_services`, which the `private-bedrock` root fills from the `container-services` module. |
+| Tokens in `rotated_token_secrets` | `aws secretsmanager rotate-secret --secret-id <arn>`. The external restart rule restarts the deployments `restart_eks.external_secrets` lists for the secret when the rotation succeeds. |
 | External secrets | Issue the new token or webhook secret at GitHub, Jira, or Slack, then `aws secretsmanager put-secret-value`. Revoke the old one at the issuer after the consumers restart. |
 | Signing keys | Add the new public key to the trust root or identity, write the private key with `put-secret-value`, then revoke the old key. |
 | `langfuse_encryption_key` | Not rotated. Langfuse encrypts stored data with it and has no re-encryption path, so a new key makes stored data unreadable. |
+| `langfuse_admin_password` | Langfuse reads it only to create the administrator on its first start against an empty database. Change the administrator password in the Langfuse UI, then write the new value with `aws secretsmanager put-secret-value` so the secret records it. A new generation alone does not change the password Langfuse holds. |
 
 Rotate a credential at once, outside the schedule, when it may be exposed, when a person with access to it leaves or changes role, and when the membership of a group that shares it changes.
 

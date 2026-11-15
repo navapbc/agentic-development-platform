@@ -1,0 +1,3 @@
+# Rules of the CIS Amazon Linux 2023 Level 2 Server profile that an image may fail, one per line,
+# as the rule ID without the xccdf_org.ssgproject.content_rule_ prefix, followed by the reason.
+root_path_no_dot The rule reads the PATH of running processes, which an offline scan of an image file system has none of. The publish checks the PATH in each image's configuration for empty and relative entries instead.

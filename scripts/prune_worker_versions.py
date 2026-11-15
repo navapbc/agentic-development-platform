@@ -32,4 +32,7 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
+    from services.temporal_client import exit_without_finalization
+
     asyncio.run(main())
+    exit_without_finalization(0)

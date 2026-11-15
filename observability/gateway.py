@@ -2,7 +2,7 @@
 
 The LiteLLM gateway forwards a request's ``metadata`` to Langfuse. These helpers
 build that metadata so a generation carries the execution identifiers, the stage,
-and the prompt version, joining it to the OpenTelemetry trace by ``execution_id``.
+the prompt version, and the tenant, joining it to the OpenTelemetry trace by ``execution_id``.
 """
 
 from __future__ import annotations
@@ -11,6 +11,13 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+TENANT_TAG_PREFIX = "tenant:"
+
+
+def tenant_tag(tenant: str) -> str:
+    """The LiteLLM request tag and Langfuse trace tag that attribute a call to its tenant."""
+    return f"{TENANT_TAG_PREFIX}{tenant}"
+
 
 def langfuse_request_metadata(
     *,
@@ -18,6 +25,7 @@ def langfuse_request_metadata(
     task_id: str | None = None,
     stage: str | None = None,
     prompt_version: str | None = None,
+    tenant: str | None = None,
     extra_tags: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     """Build the LiteLLM request metadata that Langfuse maps onto a generation."""
@@ -37,6 +45,9 @@ def langfuse_request_metadata(
     if task_id:
         trace_metadata["task_id"] = task_id
         tags.append(f"task:{task_id}")
+    if tenant:
+        trace_metadata["tenant"] = tenant
+        tags.append(tenant_tag(tenant))
     if extra_tags:
         tags.extend(extra_tags)
     if trace_metadata:

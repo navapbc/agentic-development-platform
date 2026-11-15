@@ -1,0 +1,8 @@
+# The extras the platform uses, the proxy with its runtime callbacks and Bedrock, plus the
+# database client of the extra_proxy extra. extra_proxy itself pins google-cloud-kms, which holds
+# protobuf below the release that fixes CVE-2025-4565, for a Google integration the platform
+# does not use.
+litellm[proxy,proxy-runtime,bedrock-realtime]==1.109.1
+prisma>=0.11.0,<1.0
+psycopg[binary]>=3.2,<4.0
+protobuf>=6.31.1

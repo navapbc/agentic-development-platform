@@ -191,3 +191,28 @@ async def test_a_failed_scrub_stops_the_workspace_being_reused(
         await materializer.materialize(
             repo=REPO, task_id=TASK_ID, execution_id=EXECUTION_ID, base="main", commit_sha=head
         )
+
+
+async def test_discard_changes_returns_a_reused_workspace_to_its_commit(
+    remote: tuple[str, str], tmp_path: Path
+) -> None:
+    bare, head = remote
+    materializer = WorkspaceMaterializer(
+        registry=InMemoryOrphanRegistry(),
+        allowed_repos=frozenset({REPO}),
+        workspace_root=tmp_path / "workspaces",
+        remote_url_for=lambda repo: bare,
+    )
+    workspace = await materializer.materialize(
+        repo=REPO, task_id=TASK_ID, execution_id=EXECUTION_ID, base="main", commit_sha=head
+    )
+    root = Path(workspace.path)
+    (root / "README.md").write_text("edited by a lost attempt\n", encoding="utf-8")
+    (root / "scratch.py").write_text("print('left behind')\n", encoding="utf-8")
+    _git(["add", "README.md"], workspace.path)
+
+    await materializer.discard_changes(workspace)
+
+    assert (root / "README.md").read_text(encoding="utf-8") == "hello\n"
+    assert not (root / "scratch.py").exists()
+    assert _git(["status", "--porcelain"], workspace.path) == ""

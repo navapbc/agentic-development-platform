@@ -17,6 +17,21 @@ _NAME_SANITISE = re.compile(r"[^a-z0-9-]+")
 _SANDBOX_UID = 10001
 _SANDBOX_HOME = "/home/sandbox"
 _BASE_TAG = "__openhands_base"
+# Untracked paths matching these never reach the patch. A pattern excludes only untracked files,
+# so an edit to a tracked file under one of them still does.
+BUILD_ARTIFACT_EXCLUDES = (
+    "__pycache__/",
+    "*.pyc",
+    ".pytest_cache/",
+    "node_modules/",
+    "target/",
+    "build/",
+    "dist/",
+    ".venv/",
+)
+# The eks-cluster module labels its nodes with the pool name and taints the sandbox pool.
+NODE_POOL_LABEL = "agentic-dev-platform/node-pool"
+SANDBOX_TAINT_KEY = "agentic-dev-platform/sandbox"
 
 
 class SandboxExecError(RuntimeError):
@@ -39,6 +54,8 @@ class SandboxSpec:
     labels: Mapping[str, str] = field(default_factory=dict)
     env: Mapping[str, str] = field(default_factory=dict)
     workspace: WorkspaceBinding | None = None
+    session_api_key: str = ""
+    node_pool: str = ""
 
 
 @dataclass(frozen=True)
@@ -46,6 +63,7 @@ class SandboxHandle:
     name: str
     namespace: str
     base_url: str
+    session_api_key: str = ""
 
 
 def pod_name_for(execution_id: str) -> str:
@@ -67,6 +85,16 @@ def _workspace_volume(binding: WorkspaceBinding) -> tuple[dict, dict]:
     return volume, mount
 
 
+def node_pool_scheduling(node_pool: str) -> dict:
+    """Return the pod spec fields that place a pod on the tainted node pool, or none without one."""
+    if not node_pool:
+        return {}
+    return {
+        "nodeSelector": {NODE_POOL_LABEL: node_pool},
+        "tolerations": [{"key": SANDBOX_TAINT_KEY, "operator": "Exists", "effect": "NoSchedule"}],
+    }
+
+
 def build_pod_manifest(spec: SandboxSpec) -> dict:
     labels = {
         "app": "openhands-sandbox",
@@ -77,8 +105,13 @@ def build_pod_manifest(spec: SandboxSpec) -> dict:
     env = [
         {"name": "LLM_BASE_URL", "value": spec.litellm_base_url},
         {"name": "HOME", "value": _SANDBOX_HOME},
+        {"name": "PYTHONDONTWRITEBYTECODE", "value": "1"},
     ]
     env += [{"name": key, "value": value} for key, value in spec.env.items()]
+    # The agent server binds the pod IP only when a session key is set, and then requires
+    # that key on every call, so the in-cluster driver can reach it and nothing else can.
+    if spec.session_api_key:
+        env.append({"name": "SESSION_API_KEY", "value": spec.session_api_key})
     volumes = [
         {"name": "agent-tmp", "emptyDir": {}},
         {"name": "agent-home", "emptyDir": {}},
@@ -127,6 +160,7 @@ def build_pod_manifest(spec: SandboxSpec) -> dict:
         "securityContext": {"seccompProfile": {"type": "RuntimeDefault"}},
         "containers": [container],
         "volumes": volumes,
+        **node_pool_scheduling(spec.node_pool),
     }
     if spec.runtime_class:
         spec_body["runtimeClassName"] = spec.runtime_class
@@ -197,11 +231,21 @@ class KubernetesSandboxProvisioner:
         except ApiException as exc:
             if exc.status != 409:
                 raise
-            await self._wait_absent(core, name, spec.namespace)
+            # The pod name comes from the execution id, so a pod already holding it belongs to
+            # an earlier attempt of this stage, either still terminating or orphaned by a worker
+            # that stopped. Neither is used again, and removing it lets this attempt start.
+            await self.teardown(
+                SandboxHandle(name=name, namespace=spec.namespace, base_url="", session_api_key="")
+            )
             await asyncio.to_thread(core.create_namespaced_pod, spec.namespace, manifest)
         pod_ip = await self._wait_ready(core, name, spec.namespace)
         base_url = f"http://{pod_ip}:{spec.server_port}"
-        return SandboxHandle(name=name, namespace=spec.namespace, base_url=base_url)
+        return SandboxHandle(
+            name=name,
+            namespace=spec.namespace,
+            base_url=base_url,
+            session_api_key=spec.session_api_key,
+        )
 
     async def _wait_absent(self, core, name: str, namespace: str) -> None:
         from kubernetes.client.exceptions import ApiException
@@ -309,8 +353,11 @@ class KubernetesSandboxProvisioner:
                 "--",
                 "sh",
                 "-c",
-                f"cd {shlex.quote(project_dir)} && git add -A && "
-                f"(git diff --cached {_BASE_TAG} 2>/dev/null || git diff --cached)",
+                f"cd {shlex.quote(project_dir)} && excludes=$(mktemp) && "
+                f"printf '%s\\n' {' '.join(shlex.quote(p) for p in BUILD_ARTIFACT_EXCLUDES)} "
+                f'> "$excludes" && git -c core.excludesFile="$excludes" add -A && '
+                f"(git diff --cached --binary {_BASE_TAG} 2>/dev/null || "
+                f"git diff --cached --binary)",
             ],
             timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS,
             capture_output=True,
@@ -336,6 +383,7 @@ class FakeSandboxProvisioner:
             name=pod_name_for(spec.execution_id),
             namespace=spec.namespace,
             base_url=self._base_url,
+            session_api_key=spec.session_api_key,
         )
         self.specs.append(spec)
         self.provisioned.append(handle)
@@ -413,6 +461,7 @@ class PortForwardSandboxProvisioner:
             name=handle.name,
             namespace=handle.namespace,
             base_url=f"http://127.0.0.1:{local_port}",
+            session_api_key=handle.session_api_key,
         )
 
     async def _wait_forward(self, port: int, proc: process.Popen) -> None:

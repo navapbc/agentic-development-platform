@@ -49,7 +49,6 @@ create_cache              = false
 create_clickhouse_storage = false
 create_langfuse_bucket    = false
 create_secret_store       = false
-create_rebar_ticket_store = false
 
 tags = {
   project = "agentic-dev-platform"

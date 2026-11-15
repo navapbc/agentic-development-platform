@@ -1,0 +1,170 @@
+# Tenant config
+
+Each tenant of a deployment owns the config files that describe its work and its credentials. It publishes them as a bundle, and the workers load the bundle at run time without a deploy. This document lists the files a tenant owns, how a bundle layers over the environment's config, what a bundle must contain, the default each file and key takes when it is absent, and how a run pins one version of the bundle. [tenants](../infra/terraform/examples/private-bedrock/README.md#tenants) in the `private-bedrock` README covers the AWS resources each tenant receives.
+
+## Where a bundle comes from
+
+`TENANT` names the tenant a process serves. An activity worker refuses to start without it, everywhere, because there is no default tenant. Locally, set `TENANT` in `.env`, and `TENANTS` to the comma-separated list of tenants the local cluster renders. In AWS the deploy sets `TENANT` on each tenant's worker and `TENANTS` on the platform tasks from the `tenants` variable.
+
+Each tenant's activity worker polls its own task queue, `<TEMPORAL_TASK_QUEUE>-<tenant>`, and the workflow worker polls the base queue and the queue of every tenant in `TENANTS`. A run starts on the queue of the tenant whose worker started it, so its activities run in that tenant's worker. When a tenant's worker starts, it installs its intake schedule, `<source>-intake-<tenant>`, and its reap schedule, `<REAP_SCHEDULE_ID>-<tenant>`, on its queue, and removes the untenanted schedules of the same name. When the ticket source cannot authenticate with the worker's credentials, for example a Jira `token_ref` without a value or a Jira Cloud site that refuses the account email and token, the intake schedule installs paused with the reason as its note, and the next worker start after the gap is fixed installs it running. In AWS, `inv eks-deploy --command "restart tenant-workers"` restarts every tenant worker after a secret is set. Each execution row records its tenant, and a worker counts, admits, and reconciles only its tenant's executions. The reap schedule reaps orphaned branches and pull requests only in the tenant's repositories.
+
+| Setting | Source of the bundle |
+|---|---|
+| `TENANT_CONFIG_BUCKET` set | The objects under `tenants/<TENANT>/` in that bucket, which the [tenant-config-store](../infra/terraform/tenant-config-store) module creates and the tenant's publisher role writes |
+| `TENANT_CONFIG_BUCKET` empty | The directory `config/<environment>/tenants/<TENANT>/` |
+
+A bundle is flat. It holds files named `<name>.yaml` at the top of its directory or prefix.
+
+## Layering
+
+A bundle layers over `config/<environment>/`, or the directory `PLATFORM_ENV_CONFIG_DIR` names in a deployed task. For each tenant file, the bundle's copy wins, and a file the bundle lacks is read from the environment directory. A file that is not a tenant file is read only from the environment directory, so a bundle can never replace a platform file such as `review-trust-root.yaml` or `integrations.yaml`, and a bundle that holds one is refused.
+
+The tenant files are listed below.
+
+| File | What it holds |
+|---|---|
+| `repositories.yaml` | The tenant's repositories, their backend, default branch, and indexing |
+| `checks.yaml` | Each repository's checks image, command, and fix command |
+| `gates.yaml` | The gate bundle and the per-gate overrides a run evaluates |
+| `gate_engine.yaml` | The external gate engines and their source or image |
+| `registries.yaml` | The image and package mirrors the gate, checks, and scanner pods use |
+| `github.yaml` | The GitHub hosts, the default owner, and the `token_ref` of each credential |
+| `jira.yaml` | The Jira sites, projects, boards, flows, and the `token_ref` of each credential |
+| `tickets.yaml` | The rebar ticket store, its status flow, its poll identity, and its S3 store |
+| `profiles.yaml` | The tenant's own runtime profiles, beside the catalog's |
+
+Because the environment directory fills every gap, one environment-level file can serve every tenant, such as the aws-mode `registries.yaml` that Terraform generates. The required-content rules below still apply to the effective config, the bundle and the environment together.
+
+## Validation
+
+A worker validates a bundle before it activates it, and `inv tenant-config-validate` runs the same validation on a directory. A bundle is refused when any of the following holds.
+
+- It holds a file that is not a tenant file.
+- A file's `config_version` is older than the release expects.
+- A file fails the loader the platform uses for it, for example an unknown gate, a malformed mirror, or a repository on the local backend without a path.
+- `repositories.yaml` is absent from the effective config, or names no repository.
+- `gates.yaml` is absent from the effective config.
+- `TICKET_BACKEND=rebar` and `tickets.yaml` is absent.
+- `TICKET_BACKEND=jira` and `jira.yaml` is absent.
+- A repository uses the `github` backend and `github.yaml` is absent.
+- A repository names a runtime profile that neither the catalog nor `profiles.yaml` defines, a profile reuses a catalog name, a profile's catalog image is not published, or a profile's checks or gates do not parse or enable a gate that does not register.
+- An image the effective config names, a profile's sandbox or checks image, a checks image, or a gate engine image, lacks an `@sha256:` digest or comes from a repository the platform's `image_policy.yaml` does not admit for the tenant. `image_policy.yaml` and `image_exceptions.yaml` are platform files. See [image governance](image-governance.md).
+
+The workers check the source every `TENANT_CONFIG_REFRESH_SECONDS`, 60 by default. A new bundle that passes validation becomes active for the runs that start after it. A new bundle that fails stays refused until its content changes. The last valid bundle stays active, and the workers alert over the Slack webhook and the alert email with every reason. A worker whose first bundle fails validation refuses to start.
+
+## Defaults
+
+A file the effective config lacks, and a key a file omits, take the defaults below.
+
+### repositories.yaml
+
+Required. `defaults.backend` is `github`, `defaults.default_branch` is `main`, `defaults.index` is `false`, and `defaults.profile` is unset. Each repository inherits the defaults and may override them. A repository on the `local` backend needs a `path`. A repository without a `profile` runs in the platform's sandbox image with its `checks.yaml` entry and `gates.yaml` alone.
+
+### checks.yaml
+
+Optional. Absent, no repository has checks of its own, and a repository whose runtime profile has checks runs those. A repository on the `github` backend without an entry is held at intake, because the GitHub backend requires checks. A repository on the `local` backend without an entry skips the checks gate. An entry's `working_dir` is `/workspace`, its `timeout_minutes` is 15, and it has no `fix_command` unless it sets one.
+
+### gates.yaml
+
+Required. `profile` selects a shipped bundle, `private` or `government`. Both run `code-review`, `security-review`, `acceptance`, `semgrep`, and `trivy` as required gates, except that `private` runs `semgrep` advisory. `fail_fast` is off for the review and scanner stages. An entry under `gates` overrides one gate by name and leaves the rest of the bundle as it is.
+
+### gate_engine.yaml
+
+Optional. Absent, only the catalog engines `security-policy` and `test-policy` register, where `GATE_ENGINE_IMAGES` names their images, and a tenant entry may not reuse their names. An entry's `enabled` is `false`, `mode` is `local`, `output_format` is `review-json`, `tool` is `claude`, `on_unavailable` is `abort`, and `max_output_tokens` is 8192. An enabled entry must set `review_entrypoint`, and `classifier_entrypoint` is empty, which runs no classifier. An `image`-mode entry without an `image` runs the image `GATE_ENGINE_IMAGES` names for it. [gate-engine.md](gate-engine.md) describes every field.
+
+### registries.yaml
+
+Optional. Absent, the gate, checks, and scanner pods pull images as written and install packages from their public indexes, which works on a workstation and fails in AWS, where DNS Firewall resolves no public registry. [gate-engine.md](gate-engine.md#registries) describes the `aws` and `external` modes.
+
+### github.yaml
+
+Required when a repository uses the `github` backend. `default.host` names one of `hosts`, and `default.token_ref` names the variable holding the token, `GITHUB_TOKEN` in the template. A repository in `repositories.yaml` may override the host, owner, or `token_ref`.
+
+### jira.yaml
+
+Required with `TICKET_BACKEND=jira`. `allowlist` names the projects intake reads. `default` is the identity of any allowlisted project without a `projects` entry. `intake_label` unset admits every issue in a project that is not Done. `dependency_link_type` unset turns off dependency recording for the project. `acceptance_field` empty reads no acceptance criteria field.
+
+### tickets.yaml
+
+Required with `TICKET_BACKEND=rebar`. `backend` names the store's `repo_root`, `project`, `default_repo`, and `status_flow`. `store`, `roles`, `provenance`, and `isolation` are optional together. Without `store`, the ticket store stays local to `repo_root` and syncs to no bucket. `write_back.allowed_scopes` defaults to every write scope, `status`, `comment`, `approval`, and `link`.
+
+### profiles.yaml
+
+Optional. Absent, the tenant uses the catalog profiles alone. A profile's `sandbox_image` empty runs the platform's sandbox image, `checks` absent leaves a repository without a `checks.yaml` entry with no checks, and `gates` absent applies no override. [runtime-profiles.md](runtime-profiles.md) describes the catalog and every field.
+
+## Pinning a run
+
+A run's first activity, `record_manifest`, records the tenant and the identity of the active bundle in the run's determinism manifest. The identity is the version of each file, the S3 version ID from the bucket or a content hash from a directory. Every later activity of the run reads that identity's copy, which the worker keeps in a local store under `$TMPDIR/tenant-config/<tenant>/`, holding the 20 most recent bundles, and fetches again from the bucket's version history when it has been pruned. A bundle published while a run is in flight therefore changes nothing the run reads. An activity that runs before the manifest, such as intake, reads the bundle active when it starts. An activity of a run whose manifest names another tenant fails without a retry.
+
+A directory source keeps no history. A run pinned to a directory bundle that has since changed reads its copy from the worker's store, and fails when the copy has been pruned.
+
+## Publishing
+
+```bash
+inv tenant-config-validate --tenant adp --bundle-dir path/to/bundle
+inv tenant-config-publish --tenant adp --bundle-dir path/to/bundle --bucket <config bucket>
+```
+
+`inv tenant-config-publish` validates the bundle, uploads every file, deletes the files under the tenant's prefix the bundle no longer holds, and prints each file's new version. In a tenant's CI, the workflow assumes the tenant's publisher role through GitHub OIDC and passes `--environment-dir` at a copy of the deployment's environment files, so validation layers over the same environment the workers use. The workers validate the bundle again before they activate it.
+
+## Upgrading a v0.2.x database to v0.3.0
+
+A v0.2.x database records executions and orphan artifacts without a tenant. The migrations `0012_execution_tenant` and `0013_orphan_tenant` add the tenant column, leave `executions.tenant` NULL on every existing row, and set `orphan_artifacts.tenant` to the empty string on every existing row. The upgrade assigns none of these rows to a tenant.
+
+### Before the upgrade
+
+1. Pause intake. Pause the intake schedule, which `INTAKE_SCHEDULE_ID` names and which is `jira-intake` by default, in the Temporal UI, at `localhost:3001` locally or through `inv temporal-ui` in AWS. Do not run `inv intake` until the upgrade is complete.
+2. Let every in-flight run finish, or cancel its workflow in the Temporal UI. `inv workflow-status` lists the recent workflow executions.
+3. Run `inv reap` to list the orphaned branches and pull requests whose TTL has passed, then `inv reap --apply` to delete them. The reaper deletes only orphans whose TTL has passed, so close any remaining agent branch or pull request in the repository host before the upgrade.
+
+### After the upgrade
+
+The rows recorded before the upgrade belong to no tenant. Every tenant-scoped query matches its tenant exactly, so these executions do not count toward a tenant's `MAX_CONCURRENT_RUNS` limit, the reaper does not reclaim these orphan artifacts, and the MCP gateway evidence tools do not return the evidence of these executions. A pull request event for one of these executions resolves to no workflow, and the inbound webhook answers it as it answers any event without a workflow.
+
+The intake idempotency records in `agent_platform.side_effects` name an issue and a repository without a tenant, and the intake of a tenant matches only records that name the tenant. Intake therefore treats a ticket it started before the upgrade as not started. Intake selects every ticket that carries the intake label and is not in a Done status, so before resuming intake, move each ticket whose run finished or was cancelled to a Done status or remove its intake label. An unroutable ticket that was alerted before the upgrade alerts once more for each tenant.
+
+### Optional backfill
+
+A one-time backfill assigns the rows recorded before the upgrade to one tenant. It consists of the following two statements.
+
+```sql
+UPDATE agent_platform.executions SET tenant = '<tenant>' WHERE tenant IS NULL;
+UPDATE agent_platform.orphan_artifacts SET tenant = '<tenant>' WHERE tenant = '';
+```
+
+No `inv` task runs SQL against the platform database. Locally, run the statements in the Compose `postgres` service, the database `inv db-migrate` migrates.
+
+```bash
+docker compose exec -T postgres sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d agent_platform' <<'EOF'
+BEGIN;
+UPDATE agent_platform.executions SET tenant = '<tenant>' WHERE tenant IS NULL;
+UPDATE agent_platform.orphan_artifacts SET tenant = '<tenant>' WHERE tenant = '';
+COMMIT;
+EOF
+```
+
+In AWS, run the statements from the activity worker of the tenant, which holds the platform `DATABASE_URL`, through the same `kubectl exec` path the `inv` worker tasks use.
+
+```bash
+kubectl -n tenant-<tenant> exec -i deploy/activity-worker -c activity-worker -- python - <<'EOF'
+import asyncio
+
+from database.engine import create_platform_engine
+from scripts.config import get_settings
+from sqlalchemy import text
+
+
+async def backfill() -> None:
+    engine = create_platform_engine(get_settings().database_url)
+    async with engine.begin() as conn:
+        executions = await conn.execute(text("UPDATE agent_platform.executions SET tenant = '<tenant>' WHERE tenant IS NULL"))
+        orphans = await conn.execute(text("UPDATE agent_platform.orphan_artifacts SET tenant = '<tenant>' WHERE tenant = ''"))
+    await engine.dispose()
+    print(f"executions {executions.rowcount}, orphan artifacts {orphans.rowcount}")
+
+
+asyncio.run(backfill())
+EOF
+```
+
+The backfill does not rewrite the intake idempotency records, so after it a ticket started before the upgrade still reads as not started to the tenant's intake. Pausing intake and finishing or cancelling every run before the upgrade is what keeps intake from starting a second run of such a ticket.

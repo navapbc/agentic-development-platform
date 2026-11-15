@@ -14,12 +14,28 @@ from services.integration.credentials import (
 
 from scripts.config import get_settings
 
-_CONFIGS = ("github", "jira", "integrations", "gates", "gate_engine", "tickets")
-_REQUIRED_SECRETS = ("COORDINATION_SHARED_SECRET",)
+_CONFIGS = (
+    "github",
+    "jira",
+    "integrations",
+    "gates",
+    "gate_engine",
+    "tickets",
+    "repositories",
+    "registries",
+    "profiles",
+    "image_policy",
+    "image_exceptions",
+)
+_REQUIRED_SECRETS = (
+    "COORDINATION_SHARED_SECRET",
+    "MCP_GATEWAY_TOKEN",
+    "REPO_INTELLIGENCE_TOKEN_KEY",
+)
 
 
 def report_required_secrets(resolver: SecretResolver) -> int:
-    """Print the state of each secret a service refuses to start without, and count the absent."""
+    """Print the state of each secret a service cannot serve without, and count the absent."""
     missing = 0
     for ref in _REQUIRED_SECRETS:
         try:

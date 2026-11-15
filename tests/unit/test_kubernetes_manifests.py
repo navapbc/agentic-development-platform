@@ -15,7 +15,7 @@ REPOSITORY = Path(__file__).resolve().parents[2]
 MANIFESTS = REPOSITORY / "deploy" / "kubernetes"
 LOCAL_OVERLAY = MANIFESTS / "local"
 CONFIG_LOCAL = REPOSITORY / "config" / "local"
-GENERATED_CONFIG = ("github.yaml", "jira.yaml", "integrations.yaml")
+GENERATED_CONFIG = ("github.yaml", "jira.yaml", "integrations.yaml", "repositories.yaml")
 
 
 def _container_env(documents: Iterable[dict[str, Any] | None], name: str) -> dict[str, Any]:
@@ -45,14 +45,15 @@ def _overlay_patch_env(kind: str, name: str) -> dict[str, Any]:
 def _hermetic_overlay(root: Path) -> Path:
     """Reproduce the tree the overlay walks up to, from tracked files only.
 
-    Its generators read an operator secret and three `config/local` files that the
-    repository does not track, so a checkout renders in place only on a machine that
-    already runs the sandbox. The copy skips any secret file an operator holds, so the
-    render reads the same inputs everywhere.
+    Its generators read four `config/local` files that the repository does not track, so a
+    checkout renders in place only on a machine that already runs the sandbox, and it
+    includes the sandbox network policies under `openhands/policies`.
     """
     manifests = root / "deploy" / "kubernetes"
-    shutil.copytree(MANIFESTS, manifests, ignore=shutil.ignore_patterns("*.secret.env"))
-    (manifests / "local" / "agentic-platform.secret.env").write_text("")
+    shutil.copytree(MANIFESTS, manifests)
+    shutil.copytree(
+        MANIFESTS.parents[1] / "openhands" / "policies", root / "openhands" / "policies"
+    )
     config_local = root / "config" / "local"
     config_local.mkdir(parents=True)
     for name in GENERATED_CONFIG:
@@ -86,3 +87,42 @@ def test_rendered_local_overlay_leaves_the_gateway_host_header_unchecked(tmp_pat
     ).stdout
 
     assert _container_env(yaml.safe_load_all(rendered), "mcp-gateway")["MCP_ALLOWED_HOSTS"] == ""
+
+
+def _gateway_documents() -> list[dict[str, Any]]:
+    return [d for d in yaml.safe_load_all((MANIFESTS / "mcp-gateway.yaml").read_text()) if d]
+
+
+def test_the_gateway_reads_its_token_from_the_platform_secret():
+    deployment = next(d for d in _gateway_documents() if d["kind"] == "Deployment")
+    container = deployment["spec"]["template"]["spec"]["containers"][0]
+    token = next(e for e in container["env"] if e["name"] == "MCP_GATEWAY_TOKEN")
+
+    assert token["valueFrom"]["secretKeyRef"] == {
+        "name": "agentic-platform",
+        "key": "mcp_gateway_token",
+    }
+
+
+def test_the_gateway_load_balancer_admits_only_the_declared_client_cidrs():
+    ingress = next(d for d in _gateway_documents() if d["kind"] == "Ingress")
+
+    assert ingress["metadata"]["annotations"]["alb.ingress.kubernetes.io/inbound-cidrs"]
+
+
+def _aws_overlay_documents(name: str) -> list[dict[str, Any]]:
+    text = (MANIFESTS / "aws" / name).read_text(encoding="utf-8")
+    return [document for document in yaml.safe_load_all(text) if document]
+
+
+def test_the_kube_system_policies_sit_alone_in_their_own_manifest():
+    kube_system = _aws_overlay_documents("kube-system-network-policies.yaml")
+    others = _aws_overlay_documents("network-policies.yaml")
+    overlay = yaml.safe_load((MANIFESTS / "aws" / "kustomization.yaml").read_text())
+
+    assert kube_system
+    assert {(d["kind"], d["metadata"]["namespace"]) for d in kube_system} == {
+        ("NetworkPolicy", "kube-system")
+    }
+    assert "kube-system" not in {d["metadata"]["namespace"] for d in others}
+    assert "kube-system-network-policies.yaml" in overlay["resources"]

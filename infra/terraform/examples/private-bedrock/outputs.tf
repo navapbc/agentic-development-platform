@@ -55,7 +55,7 @@ output "egress_public_ip" {
 
 output "dns_firewall_allowed_domains" {
   description = "Domains the VPC may resolve when the DNS Firewall is enabled."
-  value       = module.dns_firewall.allowed_domains
+  value       = concat(module.dns_firewall.allowed_domains, module.dns_firewall.redirect_trusted_domains)
 }
 
 output "aurora_endpoint" {
@@ -108,21 +108,6 @@ output "role_bootstrap_function_name" {
   value       = module.secret_store.role_bootstrap_function_name
 }
 
-output "rebar_ticket_store_bucket" {
-  description = "Ticket store bucket, set as store.bucket in tickets.yaml. Null when create_rebar_ticket_store is false."
-  value       = module.rebar_ticket_store.bucket
-}
-
-output "rebar_ticket_store_reader_role_arn" {
-  description = "Role the reader profile assumes, set as roles.read_only in tickets.yaml."
-  value       = module.rebar_ticket_store.reader_role_arn
-}
-
-output "rebar_ticket_store_writer_role_arn" {
-  description = "Role the writer profile assumes, set as roles.write in tickets.yaml."
-  value       = module.rebar_ticket_store.writer_role_arn
-}
-
 output "ecs_cluster_arn" {
   description = "Platform ECS cluster ARN. Empty when create_ecs_cluster is false."
   value       = module.ecs_cluster.cluster_arn
@@ -141,6 +126,41 @@ output "ecs_deployer_policy_arn" {
 output "ecs_exec_task_policy_arn" {
   description = "Policy a task role attaches to accept ECS Exec sessions in the platform ECS cluster."
   value       = module.ecs_cluster.exec_task_policy_arn
+}
+
+output "container_repository_urls" {
+  description = "ECR repository of each platform container image, keyed by the name inv publish-platform-images uses."
+  value       = module.container_services.repository_urls
+}
+
+output "container_deploy" {
+  description = "What inv platform-deploy runs."
+  value       = module.container_services.deploy
+}
+
+output "container_workspace" {
+  description = "Workspace file system and its checkouts and index access points."
+  value       = module.container_services.workspace
+}
+
+output "container_clickhouse" {
+  description = "The ClickHouse TLS secret inv clickhouse-certs put writes, and the name its certificate must carry."
+  value       = module.container_services.clickhouse
+}
+
+output "container_telemetry" {
+  description = "The Prometheus workspace the collector writes to, the X-Ray encryption key the module set, and the collector URL."
+  value       = module.container_services.telemetry
+}
+
+output "container_langfuse" {
+  description = "The internal Langfuse URL the platform services export to, and the URL inv langfuse-ui forwards."
+  value       = module.container_services.langfuse
+}
+
+output "container_internal_endpoints" {
+  description = "The internal load balancer's client security group, each service's target security group and target group, and each service's HTTPS URL."
+  value       = module.container_services.internal_endpoints
 }
 
 output "temporal_server_repository_url" {
@@ -192,4 +212,90 @@ output "temporal_ui_url" {
 output "temporal_deploy" {
   description = "What inv temporal-deploy runs."
   value       = module.temporal_control_plane.deploy
+}
+
+output "off_hours" {
+  description = "The automation documents that put the services to sleep and wake them, the role they assume, and the parameter holding the counts the wake restores."
+  value = {
+    documents             = module.off_hours.documents
+    automation_role_arn   = module.off_hours.automation_role_arn
+    wake_counts_parameter = module.off_hours.wake_counts_parameter
+  }
+}
+
+output "github_image_publisher_role_arn" {
+  description = "The role the publish-images workflow assumes. Set it as the AWS_PUBLISH_ROLE_ARN repository variable. Null when disabled."
+  value       = module.github_image_publisher.role_arn
+}
+
+output "github_image_exception_role_arn" {
+  description = "The role the image-exception workflow assumes. Set it as the AWS_IMAGE_EXCEPTION_ROLE_ARN repository variable. Null without the image publisher and tenants."
+  value       = module.github_image_publisher.exception_role_arn
+}
+
+output "config_bucket" {
+  description = "The tenant config bucket, which holds platform/image_exceptions.yaml. Set it as the AWS_CONFIG_BUCKET repository variable. Null without tenants."
+  value       = module.tenant_config_store.bucket
+}
+
+output "eks" {
+  description = "Cluster name, private endpoint, Pod Identity roles, security groups, workspace file system, node scheduling, Load Balancer Controller settings, each tenant's secrets, and the MCP gateway zone and each tenant's gateway host name that the EKS deploy reads. Null without create_eks."
+  value = local.eks_enabled ? {
+    cluster_name              = module.eks_cluster.cluster_name
+    region                    = var.region
+    endpoint                  = module.eks_cluster.cluster_endpoint
+    vpc_id                    = module.eks_cluster.vpc_id
+    pod_identity_role_arns    = module.eks_cluster.pod_identity_role_arns
+    cluster_security_group_id = module.eks_cluster.cluster_security_group_id
+    temporal_client_group_id  = module.temporal_control_plane.client_security_group_id
+    internal_client_group_id  = try(module.container_services.internal_endpoints.client_security_group_id, null)
+    workspace_file_system_id  = try(module.container_services.workspace.file_system_id, null)
+    node_pool_label           = module.eks_cluster.node_pool_label
+    sandbox_taint             = module.eks_cluster.sandbox_taint
+    load_balancer_controller  = module.eks_cluster.load_balancer_controller
+    log_group_name            = module.eks_cluster.log_group_name
+    images = {
+      platform = var.container_platform_image
+      opa      = var.eks_opa_image
+      litellm  = var.eks_litellm_image
+    }
+    platform_environment        = module.container_services.platform_environment
+    environment_config          = local.container_environment_config
+    webhook_certificate_arn     = var.eks_webhook_certificate_arn
+    mcp_gateway_certificate_arn = var.eks_mcp_gateway_certificate_arn
+    mcp_gateway_client_cidrs    = var.eks_mcp_gateway_client_cidrs
+    mcp_gateway_zone_id         = try(aws_route53_zone.mcp_gateway[0].zone_id, null)
+    mcp_gateway_domain          = var.eks_mcp_gateway_domain
+    mcp_gateway_hosts           = local.eks_mcp_gateway_hosts
+    temporal_ca_secret_arn      = module.temporal_control_plane.client_ca_secret_arn
+    deployer                    = module.eks_deployer.deploy
+    secret_arns                 = try(local.eks_deploy_inputs.secrets, {})
+    tenants                     = [for entry in local.eks_tenant_inputs : { name = entry.name, secrets = entry.secrets }]
+    image_settings = {
+      OPENHANDS_AGENT_SERVER_IMAGE = var.eks_agent_server_image
+      GATE_ENGINE_BUILDER_IMAGE    = var.eks_buildah_image
+      SEMGREP_IMAGE                = var.eks_semgrep_image
+      TRIVY_IMAGE                  = var.eks_trivy_image
+      GATE_ENGINE_IMAGES           = jsonencode(var.eks_gate_engine_images)
+      RUNTIME_IMAGES               = jsonencode(var.eks_runtime_images)
+    }
+  } : null
+}
+
+output "tenants" {
+  description = "Each tenant's worker role, namespaces, secrets, image prefix, config bundle prefix and publisher role, and ticket store, with the config bucket."
+  value = local.tenants_enabled ? {
+    config_bucket = module.tenant_config_store.bucket
+    tenants = {
+      for name, tenant in local.tenant_records : name => merge(tenant, {
+        worker_role_arn        = module.eks_cluster.pod_identity_role_arns["tenant_${name}"]
+        workspace_access_point = module.container_services.workspace.tenant_access_point_arns[name]
+      })
+    }
+  } : null
+}
+
+output "image_signing_profile_arn" {
+  description = "The AWS Signer profile inv publish-platform-images signs the catalog images with. Null without the EKS cluster and the container services."
+  value       = try(aws_signer_signing_profile.platform[0].arn, null)
 }

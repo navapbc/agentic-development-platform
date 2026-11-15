@@ -11,6 +11,7 @@ from services.integration.github.credentials import (
     UnconfiguredRepositoryError,
     parse_github_config,
 )
+from services.integration.repositories import parse_repositories
 
 RAW = {
     "hosts": {
@@ -18,15 +19,21 @@ RAW = {
         "globex": {"api_url": "https://globex.ghe/api/v3", "git_base_url": "https://globex.ghe"},
     },
     "default": {"host": "acme", "owner": "acme-org", "token_ref": "ACME_TOKEN"},
-    "repositories": {
-        "repo-b": {"host": "globex", "owner": "globex-org", "token_ref": "GLOBEX_TOKEN"},
-    },
 }
+REGISTRY = parse_repositories(
+    {
+        "repositories": {
+            "repo-a": {},
+            "repo-b": {"host": "globex", "owner": "globex-org", "token_ref": "GLOBEX_TOKEN"},
+        }
+    },
+    root="/repos",
+)
 
 
 def _resolver() -> GitHubCredentialResolver:
     return GitHubCredentialResolver(
-        parse_github_config(RAW),
+        parse_github_config(RAW, REGISTRY),
         {"repo-a", "repo-b"},
         EnvSecretResolver({"ACME_TOKEN": "tok-a", "GLOBEX_TOKEN": "tok-b"}),
     )
@@ -101,3 +108,22 @@ def test_non_allowlisted_repository_resolves_nothing() -> None:
 def test_git_auth_refuses_a_non_allowlisted_repository() -> None:
     with pytest.raises(UnconfiguredRepositoryError):
         _resolver().git_auth("repo-c")
+
+
+async def test_delete_branch_deletes_the_ref_through_rest_with_the_repository_token() -> None:
+    calls: list[tuple[str, str, str | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((request.method, str(request.url), request.headers.get("authorization")))
+        if request.url.path.endswith("/git/refs/heads/agent/beta/T-1"):
+            return httpx.Response(204)
+        return httpx.Response(422, json={"message": "Reference does not exist"})
+
+    host = RealGitHost(_resolver(), transport=httpx.MockTransport(handler))
+
+    assert await host.delete_branch("repo-b", "agent/beta/T-1") is True
+    assert await host.delete_branch("repo-b", "agent/beta/T-2") is False
+    method, url, auth = calls[0]
+    assert method == "DELETE"
+    assert url == "https://globex.ghe/api/v3/repos/globex-org/repo-b/git/refs/heads/agent/beta/T-1"
+    assert auth is not None and auth.endswith(" tok-b")

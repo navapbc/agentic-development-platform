@@ -1,0 +1,45 @@
+# Each rule matches a regular expression against the lines a change adds. paths and exclude are
+# fnmatch patterns on the repository-relative path, where * also matches across directories.
+# severity is critical, high, medium, or low. A pattern in single quotes needs no escaping, and one
+# that contains a single quote goes in triple single quotes.
+
+[[rule]]
+id = "aws-access-key-id"
+description = "An AWS access key ID is committed in the change."
+severity = "critical"
+pattern = '\b(?:AKIA|ASIA)(?![0-9A-Z]*EXAMPLE)[0-9A-Z]{16}\b'
+
+[[rule]]
+id = "private-key"
+description = "A private key is committed in the change."
+severity = "critical"
+pattern = '-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----'
+
+[[rule]]
+id = "python-shell-true"
+description = "A subprocess call runs through the shell, which allows command injection through its arguments."
+severity = "high"
+pattern = 'subprocess\.(?:run|call|check_call|check_output|Popen)\(.*\bshell\s*=\s*True'
+paths = ["*.py"]
+
+[[rule]]
+id = "python-tls-verification-disabled"
+description = "An HTTPS request disables certificate verification."
+severity = "high"
+pattern = '\bverify\s*=\s*False\b'
+paths = ["*.py"]
+
+[[rule]]
+id = "node-tls-verification-disabled"
+description = "A TLS connection disables certificate verification."
+severity = "high"
+pattern = '''\brejectUnauthorized\s*:\s*false\b|NODE_TLS_REJECT_UNAUTHORIZED\s*=\s*["']?0'''
+paths = ["*.js", "*.mjs", "*.cjs", "*.ts"]
+
+[[rule]]
+id = "plaintext-http-endpoint"
+description = "The change adds a plaintext HTTP endpoint outside the local host."
+severity = "medium"
+pattern = 'http://(?!(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|host\.docker\.internal|json-schema\.org|www\.w3\.org)\b)[A-Za-z0-9.-]+'
+paths = ["*.py", "*.js", "*.mjs", "*.ts", "*.go", "*.java", "*.yaml", "*.yml", "*.toml", "*.tf"]
+exclude = ["tests/*", "*/tests/*"]

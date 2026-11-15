@@ -7,8 +7,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
+from database.engine import create_platform_engine
 from scripts.config import get_settings, to_host_url
-from sqlalchemy.ext.asyncio import create_async_engine
 
 from services.orchestration.intake_cursor import (
     IntakeCursorRelease,
@@ -95,9 +95,7 @@ async def run_restart_task(
     issue_key: str, *, actor: str = "operator", repo: str | None = None, settings: Any = None
 ) -> RestartResult:
     resolved = settings or get_settings()
-    engine = create_async_engine(
-        to_host_url(resolved.database_url), future=True, pool_pre_ping=True
-    )
+    engine = create_platform_engine(to_host_url(resolved.database_url))
     try:
         return await restart_task(
             issue_key,

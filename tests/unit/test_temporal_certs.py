@@ -327,3 +327,14 @@ def test_generate_issues_a_ui_certificate_on_request(tmp_path) -> None:
     assert {certs.UI, certs.UI_KEY} <= {path.name for path in written}
     text = certs._certificate_text(out / certs.UI)
     assert "DNS:temporal-ui.example.internal" in text and certs.CLIENT_AUTH not in text
+
+
+def test_generate_issues_an_internal_load_balancer_certificate_from_the_same_ca(tmp_path) -> None:
+    out = tmp_path / "tls"
+    names = ["coordination.platform.internal", "langfuse.platform.internal"]
+    written = _generate(out, internal_names=names)
+
+    assert {certs.INTERNAL, certs.INTERNAL_KEY} <= {path.name for path in written}
+    text = certs._certificate_text(out / certs.INTERNAL)
+    assert all(f"DNS:{name}" in text for name in names) and certs.CLIENT_AUTH not in text
+    certs._openssl("verify", "-CAfile", str(out / certs.CA), str(out / certs.INTERNAL))

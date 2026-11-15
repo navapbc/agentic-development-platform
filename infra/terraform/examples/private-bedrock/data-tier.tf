@@ -67,6 +67,9 @@ module "secret_store" {
   region              = var.region
   secret_readers      = local.secret_readers
   restart_services    = local.secret_restart_services
+  restart_eks         = local.eks_restart
+  # A name pattern, because each tenant's token secret policy names the rotation role this creates.
+  rotated_token_secrets = length(local.tenants) > 0 ? ["${var.name_prefix}/tenants/*/repo-intelligence-token"] : []
 
   recovery_window_days = var.secret_recovery_window_days
 
@@ -83,18 +86,4 @@ module "secret_store" {
   endpoints_security_group_id = local.endpoints_security_group_id
 
   tags = var.tags
-}
-
-module "rebar_ticket_store" {
-  source = "../../rebar-ticket-store"
-
-  create_rebar_ticket_store = var.create_rebar_ticket_store
-  name_prefix               = var.name_prefix
-  access_log_bucket         = var.access_log_bucket
-  trusted_principals        = var.rebar_ticket_store_trusted_principals
-  writer_github_oidc_trust  = var.rebar_ticket_store_writer_oidc_trust
-  admin_principals          = var.rebar_ticket_store_admin_principals
-  existing_reader_role_arn  = var.rebar_ticket_store_existing_reader_role_arn
-  existing_writer_role_arn  = var.rebar_ticket_store_existing_writer_role_arn
-  tags                      = var.tags
 }

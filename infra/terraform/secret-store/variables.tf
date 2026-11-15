@@ -15,7 +15,7 @@ variable "region" {
 }
 
 variable "secret_readers" {
-  description = "IAM role ARNs allowed to read each secret, keyed by the secret keys the README lists. Pass the ECS task execution role for a secret that ECS injects. A secret with no readers denies GetSecretValue to every principal except its rotation function."
+  description = "IAM role or user ARNs allowed to read each secret, keyed by the secret keys the README lists. Pass the ECS task execution role for a secret that ECS injects. A secret with no readers denies GetSecretValue to every principal except its rotation function."
   type        = map(list(string))
   default     = {}
 }
@@ -97,6 +97,17 @@ variable "elasticache_user_arn" {
   default     = ""
 }
 
+variable "rotated_token_secrets" {
+  description = "Name patterns of the plain-text token secrets the token rotation function rotates, where * matches any characters, such as agentic-platform/tenants/*/repo-intelligence-token. A pattern names secrets outside this module, whose own module attaches the function and grants its role on the secret and its key. Empty creates no token rotation function."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for pattern in var.rotated_token_secrets : can(regex("^[A-Za-z0-9/_+=.@*-]+$", pattern))])
+    error_message = "A rotated token secret pattern is a secret name of letters, digits, and /_+=.@- characters, where * matches any characters."
+  }
+}
+
 variable "vpc_id" {
   description = "VPC of the rotation functions."
   type        = string
@@ -123,6 +134,29 @@ variable "restart_services" {
   validation {
     condition     = alltrue([for services in values(var.restart_services) : length(services) <= 5])
     error_message = "restart_services allows at most five ECS services per secret."
+  }
+}
+
+variable "restart_eks" {
+  description = "The eks-deployer task, which restarts the EKS deployments that read a secret after it changes. deployments maps a secret key to the deployment names. external_secrets restarts the deployments that read a secret of another module, keyed by a name of lowercase letters, digits, and underscores that names its rule, with the secret ARN and the deployments, each namespace/name. Null restarts no EKS deployment."
+  type = object({
+    cluster_arn        = string
+    task_family        = string
+    container          = string
+    subnet_ids         = list(string)
+    security_group_ids = list(string)
+    pass_role_arns     = list(string)
+    deployments        = map(list(string))
+    external_secrets = optional(map(object({
+      secret_arn  = string
+      deployments = list(string)
+    })), {})
+  })
+  default = null
+
+  validation {
+    condition     = var.restart_eks == null || alltrue([for key in keys(try(var.restart_eks.external_secrets, {})) : can(regex("^[a-z][a-z0-9_]{0,31}$", key))])
+    error_message = "A restart_eks.external_secrets key is 1 to 32 lowercase letters, digits, and underscores, starting with a letter."
   }
 }
 

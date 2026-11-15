@@ -419,3 +419,39 @@ async def test_mediator_propagates_scanner_unavailable_for_retry():
 
     with pytest.raises(ScannerUnavailableError):
         await mediator.scan(_target())
+
+
+async def test_a_budget_stop_in_a_gate_engine_blocks_every_scanner_gate(monkeypatch):
+    from services.integration.litellm_admin import (
+        TENANT_MODEL_BUDGET_EXCEEDED,
+        ModelBudgetExceededError,
+    )
+    from services.orchestration.temporal_activities import security as security_activity
+
+    class _RefusedEngine:
+        name = "ai-security-review"
+
+        async def scan(self, target):
+            raise ModelBudgetExceededError(TENANT_MODEL_BUDGET_EXCEEDED)
+
+    mediator = SecurityScanMediator(
+        backends=(MockSecurityScanner("semgrep", []), _RefusedEngine()),
+        allowed_repos=frozenset({"agentic-demo-service"}),
+        threshold=HIGH,
+    )
+    monkeypatch.setattr(security_activity, "_build_security_mediator", lambda: mediator)
+
+    result = await security_activity.scan_change(
+        security_activity.ScanChangeRequest(
+            task_id="T-1",
+            execution_id="exec-1",
+            repo="agentic-demo-service",
+            ref="c" * 40,
+            repo_root="/tmp/ws/agent-T-1",
+        )
+    )
+
+    assert result.budget_stop == TENANT_MODEL_BUDGET_EXCEEDED
+    assert result.scanner_verdicts == {"semgrep": "block", "ai-security-review": "block"}
+    assert result.blocking_count == 2
+    assert {finding.rule_id for finding in result.findings} == {"gate-backend-error"}

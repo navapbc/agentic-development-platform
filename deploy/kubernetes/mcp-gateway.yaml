@@ -1,3 +1,13 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mcp-gateway
+  namespace: agentic-dev-platform
+  labels:
+    app.kubernetes.io/name: mcp-gateway
+    app.kubernetes.io/part-of: agentic-dev-platform
+automountServiceAccountToken: false
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -17,6 +27,7 @@ spec:
         app.kubernetes.io/name: mcp-gateway
         app.kubernetes.io/part-of: agentic-dev-platform
     spec:
+      serviceAccountName: mcp-gateway
       automountServiceAccountToken: false
       securityContext:
         seccompProfile:
@@ -24,7 +35,7 @@ spec:
       containers:
         - name: mcp-gateway
           image: 123456789012.dkr.ecr.us-east-1.amazonaws.com/agentic-dev-platform/mcp-gateway:0.3.0
-          command:
+          args:
             - python
             - -m
             - services.integration.mcp_gateway.server
@@ -37,21 +48,16 @@ spec:
                 secretKeyRef:
                   name: agentic-platform
                   key: database_url
-            - name: ALLOWED_REPOS
-              valueFrom:
-                configMapKeyRef:
-                  name: agentic-platform
-                  key: allowed_repos
             - name: REPO_INTELLIGENCE_URL
               valueFrom:
                 configMapKeyRef:
                   name: agentic-platform
                   key: repo_intelligence_url
-            - name: JIRA_ACCEPTANCE_FIELD
+            - name: MCP_GATEWAY_TOKEN
               valueFrom:
-                configMapKeyRef:
+                secretKeyRef:
                   name: agentic-platform
-                  key: jira_acceptance_field
+                  key: mcp_gateway_token
             - name: MCP_ALLOWED_HOSTS
               value: mcp.internal.example,mcp.internal.example:443
           volumeMounts:
@@ -123,6 +129,7 @@ metadata:
     app.kubernetes.io/part-of: agentic-dev-platform
   annotations:
     alb.ingress.kubernetes.io/scheme: internal
+    alb.ingress.kubernetes.io/inbound-cidrs: 192.0.2.0/24
     alb.ingress.kubernetes.io/target-type: ip
     alb.ingress.kubernetes.io/healthcheck-path: /health
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
@@ -131,7 +138,8 @@ metadata:
 spec:
   ingressClassName: alb
   rules:
-    - http:
+    - host: mcp.internal.example
+      http:
         paths:
           - path: /mcp
             pathType: Prefix

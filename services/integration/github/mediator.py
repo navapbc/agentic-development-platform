@@ -60,6 +60,7 @@ class GitHubMediator:
     ledger: SideEffectLedger
     gate: SequenceGate
     allowed_repos: frozenset[str]
+    tenant: str = ""
 
     @classmethod
     def from_settings(
@@ -77,6 +78,7 @@ class GitHubMediator:
             ledger=ledger,
             gate=gate,
             allowed_repos=frozenset(source_control_repos(resolved)),
+            tenant=resolved.tenant,
         )
 
     def _guard(self, repo: str) -> None:
@@ -97,7 +99,7 @@ class GitHubMediator:
 
     async def find_open_pr(self, repo: str, task_id: str) -> PullRequest | None:
         self._guard(repo)
-        return await self.backend.find_open_pr(repo, agent_branch_name(task_id))
+        return await self.backend.find_open_pr(repo, agent_branch_name(task_id, self.tenant))
 
     async def ensure_agent_branch(
         self,
@@ -109,7 +111,7 @@ class GitHubMediator:
         sequence: int,
     ) -> BranchRef:
         self._guard(repo)
-        name = agent_branch_name(task_id)
+        name = agent_branch_name(task_id, self.tenant)
         action = SequencedAction(task_id, execution_id, sequence, operation="github.ensure_branch")
         ref = SideEffectRef(task_id, execution_id, "github.ensure_branch", f"{repo}:{name}")
 

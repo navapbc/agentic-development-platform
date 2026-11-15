@@ -9,6 +9,17 @@ variable "name_prefix" {
   type        = string
 }
 
+variable "bucket_prefix" {
+  description = "Prefix of the generated bucket name, at most 37 characters. Empty uses <name_prefix>-rebar-tickets-."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = length(var.bucket_prefix) <= 37
+    error_message = "bucket_prefix may be at most 37 characters, the limit S3 sets for a generated bucket name."
+  }
+}
+
 variable "prefix" {
   description = "Key prefix the ticket store syncs under, the path part of its s3:// remote URL."
   type        = string

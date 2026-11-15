@@ -1,0 +1,594 @@
+"""Building, tagging, and mirroring the images the platform ECS services run."""
+
+from __future__ import annotations
+
+import base64
+import contextlib
+import hashlib
+import json
+import re
+import shutil
+import subprocess
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from scripts import base_versions
+from scripts import publish_platform_images as publisher
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+REGISTRY = "111111111111.dkr.ecr.us-east-1.amazonaws.com"
+DIGEST = "sha256:" + "a" * 64
+
+
+class _ImageNotFound(Exception):
+    pass
+
+
+class _Paginator:
+    def __init__(self, ecr: _FakeEcr) -> None:
+        self._ecr = ecr
+
+    def paginate(self, repositoryName: str, filter: dict[str, str]):
+        details = [
+            {"imageDigest": digest, "imageTags": [tag]}
+            for (repository, tag), digest in self._ecr.pushed.items()
+            if repository == repositoryName
+        ]
+        yield {"imageDetails": details}
+
+
+class _FakeEcr:
+    class exceptions:
+        ImageNotFoundException = _ImageNotFound
+
+    def __init__(self, pushed: dict[tuple[str, str], str] | None = None) -> None:
+        self.pushed = dict(pushed or {})
+
+    def describe_images(self, repositoryName: str, imageIds: list[dict[str, str]]):
+        key = (repositoryName, imageIds[0]["imageTag"])
+        if key not in self.pushed:
+            raise _ImageNotFound
+        return {"imageDetails": [{"imageDigest": self.pushed[key]}]}
+
+    def get_paginator(self, name: str) -> _Paginator:
+        assert name == "describe_images"
+        return _Paginator(self)
+
+    def get_authorization_token(self):
+        token = base64.b64encode(b"AWS:secret").decode()
+        return {"authorizationData": [{"authorizationToken": token}]}
+
+
+@pytest.fixture
+def commands(monkeypatch) -> list[list[str]]:
+    """Record every command, pushing the image a build or copy names with a fixed digest."""
+    recorded: list[list[str]] = []
+
+    def _run(command, **_):
+        recorded.append(command)
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+
+    monkeypatch.setattr(publisher.process, "run", _run)
+    return recorded
+
+
+def _pushes(ecr: _FakeEcr, commands: list[list[str]]) -> None:
+    for command in commands:
+        if "--tag" in command:
+            image = command[command.index("--tag") + 1]
+            repository, _, tag = image.removeprefix(f"{REGISTRY}/").partition(":")
+            ecr.pushed[(repository, tag)] = DIGEST
+
+
+def test_the_collector_and_opa_versions_come_from_their_pinned_bases() -> None:
+    collector = (REPO_ROOT / "docker/otel-collector.Dockerfile").read_text(encoding="utf-8")
+    opa = (REPO_ROOT / "docker/opa.Dockerfile").read_text(encoding="utf-8")
+
+    pins = base_versions.load()
+    collector_version = pins["OTEL_COLLECTOR_IMAGE"].split(":")[1].split("@")[0]
+
+    assert publisher.base_image_version(collector, "opentelemetry-collector-contrib") == (
+        collector_version
+    )
+    assert publisher.pinned_version(opa, "OPA_VERSION") == pins["OPA_VERSION"].removeprefix("v")
+
+
+def test_a_base_image_without_a_digest_is_refused() -> None:
+    with pytest.raises(publisher.PublishError, match="pins no openpolicyagent/opa image"):
+        publisher.base_image_version("FROM openpolicyagent/opa:1.20.1\n", "openpolicyagent/opa")
+
+
+def test_the_platform_and_litellm_images_pin_the_rds_ca_bundle_the_temporal_images_pin() -> None:
+    def checksum(path: str) -> str:
+        text = (REPO_ROOT / path).read_text(encoding="utf-8")
+        return re.search(r"^ARG RDS_CA_BUNDLE_SHA256=([0-9a-f]{64})$", text, re.M).group(1)
+
+    for path in ("docker/Dockerfile", "docker/litellm.Dockerfile"):
+        text = (REPO_ROOT / path).read_text(encoding="utf-8")
+        assert "ADD --checksum=sha256:${RDS_CA_BUNDLE_SHA256} --chmod=0444" in text
+        assert checksum(path) == checksum("docker/temporal.Dockerfile")
+
+
+def test_the_source_hash_follows_the_architecture() -> None:
+    plain = publisher.platform_source_hash(REPO_ROOT, "arm64")
+
+    assert plain == publisher.platform_source_hash(REPO_ROOT, "arm64")
+    assert plain != publisher.platform_source_hash(REPO_ROOT, "amd64")
+
+
+def test_sources_already_published_reuse_their_image_and_build_id(commands) -> None:
+    source_hash = publisher.platform_source_hash(REPO_ROOT, "arm64")
+    tag = f"0.3.0.20261101000000-{source_hash}-arm64"
+    ecr = _FakeEcr({("agentic-platform/platform", tag): DIGEST})
+    platform = publisher.Publisher(ecr, REGISTRY, "agentic-platform", "arm64")
+
+    reference = platform.platform(REPO_ROOT)
+
+    assert reference == f"{REGISTRY}/agentic-platform/platform:{tag}@{DIGEST}"
+    assert commands == []
+    assert platform.pushed == []
+
+
+def test_new_sources_mint_a_build_id_and_bake_it_into_the_image(commands, monkeypatch) -> None:
+    monkeypatch.setattr(publisher, "generate_build_id", lambda: "0.3.0.20261105120000")
+    ecr = _FakeEcr()
+    platform = publisher.Publisher(ecr, REGISTRY, "agentic-platform", "arm64")
+
+    def _run(command, **_):
+        commands.append(command)
+        _pushes(ecr, commands)
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+
+    monkeypatch.setattr(publisher.process, "run", _run)
+    reference = platform.platform(REPO_ROOT)
+
+    build = commands[-1]
+    assert build[:3] == ["docker", "buildx", "build"]
+    arguments = [build[index + 1] for index, part in enumerate(build) if part == "--build-arg"]
+    assert arguments == ["AGENT_BUILD_ID=0.3.0.20261105120000"]
+    assert platform.pushed == [reference]
+    tag = reference.split(":")[1].split("@")[0]
+    assert publisher.build_id_of(tag) == "0.3.0.20261105120000"
+    assert re.fullmatch(r"0\.3\.0\.20261105120000-[0-9a-f]{12}-arm64", tag)
+
+
+def test_a_mirror_keeps_the_pinned_digest(commands, monkeypatch) -> None:
+    ecr = _FakeEcr()
+    mirror = publisher.Mirror(
+        "clickhouse", "docker.io/clickhouse/clickhouse-server", "26.9", DIGEST
+    )
+
+    def _run(command, **_):
+        commands.append(command)
+        _pushes(ecr, commands)
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+
+    monkeypatch.setattr(publisher.process, "run", _run)
+    reference = publisher.Publisher(ecr, REGISTRY, "agentic-platform", "arm64").mirror(mirror)
+
+    assert commands[-1][:5] == ["docker", "buildx", "imagetools", "create", "--tag"]
+    assert commands[-1][-1] == f"docker.io/clickhouse/clickhouse-server@{DIGEST}"
+    assert reference == f"{REGISTRY}/agentic-platform/clickhouse:26.9@{DIGEST}"
+
+
+def test_a_mirror_whose_digest_differs_from_the_pin_is_refused(commands) -> None:
+    other = "sha256:" + "c" * 64
+    ecr = _FakeEcr({("agentic-platform/clickhouse", "26.9"): other})
+    mirror = publisher.Mirror(
+        "clickhouse", "docker.io/clickhouse/clickhouse-server", "26.9", DIGEST
+    )
+
+    with pytest.raises(publisher.PublishError, match="compose.yaml pins"):
+        publisher.Publisher(ecr, REGISTRY, "agentic-platform", "arm64").mirror(mirror)
+
+
+def test_a_release_mirror_whose_digest_differs_names_the_pins_file(commands) -> None:
+    trivy = publisher.pinned(
+        "trivy", f"docker.io/aquasec/trivy:0.76.2@{DIGEST}", "docker/al2023/versions.env"
+    )
+    ecr = _FakeEcr({("agentic-platform/trivy", trivy.tag): "sha256:" + "c" * 64})
+
+    with pytest.raises(publisher.PublishError, match="docker/al2023/versions.env pins"):
+        publisher.Publisher(ecr, REGISTRY, "agentic-platform", "arm64").mirror(trivy)
+
+
+def test_a_publish_writes_every_composition_root_variable(commands, monkeypatch) -> None:
+    monkeypatch.setattr(publisher, "generate_build_id", lambda: "0.3.0.20261105120000")
+    ecr = _FakeEcr()
+
+    def _run(command, **_):
+        if command[0] == "git":
+            return subprocess.run(command, capture_output=True, check=True)
+        commands.append(command)
+        _pushes(ecr, commands)
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+
+    monkeypatch.setattr(publisher.process, "run", _run)
+    platform = publisher.Publisher(ecr, REGISTRY, "agentic-platform", "arm64")
+
+    references = publisher.publish(platform)
+
+    values = publisher.tfvars(references)
+    assert set(values) == set(publisher.TFVARS_KEYS.values()) | {
+        publisher.GATE_ENGINE_IMAGES_KEY,
+        publisher.RUNTIME_IMAGES_KEY,
+    }
+    assert set(values[publisher.GATE_ENGINE_IMAGES_KEY]) == {"security-policy", "test-policy"}
+    assert set(values[publisher.RUNTIME_IMAGES_KEY]) == {
+        "agent-server-jvm",
+        "agent-server-go",
+        "checks-python",
+        "checks-node",
+        "checks-jvm",
+        "checks-go",
+    }
+    built = {
+        command[command.index("--tag") + 1].split(":")[0]
+        for command in commands
+        if "--tag" in command
+    }
+    assert f"{REGISTRY}/agentic-platform/opa" in built
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+def test_the_build_context_holds_no_ignored_file(tmp_path) -> None:
+    repository = tmp_path / "repository"
+    (repository / "vendor/bin").mkdir(parents=True)
+    (repository / ".gitignore").write_text("vendor/bin/*\n!vendor/bin/.gitkeep\n", encoding="utf-8")
+    (repository / "vendor/bin/.gitkeep").write_text("", encoding="utf-8")
+    (repository / "vendor/bin/acli").write_text("darwin binary", encoding="utf-8")
+    (repository / "tracked.py").write_text("print(1)\n", encoding="utf-8")
+    (repository / "untracked.py").write_text("print(2)\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(repository)], check=True)
+    subprocess.run(
+        ["git", "-C", str(repository), "add", ".gitignore", "tracked.py", "vendor"], check=True
+    )
+
+    with publisher.build_context(repository) as context:
+        files = sorted(
+            path.relative_to(context).as_posix() for path in context.rglob("*") if path.is_file()
+        )
+
+    assert files == [".gitignore", "tracked.py", "untracked.py", "vendor/bin/.gitkeep"]
+
+
+PUSHED = f"{REGISTRY}/agentic-platform/platform:0.3.0.20261105120000-abc-arm64@{DIGEST}"
+REUSED = f"{REGISTRY}/agentic-platform/clickhouse:26.9@sha256:{'c' * 64}"
+
+
+def test_the_references_map_to_the_composition_root_variables() -> None:
+    assert publisher.tfvars([PUSHED, REUSED]) == {
+        "container_platform_image": PUSHED,
+        "container_clickhouse_image": REUSED,
+    }
+
+
+def test_every_published_image_has_a_composition_root_variable() -> None:
+    from scripts.publish_temporal_images import ImageSpec
+
+    published = {spec.name for spec in vars(publisher).values() if isinstance(spec, ImageSpec)}
+
+    assert published == set(publisher.TFVARS_KEYS)
+    variables = (REPO_ROOT / "infra/terraform/examples/private-bedrock/variables.tf").read_text()
+    assert all(f'variable "{key}"' in variables for key in publisher.TFVARS_KEYS.values())
+
+
+def test_the_gate_engine_images_map_to_their_engine_names() -> None:
+    engine = f"{REGISTRY}/agentic-platform/gate-engine-test-policy:0.3.0-abc-arm64@{DIGEST}"
+
+    assert publisher.tfvars([PUSHED, engine]) == {
+        "container_platform_image": PUSHED,
+        "eks_gate_engine_images": {"test-policy": engine},
+    }
+    variables = (REPO_ROOT / "infra/terraform/examples/private-bedrock/variables.tf").read_text()
+    assert f'variable "{publisher.GATE_ENGINE_IMAGES_KEY}"' in variables
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+def test_each_gate_engine_builds_from_its_own_directory(monkeypatch) -> None:
+    commands: list[list[str]] = []
+    contexts: list[set[str]] = []
+
+    def _build(command, **_):
+        if command[:3] == ["docker", "buildx", "imagetools"]:
+            return subprocess.CompletedProcess(command, 0, b'{"manifest": 1}', b"")
+        if command[:3] == ["docker", "buildx", "build"]:
+            commands.append(command)
+            contexts.append({p.name for p in Path(command[-1]).iterdir()})
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+
+    pushed = publisher.push_engines_locally("localhost:5001", "arm64", REPO_ROOT, _build)
+
+    digest = hashlib.sha256(b'{"manifest": 1}').hexdigest()
+    assert set(pushed) == {"security-policy", "test-policy"}
+    assert all(image.endswith(f"@sha256:{digest}") for image in pushed.values())
+    for command in commands:
+        context = Path(command[-1])
+        assert context.name in pushed
+        assert command[command.index("--file") + 1] == str(context / "Dockerfile")
+        assert "--push" in command
+    assert all({"Dockerfile", "bin", "policy.py", "rules.toml"} <= names for names in contexts)
+    assert pushed["test-policy"].startswith("localhost:5001/gate-engine-test-policy:")
+    assert all(
+        command[command.index("--build-arg") + 1].startswith(
+            "AL2023_IMAGE=agentic-dev-platform-al2023-base:"
+        )
+        for command in commands
+    )
+
+
+def test_the_local_engine_references_name_the_registry_as_the_pods_address_it() -> None:
+    from scripts.gate_engine_images import pull_references
+
+    pushed = {"security-policy": "localhost:5001/gate-engine-security-policy:1"}
+
+    assert pull_references(pushed, "localhost:5001", "host.docker.internal:5001") == {
+        "security-policy": "host.docker.internal:5001/gate-engine-security-policy:1"
+    }
+
+
+def test_the_manifest_marks_only_the_images_this_run_pushed() -> None:
+    entries = publisher.manifest([PUSHED, REUSED], [PUSHED])
+
+    assert entries == [
+        {
+            "name": "platform",
+            "repository": f"{REGISTRY}/agentic-platform/platform",
+            "digest": DIGEST,
+            "reference": PUSHED,
+            "pushed": True,
+        },
+        {
+            "name": "clickhouse",
+            "repository": f"{REGISTRY}/agentic-platform/clickhouse",
+            "digest": f"sha256:{'c' * 64}",
+            "reference": REUSED,
+            "pushed": False,
+        },
+    ]
+
+
+def test_a_local_build_loads_each_image_on_the_hardened_base(commands, monkeypatch) -> None:
+    def _run(command, **_):
+        if command[0] == "git":
+            return subprocess.run(command, capture_output=True, check=True)
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+
+    monkeypatch.setattr(publisher.process, "run", _run)
+
+    publisher.build_locally([(publisher.OPA, "agentic-dev-platform-opa:1", {})], "arm64", REPO_ROOT)
+
+    build = commands[-1]
+    assert build[:3] == ["docker", "buildx", "build"]
+    assert "--load" in build and "--push" not in build
+    assert build[build.index("--tag") + 1] == "agentic-dev-platform-opa:1"
+    base = build[build.index("--build-arg") + 1]
+    assert base.startswith("AL2023_IMAGE=agentic-dev-platform-al2023-base:")
+
+
+def test_the_images_file_is_ignored_by_git() -> None:
+    ignored = subprocess.run(
+        ["git", "check-ignore", "-q", str(publisher.IMAGES_FILE)], cwd=REPO_ROOT, check=False
+    )
+
+    assert ignored.returncode == 0
+
+
+def test_each_catalog_image_is_a_target_of_the_sandbox_or_checks_dockerfile() -> None:
+    dockerfile = (REPO_ROOT / publisher.AGENT_SERVER_DOCKERFILE).read_text(encoding="utf-8")
+
+    for spec in (publisher.AGENT_SERVER, *publisher.RUNTIME_IMAGES.values()):
+        assert spec.dockerfile in (publisher.AGENT_SERVER_DOCKERFILE, publisher.CHECKS_DOCKERFILE)
+        text = (REPO_ROOT / spec.dockerfile).read_text(encoding="utf-8")
+        assert f" AS {spec.target}\n" in text, spec.target
+    assert "FROM agent-server-python-node AS agent-server-jvm\n" in dockerfile
+    assert "FROM agent-server-python-node AS agent-server-go\n" in dockerfile
+
+
+def test_a_spec_with_a_target_builds_only_that_target() -> None:
+    command = publisher.build_command(
+        publisher.AGENT_SERVER, REPO_ROOT, "registry/openhands-agent-server:t", "arm64"
+    )
+
+    assert command[command.index("--target") + 1] == "agent-server-python-node"
+
+
+class _Credentials:
+    access_key, secret_key, token = "AKIA", "secret", "session"
+
+    def get_frozen_credentials(self):
+        return self
+
+
+class _Session:
+    region_name = "us-east-1"
+
+    def get_credentials(self):
+        return _Credentials()
+
+
+def test_the_catalog_images_are_signed_once_inside_the_builder_image(monkeypatch) -> None:
+    from services.orchestration.gates import registry_auth
+
+    monkeypatch.setattr(registry_auth, "ecr_token", lambda account, region: "dG9rZW4=")
+    registry = "123456789012.dkr.ecr.us-east-1.amazonaws.com"
+    signed_before = f"{registry}/agentic-platform/semgrep:1@sha256:{'a' * 64}"
+    unsigned = f"{registry}/agentic-platform/gate-engine-test-policy:1@sha256:{'b' * 64}"
+    platform = f"{registry}/agentic-platform/platform:1@sha256:{'c' * 64}"
+    builder = f"{registry}/agentic-platform/buildah:1@sha256:{'d' * 64}"
+    calls: list[list[str]] = []
+    env_files: list[str] = []
+
+    def run(command, **_):
+        calls.append(command)
+        env_files.append(Path(command[command.index("--env-file") + 1]).read_text())
+        listing = "└── application/vnd.cncf.notary.signature" if signed_before in command else ""
+        return subprocess.CompletedProcess(command, 0, listing, "")
+
+    signer = publisher.Signer(_Session(), None, registry, "arn:profile", "arm64", run)
+    signed = signer.sign([signed_before, unsigned, platform], builder)
+
+    assert signed == [unsigned]
+    sign = next(command for command in calls if "sign" in command)
+    assert sign[sign.index("--entrypoint") + 1 :] == [
+        "notation",
+        builder,
+        "sign",
+        "--plugin",
+        "com.amazonaws.signer.notation.plugin",
+        "--id",
+        "arn:profile",
+        unsigned,
+    ]
+    assert not any(platform in command for command in calls)
+    assert all("AWS_SECRET_ACCESS_KEY=secret" in env for env in env_files)
+    assert not any("secret" in part for command in calls for part in command)
+
+
+def test_publishing_without_a_signing_profile_stops_before_any_aws_call(
+    monkeypatch, capsys
+) -> None:
+    monkeypatch.setattr(publisher, "signing_profile", lambda explicit: "")
+    monkeypatch.setattr(
+        "scripts.config.get_settings",
+        lambda: (_ for _ in ()).throw(AssertionError("no AWS call without a signing profile")),
+    )
+
+    assert publisher.main([]) == 1
+    assert "no signing profile, so nothing is published" in capsys.readouterr().out
+
+
+def test_unsigned_publishing_proceeds_without_a_signing_profile(monkeypatch) -> None:
+    monkeypatch.setattr(publisher, "signing_profile", lambda explicit: "")
+
+    class _Reached(Exception):
+        pass
+
+    def reached(settings):
+        raise _Reached
+
+    monkeypatch.setattr("scripts.aws_clients.configure_aws_fips", reached)
+
+    with pytest.raises(_Reached):
+        publisher.main(["--unsigned"])
+
+
+def test_a_component_in_release_mode_is_mirrored_from_its_pinned_upstream_image() -> None:
+    pins = {
+        "LITELLM_IMAGE_MODE": "release",
+        "LITELLM_UPSTREAM_IMAGE": f"ghcr.io/berriai/litellm:v1.109.1@{DIGEST}",
+        "TRIVY_IMAGE_MODE": "build",
+    }
+
+    mirrors = publisher.release_mirrors({**_upstreams(), **pins})
+
+    assert [(m.name, m.source, m.tag, m.digest) for m in mirrors] == [
+        ("litellm", "ghcr.io/berriai/litellm", "v1.109.1", DIGEST)
+    ]
+
+
+def test_every_image_component_pins_its_mode_and_upstream_image() -> None:
+    pins = base_versions.load()
+
+    for name, (spec, upstream) in publisher.IMAGE_COMPONENTS.items():
+        key = name.upper().replace("-", "_")
+        assert pins[f"{key}_IMAGE_MODE"] in (publisher.BUILD, publisher.RELEASE), name
+        assert "@sha256:" in pins[upstream], name
+        assert spec.name == name
+
+
+def _upstreams() -> dict[str, str]:
+    return {upstream: f"x/y:1@{DIGEST}" for _, upstream in publisher.IMAGE_COMPONENTS.values()}
+
+
+def test_the_platform_image_installs_every_executable_the_worker_runs() -> None:
+    dockerfile = (REPO_ROOT / publisher.PLATFORM.dockerfile).read_text(encoding="utf-8")
+    runtime = dockerfile[dockerfile.rindex("FROM ${AL2023_IMAGE}") :]
+    installed = set(re.search(r"install ([^\\]+)\\", runtime).group(1).split())
+    sources = [
+        path.read_text(encoding="utf-8")
+        for root in ("services", "adapters", "openhands")
+        for path in (REPO_ROOT / root).rglob("*.py")
+    ]
+    called = {name for text in sources for name in re.findall(r'\[\s*"([a-z][\w-]*)",', text)}
+    packages = {
+        "git": "git",
+        "tar": "tar",
+        "ssh": "openssh-clients",
+        "ssh-keygen": "openssh-clients",
+    }
+
+    assert {"git", "tar"} <= called
+    assert {packages[name] for name in called & packages.keys()} <= installed
+    assert "COPY --from=kubectl /out/kubectl /usr/local/bin/kubectl" in runtime
+
+
+def _stub_publisher():
+    return SimpleNamespace(
+        platform=lambda context: "platform",
+        built=lambda spec, context, version: spec.name,
+        mirror=lambda mirror: mirror.name,
+    )
+
+
+@pytest.mark.parametrize("mode", [publisher.BUILD, publisher.RELEASE])
+def test_the_publish_groups_hold_every_image_once(mode) -> None:
+    pins = base_versions.load()
+    pins.update(
+        {f"{n.upper().replace('-', '_')}_IMAGE_MODE": mode for n in publisher.IMAGE_COMPONENTS}
+    )
+    pins.update(_upstreams())
+    names = [name for group in publisher.PUBLISH_GROUPS.values() for name in group]
+
+    steps = publisher.image_steps(_stub_publisher(), REPO_ROOT, pins)
+
+    assert sorted(names) == sorted(steps)
+    assert len(names) == len(set(names))
+
+
+def test_a_publish_of_named_images_runs_only_their_steps(monkeypatch) -> None:
+    monkeypatch.setattr(publisher, "build_context", lambda root: contextlib.nullcontext(REPO_ROOT))
+
+    published = publisher.publish(_stub_publisher(), only=("checks-go", "platform"))
+
+    assert published == ["platform", "checks-go"]
+    with pytest.raises(publisher.PublishError, match="no image is named nope"):
+        publisher.publish(_stub_publisher(), only=("nope",))
+
+
+def _partial(directory: Path, name: str, references: list[str], refused=()) -> None:
+    (directory / f"{name}.json").write_text(
+        json.dumps({"references": references, "pushed": references[:1], "refused": list(refused)})
+    )
+
+
+def _references(names) -> list[str]:
+    return [f"{REGISTRY}/agentic-platform/{name}:t@{DIGEST}" for name in names]
+
+
+def test_merging_the_partials_returns_every_reference_and_push(tmp_path) -> None:
+    for group, names in publisher.PUBLISH_GROUPS.items():
+        _partial(tmp_path, group, _references(names))
+
+    references, pushed = publisher.merge_partials(tmp_path)
+
+    assert len(references) == sum(len(names) for names in publisher.PUBLISH_GROUPS.values())
+    assert len(pushed) == len(publisher.PUBLISH_GROUPS)
+
+
+def test_a_missing_group_or_a_refusal_stops_the_merge(tmp_path) -> None:
+    groups = dict(publisher.PUBLISH_GROUPS)
+    skipped = groups.pop("checks")
+    for group, names in groups.items():
+        _partial(tmp_path, group, _references(names))
+
+    with pytest.raises(
+        publisher.PublishError, match=f"no group published {', '.join(sorted(skipped))}"
+    ):
+        publisher.merge_partials(tmp_path)
+
+    _partial(tmp_path, "checks", _references(skipped), refused=["checks-go carries 1 finding"])
+    with pytest.raises(publisher.PublishError, match="checks.json refused checks-go"):
+        publisher.merge_partials(tmp_path)

@@ -1,4 +1,4 @@
-"""Facade over rebar's vendor Jira clients, selecting a backend by the resolved project site."""
+"""Facade over the Jira clients, selecting the Cloud or Data Center client by the project site."""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from scripts.config import Settings, get_settings
 
-from services.integration.jira.acli_auth import ensure_acli_authenticated_cached
 from services.integration.jira.credentials import (
     CLOUD,
     DATACENTER,
@@ -157,18 +156,10 @@ def _build_datacenter_client(cred: JiraProjectCredential) -> _VendorJiraClient:
     return JiraDataCenterTransport(client=client, project=cred.project)
 
 
-def _build_cloud_client(cred: JiraProjectCredential, *, acli_path: str) -> _VendorJiraClient:
-    from rebar.reconciler.adapters.jira.acli import AcliClient
+def _build_cloud_client(cred: JiraProjectCredential) -> _VendorJiraClient:
+    from services.integration.jira.cloud_client import JiraCloudClient
 
-    ensure_acli_authenticated_cached(cred, acli_path=acli_path)
-    acli_cmd = [acli_path] if acli_path else None
-    return AcliClient(
-        cred.url,
-        cred.email,
-        cred.token,
-        jira_project=cred.project,
-        acli_cmd=acli_cmd,
-    )
+    return JiraCloudClient(cred.url, cred.email, cred.token, project=cred.project)
 
 
 def project_of(issue_key: str) -> str:
@@ -189,7 +180,7 @@ def build_jira_adapter(
     if cred.auth_mode == DATACENTER:
         client = _build_datacenter_client(cred)
     else:
-        client = _build_cloud_client(cred, acli_path=resolved.jira_acli_path)
+        client = _build_cloud_client(cred)
     return JiraAdapter(
         source=cred.auth_mode,
         client=client,

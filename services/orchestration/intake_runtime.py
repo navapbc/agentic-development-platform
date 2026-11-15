@@ -47,12 +47,8 @@ class TemporalStarter:
         )
 
     async def start(self, start: IntakeStart) -> str:
-        from services.integration.github.factory import (
-            LOCAL,
-            build_git_auth_for,
-            build_git_host,
-            resolve_source_control_backend_name,
-        )
+        from services.integration.github.factory import build_git_auth_for, build_git_host
+        from services.integration.repositories import LOCAL, load_repository_registry
         from services.orchestration.gates.engine_source import (
             load_gate_engine_configs,
             triage_engine,
@@ -63,16 +59,19 @@ class TemporalStarter:
         )
         from services.orchestration.usage_rollup import BudgetCaps
 
-        base = start.base or self._settings.github_default_base_branch
+        repository = load_repository_registry(self._settings).require(start.repo)
+        base = start.base or repository.default_branch
         source_location = build_git_host(self._settings).source_location(start.repo)
         base_auth = build_git_auth_for(self._settings)(start.repo)
         base_sha = remote_head(source_location, base, base_auth)
         if start.base and not base_sha:
             raise UnresolvableBaseBranch(base, start.repo)
         run_test_triage = triage_engine(load_gate_engine_configs(self._settings)) is not None
-        await_pr_close = resolve_source_control_backend_name(self._settings) == LOCAL
+        await_pr_close = repository.backend == LOCAL
         caps = BudgetCaps.from_settings(self._settings)
         workflow_id = f"draft-pr-{start.issue_key}-{start.execution_id}"
+        from services.orchestration.task_queues import run_task_queue
+
         await self._client.start_workflow(
             DraftPullRequestWorkflow.run,
             DraftPullRequestInput(
@@ -111,7 +110,7 @@ class TemporalStarter:
                 max_tokens=caps.max_tokens,
             ),
             id=workflow_id,
-            task_queue=self._settings.temporal_task_queue,
+            task_queue=run_task_queue(self._settings),
         )
         return workflow_id
 
@@ -128,22 +127,28 @@ class NotificationsAlerter:
         )
 
 
+def _this_tenant(executions: Any) -> list[Any]:
+    """Limit a query to this process's tenant, whose worker owns the runs it admits and reaps."""
+    from scripts.config import get_settings
+
+    tenant = get_settings().tenant
+    return [executions.c.tenant == tenant] if tenant else []
+
+
 class PostgresExecutionSeeder:
     def __init__(self) -> None:
         self._engine: Any = None
 
     def _get_engine(self) -> Any:
         if self._engine is None:
-            from scripts.config import get_settings
-            from sqlalchemy.ext.asyncio import create_async_engine
+            from database.engine import shared_platform_engine
 
-            self._engine = create_async_engine(
-                get_settings().database_url, future=True, pool_pre_ping=True
-            )
+            self._engine = shared_platform_engine()
         return self._engine
 
     async def seed(self, *, execution_id: str, task_id: str, repo: str) -> None:
         from database.models.schema import executions
+        from scripts.config import get_settings
         from sqlalchemy.dialects.postgresql import insert
 
         stmt = (
@@ -153,13 +158,34 @@ class PostgresExecutionSeeder:
                 task_id=task_id,
                 state="TASK_RECEIVED",
                 repository=repo,
+                tenant=get_settings().tenant or None,
             )
             .on_conflict_do_nothing(index_elements=[executions.c.execution_id])
         )
         async with self._get_engine().begin() as conn:
             await conn.execute(stmt)
 
+    async def abandon(self, *, execution_id: str, reason: str) -> None:
+        from database.models.schema import executions
+        from sqlalchemy import update
+
+        stmt = (
+            update(executions)
+            .where(executions.c.execution_id == execution_id)
+            .where(executions.c.workflow_id.is_(None))
+            .values(state="FAILED")
+        )
+        async with self._get_engine().begin() as conn:
+            await conn.execute(stmt)
+        _log.info("intake_execution_abandoned", execution_id=execution_id, reason=reason)
+
     async def active_workflow(self, *, issue_key: str, repo: str) -> str | None:
+        """Return the workflow of a running execution, ignoring rows no workflow was started for.
+
+        An execution is seeded before its workflow starts. A row without a workflow is a start
+        in progress, which the intake ledger reports as in flight, or one that failed, which the
+        orphan reclaimer closes, so neither is a run to treat the ticket as a duplicate of.
+        """
         from database.models.schema import executions
         from sqlalchemy import select
 
@@ -167,15 +193,15 @@ class PostgresExecutionSeeder:
             select(executions.c.workflow_id)
             .where(executions.c.task_id == issue_key)
             .where(executions.c.repository == repo)
+            .where(executions.c.workflow_id.is_not(None))
             .where(executions.c.state.not_in(("COMPLETED", "FAILED", "CANCELLED")))
+            .where(*_this_tenant(executions))
             .order_by(executions.c.updated_at.desc())
             .limit(1)
         )
         async with self._get_engine().connect() as conn:
             row = (await conn.execute(stmt)).first()
-        if row is None:
-            return None
-        return row.workflow_id or ""
+        return None if row is None else row.workflow_id
 
     async def count_active_runs(self) -> int:
         from database.models.schema import executions
@@ -185,6 +211,7 @@ class PostgresExecutionSeeder:
             select(func.count())
             .select_from(executions)
             .where(executions.c.state.not_in(("COMPLETED", "FAILED", "CANCELLED")))
+            .where(*_this_tenant(executions))
         )
         async with self._get_engine().connect() as conn:
             return int((await conn.execute(stmt)).scalar_one())
@@ -199,7 +226,10 @@ class PostgresExecutionSeeder:
             executions.c.workflow_id,
             executions.c.updated_at,
             executions.c.state,
-        ).where(executions.c.state.not_in(("COMPLETED", "FAILED", "CANCELLED")))
+        ).where(
+            executions.c.state.not_in(("COMPLETED", "FAILED", "CANCELLED")),
+            *_this_tenant(executions),
+        )
         async with self._get_engine().connect() as conn:
             rows = (await conn.execute(stmt)).all()
         return [

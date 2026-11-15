@@ -102,6 +102,23 @@ def test_logging_exports_records_over_otlp():
     reset_logging_for_testing()
 
 
+def test_structlog_events_are_exported_with_their_fields(monkeypatch):
+    import structlog
+
+    monkeypatch.setattr(logging.getLogger(), "level", logging.INFO)
+    reset_logging_for_testing()
+    exporter = InMemoryLogRecordExporter()
+    assert configure_logging("test-logs", exporter=exporter) is True
+
+    structlog.get_logger("rebar_poll").info("rebar_poll_new", ticket_id="0316", revision="abc")
+    force_flush_logs()
+
+    bodies = [str(record.log_record.body) for record in exporter.get_finished_logs()]
+    assert "event='rebar_poll_new' revision='abc' ticket_id='0316'" in bodies
+
+    reset_logging_for_testing()
+
+
 def test_configure_logging_is_idempotent():
     reset_logging_for_testing()
     exporter = InMemoryLogRecordExporter()

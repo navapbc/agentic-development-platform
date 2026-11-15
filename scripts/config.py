@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     database_url: str = (
         "postgresql+asyncpg://platform:change-me-locally@postgres:5432/agent_platform"
     )
+    database_pool_size: int = 5
+    database_pool_max_overflow: int = 10
 
     temporal_host: str = "localhost:7233"
     temporal_namespace: str = "default"
@@ -35,11 +37,19 @@ class Settings(BaseSettings):
     workflow_execution_timeout_seconds: float = 3600.0
     draft_pr_execution_timeout_seconds: float = 86400.0
     bind_host: str = "127.0.0.1"
+    server_tls: bool = False
+    server_tls_dir: str = ""
     health_heartbeat_file: str = ""
     health_heartbeat_interval_seconds: float = 15.0
 
     litellm_base_url: str = "http://localhost:4000"
     litellm_master_key: str = "change-me-locally"
+    run_model_budget_usd: float = 10.0
+    run_model_access_ttl_seconds: int = 86400
+    tenant_model_budget_usd: float = 0.0
+    tenant_model_budget_duration: str = "30d"
+    tenant_model_rpm_limit: int = 0
+    tenant_model_tpm_limit: int = 0
 
     rebar_llm_base_url: str = "http://localhost:4000"
     rebar_llm_api_key: str = "change-me-locally"
@@ -90,10 +100,24 @@ class Settings(BaseSettings):
     ssh_bastion_target: str = ""
     bedrock_tunnel_local_port: int = 8444
 
+    aws_login_command: str = ""
+    aws_login_session_seconds: int = 43200
+    aws_login_static_passthrough: bool = False
+    aws_credentials_warn_seconds: int = 900
+    aws_credentials_file: str = ""
+
+    k8s_context: str = "docker-desktop"
+    k8s_namespace: str = "agentic-dev-platform"
+    k8s_compose_address: str = "host.docker.internal"
+    k8s_image_load: str = "shared"
+    k8s_image_load_target: str = ""
+
     @field_validator(
         "jumphost_session_duration_seconds",
         "jumphost_keepalive_seconds",
         "execution_orphan_grace_seconds",
+        "aws_login_session_seconds",
+        "aws_credentials_warn_seconds",
         mode="before",
     )
     @classmethod
@@ -101,6 +125,26 @@ class Settings(BaseSettings):
         if info.field_name is not None and (value is None or value == ""):
             return cls.model_fields[info.field_name].default
         return value
+
+    @field_validator("aws_login_session_seconds")
+    @classmethod
+    def _session_token_duration(cls, value: int) -> int:
+        if not 900 <= value <= 129600:
+            raise ValueError(
+                "AWS_LOGIN_SESSION_SECONDS must be between 900 and 129600, the range "
+                "sts:GetSessionToken accepts"
+            )
+        return value
+
+    @field_validator("k8s_image_load")
+    @classmethod
+    def _known_image_load(cls, value: str) -> str:
+        method = value.strip().lower() or "shared"
+        if method not in K8S_IMAGE_LOAD_METHODS:
+            raise ValueError(
+                f"K8S_IMAGE_LOAD must be one of {', '.join(K8S_IMAGE_LOAD_METHODS)}, got {value!r}"
+            )
+        return method
 
     @field_validator("log_level")
     @classmethod
@@ -138,37 +182,32 @@ class Settings(BaseSettings):
 
     postgres_host_port: int = 5432
     temporal_host_port: int = 7233
-    langgraph_host_port: int = 8100
     litellm_host_port: int = 4000
-    opa_host_port: int = 8181
+    coordination_host_port: int = 8130
     langfuse_web_host_port: int = 3000
     otel_grpc_host_port: int = 4317
     otel_http_host_port: int = 4318
     otel_metrics_host_port: int = 8889
 
     repo_intelligence_url: str = "http://localhost:8120"
-    repo_intelligence_repo_root: str = ""
-    repo_intelligence_commit: str = ""
     repo_intelligence_cbm_binary: str = ""
+    repo_intelligence_token: str = ""
+    repo_intelligence_token_key: str = ""
 
     coordination_url: str = "http://localhost:8130"
     mcp_allowed_hosts: str = ""
+    mcp_gateway_token: str = ""
     coordination_shared_secret: str = ""
-    repo_intelligence_repos: str = ""
     repo_index_poll_interval_seconds: float = 30.0
     repo_index_worker_concurrency: int = 2
 
-    jira_acli_path: str = ""
     jira_parked_status: str = ""
 
     ticket_backend: str = "jira"
-    source_control_backend: str = "github"
-    source_control_local_root: str = ""
+    repository_root: str = "/repos"
     source_control_local_artifacts_root: str = ""
     source_control_local_operators: str = ""
-    source_control_local_repos: str = ""
 
-    github_default_base_branch: str = "main"
     github_webhook_secret: str = ""
     jira_webhook_secret: str = ""
 
@@ -191,6 +230,7 @@ class Settings(BaseSettings):
         "@sha256:718bf6d719f34184810ecaebe607f1aafaf526e109654815e61ddd6238728023"
     )
     openhands_runtime_class: str = ""
+    sandbox_node_pool: str = ""
     openhands_sandbox_namespace: str = "agent-sandbox"
     openhands_server_port: int = 8000
     openhands_max_tool_calls: int = 60
@@ -211,6 +251,15 @@ class Settings(BaseSettings):
         "@sha256:7c2b605262748ace2c5c57c5550942d0adad57aec82ede3070927722306c0ffb"
     )
     gate_engine_privileged: bool = False
+    gate_engine_root: str = "/workspaces/engines"
+    gate_engine_images: dict[str, str] = {}
+    runtime_images: dict[str, str] = {}
+    image_scan_wait_seconds: int = 600
+    tenant: str = ""
+    tenants: str = ""
+    tenant_config_bucket: str = ""
+    tenant_config_refresh_seconds: int = 60
+    index_checkout_sync_seconds: int = 300
     gate_registry_tls_verify: bool = True
 
     reap_schedule_id: str = "orphan-reaper"
@@ -229,32 +278,65 @@ class Settings(BaseSettings):
     dependency_detection_enabled: bool = False
     dependency_replan_attempts: int = 3
 
-    def repo_intelligence_registry(self) -> dict[str, tuple[str, str | None]]:
-        """Parse configured repositories into a name to (root, commit) mapping."""
-        registry: dict[str, tuple[str, str | None]] = {}
-        raw = self.repo_intelligence_repos.replace("\n", ",").replace(";", ",")
-        for item in raw.split(","):
-            entry = item.strip()
-            if not entry or "=" not in entry:
-                continue
-            name, _, location = entry.partition("=")
-            path, _, commit = location.strip().partition("@")
-            name, path = name.strip(), path.strip()
-            if name and path:
-                registry[name] = (path, commit.strip() or None)
-        if not registry and self.repo_intelligence_repo_root:
-            root = self.repo_intelligence_repo_root
-            registry[Path(root).name] = (root, self.repo_intelligence_commit or None)
-        return registry
-
     def mcp_allowed_host_values(self) -> tuple[str, ...]:
         """Parse the Host header values the MCP gateway accepts, empty when unconfigured."""
         raw = self.mcp_allowed_hosts.replace("\n", ",").replace(";", ",")
         return tuple(entry.strip() for entry in raw.split(",") if entry.strip())
 
+    def local_artifacts_root(self) -> str:
+        """Return where the local backend writes its artifacts and done ledger.
+
+        The default sits under the execution workspace root, which the workers and the host
+        share through a mount, so operator-done reads what a worker wrote.
+        """
+        configured = self.source_control_local_artifacts_root.strip()
+        return configured or f"{self.execution_workspace_root.rstrip('/')}/.agent-publish"
+
+
+# shared: the cluster reads the Docker image store, as Docker Desktop does. kind: kind load
+# docker-image into the cluster named by K8S_IMAGE_LOAD_TARGET. registry: push to the registry
+# named by K8S_IMAGE_LOAD_TARGET, which the cluster pulls from.
+K8S_IMAGE_LOAD_METHODS = ("shared", "kind", "registry")
+
+
+# Each setting names the repositories.yaml field that replaced it.
+REMOVED_SETTINGS = {
+    "SOURCE_CONTROL_BACKEND": "each repository's backend",
+    "SOURCE_CONTROL_LOCAL_REPOS": "the repositories with backend local",
+    "SOURCE_CONTROL_LOCAL_ROOT": "REPOSITORY_ROOT and each local repository's path",
+    "REPO_INTELLIGENCE_REPOS": "each repository's index flag",
+    "REPO_INTELLIGENCE_REPO_ROOT": "each repository's index flag",
+    "REPO_INTELLIGENCE_COMMIT": "each repository's index_ref",
+    "GITHUB_DEFAULT_BASE_BRANCH": "defaults.default_branch and each repository's default_branch",
+}
+
+
+class RemovedSettingError(RuntimeError):
+    """Raised when the environment still sets a setting that repositories.yaml replaced."""
+
+
+def refuse_removed_settings(env_file: str | Path | None = ".env") -> None:
+    """Fail when the process environment or the env file still sets a removed setting."""
+    present: dict[str, str] = {}
+    if env_file is not None and Path(env_file).exists():
+        from dotenv import dotenv_values
+
+        present.update({key.upper(): key for key in dotenv_values(env_file)})
+    present.update({key.upper(): key for key in os.environ})
+    found = sorted(name for name in REMOVED_SETTINGS if name in present)
+    if found:
+        replacements = "; ".join(f"{name} by {REMOVED_SETTINGS[name]}" for name in found)
+        raise RemovedSettingError(
+            f"{', '.join(found)} {'is' if len(found) == 1 else 'are'} no longer read. "
+            f"config/<env>/repositories.yaml replaces {replacements}. Remove them from the "
+            "environment and .env, and copy repositories.yaml.example to configure the "
+            "repositories."
+        )
+
 
 @lru_cache
 def get_settings() -> Settings:
+    refuse_removed_settings()
     return Settings()
 
 
@@ -265,11 +347,10 @@ def configured_log_level() -> str:
 
 _COMPOSE_PUBLISHED_PORTS: dict[str, dict[int, str]] = {
     "litellm": {4000: "litellm_host_port"},
-    "opa": {8181: "opa_host_port"},
+    "coordination-service": {8130: "coordination_host_port"},
     "langfuse-web": {3000: "langfuse_web_host_port"},
     "postgres": {5432: "postgres_host_port"},
     "temporal": {7233: "temporal_host_port"},
-    "langgraph-service": {8100: "langgraph_host_port"},
     "otel-collector": {
         4317: "otel_grpc_host_port",
         4318: "otel_http_host_port",
@@ -280,6 +361,11 @@ _COMPOSE_PUBLISHED_PORTS: dict[str, dict[int, str]] = {
 _COMPOSE_SERVICE_HOSTS = frozenset(_COMPOSE_PUBLISHED_PORTS)
 
 _SYNC_DRIVERS = {"postgresql+asyncpg": "postgresql+psycopg", "postgresql": "postgresql+psycopg"}
+
+
+def in_platform_image() -> bool:
+    """Report whether this process runs inside the platform image rather than on the host."""
+    return _in_platform_image()
 
 
 def _in_platform_image() -> bool:

@@ -4,7 +4,7 @@ This roadmap groups the remaining platform work into versions. The authoritative
 
 Every v0.2.0 feature and every v0.3.0 feature planned before the Jira board has a dedicated implementation plan. The v0.3.0 features added from the Jira board name their ticket. Later versions link to their entry in the roadmap plan until their plans are written.
 
-Total remaining scope is roughly 160 to 213 hours across 23 features.
+Total remaining scope is roughly 260 to 351 hours across 24 features.
 
 ## v0.1.0 Pluggable ticket and source-control backends
 
@@ -35,7 +35,14 @@ Sequencing. Native Bedrock review path first, since it settles the review path a
 
 ## v0.3.0 AWS transition and FedRAMP readiness
 
-Status. In progress. v0.3.0 is the FedRAMP Medium readiness release and does not ship until the platform-owned technical controls are met. The hosting account holds a FedRAMP Medium authorization, so the platform inherits the controls AWS owns and implements the configuration and provisioning controls on top. The scope was expanded from a design-only release to provision the production infrastructure the platform-owned controls require. The local-to-AWS mapping, the schema contracts, the WORM evidence and audit store, the full evidence artifact coverage, the hardening design, the data tier with its tiered network, egress path, and remote state, the secret store with per-service database roles and credential rotation, and the rebar ticket store bucket are delivered.
+Status. In progress. v0.3.0 is the FedRAMP Medium readiness release and does not ship until the platform-owned technical controls are met. The hosting account holds a FedRAMP Medium authorization, so the platform inherits the controls AWS owns and implements the configuration and provisioning controls on top. The scope was expanded from a design-only release to provision the production infrastructure the platform-owned controls require.
+
+Delivered, as the 0.3.0 section of the [changelog](CHANGELOG.md) records, are the local-to-AWS mapping, the schema contracts, the WORM evidence and audit store, the full evidence artifact coverage, the hardening design, the control inheritance matrix, the evidence retention configuration and classification mapping, the AWS security baseline, the data tier with its tiered network, egress path, and remote state, the secret store with per-service database roles and credential rotation, the rebar ticket store bucket, the ECS Fargate services, the platform image builds in CI, the platform ECS cluster, the Temporal control plane, the local Temporal server upgrade, the sandbox teardown, the per-environment repository file, the activity worker and its services in the local cluster, and the MCP gateway client authentication.
+
+Built and awaiting the ADP-168 sandbox verification session are the EKS cluster, the multi-tenant runtime profiles, and the image vulnerability remediation with the validated Go FIPS module. The image remediation also needs the merge to `main` and the first release tag before its daily run and catalog signing can be verified in CI.
+
+Open are the connectivity and sandbox confirmations of ADP-92, whose credential and sandbox checks run in the ADP-168 session, the observability terraform, the off-hours scale-down of the EKS deployments, the jump-host residual hardening, the leaked OpenHands sandbox pods, the Slack escalation channel, the operator alert remedies, the tenant scoping of work claims and the sequence gate, and the evidence artifact deduplication per execution.
+
 Goal. The platform is technically FedRAMP Medium ready. It has documented local-to-AWS mappings, a control inheritance and shared-responsibility matrix, committed audit and evidence contracts, an S3-backed WORM evidence and audit store, and terraform that provisions the data tier, secret store, container-platform services, Temporal control plane, observability, and the rebar ticket bucket with encryption, least privilege, backups, and private networking, plus a hardened AWS security baseline. Organizational and operational control families remain the deploying organization's responsibility, recorded in the inheritance matrix.
 
 | Feature | Effort | Detail |
@@ -51,22 +58,31 @@ Goal. The platform is technically FedRAMP Medium ready. It has documented local-
 | Data and cache tier terraform | 24-32h | [plan](docs/plans/2026-09-14-2148-feat-data-cache-tier-terraform-plan.md) |
 | Secret store terraform | 8-13h | [plan](docs/plans/2026-09-14-2149-feat-secret-store-terraform-plan.md) |
 | Rebar ticket store bucket terraform | 16-21h | [plan](docs/plans/2026-09-14-2150-feat-rebar-ticket-store-bucket-terraform-plan.md) |
-| ECS Fargate services for the platform containers | 20-30h (low) | Jira ADP-136, a sub-task of ADP-61. [plan](docs/plans/2026-09-14-2151-feat-container-platform-services-terraform-plan.md) |
-| EKS cluster for the pod-orchestrating workloads | 28-40h (low) | Jira ADP-137, a sub-task of ADP-61. [plan](docs/plans/2026-09-14-2151-feat-container-platform-services-terraform-plan.md) |
+| ECS Fargate services for the platform containers | 28-41h (low) | Jira ADP-136, a sub-task of ADP-61, delivered through ADP-154 to ADP-159. [plan](docs/plans/2026-09-14-2151-feat-container-platform-services-terraform-plan.md) |
+| Platform image builds in CI | 6-10h | Jira ADP-162, a sub-task of ADP-61. Builds and publishes the images in GitHub Actions through the same `inv` tasks a developer runs. |
+| EKS cluster for the pod-orchestrating workloads | 59-85h (low) | Jira ADP-137, ADP-164, ADP-165, ADP-166, ADP-167, ADP-169, ADP-170, and ADP-168, sub-tasks of ADP-61 for the cluster module, the composition wiring, the images, the production overlay, the in-VPC deploy task, the registry provider for the gate pods, the example gate engines, and the verification. [plan](docs/plans/2026-09-14-2151-feat-container-platform-services-terraform-plan.md) |
+| Multi-tenant runtime profiles | 82-112h | Jira ADP-171 with sub-tasks ADP-172 to ADP-180 for tenants, config bundles, runtime profiles, worker pools, image governance, per-run model keys, attribution, verification, and image remediation. ADP-168 runs its ticket through a tenant and verifies the two-tenant stop conditions. [plan](docs/plans/2026-11-08-1600-feat-multi-tenant-runtime-profiles-plan.md) |
+| Image vulnerability remediation | 97-151h (low) | Jira ADP-180, a sub-task of ADP-171 that blocks ADP-168, with ADP-153 folded in. Moves every image to Amazon Linux 2023, replaces the Atlassian CLI with a Jira Cloud REST client, builds third-party software from source when its release carries a finding, builds Temporal with the validated Go FIPS module, hardens every image to the CIS benchmark, and rescans the newest release tag daily, until the publish scan and the ECR scan report no HIGH or CRITICAL finding with no exception. [plan](docs/plans/2026-11-12-1500-feat-image-vulnerability-remediation-plan.md) |
+| Sandbox teardown | 2-4h | Jira ADP-163, a sub-task of ADP-61. Destroys the composition root and keeps the bootstrap, to stop the sandbox's standing cost between work sessions. |
 | Local Temporal server upgrade to 1.32.1 | 6-10h | Jira ADP-138. [plan](docs/plans/2026-10-30-1330-feat-temporal-server-upgrade-plan.md) |
 | Platform ECS cluster | 3-5h | Jira ADP-145. The shared cluster the platform owns for the Temporal control plane, the ECS services, and other teams. |
 | Temporal control plane terraform | 15-21h | Jira ADP-97. [plan](docs/plans/2026-09-14-2152-feat-temporal-control-plane-terraform-plan.md) |
-| Off-hours Temporal scale-down and database pause | 5-8h | Jira ADP-146 |
-| Validated Go FIPS 140-3 module for the Temporal server and UI | 8-12h, low confidence | Jira ADP-153. Builds the server, admin-tools, and UI binaries from source with `GOFIPS140` set to a CMVP-validated module version. |
-| Observability terraform | 6-10h | Jira ADP-95. [plan](docs/plans/2026-09-14-2153-feat-observability-terraform-plan.md) |
-| Activity worker, LiteLLM, and OPA in the local cluster | 8-12h | Jira ADP-139. Also removes `langgraph-service`. |
-| Private-endpoint jump-host residual hardening | 1-2h | Jira ADP-104. [plan](docs/plans/2026-09-14-1900-feat-jumphost-residual-hardening-plan.md) |
+| Off-hours Temporal scale-down and database pause | 5-8h | Jira ADP-146. ADP-159 delivered the ECS sleep and wake. This extends it to the EKS deployments that connect to Aurora. |
+| Validated Go FIPS 140-3 module for the Temporal server and UI | Counted in ADP-180 | Jira ADP-153, delivered by ADP-180. Builds the server, admin-tools, and UI binaries from source with `GOFIPS140` set to a CMVP-validated module version. |
+| Observability terraform | 3-5h | Jira ADP-95. Adds Managed Grafana and a query role on the Prometheus workspace that ADP-158 provisions. [plan](docs/plans/2026-09-14-2153-feat-observability-terraform-plan.md) |
+| Source control repositories in one per-environment file | 8-12h | Jira ADP-161. Moves the repository list into `config/<env>/repositories.yaml` and selects GitHub or a local repository per repository. |
+| Activity worker, review worker, LiteLLM, and OPA in the local cluster | 16-24h | Jira ADP-139, after ADP-161. Moves data in and out of the cluster through `inv` tasks over the Kubernetes API with no host mounts, and refreshes AWS credentials in place through `inv aws-login`. Also removes `langgraph-service`. |
+| Private-endpoint jump-host residual hardening | 2-4h | Jira ADP-104. Publishes the jump-host image through the Inspector and CIS scans and reviews its roles for least privilege. [plan](docs/plans/2026-09-14-1900-feat-jumphost-residual-hardening-plan.md) |
 | Full evidence artifact coverage | 4-6h | [plan](docs/plans/2026-09-14-1901-feat-full-evidence-artifact-coverage-plan.md) |
 | Remaining connectivity and sandbox confirmations | 3-6h (low) | Jira ADP-92. [plan](docs/plans/2026-09-14-1902-feat-connectivity-sandbox-confirmations-plan.md) |
 | MCP gateway client authentication | 3-5h | Jira ADP-140 |
 | Leaked OpenHands sandbox pods | 3-5h | Jira ADP-141 |
+| Slack escalation channel with approve, reject, retry, and abandon actions | 28-42h (low) | Jira ADP-160. [plan](docs/plans/2026-11-06-1000-feat-slack-escalation-channel-plan.md) |
+| Operator alert remedies that name a next step | 4-8h (low) | Jira ADP-24, draft PR 54. Every human-intervention alert renders a remedy. Open is the decision on how a remedy stays runnable where the operator reads the alert. |
+| Tenant scoping of work claims and the sequence gate | 5-8h | Jira ADP-183. Adds a tenant column to `work_claims` and `sequence_gate`, so two tenants that submit the same ticket key keep separate claims and sequence counters. |
+| Evidence artifact deduplication per execution | 3-5h | Jira ADP-184. Moves the `evidence_artifacts` unique constraint from `content_hash` to `(execution_id, content_hash)` and records the tenant on each row. |
 
-Version effort. 185-269h.
+Version effort. 465-686h.
 
 ## v0.4.0 Production serving and demo readiness
 

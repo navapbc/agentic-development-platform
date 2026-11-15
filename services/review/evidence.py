@@ -9,10 +9,11 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol, runtime_checkable
 
+from database.engine import shared_platform_engine
 from database.models.schema import evidence_artifacts
 from scripts.config import Settings, get_settings
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from services.review.attestation import content_hash
 from services.review.classification import (
@@ -68,30 +69,13 @@ def resolve_retention(record: EvidenceRecord, settings: Settings) -> EvidenceRec
     return replace(record, retention=str(days))
 
 
-_shared_engine: AsyncEngine | None = None
-
-
-def _shared_evidence_engine() -> AsyncEngine:
-    """One engine per process, shared by every sink this module builds.
-
-    ``persist_artifact_evidence`` builds a sink per artifact, so an engine per sink would
-    leave a connection pool behind on every write.
-    """
-    global _shared_engine
-    if _shared_engine is None:
-        _shared_engine = create_async_engine(
-            get_settings().database_url, future=True, pool_pre_ping=True
-        )
-    return _shared_engine
-
-
 class PostgresEvidenceSink:
     def __init__(self, engine: AsyncEngine | None = None) -> None:
         self._engine = engine
 
     def _get_engine(self) -> AsyncEngine:
         if self._engine is None:
-            self._engine = _shared_evidence_engine()
+            self._engine = shared_platform_engine()
         return self._engine
 
     async def persist(self, record: EvidenceRecord) -> str:

@@ -5,12 +5,21 @@ x-python-service: &python-service
     context: .
     dockerfile: docker/Dockerfile
     args:
-      INSTALL_ACLI: ${INSTALL_ACLI:-false}
-      ACLI_VERSION: ${ACLI_VERSION:-}
-      ACLI_SHA256: ${ACLI_SHA256:-}
-      AGENT_BUILD_ID: ${AGENT_BUILD_ID:-0.3.0}
+      - AGENT_BUILD_ID=${AGENT_BUILD_ID:-0.3.0}
+      - AL2023_IMAGE
   env_file: [.env]
   restart: unless-stopped
+
+# The repository intelligence services receive only these settings and the registry, tenant bundle,
+# and checkout mounts that inv repos-compose writes to compose.repositories.yaml. They never receive
+# .env or the whole config/local directory.
+x-repo-intelligence-env: &repo-intelligence-env
+  ENVIRONMENT: ${ENVIRONMENT:-local}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  TENANT: ${TENANT:-}
+  TENANTS: ${TENANTS:-}
+  TENANT_CONFIG_REFRESH_SECONDS: ${TENANT_CONFIG_REFRESH_SECONDS:-60}
+  REPOSITORY_ROOT: ${REPOSITORY_ROOT:-/repos}
 
 services:
   postgres:
@@ -20,7 +29,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-platform}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-locally}
       POSTGRES_DB: ${POSTGRES_DB:-agent_platform}
-      POSTGRES_MULTIPLE_DATABASES: agent_platform,temporal,temporal_visibility,langfuse
+      POSTGRES_MULTIPLE_DATABASES: agent_platform,temporal,temporal_visibility,langfuse,litellm
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./database/init/00-create-multiple-databases.sh:/docker-entrypoint-initdb.d/00-create-multiple-databases.sh:ro
@@ -32,10 +41,11 @@ services:
       retries: 10
 
   temporal:
+    image: agentic-dev-platform-temporal:local
     build:
       context: .
       dockerfile: docker/temporal.Dockerfile
-      args: [TEMPORAL_SERVER_IMAGE]
+      args: [AL2023_IMAGE]
     restart: unless-stopped
     depends_on:
       postgres:
@@ -55,7 +65,11 @@ services:
     ports: ["${TEMPORAL_HOST_PORT:-7233}:7233"]
 
   temporal-admin-tools:
-    image: ${TEMPORAL_ADMIN_TOOLS_IMAGE:-docker.io/temporalio/admin-tools:1.32.1@sha256:9ef0dc5b063bf4ffd5c1512de72e0e73e225bd2c7006a18ce69bd592a8862a83}
+    image: agentic-dev-platform-temporal-admin-tools:local
+    build:
+      context: .
+      dockerfile: docker/temporal-admin-tools.Dockerfile
+      args: [AL2023_IMAGE]
     entrypoint: ["/bin/sh", "/usr/local/libexec/temporal-admin-tools.sh"]
     command: ["schema"]
     restart: "no"
@@ -77,14 +91,19 @@ services:
         condition: service_healthy
 
   temporal-ui:
-    image: docker.io/temporalio/ui:2.58.0@sha256:d36185e811d0ce1720b8d3ca4d9ac4dac504b67181e9b5e3d3ca72b2294f3590
+    image: agentic-dev-platform-temporal-ui:local
+    build:
+      context: .
+      dockerfile: docker/temporal-ui.Dockerfile
+      args: [AL2023_IMAGE]
+    entrypoint: ["./ui-server", "--env", "docker", "start"]
     depends_on: [temporal]
     environment:
       TEMPORAL_ADDRESS: temporal:7233
       TEMPORAL_CORS_ORIGINS: http://localhost:3001
     ports: ["3001:8080"]
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/"]
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:8080/"]
       interval: 30s
       timeout: 10s
       start_period: 60s
@@ -120,7 +139,6 @@ services:
       HEALTH_HEARTBEAT_FILE: /tmp/worker.heartbeat
       REPO_INTELLIGENCE_URL: http://repo-intelligence:8120
       COORDINATION_URL: http://coordination-service:8130
-      JIRA_ACLI_PATH: /app/vendor/bin/acli
       EXECUTION_WORKSPACE_ROOT: /home/appuser/agent-workspaces
       AWS_USE_FIPS_ENDPOINT: ${AWS_USE_FIPS_ENDPOINT:-false}
     depends_on:
@@ -128,84 +146,15 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
-      litellm:
-        condition: service_started
-
-  activity-worker:
-    <<: *python-service
-    command: ["python", "-m", "services.orchestration.worker"]
-    healthcheck:
-      test: ["CMD", "python", "-m", "services.healthcheck", "heartbeat", "/tmp/worker.heartbeat", "--max-age", "60"]
-      interval: 30s
-      timeout: 10s
-      start_period: 180s
-      retries: 3
-    volumes:
-      - ./config/local:/app/config/local:ro
-      - ./config/platform:/app/config/platform:ro
-    environment:
-      WORKER_ROLE: activity
-      AWS_CONFIG_FILE: /app/config/local/rebar-store-aws-config
-      HEALTH_HEARTBEAT_FILE: /tmp/worker.heartbeat
-      REPO_INTELLIGENCE_URL: http://repo-intelligence:8120
-      COORDINATION_URL: http://coordination-service:8130
-      JIRA_ACLI_PATH: /app/vendor/bin/acli
-      EXECUTION_WORKSPACE_ROOT: /home/appuser/agent-workspaces
-      AWS_USE_FIPS_ENDPOINT: ${AWS_USE_FIPS_ENDPOINT:-false}
-    depends_on:
-      temporal:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
-      litellm:
-        condition: service_started
-
-  review-worker:
-    <<: *python-service
-    command: ["python", "-m", "services.orchestration.worker"]
-    healthcheck:
-      test: ["CMD", "python", "-m", "services.healthcheck", "heartbeat", "/tmp/worker.heartbeat", "--max-age", "60"]
-      interval: 30s
-      timeout: 10s
-      start_period: 180s
-      retries: 3
-    volumes:
-      - ./config/local:/app/config/local:ro
-      - ./config/platform:/app/config/platform:ro
-      - ${HOME}/.aws:/home/appuser/.aws:ro
-    environment:
-      WORKER_ROLE: review
-      HEALTH_HEARTBEAT_FILE: /tmp/worker.heartbeat
-      REPO_INTELLIGENCE_URL: http://repo-intelligence:8120
-      COORDINATION_URL: http://coordination-service:8130
-      JIRA_ACLI_PATH: /app/vendor/bin/acli
-      EXECUTION_WORKSPACE_ROOT: /home/appuser/agent-workspaces
-      AWS_PROFILE: ${PLATFORM_AWS_PROFILE:-${AWS_PROFILE}}
-      AWS_REGION: ${AWS_REGION}
-      AWS_USE_FIPS_ENDPOINT: ${AWS_USE_FIPS_ENDPOINT:-false}
-      REBAR_LLM_CONFIG_FILE: /app/config/platform/rebar-review.toml
-    depends_on:
-      temporal:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
-      litellm:
-        condition: service_started
 
   schedule-bootstrap:
     <<: *python-service
-    command: ["sh", "-c", "python -m scripts.reap --schedule && python -m scripts.intake --schedule"]
+    command: ["python", "-m", "scripts.schedules"]
     restart: "no"
     profiles: ["tasks"]
-    environment:
-      REAP_SCHEDULE_DRY_RUN: "true"
     depends_on:
       temporal:
         condition: service_healthy
-      workflow-worker:
-        condition: service_started
-      activity-worker:
-        condition: service_started
 
   coordination-service:
     <<: *python-service
@@ -216,68 +165,17 @@ services:
       timeout: 10s
       start_period: 60s
       retries: 3
+    ports: ["${COORDINATION_HOST_PORT:-8130}:8130"]
     depends_on:
       postgres:
         condition: service_healthy
 
-  langgraph-service:
-    <<: *python-service
-    command: ["python", "-m", "services.orchestration.langgraph.service"]
-    healthcheck:
-      test: ["CMD", "python", "-m", "services.healthcheck", "http", "8100"]
-      interval: 30s
-      timeout: 10s
-      start_period: 60s
-      retries: 3
-    volumes:
-      - ./config/local:/app/config/local:ro
-      - ./config/platform:/app/config/platform:ro
-    depends_on:
-      litellm:
-        condition: service_started
-    ports: ["${LANGGRAPH_HOST_PORT:-8100}:8100"]
-
-  litellm:
-    image: ghcr.io/berriai/litellm:v1.97.0@sha256:468c25f35f3e5ec4e414974f00deab93337b1b4d9953cabcfd3722e59415f834
-    command: ["--config", "/app/config/litellm-config.yaml", "--port", "4000"]
-    healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4000/health/liveliness', timeout=5)"]
-      interval: 30s
-      timeout: 10s
-      start_period: 60s
-      retries: 3
-    environment:
-      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
-      AWS_PROFILE: ${PLATFORM_AWS_PROFILE:-${AWS_PROFILE}}
-      AWS_REGION: ${AWS_REGION}
-      AWS_USE_FIPS_ENDPOINT: ${AWS_USE_FIPS_ENDPOINT:-false}
-      LANGFUSE_HOST: ${LANGFUSE_HOST:-http://langfuse-web:3000}
-      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY}
-      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY}
-    volumes:
-      - ./config/platform/litellm-config.yaml:/app/config/litellm-config.yaml:ro
-      - ./config/platform/litellm_redaction.py:/app/litellm_redaction.py:ro
-      - ${HOME}/.aws:/root/.aws:ro
-    ports: ["${LITELLM_HOST_PORT:-4000}:4000"]
-    restart: unless-stopped
-
-  opa:
+  clickhouse:
+    image: agentic-dev-platform-clickhouse:local
     build:
       context: .
-      dockerfile: docker/opa.Dockerfile
-    command:
-      - "run"
-      - "--server"
-      - "--addr=0.0.0.0:8181"
-      - "--log-level=info"
-      - "/policies"
-    volumes:
-      - ./config/policies:/policies:ro
-    ports: ["${OPA_HOST_PORT:-8181}:8181"]
-    restart: unless-stopped
-
-  clickhouse:
-    image: docker.io/clickhouse/clickhouse-server:26.9.19.9@sha256:bdb5c911a23d92fd364e246ab20b5a0a485f00112f3663fa626b083fb46c146b
+      dockerfile: docker/clickhouse.Dockerfile
+      args: [AL2023_IMAGE]
     user: "101:101"
     environment:
       CLICKHOUSE_DB: default
@@ -344,7 +242,12 @@ services:
     restart: unless-stopped
 
   langfuse-worker: &langfuse-service
-    image: docker.langfuse.com/langfuse/langfuse-worker:4.59.0@sha256:246a3a0fab57810734080d302492aa99d7ed0b6acc909c84b58832074b564175
+    image: agentic-dev-platform-langfuse-worker:local
+    build:
+      context: .
+      dockerfile: docker/langfuse.Dockerfile
+      args: [AL2023_IMAGE]
+      target: langfuse-worker
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3030/api/health"]
       interval: 30s
@@ -395,7 +298,12 @@ services:
 
   langfuse-web:
     <<: *langfuse-service
-    image: docker.langfuse.com/langfuse/langfuse:4.59.0@sha256:48ecae32cd74d3a567588602c144de0ec626daf32dc5f2e831a03cebd0bb2d34
+    image: agentic-dev-platform-langfuse-web:local
+    build:
+      context: .
+      dockerfile: docker/langfuse.Dockerfile
+      args: [AL2023_IMAGE]
+      target: langfuse-web
     ports: ["${LANGFUSE_WEB_HOST_PORT:-3000}:3000"]
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3000/api/public/health"]
@@ -419,9 +327,11 @@ services:
     build:
       context: .
       dockerfile: docker/otel-collector.Dockerfile
+      args: [AL2023_IMAGE]
     command: ["--config=/etc/otel/config.yaml"]
     volumes:
       - ./observability/otel/otel-collector-config.yaml:/etc/otel/config.yaml:ro
+      - otel-logs:/var/lib/otelcol/logs
     ports:
       - "${OTEL_GRPC_HOST_PORT:-4317}:4317"
       - "${OTEL_HTTP_HOST_PORT:-4318}:4318"
@@ -491,7 +401,12 @@ services:
     build:
       context: .
       dockerfile: docker/repo-intelligence.Dockerfile
-    env_file: [.env]
+      args: [AL2023_IMAGE]
+    environment:
+      <<: *repo-intelligence-env
+      REPO_INTELLIGENCE_CBM_BINARY: ${REPO_INTELLIGENCE_CBM_BINARY:-}
+      REPO_INTELLIGENCE_TOKEN: ${REPO_INTELLIGENCE_TOKEN:-}
+      REPO_INTELLIGENCE_TOKEN_KEY: ${REPO_INTELLIGENCE_TOKEN_KEY:-}
     ports: ["8120:8120"]
     healthcheck:
       test: ["CMD", "python", "-m", "services.healthcheck", "http", "8120"]
@@ -501,14 +416,13 @@ services:
       retries: 3
     volumes:
       - repo-index-data:/app/repository_indexes
-      - ./config/local:/app/config/local:ro
-      - ./config/platform:/app/config/platform:ro
     restart: unless-stopped
 
   repo-index-worker:
     build:
       context: .
       dockerfile: docker/repo-intelligence.Dockerfile
+      args: [AL2023_IMAGE]
     command: ["python", "-m", "services.repository_intelligence.indexing.worker"]
     healthcheck:
       test: ["CMD", "python", "-m", "services.healthcheck", "heartbeat", "/tmp/worker.heartbeat", "--max-age", "120"]
@@ -517,8 +431,10 @@ services:
       start_period: 120s
       retries: 3
     environment:
+      <<: *repo-intelligence-env
       HEALTH_HEARTBEAT_FILE: /tmp/worker.heartbeat
-    env_file: [.env]
+      REPO_INDEX_POLL_INTERVAL_SECONDS: ${REPO_INDEX_POLL_INTERVAL_SECONDS:-30}
+      REPO_INDEX_WORKER_CONCURRENCY: ${REPO_INDEX_WORKER_CONCURRENCY:-2}
     volumes:
       - repo-index-data:/app/repository_indexes
     restart: unless-stopped
@@ -550,3 +466,4 @@ volumes:
   grafana-data:
   prometheus-data:
   registry-data:
+  otel-logs:

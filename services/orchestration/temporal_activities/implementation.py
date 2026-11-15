@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +14,8 @@ from services.prompts.library import IMPLEMENTATION_VERSION
 IMPLEMENTATION_PROMPT_VERSION = IMPLEMENTATION_VERSION
 
 COORDINATION_AUTH_ERROR_TYPE = "CoordinationAuth"
+IMPLEMENTATION_TIMED_OUT_ERROR_TYPE = "ImplementationTimedOut"
+_RETRYABLE_BEFORE_AGENT = frozenset({"ImageScanPendingError", "LiteLLMAdminError"})
 
 
 @dataclass
@@ -109,7 +111,29 @@ def _build_materializer():
     return WorkspaceMaterializer.from_settings(PostgresOrphanRegistry())
 
 
-def _build_runtime():
+async def _run_model_key(execution_id: str) -> str:
+    from services.integration.litellm_admin import ensure_run_model_key
+
+    return await ensure_run_model_key(execution_id)
+
+
+async def _model_budget_stop(execution_id: str, failure_text: str) -> str:
+    from services.integration.litellm_admin import run_model_budget_stop
+
+    return await run_model_budget_stop(execution_id, failure_text=failure_text)
+
+
+async def _budget_stopped_outcome(execution_id: str, outcome: Any) -> Any:
+    """Rename a failed sandbox conversation's reason when LiteLLM refused it for budget."""
+    from openhands.runtime.conversation import FAILED
+
+    if outcome.status != FAILED:
+        return outcome
+    reason = await _model_budget_stop(execution_id, outcome.summary)
+    return replace(outcome, terminal_reason=reason) if reason else outcome
+
+
+def _build_runtime(repo: str = "", *, model_api_key: str):
     from openhands.runtime.conversation import RemoteConversationDriver
     from openhands.runtime.provisioner import (
         KubernetesSandboxProvisioner,
@@ -118,12 +142,14 @@ def _build_runtime():
     from openhands.runtime.runtime import SandboxRuntime
     from scripts.config import get_settings
 
+    from services.integration.runtime_profiles import sandbox_image
+
     settings = get_settings()
     litellm_base_url = settings.sandbox_litellm_base_url
     driver = RemoteConversationDriver(
         model=settings.coding_model,
         litellm_base_url=litellm_base_url,
-        api_key=settings.litellm_master_key,
+        api_key=model_api_key,
     )
     inner = KubernetesSandboxProvisioner(
         in_cluster=settings.openhands_in_cluster,
@@ -132,6 +158,7 @@ def _build_runtime():
     provisioner = inner if settings.openhands_in_cluster else PortForwardSandboxProvisioner(inner)
     runtime = SandboxRuntime.from_settings(provisioner, driver, settings)
     runtime.litellm_base_url = litellm_base_url
+    runtime.image = sandbox_image(repo, settings)
     return runtime
 
 
@@ -200,6 +227,66 @@ async def finalize_work_claim(req: FinalizeClaimRequest) -> FinalizeClaimResult:
 
 @activity.defn
 async def run_implementation_stage(req: ImplementationRequest) -> ImplementationResult:
+    """Run the coding agent once, retrying only an attempt whose agent never ran or lost its worker.
+
+    A pending image scan and a LiteLLM admin API failure stop the stage before its agent runs, and
+    they are retryable. Every other failure raised here is non-retryable, so Temporal schedules a
+    second attempt otherwise only after a timeout. A previous attempt that ran for its whole
+    start-to-close timeout timed out on its own, and the second attempt refuses to run it again.
+    One that ended sooner lost its worker and heartbeats, or stopped before its agent ran, and the
+    second attempt starts the stage over on a clean workspace. A worker lost within the heartbeat
+    timeout of the stage timeout looks like a full timeout, so that attempt is not retried. The
+    second attempt starts with the stage's whole cost budget.
+    """
+    retry_after_lost_worker = False
+    if activity.in_activity():
+        info = activity.info()
+        if info.attempt > 1:
+            elapsed = info.current_attempt_scheduled_time - info.scheduled_time
+            if info.start_to_close_timeout and elapsed >= info.start_to_close_timeout:
+                raise ApplicationError(
+                    "the implementation stage timed out on its previous attempt",
+                    type=IMPLEMENTATION_TIMED_OUT_ERROR_TYPE,
+                    non_retryable=True,
+                )
+            retry_after_lost_worker = True
+    try:
+        return await _run_implementation_stage(req, clean_workspace=retry_after_lost_worker)
+    except ApplicationError as exc:
+        if exc.non_retryable or exc.type in _RETRYABLE_BEFORE_AGENT:
+            raise
+        raise ApplicationError(
+            exc.message, *exc.details, type=exc.type, non_retryable=True
+        ) from exc
+    except Exception as exc:
+        raise ApplicationError(str(exc), type=type(exc).__name__, non_retryable=True) from exc
+
+
+async def _admitted_runtime(repo: str, execution_id: str):
+    """Build the run's sandbox runtime and admit its image, before the agent runs.
+
+    A scan still pending and a LiteLLM admin API that refused or was unreachable clear on a later
+    attempt, so they fail the activity retryably.
+    """
+    from scripts.config import get_settings
+
+    from services.integration.litellm_admin import LiteLLMAdminError
+    from services.orchestration.gates.image_admission import (
+        ImageScanPendingError,
+        admit_sandbox_image,
+    )
+
+    try:
+        runtime = _build_runtime(repo, model_api_key=await _run_model_key(execution_id))
+        await admit_sandbox_image(runtime.image, get_settings())
+    except (ImageScanPendingError, LiteLLMAdminError) as exc:
+        raise ApplicationError(str(exc), type=type(exc).__name__) from exc
+    return runtime
+
+
+async def _run_implementation_stage(
+    req: ImplementationRequest, *, clean_workspace: bool
+) -> ImplementationResult:
     from scripts.config import get_settings
 
     from services.repository_intelligence.normalization.serialization import (
@@ -219,7 +306,9 @@ async def run_implementation_stage(req: ImplementationRequest) -> Implementation
         base=req.base,
         commit_sha=req.commit,
     )
-    runtime = _build_runtime()
+    if clean_workspace:
+        await materializer.discard_changes(workspace)
+    runtime = await _admitted_runtime(req.repo, req.execution_id)
     outcome = await runtime.run_implementation(
         execution_id=req.execution_id,
         task=req.task,
@@ -227,6 +316,7 @@ async def run_implementation_stage(req: ImplementationRequest) -> Implementation
         workspace_source=str(Path(workspace.path).resolve()),
         task_id=req.task_id,
     )
+    outcome = await _budget_stopped_outcome(req.execution_id, outcome)
     staged = await materializer.stage(workspace)
     return ImplementationResult(
         status=outcome.status,

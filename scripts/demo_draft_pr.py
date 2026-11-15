@@ -22,7 +22,6 @@ from services.coordination.orphans import InMemoryOrphanRegistry
 from services.integration.credentials import ConfigError, SecretNotFoundError
 from services.integration.github.credentials import (
     UnconfiguredRepositoryError,
-    allowed_repos,
     build_github_credential_resolver,
 )
 from services.integration.github.git_auth import GitAuth
@@ -31,7 +30,6 @@ from services.integration.jira import (
     CLOUD,
     DATACENTER,
     TaskSnapshot,
-    ensure_acli_authenticated,
 )
 from services.integration.jira.adapter import build_jira_adapter_for_issue, project_of
 from services.integration.jira.credentials import (
@@ -42,6 +40,7 @@ from services.integration.jira.credentials import (
 from services.integration.jira.linkback import post_pr_linkback
 from services.integration.jira.normalize import normalize_issue
 from services.integration.jira.snapshot import SnapshotCandidate, snapshot_id_for
+from services.integration.repositories import load_repository_registry
 from services.orchestration.bounded_task_pipeline import (
     DRAFT_PR_OPEN,
     EXISTING_PR_REUSED,
@@ -167,7 +166,7 @@ def _missing(settings: Settings) -> list[str]:
         resolver = build_github_credential_resolver(settings)
         repos = sorted(resolver.repos())
         if not repos:
-            return ["config/<env>/github.yaml has no allowlisted repository with an identity"]
+            return ["config/<env>/repositories.yaml lists no repository with backend github"]
         resolver.resolve(repos[0])
     except (ConfigError, SecretNotFoundError, UnconfiguredRepositoryError) as exc:
         return [str(exc)]
@@ -387,14 +386,17 @@ async def main() -> int:
     missing = _missing(settings)
     if missing:
         print("Configure GitHub before running the demo.")
-        print("Set the host, owner, and token_ref in config/<env>/github.yaml.")
+        print("Set the host, owner, and token_ref in config/<env>/github.yaml or for the")
+        print("repository in config/<env>/repositories.yaml.")
         print("Export the token named by token_ref, for example GITHUB_TOKEN, in .env.")
         print(f"Blocked: {', '.join(missing)}")
         return 2
 
     args = _parse_args()
     repo = args.repo
-    base = args.base or settings.github_default_base_branch or "main"
+    registry = load_repository_registry(settings)
+    configured = registry.get(repo)
+    base = args.base or (configured.default_branch if configured else "main")
     task_id = args.task
     execution_id = f"exec-{uuid.uuid4().hex[:8]}"
 
@@ -407,7 +409,7 @@ async def main() -> int:
             print("[demo]   `inv connectivity-check`, then retry.")
             return 2
 
-    allowlist = sorted(allowed_repos(settings))
+    allowlist = sorted(registry.names())
     if repo not in allowlist:
         print(f"Repo '{repo}' is not allowlisted. Choose one of: {', '.join(allowlist)}")
         return 2
@@ -433,7 +435,11 @@ async def main() -> int:
     ledger = InMemorySideEffectLedger()
     gate = InMemorySequenceGate()
     mediator = GitHubMediator(
-        backend=host, ledger=ledger, gate=gate, allowed_repos=frozenset(allowlist)
+        backend=host,
+        ledger=ledger,
+        gate=gate,
+        allowed_repos=frozenset(allowlist),
+        tenant=settings.tenant,
     )
     materializer = WorkspaceMaterializer.from_settings(
         InMemoryOrphanRegistry(),
@@ -447,9 +453,6 @@ async def main() -> int:
     existing_pr = await mediator.find_open_pr(repo, task_id)
     if _jira_configured(settings, task_id):
         jira_resolver = build_jira_credential_resolver(settings)
-        cloud_cred = jira_resolver.resolve(project_of(task_id))
-        if cloud_cred is not None:
-            ensure_acli_authenticated(cloud_cred, acli_path=settings.jira_acli_path)
         adapter = build_jira_adapter_for_issue(task_id, settings, resolver=jira_resolver)
         ok, detail = _jira_task_actionable(adapter, task_id, settings.jira_parked_status)
         print(f"[demo] jira preflight {task_id}: [{'ok' if ok else 'FAIL'}] {detail}")
@@ -545,7 +548,7 @@ async def main() -> int:
     if result.status == EXISTING_PR_REUSED:
         print("[demo] existing draft PR detected for this task; reused instead of duplicating")
 
-    branch = agent_branch_name(task_id)
+    branch = agent_branch_name(task_id, settings.tenant)
     print(f"  branch                {branch}")
     print(f"  draft pr number       {result.pr_number}")
     print(f"  draft pr url          {result.pr_url}")

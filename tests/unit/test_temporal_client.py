@@ -116,3 +116,29 @@ def test_no_client_connects_outside_the_helper_anywhere_in_the_repository() -> N
     ]
 
     assert offenders == []
+
+
+def test_a_finished_command_flushes_its_output_before_skipping_finalization(monkeypatch) -> None:
+    import io
+    import os
+
+    from services import temporal_client
+
+    events: list[str] = []
+
+    class _Stream(io.StringIO):
+        def __init__(self, name: str) -> None:
+            super().__init__()
+            self._name = name
+
+        def flush(self) -> None:
+            events.append(f"flush {self._name}")
+
+    monkeypatch.setattr("sys.stdout", _Stream("stdout"))
+    monkeypatch.setattr("sys.stderr", _Stream("stderr"))
+    monkeypatch.setattr(os, "_exit", lambda code: events.append(f"exit {code}"))
+
+    temporal_client.exit_without_finalization(3)
+
+    assert events[-1] == "exit 3"
+    assert {"flush stdout", "flush stderr"} <= set(events[:-1])

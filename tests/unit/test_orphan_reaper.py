@@ -161,3 +161,80 @@ async def test_unexpired_artifacts_are_not_scanned() -> None:
     assert receipt.scanned == 0
     assert branch in backend._repos[REPO].heads
     assert orphan_id_for(BRANCH, f"{REPO}:{branch}", REPO) in registry.records
+
+
+async def test_list_reapable_filters_by_tenant() -> None:
+    registry = InMemoryOrphanRegistry()
+    await registry.register(
+        OrphanArtifact(BRANCH, f"{REPO}:agent/AGENTDEV-1", repository=REPO, ttl_at=PAST)
+    )
+    await registry.register(
+        OrphanArtifact(
+            BRANCH, f"{REPO}:agent/beta/AGENTDEV-1", repository=REPO, ttl_at=PAST, tenant="beta"
+        )
+    )
+
+    platform = await registry.list_reapable(NOW)
+    beta = await registry.list_reapable(NOW, "beta")
+
+    assert [r.external_id for r in platform] == [f"{REPO}:agent/AGENTDEV-1"]
+    assert [r.external_id for r in beta] == [f"{REPO}:agent/beta/AGENTDEV-1"]
+
+
+async def test_reaper_leaves_another_tenants_branch_alone() -> None:
+    backend = MockGitHost()
+    backend.seed_repo(REPO, files={"README.md": "hello\n"})
+    alpha_branch = agent_branch_name("AGENTDEV-1", "alpha")
+    beta_branch = agent_branch_name("AGENTDEV-1", "beta")
+    await backend.ensure_branch(REPO, alpha_branch, "main")
+    await backend.ensure_branch(REPO, beta_branch, "main")
+    registry = InMemoryOrphanRegistry()
+    alpha_id = await registry.register(
+        OrphanArtifact(
+            BRANCH, f"{REPO}:{alpha_branch}", repository=REPO, ttl_at=PAST, tenant="alpha"
+        )
+    )
+    beta_id = await registry.register(
+        OrphanArtifact(BRANCH, f"{REPO}:{beta_branch}", repository=REPO, ttl_at=PAST, tenant="beta")
+    )
+
+    receipt = await reap(
+        registry=registry,
+        backend=backend,
+        allowed_repos=ALLOWED,
+        now=NOW,
+        tenant="alpha",
+        dry_run=False,
+    )
+
+    assert [a.orphan_id for a in receipt.applied] == [alpha_id]
+    assert alpha_branch not in backend._repos[REPO].heads
+    assert beta_branch in backend._repos[REPO].heads
+    assert registry.states[alpha_id] == REAPED
+    assert registry.states[beta_id] != REAPED
+
+
+async def test_apply_closes_pull_requests_before_deleting_branches() -> None:
+    calls: list[str] = []
+
+    class OrderedHost(MockGitHost):
+        async def delete_branch(self, repo: str, name: str) -> bool:
+            calls.append(DELETE_BRANCH)
+            return await super().delete_branch(repo, name)
+
+        async def close_pr(self, repo: str, number: int):
+            calls.append(CLOSE_PR)
+            return await super().close_pr(repo, number)
+
+    backend = OrderedHost()
+    branch = await _seed_branch(backend)
+    pr = await backend.open_draft_pr(REPO, branch, "main", "title", "body")
+    registry = InMemoryOrphanRegistry()
+    await registry.register(
+        OrphanArtifact(BRANCH, f"{REPO}:{branch}", repository=REPO, ttl_at=PAST)
+    )
+    await registry.register(OrphanArtifact(PR, f"{REPO}#{pr.number}", repository=REPO, ttl_at=PAST))
+
+    await reap(registry=registry, backend=backend, allowed_repos=ALLOWED, now=NOW, dry_run=False)
+
+    assert calls == [CLOSE_PR, DELETE_BRANCH]

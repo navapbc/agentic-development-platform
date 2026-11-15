@@ -83,6 +83,11 @@ output "client_ca_secret_arn" {
   value       = local.client_ca ? try(aws_secretsmanager_secret.tls["ca"].arn, null) : null
 }
 
+output "tls_kms_key_arn" {
+  description = "KMS key that encrypts the TLS secrets, which a client decrypts to read the CA secret. Null when disabled."
+  value       = try(aws_kms_key.temporal[0].arn, null)
+}
+
 output "client_security_group_id" {
   description = "Security group a workload attaches to reach the frontend. Null until the images are set."
   value       = try(aws_security_group.client[0].id, null)
@@ -90,7 +95,7 @@ output "client_security_group_id" {
 
 output "server_service_arn" {
   description = "Server ECS service, for secret_restart_services after a temporal role rotation. Null until the images are set."
-  value       = try(aws_ecs_service.server[0].id, null)
+  value       = one(aws_ecs_service.server[*].id)
 }
 
 output "execution_role_arns" {
@@ -115,4 +120,9 @@ output "deploy" {
     admin_tools_security_groups = [aws_security_group.admin_tools[0].id, aws_security_group.client[0].id]
     ui_service                  = local.ui ? aws_ecs_service.ui[0].name : null
   } : null
+}
+
+output "service_arns" {
+  description = "Server and UI ECS services, for the off-hours schedule. Empty until the images are set."
+  value       = concat(aws_ecs_service.server[*].id, aws_ecs_service.ui[*].id)
 }

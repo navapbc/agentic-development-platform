@@ -1,10 +1,11 @@
-"""Resolve an external engine source from config to a checkout by local, tag, or zip mode."""
+"""Resolve an external engine source from config to a checkout or a published image."""
 
 from __future__ import annotations
 
 import hashlib
+import re
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from services import process
@@ -22,6 +23,9 @@ _OUTPUT_FORMATS = frozenset({REVIEW_JSON, SARIF})
 WARN = "warn"
 ABORT = "abort"
 _ON_UNAVAILABLE = frozenset({WARN, ABORT})
+
+_PLATFORM_ROOT = Path(__file__).resolve().parents[3]
+_ENGINE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
 class EngineSourceError(Exception):
@@ -55,8 +59,8 @@ class GateEngineConfig:
     on_unavailable: str = "abort"
     max_output_tokens: int = 8192
     output_format: str = REVIEW_JSON
-    review_entrypoint: str = "engines/security-compliance-review/harness/ai-pr-review"
-    classifier_entrypoint: str = "engines/test-classifier/harness/ai-test-classifier"
+    review_entrypoint: str = ""
+    classifier_entrypoint: str = ""
 
     @property
     def needs_model(self) -> bool:
@@ -208,8 +212,8 @@ def parse_gate_engine_config(raw: dict) -> GateEngineConfig:
     mode = str(raw.get("mode", LOCAL))
     if enabled and mode not in _MODES:
         raise ConfigError(f"gate_engine.mode must be one of {sorted(_MODES)}, got {mode!r}")
-    if enabled and mode == IMAGE and not str(raw.get("image", "")):
-        raise ConfigError("gate_engine.mode image needs an image reference")
+    if enabled and not str(raw.get("review_entrypoint", "")):
+        raise ConfigError(f"gate_engine {name!r} needs a review_entrypoint")
     output_format = str(raw.get("output_format", REVIEW_JSON))
     if output_format not in _OUTPUT_FORMATS:
         raise ConfigError(
@@ -238,10 +242,8 @@ def parse_gate_engine_config(raw: dict) -> GateEngineConfig:
         on_unavailable=on_unavailable,
         max_output_tokens=int(raw.get("max_output_tokens", 8192)),
         output_format=output_format,
-        review_entrypoint=str(raw.get("review_entrypoint", GateEngineConfig.review_entrypoint)),
-        classifier_entrypoint=str(
-            raw.get("classifier_entrypoint", GateEngineConfig.classifier_entrypoint)
-        ),
+        review_entrypoint=str(raw.get("review_entrypoint", "")),
+        classifier_entrypoint=str(raw.get("classifier_entrypoint", "")),
     )
 
 
@@ -257,11 +259,66 @@ def parse_gate_engine_configs(raw: dict) -> tuple[GateEngineConfig, ...]:
         if not isinstance(entry, dict) or not str(entry.get("name", "")):
             raise ConfigError("each gate_engine entry must be a mapping with a name")
         config = parse_gate_engine_config(entry)
+        if config.enabled and config.mode == LOCAL and not _ENGINE_NAME.match(config.name):
+            raise ConfigError(
+                f"gate_engine name {config.name!r} names its directory in local mode, so it must "
+                f"match {_ENGINE_NAME.pattern}"
+            )
         if config.name in seen:
             raise ConfigError(f"gate_engine.engines has a duplicate name {config.name!r}")
         seen.add(config.name)
         configs.append(config)
     return tuple(configs)
+
+
+def engine_host_path(config: GateEngineConfig, base: Path = _PLATFORM_ROOT) -> Path:
+    """Return a local-mode engine's checkout on the host, resolving a relative path from base."""
+    path = Path(config.local_path).expanduser()
+    return path if path.is_absolute() else (base / path).resolve()
+
+
+def locate_local_engines(
+    configs: tuple[GateEngineConfig, ...], *, engine_root: str, in_image: bool
+) -> tuple[GateEngineConfig, ...]:
+    """Point each local-mode engine at the checkout this process reads.
+
+    Inside the platform image, inv repos-sync copies the engine's working tree to
+    <engine_root>/<name>. On the host the configured local_path is the checkout.
+    """
+    located = []
+    for config in configs:
+        if config.mode == LOCAL and config.local_path:
+            path = (
+                f"{engine_root.rstrip('/')}/{config.name}"
+                if in_image
+                else str(engine_host_path(config))
+            )
+            config = replace(config, local_path=path)
+        located.append(config)
+    return tuple(located)
+
+
+def attach_published_images(
+    configs: tuple[GateEngineConfig, ...], images: dict[str, str]
+) -> tuple[GateEngineConfig, ...]:
+    """Give each image-mode engine that names no image the one GATE_ENGINE_IMAGES publishes.
+
+    A deployment publishes the engine images to its own registry, so gate_engine.yaml can name an
+    engine without carrying an account-specific reference.
+    """
+    from services.integration.credentials import ConfigError
+
+    attached = []
+    for config in configs:
+        if config.mode == IMAGE and not config.image:
+            config = replace(config, image=images.get(config.name, ""))
+            if config.enabled and not config.image:
+                raise ConfigError(
+                    f"gate_engine {config.name!r} runs in image mode, and neither its image nor "
+                    "GATE_ENGINE_IMAGES names an image for it"
+                )
+        attached.append(config)
+    return tuple(attached)
 
 
 def enabled_engines(configs: tuple[GateEngineConfig, ...]) -> tuple[GateEngineConfig, ...]:
@@ -278,17 +335,52 @@ def triage_engine(configs: tuple[GateEngineConfig, ...]) -> GateEngineConfig | N
 def load_gate_engine_configs(
     settings=None, *, environment: str | None = None
 ) -> tuple[GateEngineConfig, ...]:
-    from scripts.config import get_settings
+    from scripts.config import get_settings, in_platform_image
 
     from services.integration.credentials import (
-        _REPO_ROOT,
+        ConfigError,
+        env_config_path,
         load_env_config,
         require_current_config,
     )
 
     resolved = settings or get_settings()
     env = environment or resolved.environment
-    if not (_REPO_ROOT / "config" / env / "gate_engine.yaml").exists():
-        return ()
-    require_current_config("gate_engine", environment=env)
-    return parse_gate_engine_configs(load_env_config("gate_engine", environment=env))
+    configs: tuple[GateEngineConfig, ...] = ()
+    if env_config_path("gate_engine", environment=env).exists():
+        require_current_config("gate_engine", environment=env)
+        configs = parse_gate_engine_configs(load_env_config("gate_engine", environment=env))
+    catalog = catalog_engines(resolved.gate_engine_images)
+    reused = sorted({config.name for config in configs} & set(catalog_engine_names()))
+    if reused:
+        raise ConfigError(
+            f"gate_engine.yaml redefines the catalog engines {', '.join(reused)}. Enable a catalog "
+            "engine in gates.yaml by its name, or give a custom engine another name."
+        )
+    located = locate_local_engines(
+        configs, engine_root=resolved.gate_engine_root, in_image=in_platform_image()
+    )
+    return attach_published_images(located, resolved.gate_engine_images) + catalog
+
+
+def catalog_engine_names() -> tuple[str, ...]:
+    return tuple(config.name for config in _catalog_engine_configs())
+
+
+def _catalog_engine_configs() -> tuple[GateEngineConfig, ...]:
+    from services.integration.credentials import load_platform_config
+
+    return parse_gate_engine_configs(load_platform_config("gate-engines"))
+
+
+def catalog_engines(images: dict[str, str]) -> tuple[GateEngineConfig, ...]:
+    """Return the catalog engines whose image GATE_ENGINE_IMAGES names, with that image.
+
+    An engine whose image this deployment has not published does not register, so enabling it
+    in gates.yaml fails as an unregistered gate.
+    """
+    return tuple(
+        replace(config, image=images[config.name])
+        for config in _catalog_engine_configs()
+        if images.get(config.name)
+    )

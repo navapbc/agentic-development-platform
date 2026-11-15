@@ -202,10 +202,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     actor = local_operator()
     host = build_git_host(settings)
-    artifacts_root = settings.source_control_local_artifacts_root or (
-        f"{settings.source_control_local_root}/.agent-publish"
-    )
-    ledger = FileDoneLedger(Path(artifacts_root) / ".operator-done.json")
+    ledger = FileDoneLedger(Path(settings.local_artifacts_root()) / ".operator-done.json")
 
     async def _signaler(workflow_id: str, merged: bool) -> None:
         address = to_host_hostport(settings.temporal_host)

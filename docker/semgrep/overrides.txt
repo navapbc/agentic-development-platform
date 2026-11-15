@@ -1,0 +1,2 @@
+# semgrep pins mcp 1.29.0 for its MCP server, which the scanner pods never start.
+mcp>=1.30.0,<2

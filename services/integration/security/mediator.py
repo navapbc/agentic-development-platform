@@ -15,6 +15,7 @@ from adapters.interfaces.security_scanner import (
     blocking_count,
 )
 from scripts.config import Settings, get_settings
+from services.integration.litellm_admin import ModelBudgetExceededError
 from services.integration.source_control import source_control_repos
 
 
@@ -76,6 +77,9 @@ class SecurityScanMediator:
             except ScannerUnavailableError:
                 # Infrastructure failure, not a finding. Propagate so the activity retries the
                 # scan before the gate fails closed on exhausted retries.
+                raise
+            except ModelBudgetExceededError:
+                # A spent budget stops the run, which the activity records as a budget stop.
                 raise
             except Exception as exc:  # noqa: BLE001
                 # Any other backend failure fails the gate closed as a finding.

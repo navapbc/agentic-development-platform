@@ -68,6 +68,13 @@ locals {
         environment = { LOG_LEVEL = "INFO" }
       }
     } : {},
+    local.token_enabled ? {
+      token = {
+        handler     = "rotation.token_handler"
+        role        = try(aws_iam_role.token[0].arn, "")
+        environment = { LOG_LEVEL = "INFO" }
+      }
+    } : {},
   )
 }
 
@@ -117,6 +124,7 @@ resource "aws_lambda_function" "rotation" {
   depends_on = [
     aws_iam_role_policy.postgres,
     aws_iam_role_policy.elasticache,
+    aws_iam_role_policy.token,
     aws_iam_role_policy_attachment.rotation_vpc_access,
   ]
 }
@@ -143,11 +151,27 @@ resource "aws_iam_role" "elasticache" {
   tags = var.tags
 }
 
+resource "aws_iam_role" "token" {
+  count = local.token_enabled ? 1 : 0
+
+  name                 = "${var.name_prefix}-token-rotation"
+  path                 = var.iam_path
+  permissions_boundary = var.permissions_boundary_arn == "" ? null : var.permissions_boundary_arn
+  assume_role_policy   = data.aws_iam_policy_document.lambda_assume[0].json
+
+  tags = var.tags
+}
+
 locals {
   rotation_role_names = merge(
     local.database_enabled ? { postgres = aws_iam_role.postgres[0].name } : {},
     local.cache_enabled ? { elasticache = aws_iam_role.elasticache[0].name } : {},
+    local.token_enabled ? { token = aws_iam_role.token[0].name } : {},
   )
+  # Secrets Manager appends a hyphen and six random characters to a secret name in its ARN.
+  rotated_token_secret_arns = [
+    for pattern in var.rotated_token_secrets : "arn:${local.partition}:secretsmanager:${var.region}:${local.account_id}:secret:${pattern}-??????"
+  ]
 }
 
 resource "aws_iam_role_policy_attachment" "rotation_vpc_access" {
@@ -266,6 +290,72 @@ resource "aws_iam_role_policy" "elasticache" {
   name   = "rotation"
   role   = aws_iam_role.elasticache[0].id
   policy = data.aws_iam_policy_document.elasticache[0].json
+}
+
+data "aws_iam_policy_document" "token" {
+  count = local.token_enabled ? 1 : 0
+
+  statement {
+    sid = "RotateTokens"
+    actions = [
+      "secretsmanager:DescribeSecret",
+      "secretsmanager:GetSecretValue",
+      "secretsmanager:PutSecretValue",
+      "secretsmanager:UpdateSecretVersionStage",
+    ]
+    resources = local.rotated_token_secret_arns
+  }
+
+  statement {
+    sid       = "UseTheTokenSecretKeys"
+    actions   = ["kms:Decrypt", "kms:GenerateDataKey"]
+    resources = ["*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["secretsmanager.${var.region}.amazonaws.com"]
+    }
+
+    condition {
+      test     = "StringLike"
+      variable = "kms:EncryptionContext:SecretARN"
+      values   = local.rotated_token_secret_arns
+    }
+  }
+
+  statement {
+    sid       = "DecryptTheFunctionEnvironment"
+    actions   = ["kms:Decrypt"]
+    resources = [aws_kms_key.this[0].arn]
+  }
+
+  statement {
+    sid       = "Tracing"
+    actions   = ["xray:PutTraceSegments", "xray:PutTelemetryRecords"]
+    resources = ["*"]
+  }
+}
+
+resource "aws_iam_role_policy" "token" {
+  count = local.token_enabled ? 1 : 0
+
+  name   = "rotation"
+  role   = aws_iam_role.token[0].id
+  policy = data.aws_iam_policy_document.token[0].json
+}
+
+# Lambda matches the source ARN of an invocation with ArnLike, so one permission per pattern
+# admits every secret the pattern names, which the owning modules create.
+resource "aws_lambda_permission" "token" {
+  for_each = local.token_enabled ? { for index, arn in local.rotated_token_secret_arns : tostring(index) => arn } : {}
+
+  statement_id   = "SecretsManagerTokenRotation-${each.key}"
+  action         = "lambda:InvokeFunction"
+  function_name  = aws_lambda_function.rotation["token"].function_name
+  principal      = "secretsmanager.amazonaws.com"
+  source_arn     = each.value
+  source_account = local.account_id
 }
 
 locals {

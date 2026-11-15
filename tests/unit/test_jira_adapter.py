@@ -18,14 +18,6 @@ from services.integration.jira.credentials import (
 _GIT_MARKERS = ("apply_outbound", "git_adapter", "_ref_lock", "_advisory_lock")
 
 
-@pytest.fixture(autouse=True)
-def _no_acli_auth(monkeypatch):
-    monkeypatch.setattr(
-        "services.integration.jira.adapter.ensure_acli_authenticated_cached",
-        lambda *args, **kwargs: False,
-    )
-
-
 @pytest.fixture
 def fake_dc_jira(monkeypatch):
     from rebar.reconciler.adapters.jira_datacenter import transport
@@ -59,7 +51,7 @@ def test_build_datacenter_adapter(fake_dc_jira):
 def test_build_cloud_adapter():
     adapter = build_jira_adapter(project="AGENTDEV", resolver=_resolver("cloud"))
     assert adapter.source == CLOUD
-    assert type(adapter.client).__name__ == "AcliClient"
+    assert type(adapter.client).__name__ == "JiraCloudClient"
 
 
 def test_auth_mode_is_case_insensitive(fake_dc_jira):
@@ -90,7 +82,7 @@ def test_build_jira_adapter_for_issue_routes_by_project(fake_dc_jira):
 
     assert a.source == CLOUD
     assert a.project == "AAA"
-    assert type(a.client).__name__ == "AcliClient"
+    assert type(a.client).__name__ == "JiraCloudClient"
     assert b.source == DATACENTER
     assert b.project == "BBB"
     assert type(b.client).__name__ == "JiraDataCenterTransport"

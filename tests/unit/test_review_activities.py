@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import pytest
+from observability import bind_execution
+from services.integration.tenant_config import DirectorySource
 from services.orchestration.temporal_activities import review
 from services.orchestration.temporal_activities.review import (
     ReviewRequest,
@@ -10,6 +13,8 @@ from services.orchestration.temporal_activities.review import (
     review_security,
     verify_acceptance,
 )
+from services.repository_intelligence import tenants as tenants_module
+from services.repository_intelligence.tenants import TenantRegistries
 from services.review.attestation import HmacAttestor
 from services.review.gate import ReviewGate
 from services.review.types import (
@@ -20,6 +25,7 @@ from services.review.types import (
     ReviewStage,
     Verdict,
 )
+from tests.support import configure_repositories, hermetic_settings
 
 
 class _CapturingKernel:
@@ -140,25 +146,92 @@ def test_resolve_repo_root_prefers_explicit_existing_root(tmp_path):
     assert review._resolve_repo_root(req) == str(tmp_path)
 
 
-def test_resolve_repo_root_maps_repo_to_ris_path(tmp_path, monkeypatch):
-    class _Settings:
-        def repo_intelligence_registry(self):
-            return {"demo": (str(tmp_path), None)}
+@pytest.fixture
+def platform_mode(monkeypatch):
+    monkeypatch.setattr("scripts.config.get_settings", lambda: hermetic_settings())
 
-    monkeypatch.setattr(review, "get_settings", lambda: _Settings(), raising=False)
-    monkeypatch.setattr("scripts.config.get_settings", lambda: _Settings(), raising=False)
+
+def test_resolve_repo_root_maps_repo_to_ris_path(tmp_path, monkeypatch, platform_mode):
+    configure_repositories(
+        monkeypatch,
+        tmp_path / "config",
+        f"repositories:\n  demo:\n    index: true\n    path: {tmp_path}\n",
+    )
     req = ReviewRequest(task_id="T", execution_id="E", subject="s", repo="demo")
     assert review._resolve_repo_root(req) == str(tmp_path)
 
 
-def test_resolve_repo_root_returns_none_for_missing_path(monkeypatch):
-    class _Settings:
-        def repo_intelligence_registry(self):
-            return {"demo": ("/nonexistent/path/xyz", None)}
-
-    monkeypatch.setattr("scripts.config.get_settings", lambda: _Settings(), raising=False)
+def test_resolve_repo_root_returns_none_for_missing_path(tmp_path, monkeypatch, platform_mode):
+    configure_repositories(
+        monkeypatch,
+        tmp_path / "config",
+        "repositories:\n  demo:\n    index: true\n    path: /nonexistent/path/xyz\n",
+    )
     req = ReviewRequest(task_id="T", execution_id="E", subject="s", repo="demo")
     assert review._resolve_repo_root(req) is None
+
+
+@pytest.fixture
+def two_tenants(tmp_path, monkeypatch):
+    """Serve adp and beta with checkouts under a tenants mount in tmp_path."""
+    mount = tmp_path / "tenants"
+    monkeypatch.setattr(tenants_module, "TENANTS_MOUNT", mount)
+    for tenant, repo in (("adp", "svc"), ("beta", "web")):
+        bundle = tmp_path / "bundles" / tenant
+        bundle.mkdir(parents=True)
+        (bundle / "repositories.yaml").write_text(
+            f"config_version: 1\nrepositories:\n  {repo}:\n    index: true\n", encoding="utf-8"
+        )
+    (mount / "adp" / "repositories" / "svc").mkdir(parents=True)
+    settings = hermetic_settings(tenants="adp,beta")
+    monkeypatch.setattr("scripts.config.get_settings", lambda: settings)
+    registries = TenantRegistries(
+        settings,
+        source_factory=lambda name: DirectorySource(tmp_path / "bundles" / name, name),
+    )
+    monkeypatch.setattr(review, "_tenant_registries", registries)
+    return mount
+
+
+def test_resolve_repo_root_maps_repo_through_the_runs_tenant(two_tenants):
+    req = ReviewRequest(task_id="T", execution_id="E", subject="s", repo="svc")
+
+    with bind_execution(tenant="adp"):
+        resolved = review._resolve_repo_root(req)
+
+    assert resolved == str((two_tenants / "adp" / "repositories" / "svc").resolve())
+
+
+def test_resolve_repo_root_refuses_another_tenants_repository(two_tenants):
+    req = ReviewRequest(task_id="T", execution_id="E", subject="s", repo="web")
+
+    with bind_execution(tenant="adp"):
+        assert review._resolve_repo_root(req) is None
+
+
+def test_resolve_repo_root_refuses_a_checkout_outside_the_tenant(two_tenants, tmp_path):
+    outside = tmp_path / "elsewhere" / "web"
+    outside.mkdir(parents=True)
+    link = two_tenants / "beta" / "repositories" / "web"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(outside, target_is_directory=True)
+    req = ReviewRequest(task_id="T", execution_id="E", subject="s", repo="web")
+
+    with bind_execution(tenant="beta"):
+        assert review._resolve_repo_root(req) is None
+
+
+def test_resolve_repo_root_is_none_when_the_tenant_is_unknown(two_tenants):
+    req = ReviewRequest(task_id="T", execution_id="E", subject="s", repo="svc")
+
+    assert review._resolve_repo_root(req) is None
+
+
+def test_resolve_repo_root_refuses_a_tenant_that_is_not_served(two_tenants):
+    req = ReviewRequest(task_id="T", execution_id="E", subject="s", repo="svc")
+
+    with bind_execution(tenant="gamma"):
+        assert review._resolve_repo_root(req) is None
 
 
 def test_resolve_repo_root_none_without_repo():

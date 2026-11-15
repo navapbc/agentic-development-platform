@@ -8,6 +8,11 @@ output "allowed_domains" {
   value       = local.enabled ? local.domains : []
 }
 
+output "redirect_trusted_domains" {
+  description = "Domains the VPC may resolve through any CNAME chain."
+  value       = local.enabled ? var.redirect_trusted_domains : []
+}
+
 output "query_log_group_name" {
   description = "CloudWatch log group holding the resolver query log, or null when the module is disabled."
   value       = try(aws_cloudwatch_log_group.queries[0].name, null)

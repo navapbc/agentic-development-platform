@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import uuid
 
+import pytest
 from openhands.runtime.caps import COMPLETED, ERROR, TOOL_CALLS_EXCEEDED
+from services.integration.litellm_admin import (
+    RUN_MODEL_BUDGET_EXCEEDED,
+    TENANT_MODEL_BUDGET_EXCEEDED,
+)
 from services.orchestration.temporal_activities.implementation import (
     ClaimRequest,
     ClaimResult,
@@ -189,6 +194,19 @@ async def test_tool_call_cap_breach_fails_bounded():
     assert failed.decision == "cap_breach"
     assert failed.reason == TOOL_CALLS_EXCEEDED
     assert failed.new_state == "FAILED"
+
+
+@pytest.mark.parametrize("reason", [RUN_MODEL_BUDGET_EXCEEDED, TENANT_MODEL_BUDGET_EXCEEDED])
+async def test_a_model_budget_refusal_fails_bounded(reason):
+    result, states, audits, _claims, _stages = await _run_workflow(terminal_reason=reason)
+
+    assert result.status == "failed"
+    assert result.terminal_reason == reason
+    assert states[-1] == "FAILED"
+    failed = audits[-1]
+    assert failed.event_type == "IMPLEMENTATION_FAILED"
+    assert failed.decision == "cap_breach"
+    assert failed.reason == reason
 
 
 async def test_failure_output_carries_exception_summary():

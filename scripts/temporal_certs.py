@@ -34,6 +34,8 @@ INTERNODE = "internode.pem"
 INTERNODE_KEY = "internode-key.pem"
 UI = "ui.pem"
 UI_KEY = "ui-key.pem"
+INTERNAL = "internal.pem"
+INTERNAL_KEY = "internal-key.pem"
 
 SERVER_AUTH = "TLS Web Server Authentication"
 CLIENT_AUTH = "TLS Web Client Authentication"
@@ -64,6 +66,14 @@ basicConstraints = critical,CA:FALSE
 keyUsage = critical,digitalSignature
 extendedKeyUsage = serverAuth
 subjectAltName = {ui_sans}
+authorityKeyIdentifier = keyid
+subjectKeyIdentifier = hash
+
+[internal]
+basicConstraints = critical,CA:FALSE
+keyUsage = critical,digitalSignature
+extendedKeyUsage = serverAuth
+subjectAltName = {internal_sans}
 authorityKeyIdentifier = keyid
 subjectKeyIdentifier = hash
 
@@ -107,6 +117,7 @@ def generate(
     ca_days: int = 3650,
     frontend: bool = True,
     ui_names: list[str] | None = None,
+    internal_names: list[str] | None = None,
     force: bool = False,
     repo_root: Path = REPO_ROOT,
 ) -> list[Path]:
@@ -122,6 +133,8 @@ def generate(
         leaves.append((FRONTEND, FRONTEND_KEY, "frontend", frontend_names))
     if ui_names:
         leaves.append((UI, UI_KEY, "ui", ui_names))
+    if internal_names:
+        leaves.append((INTERNAL, INTERNAL_KEY, "internal", internal_names))
     targets = [out / CA, out / CA_KEY] + [out / name for leaf in leaves for name in leaf[:2]]
     existing = [path.name for path in targets if path.exists()]
     if existing and not force:
@@ -132,15 +145,7 @@ def generate(
     out.mkdir(mode=0o700, parents=True, exist_ok=True)
     previous_umask = os.umask(0o077)
     try:
-        _issue(
-            out,
-            leaves,
-            frontend_names,
-            internode_names,
-            ui_names or ["ui.temporal.internal"],
-            days,
-            ca_days,
-        )
+        _issue(out, leaves, days, ca_days)
     finally:
         os.umask(previous_umask)
     _openssl("verify", "-CAfile", str(out / CA), *(str(out / leaf[0]) for leaf in leaves))
@@ -148,24 +153,17 @@ def generate(
 
 
 def _issue(
-    out: Path,
-    leaves: list[tuple[str, str, str, list[str]]],
-    frontend_names: list[str],
-    internode_names: list[str],
-    ui_names: list[str],
-    days: int,
-    ca_days: int,
+    out: Path, leaves: list[tuple[str, str, str, list[str]]], days: int, ca_days: int
 ) -> None:
+    # Every section must render a valid SAN, including those of leaves not issued.
+    sans = {
+        f"{section}_sans": "DNS:unused.invalid"
+        for section in ("frontend", "internode", "ui", "internal")
+    }
+    sans.update({f"{section}_sans": _sans(names) for _, _, section, names in leaves})
     with tempfile.TemporaryDirectory() as scratch:
         config = Path(scratch) / "extensions.cnf"
-        config.write_text(
-            _EXTENSIONS.format(
-                frontend_sans=_sans(frontend_names),
-                internode_sans=_sans(internode_names),
-                ui_sans=_sans(ui_names),
-            ),
-            encoding="utf-8",
-        )
+        config.write_text(_EXTENSIONS.format(**sans), encoding="utf-8")
         _new_key(out / CA_KEY)
         _openssl(
             "req", "-x509", "-new", "-config", str(config), "-extensions", "ca",
@@ -185,6 +183,61 @@ def _issue(
                 "-days", str(days), "-sha256", "-extfile", str(config),
                 "-extensions", section, "-out", str(out / cert),
             )  # fmt: skip
+
+
+def issue_server_certificate(
+    directory: Path,
+    cert: str,
+    key: str,
+    names: list[str],
+    *,
+    ip_addresses: tuple[str, ...] = (),
+    days: int = 397,
+    force: bool = False,
+    repo_root: Path = REPO_ROOT,
+) -> list[Path]:
+    """Issue one server certificate for `names` and `ip_addresses` from the CA in `directory`."""
+    directory = directory.expanduser().resolve()
+    if _inside(directory, repo_root.resolve()):
+        raise CertificateError(f"{directory} is inside the repository. Use a directory outside it.")
+    missing = [name for name in (CA, CA_KEY) if not (directory / name).exists()]
+    if missing:
+        raise CertificateError(
+            f"{directory} is missing {', '.join(missing)}. Issue from the directory that "
+            "inv temporal-certs generate --internal-name wrote, whose CA the clients trust."
+        )
+    targets = [directory / cert, directory / key]
+    existing = [path.name for path in targets if path.exists()]
+    if existing and not force:
+        raise CertificateError(
+            f"{', '.join(existing)} already exist in {directory}. Pass --force to replace them."
+        )
+    sans = {
+        f"{section}_sans": "DNS:unused.invalid"
+        for section in ("frontend", "internode", "ui", "internal")
+    }
+    sans["internal_sans"] = ",".join([_sans(names), *(f"IP:{address}" for address in ip_addresses)])
+    previous_umask = os.umask(0o077)
+    try:
+        with tempfile.TemporaryDirectory() as scratch:
+            config = Path(scratch) / "extensions.cnf"
+            config.write_text(_EXTENSIONS.format(**sans), encoding="utf-8")
+            _new_key(directory / key)
+            request = Path(scratch) / "server.csr"
+            _openssl(
+                "req", "-new", "-config", str(config), "-key", str(directory / key),
+                "-subj", f"/CN={names[0]}", "-out", str(request),
+            )  # fmt: skip
+            _openssl(
+                "x509", "-req", "-in", str(request), "-CA", str(directory / CA),
+                "-CAkey", str(directory / CA_KEY), "-set_serial", f"0x{secrets.token_hex(16)}",
+                "-days", str(days), "-sha256", "-extfile", str(config),
+                "-extensions", "internal", "-out", str(directory / cert),
+            )  # fmt: skip
+    finally:
+        os.umask(previous_umask)
+    _openssl("verify", "-CAfile", str(directory / CA), str(directory / cert))
+    return targets
 
 
 def _new_key(path: Path) -> None:
@@ -416,6 +469,11 @@ def main(argv: list[str] | None = None) -> int:
         action="append",
         help="Also issue a UI load balancer certificate with this SAN, repeatable.",
     )
+    generate_parser.add_argument(
+        "--internal-name",
+        action="append",
+        help="Also issue an internal load balancer certificate with this SAN, repeatable.",
+    )
     generate_parser.add_argument("--days", type=int, default=397)
     generate_parser.add_argument("--no-frontend", action="store_true")
     generate_parser.add_argument("--force", action="store_true")
@@ -435,6 +493,7 @@ def main(argv: list[str] | None = None) -> int:
                 days=args.days,
                 frontend=not args.no_frontend,
                 ui_names=args.ui_name,
+                internal_names=args.internal_name,
                 force=args.force,
             )
             names = ", ".join(path.name for path in written)

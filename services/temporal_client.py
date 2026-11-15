@@ -10,8 +10,11 @@ the NLB address the client dials.
 
 from __future__ import annotations
 
+import logging
+import os
+import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 from scripts.config import Settings
 from temporalio.client import Client
@@ -48,3 +51,17 @@ async def connect(target_host: str, settings: Settings, **options: Any) -> Clien
         tls=tls_config(settings),
         **options,
     )
+
+
+def exit_without_finalization(code: int) -> NoReturn:
+    """End a short-lived Temporal client command once its work is done.
+
+    temporalio 1.34 can abort the process while CPython finalizes, when a native thread is still
+    returning a client result into Python (temporalio/sdk-python#300, fixed by #2062 after
+    1.35.0). On Fargate this surfaced as exit code 133 after the command succeeded, so the
+    command flushes its output and exits without finalization.
+    """
+    logging.shutdown()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(code)

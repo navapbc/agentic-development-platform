@@ -57,6 +57,7 @@ async def reap_orphans(request: ReapRequest) -> ReapReport:
         backend=_build_backend(),
         allowed_repos=frozenset(source_control_repos(settings)),
         now=datetime.now(UTC),
+        tenant=settings.tenant,
         dry_run=request.dry_run,
     )
     return ReapReport(

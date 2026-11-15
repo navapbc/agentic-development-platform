@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 from collections.abc import Mapping
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from database.engine import shared_platform_engine
 from database.models.schema import executions
 from scripts.config import Settings, get_settings, to_host_hostport
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from services.orchestration.webhook.inbound import DispatchNotReady
 
@@ -22,6 +25,9 @@ _SIGNATURE_PREFIX = "sha256="
 _SIGNATURE_HEADER = "X-Hub-Signature-256"
 _DELIVERY_HEADER = "X-GitHub-Delivery"
 _BRANCH_PREFIX = "agent/"
+# Each request runs in its own asyncio task with its own context, so the tenant verify selects
+# reaches parse of the same delivery and never another concurrent one.
+_selected_tenant: ContextVar[str | None] = ContextVar("pr_closed_selected_tenant", default=None)
 
 
 @dataclass(frozen=True)
@@ -31,6 +37,7 @@ class PrClosedEvent:
     branch: str
     task_id: str
     merged: bool
+    tenant: str | None = None
 
 
 def verify_signature(secret: str, body: bytes, header: str) -> bool:
@@ -42,11 +49,20 @@ def verify_signature(secret: str, body: bytes, header: str) -> bool:
     return hmac.compare_digest(f"{_SIGNATURE_PREFIX}{digest}", header)
 
 
-def _task_id_from_branch(branch: str) -> str:
-    return branch[len(_BRANCH_PREFIX) :] if branch.startswith(_BRANCH_PREFIX) else ""
+def _task_id_from_branch(branch: str, tenant: str | None = None) -> str:
+    if not branch.startswith(_BRANCH_PREFIX):
+        return ""
+    rest = branch[len(_BRANCH_PREFIX) :]
+    if tenant:
+        tenant_prefix = f"{tenant}/"
+        if rest.startswith(tenant_prefix):
+            return rest[len(tenant_prefix) :]
+    return rest
 
 
-def parse_pr_closed_event(payload: dict[str, Any]) -> PrClosedEvent | None:
+def parse_pr_closed_event(
+    payload: dict[str, Any], tenant: str | None = None
+) -> PrClosedEvent | None:
     if payload.get("action") != "closed":
         return None
     pull = payload.get("pull_request") or {}
@@ -60,9 +76,22 @@ def parse_pr_closed_event(payload: dict[str, Any]) -> PrClosedEvent | None:
         repo=str(repo),
         number=number,
         branch=branch,
-        task_id=_task_id_from_branch(branch),
+        task_id=_task_id_from_branch(branch, tenant),
         merged=bool(pull.get("merged")),
+        tenant=tenant,
     )
+
+
+def repository_name(body: bytes) -> str | None:
+    try:
+        payload = json.loads(body or b"{}")
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    repository = payload.get("repository")
+    name = repository.get("name") if isinstance(repository, dict) else None
+    return str(name) if name else None
 
 
 class WorkflowResolver(Protocol):
@@ -73,27 +102,58 @@ class WorkflowSignaller(Protocol):
     async def signal_pr_closed(self, workflow_id: str, *, merged: bool) -> None: ...
 
 
+class RepositoryTenants(Protocol):
+    def select_tenant(self, repository: str | None, body: bytes, signature: str) -> str | None: ...
+
+
+@dataclass(frozen=True)
+class PlatformRepositories:
+    """Every repository belongs to the platform, and one secret signs every delivery."""
+
+    secret: str
+
+    def select_tenant(self, repository: str | None, body: bytes, signature: str) -> str | None:
+        return "" if verify_signature(self.secret, body, signature) else None
+
+
 class PrClosedHandler:
+    """Route a PR-closed delivery to the tenant whose secret signs it.
+
+    Several tenants may list the same repository, each with its own secret. The handler verifies
+    the delivery against each claimant's secret and routes it to the one whose secret matches, so
+    a tenant cannot signal the workflow of another tenant's repository. A delivery that no
+    claimant's secret verifies is refused, and a delivery that more than one claimant's secret
+    verifies is refused, because tenants that share a secret can forge each other's deliveries.
+    """
+
     name = "pr_closed"
 
     def __init__(
-        self, *, secret: str, resolver: WorkflowResolver, signaller: WorkflowSignaller
+        self,
+        *,
+        resolver: WorkflowResolver,
+        signaller: WorkflowSignaller,
+        secret: str = "",
+        tenants: RepositoryTenants | None = None,
     ) -> None:
-        self._secret = secret
+        self._tenants = tenants or PlatformRepositories(secret)
         self._resolver = resolver
         self._signaller = signaller
 
     def verify(self, body: bytes, headers: Mapping[str, str]) -> bool:
-        return verify_signature(self._secret, body, headers.get(_SIGNATURE_HEADER, ""))
+        signature = headers.get(_SIGNATURE_HEADER, "")
+        tenant = self._tenants.select_tenant(repository_name(body), body, signature)
+        _selected_tenant.set(tenant)
+        return tenant is not None
 
     def delivery_id(self, headers: Mapping[str, str], payload: dict[str, Any]) -> str:
         return headers.get(_DELIVERY_HEADER, "")
 
     def parse(self, payload: dict[str, Any]) -> PrClosedEvent | None:
-        return parse_pr_closed_event(payload)
+        return parse_pr_closed_event(payload, tenant=_selected_tenant.get())
 
     def allowlisted(self, event: PrClosedEvent, allowed: frozenset[str]) -> bool:
-        return event.repo in allowed
+        return event.tenant is not None and event.repo in allowed
 
     async def dispatch(self, event: PrClosedEvent) -> dict[str, Any]:
         workflow_id = await self._resolver.resolve(event)
@@ -104,14 +164,19 @@ class PrClosedHandler:
 
 
 class PostgresWorkflowResolver:
+    """Find the open workflow of the event's task among the executions of the event's tenant.
+
+    An event without a tenant, the platform's, matches by task id alone. An event of a tenant
+    matches only the executions recorded for that tenant, so an execution recorded without a
+    tenant resolves to no workflow.
+    """
+
     def __init__(self, engine: AsyncEngine | None = None) -> None:
         self._engine = engine
 
     def _get_engine(self) -> AsyncEngine:
         if self._engine is None:
-            self._engine = create_async_engine(
-                get_settings().database_url, future=True, pool_pre_ping=True
-            )
+            self._engine = shared_platform_engine()
         return self._engine
 
     async def resolve(self, event: PrClosedEvent) -> str | None:
@@ -121,6 +186,7 @@ class PostgresWorkflowResolver:
         stmt = (
             select(executions.c.workflow_id)
             .where(executions.c.task_id == task_id)
+            .where(*self._tenant_scope(event.tenant))
             .where(executions.c.workflow_id.is_not(None))
             .where(executions.c.state.not_in(_TERMINAL_STATES))
             .order_by(
@@ -133,6 +199,11 @@ class PostgresWorkflowResolver:
         async with engine.connect() as conn:
             row = (await conn.execute(stmt)).first()
         return row.workflow_id if row is not None else None
+
+    def _tenant_scope(self, tenant: str | None) -> list[Any]:
+        if not tenant:
+            return []
+        return [executions.c.tenant == tenant]
 
 
 class TemporalSignaller:

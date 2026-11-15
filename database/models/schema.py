@@ -76,6 +76,7 @@ executions = Table(
         server_default="TASK_RECEIVED",
     ),
     Column("repository", String(255), nullable=True),
+    Column("tenant", String(32), nullable=True, index=True),
     Column("repository_sha", String(64), nullable=True),
     Column("policy_bundle_version", String(64), nullable=True),
     Column("resolved_models", JSON, nullable=True),
@@ -178,6 +179,7 @@ orphan_artifacts = Table(
     Column("state", String(32), nullable=False, server_default="active"),
     Column("ttl_at", DateTime(timezone=True), nullable=True),
     Column("platform_tagged", Boolean, nullable=False, server_default="true"),
+    Column("tenant", String(32), nullable=False, server_default=""),
     _created_at(),
 )
 

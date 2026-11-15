@@ -31,6 +31,9 @@ class _FakeStore:
     async def workflow_ids(self, issue_key: str) -> list[str]:
         return self._workflow_ids
 
+    async def describe(self, issue_key: str, repo: str | None) -> dict[str, list[str]]:
+        return {"intake_records": [f"{issue_key}:{repo}"]}
+
     async def clear_intake_dedup(self, issue_key: str, repo: str | None) -> int:
         self.cleared_repo = repo
         return self._dedup
@@ -505,3 +508,29 @@ async def test_a_retry_reports_the_intake_record_the_cursor_and_the_claims_toget
         "cursor so the next pass offers the ticket again, dropped 2 work claim(s), and marked "
         "1 stale execution(s) failed"
     )
+
+
+@pytest.mark.asyncio
+async def test_retry_audits_what_it_clears_before_clearing_it():
+    store = _FakeStore(workflow_ids=["wf-1"], dedup=1)
+    audited: list[tuple[str, dict, str | None]] = []
+
+    async def audit(issue_key: str, removed: dict) -> None:
+        audited.append((issue_key, removed, store.cleared_repo))
+
+    await retry_intake("ADSER-20", store=store, liveness=_active(), repo="repo-a", audit=audit)
+
+    assert audited == [("ADSER-20", {"intake_records": ["ADSER-20:repo-a"]}, "unset")]
+
+
+@pytest.mark.asyncio
+async def test_a_refused_retry_records_no_audit_event():
+    store = _FakeStore(workflow_ids=["wf-1"], dedup=1)
+    audited: list[str] = []
+
+    async def audit(issue_key: str, removed: dict) -> None:
+        audited.append(issue_key)
+
+    await retry_intake("ADSER-20", store=store, liveness=_active("wf-1"), audit=audit)
+
+    assert audited == []

@@ -17,6 +17,7 @@ with workflow.unsafe.imports_passed_through():
         WALL_CLOCK_EXCEEDED,
     )
 
+    from services.integration.litellm_admin import MODEL_BUDGET_REASONS
     from services.orchestration.temporal_activities.implementation import (
         IMPLEMENTATION_PROMPT_VERSION,
         ClaimRequest,
@@ -45,7 +46,7 @@ with workflow.unsafe.imports_passed_through():
         find_open_pr,
     )
 
-_CAP_BREACH_REASONS = frozenset({TOOL_CALLS_EXCEEDED, WALL_CLOCK_EXCEEDED})
+_CAP_BREACH_REASONS = frozenset({TOOL_CALLS_EXCEEDED, WALL_CLOCK_EXCEEDED, *MODEL_BUDGET_REASONS})
 COST_BUDGET_EXCEEDED = "cost_budget_exceeded"
 LLM_CALLS_EXCEEDED = "llm_calls_exceeded"
 TOKEN_BUDGET_EXCEEDED = "token_budget_exceeded"
@@ -101,7 +102,8 @@ class ImplementationWorkflow:
     @workflow.run
     async def run(self, params: ImplementationInput) -> ImplementationOutput:
         retry = RetryPolicy(maximum_attempts=3)
-        once = RetryPolicy(maximum_attempts=1)
+        # The stage refuses every retry except one after its worker stopped mid-attempt.
+        lost_worker_retry = RetryPolicy(maximum_attempts=2)
         short = timedelta(seconds=30)
         context_timeout = timedelta(minutes=5)
         stage_timeout = timedelta(seconds=params.activity_timeout_seconds)
@@ -249,7 +251,7 @@ class ImplementationWorkflow:
                 plan=params.plan,
             ),
             start_to_close_timeout=stage_timeout,
-            retry_policy=once,
+            retry_policy=lost_worker_retry,
         )
 
         await workflow.execute_activity(

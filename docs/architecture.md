@@ -42,7 +42,10 @@ flowchart LR
                 SBX["Agent sandboxes<br/>(OpenHands, one per execution)"]
             end
             subgraph NSP["Namespace agentic-dev-platform"]
-                FRONT["Inbound webhook<br/>and MCP gateway"]
+                FRONT["Inbound webhook"]
+            end
+            subgraph NST["Namespace tenant-*, one per tenant"]
+                MCPG["MCP gateway"]
             end
         end
     end
@@ -81,7 +84,10 @@ flowchart LR
     GH --> FRONT
     FRONT --> TEMPORAL
     FRONT --> PG
-    FRONT --> JIRA
+    MCPG --> PG
+    MCPG --> RIS
+    MCPG --> GH
+    MCPG --> JIRA
     PG ~~~ GH
     PG ~~~ JIRA
     MINIO ~~~ BR
@@ -94,11 +100,12 @@ flowchart LR
     style K8S fill:#CFE2F3,stroke:#6FA8DC
     style NSP fill:#A4C2F4,stroke:#3C78D8
     style NSS fill:#A4C2F4,stroke:#3C78D8
+    style NST fill:#A4C2F4,stroke:#3C78D8
     style EXT fill:#ffffff,stroke:#232F3E
     style AWS fill:#FCE5CD,stroke:#E69138
 ```
 
-- Temporal dispatches workflow and activity tasks to the workers, which hold long-poll connections to it. The inbound webhook signals Temporal when GitHub reports a closed pull request, and the MCP gateway reads from PostgreSQL, GitHub, and Jira.
+- Temporal dispatches workflow and activity tasks to the workers, which hold long-poll connections to it. The inbound webhook routes each GitHub pull request event to the tenant whose repositories list the repository and signals Temporal when the pull request closes. Each tenant namespace runs its own MCP gateway, which reads only that tenant's evidence from PostgreSQL and reads GitHub, Jira, and repository intelligence with that tenant's credentials.
 - Every worker exports traces and metrics to Observability. LiteLLM sends its generation traces to Langfuse.
 
 ### AWS, high level
@@ -174,7 +181,7 @@ flowchart LR
 
 ## Local environment
 
-The local stack runs in Docker Compose ([compose.yaml](../compose.yaml), [compose.override.yaml](../compose.override.yaml)) and on the Docker Desktop Kubernetes cluster ([deploy/kubernetes/local](../deploy/kubernetes/local)). Each block names the function it performs. Blocks built in this repository list the technologies that implement them. Off-the-shelf products are named without a technology list. Edge labels are the destination port. Dashed edges are optional paths that the default `.env.example` values leave disabled.
+The local stack runs in Docker Compose ([compose.yaml](../compose.yaml), [compose.override.yaml](../compose.override.yaml)) and on the Docker Desktop Kubernetes cluster ([deploy/kubernetes/local](../deploy/kubernetes/local)). The cluster runs the workloads that run on EKS in AWS, and no pod mounts a host directory. Each block names the function it performs. Blocks built in this repository list the technologies that implement them. Off-the-shelf products are named without a technology list. Edge labels are the destination port. A cluster workload reaches a Compose service on the port Compose publishes on the host. Dashed edges are optional paths that the default `.env.example` values leave disabled.
 
 ```mermaid
 flowchart LR
@@ -196,7 +203,7 @@ flowchart LR
         DEV["Developer<br/><i>invoke, Docker Compose,<br/>kubectl, AWS CLI</i>"]
         SSMTUNNEL["Bedrock Tunnel<br/><i>AWS CLI,<br/>Session Manager plugin</i>"]
         WHFWD["Webhook Forwarder<br/><i>GitHub CLI</i>"]
-        REPOS[("Target Repositories<br/><i>bind mounts</i>")]
+        REPOS[("Target Repositories<br/><i>host checkouts</i>")]
 
         subgraph COMPOSE["Docker Compose"]
             direction LR
@@ -207,29 +214,13 @@ flowchart LR
                 TEMPORALUI["Temporal Web UI"]
             end
 
-            subgraph WORKERS["Agent Workers"]
-                direction TB
-                ORCH["Workflow Orchestrator<br/><i>Python, Temporal SDK</i>"]
-                subgraph ACTG["Agent Activity Worker"]
-                    direction TB
-                    ACT["Agent Activities<br/><i>Python, Temporal SDK,<br/>OpenHands SDK, Kubernetes client,<br/>rebar, Atlassian CLI, git</i>"]
-                    LANGGRAPH["CI Repair and Conflict Resolution<br/><i>LangGraph, rebar</i>"]
-                end
-                REVIEW["Review Gate Worker<br/><i>Python, Temporal SDK,<br/>rebar, Pydantic AI</i>"]
-            end
+            ORCH["Workflow Orchestrator<br/><i>Python, Temporal SDK</i>"]
 
             subgraph PLATSVC["Platform Services"]
                 direction TB
                 COORD["Coordination Service<br/><i>Python, SQLAlchemy</i>"]
                 RIS["Repository Intelligence Service<br/><i>Python, Zoekt, SCIP, ast-grep,<br/>terraform-ls, phpactor,<br/>codebase-memory-mcp</i>"]
                 RIW["Repository Index Worker<br/><i>Python, zoekt-index, scip-python,<br/>scip-typescript, scip-java, scip-ruby</i>"]
-            end
-
-            subgraph MODELG["Model Access and Policy"]
-                direction TB
-                LITELLM["LiteLLM Model Gateway"]
-                SIDECAR["Bedrock Tunnel Sidecar<br/><i>socat</i>"]
-                OPA["Open Policy Agent"]
             end
 
             subgraph SETUP["One-shot Setup Jobs"]
@@ -244,7 +235,6 @@ flowchart LR
                 POSTGRES[("PostgreSQL")]
                 MINIO[("MinIO Object Storage")]
                 IDXVOL[("Repository Index Volume")]
-                WORKSPACES[("Agent Workspaces")]
                 REGISTRY[("Container Registry")]
             end
 
@@ -269,7 +259,28 @@ flowchart LR
             direction TB
             KAPI["Kubernetes API"]
             subgraph NSPLAT["Namespace agentic-dev-platform"]
+                direction TB
+                subgraph ACTG["Agent Activity Worker pod"]
+                    direction TB
+                    ACT["Agent Activities<br/><i>Python, Temporal SDK,<br/>OpenHands SDK, Kubernetes client,<br/>rebar, Atlassian CLI, git</i>"]
+                    LANGGRAPH["CI Repair and Conflict Resolution<br/><i>LangGraph, rebar</i>"]
+                    OPA["Open Policy Agent<br/><i>loopback sidecar</i>"]
+                end
+                subgraph REVIEWG["Review Gate Worker pod"]
+                    direction TB
+                    REVIEW["Review Gate Worker<br/><i>Python, Temporal SDK,<br/>rebar, Pydantic AI</i>"]
+                    RRELAY["Bedrock Relay<br/><i>socat sidecar</i>"]
+                end
+                subgraph LITELLMG["LiteLLM pod"]
+                    direction TB
+                    LITELLM["LiteLLM Model Gateway"]
+                    LRELAY["Bedrock Relay<br/><i>socat sidecar</i>"]
+                end
+                WORKSPACES[("Workspace Volume<br/><i>checkouts, repository copies,<br/>gate engines, ticket store</i>")]
+                AWSCRED[("AWS Credentials Secret")]
                 WEBHOOK["Inbound Webhook Receiver<br/><i>Python</i>"]
+            end
+            subgraph NSTEN["Namespace tenant-*, one per tenant"]
                 MCP["MCP Gateway<br/><i>Python, MCP SDK</i>"]
             end
             subgraph NSSBX["Namespace agent-sandbox"]
@@ -280,31 +291,35 @@ flowchart LR
     end
 
     %% Workflow engine
-    WORKERS -->|"7233"| TEMPORAL
-    WORKERS -->|"5432"| POSTGRES
+    ORCH -->|"7233"| TEMPORAL
+    ACT -->|"7233"| TEMPORAL
+    REVIEW -->|"7233"| TEMPORAL
+    ORCH -->|"5432"| POSTGRES
+    ACT -->|"5432"| POSTGRES
+    REVIEW -->|"5432"| POSTGRES
     TEMPORAL -->|"5432"| POSTGRES
     TEMPORALUI -->|"7233"| TEMPORAL
 
     %% Agent activities
     ACT -->|"8130"| COORD
     ACT -->|"8120"| RIS
-    ACT -->|"8181"| OPA
+    ACT -->|"8181 loopback"| OPA
     ACT -->|"4000"| LITELLM
     LANGGRAPH -->|"4000"| LITELLM
     ACT -->|"HTTPS"| KAPI
-    ACT -->|"8000 via port-forward"| OPENHANDS
+    ACT -->|"8000 pod IP"| OPENHANDS
     ACT -->|"443"| GITHUB
     ACT -->|"443"| JIRA
     ACT -.->|"443, 587"| ALERTS
-    ACT -.->|"9000"| MINIO
-    ACT -->|"bind mount"| WORKSPACES
-    ACT -->|"bind mount"| REPOS
+    ACT -->|"9090"| MINIO
+    ACT -->|"volume"| WORKSPACES
 
     %% Review gates
-    REVIEW -->|"443"| SIDECAR
+    REVIEW -->|"443 loopback"| RRELAY
     REVIEW -.->|"4000"| LITELLM
-    REVIEW -.->|"9000"| MINIO
-    REVIEW -->|"bind mount"| WORKSPACES
+    REVIEW -.->|"9090"| MINIO
+    REVIEW -->|"volume, read-only"| WORKSPACES
+    REVIEW -->|"credential_process"| AWSCRED
 
     %% Sandboxes
     KAPI -->|"creates pod"| OPENHANDS
@@ -318,12 +333,14 @@ flowchart LR
     COORD -->|"7233"| TEMPORAL
     RIS -->|"volume"| IDXVOL
     RIW -->|"volume"| IDXVOL
-    RIS -->|"bind mount"| REPOS
-    RIW -->|"bind mount"| REPOS
+    RIS -->|"bind mount, read-only"| REPOS
+    RIW -->|"bind mount, read-only"| REPOS
 
     %% Model access
-    LITELLM -->|"443"| SIDECAR
-    SIDECAR -->|"8444"| SSMTUNNEL
+    LITELLM -->|"443 loopback"| LRELAY
+    LITELLM -->|"credential_process"| AWSCRED
+    LRELAY -->|"8444"| SSMTUNNEL
+    RRELAY -->|"8444"| SSMTUNNEL
     SSMTUNNEL -->|"443 SSM session"| JUMPHOST
     JUMPHOST -->|"443"| BEDROCK
 
@@ -333,7 +350,7 @@ flowchart LR
     WEBHOOK -->|"7233"| TEMPORAL
     WEBHOOK -->|"5432"| POSTGRES
     MCP -->|"5432"| POSTGRES
-    MCP -->|"8130"| RIS
+    MCP -->|"8120"| RIS
     MCP -->|"443"| GITHUB
     MCP -->|"443"| JIRA
 
@@ -344,8 +361,10 @@ flowchart LR
     SCHED -->|"7233"| TEMPORAL
 
     %% Tracing and telemetry
-    WORKERS -->|"4317"| OTEL
-    WORKERS -->|"3000"| LANGFUSE
+    ORCH -->|"4317"| OTEL
+    ACT -->|"4317"| OTEL
+    REVIEW -->|"4317"| OTEL
+    ACT -->|"3000"| LANGFUSE
     LITELLM -->|"3000"| LANGFUSE
     LANGFUSE -->|"5432"| POSTGRES
     LANGFUSEW -->|"5432"| POSTGRES
@@ -367,6 +386,7 @@ flowchart LR
     DEV -->|"3300"| GRAFANA
     DEV -->|"HTTPS"| KAPI
     DEV -->|"starts"| SSMTUNNEL
+    REPOS -->|"inv repos-sync, inv fetch-results"| KAPI
 
     classDef compute fill:#ED7100,stroke:#232F3E,color:#fff
     classDef database fill:#C925D1,stroke:#232F3E,color:#fff
@@ -381,9 +401,9 @@ flowchart LR
     class LANGGRAPH,OPENHANDS,GATEPOD,LITELLM,BEDROCK ai
     class POSTGRES,CLICKHOUSE,VALKEY database
     class MINIO,IDXVOL,WORKSPACES,REGISTRY,REPOS storage
-    class SIDECAR,SSMTUNNEL,WHFWD network
+    class LRELAY,RRELAY,SSMTUNNEL,WHFWD network
     class LANGFUSE,LANGFUSEW,OTEL,TEMPO,PROM,GRAFANA mgmt
-    class OPA security
+    class OPA,AWSCRED security
     class GITHUB,JIRA,ALERTS,DEV ext
 ```
 
@@ -395,27 +415,29 @@ Component roles:
 | Workflow Orchestrator | Runs the intake, plan review, implementation, branch sync, pull request, draft pull request, and reap workflows. It executes no side effects. |
 | Agent Activities | Runs every side effect the workflows request: planning model calls, repository context, work claims, code generation in the OpenHands sandbox, git push, pull request creation, Jira updates, policy checks, and alerts. |
 | CI Repair and Conflict Resolution | LangGraph state graphs that run in-process in the activity worker. CI repair calls the model gateway. Conflict resolution resolves trivial merge conflicts without a model. |
-| Review Gate Worker | Runs the plan, code, security, and acceptance review gates with rebar. Native mode calls Bedrock directly through the tunnel sidecar. Proxied mode calls the model gateway. |
-| Coordination Service | Holds work claims, sequencing, and side-effect idempotency in PostgreSQL, and checks claim owners against Temporal. |
-| Repository Intelligence Service | Builds code context packages for planning from Zoekt search, SCIP symbol indexes, ast-grep, language servers, and codebase-memory-mcp. |
+| Open Policy Agent | Evaluates the pull request promotion policy. It runs as a sidecar of the activity worker, bound to the pod's loopback, so no Service exposes it. |
+| Review Gate Worker | Runs the plan, code, security, and acceptance review gates with rebar against the execution's checkout on the workspace volume. Native mode calls Bedrock directly through the relay sidecar. Proxied mode calls the model gateway. |
+| Coordination Service | Holds work claims, sequencing, and side-effect idempotency in PostgreSQL, and checks claim owners against Temporal. Every mutating call needs the shared bearer token. |
+| Repository Intelligence Service | Builds code context packages for planning from Zoekt search, SCIP symbol indexes, ast-grep, language servers, and codebase-memory-mcp. It and the index worker receive only the settings the `x-repo-intelligence-env` anchor of `compose.yaml` lists, not `.env`, and read the repository registry, each tenant's bundle directory, and the checkouts through the read-only mounts `inv repos-compose` writes to `compose.repositories.yaml`. After a registry edit, `inv repos-compose` and then `inv k8s-reload`, or `docker compose` with `compose.repositories.yaml` among its files, recreate both services. |
 | Repository Index Worker | Polls the target repositories for new commits and rebuilds the Zoekt and SCIP indexes on the shared volume. |
-| LiteLLM Model Gateway | Maps logical model names to Bedrock Claude models and sends generation traces to Langfuse with credential-shaped strings redacted. |
-| Bedrock Tunnel Sidecar and Bedrock Tunnel | The sidecar answers on the `bedrock-runtime` hostname inside Compose and relays to the host tunnel, which forwards over an SSM session to the jump-host in AWS. |
-| Open Policy Agent | Evaluates the pull request promotion policy. |
-| Inbound Webhook Receiver | Receives GitHub pull request events from the GitHub CLI forwarder and signals the matching Temporal workflow when a pull request closes. |
-| MCP Gateway | Serves read-only Jira, GitHub, evidence, and repository context tools over the Model Context Protocol. |
-| OpenHands Coding Sandbox | One agent-server pod per execution that performs the implementation stage. |
+| LiteLLM Model Gateway | Maps logical model names to Bedrock Claude models and sends generation traces to Langfuse with credential-shaped strings redacted. Compose services and host tasks reach it on host port 4000 through a `LoadBalancer` Service. |
+| Bedrock Relay and Bedrock Tunnel | Each relay answers on the `bedrock-runtime` hostname on its pod's loopback and forwards to the host tunnel, which forwards over an SSM session to the jump-host in AWS. |
+| AWS Credentials Secret | Holds the credentials `inv aws-login` writes. LiteLLM and the review worker reread it through `credential_process` before the credentials they hold expire. |
+| Workspace Volume | Holds the execution checkouts, the copies of the local-backend repositories and local gate engines that `inv repos-sync` sends, and the rebar ticket store seeded from MinIO. `inv fetch-results` brings the agent branches back to the host checkouts. |
+| Inbound Webhook Receiver | Receives GitHub pull request events from the GitHub CLI forwarder, verifies each with the secret of the tenant whose `repositories.yaml` lists the repository, and signals that tenant's workflow when the pull request closes. A Jira delivery to `/webhook/jira/<tenant>` is verified with that tenant's secret and project allowlist and starts a single-issue intake workflow on the tenant's task queue, where the tenant worker reads Jira, so the webhook holds no Jira credentials. With more than one tenant, the local cluster render gives it only each tenant's `GITHUB_WEBHOOK_SECRET` and `JIRA_WEBHOOK_SECRET` in the Secret `inbound-webhook-tenants`, and a secret change restarts the pod. |
+| MCP Gateway | One per tenant, in the tenant's namespace under the tenant worker's service account. It serves read-only Jira, GitHub, evidence, and repository context tools over the Model Context Protocol to clients that present the tenant's bearer token. Evidence and security-finding reads return only the executions recorded for the tenant, and the other tools read with the tenant's credentials, allowlists, and repository intelligence token. Its Service is ClusterIP, reached with `kubectl -n tenant-<tenant> port-forward svc/mcp-gateway 8150:80`. |
+| OpenHands Coding Sandbox | One agent-server pod per execution that performs the implementation stage. The activity worker reaches it on its pod IP with a per-sandbox session key. |
 | External Review Gate | One pod per configured external gate, running an AI CLI reviewer or a SARIF scanner. |
 | LLM Tracing | Langfuse records model generations from LiteLLM and from the workers. |
 | Telemetry | The collector receives worker traces, metrics, and logs. Tempo stores traces, Prometheus scrapes metrics, and Grafana displays both. |
 
 Notes on the local diagram:
 
-- `BEDROCK_CONNECTIVITY_PROVIDER` selects the Bedrock path. The diagram shows the default `jumphost` provider. The `ssh-bastion` provider replaces the SSM session with an SSH tunnel, and the `direct` provider removes the tunnel and the sidecar.
-- MinIO holds the Langfuse and Tempo buckets. The worker paths to MinIO are the rebar ticket store, used when `TICKET_BACKEND=rebar`, and the evidence Object Lock bucket, used when `EVIDENCE_OBJECT_STORE_ENABLED=true`.
+- `BEDROCK_CONNECTIVITY_PROVIDER` selects the Bedrock path. The diagram shows the default `jumphost` provider. The `ssh-bastion` provider replaces the SSM session with an SSH tunnel, and the `direct` provider removes the tunnel and the relays.
+- MinIO holds the Langfuse and Tempo buckets. The worker paths to MinIO are the rebar ticket store, used when `TICKET_BACKEND=rebar`, and the evidence Object Lock bucket, used when `EVIDENCE_OBJECT_STORE_ENABLED=true`. The cluster reaches MinIO on its published port 9090.
 - The External Review Gate path is inactive until `config/local/gate_engine.yaml` enables an engine. The Container Registry runs only under the `registry` Compose profile.
-- The `langgraph-service` Compose service serves only a health endpoint and has no callers, so it is not drawn.
-- The MCP Gateway has no client in this repository. The local overlay points its repository context calls at `host.docker.internal:8130`, which is the Coordination Service port and is not published to the host. The Repository Intelligence Service is published on 8120.
+- The `agent-sandbox` network policies limit sandbox egress to DNS and LiteLLM. The Docker Desktop cluster enforces them through its kindnet CNI, which `inv smoke-test` confirms.
+- The MCP Gateway has no client in this repository.
 
 ## AWS environment
 
@@ -451,7 +473,7 @@ flowchart LR
                 end
 
                 subgraph MGMT["Management subnets, two AZs"]
-                    JHOST["Bedrock Jump-Host<br/><i>Alpine, ECS Exec,<br/>Fargate task on its own cluster</i>"]
+                    JHOST["Bedrock Jump-Host<br/><i>Amazon Linux 2023, ECS Exec,<br/>Fargate task on its own cluster</i>"]
                     ALB["Temporal Web UI Load Balancer<br/><i>internal Application Load Balancer</i>"]
                     TUI["Temporal Web UI"]
                     TADM["Temporal Schema and Namespace Setup<br/><i>Temporal admin-tools</i>"]
@@ -624,7 +646,7 @@ Component roles:
 | Bedrock Jump-Host | An ephemeral task that holds an ECS Exec session open for a fixed TTL. The developer forwards local ports through it to the Bedrock endpoint and to the Temporal Web UI load balancer. |
 | AWS Service Endpoints | Private endpoints for Bedrock Runtime, SSM Messages, ECR, CloudWatch Logs, KMS, Secrets Manager, the RDS Data API, and ElastiCache. |
 | Temporal Database | Holds the `temporal` and `temporal_visibility` databases and the per-role platform database credentials. |
-| Secret Rotation Function | Rotates the per-role database credentials through the RDS Data API and the Valkey RBAC user through the ElastiCache API. |
+| Secret Rotation Function | Rotates the per-role database credentials through the RDS Data API, the Valkey RBAC user through the ElastiCache API, and each tenant's repository intelligence token by staging a new random token, after which the tenant's activity worker and MCP gateway restart. |
 | Operator Access and Runbooks | Session Manager for the jump-host, Parameter Store for the jump-host settings, and the Automation runbook that force-deploys a service after its secret rotates. |
 | Rotation and Certificate Events | Starts the restart runbook after a rotation and publishes ACM certificate expiry warnings to SNS. |
 | Rebar Ticket Store | The S3 remote of the rebar tickets branch, read and written through `git-remote-s3` under separate reader and writer roles. |
