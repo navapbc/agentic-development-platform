@@ -6,7 +6,8 @@ import hashlib
 import hmac
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from contextvars import ContextVar
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 from database.engine import shared_platform_engine
@@ -24,6 +25,9 @@ _SIGNATURE_PREFIX = "sha256="
 _SIGNATURE_HEADER = "X-Hub-Signature-256"
 _DELIVERY_HEADER = "X-GitHub-Delivery"
 _BRANCH_PREFIX = "agent/"
+# Each request runs in its own asyncio task with its own context, so the tenant verify selects
+# reaches parse of the same delivery and never another concurrent one.
+_selected_tenant: ContextVar[str | None] = ContextVar("pr_closed_selected_tenant", default=None)
 
 
 @dataclass(frozen=True)
@@ -45,11 +49,20 @@ def verify_signature(secret: str, body: bytes, header: str) -> bool:
     return hmac.compare_digest(f"{_SIGNATURE_PREFIX}{digest}", header)
 
 
-def _task_id_from_branch(branch: str) -> str:
-    return branch[len(_BRANCH_PREFIX) :] if branch.startswith(_BRANCH_PREFIX) else ""
+def _task_id_from_branch(branch: str, tenant: str | None = None) -> str:
+    if not branch.startswith(_BRANCH_PREFIX):
+        return ""
+    rest = branch[len(_BRANCH_PREFIX) :]
+    if tenant:
+        tenant_prefix = f"{tenant}/"
+        if rest.startswith(tenant_prefix):
+            return rest[len(tenant_prefix) :]
+    return rest
 
 
-def parse_pr_closed_event(payload: dict[str, Any]) -> PrClosedEvent | None:
+def parse_pr_closed_event(
+    payload: dict[str, Any], tenant: str | None = None
+) -> PrClosedEvent | None:
     if payload.get("action") != "closed":
         return None
     pull = payload.get("pull_request") or {}
@@ -63,8 +76,9 @@ def parse_pr_closed_event(payload: dict[str, Any]) -> PrClosedEvent | None:
         repo=str(repo),
         number=number,
         branch=branch,
-        task_id=_task_id_from_branch(branch),
+        task_id=_task_id_from_branch(branch, tenant),
         merged=bool(pull.get("merged")),
+        tenant=tenant,
     )
 
 
@@ -89,9 +103,7 @@ class WorkflowSignaller(Protocol):
 
 
 class RepositoryTenants(Protocol):
-    def owner(self, repository: str) -> str | None: ...
-
-    def signing_secret(self, repository: str | None) -> str: ...
+    def select_tenant(self, repository: str | None, body: bytes, signature: str) -> str | None: ...
 
 
 @dataclass(frozen=True)
@@ -100,18 +112,18 @@ class PlatformRepositories:
 
     secret: str
 
-    def owner(self, repository: str) -> str | None:
-        return ""
-
-    def signing_secret(self, repository: str | None) -> str:
-        return self.secret
+    def select_tenant(self, repository: str | None, body: bytes, signature: str) -> str | None:
+        return "" if verify_signature(self.secret, body, signature) else None
 
 
 class PrClosedHandler:
-    """Route a PR-closed delivery to the tenant that owns its repository.
+    """Route a PR-closed delivery to the tenant whose secret signs it.
 
-    The delivery must carry the signature of the owning tenant's secret, so a tenant cannot
-    signal the workflow of another tenant's repository.
+    Several tenants may list the same repository, each with its own secret. The handler verifies
+    the delivery against each claimant's secret and routes it to the one whose secret matches, so
+    a tenant cannot signal the workflow of another tenant's repository. A delivery that no
+    claimant's secret verifies is refused, and a delivery that more than one claimant's secret
+    verifies is refused, because tenants that share a secret can forge each other's deliveries.
     """
 
     name = "pr_closed"
@@ -129,17 +141,16 @@ class PrClosedHandler:
         self._signaller = signaller
 
     def verify(self, body: bytes, headers: Mapping[str, str]) -> bool:
-        secret = self._tenants.signing_secret(repository_name(body))
-        return verify_signature(secret, body, headers.get(_SIGNATURE_HEADER, ""))
+        signature = headers.get(_SIGNATURE_HEADER, "")
+        tenant = self._tenants.select_tenant(repository_name(body), body, signature)
+        _selected_tenant.set(tenant)
+        return tenant is not None
 
     def delivery_id(self, headers: Mapping[str, str], payload: dict[str, Any]) -> str:
         return headers.get(_DELIVERY_HEADER, "")
 
     def parse(self, payload: dict[str, Any]) -> PrClosedEvent | None:
-        event = parse_pr_closed_event(payload)
-        if event is None:
-            return None
-        return replace(event, tenant=self._tenants.owner(event.repo))
+        return parse_pr_closed_event(payload, tenant=_selected_tenant.get())
 
     def allowlisted(self, event: PrClosedEvent, allowed: frozenset[str]) -> bool:
         return event.tenant is not None and event.repo in allowed

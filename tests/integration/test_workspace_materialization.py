@@ -75,6 +75,31 @@ async def test_materializes_repo_at_manifest_sha_on_deterministic_branch(remote,
     assert kinds == sorted([BRANCH, STAGING])
 
 
+async def test_named_tenant_namespaces_the_branch_and_tags_orphans(remote, tmp_path) -> None:
+    remote_path, manifest_sha = remote
+    materializer = WorkspaceMaterializer(
+        registry=InMemoryOrphanRegistry(),
+        allowed_repos=frozenset({REPO}),
+        workspace_root=tmp_path / "workspaces",
+        remote_url_for=lambda repo: remote_path,
+        tenant="beta",
+    )
+
+    workspace = await materializer.materialize(
+        repo=REPO,
+        task_id=TASK_ID,
+        execution_id=EXECUTION_ID,
+        base="main",
+        commit_sha=manifest_sha,
+    )
+
+    assert workspace.branch == agent_branch_name(TASK_ID, "beta")
+    assert _git(["rev-parse", "--abbrev-ref", "HEAD"], workspace.path) == workspace.branch
+    registry = materializer.registry
+    assert isinstance(registry, InMemoryOrphanRegistry)
+    assert all(a.tenant == "beta" for a in registry.records.values())
+
+
 async def test_retry_reuses_the_same_branch_and_workspace(remote, tmp_path) -> None:
     _, manifest_sha = remote
     materializer = _materializer(remote, tmp_path)

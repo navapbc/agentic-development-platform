@@ -89,6 +89,7 @@ class WorkspaceMaterializer:
     workspace_root: Path
     remote_url_for: Callable[[str], str]
     auth_for: Callable[[str], GitAuth] = no_auth_for
+    tenant: str = ""
 
     @classmethod
     def from_settings(
@@ -111,6 +112,7 @@ class WorkspaceMaterializer:
             workspace_root=Path(resolved.execution_workspace_root),
             remote_url_for=remote_url_for,
             auth_for=auth_for or build_git_auth_for(resolved),
+            tenant=resolved.tenant,
         )
 
     def _guard(self, repo: str) -> None:
@@ -130,7 +132,7 @@ class WorkspaceMaterializer:
         commit_sha: str,
     ) -> MaterializedWorkspace:
         self._guard(repo)
-        branch = agent_branch_name(task_id)
+        branch = agent_branch_name(task_id, self.tenant)
         path = self._path_for(repo, task_id, execution_id)
         await self._ensure_checkout(repo, path, branch, commit_sha)
         head = await _git("rev-parse", "HEAD", cwd=str(path))
@@ -140,6 +142,7 @@ class WorkspaceMaterializer:
                 f"{repo}:{branch}",
                 repository=repo,
                 owning_workflow=task_id,
+                tenant=self.tenant,
             )
         )
         workspace_orphan_id = await self.registry.register(
@@ -148,6 +151,7 @@ class WorkspaceMaterializer:
                 str(path),
                 repository=repo,
                 owning_workflow=execution_id,
+                tenant=self.tenant,
             )
         )
         return MaterializedWorkspace(

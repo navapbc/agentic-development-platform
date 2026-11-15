@@ -333,3 +333,26 @@ def test_the_objects_kubectl_prints_one_after_another_are_all_read() -> None:
     )
 
     assert [o["kind"] for o in eks_deploy_task.json_objects(text)] == ["Namespace", "ConfigMap"]
+
+
+def test_apply_sends_each_workload_after_the_secret_providers_its_pods_mount(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sent: list[str] = []
+
+    def run(args: list[str], *, stdin: str | None = None, timeout: int = 0) -> str:
+        sent.append(stdin or "")
+        return ""
+
+    monkeypatch.setattr(eks_deploy_task, "run", run)
+
+    eks_deploy_task.apply(
+        [
+            {"kind": "Deployment", "metadata": {"name": "inbound-webhook"}},
+            {"kind": "SecretProviderClass", "metadata": {"name": "inbound-webhook"}},
+            {"kind": "ConfigMap", "metadata": {"name": "inbound-webhook-tenant-config"}},
+        ]
+    )
+
+    kinds = [item["kind"] for item in json.loads(sent[0])["items"]]
+    assert kinds == ["SecretProviderClass", "ConfigMap", "Deployment"]

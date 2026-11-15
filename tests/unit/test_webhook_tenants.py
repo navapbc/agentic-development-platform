@@ -177,21 +177,31 @@ def test_each_github_repository_routes_to_the_tenant_that_lists_it():
     assert routing.github_repositories() == frozenset({"adp-web", "beta-web"})
 
 
-def test_a_repository_two_tenants_list_is_refused():
+def test_a_repository_two_tenants_list_is_kept_by_both():
     routing = _routing({"adp": {"shared": GITHUB}, "beta": {"shared": GITHUB}})
 
+    assert routing.claimants("shared") == ("adp", "beta")
     assert routing.owner("shared") is None
-    assert "shared" not in routing.github_repositories()
+    assert "shared" in routing.github_repositories()
+    assert "shared" not in routing.repository_owners()
 
 
-def test_a_repository_claimed_later_stays_with_its_tenant():
-    registries = _Registries({"adp": _Registry({"shared": GITHUB}), "beta": _Registry({})})
-    routing = TenantRouting(hermetic_settings(tenants="adp,beta"), registries=cast(Any, registries))
-    assert routing.owner("shared") == "adp"
+def test_a_shared_repository_routes_each_delivery_by_its_signature():
+    routing = _routing({"adp": {"shared": GITHUB}, "beta": {"shared": GITHUB}})
+    tenants = RoutedRepositories(routing, {"adp": ADP_GITHUB_KEY, "beta": BETA_GITHUB_KEY})
+    body = _pr_body("shared")
 
-    registries.by_tenant["beta"] = _Registry({"shared": GITHUB})
+    assert tenants.select_tenant("shared", body, _sign(ADP_GITHUB_KEY, body)) == "adp"
+    assert tenants.select_tenant("shared", body, _sign(BETA_GITHUB_KEY, body)) == "beta"
+    assert tenants.select_tenant("shared", body, _sign("neither-key", body)) is None
 
-    assert routing.owner("shared") == "adp"
+
+def test_two_tenants_that_share_a_secret_are_refused():
+    routing = _routing({"adp": {"shared": GITHUB}, "beta": {"shared": GITHUB}})
+    tenants = RoutedRepositories(routing, {"adp": "same-key", "beta": "same-key"})
+    body = _pr_body("shared")
+
+    assert tenants.select_tenant("shared", body, _sign("same-key", body)) is None
 
 
 def test_a_tenant_secret_is_its_own_and_the_platform_secret_serves_one_tenant_only():

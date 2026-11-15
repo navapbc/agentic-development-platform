@@ -30,7 +30,7 @@ from typing import Any
 
 from services import process
 
-from scripts.eks_render import PLATFORM_NAMESPACE, RenderError, render
+from scripts.eks_render import PLATFORM_NAMESPACE, RenderError, render, workloads_last
 
 KUBECTL = "/usr/local/bin/kubectl"
 HELM = "/usr/local/bin/helm"
@@ -117,7 +117,7 @@ def json_objects(text: str) -> list[dict[str, Any]]:
 
 
 def apply(documents: list[dict[str, Any]]) -> None:
-    listing = {"apiVersion": "v1", "kind": "List", "items": documents}
+    listing = {"apiVersion": "v1", "kind": "List", "items": workloads_last(documents)}
     print(run([KUBECTL, "apply", "-f", "-"], stdin=json.dumps(listing)), end="")
 
 

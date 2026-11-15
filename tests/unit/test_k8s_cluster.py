@@ -15,7 +15,14 @@ from scripts.cluster_env import (
     rewrite_address,
     rewrite_env,
 )
-from scripts.k8s_cluster import delete_retired, deployments, exec_argv, one_off_argv, removable
+from scripts.k8s_cluster import (
+    apply,
+    delete_retired,
+    deployments,
+    exec_argv,
+    one_off_argv,
+    removable,
+)
 from scripts.k8s_render import RenderInputs, render
 from services import process
 from services.repository_intelligence.tenant_tokens import derive_token
@@ -882,3 +889,23 @@ def test_a_new_gateway_token_restarts_only_that_tenants_gateway(tmp_path: Path) 
 
     assert first["adp"] == second["adp"]
     assert first["beta"] != second["beta"]
+
+
+def test_apply_sends_each_workload_after_the_secrets_and_config_its_pods_read() -> None:
+    sent: list[str] = []
+
+    def run(argv, **kwargs):
+        sent.append(kwargs["input"])
+        return process.CompletedProcess(argv, 0, "", "")
+
+    documents = [
+        {"kind": "Namespace", "metadata": {"name": "platform"}},
+        {"kind": "Deployment", "metadata": {"name": "inbound-webhook"}},
+        {"kind": "Secret", "metadata": {"name": "inbound-webhook-tenants"}},
+        {"kind": "ConfigMap", "metadata": {"name": "inbound-webhook-tenant-config"}},
+    ]
+
+    apply(hermetic_settings(), documents, run=run)
+
+    kinds = [document["kind"] for document in yaml.safe_load_all(sent[0])]
+    assert kinds == ["Namespace", "Secret", "ConfigMap", "Deployment"]

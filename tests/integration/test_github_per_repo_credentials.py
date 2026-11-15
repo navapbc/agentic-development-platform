@@ -108,3 +108,22 @@ def test_non_allowlisted_repository_resolves_nothing() -> None:
 def test_git_auth_refuses_a_non_allowlisted_repository() -> None:
     with pytest.raises(UnconfiguredRepositoryError):
         _resolver().git_auth("repo-c")
+
+
+async def test_delete_branch_deletes_the_ref_through_rest_with_the_repository_token() -> None:
+    calls: list[tuple[str, str, str | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((request.method, str(request.url), request.headers.get("authorization")))
+        if request.url.path.endswith("/git/refs/heads/agent/beta/T-1"):
+            return httpx.Response(204)
+        return httpx.Response(422, json={"message": "Reference does not exist"})
+
+    host = RealGitHost(_resolver(), transport=httpx.MockTransport(handler))
+
+    assert await host.delete_branch("repo-b", "agent/beta/T-1") is True
+    assert await host.delete_branch("repo-b", "agent/beta/T-2") is False
+    method, url, auth = calls[0]
+    assert method == "DELETE"
+    assert url == "https://globex.ghe/api/v3/repos/globex-org/repo-b/git/refs/heads/agent/beta/T-1"
+    assert auth is not None and auth.endswith(" tok-b")

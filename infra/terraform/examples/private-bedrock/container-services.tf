@@ -11,7 +11,7 @@ locals {
   reader_sets = [var.secret_readers, local.temporal_secret_readers, module.container_services.secret_readers, local.eks_secret_readers, local.tenant_secret_readers, local.tenant_platform_secret_readers]
   secret_readers = {
     for key in distinct(flatten([for readers in local.reader_sets : keys(readers)])) :
-    key => distinct(flatten([for readers in local.reader_sets : lookup(readers, key, [])]))
+    key => distinct(flatten([for readers in local.reader_sets : try(readers[key], [])]))
   }
   restart_sets = [var.secret_restart_services, local.temporal_restart_services_by_secret, module.container_services.secret_restart_services]
 

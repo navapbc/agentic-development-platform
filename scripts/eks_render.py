@@ -56,6 +56,18 @@ MODEL_LIMIT_ENV = {
 }
 
 
+WORKLOAD_KINDS = frozenset({"Deployment", "StatefulSet", "DaemonSet", "Job", "CronJob", "Pod"})
+
+
+def workloads_last(documents: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Order documents so each workload applies after the Secrets and config its pods read.
+
+    kubectl applies a list in order, and a workload whose pod template changed starts new pods
+    at once, so a Secret or SecretProviderClass applied after it can miss those pods.
+    """
+    return sorted(documents, key=lambda document: document.get("kind") in WORKLOAD_KINDS)
+
+
 class RenderError(Exception):
     """The inputs cannot produce the manifests."""
 
@@ -434,7 +446,7 @@ def render(
     `mcp_hostnames` maps each tenant to the load balancer hostname of its gateway's Ingress.
     """
     from scripts.tenant_render import tenantize
-    from scripts.webhook_render import route_webhook_tenants
+    from scripts.webhook_eks_render import route_webhook_tenants
 
     documents = copy.deepcopy(overlay_documents)
     set_images(documents, inputs["images"])

@@ -55,7 +55,7 @@ class ReapReceipt:
 
 
 class ReapRegistry(Protocol):
-    async def list_reapable(self, now: datetime) -> list[OrphanRecord]: ...
+    async def list_reapable(self, now: datetime, tenant: str = "") -> list[OrphanRecord]: ...
 
     async def mark_state(self, orphan_id: str, state: str) -> None: ...
 
@@ -79,11 +79,13 @@ async def reap(
     backend: GitHost,
     allowed_repos: frozenset[str],
     now: datetime,
+    tenant: str = "",
     dry_run: bool = True,
 ) -> ReapReceipt:
-    candidates = await registry.list_reapable(now)
+    candidates = await registry.list_reapable(now, tenant)
     actions: list[ReapAction] = []
-    for record in candidates:
+    # GitHub refuses to close a pull request whose head branch is already deleted.
+    for record in sorted(candidates, key=lambda record: record.artifact_type != PR):
         actions.append(await _reap_one(record, registry, backend, allowed_repos, dry_run))
     return ReapReceipt(dry_run=dry_run, scanned=len(candidates), actions=tuple(actions))
 

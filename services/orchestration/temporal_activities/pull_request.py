@@ -233,6 +233,8 @@ def _build_ticket_backend(issue_key: str):
 
 @activity.defn
 async def create_draft_pr(req: OpenPrRequest) -> OpenPrResult:
+    from scripts.config import get_settings
+
     from services.coordination.orphans import PR, OrphanArtifact
 
     mediator = _build_mediator()
@@ -253,6 +255,7 @@ async def create_draft_pr(req: OpenPrRequest) -> OpenPrResult:
             external_id=f"{req.repo}#{pr.number}",
             repository=req.repo,
             owning_workflow=req.workflow_id,
+            tenant=get_settings().tenant,
         )
     )
     return OpenPrResult(

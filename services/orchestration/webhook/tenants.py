@@ -7,12 +7,13 @@ tenants/<tenant>/ of TENANT_CONFIG_BUCKET, and falls back to the environment's c
 worker does. Both refresh once TENANT_CONFIG_REFRESH_SECONDS have passed, and a file that fails to
 read or parse leaves the last valid copy in force.
 
-A pull request delivery belongs to the tenant whose repositories.yaml lists its repository as a
-GitHub repository. A repository that two tenants list is refused when the registries load. The
-tenant that held it before the conflict keeps it, and a repository no tenant held before routes
-to no tenant until the conflict is resolved. A Jira delivery names its tenant in its path,
-/webhook/jira/<tenant>, and is admitted for the projects the allowlist of that tenant's jira.yaml
-names.
+A pull request delivery belongs to the tenant whose secret signs it, among the tenants whose
+repositories.yaml lists its repository as a GitHub repository. Two tenants may list the same
+repository, each with its own secret, and the delivery routes to the tenant whose secret verifies
+it. A delivery that no claimant's secret verifies is refused, and a delivery that more than one
+claimant's secret verifies is refused, because tenants that share a secret can forge each other's
+deliveries. A Jira delivery names its tenant in its path, /webhook/jira/<tenant>, and is admitted
+for the projects the allowlist of that tenant's jira.yaml names.
 
 Each tenant signs its deliveries with its own secrets, GITHUB_WEBHOOK_SECRET_<TENANT> and
 JIRA_WEBHOOK_SECRET_<TENANT>, so one tenant cannot forge the events of another. When the webhook
@@ -42,6 +43,7 @@ from services.integration.credentials import (
 from services.integration.jira.credentials import allowed_projects, parse_jira_config
 from services.integration.repositories import GITHUB
 from services.integration.tenant_config import BundleSource, tenant_source
+from services.orchestration.webhook.pr_events import verify_signature
 from services.repository_intelligence.tenants import PLATFORM_TENANT, TenantRegistries
 
 if TYPE_CHECKING:
@@ -118,8 +120,6 @@ class TenantRouting:
         self._sources: dict[str, BundleSource] = {}
         self._clock = clock
         self._interval = float(settings.tenant_config_refresh_seconds)
-        self._owners: dict[str, str] = {}
-        self._conflicts: dict[str, tuple[str, ...]] = {}
         self._projects: dict[str, frozenset[str]] = {}
         self._project_versions: dict[str, str] = {}
         self._projects_refreshed_at: dict[str, float] = {}
@@ -128,8 +128,8 @@ class TenantRouting:
     def tenants(self) -> list[str]:
         return self._registries.tenants()
 
-    def repository_owners(self) -> dict[str, str]:
-        """Return the tenant that owns each GitHub repository, leaving out refused repositories."""
+    def _claimants(self) -> dict[str, tuple[str, ...]]:
+        """Return each GitHub repository mapped to the sorted tenants that list it."""
         claims: dict[str, list[str]] = {}
         for tenant in self.tenants():
             registry = self._registries.registry(tenant)
@@ -137,33 +137,25 @@ class TenantRouting:
                 continue
             for name in registry.names(GITHUB):
                 claims.setdefault(name, []).append(tenant)
-        with self._lock:
-            owners: dict[str, str] = {}
-            conflicts: dict[str, tuple[str, ...]] = {}
-            for name, claimants in claims.items():
-                if len(claimants) == 1:
-                    owners[name] = claimants[0]
-                    continue
-                conflicts[name] = tuple(claimants)
-                previous = self._owners.get(name)
-                if previous in claimants:
-                    owners[name] = previous
-            for name, claimants in sorted(conflicts.items()):
-                if self._conflicts.get(name) != claimants:
-                    log.error(
-                        "repository %s is listed by tenants %s, so it is refused and stays with %s",
-                        name,
-                        ", ".join(claimants),
-                        owners.get(name) or "no tenant",
-                    )
-            self._owners, self._conflicts = owners, conflicts
-            return dict(owners)
+        return {name: tuple(sorted(tenants)) for name, tenants in claims.items()}
+
+    def claimants(self, repository: str) -> tuple[str, ...]:
+        """Return the tenants that list the repository as a GitHub repository, sorted."""
+        return self._claimants().get(repository, ())
+
+    def repository_owners(self) -> dict[str, str]:
+        """Return each GitHub repository that one tenant lists, mapped to that tenant."""
+        return {
+            name: tenants[0] for name, tenants in self._claimants().items() if len(tenants) == 1
+        }
 
     def owner(self, repository: str) -> str | None:
-        return self.repository_owners().get(repository)
+        """Return the tenant when one lists the repository, or None when none or several do."""
+        tenants = self.claimants(repository)
+        return tenants[0] if len(tenants) == 1 else None
 
     def github_repositories(self) -> frozenset[str]:
-        return frozenset(self.repository_owners())
+        return frozenset(self._claimants())
 
     def jira_projects(self, tenant: str) -> frozenset[str]:
         """Return the projects the allowlist of the tenant's jira.yaml names."""
@@ -213,22 +205,37 @@ class TenantRouting:
 
 @dataclass(frozen=True)
 class RoutedRepositories:
-    """The owning tenant and signing secret of each repository, for the PR-closed handler.
+    """Choose the tenant whose secret signs a PR-closed delivery, for the PR-closed handler.
 
-    A repository no tenant owns is verified with the secret of the one tenant served, so a
+    A repository several tenants list routes to the tenant whose secret verifies the delivery.
+    A repository no tenant lists is verified with the secret of the one tenant served, so a
     single-tenant webhook refuses it as not allowlisted, as before tenants. With more tenants it
-    has no secret and its delivery is refused as unsigned.
+    has no such fallback and its delivery is refused as unsigned.
     """
 
     routing: TenantRouting
     secrets: Mapping[str, str]
 
-    def owner(self, repository: str) -> str | None:
-        return self.routing.owner(repository)
-
-    def signing_secret(self, repository: str | None) -> str:
-        tenant = self.owner(repository) if repository else None
-        if tenant is None:
-            tenants = self.routing.tenants()
-            tenant = tenants[0] if len(tenants) == 1 else None
-        return self.secrets.get(tenant, "") if tenant is not None else ""
+    def select_tenant(self, repository: str | None, body: bytes, signature: str) -> str | None:
+        claimants = self.routing.claimants(repository) if repository else ()
+        matches = [
+            tenant
+            for tenant in claimants
+            if verify_signature(self.secrets.get(tenant, ""), body, signature)
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            log.error(
+                "tenants %s share a webhook secret for repository %s, so the delivery is refused",
+                ", ".join(matches),
+                repository,
+            )
+            return None
+        if not claimants:
+            served = self.routing.tenants()
+            if len(served) == 1 and verify_signature(
+                self.secrets.get(served[0], ""), body, signature
+            ):
+                return served[0]
+        return None

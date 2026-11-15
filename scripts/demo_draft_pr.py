@@ -435,7 +435,11 @@ async def main() -> int:
     ledger = InMemorySideEffectLedger()
     gate = InMemorySequenceGate()
     mediator = GitHubMediator(
-        backend=host, ledger=ledger, gate=gate, allowed_repos=frozenset(allowlist)
+        backend=host,
+        ledger=ledger,
+        gate=gate,
+        allowed_repos=frozenset(allowlist),
+        tenant=settings.tenant,
     )
     materializer = WorkspaceMaterializer.from_settings(
         InMemoryOrphanRegistry(),
@@ -544,7 +548,7 @@ async def main() -> int:
     if result.status == EXISTING_PR_REUSED:
         print("[demo] existing draft PR detected for this task; reused instead of duplicating")
 
-    branch = agent_branch_name(task_id)
+    branch = agent_branch_name(task_id, settings.tenant)
     print(f"  branch                {branch}")
     print(f"  draft pr number       {result.pr_number}")
     print(f"  draft pr url          {result.pr_url}")

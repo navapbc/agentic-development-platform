@@ -100,6 +100,17 @@ def test_parse_pr_closed_event_extracts_task_id_from_branch():
     )
 
 
+def test_parse_strips_the_tenant_segment_once_the_tenant_is_known():
+    payload = _payload()
+    payload["pull_request"]["head"]["ref"] = "agent/beta/T-1"
+
+    scoped = parse_pr_closed_event(payload, tenant="beta")
+    legacy = parse_pr_closed_event(_payload(), tenant="beta")
+
+    assert scoped is not None and scoped.task_id == "T-1" and scoped.tenant == "beta"
+    assert legacy is not None and legacy.task_id == "T-1" and legacy.tenant == "beta"
+
+
 def test_parse_ignores_non_closed_actions():
     assert parse_pr_closed_event(_payload(action="opened")) is None
 

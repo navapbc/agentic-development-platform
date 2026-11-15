@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 import yaml
-from scripts import eks_render, webhook_render
+from scripts import eks_render, webhook_eks_render
 from services import process
 from tests.unit.test_eks_render import OVERLAY, REPOSITORY, _inputs, _named, _tenant
 
@@ -31,7 +31,7 @@ def overlay() -> list[dict[str, Any]]:
 
 def _with_webhook_secrets(name: str) -> dict[str, Any]:
     tenant = _tenant(name)
-    for key in webhook_render.TENANT_WEBHOOK_KEYS:
+    for key in webhook_eks_render.TENANT_WEBHOOK_KEYS:
         tenant["secrets"][key] = f"{ARN}/{name}/{key}"
     return tenant
 
@@ -109,3 +109,17 @@ def test_tenants_in_different_config_buckets_are_refused(overlay) -> None:
 
     with pytest.raises(eks_render.RenderError, match="one config bucket"):
         eks_render.render(overlay, inputs, REPOSITORY)
+
+
+def test_the_eks_webhook_aliases_match_the_names_the_webhook_reads() -> None:
+    from services.orchestration.webhook.tenants import (
+        GITHUB_SIGNING_ENV_PREFIX,
+        JIRA_SIGNING_ENV_PREFIX,
+        secret_env_name,
+    )
+
+    assert webhook_eks_render.TENANT_WEBHOOK_KEYS == {
+        "github_webhook_secret": GITHUB_SIGNING_ENV_PREFIX,
+        "jira_webhook_secret": JIRA_SIGNING_ENV_PREFIX,
+    }
+    assert webhook_eks_render.webhook_alias("x", "beta") == secret_env_name("x", "beta")

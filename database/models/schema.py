@@ -179,6 +179,7 @@ orphan_artifacts = Table(
     Column("state", String(32), nullable=False, server_default="active"),
     Column("ttl_at", DateTime(timezone=True), nullable=True),
     Column("platform_tagged", Boolean, nullable=False, server_default="true"),
+    Column("tenant", String(32), nullable=False, server_default=""),
     _created_at(),
 )
 

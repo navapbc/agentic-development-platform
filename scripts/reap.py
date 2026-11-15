@@ -36,6 +36,7 @@ async def _run_once(apply: bool) -> int:
         backend=RealGitHost.from_settings(),
         allowed_repos=frozenset(source_control_repos(settings)),
         now=datetime.now(UTC),
+        tenant=settings.tenant,
         dry_run=not apply,
     )
     _print_receipt(receipt)

@@ -207,11 +207,12 @@ def rendered(settings: Settings, build_id: str, compose_files: Sequence[str]) ->
 
 
 def apply(settings: Settings, documents: Sequence[dict], run: Runner = process.run) -> None:
+    from scripts.eks_render import workloads_last
     from scripts.k8s_render import dump
 
     run(
         kubectl(settings, "apply", "-f", "-"),
-        input=dump(documents),
+        input=dump(workloads_last(documents)),
         text=True,
         timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS,
         check=True,
