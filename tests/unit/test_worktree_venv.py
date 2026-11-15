@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -179,3 +180,45 @@ def test_a_failed_provision_removes_the_worktree_it_just_added(tmp_path, monkeyp
     assert args.handler(args) == 1
     assert removed and str(added) in removed[0]
     assert "uv sync exploded" in capsys.readouterr().err
+
+
+def _git_repository(path: Path) -> Path:
+    path.mkdir()
+    for args in (
+        ["init", "-q", "-b", "main"],
+        [
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "seed",
+        ],
+    ):
+        subprocess.run(["git", *args], cwd=path, check=True, capture_output=True)
+    return path
+
+
+def _checked_out_branch(worktree: Path) -> str:
+    return subprocess.run(
+        ["git", "branch", "--show-current"],
+        cwd=worktree,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+@pytest.mark.parametrize("create", [False, True])
+def test_adding_a_worktree_checks_out_the_branch_at_the_path(tmp_path, create):
+    root = _git_repository(tmp_path / "repo")
+    if not create:
+        subprocess.run(["git", "branch", "adp-215"], cwd=root, check=True, capture_output=True)
+    added = tmp_path / "lane"
+
+    worktree_module._add(root, added, "adp-215", create=create)
+
+    assert _checked_out_branch(added) == "adp-215"
