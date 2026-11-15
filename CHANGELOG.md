@@ -315,6 +315,7 @@ AWS transition and FedRAMP Medium readiness. The platform documents its local-to
 
 ### Fixed
 
+- `inv platform-deploy` waits only on the worker slots it moves. It also waited on the slot left to drain, which never stabilizes once that slot's build image has left ECR.
 - A run of a second tenant gathers repository context. Repository intelligence served only the platform `repositories.yaml`, so it refused every other tenant's repository with 403.
 - The review worker resolves a repository checkout only through the run's tenant and only under `/tenants/<tenant>/`.
 - `inv index-repo` sends the token of `TENANT`.

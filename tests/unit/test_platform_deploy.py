@@ -329,3 +329,13 @@ def test_a_failed_clickhouse_migration_leaves_langfuse_untouched() -> None:
         deployer.deploy(ecs, LANGFUSE_SETTINGS)
 
     assert "platform-langfuse-web" not in _steps(ecs)
+
+
+def test_the_rollout_waits_on_the_moved_slot_and_not_the_slot_left_to_drain() -> None:
+    ecs = _Ecs(slots={"blue": ("workflow:2", 2), "green": ("workflow:2", 0)})
+
+    deployer.deploy(ecs, SETTINGS)
+
+    waited = next(call[2]["services"] for call in ecs.calls if call[1] == "services_stable")
+    assert SLOT.format("green") in waited
+    assert SLOT.format("blue") not in waited

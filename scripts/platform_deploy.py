@@ -232,8 +232,9 @@ def roll_services(
     for name, (slot, _) in plans.items():
         worker = versioned[name]
         _move(ecs, cluster, worker["slots"][slot], worker["task_definition"], worker["count"])
+    # The slot left to drain is not waited on, because its build's image may already be gone.
     services = [service["service"] for service in single] + [
-        service for worker in versioned.values() for service in worker["slots"].values()
+        versioned[name]["slots"][slot] for name, (slot, _) in plans.items()
     ]
     ecs.get_waiter("services_stable").wait(
         cluster=cluster, services=services, WaiterConfig=SERVICE_WAIT
