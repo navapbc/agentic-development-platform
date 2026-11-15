@@ -237,8 +237,9 @@ async def test_a_stage_failure_is_not_retried(tmp_path, monkeypatch):
 async def test_the_sandbox_runtime_is_given_the_run_key_and_never_the_master_key(
     tmp_path, monkeypatch, _run_model_access
 ):
-    from tests.support import hermetic_settings
+    from tests.support import configure_repositories, hermetic_settings
 
+    configure_repositories(monkeypatch, tmp_path, "repositories:\n  agentic-demo-service: {}\n")
     settings = hermetic_settings(litellm_master_key="sk-master-secret")
     monkeypatch.setattr("scripts.config.get_settings", lambda: settings)
     driver = impl._build_runtime("agentic-demo-service", model_api_key=_RUN_KEY).driver

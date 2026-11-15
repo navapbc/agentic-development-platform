@@ -373,3 +373,18 @@
   path: docker/image-scan.Dockerfile
   match: ''
   justification: The image runs the SBOM generator once against an image archive and exits, so it serves nothing to check.
+- tool: semgrep
+  rule: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
+  path: services/orchestration/webhook/tenants.py
+  match: log.error(
+  justification: The rule fires on the word secret in the format string. The arguments are the names of the tenants whose signing secrets all verified the delivery and the repository name from the payload. The secret values stay in the verify_signature call and are not in the log arguments.
+- tool: bandit
+  rule: B105
+  path: scripts/webhook_eks_render.py
+  match: '"github_webhook_secret": "GITHUB_WEBHOOK_SECRET_",'
+  justification: GITHUB_WEBHOOK_SECRET_ is the prefix of the per-tenant environment variable name the inbound webhook reads its GitHub signing secret from, joined with the upper-cased tenant name. Bandit matches the word secret in the dictionary key, and the value is a variable name prefix, not a credential.
+- tool: bandit
+  rule: B105
+  path: scripts/webhook_eks_render.py
+  match: '"jira_webhook_secret": "JIRA_WEBHOOK_SECRET_",'
+  justification: JIRA_WEBHOOK_SECRET_ is the prefix of the per-tenant environment variable name the inbound webhook reads its Jira signing secret from, joined with the upper-cased tenant name. Bandit matches the word secret in the dictionary key, and the value is a variable name prefix, not a credential.

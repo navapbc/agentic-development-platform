@@ -151,12 +151,28 @@ def test_apply_staged_files_copies_nothing_when_the_failure_named_no_path(tmp_pa
 
 
 def test_autofix_degrades_to_agent_repair_when_the_pod_transport_fails(monkeypatch):
+    from services.orchestration.checks import config as checks_config
+    from services.orchestration.checks.config import ChecksConfig
+    from services.orchestration.checks.runner import ChecksRunner
+    from services.orchestration.temporal_activities import checks as checks_module
     from services.orchestration.temporal_activities import repair as repair_module
 
-    def explode(*args, **kwargs):
+    async def kubectl_missing(*args, **kwargs):
         raise RuntimeError("kubectl not found")
 
-    monkeypatch.setattr(repair_module, "_build_materializer", explode, raising=False)
+    outcomes: list[str] = []
+    monkeypatch.setattr(
+        checks_config,
+        "checks_for_repo",
+        lambda repo, settings: ChecksConfig(
+            repo=repo, image="img", command="make", fix_command="fix"
+        ),
+    )
+    monkeypatch.setattr(checks_module, "_clean_checkout", lambda source, destination: None)
+    monkeypatch.setattr(ChecksRunner, "run_fix", kubectl_missing)
+    monkeypatch.setattr(
+        repair_module, "_record_fix_outcome", lambda outcome, **fields: outcomes.append(outcome)
+    )
     request = ApplyCIRepairRequest(
         task_id="t",
         execution_id="e",
@@ -168,6 +184,7 @@ def test_autofix_degrades_to_agent_repair_when_the_pod_transport_fails(monkeypat
     )
 
     assert asyncio.run(repair_module._project_autofix(request, "/nonexistent")) is False
+    assert outcomes == ["pod-failed"]
 
 
 def test_fix_and_check_pods_of_one_execution_get_distinct_names():

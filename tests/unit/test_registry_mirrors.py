@@ -69,6 +69,7 @@ def test_a_malformed_config_is_refused(raw, message) -> None:
         registry_mirrors.parse(raw)
 
 
+@pytest.mark.usefixtures("allow_any_image")
 async def test_aws_mode_pulls_the_mirrors_with_the_ecr_token_and_installs_no_package_config() -> (
     None
 ):
@@ -91,6 +92,7 @@ async def test_aws_mode_pulls_the_mirrors_with_the_ecr_token_and_installs_no_pac
     assert setup.run_flags() == "" and setup.build_flags() == ""
 
 
+@pytest.mark.usefixtures("allow_any_image")
 async def test_external_mode_authenticates_the_mirrors_and_the_package_installs(
     monkeypatch,
 ) -> None:
@@ -112,6 +114,7 @@ async def test_external_mode_authenticates_the_mirrors_and_the_package_installs(
     assert "s3cr3t" not in setup.run_flags() + setup.build_flags() + setup.before_pull()
 
 
+@pytest.mark.usefixtures("allow_any_image")
 async def test_external_mode_without_its_token_is_an_error(monkeypatch) -> None:
     monkeypatch.delenv("REGISTRY_TOKEN", raising=False)
 
