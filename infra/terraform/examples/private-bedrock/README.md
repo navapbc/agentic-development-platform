@@ -201,7 +201,7 @@ The root writes `image_policy.yaml` into the platform config the EKS deploy rend
 
 ## After apply
 
-1. Push the jumphost image to the repository shown in the `jumphost_ecr_repository_url` output with `inv publish-jumphost-image --tag v1`.
+1. Push the jumphost image to the repository shown in the `jumphost_ecr_repository_url` output with `inv publish-jumphost-image --tag v1`, where the tag matches `jumphost_image_tag` and is not yet in the repository. It scans the image and signs it with the `image_signing_profile_arn` profile inside the buildah image that `inv publish-platform-images` pushes, so run it after that task, or pass `--unsigned` when the root creates no signing profile. See the [bedrock-jumphost-fargate README](../../bedrock-jumphost-fargate/README.md#image-delivery).
 2. Attach the `bedrock_invoke_policy_arn` output to any workload role outside the composition that signs Bedrock inference. The composition attaches it to the review worker.
 3. Bring up the platform and open the tunnel with `inv tunnel-start --detach`.
 4. With the secret store and Aurora enabled, create the per-service database roles before the first migration with `inv db-bootstrap-roles --function-name "$(terraform output -raw role_bootstrap_function_name)"`. Run it again after an apply that adds a role, such as `litellm`, to an existing cluster, before the next `inv eks-deploy`. Then set each external secret, such as `github_token`, with `aws secretsmanager put-secret-value`.

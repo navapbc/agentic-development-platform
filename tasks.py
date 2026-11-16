@@ -969,29 +969,30 @@ def cbm_build(c, source="", ref="", dest="vendor/bin"):
 
 @task(
     help={
-        "tag": "Image tag to build and push (default v1). Bump to ship a new image.",
+        "tag": "Image tag to build and push, one the repository does not hold yet. Required.",
         "arch": "Target architecture, arm64 or amd64 (default arm64).",
-        "base_image": "A registry copy of the hardened base to build from, else a local build.",
         "repo": "ECR repository name (default agentic-platform/jumphost-base).",
         "region": "AWS region (empty uses AWS_REGION).",
+        "exceptions": "image_exceptions.yaml whose entries the pre-push scan accepts.",
+        "builder": "Image that runs notation for the signing (default the published buildah).",
+        "unsigned": "Publish without signing, for a deployment with no platform signing profile.",
     }
 )
-def publish_jumphost_image(c, tag="v1", arch="arm64", base_image="", repo="", region=""):
-    """Build and push the Fargate jumphost-base image to the account ECR repository."""
+def publish_jumphost_image(
+    c, tag, arch="arm64", repo="", region="", exceptions="", builder="", unsigned=False
+):
+    """Build the Fargate jumphost-base image, scan it, push it to ECR, and sign it."""
     from scripts.config import get_settings
 
     settings = get_settings()
-    if not base_image:
-        from scripts.al2023_base import Base
-        from scripts.publish_platform_images import REPO_ROOT, build_context
-
-        with build_context(REPO_ROOT) as context:
-            base_image = Base(arch).reference(context)
-    flags = f"-t {tag} -a {arch} -b {shlex.quote(base_image)}"
-    flags += f" -r {repo}" if repo else ""
-    flags += f" -R {region}" if region else ""
+    flags = f" --tag {shlex.quote(tag)} --arch {shlex.quote(arch)}"
+    flags += f" --repository {shlex.quote(repo)}" if repo else ""
+    flags += f" --region {shlex.quote(region)}" if region else ""
+    flags += f" --exceptions {shlex.quote(exceptions)}" if exceptions else ""
+    flags += f" --builder {shlex.quote(builder)}" if builder else ""
+    flags += " --unsigned" if unsigned else ""
     env = {"AWS_PROFILE": settings.aws_profile, "AWS_REGION": settings.aws_region}
-    c.run(f"bash infra/bin/publish_jumphost_image.sh {flags}".strip(), pty=True, env=env)
+    c.run(f"{HOST_PYTHON} -m scripts.publish_jumphost_image{flags}", pty=True, env=env)
 
 
 @task(

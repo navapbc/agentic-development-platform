@@ -7,8 +7,8 @@ RUN dnf -y --releasever="${AL2023_RELEASE}" upgrade \
  && rm -rf /var/cache/dnf
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 
-COPY --from=repo LICENSE NOTICE /usr/share/doc/agentic-dev-platform/
-COPY entrypoint.sh /bin/entrypoint.sh
+COPY LICENSE NOTICE /usr/share/doc/agentic-dev-platform/
+COPY docker/jumphost-base/entrypoint.sh /bin/entrypoint.sh
 RUN chmod 0755 /bin/entrypoint.sh
 
 RUN cis-harden
