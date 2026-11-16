@@ -199,8 +199,9 @@ class ObjectStoreWriter:
 class ObjectStoreEvidenceSink:
     """Persist each evidence object to an S3-compatible store under Object Lock.
 
-    The object body is content-addressed by the record's content hash, so a repeated
-    write of the same content is idempotent. The object location is then recorded on the
+    The object is keyed by the record's execution and content hash, so a repeated write of
+    the same content for one execution is idempotent, and each execution's index row locates
+    an object whose body names that execution. The object location is then recorded on the
     Postgres index so a reader resolves the object by id.
     """
 
@@ -222,12 +223,16 @@ class ObjectStoreEvidenceSink:
 
     async def persist(self, record: EvidenceRecord) -> str:
         record = resolve_retention(record, self._settings)
-        key = f"evidence/{record.content_hash}"
+        key = evidence_object_key(record)
         body = json.dumps(_serialize(record), sort_keys=True).encode("utf-8")
         location = await asyncio.to_thread(
             self._writer.put_locked, key, body, retention_days=self._retention_days(record)
         )
         return await self._index.persist(replace(record, location=location))
+
+
+def evidence_object_key(record: EvidenceRecord) -> str:
+    return f"evidence/{record.execution_id}/{record.content_hash}"
 
 
 def _serialize(record: EvidenceRecord) -> dict[str, Any]:

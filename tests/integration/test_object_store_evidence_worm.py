@@ -16,7 +16,11 @@ from urllib.parse import urlparse
 
 import pytest
 from botocore.exceptions import ClientError
-from services.review.evidence import EvidenceRecord, ObjectStoreEvidenceSink
+from services.review.evidence import (
+    EvidenceRecord,
+    ObjectStoreEvidenceSink,
+    evidence_object_key,
+)
 from tests.support import hermetic_settings
 
 _ENDPOINT = "http://localhost:9090"
@@ -79,7 +83,7 @@ async def test_locked_evidence_object_resists_delete_and_overwrite():
     )
     await sink.persist(record)
 
-    key = f"evidence/{record.content_hash}"
+    key = evidence_object_key(record)
     head = client.head_object(Bucket=bucket, Key=key)
     version_id = head["VersionId"]
     assert head["ObjectLockMode"] == "COMPLIANCE"

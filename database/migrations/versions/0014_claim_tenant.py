@@ -66,20 +66,20 @@ def upgrade() -> None:
 
     _add_nullable_tenant("sequence_gate")
     op.drop_constraint(op.f(_GATE_PRIMARY_KEY), "sequence_gate", type_="primary", schema=SCHEMA)
+    # A workflow sequences from its claim version, so only a tenant that kept the claim row
+    # continues above the gate. Any other tenant claims at version 1 and starts from zero.
     op.execute(
         "INSERT INTO agent_platform.sequence_gate "
         "(tenant, task_id, current_sequence, updated_at) "
-        "SELECT DISTINCT COALESCE(execution.tenant, ''), gate.task_id, "
-        "gate.current_sequence, gate.updated_at "
+        "SELECT DISTINCT claim.tenant, gate.task_id, gate.current_sequence, gate.updated_at "
         "FROM agent_platform.sequence_gate AS gate "
-        "JOIN agent_platform.executions AS execution ON execution.task_id = gate.task_id "
+        "JOIN agent_platform.work_claims AS claim ON claim.task_id = gate.task_id "
         "WHERE gate.tenant IS NULL"
     )
     op.execute(
         "DELETE FROM agent_platform.sequence_gate AS gate "
         "WHERE gate.tenant IS NULL AND EXISTS "
-        "(SELECT 1 FROM agent_platform.executions AS execution "
-        "WHERE execution.task_id = gate.task_id)"
+        "(SELECT 1 FROM agent_platform.work_claims AS claim WHERE claim.task_id = gate.task_id)"
     )
     op.execute("UPDATE agent_platform.sequence_gate SET tenant = '' WHERE tenant IS NULL")
     _require_tenant("sequence_gate")

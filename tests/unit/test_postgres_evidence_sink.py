@@ -6,6 +6,7 @@ and the content hash, and for the tenant each execution recorded.
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -48,6 +49,7 @@ class _EvidenceConnection:
                 return SimpleNamespace(scalar_one_or_none=lambda: None)
             self._table.rows[key] = {
                 "artifact_id": params["artifact_id"],
+                "location": params["location"],
                 "tenant": self._table.execution_tenants.get(params["execution_id_1"], ""),
             }
             return SimpleNamespace(scalar_one_or_none=lambda: params["artifact_id"])
@@ -95,19 +97,19 @@ async def test_a_repeated_persist_for_one_execution_returns_the_stored_artifact_
     assert list(table.rows) == [("exec-1", "sha256:identical")]
 
 
-async def test_two_executions_with_identical_evidence_hold_a_row_each_and_one_object():
+async def test_each_execution_s_row_locates_an_object_that_names_the_execution():
     table = _EvidenceTable({"exec-alpha": "alpha", "exec-beta": "beta"})
     client = _FakeS3()
     sink = ObjectStoreEvidenceSink(
         index=_index(table), settings=_settings(), writer=_writer(client)
     )
 
-    alpha = await sink.persist(_record("art-alpha", "exec-alpha"))
-    beta = await sink.persist(_record("art-beta", "exec-beta"))
+    await sink.persist(_record("art-alpha", "exec-alpha"))
+    await sink.persist(_record("art-beta", "exec-beta"))
 
-    assert (alpha, beta) == ("art-alpha", "art-beta")
-    assert {key: row["tenant"] for key, row in table.rows.items()} == {
-        ("exec-alpha", "sha256:identical"): "alpha",
-        ("exec-beta", "sha256:identical"): "beta",
-    }
-    assert list(client.objects) == [("evidence", "evidence/sha256:identical")]
+    assert len(table.rows) == 2
+    for (execution_id, _content_hash), row in table.rows.items():
+        bucket, _, key = row["location"].removeprefix("s3://").partition("/")
+        body = json.loads(client.objects[(bucket, key)])
+        assert (body["execution_id"], body["artifact_id"]) == (execution_id, row["artifact_id"])
+    assert {row["tenant"] for row in table.rows.values()} == {"alpha", "beta"}
