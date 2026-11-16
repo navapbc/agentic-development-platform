@@ -22,7 +22,7 @@ locals {
   step_timeout_seconds     = 600
   read_timeout_seconds     = 590
   function_timeout_seconds = 560
-  throttle_seconds         = 60
+  throttle_seconds         = 20
 
   # Field 5 of a cron() expression is the day of the week.
   wake_days       = upper(try(split(" ", trimsuffix(trimprefix(var.wake_schedule, "cron("), ")"))[4], ""))
@@ -31,6 +31,7 @@ locals {
 
   service_arns     = distinct(concat(var.foundation_services, var.services))
   metric_namespace = "${var.name_prefix}/OffHours"
+  alert_topic_arn  = "arn:${local.partition}:sns:${var.region}:${local.account_id}:${var.name_prefix}-off-hours-alerts"
   topic_arn        = try(aws_sns_topic.alerts[0].arn, "")
   eks_enabled      = local.enabled && var.eks_deployer != null
   database_enabled = local.enabled && var.database != null
@@ -129,6 +130,18 @@ resource "aws_kms_key" "alerts" {
         Resource  = "*"
       },
       {
+        Sid       = "EncryptAFailedRunAlert"
+        Effect    = "Allow"
+        Principal = { Service = "events.amazonaws.com" }
+        Action    = ["kms:GenerateDataKey*", "kms:Decrypt"]
+        Resource  = "*"
+        # EventBridge sends no aws:SourceAccount or aws:SourceArn to KMS when it publishes to an
+        # encrypted topic, so the statement is scoped by the topic in the encryption context.
+        Condition = {
+          StringEquals = { "kms:EncryptionContext:aws:sns:topicArn" = local.alert_topic_arn }
+        }
+      },
+      {
         Sid       = "EncryptTheFunctionLogGroup"
         Effect    = "Allow"
         Principal = { Service = "logs.${var.region}.amazonaws.com" }
@@ -160,6 +173,59 @@ resource "aws_sns_topic" "alerts" {
   kms_master_key_id = aws_kms_key.alerts[0].arn
 
   tags = var.tags
+}
+
+resource "aws_sns_topic_policy" "alerts" {
+  count = local.enabled ? 1 : 0
+
+  arn = aws_sns_topic.alerts[0].arn
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid       = "PublishAFailedRun"
+      Effect    = "Allow"
+      Principal = { Service = "events.amazonaws.com" }
+      Action    = "sns:Publish"
+      Resource  = aws_sns_topic.alerts[0].arn
+      Condition = { ArnEquals = { "aws:SourceArn" = aws_cloudwatch_event_rule.failed_run[0].arn } }
+    }]
+  })
+}
+
+# RecordFailure runs in the off-hours function, so a run that fails because the function cannot
+# run, such as a sustained throttle or a broken deploy, records nothing. This rule alerts from
+# the execution status instead.
+resource "aws_cloudwatch_event_rule" "failed_run" {
+  count = local.enabled ? 1 : 0
+
+  name        = "${var.name_prefix}-off-hours-failed-run"
+  description = "Alert when an off-hours sleep or wake execution fails, times out, or is cancelled."
+  event_pattern = jsonencode({
+    source      = ["aws.ssm"]
+    detail-type = ["EC2 Automation Execution Status-change Notification"]
+    detail = {
+      Definition = [for name in keys(local.documents) : "${var.name_prefix}-off-hours-${name}"]
+      Status     = ["Failed", "TimedOut", "Cancelled"]
+    }
+  })
+
+  tags = var.tags
+}
+
+resource "aws_cloudwatch_event_target" "failed_run" {
+  count = local.enabled ? 1 : 0
+
+  rule = aws_cloudwatch_event_rule.failed_run[0].name
+  arn  = aws_sns_topic.alerts[0].arn
+
+  input_transformer {
+    input_paths = {
+      definition = "$.detail.Definition"
+      status     = "$.detail.Status"
+      execution  = "$.detail.ExecutionId"
+    }
+    input_template = "\"The off-hours run <definition> ended <status>. aws ssm get-automation-execution --automation-execution-id <execution> names the step that failed.\""
+  }
 }
 
 resource "aws_ssm_document" "scale" {

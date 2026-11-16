@@ -23,6 +23,9 @@ mock_provider "aws" {
   mock_resource "aws_cloudwatch_log_group" {
     defaults = { arn = "arn:aws:logs:us-east-1:111111111111:log-group:/aws/lambda/agentic-platform-off-hours" }
   }
+  mock_resource "aws_cloudwatch_event_rule" {
+    defaults = { arn = "arn:aws:events:us-east-1:111111111111:rule/agentic-platform-off-hours-failed-run" }
+  }
   mock_resource "aws_lambda_function" {
     defaults = { arn = "arn:aws:lambda:us-east-1:111111111111:function:agentic-platform-off-hours" }
   }
@@ -70,6 +73,7 @@ run "disabled_creates_nothing" {
       length(aws_sns_topic.alerts) == 0 && length(aws_kms_key.alerts) == 0 && length(aws_kms_alias.alerts) == 0 &&
       length(aws_lambda_function.scale) == 0 && length(aws_iam_role.function) == 0 && length(aws_cloudwatch_log_group.scale) == 0 &&
       output.function_name == null && output.function_role_arn == null &&
+      length(aws_cloudwatch_event_rule.failed_run) == 0 && length(aws_cloudwatch_event_target.failed_run) == 0 && length(aws_sns_topic_policy.alerts) == 0 &&
       output.alert_topic_arn == null && output.metric_namespace == null
     )
     error_message = "A disabled schedule created a resource."
@@ -281,5 +285,45 @@ run "the_automation_role_may_only_invoke_the_function" {
       data.aws_iam_policy_document.automation[0].statement[0].resources == toset([aws_lambda_function.scale[0].arn])
     )
     error_message = "The automation role holds a permission beyond invoking the off-hours function."
+  }
+}
+
+run "a_run_that_fails_outside_the_function_still_alerts" {
+  command = apply
+
+  assert {
+    condition = (
+      jsondecode(aws_cloudwatch_event_rule.failed_run[0].event_pattern).source == ["aws.ssm"] &&
+      jsondecode(aws_cloudwatch_event_rule.failed_run[0].event_pattern)["detail-type"] == ["EC2 Automation Execution Status-change Notification"] &&
+      toset(jsondecode(aws_cloudwatch_event_rule.failed_run[0].event_pattern).detail.Definition) == toset([for document in aws_ssm_document.scale : document.name]) &&
+      toset(jsondecode(aws_cloudwatch_event_rule.failed_run[0].event_pattern).detail.Status) == toset(["Failed", "TimedOut", "Cancelled"]) &&
+      aws_cloudwatch_event_target.failed_run[0].arn == aws_sns_topic.alerts[0].arn
+    )
+    error_message = "A failed, timed out, or cancelled sleep or wake execution does not alert the topic."
+  }
+
+  assert {
+    condition = (
+      one(jsondecode(aws_sns_topic_policy.alerts[0].policy).Statement).Principal.Service == "events.amazonaws.com" &&
+      one(jsondecode(aws_sns_topic_policy.alerts[0].policy).Statement).Condition.ArnEquals["aws:SourceArn"] == aws_cloudwatch_event_rule.failed_run[0].arn &&
+      one([for statement in jsondecode(aws_kms_key.alerts[0].policy).Statement : statement.Condition.StringEquals["kms:EncryptionContext:aws:sns:topicArn"] if statement.Sid == "EncryptAFailedRunAlert"]) == "arn:aws:sns:us-east-1:111111111111:agentic-platform-off-hours-alerts" &&
+      one([for statement in jsondecode(aws_kms_key.alerts[0].policy).Statement : keys(statement.Condition) if statement.Sid == "EncryptAFailedRunAlert"]) == ["StringEquals"] &&
+      one([for statement in jsondecode(aws_kms_key.alerts[0].policy).Statement : keys(statement.Condition.StringEquals) if statement.Sid == "EncryptAFailedRunAlert"]) == ["kms:EncryptionContext:aws:sns:topicArn"]
+    )
+    error_message = "The alert topic does not admit only the failed-run rule, or its key does not let EventBridge encrypt for that topic alone without the source conditions EventBridge does not send to KMS."
+  }
+}
+
+run "a_throttled_step_still_finishes_its_longest_wait_within_the_step_timeout" {
+  command = apply
+
+  assert {
+    condition = alltrue(flatten([
+      for document in aws_ssm_document.scale : [
+        for step in yamldecode(document.content).mainSteps :
+        step.inputs.InputPayload.ThrottleSeconds + try(step.inputs.InputPayload.Input.WaitSeconds, 0) + 30 < step.timeoutSeconds
+      ]
+    ]))
+    error_message = "A step throttled for its whole window could not finish its wait before the step times out."
   }
 }
