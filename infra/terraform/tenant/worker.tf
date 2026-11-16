@@ -42,6 +42,12 @@ resource "aws_iam_policy" "worker" {
           Condition = { StringEquals = { "kms:ViaService" = "s3.${local.region}.amazonaws.com" } }
         },
         {
+          Sid      = "AssumeTheTicketStoreRoles"
+          Effect   = "Allow"
+          Action   = "sts:AssumeRole"
+          Resource = [module.ticket_store.reader_role_arn, module.ticket_store.writer_role_arn]
+        },
+        {
           Sid      = "PullTheTenantImages"
           Effect   = "Allow"
           Action   = ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer", "ecr:BatchCheckLayerAvailability"]

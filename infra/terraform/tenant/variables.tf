@@ -30,6 +30,12 @@ variable "worker_role_arn" {
   default     = ""
 }
 
+variable "worker_role_name" {
+  description = "Name of the role worker_role_arn names. The ticket store roles trust the worker through an ARN built from this name, so the store depends on no resource outside the tenant and a teardown can keep it while it removes the worker role."
+  type        = string
+  default     = ""
+}
+
 variable "secrets" {
   description = "Names of the tenant's secrets, each created empty under <name_prefix>/tenants/<tenant>/ for the tenant to fill, such as github_token."
   type        = list(string)
@@ -130,10 +136,11 @@ variable "untagged_image_expiry_days" {
 }
 
 variable "ticket_store" {
-  description = "The tenant's rebar ticket store. operators are the principals besides the worker that may assume its reader and writer roles, admins seed and empty it, and writer_github_oidc_trust lets a workflow push it, as the rebar-ticket-store module describes."
+  description = "The tenant's rebar ticket store. bucket_name names the bucket, set to an existing bucket's name to keep that bucket, and empty uses <name_prefix>-<tenant>-rebar-tickets-<account ID>. operators are the principals besides the worker that may assume its reader and writer roles, admins seed and empty it, and writer_github_oidc_trust lets a workflow push it, as the rebar-ticket-store module describes."
   type = object({
-    operators = optional(list(string), [])
-    admins    = optional(list(string), [])
+    bucket_name = optional(string, "")
+    operators   = optional(list(string), [])
+    admins      = optional(list(string), [])
     writer_github_oidc_trust = optional(object({
       provider_arn      = string
       subjects          = list(string)

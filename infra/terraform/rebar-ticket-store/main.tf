@@ -22,6 +22,7 @@ locals {
   reader_role_arn = local.create_roles ? aws_iam_role.reader[0].arn : var.existing_reader_role_arn
   writer_role_arn = local.create_roles ? aws_iam_role.writer[0].arn : var.existing_writer_role_arn
 
+  bucket_name    = var.bucket_name != "" ? var.bucket_name : "${coalesce(var.bucket_prefix, "${var.name_prefix}-rebar-tickets-")}${local.account_id}"
   bucket_arn     = try(aws_s3_bucket.this[0].arn, "")
   kms_key_arn    = try(aws_kms_key.this[0].arn, "")
   objects_arn    = "${local.bucket_arn}/${var.prefix}/*"
@@ -40,8 +41,8 @@ resource "terraform_data" "inputs_guard" {
       error_message = "existing_reader_role_arn and existing_writer_role_arn must name different roles."
     }
     precondition {
-      condition     = !local.create_roles || length(var.trusted_principals) > 0
-      error_message = "trusted_principals must name at least one principal when the module creates the reader and writer roles."
+      condition     = !local.create_roles || length(var.trusted_principals) + length(var.trusted_principals_by_condition) > 0
+      error_message = "trusted_principals or trusted_principals_by_condition must name at least one principal when the module creates the reader and writer roles."
     }
     precondition {
       condition     = !local.oidc_enabled || local.create_roles
@@ -99,9 +100,18 @@ resource "aws_kms_alias" "this" {
 resource "aws_s3_bucket" "this" {
   count = local.enabled ? 1 : 0
 
-  bucket_prefix = coalesce(var.bucket_prefix, "${var.name_prefix}-rebar-tickets-")
+  bucket = local.bucket_name
 
   tags = merge(var.tags, { Name = "${var.name_prefix}-rebar-tickets" })
+
+  lifecycle {
+    prevent_destroy = true
+
+    precondition {
+      condition     = length(local.bucket_name) <= 63
+      error_message = "The bucket name ${local.bucket_name} is longer than the 63 characters S3 allows. Set bucket_name, or a shorter bucket_prefix."
+    }
+  }
 }
 
 resource "aws_s3_bucket_ownership_controls" "this" {

@@ -122,6 +122,7 @@ module "tenant" {
   tenant                        = each.key
   description                   = each.value.description
   worker_role_arn               = module.eks_cluster.pod_identity_role_arns["tenant_${each.key}"]
+  worker_role_name              = "${var.name_prefix}-eks-tenant-${each.key}"
   secrets                       = each.value.secrets
   create_webhook_secrets        = local.tenant_webhooks
   webhook_reader_arn            = local.tenant_webhooks ? module.eks_cluster.pod_identity_role_arns["inbound_webhook"] : ""

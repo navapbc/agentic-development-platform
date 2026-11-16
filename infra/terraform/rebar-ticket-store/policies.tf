@@ -109,11 +109,20 @@ locals {
     ]
   })
 
-  assume_statement = {
-    Effect    = "Allow"
-    Principal = { AWS = var.trusted_principals }
-    Action    = "sts:AssumeRole"
-  }
+  assume_statements = concat(
+    length(var.trusted_principals) == 0 ? [] : [{
+      Effect    = "Allow"
+      Principal = { AWS = var.trusted_principals }
+      Action    = "sts:AssumeRole"
+    }],
+    length(var.trusted_principals_by_condition) == 0 ? [] : [{
+      Sid       = "TrustedPrincipalsByCondition"
+      Effect    = "Allow"
+      Principal = { AWS = "arn:${local.partition}:iam::${local.account_id}:root" }
+      Action    = "sts:AssumeRole"
+      Condition = { ArnEquals = { "aws:PrincipalArn" = var.trusted_principals_by_condition } }
+    }],
+  )
 
   oidc_enabled       = var.writer_github_oidc_trust != null
   oidc_provider_arn  = try(var.writer_github_oidc_trust.provider_arn, "")
@@ -144,12 +153,12 @@ locals {
 
   assume_policy = jsonencode({
     Version   = "2012-10-17"
-    Statement = [local.assume_statement]
+    Statement = local.assume_statements
   })
 
   writer_assume_policy = jsonencode({
     Version   = "2012-10-17"
-    Statement = concat([local.assume_statement], local.writer_oidc_statements)
+    Statement = concat(local.assume_statements, local.writer_oidc_statements)
   })
 
   list_store_prefix = {
