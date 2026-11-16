@@ -318,6 +318,7 @@ class _Account:
         self.buckets = dict(buckets)
         self.planned: list[str] = []
         self.racing_writes = 0
+        self.refused: set[str] = set()
         self.calls: list[list[str]] = []
 
     def state(self) -> dict:
@@ -353,7 +354,17 @@ class _Account:
                 versions = [{"Key": "k", "VersionId": str(n)} for n in range(self.buckets[bucket])]
                 return subprocess.CompletedProcess(argv, 0, json.dumps({"Versions": versions}))
             if command[1] == "delete-objects":
-                self.buckets[bucket] -= len(json.loads(command[-1])["Objects"])
+                objects = json.loads(command[-1])["Objects"]
+                if bucket in self.refused:
+                    refused_calls = sum(c[1:3] == ["s3api", "delete-objects"] for c in self.calls)
+                    if refused_calls > 3:
+                        raise AssertionError("a refused object delete was retried")
+                    errors = [
+                        {"Key": o["Key"], "Code": "AccessDenied", "Message": "Access Denied"}
+                        for o in objects
+                    ]
+                    return subprocess.CompletedProcess(argv, 0, json.dumps({"Errors": errors}))
+                self.buckets[bucket] -= len(objects)
             if command[1] == "delete-bucket":
                 if self.racing_writes:
                     self.racing_writes -= 1
@@ -455,6 +466,22 @@ def test_a_rerun_with_only_the_released_bucket_empties_deletes_and_forgets_it(ac
     assert not fake.ran("terraform", f"-chdir={aws_destroy.ROOT}", "plan")
     assert "tickets" not in fake.buckets
     assert fake.resources == []
+
+
+def test_a_refused_object_delete_fails_the_bucket_instead_of_retrying_forever(
+    account, capsys
+) -> None:
+    fake = account([_store_resources()[2]], {"tickets": 2})
+    fake.refused.add("tickets")
+
+    assert aws_destroy.main(["--delete-stores"]) == 1
+
+    err = capsys.readouterr().err
+    assert "tickets was not deleted and stays in state" in err
+    assert "AccessDenied" in err
+    assert "Traceback" not in err
+    assert [r["address"] for r in fake.resources] == [STORE_BUCKET]
+    assert sum(call[1:3] == ["s3api", "delete-objects"] for call in fake.calls) == 1
 
 
 def test_a_bucket_already_deleted_is_removed_from_state(account) -> None:

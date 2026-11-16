@@ -287,7 +287,7 @@ def empty_bucket(bucket: str, run: Runner) -> int:
         ]
         if not keys:
             return deleted
-        _aws(
+        result = _aws(
             [
                 "s3api",
                 "delete-objects",
@@ -298,6 +298,13 @@ def empty_bucket(bucket: str, run: Runner) -> int:
             ],
             run,
         )
+        refused = result.get("Errors", [])
+        if refused:
+            first = refused[0]
+            raise DestroyError(
+                f"S3 refused to delete {len(refused)} object versions in {bucket}, "
+                f"first {first.get('Code')}: {first.get('Message')}"
+            )
         deleted += len(keys)
 
 
@@ -327,7 +334,7 @@ def delete_released_buckets(released: list[Resource], run: Runner) -> dict[str, 
         name = bucket.values["bucket"]
         try:
             emptied = delete_released_bucket(bucket, run)
-        except (process.CalledProcessError, process.TimeoutExpired) as error:
+        except (process.CalledProcessError, process.TimeoutExpired, DestroyError) as error:
             detail = str(getattr(error, "stderr", "") or "").strip() or str(error)
             failed[name] = detail.splitlines()[-1]
             continue
@@ -486,6 +493,9 @@ def main(argv: list[str] | None = None) -> int:
             if args.delete_images:
                 print(f"{LOG} deleted {delete_images(teardown.repositories, run)} images")
             terraform(["apply", "-input=false", PLAN], run, check=True)
+        except DestroyError as error:
+            print(f"{LOG} {error}", file=sys.stderr)
+            return 1
         finally:
             (ROOT / PLAN).unlink(missing_ok=True)
     failed = delete_released_buckets(teardown.released, run)
