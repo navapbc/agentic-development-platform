@@ -73,7 +73,7 @@ These modules provision the shared AWS infrastructure the components above consu
 | Container platform | Shared ECS cluster on Fargate that the platform owns, with encrypted Exec sessions and ephemeral storage | [ecs-cluster](../infra/terraform/ecs-cluster) |
 | Kubernetes platform | EKS cluster with a private API endpoint, a platform and a tainted sandbox node group on arm64, network policy enforcement, and Pod Identity roles for the workloads that call AWS | [eks-cluster](../infra/terraform/eks-cluster) |
 | Service-to-service HTTPS | One internal ALB under the FIPS TLS policy with host routing to each service, re-encrypting to every task, and a private hosted zone | [container-services](../infra/terraform/container-services) |
-| Off-hours schedule | EventBridge Scheduler and SSM Automation that scale the ECS services to zero overnight so Aurora pauses | [off-hours](../infra/terraform/off-hours) |
+| Off-hours schedule | EventBridge Scheduler and SSM Automation that scale the ECS services and EKS deployments to zero overnight, check that no connection remains, and let Aurora pause | [off-hours](../infra/terraform/off-hours) |
 | Laptop Bedrock path for test accounts | Ephemeral ECS Fargate jump-host reached over ECS Exec, in the management tier | [bedrock-jumphost-fargate](../infra/terraform/bedrock-jumphost-fargate) |
 | Network tiers | Public, application, management, and data subnets with per-tier route tables and a data-tier network ACL | [private-bedrock](../infra/terraform/examples/private-bedrock) |
 | Outbound internet | NAT instance or NAT Gateway for the application and management tiers | [egress](../infra/terraform/egress) |

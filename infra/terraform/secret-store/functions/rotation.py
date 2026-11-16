@@ -53,7 +53,8 @@ PLATFORM_APP = "platform_app"
 TEMPORAL = "temporal"
 LANGFUSE = "langfuse"
 LITELLM = "litellm"
-ROLE_KEYS = (PLATFORM_MIGRATOR, PLATFORM_APP, TEMPORAL, LANGFUSE, LITELLM)
+MONITOR = "monitor"
+ROLE_KEYS = (PLATFORM_MIGRATOR, PLATFORM_APP, TEMPORAL, LANGFUSE, LITELLM, MONITOR)
 
 _IDENTIFIER = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
 
@@ -332,6 +333,7 @@ def bootstrap_plan(
     for key in ROLE_KEYS:
         exists = names[key] in existing_roles
         role_sql.extend(role_statements(names[key], credentials[key]["password"], exists=exists))
+    role_sql.append(f"GRANT pg_monitor TO {quote_identifier(names[MONITOR])}")
 
     service_databases = {
         "temporal": names[TEMPORAL],

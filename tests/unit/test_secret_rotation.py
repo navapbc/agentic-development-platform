@@ -217,6 +217,14 @@ def test_bootstrap_creates_only_the_absent_roles_and_resets_every_password():
         assert f'GRANT "{key}" TO CURRENT_USER' in role_step.statements
 
 
+def test_bootstrap_makes_the_monitor_role_a_member_of_pg_monitor_after_creating_it():
+    statements = list(_plan()[0].statements)
+
+    grant = statements.index('GRANT pg_monitor TO "monitor"')
+    assert grant > statements.index('CREATE ROLE "monitor" LOGIN')
+    assert not any("pg_monitor" in sql for sql in statements[:grant] + statements[grant + 1 :])
+
+
 def test_bootstrap_installs_pgaudit_in_every_service_database():
     audited = {
         step.database

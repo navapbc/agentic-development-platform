@@ -87,6 +87,7 @@ locals {
     temporal          = "Temporal server role, which owns the temporal and temporal_visibility databases."
     langfuse          = "Langfuse role, which owns the langfuse database."
     litellm           = "LiteLLM role, which owns the litellm database."
+    monitor           = "Monitoring role, a member of pg_monitor, which the off-hours check reads pg_stat_activity as."
   }
 
   secret_catalog = merge(
