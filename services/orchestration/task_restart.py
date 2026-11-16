@@ -103,7 +103,7 @@ async def run_restart_task(
             repo=repo,
             repair_store=PostgresRepairDecisionStore(engine),
             repair_signaller=TemporalRepairSignaller(resolved),
-            intake_store=PostgresIntakeRetryStore(engine),
+            intake_store=PostgresIntakeRetryStore(engine, tenant=resolved.tenant),
             liveness=temporal_workflow_liveness(resolved),
             cursor=build_intake_cursor_release(resolved),
         )

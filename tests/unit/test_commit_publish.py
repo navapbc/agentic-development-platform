@@ -30,12 +30,15 @@ class _Host:
         )
 
 
-def _mediator(published_tree: str) -> GitHubMediator:
+def _mediator(
+    published_tree: str, *, gate: InMemorySequenceGate | None = None, tenant: str = ""
+) -> GitHubMediator:
     return GitHubMediator(
         backend=cast(GitHost, _Host(published_tree)),
         ledger=InMemorySideEffectLedger(),
-        gate=InMemorySequenceGate(),
+        gate=gate or InMemorySequenceGate(),
         allowed_repos=frozenset({REPO}),
+        tenant=tenant,
     )
 
 
@@ -63,3 +66,14 @@ async def test_a_divergent_tree_fails_the_publish() -> None:
     message = str(raised.value)
     assert VERIFIED in message
     assert DIVERGENT in message
+
+
+async def test_two_tenants_publish_the_same_ticket_through_one_sequence_gate() -> None:
+    gate = InMemorySequenceGate()
+    await _mediator(VERIFIED, gate=gate, tenant="alpha").commit_and_push(_request(), sequence=5)
+
+    result = await _mediator(VERIFIED, gate=gate, tenant="beta").commit_and_push(
+        _request(), sequence=1
+    )
+
+    assert result.published_tree == VERIFIED

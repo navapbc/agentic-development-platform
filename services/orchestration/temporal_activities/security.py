@@ -162,11 +162,9 @@ async def scan_change(req: ScanChangeRequest) -> ScanChangeResult:
     for scanner in report.scanners:
         scoped = [f for f in report.findings if f.scanner == scanner]
         scanner_hash = _scanner_content_hash(report, scanner, scoped)
-        artifact_id = uuid.uuid4().hex
-        evidence_ids[scanner] = artifact_id
-        await sink.persist(
+        evidence_ids[scanner] = await sink.persist(
             EvidenceRecord(
-                artifact_id=artifact_id,
+                artifact_id=uuid.uuid4().hex,
                 execution_id=req.execution_id,
                 content_hash=scanner_hash,
                 source_component=f"gate:{scanner}",

@@ -27,7 +27,6 @@ from services.review.evidence import (
 from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlalchemy.sql import operators
 from sqlalchemy.sql.elements import BinaryExpression
-from sqlalchemy.sql.selectable import Join
 from tests.unit._evidence_producers import PRODUCERS
 
 COMPONENTS = {
@@ -59,11 +58,11 @@ class _FakeResult:
 
 
 class _FakeConnection:
-    """Stands in for the evidence table joined to executions, evaluating the WHERE predicate.
+    """Stands in for the evidence table, evaluating the WHERE predicate.
 
     Matching on the compiled SQL text would accept a reader that filtered on the wrong
     column, because the bound value appears in the text either way. Each row carries the
-    tenant of its execution, which the join supplies in the database.
+    tenant the evidence was recorded for.
     """
 
     def __init__(self, rows: dict[str, dict[str, Any]]) -> None:
@@ -85,19 +84,12 @@ class _FakeConnection:
                 raise AssertionError(f"unsupported predicate {clause!r}")
             if clause.operator is not operators.eq:
                 raise AssertionError(f"unsupported operator in {clause!r}")
+            if clause.left.table.name != "evidence_artifacts":  # pyright: ignore[reportAttributeAccessIssue]
+                raise AssertionError(f"predicate outside the evidence table {clause!r}")
             pairs.append((clause.left.name, clause.right.value))
         return pairs
 
-    @staticmethod
-    def _joins_executions(statement) -> bool:
-        return any(
-            isinstance(source, Join) and source.right.name == "executions"  # pyright: ignore[reportAttributeAccessIssue]
-            for source in statement.get_final_froms()
-        )
-
     async def execute(self, statement) -> _FakeResult:
-        if not self._joins_executions(statement):
-            raise AssertionError("the reader must join executions to read the tenant")
         predicates = self._predicates(statement)
         for row in self._rows.values():
             if all(row.get(column) == value for column, value in predicates):
@@ -113,8 +105,8 @@ class _FakeEngine:
         return self._connection
 
 
-def _stored_row(record: EvidenceRecord, tenant: str | None) -> dict[str, Any]:
-    """Mirror the columns PostgresEvidenceSink writes for one record, plus its tenant."""
+def _stored_row(record: EvidenceRecord, tenant: str) -> dict[str, Any]:
+    """Mirror the columns PostgresEvidenceSink writes for one record."""
     return {
         "tenant": tenant,
         "artifact_id": record.artifact_id,
@@ -129,7 +121,7 @@ def _stored_row(record: EvidenceRecord, tenant: str | None) -> dict[str, Any]:
 
 
 def _reader(
-    records: list[EvidenceRecord], tenant: str = "adp", owner: str | None = "adp"
+    records: list[EvidenceRecord], tenant: str = "adp", owner: str = "adp"
 ) -> PostgresEvidenceReader:
     rows = {record.artifact_id: _stored_row(record, owner) for record in records}
     engine = cast(AsyncEngine, _FakeEngine(_FakeConnection(rows)))
@@ -195,7 +187,7 @@ async def test_security_findings_resolve_only_for_the_reader_tenant(monkeypatch)
     assert other is None
 
 
-async def test_the_evidence_of_an_execution_recorded_without_a_tenant_resolves_to_none(
+async def test_evidence_recorded_without_a_tenant_resolves_to_none(
     monkeypatch,
 ):
     record = await PRODUCERS["plan"](monkeypatch)
@@ -205,7 +197,7 @@ async def test_the_evidence_of_an_execution_recorded_without_a_tenant_resolves_t
         source_component=SECURITY_COMPONENT,
         metadata={"finding_count": 1},
     )
-    reader = _reader([record, findings], tenant="adp", owner=None)
+    reader = _reader([record, findings], tenant="adp", owner="")
 
     assert await reader.get_artifact(record.artifact_id) is None
     assert await reader.get_security_findings(findings.execution_id) is None

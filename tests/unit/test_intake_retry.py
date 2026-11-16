@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+from services.coordination.idempotency import intake_start_target
 from services.orchestration.intake_cursor import CursorRelease
 from services.orchestration.intake_retry import (
     IntakeRetryResult,
@@ -362,7 +363,7 @@ async def test_clearing_intake_dedup_treats_underscores_in_the_repo_literally():
             _intake_row("k-bystander", "ADEV-1", "myXrepo"),
         ]
     )
-    store = PostgresIntakeRetryStore(cast(AsyncEngine, engine))
+    store = PostgresIntakeRetryStore(cast(AsyncEngine, engine), tenant="")
 
     cleared = await store.clear_intake_dedup("ADEV-1", "my_repo")
 
@@ -377,7 +378,7 @@ async def test_clearing_intake_dedup_without_a_repo_clears_every_intake_row():
             _intake_row("k-b", "ADEV-1", "repo-b"),
         ]
     )
-    store = PostgresIntakeRetryStore(cast(AsyncEngine, engine))
+    store = PostgresIntakeRetryStore(cast(AsyncEngine, engine), tenant="")
 
     cleared = await store.clear_intake_dedup("ADEV-1", None)
 
@@ -392,7 +393,7 @@ async def test_clearing_intake_dedup_without_a_repo_spares_other_tickets():
             _intake_row("k-other", "ADEV-2", "repo-a"),
         ]
     )
-    store = PostgresIntakeRetryStore(cast(AsyncEngine, engine))
+    store = PostgresIntakeRetryStore(cast(AsyncEngine, engine), tenant="")
 
     cleared = await store.clear_intake_dedup("ADEV-1", None)
 
@@ -402,7 +403,7 @@ async def test_clearing_intake_dedup_without_a_repo_spares_other_tickets():
 
 async def test_clearing_intake_dedup_for_an_unmatched_repo_deletes_nothing():
     engine = _FakeLedgerEngine([_intake_row("k-a", "ADEV-1", "repo-a")])
-    store = PostgresIntakeRetryStore(cast(AsyncEngine, engine))
+    store = PostgresIntakeRetryStore(cast(AsyncEngine, engine), tenant="")
 
     cleared = await store.clear_intake_dedup("ADEV-1", "repo-b")
 
@@ -459,21 +460,71 @@ class _StatementCapturingConnection:
         return _FakeLedgerResult([], rowcount=self._engine.rowcount)
 
 
-async def test_clearing_work_claims_deletes_only_the_ticket_s_claims():
+async def test_clearing_work_claims_deletes_only_the_tenant_s_claims_on_the_ticket():
     engine = _StatementCapturingEngine(rowcount=3)
-    store = PostgresIntakeRetryStore(cast(AsyncEngine, engine))
+    store = PostgresIntakeRetryStore(cast(AsyncEngine, engine), tenant="alpha")
 
     cleared = await store.clear_work_claims("ADEV-1")
 
     assert cleared == 3
     assert "DELETE FROM agent_platform.work_claims" in engine.sql
-    assert "WHERE agent_platform.work_claims.task_id = " in engine.sql
-    assert engine.params["task_id_1"] == "ADEV-1"
+    assert engine.params == {"tenant_1": "alpha", "task_id_1": "ADEV-1"}
+
+
+async def test_clearing_the_sequence_gate_resets_only_the_tenant_s_gate():
+    engine = _StatementCapturingEngine(rowcount=1)
+    store = PostgresIntakeRetryStore(cast(AsyncEngine, engine), tenant="alpha")
+
+    await store.clear_sequence_gate("ADEV-1")
+
+    assert "DELETE FROM agent_platform.sequence_gate" in engine.sql
+    assert engine.params == {"tenant_1": "alpha", "task_id_1": "ADEV-1"}
+
+
+async def test_failing_stale_executions_touches_only_the_tenant_s_executions():
+    engine = _StatementCapturingEngine(rowcount=1)
+    store = PostgresIntakeRetryStore(cast(AsyncEngine, engine), tenant="alpha")
+
+    await store.mark_non_terminal_failed("ADEV-1")
+
+    assert "agent_platform.executions.tenant = %(tenant_1)s" in engine.sql
+    assert engine.params["tenant_1"] == "alpha"
+
+
+async def test_the_untenanted_store_fails_only_executions_without_a_tenant():
+    engine = _StatementCapturingEngine(rowcount=1)
+    store = PostgresIntakeRetryStore(cast(AsyncEngine, engine), tenant="")
+
+    await store.mark_non_terminal_failed("ADEV-1")
+
+    assert "agent_platform.executions.tenant IS NULL" in engine.sql
+
+
+async def test_clearing_intake_dedup_spares_another_tenant_s_record():
+    engine = _FakeLedgerEngine(
+        [
+            _LedgerRow(
+                "k-alpha",
+                "ADEV-1",
+                "intake_start",
+                intake_start_target("ADEV-1", "repo-a", "alpha"),
+            ),
+            _LedgerRow(
+                "k-beta", "ADEV-1", "intake_start", intake_start_target("ADEV-1", "repo-a", "beta")
+            ),
+        ]
+    )
+    store = PostgresIntakeRetryStore(cast(AsyncEngine, engine), tenant="alpha")
+
+    cleared = await store.clear_intake_dedup("ADEV-1", None)
+
+    assert cleared == 1
+    assert set(engine.rows) == {"k-beta"}
 
 
 async def test_clearing_work_claims_reports_zero_when_no_rows_match():
     engine = _StatementCapturingEngine(rowcount=0)
-    store = PostgresIntakeRetryStore(cast(AsyncEngine, engine))
+    store = PostgresIntakeRetryStore(cast(AsyncEngine, engine), tenant="")
 
     assert await store.clear_work_claims("ADEV-1") == 0
 

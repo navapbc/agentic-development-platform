@@ -15,7 +15,9 @@ from services.coordination import (
     InMemoryWorkClaimStore,
 )
 from services.coordination.auth import CoordinationAuthError
+from services.coordination.claims import ClaimOutcome, WorkUnit
 from services.coordination.idempotency import SideEffectRef
+from services.coordination.sequencing import ADMITTED, SequencedAction, SequenceDecision
 from services.coordination.service import build_handler
 from services.coordination.service import main as coordination_main
 from services.http_front_door import (
@@ -58,7 +60,7 @@ def coordination_address() -> Iterator[tuple[str, int]]:
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    host, port = server.server_address
+    host, port = server.server_address[:2]
     try:
         yield str(host), int(port)
     finally:
@@ -202,6 +204,35 @@ def test_coordination_client_names_the_remedy_for_a_refused_token(coordination_a
     with pytest.raises(CoordinationAuthError) as excinfo:
         asyncio.run(client.reserve_side_effect(ref))
     assert _names_the_remedy(str(excinfo.value))
+
+
+def test_two_tenants_claim_and_sequence_the_same_ticket_through_the_service(
+    coordination_address,
+):
+    host, port = coordination_address
+    client = CoordinationClient(f"http://{host}:{port}", token=SHARED_SECRET)
+
+    async def _both_tenants() -> list[object]:
+        claims = [
+            await client.try_claim(
+                WorkUnit("ADEV-1", "unit-1", f"e-{tenant}", "agent", tenant=tenant)
+            )
+            for tenant in ("alpha", "beta")
+        ]
+        sequenced = [
+            await client.admit_sequence(
+                SequencedAction("ADEV-1", f"e-{tenant}", sequence, tenant=tenant)
+            )
+            for tenant, sequence in (("alpha", 5), ("beta", 1))
+        ]
+        return [*claims, *sequenced]
+
+    alpha_claim, beta_claim, alpha_write, beta_write = asyncio.run(_both_tenants())
+
+    assert isinstance(alpha_claim, ClaimOutcome) and isinstance(beta_claim, ClaimOutcome)
+    assert alpha_claim.won and beta_claim.won
+    assert isinstance(alpha_write, SequenceDecision) and isinstance(beta_write, SequenceDecision)
+    assert (alpha_write.outcome, beta_write.outcome) == (ADMITTED, ADMITTED)
 
 
 def test_a_missing_shared_secret_fails_the_claim_activity_without_retry(monkeypatch):
