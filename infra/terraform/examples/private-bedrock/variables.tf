@@ -628,7 +628,7 @@ variable "container_xray_encryption_enabled" {
 }
 
 variable "create_managed_grafana" {
-  description = "Provision the managed-grafana module, an Amazon Managed Grafana workspace in the application tier with IAM Identity Center sign-in over the collector's Prometheus workspace and X-Ray traces, a query role that may only read the Prometheus workspace, and the grafana-workspace, sts, and xray interface endpoints. Needs the collector exports and an IAM Identity Center instance."
+  description = "Provision the managed-grafana module, an Amazon Managed Grafana workspace in the application tier with IAM Identity Center sign-in over the collector's Prometheus workspace and X-Ray traces, and the aps-workspaces, grafana-workspace, and xray interface endpoints. Needs the collector exports and an IAM Identity Center instance."
   type        = bool
   default     = false
 }
@@ -652,7 +652,7 @@ variable "grafana_viewer_group_ids" {
 }
 
 variable "grafana_query_principal_arns" {
-  description = "IAM principals, besides the Grafana workspace role, that may assume the Prometheus query role, such as an operator SSO permission set role."
+  description = "IAM principals that may assume the Prometheus query role, which may only query the Prometheus workspace, such as an operator SSO permission set role. Empty creates no query role."
   type        = list(string)
   default     = []
 }

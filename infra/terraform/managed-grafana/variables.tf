@@ -1,5 +1,5 @@
 variable "create_managed_grafana" {
-  description = "Create the Grafana workspace, its workspace role, the Prometheus query role, the workspace security group, and the workspace KMS key. When false the module provisions nothing."
+  description = "Create the Grafana workspace, its workspace role, the workspace security group, the workspace KMS key, and, with operator_principal_arns, the Prometheus query role. When false the module provisions nothing."
   type        = bool
   default     = false
 }
@@ -10,7 +10,7 @@ variable "name_prefix" {
 }
 
 variable "prometheus_workspace_arn" {
-  description = "ARN of the Amazon Managed Service for Prometheus workspace the query role may read."
+  description = "ARN of the Amazon Managed Service for Prometheus workspace the workspace role and the query role may query."
   type        = string
   default     = ""
   nullable    = false
@@ -31,7 +31,7 @@ variable "xray_kms_key_arn" {
 }
 
 variable "operator_principal_arns" {
-  description = "IAM principals, besides the workspace role, that may assume the Prometheus query role, such as an operator SSO permission set role."
+  description = "IAM principals that may assume the Prometheus query role, such as an operator SSO permission set role. Empty creates no query role."
   type        = list(string)
   default     = []
 }

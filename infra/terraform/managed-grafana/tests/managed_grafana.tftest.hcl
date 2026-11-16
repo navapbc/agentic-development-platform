@@ -132,11 +132,11 @@ run "workspace_signs_in_through_identity_center_and_reads_both_data_sources" {
   assert {
     condition = (
       output.data_sources.prometheus.url == "https://aps-workspaces.us-east-1.amazonaws.com/workspaces/ws-telemetry" &&
-      output.data_sources.prometheus.assume_role_arn == output.query_role_arn &&
+      !contains(keys(output.data_sources.prometheus), "assume_role_arn") &&
       output.data_sources.xray.region == "us-east-1" &&
       output.workspace_url == "https://g-1.grafana-workspace.us-east-1.amazonaws.com"
     )
-    error_message = "The data source settings do not name the workspace endpoint and the query role."
+    error_message = "The data source settings do not name the workspace endpoint, or the Prometheus data source chains to another role."
   }
 }
 
@@ -156,8 +156,8 @@ run "workspace_traffic_leaves_only_through_the_interface_endpoints" {
   }
 
   assert {
-    condition     = toset(output.interface_services) == toset(["aps-workspaces", "grafana-workspace", "sts", "xray"])
-    error_message = "The interface endpoints do not cover every AWS service the workspace calls."
+    condition     = toset(output.interface_services) == toset(["aps-workspaces", "grafana-workspace", "xray"]) && !contains(output.interface_services, "sts")
+    error_message = "The interface endpoints do not match the AWS services the workspace calls, or add the VPC-wide STS endpoint."
   }
 
   assert {
@@ -198,35 +198,58 @@ run "query_role_queries_the_workspace_and_cannot_write" {
   }
 
   assert {
-    condition = toset(jsondecode(aws_iam_role.query[0].assume_role_policy).Statement[0].Principal.AWS) == toset([
-      "arn:aws:iam::111111111111:role/agentic-platform-grafana",
-      "arn:aws:iam::111111111111:role/operators",
-    ])
-    error_message = "The query role trusts a principal other than the workspace role and the operators."
+    condition = (
+      length(jsondecode(aws_iam_role.query[0].assume_role_policy).Statement) == 1 &&
+      toset(jsondecode(aws_iam_role.query[0].assume_role_policy).Statement[0].Principal.AWS) == toset(["arn:aws:iam::111111111111:role/operators"]) &&
+      output.query_role_arn == "arn:aws:iam::111111111111:role/agentic-platform-prometheus-query"
+    )
+    error_message = "The query role trusts a principal other than the listed operators."
   }
 }
 
-run "workspace_role_reads_traces_and_assumes_only_the_query_role" {
-  command = apply
+run "no_query_role_without_operator_principals" {
+  command = plan
 
   variables {
     create_managed_grafana = true
   }
 
   assert {
+    condition     = length(aws_iam_role.query) == 0 && length(aws_iam_role_policy.query) == 0 && output.query_role_arn == null
+    error_message = "A query role was planned without operator principals to assume it."
+  }
+}
+
+run "workspace_role_queries_the_workspace_and_reads_traces_without_a_role_chain" {
+  command = apply
+
+  variables {
+    create_managed_grafana  = true
+    operator_principal_arns = ["arn:aws:iam::111111111111:role/operators"]
+  }
+
+  assert {
     condition = (
-      [for statement in jsondecode(aws_iam_role_policy.workspace[0].policy).Statement : statement.Resource if statement.Action == "sts:AssumeRole"] ==
-      ["arn:aws:iam::111111111111:role/agentic-platform-prometheus-query"]
+      [for statement in jsondecode(aws_iam_role_policy.workspace[0].policy).Statement : [toset(statement.Action), statement.Resource] if statement.Sid == "QueryThePrometheusWorkspace"] ==
+      [[toset(["aps:QueryMetrics", "aps:GetSeries", "aps:GetLabels", "aps:GetMetricMetadata"]), "arn:aws:aps:us-east-1:111111111111:workspace/ws-telemetry"]]
     )
-    error_message = "The workspace role may assume a role other than the query role."
+    error_message = "The workspace role does not hold the four query actions on the Prometheus workspace alone."
   }
 
   assert {
     condition = alltrue([
-      for action in flatten([for statement in jsondecode(aws_iam_role_policy.workspace[0].policy).Statement : statement.Action]) :
-      can(regex("^(xray:(BatchGet|Get)[A-Za-z]+|sts:AssumeRole|ec2:DescribeRegions)$", action))
+      for statement in jsondecode(aws_iam_role_policy.workspace[0].policy).Statement :
+      statement.Effect == "Allow" && alltrue([
+        for action in flatten([statement.Action]) :
+        contains(["aps:QueryMetrics", "aps:GetSeries", "aps:GetLabels", "aps:GetMetricMetadata"], action) ? statement.Resource == "arn:aws:aps:us-east-1:111111111111:workspace/ws-telemetry" : can(regex("^(xray:(BatchGet|Get)[A-Za-z]+|ec2:DescribeRegions)$", action))
+      ])
     ])
-    error_message = "The workspace role holds an action other than trace reads, region listing, and the query role assumption."
+    error_message = "The workspace role holds an action other than the workspace queries, trace reads, and region listing."
+  }
+
+  assert {
+    condition     = !contains(flatten([for statement in jsondecode(aws_iam_role_policy.workspace[0].policy).Statement : statement.Action]), "sts:AssumeRole")
+    error_message = "The workspace role chains to another role."
   }
 
   assert {
@@ -237,9 +260,15 @@ run "workspace_role_reads_traces_and_assumes_only_the_query_role" {
   assert {
     condition = (
       jsondecode(aws_iam_role.workspace[0].assume_role_policy).Statement[0].Principal.Service == "grafana.amazonaws.com" &&
-      jsondecode(aws_iam_role.workspace[0].assume_role_policy).Statement[0].Condition.StringEquals["aws:SourceAccount"] == "111111111111"
+      jsondecode(aws_iam_role.workspace[0].assume_role_policy).Statement[0].Condition.StringEquals["aws:SourceAccount"] == "111111111111" &&
+      jsondecode(aws_iam_role.workspace[0].assume_role_policy).Statement[0].Condition.ArnLike["aws:SourceArn"] == "arn:aws:grafana:us-east-1:111111111111:/workspaces/*"
     )
-    error_message = "The workspace role trusts a principal other than this account's Grafana workspaces."
+    error_message = "The workspace role trusts a principal other than this account's Grafana workspaces in the region."
+  }
+
+  assert {
+    condition     = !contains(jsondecode(aws_iam_role.query[0].assume_role_policy).Statement[0].Principal.AWS, aws_iam_role.workspace[0].arn)
+    error_message = "The query role trusts the workspace role."
   }
 }
 
@@ -307,6 +336,21 @@ run "unsupported_region_is_refused" {
   override_data {
     target = data.aws_region.current
     values = { region = "ca-central-1" }
+  }
+
+  variables {
+    create_managed_grafana = true
+  }
+
+  expect_failures = [terraform_data.inputs_guard]
+}
+
+run "seoul_is_refused_because_the_workspace_cannot_connect_to_a_vpc_there" {
+  command = plan
+
+  override_data {
+    target = data.aws_region.current
+    values = { region = "ap-northeast-2" }
   }
 
   variables {

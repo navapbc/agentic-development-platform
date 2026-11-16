@@ -154,7 +154,7 @@ output "container_telemetry" {
 }
 
 output "managed_grafana" {
-  description = "The Grafana workspace URL, the Prometheus query role, and the settings a Grafana Admin enters for the Prometheus and X-Ray data sources. Null without create_managed_grafana."
+  description = "The Grafana workspace URL, the Prometheus query role when grafana_query_principal_arns is set, and the settings a Grafana Admin enters for the Prometheus and X-Ray data sources. Null without create_managed_grafana."
   value = var.create_managed_grafana ? {
     workspace_id       = module.managed_grafana.workspace_id
     workspace_url      = module.managed_grafana.workspace_url

@@ -9,12 +9,12 @@ output "workspace_url" {
 }
 
 output "workspace_role_arn" {
-  description = "Workspace role, which reads X-Ray and assumes the query role. Null when disabled."
+  description = "Workspace role, which queries the Prometheus workspace and reads X-Ray. Null when disabled."
   value       = try(aws_iam_role.workspace[0].arn, null)
 }
 
 output "query_role_arn" {
-  description = "Role that may query the Prometheus workspace and may not write to it. Null when disabled."
+  description = "Role operators assume to query the Prometheus workspace, which may not write to it. Null when disabled or without operator_principal_arns."
   value       = try(aws_iam_role.query[0].arn, null)
 }
 
@@ -32,10 +32,9 @@ output "data_sources" {
   description = "Settings a Grafana Admin enters for the Prometheus and X-Ray data sources. Null when disabled."
   value = local.enabled ? {
     prometheus = {
-      url             = trimsuffix(var.prometheus_endpoint, "/")
-      auth            = "SigV4, Workspace IAM role"
-      region          = local.region
-      assume_role_arn = aws_iam_role.query[0].arn
+      url    = trimsuffix(var.prometheus_endpoint, "/")
+      auth   = "SigV4, Workspace IAM role"
+      region = local.region
     }
     xray = {
       auth   = "Workspace IAM role"
@@ -46,5 +45,5 @@ output "data_sources" {
 
 output "interface_services" {
   description = "Interface endpoint services the workspace reaches AWS through, for the caller's vpc-endpoints module. The workspace calls the xray name, so the list holds it where the collector uses xray-fips. Empty when disabled."
-  value       = local.enabled ? ["aps-workspaces", "grafana-workspace", "sts", "xray"] : []
+  value       = local.enabled ? ["aps-workspaces", "grafana-workspace", "xray"] : []
 }

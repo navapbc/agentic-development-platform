@@ -10,15 +10,18 @@ locals {
   partition  = data.aws_partition.current.partition
   region     = data.aws_region.current.region
 
-  # Amazon Managed Grafana service endpoints, from the AWS General Reference.
+  # Amazon Managed Grafana service endpoints, from the AWS General Reference, without ap-northeast-2,
+  # where the service cannot connect a workspace to a private VPC, which this module always does.
   supported_regions = [
     "us-east-1", "us-east-2", "us-west-2",
-    "ap-northeast-1", "ap-northeast-2", "ap-southeast-1", "ap-southeast-2",
+    "ap-northeast-1", "ap-southeast-1", "ap-southeast-2",
     "eu-central-1", "eu-west-1", "eu-west-2",
     "us-gov-east-1", "us-gov-west-1",
   ]
   # AWS GovCloud (US) offers Amazon Managed Grafana no customer managed key.
   customer_managed_key = local.enabled && local.partition == "aws"
+
+  query_role = local.enabled && length(var.operator_principal_arns) > 0
 
   role_groups = {
     for role, group_ids in { ADMIN = var.admin_group_ids, EDITOR = var.editor_group_ids, VIEWER = var.viewer_group_ids } :
@@ -40,10 +43,10 @@ locals {
   workspace_statements = [
     for statement in [
       {
-        Sid      = "AssumeThePrometheusQueryRole"
+        Sid      = "QueryThePrometheusWorkspace"
         Effect   = "Allow"
-        Action   = "sts:AssumeRole"
-        Resource = try(aws_iam_role.query[0].arn, "")
+        Action   = local.prometheus_query_actions
+        Resource = var.prometheus_workspace_arn
         Include  = true
       },
       {
@@ -126,7 +129,7 @@ resource "aws_iam_role" "workspace" {
   count = local.enabled ? 1 : 0
 
   name        = "${var.name_prefix}-grafana"
-  description = "Workspace role of the ${var.name_prefix} Grafana workspace. Reads X-Ray traces and assumes the Prometheus query role."
+  description = "Workspace role of the ${var.name_prefix} Grafana workspace. Queries the Prometheus workspace and reads X-Ray traces."
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
@@ -155,7 +158,7 @@ resource "aws_iam_role_policy" "workspace" {
 }
 
 resource "aws_iam_role" "query" {
-  count = local.enabled ? 1 : 0
+  count = local.query_role ? 1 : 0
 
   name        = "${var.name_prefix}-prometheus-query"
   description = "Queries the ${var.name_prefix} Prometheus workspace and cannot write to it."
@@ -163,7 +166,7 @@ resource "aws_iam_role" "query" {
     Version = "2012-10-17"
     Statement = [{
       Effect    = "Allow"
-      Principal = { AWS = concat([aws_iam_role.workspace[0].arn], var.operator_principal_arns) }
+      Principal = { AWS = var.operator_principal_arns }
       Action    = "sts:AssumeRole"
     }]
   })
@@ -172,7 +175,7 @@ resource "aws_iam_role" "query" {
 }
 
 resource "aws_iam_role_policy" "query" {
-  count = local.enabled ? 1 : 0
+  count = local.query_role ? 1 : 0
 
   name = "query"
   role = aws_iam_role.query[0].id
@@ -205,7 +208,7 @@ resource "aws_vpc_security_group_egress_rule" "endpoints" {
   count = local.enabled ? 1 : 0
 
   security_group_id            = aws_security_group.workspace[0].id
-  description                  = "HTTPS to the VPC interface endpoints for Prometheus, X-Ray, and STS"
+  description                  = "HTTPS to the VPC interface endpoints for Prometheus and X-Ray"
   from_port                    = 443
   to_port                      = 443
   ip_protocol                  = "tcp"
