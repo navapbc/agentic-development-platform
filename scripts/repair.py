@@ -32,7 +32,7 @@ def main() -> int:
     group.add_argument(
         "--abandon",
         action="store_true",
-        help="Abandon the workflow so intake can relaunch a fresh execution.",
+        help="End the workflow. Run `inv restart --issue X` to have intake admit the ticket again.",
     )
     args = parser.parse_args()
     return asyncio.run(_decide(args.issue, retry=args.retry, actor=local_operator()))

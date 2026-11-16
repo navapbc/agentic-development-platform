@@ -4,7 +4,7 @@ import logging
 import os
 from functools import lru_cache
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 from urllib.parse import urlparse, urlunparse
 
 from pydantic import ValidationInfo, field_validator
@@ -83,6 +83,7 @@ class Settings(BaseSettings):
     alert_email_to: str = ""
     smtp_host: str = ""
     smtp_port: int = 587
+    deployment_posture: Literal["host", "deployed"] = "host"
 
     aws_profile: str = "agentic-platform"
     aws_region: str = "us-east-1"

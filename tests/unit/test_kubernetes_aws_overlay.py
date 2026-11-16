@@ -151,6 +151,16 @@ def test_every_image_comes_from_ecr(documents) -> None:
     assert settings["SANDBOX_NODE_POOL"] == "sandbox"
 
 
+def test_the_activity_worker_renders_remedies_for_a_deployed_operator(documents) -> None:
+    sources = {
+        ref["configMapRef"]["name"] for ref in _container(documents, "activity-worker")["envFrom"]
+    }
+    settings = _named(documents, "ConfigMap", "agentic-platform-eks")["data"]
+
+    assert "agentic-platform-eks" in sources
+    assert settings["DEPLOYMENT_POSTURE"] == "deployed"
+
+
 def test_the_tenant_workspace_sits_where_the_review_worker_reads_it(documents) -> None:
     review_path = re.search(r'tenants_path\s+= "([^"]+)"', SERVICES.read_text()).group(1)
     claim = _named(documents, "PersistentVolumeClaim", "workspaces")

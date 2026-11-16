@@ -80,15 +80,21 @@ def _on_host(command: str) -> str:
     return command
 
 
-def _run_scripted(c, command: str, *, local: bool) -> None:
-    """Run a python -m command in the in-cluster activity worker, or on the host with local=True."""
+def _run_scripted(c, command: str, *, local: bool, tenant: str = "") -> None:
+    """Run a python -m command in the in-cluster activity worker, or on the host with local=True.
+
+    A tenant selects that tenant's activity worker, or runs the host command with TENANT set to it.
+    """
     if local:
-        c.run(_on_host(command), pty=True)
+        c.run(_on_host(command), pty=True, env={"TENANT": tenant} if tenant else {})
         return
     from scripts.config import get_settings
     from scripts.k8s_cluster import exec_argv
 
-    c.run(shlex.join(exec_argv(get_settings(), shlex.split(command), tty=False)), pty=True)
+    settings = get_settings()
+    if tenant:
+        settings = settings.model_copy(update={"tenant": tenant})
+    c.run(shlex.join(exec_argv(settings, shlex.split(command), tty=False)), pty=True)
 
 
 def _compose_file_flags() -> str:
@@ -1398,20 +1404,26 @@ def index_repo(c, repo, commit="", local=False):
     _run_scripted(c, f"python -m scripts.index_repo {flags}", local=local)
 
 
+_TENANT_HELP = "Act for this tenant's run instead of the tenant TENANT names."
+
+
 @task(
     help={
         "issue": "Jira issue key parked for human repair, for example ADSER-24.",
         "retry": "Re-run CI and repair on the current branch head.",
-        "abandon": "Abandon the workflow so intake can relaunch a fresh execution.",
+        "abandon": (
+            "End the workflow. Run `inv restart --issue X` to have intake admit the ticket again."
+        ),
         "local": "Run on the host instead of the activity worker pod.",
+        "tenant": _TENANT_HELP,
     }
 )
-def repair(c, issue, retry=False, abandon=False, local=False):
+def repair(c, issue, retry=False, abandon=False, local=False, tenant=""):
     """Release the AWAITING_HUMAN pause on a workflow parked after CI repair exhaustion."""
     if retry == abandon:
         raise Exit("pass exactly one of --retry or --abandon")
     decision = "--retry" if retry else "--abandon"
-    _run_scripted(c, f"python -m scripts.repair {issue} {decision}", local=local)
+    _run_scripted(c, f"python -m scripts.repair {issue} {decision}", local=local, tenant=tenant)
 
 
 @task(
@@ -1421,15 +1433,19 @@ def repair(c, issue, retry=False, abandon=False, local=False):
         "approve": "Approve the gate and continue the run.",
         "reject": "Reject the gate and cancel the run.",
         "local": "Run on the host instead of the activity worker pod.",
+        "tenant": _TENANT_HELP,
     }
 )
-def gate(c, issue, gate, approve=False, reject=False, local=False):
+def gate(c, issue, gate, approve=False, reject=False, local=False, tenant=""):
     """Release the AWAITING_HUMAN pause on a workflow parked at a configured human gate."""
     if approve == reject:
         raise Exit("pass exactly one of --approve or --reject")
     decision = "--approve" if approve else "--reject"
     _run_scripted(
-        c, f"python -m scripts.gate_decision {issue} --gate {gate} {decision}", local=local
+        c,
+        f"python -m scripts.gate_decision {issue} --gate {gate} {decision}",
+        local=local,
+        tenant=tenant,
     )
 
 
@@ -1438,12 +1454,13 @@ def gate(c, issue, gate, approve=False, reject=False, local=False):
         "issue": "Jira issue key to restart, for example ADSER-24.",
         "repo": "Scope the intake retry to one repository when the issue fanned out to several.",
         "local": "Run on the host instead of the activity worker pod.",
+        "tenant": _TENANT_HELP,
     }
 )
-def restart(c, issue, repo="", local=False):
+def restart(c, issue, repo="", local=False, tenant=""):
     """Abandon a parked workflow and re-trigger intake for a fresh execution."""
     repo_flag = f" --repo {repo}" if repo else ""
-    _run_scripted(c, f"python -m scripts.restart {issue}{repo_flag}", local=local)
+    _run_scripted(c, f"python -m scripts.restart {issue}{repo_flag}", local=local, tenant=tenant)
 
 
 @task(
