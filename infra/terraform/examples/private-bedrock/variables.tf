@@ -627,6 +627,42 @@ variable "container_xray_encryption_enabled" {
   default     = false
 }
 
+variable "create_managed_grafana" {
+  description = "Provision the managed-grafana module, an Amazon Managed Grafana workspace in the application tier with IAM Identity Center sign-in over the collector's Prometheus workspace and X-Ray traces, a query role that may only read the Prometheus workspace, and the grafana-workspace, sts, and xray interface endpoints. Needs the collector exports and an IAM Identity Center instance."
+  type        = bool
+  default     = false
+}
+
+variable "grafana_admin_group_ids" {
+  description = "IAM Identity Center group IDs granted the Grafana Admin role, which adds the data sources. create_managed_grafana needs at least one."
+  type        = list(string)
+  default     = []
+}
+
+variable "grafana_editor_group_ids" {
+  description = "IAM Identity Center group IDs granted the Grafana Editor role."
+  type        = list(string)
+  default     = []
+}
+
+variable "grafana_viewer_group_ids" {
+  description = "IAM Identity Center group IDs granted the Grafana Viewer role."
+  type        = list(string)
+  default     = []
+}
+
+variable "grafana_query_principal_arns" {
+  description = "IAM principals, besides the Grafana workspace role, that may assume the Prometheus query role, such as an operator SSO permission set role."
+  type        = list(string)
+  default     = []
+}
+
+variable "grafana_private_access" {
+  description = "Admit only the grafana-workspace interface endpoint to the Grafana workspace, so operators reach it from inside the VPC. False admits any network, and IAM Identity Center still authenticates every user."
+  type        = bool
+  default     = false
+}
+
 variable "container_langfuse_admin_email" {
   description = "Email of the Langfuse administrator created on the first start, whose password is the langfuse_admin_password secret."
   type        = string

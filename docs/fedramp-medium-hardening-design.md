@@ -61,6 +61,20 @@ Controls. SC-7 boundary protection through the tier placement, the per-workload 
 
 Open items. The TLS a task terminates and the TLS its clients open run in the Python, Node, and Go runtimes of the images, which do not run a CMVP-validated module in FIPS mode, because Fargate offers FIPS mode only in AWS GovCloud. Langfuse's FIPS mode also needs a Government license. The load balancer hop and the AWS endpoints do run validated modules. Amazon Managed Service for Prometheus offers no FIPS endpoint for remote write. The load balancer does not authenticate the task certificate, so the hop to a task relies on the target group's security group for its peer. The [control inheritance matrix](fedramp-control-inheritance.md) tracks these items.
 
+## Dashboards
+
+Posture. An Amazon Managed Grafana workspace from [managed-grafana](../infra/terraform/managed-grafana) holds the dashboards over the collector's metrics in the Prometheus workspace and its traces in X-Ray. Users sign in only through IAM Identity Center, and Identity Center groups receive the Grafana Admin, Editor, and Viewer roles. The workspace connects to the application tier, and its group admits no ingress and egress only to the interface endpoints, so its data source traffic reaches Prometheus, X-Ray, and STS through the `aps-workspaces`, `xray`, and `sts` endpoints. The workspace role reads X-Ray and assumes the Prometheus query role, which holds the four query actions on the one workspace and no write action, and which operators named in the composition may also assume. The collector role writes and the query role reads, so no role does both. A customer managed key with rotation encrypts the workspace outside AWS GovCloud (US). Plugin installation from the Grafana UI is off. The `grafana-workspace` endpoint gives operators an in-VPC path to the workspace, and network access control can admit only that endpoint. A Grafana Admin adds the two data sources from the module's output, so no Grafana credential is stored in the Terraform state.
+
+| Hop | Protection |
+|---|---|
+| User to the workspace | TLS, with IAM Identity Center sign-in, and through the `grafana-workspace` endpoint when network access control admits only it |
+| Workspace to Prometheus | TLS to the `aps-workspaces` interface endpoint with SigV4 under the query role |
+| Workspace to X-Ray | TLS to the `xray` interface endpoint with SigV4 under the workspace role |
+
+Controls. CA-7 continuous monitoring through the dashboards over the platform's metrics and traces, which the deploying organization's monitoring program consumes. AU-6 audit review, analysis, and reporting through the trace views. AC-2 and IA-2 through Identity Center sign-in and group-based roles. AC-6 through the separate write and query roles and the workspace role limited to trace reads and one role assumption. SC-7 through the VPC connection with egress only to the endpoints and the optional inbound restriction to the `grafana-workspace` endpoint. SC-8 through TLS on every hop. SC-12 and SC-28 through the workspace key. CM-7 through disabled plugin installation.
+
+Open items. Amazon Managed Grafana accepts no customer managed key in AWS GovCloud (US), where the workspace uses an AWS owned key. Its workspace and data source calls use the standard regional endpoints rather than FIPS endpoints. Dashboard and alert rule content is the deploying organization's.
+
 ## Edge endpoints
 
 Posture. The platform reaches AWS services through interface and gateway VPC endpoints rather than the public internet, so traffic to Bedrock, the object store, and the other consumed services stays on the AWS network. Bedrock inference is authorized by a dedicated IAM policy.
