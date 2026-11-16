@@ -8,6 +8,7 @@ metadata:
     app.kubernetes.io/part-of: agentic-dev-platform
 spec:
   restartPolicy: Never
+  activeDeadlineSeconds: 4200
   automountServiceAccountToken: false
   securityContext:
     seccompProfile:

@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
 from database.engine import shared_platform_engine
-from database.models.schema import orphan_artifacts
+from database.models.schema import executions, orphan_artifacts
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -21,6 +22,7 @@ STAGING = "staging"
 ACTIVE = "active"
 REAPED = "reaped"
 ARCHIVED = "archived"
+TERMINAL_EXECUTION_STATES = frozenset({"COMPLETED", "FAILED", "CANCELLED"})
 
 
 @dataclass(frozen=True)
@@ -44,6 +46,18 @@ class OrphanRecord:
     ttl_at: datetime | None
     platform_tagged: bool
     tenant: str = ""
+
+
+@dataclass(frozen=True)
+class ExecutionRecord:
+    execution_id: str
+    task_id: str
+    state: str
+    tenant: str = ""
+
+    @property
+    def active(self) -> bool:
+        return self.state not in TERMINAL_EXECUTION_STATES
 
 
 def orphan_id_for(artifact_type: str, external_id: str, repository: str, tenant: str = "") -> str:
@@ -128,11 +142,36 @@ class PostgresOrphanRegistry:
                 .values(state=state)
             )
 
+    async def find_executions(self, execution_ids: Collection[str]) -> dict[str, ExecutionRecord]:
+        if not execution_ids:
+            return {}
+        engine = self._get_engine()
+        async with engine.connect() as conn:
+            result = await conn.execute(
+                select(
+                    executions.c.execution_id,
+                    executions.c.task_id,
+                    executions.c.state,
+                    executions.c.tenant,
+                ).where(executions.c.execution_id.in_(list(execution_ids)))
+            )
+            rows = result.mappings().all()
+        return {
+            row["execution_id"]: ExecutionRecord(
+                execution_id=row["execution_id"],
+                task_id=row["task_id"],
+                state=row["state"],
+                tenant=row["tenant"] or "",
+            )
+            for row in rows
+        }
+
 
 class InMemoryOrphanRegistry:
     def __init__(self) -> None:
         self.records: dict[str, OrphanArtifact] = {}
         self.states: dict[str, str] = {}
+        self.executions: dict[str, ExecutionRecord] = {}
 
     async def register(self, artifact: OrphanArtifact) -> str:
         orphan_id = orphan_id_for(
@@ -167,3 +206,10 @@ class InMemoryOrphanRegistry:
 
     async def mark_state(self, orphan_id: str, state: str) -> None:
         self.states[orphan_id] = state
+
+    async def find_executions(self, execution_ids: Collection[str]) -> dict[str, ExecutionRecord]:
+        return {
+            execution_id: self.executions[execution_id]
+            for execution_id in execution_ids
+            if execution_id in self.executions
+        }

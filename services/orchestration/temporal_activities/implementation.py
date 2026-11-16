@@ -136,6 +136,7 @@ async def _budget_stopped_outcome(execution_id: str, outcome: Any) -> Any:
 def _build_runtime(repo: str = "", *, model_api_key: str):
     from openhands.runtime.conversation import RemoteConversationDriver
     from openhands.runtime.provisioner import (
+        SANDBOX_READY_TIMEOUT_SECONDS,
         KubernetesSandboxProvisioner,
         PortForwardSandboxProvisioner,
     )
@@ -153,7 +154,7 @@ def _build_runtime(repo: str = "", *, model_api_key: str):
     )
     inner = KubernetesSandboxProvisioner(
         in_cluster=settings.openhands_in_cluster,
-        ready_timeout_seconds=600.0,
+        ready_timeout_seconds=SANDBOX_READY_TIMEOUT_SECONDS,
     )
     provisioner = inner if settings.openhands_in_cluster else PortForwardSandboxProvisioner(inner)
     runtime = SandboxRuntime.from_settings(provisioner, driver, settings)
