@@ -5,10 +5,15 @@ from __future__ import annotations
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, cast
 
+import pytest
 import yaml
 from openhands.runtime.provisioner import (
     NODE_POOL_LABEL,
+    PATCH_EXTRACTION_TIMEOUT_SECONDS,
+    SANDBOX_READY_TIMEOUT_SECONDS,
     SANDBOX_TAINT_KEY,
     SandboxSpec,
     WorkspaceBinding,
@@ -82,6 +87,60 @@ def test_pod_builder_matches_the_declarative_manifest() -> None:
         == pod["spec"]["containers"][0]["ports"][0]["containerPort"]
     )
     assert "runtimeClassName" not in built["spec"]
+    assert built["spec"]["activeDeadlineSeconds"] == pod["spec"]["activeDeadlineSeconds"]
+
+
+class _ReadyPodCore:
+    def __init__(self) -> None:
+        self.manifests: list[dict] = []
+        self.exists = False
+
+    def create_namespaced_pod(self, namespace: str, manifest: dict) -> None:
+        self.manifests.append(manifest)
+        self.exists = True
+
+    def read_namespaced_pod(self, name: str, namespace: str) -> SimpleNamespace:
+        from kubernetes.client.exceptions import ApiException
+
+        if not self.exists:
+            raise ApiException(status=404)
+        ready = SimpleNamespace(type="Ready", status="True")
+        return SimpleNamespace(
+            status=SimpleNamespace(phase="Running", pod_ip="10.0.0.5", conditions=[ready])
+        )
+
+    def delete_namespaced_pod(self, name: str, namespace: str, grace_period_seconds=None) -> None:
+        self.exists = False
+
+
+@pytest.mark.parametrize("max_wall_clock_seconds", [60.0, 1800.0, 7200.5])
+async def test_the_sandbox_pod_deadline_outlasts_every_bounded_phase(
+    max_wall_clock_seconds: float,
+) -> None:
+    from openhands.runtime.conversation import FakeConversationDriver
+    from openhands.runtime.provisioner import KubernetesSandboxProvisioner
+    from openhands.runtime.runtime import SandboxRuntime
+    from tests.support import hermetic_settings
+
+    core = _ReadyPodCore()
+    provisioner = KubernetesSandboxProvisioner(
+        in_cluster=False,
+        ready_timeout_seconds=SANDBOX_READY_TIMEOUT_SECONDS,
+        poll_interval_seconds=0.0,
+    )
+    cast(Any, provisioner)._core = core
+    runtime = SandboxRuntime.from_settings(
+        provisioner,
+        FakeConversationDriver(),
+        hermetic_settings(openhands_max_wall_clock_seconds=max_wall_clock_seconds),
+    )
+
+    await runtime.run_implementation(execution_id="exec-1", task="t")
+
+    deadline = core.manifests[0]["spec"]["activeDeadlineSeconds"]
+    assert deadline >= (
+        SANDBOX_READY_TIMEOUT_SECONDS + max_wall_clock_seconds + PATCH_EXTRACTION_TIMEOUT_SECONDS
+    )
 
 
 def test_builder_swaps_runtime_class_without_touching_the_pod_shape() -> None:

@@ -72,6 +72,7 @@ class SandboxRuntime:
             workspace=binding,
             session_api_key=secrets.token_urlsafe(32),
             node_pool=self.node_pool,
+            max_wall_clock_seconds=self.caps.max_wall_clock_seconds,
         )
         metadata = {"execution_id": execution_id, "stage": "implementing"}
         if task_id:

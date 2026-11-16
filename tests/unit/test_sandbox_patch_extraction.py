@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+from types import SimpleNamespace
 
+import pytest
 from openhands.runtime.provisioner import (
     _BASE_TAG,
     KubernetesSandboxProvisioner,
@@ -251,6 +253,81 @@ async def test_provision_replaces_the_pod_an_earlier_attempt_left(monkeypatch):
     assert core.created == 1
     assert core.create_conflicts == 0
     assert handle.base_url == "http://10.0.0.5:8000"
+
+
+class _PodLifecycleCore:
+    """Holds one pod from create to delete, reporting the given phase while it exists."""
+
+    def __init__(self, phase: str):
+        self.phase = phase
+        self.exists = False
+        self.deleted: list = []
+
+    def create_namespaced_pod(self, namespace, manifest):
+        self.exists = True
+
+    def read_namespaced_pod(self, name, namespace):
+        from kubernetes.client.exceptions import ApiException
+
+        if not self.exists:
+            raise ApiException(status=404)
+        return SimpleNamespace(status=SimpleNamespace(phase=self.phase, pod_ip=None, conditions=[]))
+
+    def delete_namespaced_pod(self, name, namespace, grace_period_seconds=None):
+        self.deleted.append(name)
+        self.exists = False
+
+
+async def test_provision_deletes_a_pod_that_is_not_ready_in_time():
+    from openhands.runtime.provisioner import SandboxSpec, pod_name_for
+
+    core = _PodLifecycleCore(phase="Pending")
+    provisioner = _fast_provisioner(core)
+    provisioner._ready_timeout = 0.0
+
+    with pytest.raises(TimeoutError):
+        await provisioner.provision(SandboxSpec(execution_id="exec-1", image="img"))
+
+    assert core.deleted == [pod_name_for("exec-1")]
+    assert core.exists is False
+
+
+async def test_provision_deletes_a_pod_that_enters_a_terminal_phase():
+    from openhands.runtime.provisioner import SandboxSpec, pod_name_for
+
+    core = _PodLifecycleCore(phase="Failed")
+    provisioner = _fast_provisioner(core)
+
+    with pytest.raises(RuntimeError, match="terminal phase Failed"):
+        await provisioner.provision(SandboxSpec(execution_id="exec-1", image="img"))
+
+    assert core.deleted == [pod_name_for("exec-1")]
+    assert core.exists is False
+
+
+async def test_port_forward_provision_tears_down_the_pod_when_the_forward_fails(monkeypatch):
+    from openhands.runtime.provisioner import (
+        FakeSandboxProvisioner,
+        PortForwardSandboxProvisioner,
+        SandboxSpec,
+        pod_name_for,
+    )
+
+    class _ExitedForward:
+        def __init__(self, args, **kwargs):
+            pass
+
+        def poll(self):
+            return 1
+
+    monkeypatch.setattr(process, "Popen", _ExitedForward)
+    inner = FakeSandboxProvisioner()
+    provisioner = PortForwardSandboxProvisioner(inner)
+
+    with pytest.raises(RuntimeError, match="port-forward exited"):
+        await provisioner.provision(SandboxSpec(execution_id="exec-1", image="img"))
+
+    assert [handle.name for handle in inner.torn_down] == [pod_name_for("exec-1")]
 
 
 def _git(cwd, *args):

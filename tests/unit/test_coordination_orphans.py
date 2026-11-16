@@ -8,6 +8,7 @@ from typing import Any, cast
 
 from services.coordination.orphans import (
     BRANCH,
+    ExecutionRecord,
     InMemoryOrphanRegistry,
     OrphanArtifact,
     PostgresOrphanRegistry,
@@ -97,8 +98,9 @@ async def test_register_is_idempotent():
 
 
 class _Connection:
-    def __init__(self) -> None:
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
         self.statements: list[Any] = []
+        self.rows = rows
 
     async def __aenter__(self) -> _Connection:
         return self
@@ -108,12 +110,12 @@ class _Connection:
 
     async def execute(self, statement: Any) -> Any:
         self.statements.append(statement)
-        return SimpleNamespace(mappings=lambda: SimpleNamespace(all=lambda: []))
+        return SimpleNamespace(mappings=lambda: SimpleNamespace(all=lambda: self.rows))
 
 
 class _Engine:
-    def __init__(self) -> None:
-        self.connection = _Connection()
+    def __init__(self, rows: list[dict[str, Any]] | None = None) -> None:
+        self.connection = _Connection(rows or [])
 
     def connect(self) -> _Connection:
         return self.connection
@@ -134,3 +136,12 @@ async def test_the_reapable_orphans_of_a_tenant_exclude_orphans_recorded_without
     assert "orphan_artifacts.tenant = 'adp'" in sql
     assert "orphan_artifacts.tenant = ''" not in sql
     assert " OR " not in sql
+
+
+async def test_execution_lookup_reads_an_untenanted_execution_as_the_empty_tenant():
+    row = {"execution_id": "exec-1", "task_id": "ADSER-1", "state": "COMPLETED", "tenant": None}
+    engine = _Engine([row])
+
+    found = await PostgresOrphanRegistry(cast(AsyncEngine, engine)).find_executions(["exec-1"])
+
+    assert found == {"exec-1": ExecutionRecord("exec-1", "ADSER-1", "COMPLETED", "")}

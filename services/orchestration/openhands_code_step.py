@@ -8,6 +8,7 @@ from pathlib import Path
 
 from openhands.runtime.conversation import ConversationDriver, RemoteConversationDriver
 from openhands.runtime.provisioner import (
+    SANDBOX_READY_TIMEOUT_SECONDS,
     KubernetesSandboxProvisioner,
     PortForwardSandboxProvisioner,
 )
@@ -69,7 +70,9 @@ def build_openhands_code_step(
         return driver_with_key(await ensure_run_model_key(execution_id, settings=resolved))
 
     provisioner = PortForwardSandboxProvisioner(
-        KubernetesSandboxProvisioner(in_cluster=in_cluster, ready_timeout_seconds=600.0)
+        KubernetesSandboxProvisioner(
+            in_cluster=in_cluster, ready_timeout_seconds=SANDBOX_READY_TIMEOUT_SECONDS
+        )
     )
     runtime = SandboxRuntime.from_settings(provisioner, driver_with_key(""), resolved)
     runtime.litellm_base_url = llm_url
