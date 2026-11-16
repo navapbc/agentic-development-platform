@@ -386,6 +386,8 @@ AWS transition and FedRAMP Medium readiness. The platform documents its local-to
 - The sandbox egress policy selected LiteLLM in `agent-sandbox`, where it does not run, and now selects it in the platform namespace.
 - The local MCP gateway reached repository intelligence on the coordination service port, and now reaches it on 8120.
 - The `mcp-gateway` manifest no longer sets `JIRA_ACCEPTANCE_FIELD`, which no service read.
+- Work claims and the sequence gate are scoped to the tenant, so two tenants that run tickets with the same key no longer contend for one claim or one sequence counter. `inv intake --retry` clears only the retrying tenant's intake records, executions, claims, and sequence gate.
+- Evidence artifacts are deduplicated per execution and record the tenant of the execution. A persist of evidence that the execution already holds returns the stored artifact id. The object store keys each evidence object by its execution and content hash, so the object an execution's row locates names that execution, and an object written earlier keeps its stored location. The MCP gateway evidence tools filter evidence by its tenant column.
 
 ## 0.2.0 (2026-09-14)
 

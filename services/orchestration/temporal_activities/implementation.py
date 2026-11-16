@@ -164,6 +164,8 @@ def _build_runtime(repo: str = "", *, model_api_key: str):
 
 @activity.defn
 async def claim_work_unit(req: ClaimRequest) -> ClaimResult:
+    from scripts.config import get_settings
+
     from services.coordination.auth import CoordinationAuthError
     from services.coordination.claims import WorkUnit
 
@@ -180,6 +182,7 @@ async def claim_work_unit(req: ClaimRequest) -> ClaimResult:
                 agent_id=req.agent_id,
                 file_impact=tuple(req.file_impact),
                 workflow_id=owner_workflow_id,
+                tenant=get_settings().tenant,
             )
         )
     except CoordinationAuthError as exc:
@@ -198,14 +201,18 @@ async def claim_work_unit(req: ClaimRequest) -> ClaimResult:
 
 @activity.defn
 async def reset_task_coordination(req: ResetCoordinationRequest) -> ResetCoordinationResult:
+    from scripts.config import get_settings
+
     from services.coordination.sequencing import PostgresSequenceGate
 
-    await PostgresSequenceGate().reset(req.task_id)
+    await PostgresSequenceGate().reset(req.task_id, tenant=get_settings().tenant)
     return ResetCoordinationResult(sequence_reset=True)
 
 
 @activity.defn
 async def finalize_work_claim(req: FinalizeClaimRequest) -> FinalizeClaimResult:
+    from scripts.config import get_settings
+
     from services.coordination.claims import (
         COMPLETED,
         RELEASED,
@@ -213,7 +220,7 @@ async def finalize_work_claim(req: FinalizeClaimRequest) -> FinalizeClaimResult:
         claim_id_for,
     )
 
-    claim_id = claim_id_for(req.task_id, req.work_unit)
+    claim_id = claim_id_for(req.task_id, req.work_unit, get_settings().tenant)
     state = COMPLETED if req.completed else RELEASED
     if not req.owner_workflow_id:
         return FinalizeClaimResult(claim_id=claim_id, finalized=False, state=state)

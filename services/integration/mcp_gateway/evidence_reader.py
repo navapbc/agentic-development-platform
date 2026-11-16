@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Protocol
 
 from database.engine import shared_platform_engine
-from database.models.schema import evidence_artifacts, executions
+from database.models.schema import evidence_artifacts
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -19,10 +19,10 @@ class EvidenceReader(Protocol):
 
 
 class PostgresEvidenceReader:
-    """Read the evidence of the executions recorded for one tenant.
+    """Read the evidence recorded for one tenant.
 
-    An artifact of an execution recorded for another tenant, or for no tenant, reads as absent,
-    the same as an ID that names no artifact.
+    An artifact recorded for another tenant, or for no tenant, reads as absent, the same as an
+    ID that names no artifact.
     """
 
     def __init__(self, tenant: str, engine: AsyncEngine | None = None) -> None:
@@ -36,11 +36,6 @@ class PostgresEvidenceReader:
             self._engine = shared_platform_engine()
         return self._engine
 
-    def _tenant_evidence(self):
-        return evidence_artifacts.join(
-            executions, evidence_artifacts.c.execution_id == executions.c.execution_id
-        )
-
     async def get_artifact(self, artifact_id: str) -> dict[str, Any] | None:
         stmt = (
             select(
@@ -53,9 +48,8 @@ class PostgresEvidenceReader:
                 evidence_artifacts.c.location,
                 evidence_artifacts.c.metadata,
             )
-            .select_from(self._tenant_evidence())
             .where(evidence_artifacts.c.artifact_id == artifact_id)
-            .where(executions.c.tenant == self._tenant)
+            .where(evidence_artifacts.c.tenant == self._tenant)
         )
         engine = self._get_engine()
         async with engine.connect() as conn:
@@ -65,10 +59,9 @@ class PostgresEvidenceReader:
     async def get_security_findings(self, execution_id: str) -> dict[str, Any] | None:
         stmt = (
             select(evidence_artifacts.c.metadata)
-            .select_from(self._tenant_evidence())
             .where(evidence_artifacts.c.execution_id == execution_id)
             .where(evidence_artifacts.c.source_component == SECURITY_COMPONENT)
-            .where(executions.c.tenant == self._tenant)
+            .where(evidence_artifacts.c.tenant == self._tenant)
             .limit(1)
         )
         engine = self._get_engine()

@@ -15,10 +15,10 @@ from typing import Any, Protocol
 from database.engine import create_platform_engine
 from database.models.schema import executions, sequence_gate, side_effects, work_claims
 from scripts.config import Settings, get_settings, to_host_hostport, to_host_url
-from sqlalchemy import delete, select, update
+from sqlalchemy import ColumnElement, delete, select, update
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from services.coordination.idempotency import intake_start_target_repo
+from services.coordination.idempotency import intake_start_target_repo, intake_start_target_tenant
 from services.orchestration.intake_cursor import (
     CursorRelease,
     IntakeCursorRelease,
@@ -155,8 +155,24 @@ async def retry_intake(
 
 
 class PostgresIntakeRetryStore:
-    def __init__(self, engine: AsyncEngine) -> None:
+    """Read and clear the intake state one tenant recorded for an issue.
+
+    An execution without a tenant belongs to the store of the empty tenant only.
+    """
+
+    def __init__(self, engine: AsyncEngine, *, tenant: str) -> None:
         self._engine = engine
+        self._tenant = tenant
+
+    def _tenant_executions(self) -> ColumnElement[bool]:
+        if self._tenant:
+            return executions.c.tenant == self._tenant
+        return executions.c.tenant.is_(None)
+
+    def _in_scope(self, target: str, repo: str | None) -> bool:
+        if intake_start_target_tenant(target) != self._tenant:
+            return False
+        return repo is None or intake_start_target_repo(_INTAKE_START, target) == repo
 
     async def workflow_ids(self, issue_key: str) -> list[str]:
         async with self._engine.connect() as conn:
@@ -164,6 +180,7 @@ class PostgresIntakeRetryStore:
                 await conn.execute(
                     select(executions.c.workflow_id)
                     .where(executions.c.task_id == issue_key)
+                    .where(self._tenant_executions())
                     .where(executions.c.workflow_id.is_not(None))
                     .distinct()
                 )
@@ -187,15 +204,16 @@ class PostgresIntakeRetryStore:
             ).all()
             claims = (
                 await conn.execute(
-                    select(
-                        work_claims.c.claim_id, work_claims.c.execution_id, work_claims.c.state
-                    ).where(work_claims.c.task_id == issue_key)
+                    select(work_claims.c.claim_id, work_claims.c.execution_id, work_claims.c.state)
+                    .where(work_claims.c.tenant == self._tenant)
+                    .where(work_claims.c.task_id == issue_key)
                 )
             ).all()
             stale = (
                 await conn.execute(
                     select(executions.c.execution_id, executions.c.state, executions.c.workflow_id)
                     .where(executions.c.task_id == issue_key)
+                    .where(self._tenant_executions())
                     .where(executions.c.state.not_in(_TERMINAL_STATES))
                 )
             ).all()
@@ -203,7 +221,7 @@ class PostgresIntakeRetryStore:
             "intake_records": [
                 f"{row.side_effect_key} {row.target} {row.status} {row.result}"
                 for row in intake
-                if repo is None or intake_start_target_repo(_INTAKE_START, str(row.target)) == repo
+                if self._in_scope(str(row.target), repo)
             ],
             "work_claims": [f"{row.claim_id} {row.execution_id} {row.state}" for row in claims],
             "stale_executions": [
@@ -214,17 +232,13 @@ class PostgresIntakeRetryStore:
     async def clear_intake_dedup(self, issue_key: str, repo: str | None) -> int:
         clause = (side_effects.c.task_id == issue_key) & (side_effects.c.operation == _INTAKE_START)
         async with self._engine.begin() as conn:
-            if repo is None:
-                return (await conn.execute(delete(side_effects).where(clause))).rowcount or 0
             candidates = (
                 await conn.execute(
                     select(side_effects.c.side_effect_key, side_effects.c.target).where(clause)
                 )
             ).all()
             keys = [
-                row.side_effect_key
-                for row in candidates
-                if intake_start_target_repo(_INTAKE_START, str(row.target)) == repo
+                row.side_effect_key for row in candidates if self._in_scope(str(row.target), repo)
             ]
             if not keys:
                 return 0
@@ -240,6 +254,7 @@ class PostgresIntakeRetryStore:
                 await conn.execute(
                     update(executions)
                     .where(executions.c.task_id == issue_key)
+                    .where(self._tenant_executions())
                     .where(executions.c.state.not_in(_TERMINAL_STATES))
                     .values(state="FAILED")
                 )
@@ -249,14 +264,20 @@ class PostgresIntakeRetryStore:
         async with self._engine.begin() as conn:
             return (
                 await conn.execute(
-                    delete(sequence_gate).where(sequence_gate.c.task_id == issue_key)
+                    delete(sequence_gate)
+                    .where(sequence_gate.c.tenant == self._tenant)
+                    .where(sequence_gate.c.task_id == issue_key)
                 )
             ).rowcount or 0
 
     async def clear_work_claims(self, issue_key: str) -> int:
         async with self._engine.begin() as conn:
             return (
-                await conn.execute(delete(work_claims).where(work_claims.c.task_id == issue_key))
+                await conn.execute(
+                    delete(work_claims)
+                    .where(work_claims.c.tenant == self._tenant)
+                    .where(work_claims.c.task_id == issue_key)
+                )
             ).rowcount or 0
 
 
@@ -322,7 +343,7 @@ async def run_intake_retry(
     try:
         return await retry_intake(
             issue_key,
-            store=PostgresIntakeRetryStore(engine),
+            store=PostgresIntakeRetryStore(engine, tenant=resolved.tenant),
             liveness=temporal_workflow_liveness(resolved),
             repo=repo,
             cursor=build_intake_cursor_release(resolved),

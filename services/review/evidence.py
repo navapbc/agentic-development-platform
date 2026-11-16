@@ -10,8 +10,9 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol, runtime_checkable
 
 from database.engine import shared_platform_engine
-from database.models.schema import evidence_artifacts
+from database.models.schema import evidence_artifacts, executions
 from scripts.config import Settings, get_settings
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -79,7 +80,17 @@ class PostgresEvidenceSink:
         return self._engine
 
     async def persist(self, record: EvidenceRecord) -> str:
+        """Record the evidence for its execution and return the artifact id the row holds.
+
+        A record whose content the execution already holds writes no row, and the id of the
+        stored row is returned in place of the record's own id.
+        """
         record = resolve_retention(record, get_settings())
+        execution_tenant = (
+            select(executions.c.tenant)
+            .where(executions.c.execution_id == record.execution_id)
+            .scalar_subquery()
+        )
         stmt = (
             insert(evidence_artifacts)
             .values(
@@ -91,13 +102,26 @@ class PostgresEvidenceSink:
                 retention=record.retention,
                 location=record.location,
                 metadata=record.metadata or None,
+                tenant=func.coalesce(execution_tenant, ""),
             )
-            .on_conflict_do_nothing(index_elements=[evidence_artifacts.c.content_hash])
+            .on_conflict_do_nothing(
+                index_elements=[
+                    evidence_artifacts.c.execution_id,
+                    evidence_artifacts.c.content_hash,
+                ]
+            )
+            .returning(evidence_artifacts.c.artifact_id)
+        )
+        stored = select(evidence_artifacts.c.artifact_id).where(
+            evidence_artifacts.c.execution_id == record.execution_id,
+            evidence_artifacts.c.content_hash == record.content_hash,
         )
         engine = self._get_engine()
         async with engine.begin() as conn:
-            await conn.execute(stmt)
-        return record.artifact_id
+            inserted = (await conn.execute(stmt)).scalar_one_or_none()
+            if inserted is not None:
+                return inserted
+            return (await conn.execute(stored)).scalar_one()
 
 
 class ObjectStoreWriter:
@@ -175,8 +199,9 @@ class ObjectStoreWriter:
 class ObjectStoreEvidenceSink:
     """Persist each evidence object to an S3-compatible store under Object Lock.
 
-    The object body is content-addressed by the record's content hash, so a repeated
-    write of the same content is idempotent. The object location is then recorded on the
+    The object is keyed by the record's execution and content hash, so a repeated write of
+    the same content for one execution is idempotent, and each execution's index row locates
+    an object whose body names that execution. The object location is then recorded on the
     Postgres index so a reader resolves the object by id.
     """
 
@@ -198,12 +223,16 @@ class ObjectStoreEvidenceSink:
 
     async def persist(self, record: EvidenceRecord) -> str:
         record = resolve_retention(record, self._settings)
-        key = f"evidence/{record.content_hash}"
+        key = evidence_object_key(record)
         body = json.dumps(_serialize(record), sort_keys=True).encode("utf-8")
         location = await asyncio.to_thread(
             self._writer.put_locked, key, body, retention_days=self._retention_days(record)
         )
         return await self._index.persist(replace(record, location=location))
+
+
+def evidence_object_key(record: EvidenceRecord) -> str:
+    return f"evidence/{record.execution_id}/{record.content_hash}"
 
 
 def _serialize(record: EvidenceRecord) -> dict[str, Any]:
@@ -266,7 +295,7 @@ async def persist_artifact_evidence(
     """Persist one artifact body through the sink and return its artifact id.
 
     The content hash covers the canonical body, so a replayed activity writes the same
-    key and the sink's conflict clause keeps the first record.
+    key for the execution, and the sink keeps the first record and returns its id.
     """
     record = EvidenceRecord(
         artifact_id=uuid.uuid4().hex,

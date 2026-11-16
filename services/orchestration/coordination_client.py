@@ -94,6 +94,7 @@ class CoordinationClient:
                 "sequence": action.sequence,
                 "idempotency_key": action.idempotency_key,
                 "operation": action.operation,
+                "tenant": action.tenant,
             },
         )
         return SequenceDecision(**data)
@@ -121,6 +122,7 @@ def _work_unit_body(unit: WorkUnit) -> dict[str, Any]:
         "agent_id": unit.agent_id,
         "file_impact": list(unit.file_impact),
         "workflow_id": unit.workflow_id,
+        "tenant": unit.tenant,
     }
 
 

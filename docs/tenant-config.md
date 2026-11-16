@@ -109,7 +109,7 @@ inv tenant-config-publish --tenant adp --bundle-dir path/to/bundle --bucket <con
 
 ## Upgrading a v0.2.x database to v0.3.0
 
-A v0.2.x database records executions and orphan artifacts without a tenant. The migrations `0012_execution_tenant` and `0013_orphan_tenant` add the tenant column, leave `executions.tenant` NULL on every existing row, and set `orphan_artifacts.tenant` to the empty string on every existing row. The upgrade assigns none of these rows to a tenant.
+A v0.2.x database records executions, orphan artifacts, work claims, sequence gates, and evidence artifacts without a tenant. The migrations `0012_execution_tenant` and `0013_orphan_tenant` add the tenant column, leave `executions.tenant` NULL on every existing row, and set `orphan_artifacts.tenant` to the empty string on every existing row. The migration `0014_claim_tenant` adds a non-null tenant column to `work_claims` and `sequence_gate`. It copies the tenant of the owning execution onto each work claim, and a claim whose execution has no tenant or no longer exists receives the empty string. It copies each sequence gate row to every tenant that holds a work claim of the gate's task, because a workflow sequences from the version of its claim and only the tenant that keeps the claim continues above the gate. A gate row whose task has no claim receives the empty string, and a tenant that holds no claim of the task starts its gate from zero. The claim unique constraint becomes `(tenant, task_id, work_unit)` and the gate primary key becomes `(tenant, task_id)`. The migration `0015_evidence_execution_scope` adds a non-null tenant column to `evidence_artifacts`, copies the tenant of the owning execution onto each row, and gives a row whose execution has no tenant or no longer exists the empty string. It replaces the unique constraint on `content_hash` with one on `(execution_id, content_hash)`, so each execution holds its own row for evidence whose content another execution already recorded. The object store keys each evidence object written after the upgrade as `evidence/<execution_id>/<content_hash>`, and a row recorded before the upgrade keeps the object location it stored. The upgrade assigns none of these rows to a named tenant, because every execution it reads has a NULL tenant.
 
 ### Before the upgrade
 
@@ -121,15 +121,18 @@ A v0.2.x database records executions and orphan artifacts without a tenant. The 
 
 The rows recorded before the upgrade belong to no tenant. Every tenant-scoped query matches its tenant exactly, so these executions do not count toward a tenant's `MAX_CONCURRENT_RUNS` limit, the reaper does not reclaim these orphan artifacts, and the MCP gateway evidence tools do not return the evidence of these executions. A pull request event for one of these executions resolves to no workflow, and the inbound webhook answers it as it answers any event without a workflow.
 
+Work claims and sequence gates recorded before the upgrade carry the empty tenant. A tenant's run claims and sequences on rows of its own, so these rows block no tenant's run, and `inv intake --retry` on a tenant's worker neither releases nor resets them.
+
 The intake idempotency records in `agent_platform.side_effects` name an issue and a repository without a tenant, and the intake of a tenant matches only records that name the tenant. Intake therefore treats a ticket it started before the upgrade as not started. Intake selects every ticket that carries the intake label and is not in a Done status, so before resuming intake, move each ticket whose run finished or was cancelled to a Done status or remove its intake label. An unroutable ticket that was alerted before the upgrade alerts once more for each tenant.
 
 ### Optional backfill
 
-A one-time backfill assigns the rows recorded before the upgrade to one tenant. It consists of the following two statements.
+A one-time backfill assigns the rows recorded before the upgrade to one tenant. It consists of the following three statements. It leaves `work_claims` and `sequence_gate` unchanged, because no run of a named tenant reads the rows with the empty tenant.
 
 ```sql
 UPDATE agent_platform.executions SET tenant = '<tenant>' WHERE tenant IS NULL;
 UPDATE agent_platform.orphan_artifacts SET tenant = '<tenant>' WHERE tenant = '';
+UPDATE agent_platform.evidence_artifacts SET tenant = '<tenant>' WHERE tenant = '';
 ```
 
 No `inv` task runs SQL against the platform database. Locally, run the statements in the Compose `postgres` service, the database `inv db-migrate` migrates.
@@ -139,6 +142,7 @@ docker compose exec -T postgres sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USE
 BEGIN;
 UPDATE agent_platform.executions SET tenant = '<tenant>' WHERE tenant IS NULL;
 UPDATE agent_platform.orphan_artifacts SET tenant = '<tenant>' WHERE tenant = '';
+UPDATE agent_platform.evidence_artifacts SET tenant = '<tenant>' WHERE tenant = '';
 COMMIT;
 EOF
 ```
@@ -159,8 +163,9 @@ async def backfill() -> None:
     async with engine.begin() as conn:
         executions = await conn.execute(text("UPDATE agent_platform.executions SET tenant = '<tenant>' WHERE tenant IS NULL"))
         orphans = await conn.execute(text("UPDATE agent_platform.orphan_artifacts SET tenant = '<tenant>' WHERE tenant = ''"))
+        evidence = await conn.execute(text("UPDATE agent_platform.evidence_artifacts SET tenant = '<tenant>' WHERE tenant = ''"))
     await engine.dispose()
-    print(f"executions {executions.rowcount}, orphan artifacts {orphans.rowcount}")
+    print(f"executions {executions.rowcount}, orphan artifacts {orphans.rowcount}, evidence artifacts {evidence.rowcount}")
 
 
 asyncio.run(backfill())

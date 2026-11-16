@@ -154,6 +154,7 @@ async def run_bounded_task(
         request.execution_id,
         request.agent_id,
         request.file_impact,
+        tenant=settings.tenant,
     )
     _progress("claim: acquiring work claim")
     claim = await deps.claim_store.try_claim(unit)
