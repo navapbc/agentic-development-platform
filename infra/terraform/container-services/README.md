@@ -124,7 +124,7 @@ With `collector_exports_enabled`, the default, the collector sends:
 
 The task role grants only `xray:PutTraceSegments`, `xray:PutTelemetryRecords`, and `aps:RemoteWrite` on the workspace. The collector's group admits egress only to the VPC endpoints, S3, and the internal load balancer, so X-Ray and Prometheus are reached only through their interface endpoints, which the `private-bedrock` root adds. AWS offers no FIPS endpoint for Prometheus remote write. Logs go to the debug exporter, which writes counts to the task log. With `collector_exports_enabled = false`, every pipeline ends in the debug exporter, and the module creates no workspace, telemetry key, or task permission.
 
-The telemetry KMS key encrypts the workspace. X-Ray encryption is one setting per account and region, so the module leaves it alone unless `xray_encryption_enabled` sets it to the telemetry key, which also lets the collector use the key. Dashboards and alerts on the workspace are out of scope for this module.
+The telemetry KMS key encrypts the workspace. X-Ray encryption is one setting per account and region, so the module leaves it alone unless `xray_encryption_enabled` sets it to the telemetry key, which also lets the collector use the key. The [managed-grafana](../managed-grafana) module provisions the dashboards over the workspace and the traces, with a query role that may only read the workspace.
 
 ## Outputs
 
@@ -144,7 +144,7 @@ The telemetry KMS key encrypts the workspace. X-Ray encryption is one setting pe
 | `secret_restart_services` | The services and worker slots that read each secret, the `platform_app` login included, for the secret store's restart rules |
 | `clickhouse` | The ClickHouse TLS secret and the name its certificate carries. Null without Langfuse |
 | `langfuse` | The internal Langfuse URL and the public URL. Null without Langfuse |
-| `telemetry` | The Prometheus workspace and its endpoint, the X-Ray encryption key the module set, and the collector URL. Null without collector exports |
+| `telemetry` | The Prometheus workspace ID, ARN, and endpoint, the X-Ray encryption key the module set, and the collector URL. Null without collector exports |
 
 ## Tests
 

@@ -36,7 +36,7 @@ Locally the activity worker, the review worker, LiteLLM, OPA, the inbound webhoo
 | `otel-collector` | Fargate service behind the internal load balancer as the OTLP gateway for the ECS and EKS workloads, exporting traces to AWS X-Ray, metrics to Amazon Managed Service for Prometheus, and generation spans to Langfuse | [container-services](../infra/terraform/container-services) |
 | `prometheus` | Amazon Managed Service for Prometheus workspace the collector writes to through SigV4 remote write | [container-services](../infra/terraform/container-services) |
 | `tempo` | AWS X-Ray, which the collector writes the traces to | [container-services](../infra/terraform/container-services) |
-| `grafana` | Amazon Managed Grafana | Planned, see the [roadmap](../ROADMAP.md) |
+| `grafana` | Amazon Managed Grafana workspace with IAM Identity Center sign-in, connected to the application tier, reading the Prometheus workspace and the X-Ray traces through its workspace role, which holds only query and read actions, over the interface endpoints | [managed-grafana](../infra/terraform/managed-grafana), wired by [private-bedrock](../infra/terraform/examples/private-bedrock) with `create_managed_grafana` |
 | `repo-intelligence`, `repo-index-worker` | Fargate services in the application tier sharing the repository checkouts and index on an encrypted EFS file system. `repo-intelligence` sits behind the internal load balancer | [container-services](../infra/terraform/container-services) |
 
 ## Tenants

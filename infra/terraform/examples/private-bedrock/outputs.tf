@@ -153,6 +153,17 @@ output "container_telemetry" {
   value       = module.container_services.telemetry
 }
 
+output "managed_grafana" {
+  description = "The Grafana workspace URL, the Prometheus query role when grafana_query_principal_arns is set, and the settings a Grafana Admin enters for the Prometheus and X-Ray data sources. Null without create_managed_grafana."
+  value = var.create_managed_grafana ? {
+    workspace_id       = module.managed_grafana.workspace_id
+    workspace_url      = module.managed_grafana.workspace_url
+    workspace_role_arn = module.managed_grafana.workspace_role_arn
+    query_role_arn     = module.managed_grafana.query_role_arn
+    data_sources       = module.managed_grafana.data_sources
+  } : null
+}
+
 output "container_langfuse" {
   description = "The internal Langfuse URL the platform services export to, and the URL inv langfuse-ui forwards."
   value       = module.container_services.langfuse

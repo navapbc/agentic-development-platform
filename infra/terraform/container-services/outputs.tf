@@ -144,10 +144,11 @@ output "secret_restart_services" {
 output "telemetry" {
   description = "The Prometheus workspace the collector writes to, and whether the module sets the region's X-Ray encryption. Null without collector exports."
   value = local.collector_exports ? {
-    prometheus_workspace_id = aws_prometheus_workspace.telemetry[0].id
-    prometheus_endpoint     = aws_prometheus_workspace.telemetry[0].prometheus_endpoint
-    xray_encryption_key_arn = var.xray_encryption_enabled ? aws_kms_key.telemetry[0].arn : null
-    collector_url           = local.collector_url
+    prometheus_workspace_id  = aws_prometheus_workspace.telemetry[0].id
+    prometheus_workspace_arn = aws_prometheus_workspace.telemetry[0].arn
+    prometheus_endpoint      = aws_prometheus_workspace.telemetry[0].prometheus_endpoint
+    xray_encryption_key_arn  = var.xray_encryption_enabled ? aws_kms_key.telemetry[0].arn : null
+    collector_url            = local.collector_url
   } : null
 }
 
