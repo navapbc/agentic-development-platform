@@ -173,6 +173,37 @@ def test_restart_runs_in_the_activity_worker(project):
     assert host.commands == [f"{tasks_module.HOST_PYTHON} -m scripts.restart T-1"]
 
 
+class _EnvRecordingContext(Context):
+    def __init__(self) -> None:
+        super().__init__()
+        self.runs: list[tuple[str, dict[str, str]]] = []
+
+    def run(self, command: str, **kwargs: object) -> None:
+        env = kwargs.get("env") or {}
+        assert isinstance(env, dict)
+        self.runs.append((command, env))
+
+
+@pytest.mark.parametrize(
+    ("invoke", "script"),
+    [
+        (lambda c, **kw: tasks_module.restart(c, "T-1", **kw), "scripts.restart"),
+        (lambda c, **kw: tasks_module.repair(c, "T-1", retry=True, **kw), "scripts.repair"),
+        (lambda c, **kw: tasks_module.gate(c, "T-1", "plan", approve=True, **kw), "scripts.gate"),
+    ],
+)
+def test_a_run_decision_reaches_the_worker_of_the_tenant_it_names(project, invoke, script):
+    container, host = _EnvRecordingContext(), _EnvRecordingContext()
+
+    invoke(container, tenant="acme")
+    invoke(host, tenant="acme", local=True)
+
+    argv = shlex.split(container.runs[0][0])
+    assert argv[argv.index("--namespace") + 1] == "tenant-acme"
+    assert script in host.runs[0][0]
+    assert host.runs[0][1] == {"TENANT": "acme"}
+
+
 @pytest.mark.parametrize("service", ["mcp-gateway", "activity-worker"])
 def test_logs_follows_the_tenant_deployment_in_its_namespace(project, service):
     context = _RecordingContext()

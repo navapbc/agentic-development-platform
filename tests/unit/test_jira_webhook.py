@@ -14,6 +14,7 @@ from services.coordination.idempotency import InMemorySideEffectLedger
 from services.integration.integrations import HYBRID, POLLING, WEBHOOK
 from services.integration.jira import DATACENTER
 from services.integration.jira.snapshot import TaskSnapshot, snapshot_id_for
+from services.operator_remedy import Remedy
 from services.orchestration.intake_reconciler import (
     IntakeContext,
     IntakeStart,
@@ -63,9 +64,13 @@ class _Starter:
 class _Alerter:
     def __init__(self) -> None:
         self.alerts: list[tuple[str, str, str]] = []
+        self.remedies: list[Remedy] = []
 
-    async def unroutable(self, *, issue_key: str, project: str, reason: str) -> None:
+    async def unroutable(
+        self, *, issue_key: str, project: str, reason: str, remedy: Remedy
+    ) -> None:
         self.alerts.append((issue_key, project, reason))
+        self.remedies.append(remedy)
 
 
 class _Seeder:

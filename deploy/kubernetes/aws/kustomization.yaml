@@ -40,6 +40,7 @@ configMapGenerator:
       - SCANNER_EXECUTION=pod
       - AWS_USE_FIPS_ENDPOINT=true
       - BEDROCK_CONNECTIVITY_PROVIDER=direct
+      - DEPLOYMENT_POSTURE=deployed
       - SANDBOX_NODE_POOL=sandbox
       - LANGFUSE_HOST=https://langfuse.platform.internal
       - OPENHANDS_AGENT_SERVER_IMAGE=123456789012.dkr.ecr.us-east-1.amazonaws.com/agentic-platform/openhands-agent-server:1.56.0-python@sha256:718bf6d719f34184810ecaebe607f1aafaf526e109654815e61ddd6238728023

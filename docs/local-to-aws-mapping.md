@@ -8,6 +8,8 @@ The authoritative per-target detail lives in each Terraform module's own README 
 
 In a deployed environment the platform runs inside the target VPC. It reaches the private `bedrock-runtime` interface endpoint with `BEDROCK_CONNECTIVITY_PROVIDER=direct` and no hop. The Fargate jump-host is a laptop path for a test or development account, not a deployed component. A reader mapping the deployed system should treat the jump-host as absent and the connectivity provider as `direct`.
 
+The activity workers on EKS set `DEPLOYMENT_POSTURE=deployed`, so the next step an operator alert names is a `kubectl` command against the tenant's namespace and a location in the tenant config bundle, in place of the `inv` task and `config/<environment>/` path a local operator reads. See [operator remedies](operator-remedies.md).
+
 Workloads sign Bedrock inference with a role that carries the `bedrock:InvokeModel` policy from the [bedrock-iam](../infra/terraform/bedrock-iam) module, and private reachability comes from the shared endpoints in the [vpc-endpoints](../infra/terraform/vpc-endpoints) module.
 
 ## Component mapping

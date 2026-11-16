@@ -3179,3 +3179,80 @@ async def test_a_run_cancelled_before_the_cancel_cleanup_replays_without_it():
         workflow_runner=UnsandboxedWorkflowRunner(),
     ).replay_workflow(history, raise_on_replay_failure=False)
     assert replayed.replay_failure is None
+
+
+@workflow.defn(name="DefectOnceDraftPr")
+class _PreAlertDefectOnceDraftPr(DefectOnceDraftPr):
+    """The code-defect park as it ran before it alerted, with no alert on the push_branch stage."""
+
+    @workflow.run
+    async def run(self, params: DraftPullRequestInput) -> DraftPullRequestOutput:
+        return await super().run(params)
+
+    async def _terminal_alert(self, params, workflow_id, *, stage, **kwargs) -> str:
+        if stage == "push_branch":
+            return ""
+        return await super()._terminal_alert(params, workflow_id, stage=stage, **kwargs)
+
+
+async def test_a_run_parked_on_a_code_defect_before_the_alert_replays_without_it(monkeypatch):
+    """Before the code-defect park alerted, its path recorded no patch marker and ran no alert
+    activity. The recording answers False for the patch without recording its marker, and its
+    workflow skips the alert, so the history matches a pre-patch run whatever the guard does."""
+    from temporalio.worker import Replayer, UnsandboxedWorkflowRunner
+
+    alerts: list[AlertHumanInterventionRequest] = []
+    activities = _make_activities(None, 1, [], [], [], alerts=alerts)
+    children = [ImplementationWorkflow, BranchSyncWorkflow, PullRequestWorkflow]
+    patched = workflow.patched
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        with monkeypatch.context() as pre_patch:
+            pre_patch.setattr(
+                workflow,
+                "patched",
+                lambda patch_id: patch_id != "code-defect-alert" and patched(patch_id),
+            )
+            async with Worker(
+                env.client,
+                task_queue=task_queue,
+                workflows=[_PreAlertDefectOnceDraftPr, *children],
+                workflow_runner=UnsandboxedWorkflowRunner(),
+                activities=activities,
+            ):
+                handle = await env.client.start_workflow(
+                    "DefectOnceDraftPr",
+                    DraftPullRequestInput(
+                        task_id="T-1",
+                        execution_id="exec-1",
+                        repo="agentic-demo-service",
+                        base="main",
+                        base_sha="a" * 40,
+                        task="Implement the change",
+                        issue_key="T-1",
+                        file_impact=["feature.py"],
+                        stored_issue={"summary": "Implement the change"},
+                        build_id="1.4.1",
+                    ),
+                    id=f"wf-{uuid.uuid4().hex[:8]}",
+                    task_queue=task_queue,
+                    result_type=DraftPullRequestOutput,
+                )
+                state: dict[str, str] = {}
+                for _ in range(50):
+                    state = await handle.query(DefectOnceDraftPr.suspension_state)
+                    if state:
+                        break
+                    await asyncio.sleep(0.05)
+                assert state["reason"] == SuspendReason.AWAITING_FIX.value
+                await handle.signal(RESUME_SIGNAL, ResumeOn.NEWER_BUILD.value)
+                await handle.result()
+                history = await handle.fetch_history()
+
+    assert alerts == []
+    assert not any("code-defect-alert" in marker for marker in _patch_markers(history))
+    replayed = await Replayer(
+        workflows=[DefectOnceDraftPr, *children], workflow_runner=UnsandboxedWorkflowRunner()
+    ).replay_workflow(history, raise_on_replay_failure=False)
+    assert replayed.replay_failure is None

@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+import logging
+from dataclasses import replace
+
 import httpx
+import pytest
 from scripts.config import Settings
+from services.operator_remedy import NEXT_STEP_PREFIX
+from services.orchestration import remedies
 from services.orchestration.notifications import (
     HumanInterventionAlert,
+    render_remedy,
     send_human_intervention_alert,
+    send_intake_unroutable_alert,
 )
 
 
@@ -141,3 +149,121 @@ def test_channel_error_is_swallowed(monkeypatch):
     )
 
     assert send_human_intervention_alert(_alert(), settings) == []
+
+
+def _unconfigured() -> Settings:
+    return Settings(
+        slack_webhook_url="",
+        smtp_host="",
+        alert_email_from="",
+        alert_email_to="",
+    )
+
+
+def _slack_only() -> Settings:
+    return Settings(
+        slack_webhook_url="https://hooks.slack.test/x",
+        smtp_host="",
+        alert_email_from="",
+        alert_email_to="",
+    )
+
+
+def _record_slack_posts(monkeypatch) -> list[dict[str, str]]:
+    posted: list[dict[str, str]] = []
+
+    def fake_post(url, *, json, timeout):
+        posted.append(json)
+        return httpx.Response(200)
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    return posted
+
+
+def test_the_remedy_renders_as_a_next_step_line(monkeypatch):
+    posted = _record_slack_posts(monkeypatch)
+    alert = replace(_alert(), remedy="Run `inv repair --issue ADSER-24 --retry`.")
+
+    send_human_intervention_alert(alert, _slack_only())
+
+    assert posted[0]["text"].endswith(
+        f"{NEXT_STEP_PREFIX} Run `inv repair --issue ADSER-24 --retry`."
+    )
+
+
+def test_an_alert_with_no_remedy_renders_no_next_step_line(monkeypatch):
+    posted = _record_slack_posts(monkeypatch)
+
+    send_human_intervention_alert(_alert(), _slack_only())
+
+    assert NEXT_STEP_PREFIX not in posted[0]["text"]
+
+
+def test_an_alert_that_reaches_no_channel_is_logged_as_an_error(caplog):
+    with caplog.at_level(logging.ERROR, logger="services.orchestration.notifications"):
+        delivered = send_human_intervention_alert(_alert(), _unconfigured())
+
+    assert delivered == []
+    assert "reached no channel" in caplog.text
+    assert "SLACK_WEBHOOK_URL" in caplog.text
+
+
+def test_an_alert_whose_every_channel_raises_is_logged_as_an_error(monkeypatch, caplog):
+    def boom(issue_key, settings=None):
+        raise RuntimeError("no jira")
+
+    monkeypatch.setattr("services.integration.tickets.build_ticket_backend_for_issue", boom)
+
+    with caplog.at_level(logging.ERROR, logger="services.orchestration.notifications"):
+        delivered = send_human_intervention_alert(_alert(), _unconfigured())
+
+    assert delivered == []
+    assert "reached no channel" in caplog.text
+
+
+def test_the_unroutable_intake_alert_renders_its_remedy(monkeypatch):
+    posted = _record_slack_posts(monkeypatch)
+
+    send_intake_unroutable_alert(
+        issue_key="ADSER-24",
+        project="ADSER",
+        reason="no allowlisted repository",
+        remedy="Add the repository to repositories.yaml.",
+        settings=_slack_only(),
+    )
+
+    assert f"{NEXT_STEP_PREFIX} Add the repository to repositories.yaml." in posted[0]["text"]
+
+
+def test_a_host_operator_is_told_the_inv_task_for_the_runs_tenant():
+    settings = Settings(deployment_posture="host", tenant="acme", environment="local")
+
+    text = render_remedy(remedies.plan_rejected_remedy("ADSER-24"), settings)
+
+    assert "`inv restart --issue ADSER-24 --tenant acme`" in text
+
+
+def test_a_deployed_operator_is_told_the_kubectl_command_in_the_tenants_namespace():
+    settings = Settings(deployment_posture="deployed", tenant="acme", environment="aws")
+
+    text = render_remedy(remedies.plan_rejected_remedy("ADSER-24"), settings)
+
+    assert (
+        "`kubectl -n tenant-acme exec -i deploy/activity-worker -c activity-worker -- "
+        "python -m scripts.restart ADSER-24`"
+    ) in text
+    assert "inv " not in text
+
+
+@pytest.mark.parametrize(
+    ("posture", "location"),
+    [
+        ("host", "`config/local/tenants/acme/repositories.yaml`"),
+        ("deployed", "`tenants/acme/` of the bucket `TENANT_CONFIG_BUCKET` names"),
+    ],
+)
+def test_a_config_key_is_located_where_the_operators_posture_keeps_it(posture, location):
+    settings = Settings(deployment_posture=posture, tenant="acme", environment="local")
+    unlisted = remedies.unroutable_remedy("ADSER-24", "ADSER", ("navapbc/x",))
+
+    assert location in render_remedy(unlisted, settings)

@@ -31,10 +31,17 @@ from services.integration.jira.snapshot import (
 )
 from services.integration.source_control import source_control_repos
 from services.integration.tickets.rebar_backend import rebar_stored_payload
+from services.operator_remedy import Remedy
 from services.orchestration.intake_base import (
     UnresolvableBaseBranch,
     declared_base,
     unresolvable_base_reason,
+)
+from services.orchestration.remedies import (
+    base_conflict_remedy,
+    checks_not_configured_remedy,
+    unresolvable_base_remedy,
+    unroutable_remedy,
 )
 
 
@@ -143,7 +150,9 @@ class IntakeRunCounter(Protocol):
 
 
 class IntakeAlerter(Protocol):
-    async def unroutable(self, *, issue_key: str, project: str, reason: str) -> None: ...
+    async def unroutable(
+        self, *, issue_key: str, project: str, reason: str, remedy: Remedy
+    ) -> None: ...
 
 
 @dataclass
@@ -296,6 +305,7 @@ async def route_candidate(
             candidate.task_id,
             project,
             declaration.conflict,
+            base_conflict_remedy(candidate.task_id),
             digest,
             ctx,
             report,
@@ -309,13 +319,20 @@ async def route_candidate(
         component_map=component_map,
     )
     if not resolution.routable:
-        await _hold(candidate.task_id, project, resolution.reason, digest, ctx, report)
+        remedy = unroutable_remedy(
+            candidate.task_id,
+            project,
+            resolution.unlisted,
+            ticket_config="jira" if candidate.source_backend in JIRA_SOURCES else "tickets",
+        )
+        await _hold(candidate.task_id, project, resolution.reason, remedy, digest, ctx, report)
         return
     if ctx.checks_repos is not None:
         unchecked = [repo for repo in resolution.repos if repo not in ctx.checks_repos]
         if unchecked:
             reason = checks_not_configured_reason(unchecked)
-            await _hold(candidate.task_id, project, reason, digest, ctx, report)
+            remedy = checks_not_configured_remedy(candidate.task_id, unchecked)
+            await _hold(candidate.task_id, project, reason, remedy, digest, ctx, report)
             # The fix lands in operator config rather than the ticket, so a watermark poll
             # must re-read the ticket on the next pass instead of treating it as settled.
             report.deferred.append(candidate.task_id)
@@ -340,6 +357,7 @@ async def _hold(
     issue_key: str,
     project: str,
     reason: str,
+    remedy: Remedy,
     digest: str,
     ctx: IntakeContext,
     report: IntakeReport,
@@ -352,7 +370,9 @@ async def _hold(
     )
 
     async def _send() -> dict[str, str]:
-        await ctx.alerter.unroutable(issue_key=issue_key, project=project, reason=reason)
+        await ctx.alerter.unroutable(
+            issue_key=issue_key, project=project, reason=reason, remedy=remedy
+        )
         return {"issue_key": issue_key}
 
     outcome = await ctx.ledger.run_once(ref, _send)
@@ -402,6 +422,7 @@ async def _start(
             issue_key,
             project,
             unresolvable_base_reason(base, repo),
+            unresolvable_base_remedy(issue_key),
             digest,
             ctx,
             report,
@@ -465,7 +486,9 @@ async def _start(
     try:
         outcome = await ctx.ledger.run_once(ref, _launch)
     except UnresolvableBaseBranch as exc:
-        await _hold(issue_key, project, str(exc), digest, ctx, report)
+        await _hold(
+            issue_key, project, str(exc), unresolvable_base_remedy(issue_key), digest, ctx, report
+        )
         return
     if outcome.in_flight:
         # Another pass, in this worker or another, is starting this ticket now. Deferring keeps

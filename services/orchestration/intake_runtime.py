@@ -11,6 +11,7 @@ from scripts.config import Settings
 from services import process
 from services.integration.github.git_auth import NO_AUTH, GitAuth
 from services.integration.jira.credentials import acceptance_field
+from services.operator_remedy import Remedy
 from services.orchestration.change_narrative import compose_commit_message
 from services.orchestration.execution_reconciler import ActiveExecution
 from services.orchestration.intake_base import UnresolvableBaseBranch, declared_issue_key
@@ -119,11 +120,20 @@ class NotificationsAlerter:
     def __init__(self, settings: Any) -> None:
         self._settings = settings
 
-    async def unroutable(self, *, issue_key: str, project: str, reason: str) -> None:
-        from services.orchestration.notifications import send_intake_unroutable_alert
+    async def unroutable(
+        self, *, issue_key: str, project: str, reason: str, remedy: Remedy
+    ) -> None:
+        from services.orchestration.notifications import (
+            render_remedy,
+            send_intake_unroutable_alert,
+        )
 
         send_intake_unroutable_alert(
-            issue_key=issue_key, project=project, reason=reason, settings=self._settings
+            issue_key=issue_key,
+            project=project,
+            reason=reason,
+            remedy=render_remedy(remedy, self._settings),
+            settings=self._settings,
         )
 
 
