@@ -43,6 +43,7 @@ Generated secrets get a random value from Terraform on the first apply. Terrafor
 | `database_temporal` | database | Temporal `POSTGRES_USER` and `POSTGRES_PWD` | Automatic |
 | `database_langfuse` | database | Langfuse `DATABASE_URL` user and password | Automatic |
 | `database_litellm` | database | LiteLLM `DATABASE_USERNAME` and `DATABASE_PASSWORD` | Automatic |
+| `database_monitor` | database | The off-hours check's Data API credential for `pg_stat_activity` | Automatic |
 | `elasticache_user` | the `elasticache` module | `REDIS_USERNAME` and `REDIS_AUTH` | Automatic |
 
 External secrets are created empty. Set each one before the first deployment that reads it, for example `aws secretsmanager put-secret-value --secret-id agentic-platform/external/github-token --secret-string file://token.txt`. ECS cannot start a task that references a secret with no value.
@@ -73,7 +74,7 @@ The RDS-managed master secret rotates every seven days through RDS itself and is
 
 ## Role bootstrap
 
-The PostgreSQL function also creates the service roles and databases when it is invoked with `{"action": "bootstrap"}`. Run it with `inv db-bootstrap-roles --function-name <role_bootstrap_function_name>` once after the first apply, before the first migration and before the first scheduled rotation. The bootstrap is idempotent and sets every role password to the current value of its secret, so it also repairs a role after a database restore. Run it again whenever the cluster is created anew, as after a destroy and apply, because the new cluster has none of the roles and every service login fails with `password authentication failed` until it runs. Run it again after an apply that adds a role, such as `litellm`, to a cluster that already exists, because the role and its database exist only after the bootstrap.
+The PostgreSQL function also creates the service roles and databases when it is invoked with `{"action": "bootstrap"}`. Run it with `inv db-bootstrap-roles --function-name <role_bootstrap_function_name>` once after the first apply, before the first migration and before the first scheduled rotation. The bootstrap is idempotent and sets every role password to the current value of its secret, so it also repairs a role after a database restore. Run it again whenever the cluster is created anew, as after a destroy and apply, because the new cluster has none of the roles and every service login fails with `password authentication failed` until it runs. Run it again after an apply that adds a role, such as `litellm` or `monitor`, to a cluster that already exists, because the role and its database exist only after the bootstrap.
 
 | Role | Gets |
 |---|---|
@@ -82,6 +83,7 @@ The PostgreSQL function also creates the service roles and databases when it is 
 | `temporal` | Owns the `temporal` and `temporal_visibility` databases. Run the Temporal schema tool with `setup-schema` and `update-schema`, because the databases already exist. |
 | `langfuse` | Owns the `langfuse` database, where its migrations run. |
 | `litellm` | Owns the `litellm` database, where LiteLLM keeps its virtual keys, teams, budgets, and spend logs and runs its Prisma migrations at startup. |
+| `monitor` | Membership in `pg_monitor`, which reads every session in `pg_stat_activity`. It owns no database and connects only to `postgres`, where the [off-hours](../off-hours) check reads the activity view through the Data API. |
 
 The bootstrap revokes `PUBLIC` access on each of these databases, so a role connects only to its own database. It runs `CREATE EXTENSION pgaudit` in each database. It pre-creates `agent_platform.alembic_version` as the migrator, so the application role never gains write access to it when Alembic later finds and uses the table. The bootstrap expects a cluster on which the platform migrations have not run as another role. It requires PostgreSQL 15 or later.
 

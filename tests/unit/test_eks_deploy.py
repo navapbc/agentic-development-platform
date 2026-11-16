@@ -584,3 +584,119 @@ def test_a_restart_leaves_the_gateway_names_alone() -> None:
 
     assert eks_deploy.deploy(session, _eks(), ["restart", "mcp-gateway"]) == 0
     assert session.order == ["ecs", "logs"]
+
+
+class _Kubectl:
+    """Deployments and pods keyed by `namespace/name`, served to the kubectl calls of the task."""
+
+    def __init__(self, replicas: dict[str, int], pods: dict[str, list[str]] | None = None) -> None:
+        self.deployments = {
+            target: {
+                "metadata": {"annotations": {}},
+                "spec": {"replicas": count, "selector": {"matchLabels": {"app": target}}},
+            }
+            for target, count in replicas.items()
+        }
+        self.pods = pods or {}
+        self.rolled: list[str] = []
+
+    def __call__(self, args: list[str], **_: object) -> str:
+        namespace, verb = args[2], args[3]
+        if verb == "get" and args[4] == "deployment":
+            deployment = self.deployments.get(f"{namespace}/{args[5]}")
+            return json.dumps(deployment) if deployment else ""
+        if verb == "get" and args[4] == "pods":
+            target = args[6].removeprefix("app=")
+            items = [
+                {"metadata": {"name": pod}, "status": {"phase": "Running"}}
+                for pod in self.pods.get(target, [])
+            ]
+            return json.dumps({"items": items})
+        if verb == "patch":
+            deployment = self.deployments[f"{namespace}/{args[4].removeprefix('deployment/')}"]
+            patch = json.loads(args[-1])
+            annotations = deployment["metadata"]["annotations"]
+            for key, value in patch["metadata"]["annotations"].items():
+                if value is None:
+                    annotations.pop(key, None)
+                else:
+                    annotations[key] = value
+            deployment["spec"]["replicas"] = patch["spec"]["replicas"]
+            return ""
+        if verb == "rollout":
+            self.rolled.append(f"{namespace}/{args[5].removeprefix('deployment/')}")
+            return ""
+        raise AssertionError(args)
+
+    def replicas(self) -> dict[str, int]:
+        return {target: d["spec"]["replicas"] for target, d in self.deployments.items()}
+
+    def recorded(self) -> dict[str, str]:
+        annotation = eks_deploy_task.REPLICAS_ANNOTATION
+        return {
+            target: d["metadata"]["annotations"][annotation]
+            for target, d in self.deployments.items()
+            if annotation in d["metadata"]["annotations"]
+        }
+
+
+TENANT = {"tenants": [{"name": "adp"}]}
+
+
+def test_scale_down_records_each_running_deployment_and_keeps_an_earlier_record(
+    monkeypatch,
+) -> None:
+    kubectl = _Kubectl({"tenant-adp/activity-worker": 2, "agentic-dev-platform/litellm": 0})
+    kubectl.deployments["agentic-dev-platform/litellm"]["metadata"]["annotations"][
+        eks_deploy_task.REPLICAS_ANNOTATION
+    ] = "1"
+    monkeypatch.setattr(eks_deploy_task, "run", kubectl)
+
+    running = eks_deploy_task.scale_down(["tenant-workers", "litellm", "inbound-webhook"], TENANT)
+
+    assert running == []
+    assert kubectl.replicas() == {
+        "tenant-adp/activity-worker": 0,
+        "agentic-dev-platform/litellm": 0,
+    }
+    assert kubectl.recorded() == {
+        "tenant-adp/activity-worker": "2",
+        "agentic-dev-platform/litellm": "1",
+    }
+
+
+def test_scale_up_restores_only_the_recorded_deployments_and_forgets_the_record(
+    monkeypatch,
+) -> None:
+    kubectl = _Kubectl({"tenant-adp/activity-worker": 0, "agentic-dev-platform/litellm": 0})
+    kubectl.deployments["tenant-adp/activity-worker"]["metadata"]["annotations"][
+        eks_deploy_task.REPLICAS_ANNOTATION
+    ] = "2"
+    monkeypatch.setattr(eks_deploy_task, "run", kubectl)
+
+    eks_deploy_task.scale_up(["tenant-workers", "litellm"], TENANT)
+
+    assert kubectl.replicas() == {
+        "tenant-adp/activity-worker": 2,
+        "agentic-dev-platform/litellm": 0,
+    }
+    assert kubectl.recorded() == {}
+    assert kubectl.rolled == ["tenant-adp/activity-worker"]
+
+
+def test_check_stopped_names_each_running_pod_and_fails(monkeypatch, capsys) -> None:
+    kubectl = _Kubectl(
+        {"tenant-adp/activity-worker": 0, "agentic-dev-platform/inbound-webhook": 0},
+        pods={"agentic-dev-platform/inbound-webhook": ["inbound-webhook-7d9-abc"]},
+    )
+    monkeypatch.setattr(eks_deploy_task, "run", kubectl)
+    monkeypatch.setattr(eks_deploy_task, "write_kubeconfig", lambda cluster, path: None)
+    monkeypatch.setenv("DEPLOY_INPUTS", json.dumps({"cluster": {}, **TENANT}))
+    monkeypatch.setenv("KUBECONFIG", "")
+
+    exit_code = eks_deploy_task.main(["check-stopped", "tenant-workers", "inbound-webhook"])
+
+    assert exit_code == 1
+    assert capsys.readouterr().out.splitlines() == [
+        f"{eks_deploy_task.RUNNING_POD}agentic-dev-platform/inbound-webhook-7d9-abc"
+    ]

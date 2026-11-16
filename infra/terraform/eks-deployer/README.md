@@ -1,6 +1,6 @@
 # eks-deployer
 
-Reusable module that provisions the one-shot ECS task that deploys the EKS workloads from inside the VPC. A workstation starts it with `inv eks-deploy`, and the secret store's restart rule starts it after a credential rotation, so neither needs kubectl, helm, or a route to the private Kubernetes API. Nothing is created unless `create_eks_deployer = true`, and the task definition needs `image` as well.
+Reusable module that provisions the one-shot ECS task that deploys the EKS workloads from inside the VPC. A workstation starts it with `inv eks-deploy`, the secret store's restart rule starts it after a credential rotation, and the [off-hours](../off-hours) automation starts it to scale and check the deployments, so none of them needs kubectl, helm, or a route to the private Kubernetes API. Nothing is created unless `create_eks_deployer = true`, and the task definition needs `image` as well.
 
 ## What it provisions
 
@@ -19,6 +19,9 @@ The task's commands are below.
 - `deploy` installs or upgrades the controller from the regional EKS registry, restarts it onto its webhook certificate, renders and applies the overlay with each tenant's MCP gateway host on its Ingress rule and in its `MCP_ALLOWED_HOSTS`, waits for each deployment and for the load balancer of each gateway Ingress, and lists the pods no NetworkPolicy selects. The task role holds no Route 53 permission, so `inv eks-deploy` writes each gateway host's record with the operator's credentials after the task succeeds. A deployment that does not roll out has its pods, warnings, and recent log printed.
 - `restart DEPLOYMENT...` rolls the named deployments, each a platform deployment by name or `namespace/name`. `tenant-workers` names every tenant's activity worker, and `mcp-gateway` names every tenant's MCP gateway, because the platform namespace runs no gateway.
 - `check-policies` lists the pods no NetworkPolicy selects and exits 1 when there are any.
+- `scale-down DEPLOYMENT...` records the replica count of each named deployment in the `off-hours.agentic-dev-platform/replicas` annotation, scales it to zero, waits up to 300 seconds until none of its pods runs, and prints each pod still running. A deployment already at zero keeps the count an earlier run recorded. The [off-hours](../off-hours) sleep runs it.
+- `scale-up DEPLOYMENT...` restores the replica count each annotation recorded, removes the annotation, and waits for the rollout. A deployment without the annotation is left alone. The off-hours wake runs it.
+- `check-stopped DEPLOYMENT...` prints each running or terminating pod of the named deployments and exits 1 when there are any. The off-hours checks run it.
 
 ## FIPS 140 and FedRAMP
 
