@@ -52,12 +52,25 @@ override_resource {
   values          = { id = "agentic-platform-tenant-adp-rebar-tickets-abc", arn = "arn:aws:s3:::agentic-platform-tenant-adp-rebar-tickets-abc" }
 }
 
+override_resource {
+  target          = module.ticket_store.aws_iam_role.reader
+  override_during = plan
+  values          = { arn = "arn:aws:iam::111111111111:role/agentic-platform-tenant-adp-rebar-tickets-reader" }
+}
+
+override_resource {
+  target          = module.ticket_store.aws_iam_role.writer
+  override_during = plan
+  values          = { arn = "arn:aws:iam::111111111111:role/agentic-platform-tenant-adp-rebar-tickets-writer" }
+}
+
 variables {
   name_prefix       = "agentic-platform"
   tenant            = "adp"
   description       = "The platform team's own tickets."
   access_log_bucket = "agentic-platform-access-logs-111111111111"
   worker_role_arn   = "arn:aws:iam::111111111111:role/agentic-platform-eks-tenant-adp"
+  worker_role_name  = "agentic-platform-eks-tenant-adp"
   secrets           = ["github_token", "jira_api_token"]
   config_store = {
     bucket_arn  = "arn:aws:s3:::agentic-platform-tenant-config-abc"
@@ -279,9 +292,44 @@ run "the_tenant_owns_a_ticket_store" {
   }
 
   assert {
-    condition     = output.tenant.ticket_store.bucket == "agentic-platform-tenant-adp-rebar-tickets-abc" && output.tenant.ticket_store.prefix == "tickets"
-    error_message = "The tenant output does not name the tenant's own ticket store."
+    condition     = output.tenant.ticket_store.bucket == "agentic-platform-adp-rebar-tickets-111111111111" && output.tenant.ticket_store.prefix == "tickets"
+    error_message = "The tenant output does not name the tenant's own ticket store by its deployment, tenant, and account."
   }
+
+  assert {
+    condition = contains(jsondecode(aws_iam_policy.worker[0].policy).Statement, {
+      Sid      = "AssumeTheTicketStoreRoles"
+      Effect   = "Allow"
+      Action   = "sts:AssumeRole"
+      Resource = ["arn:aws:iam::111111111111:role/agentic-platform-tenant-adp-rebar-tickets-reader", "arn:aws:iam::111111111111:role/agentic-platform-tenant-adp-rebar-tickets-writer"]
+    })
+    error_message = "The worker policy does not let the worker assume the ticket store roles, which trust it only by condition."
+  }
+}
+
+run "the_tenant_keeps_an_existing_ticket_store_bucket" {
+  command = plan
+
+  variables {
+    create_tenant = true
+    ticket_store  = { bucket_name = "adp-rebar-tickets-generated-suffix" }
+  }
+
+  assert {
+    condition     = output.tenant.ticket_store.bucket == "adp-rebar-tickets-generated-suffix"
+    error_message = "ticket_store.bucket_name does not name the tenant's ticket store bucket."
+  }
+}
+
+run "a_worker_role_name_that_differs_from_the_worker_role_is_rejected" {
+  command = plan
+
+  variables {
+    create_tenant    = true
+    worker_role_name = "agentic-platform-eks-tenant-other"
+  }
+
+  expect_failures = [terraform_data.inputs_guard]
 }
 
 run "the_tenant_worker_and_repository_intelligence_read_its_generated_token" {

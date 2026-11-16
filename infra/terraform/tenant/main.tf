@@ -23,6 +23,8 @@ locals {
   image_repos_arn = "arn:${local.partition}:ecr:${local.region}:${local.account_id}:repository/${local.image_prefix}/*"
   config_prefix   = "tenants/${var.tenant}/"
   kms_key_arn     = try(aws_kms_key.this[0].arn, "")
+
+  worker_role_principal_arn = "arn:${local.partition}:iam::${local.account_id}:role/${var.worker_role_name}"
 }
 
 resource "terraform_data" "inputs_guard" {
@@ -32,6 +34,10 @@ resource "terraform_data" "inputs_guard" {
     precondition {
       condition     = var.worker_role_arn != ""
       error_message = "A tenant needs worker_role_arn, the Pod Identity role of its activity worker."
+    }
+    precondition {
+      condition     = var.worker_role_name != "" && var.worker_role_arn == local.worker_role_principal_arn
+      error_message = "worker_role_name must name the role worker_role_arn names, ${var.worker_role_arn}, and that role must have no path."
     }
     precondition {
       condition     = var.config_store != null

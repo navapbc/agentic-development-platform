@@ -11,6 +11,18 @@ mock_provider "aws" {
 }
 
 override_resource {
+  target          = module.ticket_store.aws_iam_role.reader
+  override_during = plan
+  values          = { arn = "arn:aws:iam::111111111111:role/agentic-platform-tenant-adp-rebar-tickets-reader" }
+}
+
+override_resource {
+  target          = module.ticket_store.aws_iam_role.writer
+  override_during = plan
+  values          = { arn = "arn:aws:iam::111111111111:role/agentic-platform-tenant-adp-rebar-tickets-writer" }
+}
+
+override_resource {
   target          = aws_kms_key.this
   override_during = plan
   values          = { arn = "arn:aws:kms:us-east-1:111111111111:key/tenant-adp" }
@@ -64,6 +76,7 @@ variables {
   description        = "The platform team's own tickets."
   access_log_bucket  = "agentic-platform-access-logs-111111111111"
   worker_role_arn    = "arn:aws:iam::111111111111:role/agentic-platform-eks-tenant-adp"
+  worker_role_name   = "agentic-platform-eks-tenant-adp"
   webhook_reader_arn = "arn:aws:iam::111111111111:role/agentic-platform-eks-inbound-webhook"
   secrets            = ["github_token", "jira_api_token"]
   config_store = {

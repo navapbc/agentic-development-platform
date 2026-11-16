@@ -49,6 +49,10 @@ rebar_ticket_store_writer_oidc_trust = {
 
 The module requires at least one subject and rejects any subject or workflow ref holding `*`, so the role cannot be left assumable by any workflow in any repository. Both claims are matched with `StringEquals`, which compares literally, so a wildcard would match no token at all and leave the role un-assumable rather than over-permissive. List each ref you intend to trust. The condition keys follow the issuer host carried by `provider_arn`, so a GitHub Enterprise Server provider works without further configuration. `audience` defaults to `sts.amazonaws.com`. Omitting `job_workflow_refs` drops that condition, which widens the trust to every workflow matching a listed subject, so prefer setting it. Update both the subjects and the workflow refs when the default branch changes. The permissions policy must cover the store prefix plus the bucket's KMS key. See `docs/rebar-s3-ticket-store.md`.
 
+## Empty store guard
+
+A pass reads a ticket absent from the store as deleted and closes its Jira issue, so a pass against an emptied or replaced store would close every issue. After it mounts the store, the workflow counts the tickets with `rebar list --include-archived` and fails the job before the reconciler runs when the count is zero.
+
 ## Pinning acli
 
 `ACLI_SHA256` is mandatory and the archive is verified on every pass, including cache hits. The digest also forms part of the cache key, so repinning the version misses the old entry rather than reusing it. Compute the digest for the version you intend to pin.

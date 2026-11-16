@@ -9,15 +9,21 @@ variable "name_prefix" {
   type        = string
 }
 
-variable "bucket_prefix" {
-  description = "Prefix of the generated bucket name, at most 37 characters. Empty uses <name_prefix>-rebar-tickets-."
+variable "bucket_name" {
+  description = "Name of the bucket. Set it to the name of an existing store bucket to keep that bucket, such as one created with a generated name. Empty uses <bucket_prefix><account ID>."
   type        = string
   default     = ""
 
   validation {
-    condition     = length(var.bucket_prefix) <= 37
-    error_message = "bucket_prefix may be at most 37 characters, the limit S3 sets for a generated bucket name."
+    condition     = var.bucket_name == "" || can(regex("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", var.bucket_name))
+    error_message = "bucket_name must be a valid S3 bucket name of 3 to 63 lowercase letters, digits, dots, and hyphens."
   }
+}
+
+variable "bucket_prefix" {
+  description = "Prefix of the default bucket name, which the account ID completes. Empty uses <name_prefix>-rebar-tickets-. Ignored when bucket_name is set."
+  type        = string
+  default     = ""
 }
 
 variable "prefix" {
@@ -35,6 +41,17 @@ variable "trusted_principals" {
   description = "IAM principal ARNs allowed to assume the created reader and writer roles, such as the platform task roles or an operator. Required when the module creates the roles."
   type        = list(string)
   default     = []
+}
+
+variable "trusted_principals_by_condition" {
+  description = "IAM role or user ARNs in this account allowed to assume the created reader and writer roles through an aws:PrincipalArn condition on the account principal. Unlike trusted_principals, IAM does not require the principal to exist, so the trust creates no Terraform dependency on it and holds when the principal is deleted and recreated under the same name. Each principal needs an identity policy that allows sts:AssumeRole on the roles."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for arn in var.trusted_principals_by_condition : can(regex("^arn:[^:]+:iam::[0-9]{12}:(role|user)/[^*?]+$", arn))])
+    error_message = "trusted_principals_by_condition must hold IAM role or user ARNs without wildcards, because ArnEquals expands * and ? and would widen the trust."
+  }
 }
 
 variable "writer_github_oidc_trust" {

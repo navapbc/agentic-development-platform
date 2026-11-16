@@ -1,6 +1,6 @@
 output "bucket" {
   description = "Bucket name, set as store.bucket in tickets.yaml. Null when the module is disabled."
-  value       = try(aws_s3_bucket.this[0].id, null)
+  value       = try(aws_s3_bucket.this[0].bucket, null)
 }
 
 output "bucket_arn" {

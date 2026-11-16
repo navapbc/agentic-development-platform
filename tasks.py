@@ -1096,15 +1096,19 @@ _AWS_CREDENTIAL_VARIABLES = ("AWS_ACCESS_KEY_ID", "AWS_WEB_IDENTITY_TOKEN_FILE")
     help={
         "var_file": "Var file in the composition root (default greenfield.tfvars).",
         "delete_images": "Also delete the ECR repositories and their images.",
+        "delete_stores": "Also delete the rebar ticket stores and the tickets they hold.",
         "plan_only": "Show what the destroy removes and keeps, then stop.",
     }
 )
-def aws_destroy(c, var_file="greenfield.tfvars", delete_images=False, plan_only=False):
-    """Destroy the composition root after the account ID is typed, keeping bootstrap and images."""
+def aws_destroy(
+    c, var_file="greenfield.tfvars", delete_images=False, delete_stores=False, plan_only=False
+):
+    """Destroy the composition root, keeping bootstrap, images, and ticket stores."""
     from scripts.config import get_settings
 
     flags = f" --var-file {shlex.quote(var_file)}"
     flags += " --delete-images" if delete_images else ""
+    flags += " --delete-stores" if delete_stores else ""
     flags += " --plan-only" if plan_only else ""
     c.run(f"{HOST_PYTHON} -m scripts.aws_destroy{flags}", pty=True, env=_aws_env(get_settings()))
 

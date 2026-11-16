@@ -513,7 +513,21 @@ run "a_padded_oidc_subject_entry_is_rejected" {
   expect_failures = [terraform_data.inputs_guard]
 }
 
-run "a_bucket_prefix_names_the_bucket" {
+run "the_default_bucket_name_is_the_same_on_every_plan" {
+  command = plan
+
+  variables {
+    create_rebar_ticket_store = true
+    trusted_principals        = ["arn:aws:iam::111111111111:role/activity-worker"]
+  }
+
+  assert {
+    condition     = aws_s3_bucket.this[0].bucket == "agentic-platform-rebar-tickets-111111111111" && output.bucket == "agentic-platform-rebar-tickets-111111111111"
+    error_message = "The default bucket name is not <name_prefix>-rebar-tickets-<account ID>, a name that holds across applies."
+  }
+}
+
+run "a_bucket_prefix_starts_the_default_bucket_name" {
   command = plan
 
   variables {
@@ -523,7 +537,70 @@ run "a_bucket_prefix_names_the_bucket" {
   }
 
   assert {
-    condition     = aws_s3_bucket.this[0].bucket_prefix == "adp-rebar-tickets-"
-    error_message = "bucket_prefix does not name the bucket."
+    condition     = aws_s3_bucket.this[0].bucket == "adp-rebar-tickets-111111111111"
+    error_message = "bucket_prefix does not start the default bucket name."
   }
+}
+
+run "a_bucket_name_adopts_an_existing_bucket" {
+  command = plan
+
+  variables {
+    create_rebar_ticket_store = true
+    trusted_principals        = ["arn:aws:iam::111111111111:role/activity-worker"]
+    bucket_prefix             = "adp-rebar-tickets-"
+    bucket_name               = "adp-rebar-tickets-generated-suffix"
+  }
+
+  assert {
+    condition     = aws_s3_bucket.this[0].bucket == "adp-rebar-tickets-generated-suffix" && output.bucket == "adp-rebar-tickets-generated-suffix"
+    error_message = "bucket_name does not name the bucket over the default name."
+  }
+}
+
+run "a_default_bucket_name_longer_than_s3_allows_is_rejected" {
+  command = plan
+
+  variables {
+    create_rebar_ticket_store = true
+    trusted_principals        = ["arn:aws:iam::111111111111:role/activity-worker"]
+    bucket_prefix             = "a-bucket-prefix-long-enough-to-overflow-s3s-limit-xy-"
+  }
+
+  expect_failures = [aws_s3_bucket.this]
+}
+
+run "a_principal_trusted_by_condition_is_matched_on_its_arn_through_the_account" {
+  command = plan
+
+  variables {
+    create_rebar_ticket_store       = true
+    trusted_principals_by_condition = ["arn:aws:iam::111111111111:role/agentic-platform-eks-tenant-adp"]
+  }
+
+  assert {
+    condition     = length(jsondecode(local.assume_policy).Statement) == 1 && local.writer_assume_policy == local.assume_policy
+    error_message = "The roles trust more than the principal named by condition."
+  }
+
+  assert {
+    condition     = jsondecode(local.assume_policy).Statement[0].Principal.AWS == "arn:aws:iam::111111111111:root"
+    error_message = "The trust by condition does not name the account principal, which IAM accepts whether or not the role exists."
+  }
+
+  assert {
+    condition     = jsondecode(local.assume_policy).Statement[0].Condition.ArnEquals["aws:PrincipalArn"] == ["arn:aws:iam::111111111111:role/agentic-platform-eks-tenant-adp"]
+    error_message = "The trust by condition is not limited to the named principal."
+  }
+}
+
+run "a_wildcard_principal_trusted_by_condition_is_rejected" {
+  command = plan
+
+  variables {
+    create_rebar_ticket_store       = true
+    trusted_principals_by_condition = ["arn:aws:iam::111111111111:role/agentic-platform-eks-*"]
+  }
+
+  expect_failures = [var.trusted_principals_by_condition]
 }

@@ -179,6 +179,20 @@ jobs:
           rm -rf .tickets-tracker
           git worktree add -B tickets .tickets-tracker s3tickets/tickets
 
+      - name: Refuse an empty ticket store
+        # A pass reads a ticket absent from the store as deleted and closes its Jira issue, so a
+        # pass against an emptied or replaced store would close every issue.
+        env:
+          TICKETS_S3_URL: ${{ vars.TICKETS_S3_URL }}
+        run: |
+          set -euo pipefail
+          count="$(rebar list --include-archived | python -c 'import json, sys; print(len(json.load(sys.stdin)))')"
+          if [ "${count}" -eq 0 ]; then
+            echo "::error::The ticket store at ${TICKETS_S3_URL} holds no tickets, so this pass would close the Jira issue of every ticket. Restore the store or point TICKETS_S3_URL at the populated store before running the reconciler"
+            exit 1
+          fi
+          echo "The ticket store holds ${count} tickets."
+
       - name: Configure tickets merge driver
         # .bridge_state/* uses merge=ours, so define that custom driver before the
         # push-retry loop can merge s3tickets/tickets into the mounted worktree.
