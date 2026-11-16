@@ -378,7 +378,7 @@ class Publisher:
         ).stdout.strip()
 
     def _repository(self, name: str) -> str:
-        return f"{self.name_prefix}/{name}"
+        return f"{self.name_prefix}/{name}" if self.name_prefix else name
 
     def _login(self) -> None:
         if not self._logged_in:
@@ -434,6 +434,9 @@ class Publisher:
 
     def built(self, spec: ImageSpec, context: Path, version: str) -> str:
         return self._build(spec, context, f"{version}-{content_hash(spec, context)}-{self.arch}")
+
+    def tagged(self, spec: ImageSpec, context: Path, tag: str) -> str:
+        return self._build(spec, context, tag)
 
     def mirror(self, mirror: Mirror) -> str:
         repository = self._repository(mirror.name)
@@ -602,26 +605,42 @@ class Signer:
             text=True,
         )
 
-    def sign(self, references: list[str], builder: str) -> list[str]:
-        """Sign each catalog reference that carries no signature yet, returning those it signed."""
+    @contextmanager
+    def _workdir(self) -> Iterator[Path]:
+        """Yield a directory holding the registry credentials notation reads."""
         from services.orchestration.gates.registry_auth import ecr_token
         from services.orchestration.gates.registry_mirrors import auth_document
 
         account, region = self.registry.split(".", 1)[0], self.session.region_name
-        signed = []
         with tempfile.TemporaryDirectory(prefix="notation-") as directory:
             workdir = Path(directory)
             (workdir / "auth").mkdir(mode=0o700)
             config = workdir / "auth" / "config.json"
             config.write_text(auth_document({self.registry: ecr_token(account, region)}))
             config.chmod(0o644)
+            yield workdir
+
+    def _carries_signature(self, builder: str, workdir: Path, reference: str) -> bool:
+        listed = self._notation(builder, workdir, "list", reference)
+        if listed.returncode != 0:
+            raise PublishError(f"notation could not list {reference}: {listed.stderr}")
+        return "application/vnd.cncf.notary.signature" in listed.stdout
+
+    def signed(self, reference: str, builder: str) -> bool:
+        """Return whether the reference carries a notation signature."""
+        with self._workdir() as workdir:
+            return self._carries_signature(builder, workdir, reference)
+
+    def sign(
+        self, references: list[str], builder: str, catalog: Collection[str] = SIGNED_CATALOG
+    ) -> list[str]:
+        """Sign each catalog reference that carries no signature yet, returning those it signed."""
+        signed = []
+        with self._workdir() as workdir:
             for reference in references:
-                if image_name(reference) not in SIGNED_CATALOG:
+                if image_name(reference) not in catalog:
                     continue
-                listed = self._notation(builder, workdir, "list", reference)
-                if listed.returncode != 0:
-                    raise PublishError(f"notation could not list {reference}: {listed.stderr}")
-                if "application/vnd.cncf.notary.signature" in listed.stdout:
+                if self._carries_signature(builder, workdir, reference):
                     print(f"{LOG} {reference} is already signed")
                     continue
                 print(f"{LOG} signing {reference}")

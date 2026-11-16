@@ -1,10 +1,14 @@
 data "aws_caller_identity" "current" {}
 
+data "aws_partition" "current" {}
+
 locals {
-  enabled        = var.create_jumphost
-  task_label     = "${var.name_prefix}-${var.jumphost_name}"
-  log_group_name = "/aws/ecs/fargate/${local.task_label}"
-  param_prefix   = var.jumphost_env == "" ? "/jumphost/${var.jumphost_name}" : "/${var.jumphost_env}/jumphost/${var.jumphost_name}"
+  enabled                     = var.create_jumphost
+  task_label                  = "${var.name_prefix}-${var.jumphost_name}"
+  log_group_name              = "/aws/ecs/fargate/${local.task_label}"
+  container_log_stream_prefix = "ecs"
+  exec_log_s3_key_prefix      = "exec-output"
+  param_prefix                = var.jumphost_env == "" ? "/jumphost/${var.jumphost_name}" : "/${var.jumphost_env}/jumphost/${var.jumphost_name}"
 }
 
 resource "aws_cloudwatch_log_group" "exec" {
@@ -36,7 +40,7 @@ resource "aws_ecs_cluster" "this" {
         cloud_watch_log_group_name     = aws_cloudwatch_log_group.exec[0].name
         cloud_watch_encryption_enabled = true
         s3_bucket_name                 = aws_s3_bucket.exec_logs[0].id
-        s3_key_prefix                  = "exec-output"
+        s3_key_prefix                  = local.exec_log_s3_key_prefix
         s3_bucket_encryption_enabled   = true
       }
     }
@@ -78,7 +82,7 @@ resource "aws_ecs_task_definition" "this" {
         options = {
           awslogs-group         = local.log_group_name
           awslogs-region        = var.region
-          awslogs-stream-prefix = "ecs"
+          awslogs-stream-prefix = local.container_log_stream_prefix
         }
       }
     }
