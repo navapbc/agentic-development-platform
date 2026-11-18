@@ -1,8 +1,8 @@
 """Unit tests for the object-store evidence sink with a fake S3 client.
 
-These exercise the content-addressed write, the Object Lock retention arguments, the
-idempotent skip on a repeated write, and the object location recorded on the index,
-without a running object store.
+These exercise the write keyed by execution and content hash, the Object Lock retention
+arguments, the idempotent skip on a repeated write, and the object location recorded on the
+index, without a running object store.
 """
 
 from __future__ import annotations
@@ -84,7 +84,7 @@ async def test_write_puts_content_addressed_object_under_object_lock():
     assert len(client.puts) == 1
     put = client.puts[0]
     assert put["Bucket"] == "evidence"
-    assert put["Key"] == "evidence/sha256:deadbeef"
+    assert put["Key"] == "evidence/exec-1/sha256:deadbeef"
     assert put["ObjectLockMode"] == "COMPLIANCE"
     assert isinstance(put["ObjectLockRetainUntilDate"], datetime)
 
@@ -93,7 +93,7 @@ async def test_index_record_carries_the_object_location():
     index, client = _CapturingIndex(), _FakeS3()
     await _sink(index, client).persist(_record())
 
-    assert index.records[-1].location == "s3://evidence/evidence/sha256:deadbeef"
+    assert index.records[-1].location == "s3://evidence/evidence/exec-1/sha256:deadbeef"
 
 
 async def test_repeated_write_of_same_content_is_idempotent():

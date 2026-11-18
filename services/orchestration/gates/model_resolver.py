@@ -191,7 +191,7 @@ def available_gate_model_groups(litellm_config: dict) -> list[str]:
 
     A gate's model call must send a name that both routes through the gateway and is recognized by
     the AI CLI. Those are the groups whose ``model_name`` parses to a known vendor line, for example
-    ``claude-opus-4-5-20251101``. Semantic-alias groups such as ``security-review-model`` do not
+    ``claude-opus-5-5``. Semantic-alias groups such as ``security-review-model`` do not
     name a provider model, so they are excluded from the gate catalog. First-seen order is kept.
     """
     seen: set[str] = set()

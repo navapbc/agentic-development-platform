@@ -2,7 +2,7 @@ import asyncio
 from pathlib import Path
 
 from openhands.runtime.caps import COMPLETED, RuntimeCaps
-from openhands.runtime.conversation import FakeConversationDriver
+from openhands.runtime.conversation import FakeConversationDriver, RemoteConversationDriver
 from openhands.runtime.provisioner import FakeSandboxProvisioner
 from openhands.runtime.runtime import SandboxRuntime
 from services.orchestration.materialization import MaterializedWorkspace
@@ -82,3 +82,70 @@ def test_code_step_applies_the_extracted_patch_to_the_workspace(tmp_path: Path) 
 
     assert (Path(workspace.path) / "file.txt").read_text() == "hello world\n"
     assert provisioner.patched[0][1] == "/workspace/project"
+
+
+def test_each_sandbox_gets_its_own_session_key_and_the_driver_presents_it(tmp_path: Path) -> None:
+    provisioner = FakeSandboxProvisioner()
+    driver = FakeConversationDriver()
+
+    for attempt in ("first", "second"):
+        step = OpenHandsCodeStep(
+            runtime=_runtime(provisioner, driver), workspace_root=tmp_path / attempt
+        )
+        asyncio.run(step.run(workspace=_workspace(tmp_path / attempt), task=attempt))
+
+    keys = [spec.session_api_key for spec in provisioner.specs]
+    assert all(len(key) >= 32 for key in keys)
+    assert keys[0] != keys[1]
+    assert driver.session_api_keys == keys
+
+
+def test_the_conversation_presents_the_key_issued_for_the_run(tmp_path: Path) -> None:
+    provisioner = FakeSandboxProvisioner()
+    unkeyed = FakeConversationDriver(fail=True)
+    keyed = FakeConversationDriver(tool_calls=1)
+    issued: list[str] = []
+
+    async def driver_for_run(execution_id: str) -> FakeConversationDriver:
+        issued.append(execution_id)
+        return keyed
+
+    step = OpenHandsCodeStep(
+        runtime=_runtime(provisioner, unkeyed),
+        workspace_root=tmp_path,
+        driver_for_run=driver_for_run,
+    )
+
+    result = asyncio.run(step.run(workspace=_workspace(tmp_path), task="Add a retry"))
+
+    assert result.terminal_reason == COMPLETED
+    assert issued == ["exec-1"]
+    assert unkeyed.calls == []
+    assert len(keyed.calls) == 1
+
+
+def test_the_built_code_step_never_hands_the_master_key_to_the_sandbox(monkeypatch) -> None:
+    from services.integration import litellm_admin
+    from services.orchestration.openhands_code_step import build_openhands_code_step
+    from tests.support import hermetic_settings
+
+    settings = hermetic_settings(litellm_master_key="sk-master-secret")
+
+    async def ensure_run_model_key(execution_id, *, settings=None, client=None):
+        return f"sk-run-{execution_id}"
+
+    monkeypatch.setattr(litellm_admin, "ensure_run_model_key", ensure_run_model_key)
+    step = build_openhands_code_step(settings=settings)
+    driver_for_run = step.driver_for_run
+    assert driver_for_run is not None
+
+    async def resolve():
+        return await driver_for_run("exec-1")
+
+    driver = asyncio.run(resolve())
+    unkeyed = step.runtime.driver
+
+    assert isinstance(driver, RemoteConversationDriver)
+    assert isinstance(unkeyed, RemoteConversationDriver)
+    assert driver._api_key == "sk-run-exec-1"
+    assert unkeyed._api_key == ""

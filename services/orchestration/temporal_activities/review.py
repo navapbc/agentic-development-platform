@@ -6,8 +6,9 @@ import hashlib
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from observability import bind_execution, token_cost_usd
+from observability import bind_execution, current_tenant, token_cost_usd
 from temporalio import activity
 
 from services.prompts import load_prompt
@@ -18,6 +19,11 @@ from services.prompts.library import (
     SECURITY_REVIEW,
 )
 from services.review.types import ReviewStage
+
+if TYPE_CHECKING:
+    from scripts.config import Settings
+
+    from services.repository_intelligence.tenants import TenantRegistries
 
 
 @dataclass
@@ -122,21 +128,57 @@ _REPO_GROUNDED_STAGES = frozenset(
 def _resolve_repo_root(req: ReviewRequest) -> str | None:
     """Resolve a read-only repository root for the reviewer, reusing the RIS checkout.
 
-    Prefers an explicit root on the request. Otherwise maps the repository name to
-    its configured repository-intelligence path, so the reviewer reads the same
-    read-only checkout the intelligence service indexes rather than a second copy.
+    Prefers an explicit root on the request. Otherwise maps an indexed repository of the run's
+    tenant to its checkout, so the reviewer reads the same read-only checkout the intelligence
+    service indexes rather than a second copy. Only a checkout under /tenants/<tenant>/ is
+    accepted, and a run whose tenant is unknown resolves no checkout. Without any served tenant
+    the platform registry maps the repository.
     Returns ``None`` when no path resolves or the resolved path is not present, so
     the reviewer falls back to the context summary rather than a missing directory.
     """
     candidate = req.repo_root
     if not candidate and req.repo:
-        from scripts.config import get_settings
-
-        entry = get_settings().repo_intelligence_registry().get(req.repo)
-        candidate = entry[0] if entry else None
+        candidate = _registry_checkout(req.repo)
     if candidate and Path(candidate).is_dir():
         return candidate
     return None
+
+
+_tenant_registries: TenantRegistries | None = None
+
+
+def _review_registries(settings: Settings) -> TenantRegistries:
+    global _tenant_registries
+    if _tenant_registries is None:
+        from services.repository_intelligence.tenants import TenantRegistries
+
+        _tenant_registries = TenantRegistries(settings)
+    return _tenant_registries
+
+
+def _registry_checkout(repo: str) -> str | None:
+    from scripts.config import get_settings
+
+    from services.repository_intelligence import tenants
+
+    settings = get_settings()
+    served = tenants.served_tenants(settings)
+    if not served:
+        from services.integration.repositories import load_repository_registry
+
+        entry = load_repository_registry(settings).indexed().get(repo)
+        return entry[0] if entry else None
+    tenant = current_tenant() or (served[0] if len(served) == 1 else "")
+    if tenant not in served:
+        return None
+    registry = _review_registries(settings).registry(tenant)
+    entry = registry.indexed().get(repo) if registry is not None else None
+    if entry is None:
+        return None
+    checkout = Path(entry[0]).resolve()
+    if not checkout.is_relative_to((tenants.TENANTS_MOUNT / tenant).resolve()):
+        return None
+    return str(checkout)
 
 
 async def _run_gate(stage: ReviewStage, spec: _PromptSpec, req: ReviewRequest) -> ReviewOutcome:

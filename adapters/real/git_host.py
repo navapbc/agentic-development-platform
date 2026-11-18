@@ -334,11 +334,13 @@ class RealGitHost:
         return PRFeedback(repo=repo, number=number, state=pull["state"], comments=comments)
 
     async def delete_branch(self, repo: str, name: str) -> bool:
-        remote = self._remote_url(repo)
-        auth = self._auth(repo)
-        if not await self._ls_remote(remote, name, auth):
+        cred = self._credential(repo)
+        async with self._client(cred) as client:
+            resp = await client.delete(f"/repos/{cred.owner}/{repo}/git/refs/heads/{name}")
+        # GitHub answers 422 "Reference does not exist" for a branch that is already gone.
+        if resp.status_code in (404, 422):
             return False
-        await self._git("push", remote, "--delete", f"refs/heads/{name}", auth=auth)
+        resp.raise_for_status()
         return True
 
     async def close_pr(self, repo: str, number: int) -> PullRequest:

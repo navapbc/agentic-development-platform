@@ -6,8 +6,6 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from services.integration.jira._engine import ensure_engine_on_path
-
 CLOUD = "cloud"
 DATACENTER = "datacenter"
 
@@ -153,8 +151,7 @@ def render_adf(blocks: Iterable[Block]) -> dict[str, Any]:
 
 
 def plain_text_to_adf(body: str) -> dict[str, Any]:
-    ensure_engine_on_path()
-    from rebar_reconciler.adapters.jira.adf import text_to_adf
+    from rebar.reconciler.adapters.jira.adf import text_to_adf
 
     return text_to_adf(body)
 

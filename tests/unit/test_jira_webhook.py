@@ -14,6 +14,7 @@ from services.coordination.idempotency import InMemorySideEffectLedger
 from services.integration.integrations import HYBRID, POLLING, WEBHOOK
 from services.integration.jira import DATACENTER
 from services.integration.jira.snapshot import TaskSnapshot, snapshot_id_for
+from services.operator_remedy import Remedy
 from services.orchestration.intake_reconciler import (
     IntakeContext,
     IntakeStart,
@@ -63,17 +64,25 @@ class _Starter:
 class _Alerter:
     def __init__(self) -> None:
         self.alerts: list[tuple[str, str, str]] = []
+        self.remedies: list[Remedy] = []
 
-    async def unroutable(self, *, issue_key: str, project: str, reason: str) -> None:
+    async def unroutable(
+        self, *, issue_key: str, project: str, reason: str, remedy: Remedy
+    ) -> None:
         self.alerts.append((issue_key, project, reason))
+        self.remedies.append(remedy)
 
 
 class _Seeder:
     def __init__(self) -> None:
         self.seeded: list[tuple[str, str, str]] = []
+        self.abandoned: list[tuple[str, str]] = []
 
     async def seed(self, *, execution_id: str, task_id: str, repo: str) -> None:
         self.seeded.append((execution_id, task_id, repo))
+
+    async def abandon(self, *, execution_id: str, reason: str) -> None:
+        self.abandoned.append((execution_id, reason))
 
 
 class _RecordingStore:
@@ -275,3 +284,39 @@ async def test_cloud_adf_webhook_starts_and_normalizes_description():
     snapshot = world.store.by_execution[world.starter.starts[0].execution_id][0]
     expected = "Add a GET /health endpoint that returns 200 with a body of ok."
     assert snapshot.payload["description"] == expected
+
+
+async def test_a_poll_during_an_in_flight_start_defers_instead_of_starting_twice():
+    world = _world()
+    issue = json.loads(_fixture("jira_datacenter_issue_created.json"))["issue"]
+    overlapping: list[Any] = []
+    start = world.starter.start
+
+    async def start_with_an_overlapping_pass(request: IntakeStart) -> str:
+        overlapping.append(await _poll(world, issue=issue))
+        return await start(request)
+
+    world.starter.start = start_with_an_overlapping_pass  # type: ignore[method-assign]
+    await _poll(world, issue=issue)
+
+    assert overlapping[0].deferred == ["ADSER-42"]
+    assert overlapping[0].started == []
+    assert len(world.starter.starts) == 1
+
+
+async def test_a_delivery_during_its_own_in_flight_dispatch_is_told_to_retry():
+    world = _world()
+    body = _fixture("jira_datacenter_issue_created.json")
+    redelivered: list[tuple[int, dict]] = []
+    start = world.starter.start
+
+    async def start_with_a_redelivery(request: IntakeStart) -> str:
+        redelivered.append(await _post(world, body=body, mode=WEBHOOK))
+        return await start(request)
+
+    world.starter.start = start_with_a_redelivery  # type: ignore[method-assign]
+    code, _ = await _post(world, body=body, mode=WEBHOOK)
+
+    assert code == 200
+    assert redelivered[0][0] == 409
+    assert len(world.starter.starts) == 1

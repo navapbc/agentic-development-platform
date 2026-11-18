@@ -6,12 +6,9 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
-from services.integration.jira._engine import ensure_engine_on_path
-
 
 def _normalize_rich_text(body: Any) -> str:
-    ensure_engine_on_path()
-    from rebar_reconciler.inbound_fields import normalize_rich_text
+    from rebar.reconciler.inbound_fields import normalize_rich_text
 
     return normalize_rich_text(body)
 

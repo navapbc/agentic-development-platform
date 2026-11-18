@@ -111,11 +111,11 @@ def _parse_args() -> argparse.Namespace:
 
 
 async def main() -> int:
+    from services import temporal_client
     from services.orchestration.temporal_workflows.durable_task_workflow import (
         DurableTaskInput,
         DurableTaskWorkflow,
     )
-    from temporalio.client import Client
 
     args = _parse_args()
     settings = get_settings()
@@ -136,7 +136,7 @@ async def main() -> int:
 
     address = to_host_hostport(settings.temporal_host)
     print(f"[demo] connecting to Temporal at {address}")
-    client = await Client.connect(address, namespace=settings.temporal_namespace)
+    client = await temporal_client.connect(address, settings)
 
     if args.repo:
         print(f"[demo] reading repository '{args.repo}' to build a briefing pack for the task")

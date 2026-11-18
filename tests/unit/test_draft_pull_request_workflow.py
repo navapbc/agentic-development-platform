@@ -68,6 +68,10 @@ from services.orchestration.temporal_activities.implementation import (
     ResetCoordinationResult,
 )
 from services.orchestration.temporal_activities.manifest import RecordManifestRequest
+from services.orchestration.temporal_activities.model_access import (
+    DeleteRunModelKeyRequest,
+    DeleteRunModelKeyResult,
+)
 from services.orchestration.temporal_activities.notify import (
     AlertHumanInterventionRequest,
     AlertHumanInterventionResult,
@@ -145,12 +149,13 @@ from services.orchestration.temporal_workflows.draft_pull_request import (
     PROMOTION_CANCELLED,
     REVIEW_BLOCKED,
     DraftPullRequestInput,
+    DraftPullRequestOutput,
     DraftPullRequestWorkflow,
 )
 from services.orchestration.temporal_workflows.implementation import ImplementationWorkflow
 from services.orchestration.temporal_workflows.pull_request import PullRequestWorkflow
 from services.orchestration.temporal_workflows.review import PlanReviewWorkflow
-from temporalio import activity
+from temporalio import activity, workflow
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 from temporalio.worker.workflow_sandbox import SandboxedWorkflowRunner, SandboxRestrictions
@@ -212,9 +217,17 @@ def _make_activities(
     authorship_active: bool = False,
     authorship_verified: list[list[dict]] | None = None,
     commit_shas: list[str] | None = None,
+    model_key_deletions: list[DeleteRunModelKeyRequest] | None = None,
+    scan_budget_stop: str = "",
+    repair_terminal_reason: str = "",
+    persisted_states: list[ExecutionState] | None = None,
+    audit_events: list[AuditEvent] | None = None,
+    claim_finalizations: list[FinalizeClaimRequest] | None = None,
 ):
     @activity.defn(name="persist_execution_state")
     async def fake_persist(payload: ExecutionState) -> str:
+        if persisted_states is not None:
+            persisted_states.append(payload)
         return payload.execution_id
 
     @activity.defn(name="classify_test_failures")
@@ -229,6 +242,8 @@ def _make_activities(
 
     @activity.defn(name="record_audit_event")
     async def fake_audit(event: AuditEvent) -> str:
+        if audit_events is not None:
+            audit_events.append(event)
         return event.event_id
 
     @activity.defn(name="record_usage_metrics")
@@ -397,6 +412,7 @@ def _make_activities(
             tokens=5,
             cache_read_tokens=repair_cache_read_tokens,
             llm_calls=1,
+            terminal_reason=repair_terminal_reason,
         )
 
     @activity.defn(name="alert_human_intervention")
@@ -411,11 +427,19 @@ def _make_activities(
 
     @activity.defn(name="finalize_work_claim")
     async def fake_finalize(req: FinalizeClaimRequest) -> FinalizeClaimResult:
+        if claim_finalizations is not None:
+            claim_finalizations.append(req)
         return FinalizeClaimResult(
             claim_id="claim-1",
             finalized=True,
             state="completed" if req.completed else "released",
         )
+
+    @activity.defn(name="delete_run_model_key")
+    async def fake_delete_run_model_key(req: DeleteRunModelKeyRequest) -> DeleteRunModelKeyResult:
+        if model_key_deletions is not None:
+            model_key_deletions.append(req)
+        return DeleteRunModelKeyResult(deleted=True)
 
     def _review_outcome(stage: str, verdict: str) -> ReviewOutcome:
         return ReviewOutcome(
@@ -429,7 +453,7 @@ def _make_activities(
         )
 
     @activity.defn(name="load_gate_plan")
-    async def fake_load_gate_plan() -> GatePlan:
+    async def fake_load_gate_plan(req=None) -> GatePlan:
         on_block = review_on_block or {}
         return GatePlan(
             review=[
@@ -504,6 +528,7 @@ def _make_activities(
             evidence_id="evidence-1",
             severity_counts=dict(scan_result_severity_counts or {}),
             scanner_verdicts=scanner_verdicts,
+            budget_stop=scan_budget_stop,
         )
 
     @activity.defn(name="evaluate_promotion")
@@ -591,6 +616,7 @@ def _make_activities(
         fake_alert,
         fake_reset,
         fake_finalize,
+        fake_delete_run_model_key,
         fake_load_gate_plan,
         fake_evaluate_gate,
         fake_invoke_model,
@@ -2881,3 +2907,352 @@ async def test_repair_changed_paths_carry_the_ticket_file_impact():
 
     assert repairs, "the repair activity must run"
     assert tuple(repairs[0].changed_paths) == ("feature.py",)
+
+
+def _patch_markers(history) -> set[str]:
+    markers: set[str] = set()
+    for event in history.events:
+        if not event.HasField("marker_recorded_event_attributes"):
+            continue
+        for payloads in event.marker_recorded_event_attributes.details.values():
+            for payload in payloads.payloads:
+                markers.add(payload.data.decode())
+    return markers
+
+
+async def test_the_run_model_key_is_deleted_once_when_the_run_ends():
+    deletions: list[DeleteRunModelKeyRequest] = []
+    activities = _make_activities(
+        None, 1, [], [], [], ci_result=SUCCESS, model_key_deletions=deletions
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        workflow_id = f"wf-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            await env.client.execute_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(),
+                id=workflow_id,
+                task_queue=task_queue,
+            )
+            history = await env.client.get_workflow_handle(workflow_id).fetch_history()
+
+    assert [req.execution_id for req in deletions] == ["exec-1"]
+    assert any("delete-run-model-key" in marker for marker in _patch_markers(history))
+
+
+async def test_a_gate_engine_budget_stop_fails_the_run_as_a_cap_breach():
+    from services.integration.litellm_admin import TENANT_MODEL_BUDGET_EXCEEDED
+
+    alerts: list[AlertHumanInterventionRequest] = []
+    policy_requests: list[EvaluatePromotionRequest] = []
+    persisted: list[ExecutionState] = []
+    audits: list[AuditEvent] = []
+    deletions: list[DeleteRunModelKeyRequest] = []
+    activities = _make_activities(
+        None,
+        1,
+        [],
+        [],
+        [],
+        ci_result=SUCCESS,
+        alerts=alerts,
+        policy_requests=policy_requests,
+        scan_budget_stop=TENANT_MODEL_BUDGET_EXCEEDED,
+        persisted_states=persisted,
+        audit_events=audits,
+        model_key_deletions=deletions,
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            result = await env.client.execute_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(run_reviews=True, run_policy=True),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+
+    assert result.status == POLICY_DENIED
+    assert result.terminal_reason == TENANT_MODEL_BUDGET_EXCEEDED
+    assert result.policy_reasons == [TENANT_MODEL_BUDGET_EXCEEDED]
+    assert policy_requests == []
+    assert persisted[-1].state == "FAILED"
+    stops = [event for event in audits if event.event_type == "MODEL_BUDGET_EXCEEDED"]
+    assert [(event.decision, event.reason) for event in stops] == [
+        ("cap_breach", TENANT_MODEL_BUDGET_EXCEEDED)
+    ]
+    assert [(alert.reason, alert.stage) for alert in alerts] == [
+        (TENANT_MODEL_BUDGET_EXCEEDED, "policy")
+    ]
+    assert len(deletions) == 1
+
+
+@workflow.defn(name="DraftPullRequestWorkflow")
+class _PrePatchDraftPr(DraftPullRequestWorkflow):
+    """The workflow as it ran before the run model key was deleted at the end of a run."""
+
+    @workflow.run
+    async def run(self, params: DraftPullRequestInput) -> DraftPullRequestOutput:
+        return await super().run(params)
+
+    async def _delete_run_model_key(self, params: DraftPullRequestInput) -> None:
+        return None
+
+
+async def test_a_run_started_before_the_key_deletion_replays_without_it():
+    from temporalio.worker import Replayer, UnsandboxedWorkflowRunner
+
+    deletions: list[DeleteRunModelKeyRequest] = []
+    activities = _make_activities(
+        None, 1, [], [], [], ci_result=SUCCESS, model_key_deletions=deletions
+    )
+    children = [ImplementationWorkflow, BranchSyncWorkflow, PullRequestWorkflow, PlanReviewWorkflow]
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        workflow_id = f"wf-{uuid.uuid4().hex[:8]}"
+        async with Worker(
+            env.client,
+            task_queue=task_queue,
+            workflows=[_PrePatchDraftPr, *children],
+            workflow_runner=UnsandboxedWorkflowRunner(),
+            activities=activities,
+        ):
+            await env.client.execute_workflow(
+                "DraftPullRequestWorkflow",
+                _ci_input(),
+                id=workflow_id,
+                task_queue=task_queue,
+                result_type=DraftPullRequestOutput,
+            )
+            history = await env.client.get_workflow_handle(workflow_id).fetch_history()
+
+    assert deletions == []
+    replayed = await Replayer(
+        workflows=[DraftPullRequestWorkflow, *children],
+        workflow_runner=UnsandboxedWorkflowRunner(),
+    ).replay_workflow(history, raise_on_replay_failure=False)
+    assert replayed.replay_failure is None
+
+
+async def test_a_repair_refused_for_the_run_budget_alerts_with_the_budget_reason():
+    from services.integration.litellm_admin import RUN_MODEL_BUDGET_EXCEEDED
+
+    repairs: list[ApplyCIRepairRequest] = []
+    alerts: list[AlertHumanInterventionRequest] = []
+    activities = _make_activities(
+        None,
+        1,
+        [],
+        [],
+        [],
+        ci_result=FAILURE,
+        repairs=repairs,
+        alerts=alerts,
+        repair_terminal_reason=RUN_MODEL_BUDGET_EXCEEDED,
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(max_repair_attempts=3),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+            await _await_human_park(handle)
+            await handle.signal("submit_repair_decision", args=[False, "release-manager"])
+            result = await handle.result()
+
+    assert len(repairs) == 1
+    assert [(alert.reason, alert.stage) for alert in alerts] == [
+        (RUN_MODEL_BUDGET_EXCEEDED, "repair")
+    ]
+    assert result.terminal_reason == "human_abandoned"
+
+
+def _parking_activities(
+    deletions: list[DeleteRunModelKeyRequest], finalizations: list[FinalizeClaimRequest]
+):
+    return _make_activities(
+        None,
+        1,
+        [],
+        [],
+        [],
+        ci_result=FAILURE,
+        triage_enabled=True,
+        triage_action_value="escalate",
+        model_key_deletions=deletions,
+        claim_finalizations=finalizations,
+    )
+
+
+async def _cancel_parked_run(env, handle) -> None:
+    from temporalio.client import WorkflowFailureError
+    from temporalio.exceptions import CancelledError
+
+    state = await _await_human_park(handle)
+    assert state["reason"] == SuspendReason.AWAITING_HUMAN.value
+    await handle.cancel()
+    with pytest.raises(WorkflowFailureError) as failed:
+        await handle.result()
+    assert isinstance(failed.value.cause, CancelledError)
+
+
+async def test_a_run_cancelled_while_parked_settles_its_claim_and_deletes_its_key():
+    from temporalio.client import WorkflowExecutionStatus
+
+    deletions: list[DeleteRunModelKeyRequest] = []
+    finalizations: list[FinalizeClaimRequest] = []
+    activities = _parking_activities(deletions, finalizations)
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(run_test_triage=True, max_repair_attempts=2),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+            await _cancel_parked_run(env, handle)
+            description = await handle.describe()
+            history = await handle.fetch_history()
+
+    assert description.status == WorkflowExecutionStatus.CANCELED
+    assert [req.execution_id for req in deletions] == ["exec-1"]
+    assert [req.completed for req in finalizations] == [False]
+    assert any("finalize-on-cancel" in marker for marker in _patch_markers(history))
+
+
+@workflow.defn(name="DraftPullRequestWorkflow")
+class _PreCancelFinalizeDraftPr(DraftPullRequestWorkflow):
+    """The workflow as it ran before a cancelled run settled its claim."""
+
+    @workflow.run
+    async def run(self, params: DraftPullRequestInput) -> DraftPullRequestOutput:
+        try:
+            outcome = await self._orchestrate(params)
+        except Exception:
+            await self._finalize_claim(params)
+            raise
+        await self._finalize_claim(params)
+        return outcome
+
+
+async def test_a_run_cancelled_before_the_cancel_cleanup_replays_without_it():
+    from temporalio.worker import Replayer, UnsandboxedWorkflowRunner
+
+    deletions: list[DeleteRunModelKeyRequest] = []
+    finalizations: list[FinalizeClaimRequest] = []
+    activities = _parking_activities(deletions, finalizations)
+    children = [ImplementationWorkflow, BranchSyncWorkflow, PullRequestWorkflow, PlanReviewWorkflow]
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with Worker(
+            env.client,
+            task_queue=task_queue,
+            workflows=[_PreCancelFinalizeDraftPr, *children],
+            workflow_runner=UnsandboxedWorkflowRunner(),
+            activities=activities,
+        ):
+            handle = await env.client.start_workflow(
+                "DraftPullRequestWorkflow",
+                _ci_input(run_test_triage=True, max_repair_attempts=2),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+                result_type=DraftPullRequestOutput,
+            )
+            await _cancel_parked_run(env, handle)
+            history = await handle.fetch_history()
+
+    assert deletions == []
+    assert finalizations == []
+    replayed = await Replayer(
+        workflows=[DraftPullRequestWorkflow, *children],
+        workflow_runner=UnsandboxedWorkflowRunner(),
+    ).replay_workflow(history, raise_on_replay_failure=False)
+    assert replayed.replay_failure is None
+
+
+@workflow.defn(name="DefectOnceDraftPr")
+class _PreAlertDefectOnceDraftPr(DefectOnceDraftPr):
+    """The code-defect park as it ran before it alerted, with no alert on the push_branch stage."""
+
+    @workflow.run
+    async def run(self, params: DraftPullRequestInput) -> DraftPullRequestOutput:
+        return await super().run(params)
+
+    async def _terminal_alert(self, params, workflow_id, *, stage, **kwargs) -> str:
+        if stage == "push_branch":
+            return ""
+        return await super()._terminal_alert(params, workflow_id, stage=stage, **kwargs)
+
+
+async def test_a_run_parked_on_a_code_defect_before_the_alert_replays_without_it(monkeypatch):
+    """Before the code-defect park alerted, its path recorded no patch marker and ran no alert
+    activity. The recording answers False for the patch without recording its marker, and its
+    workflow skips the alert, so the history matches a pre-patch run whatever the guard does."""
+    from temporalio.worker import Replayer, UnsandboxedWorkflowRunner
+
+    alerts: list[AlertHumanInterventionRequest] = []
+    activities = _make_activities(None, 1, [], [], [], alerts=alerts)
+    children = [ImplementationWorkflow, BranchSyncWorkflow, PullRequestWorkflow]
+    patched = workflow.patched
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        with monkeypatch.context() as pre_patch:
+            pre_patch.setattr(
+                workflow,
+                "patched",
+                lambda patch_id: patch_id != "code-defect-alert" and patched(patch_id),
+            )
+            async with Worker(
+                env.client,
+                task_queue=task_queue,
+                workflows=[_PreAlertDefectOnceDraftPr, *children],
+                workflow_runner=UnsandboxedWorkflowRunner(),
+                activities=activities,
+            ):
+                handle = await env.client.start_workflow(
+                    "DefectOnceDraftPr",
+                    DraftPullRequestInput(
+                        task_id="T-1",
+                        execution_id="exec-1",
+                        repo="agentic-demo-service",
+                        base="main",
+                        base_sha="a" * 40,
+                        task="Implement the change",
+                        issue_key="T-1",
+                        file_impact=["feature.py"],
+                        stored_issue={"summary": "Implement the change"},
+                        build_id="1.4.1",
+                    ),
+                    id=f"wf-{uuid.uuid4().hex[:8]}",
+                    task_queue=task_queue,
+                    result_type=DraftPullRequestOutput,
+                )
+                state: dict[str, str] = {}
+                for _ in range(50):
+                    state = await handle.query(DefectOnceDraftPr.suspension_state)
+                    if state:
+                        break
+                    await asyncio.sleep(0.05)
+                assert state["reason"] == SuspendReason.AWAITING_FIX.value
+                await handle.signal(RESUME_SIGNAL, ResumeOn.NEWER_BUILD.value)
+                await handle.result()
+                history = await handle.fetch_history()
+
+    assert alerts == []
+    assert not any("code-defect-alert" in marker for marker in _patch_markers(history))
+    replayed = await Replayer(
+        workflows=[DefectOnceDraftPr, *children], workflow_runner=UnsandboxedWorkflowRunner()
+    ).replay_workflow(history, raise_on_replay_failure=False)
+    assert replayed.replay_failure is None

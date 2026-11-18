@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 
 from temporalio import activity
 
+from services.operator_remedy import Remedy
+
 
 @dataclass
 class AlertHumanInterventionRequest:
@@ -17,22 +19,30 @@ class AlertHumanInterventionRequest:
     reason: str
     stage: str
     detail: str = ""
+    remedy: Remedy = field(default_factory=Remedy)
 
 
 @dataclass
 class AlertHumanInterventionResult:
     channels: list[str] = field(default_factory=list)
+    remedy: str = ""
+    """The remedy as the alert rendered it, for the audit record."""
 
 
 @activity.defn
 async def alert_human_intervention(
     req: AlertHumanInterventionRequest,
 ) -> AlertHumanInterventionResult:
+    from scripts.config import get_settings
+
     from services.orchestration.notifications import (
         HumanInterventionAlert,
+        render_remedy,
         send_human_intervention_alert,
     )
 
+    settings = get_settings()
+    remedy = render_remedy(req.remedy, settings)
     channels = send_human_intervention_alert(
         HumanInterventionAlert(
             task_id=req.task_id,
@@ -43,6 +53,8 @@ async def alert_human_intervention(
             reason=req.reason,
             stage=req.stage,
             detail=req.detail,
-        )
+            remedy=remedy,
+        ),
+        settings,
     )
-    return AlertHumanInterventionResult(channels=channels)
+    return AlertHumanInterventionResult(channels=channels, remedy=remedy)

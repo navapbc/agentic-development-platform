@@ -10,6 +10,11 @@ SCRAM-SHA-256 verifiers, so the statement text that PostgreSQL logs under
 ``elasticache_handler`` rotates a Valkey RBAC user through the ElastiCache ``ModifyUser``
 API. The user keeps its current password next to the new one, so a consumer that has not
 restarted yet keeps connecting. The next rotation drops the older password.
+
+``token_handler`` rotates a plain-text bearer token, such as a tenant's repository intelligence
+token, that no external system stores. It stages a new random token as AWSPENDING and promotes
+it. The service that checks the token accepts the AWSCURRENT and AWSPREVIOUS versions, so a
+client that has not restarted yet keeps its access until the next rotation.
 """
 
 from __future__ import annotations
@@ -22,6 +27,7 @@ import logging
 import os
 import re
 import secrets
+import string
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -36,6 +42,8 @@ log.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 AWSCURRENT = "AWSCURRENT"
 AWSPENDING = "AWSPENDING"
 PASSWORD_LENGTH = 40
+TOKEN_LENGTH = 48
+TOKEN_ALPHABET = string.ascii_letters + string.digits
 SCRAM_ITERATIONS = 4096
 WAIT_TIMEOUT_SECONDS = 600.0
 POLL_SECONDS = 10.0
@@ -44,7 +52,9 @@ PLATFORM_MIGRATOR = "platform_migrator"
 PLATFORM_APP = "platform_app"
 TEMPORAL = "temporal"
 LANGFUSE = "langfuse"
-ROLE_KEYS = (PLATFORM_MIGRATOR, PLATFORM_APP, TEMPORAL, LANGFUSE)
+LITELLM = "litellm"
+MONITOR = "monitor"
+ROLE_KEYS = (PLATFORM_MIGRATOR, PLATFORM_APP, TEMPORAL, LANGFUSE, LITELLM, MONITOR)
 
 _IDENTIFIER = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
 
@@ -123,6 +133,25 @@ def finish_secret(client: Any, arn: str, token: str) -> None:
     log.info("promoted version %s of %s to AWSCURRENT", token, arn)
 
 
+def pending_version_awaits_rotation(client: Any, arn: str, token: str) -> bool:
+    """Return whether a rotation step still has work on the version, which must be AWSPENDING.
+
+    A version already promoted to AWSCURRENT needs no further step, so a retried invocation
+    returns without acting.
+    """
+    metadata = client.describe_secret(SecretId=arn)
+    if not metadata.get("RotationEnabled"):
+        raise RotationError(f"rotation is not enabled for {arn}")
+    stages = metadata.get("VersionIdsToStages", {})
+    if token not in stages:
+        raise RotationError(f"version {token} is not a version of {arn}")
+    if AWSCURRENT in stages[token]:
+        return False
+    if AWSPENDING not in stages[token]:
+        raise RotationError(f"version {token} of {arn} is not staged as AWSPENDING")
+    return True
+
+
 def rotate(
     event: Mapping[str, Any],
     client: Any,
@@ -131,16 +160,8 @@ def rotate(
     test_secret: Callable[[Credential], None],
 ) -> None:
     arn, token, step = event["SecretId"], event["ClientRequestToken"], event["Step"]
-    metadata = client.describe_secret(SecretId=arn)
-    if not metadata.get("RotationEnabled"):
-        raise RotationError(f"rotation is not enabled for {arn}")
-    stages = metadata.get("VersionIdsToStages", {})
-    if token not in stages:
-        raise RotationError(f"version {token} is not a version of {arn}")
-    if AWSCURRENT in stages[token]:
+    if not pending_version_awaits_rotation(client, arn, token):
         return
-    if AWSPENDING not in stages[token]:
-        raise RotationError(f"version {token} of {arn} is not staged as AWSPENDING")
 
     if step == "createSecret":
         create_secret(client, arn, token)
@@ -312,11 +333,13 @@ def bootstrap_plan(
     for key in ROLE_KEYS:
         exists = names[key] in existing_roles
         role_sql.extend(role_statements(names[key], credentials[key]["password"], exists=exists))
+    role_sql.append(f"GRANT pg_monitor TO {quote_identifier(names[MONITOR])}")
 
     service_databases = {
         "temporal": names[TEMPORAL],
         "temporal_visibility": names[TEMPORAL],
         "langfuse": names[LANGFUSE],
+        "litellm": names[LITELLM],
     }
     database_sql: list[str] = []
     for database, owner in service_databases.items():
@@ -453,3 +476,41 @@ def elasticache_handler(event: Mapping[str, Any], _context: Any = None) -> None:
         set_secret=lambda current, pending: elasticache_set_secret(elasticache, current, pending),
         test_secret=lambda pending: elasticache_test_secret(elasticache, pending),
     )
+
+
+def random_token(length: int = TOKEN_LENGTH) -> str:
+    return "".join(secrets.choice(TOKEN_ALPHABET) for _ in range(length))
+
+
+def create_token(client: Any, arn: str, token: str) -> None:
+    try:
+        client.get_secret_value(SecretId=arn, VersionId=token, VersionStage=AWSPENDING)
+        return
+    except client.exceptions.ResourceNotFoundException:
+        pass
+    client.put_secret_value(
+        SecretId=arn,
+        ClientRequestToken=token,
+        SecretString=random_token(),
+        VersionStages=[AWSPENDING],
+    )
+    log.info("staged version %s of %s as AWSPENDING", token, arn)
+
+
+def rotate_token(event: Mapping[str, Any], client: Any) -> None:
+    """Rotate a plain-text token, which no external system stores, so set and test do nothing."""
+    arn, token, step = event["SecretId"], event["ClientRequestToken"], event["Step"]
+    if not pending_version_awaits_rotation(client, arn, token):
+        return
+    if step == "createSecret":
+        create_token(client, arn, token)
+    elif step in ("setSecret", "testSecret"):
+        return
+    elif step == "finishSecret":
+        finish_secret(client, arn, token)
+    else:
+        raise RotationError(f"unknown rotation step {step!r}")
+
+
+def token_handler(event: Mapping[str, Any], _context: Any = None) -> None:
+    rotate_token(event, boto3.client("secretsmanager"))

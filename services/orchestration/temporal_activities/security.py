@@ -44,6 +44,7 @@ class ScanChangeResult:
     evidence_id: str
     severity_counts: dict[str, int] = field(default_factory=dict)
     scanner_verdicts: dict[str, str] = field(default_factory=dict)
+    budget_stop: str = ""
 
 
 def _build_security_mediator():
@@ -93,23 +94,57 @@ async def _verdict_findings(req: ScanChangeRequest, report: ScanReport) -> list:
     return blocking_findings(report.findings, changed, req.repo_root)
 
 
+def _budget_stop_result(mediator, reason: str) -> ScanChangeResult:
+    """Every scanner gate blocks, because the scan stopped when LiteLLM refused it for budget."""
+    from adapters.interfaces.security_scanner import CRITICAL
+
+    scanners = [backend.name for backend in mediator.backends]
+    findings = [
+        ScanFindingRecord(
+            finding_id=f"{name}-budget-stop",
+            scanner=name,
+            kind="error",
+            severity=CRITICAL,
+            title=f"gate {name!r} stopped by a model budget",
+            detail=reason,
+            rule_id="gate-backend-error",
+        )
+        for name in scanners
+    ]
+    return ScanChangeResult(
+        scanners=scanners,
+        findings=findings,
+        blocking_count=len(findings),
+        threshold=mediator.threshold,
+        content_hash="",
+        evidence_id="",
+        severity_counts={CRITICAL: len(findings)} if findings else {},
+        scanner_verdicts={name: "block" for name in scanners},
+        budget_stop=reason,
+    )
+
+
 @activity.defn
 async def scan_change(req: ScanChangeRequest) -> ScanChangeResult:
     from adapters.interfaces.security_scanner import blocking_count, is_blocking
 
+    from services.integration.litellm_admin import ModelBudgetExceededError
     from services.review.classification import CLASSIFICATION_SECURITY
     from services.review.evidence import EvidenceRecord, build_evidence_sink
 
     mediator = _build_security_mediator()
-    report = await mediator.scan(
-        ScanTarget(
-            repo=req.repo,
-            ref=req.ref,
-            repo_root=req.repo_root,
-            base_ref=req.base_ref,
-            execution_id=req.execution_id,
+    try:
+        report = await mediator.scan(
+            ScanTarget(
+                repo=req.repo,
+                ref=req.ref,
+                repo_root=req.repo_root,
+                base_ref=req.base_ref,
+                execution_id=req.execution_id,
+            )
         )
-    )
+    except ModelBudgetExceededError as exc:
+        return _budget_stop_result(mediator, exc.reason)
     content_hash = _content_hash(report)
     severity_counts = dict(Counter(f.severity for f in report.findings))
 
@@ -127,11 +162,9 @@ async def scan_change(req: ScanChangeRequest) -> ScanChangeResult:
     for scanner in report.scanners:
         scoped = [f for f in report.findings if f.scanner == scanner]
         scanner_hash = _scanner_content_hash(report, scanner, scoped)
-        artifact_id = uuid.uuid4().hex
-        evidence_ids[scanner] = artifact_id
-        await sink.persist(
+        evidence_ids[scanner] = await sink.persist(
             EvidenceRecord(
-                artifact_id=artifact_id,
+                artifact_id=uuid.uuid4().hex,
                 execution_id=req.execution_id,
                 content_hash=scanner_hash,
                 source_component=f"gate:{scanner}",

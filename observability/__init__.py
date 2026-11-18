@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from observability import attributes
-from observability.context import bind_execution, current_identifiers
+from observability.context import bind_execution, current_identifiers, current_tenant
 from observability.gateway import (
     Reconciliation,
     langfuse_request_metadata,
     langfuse_session_url,
     reconcile_usage,
+    tenant_tag,
     token_cost_usd,
 )
 from observability.generation import (
@@ -44,6 +45,7 @@ __all__ = [
     "attributes",
     "bind_execution",
     "current_identifiers",
+    "current_tenant",
     "ContextStampingSpanProcessor",
     "configure_logging",
     "configure_metrics",
@@ -68,5 +70,6 @@ __all__ = [
     "reset_metrics_for_testing",
     "stage_span",
     "temporal_interceptors",
+    "tenant_tag",
     "token_cost_usd",
 ]

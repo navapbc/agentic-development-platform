@@ -10,7 +10,8 @@ locals {
   enabled          = var.create_secret_store
   database_enabled = local.enabled && var.create_database_credentials
   cache_enabled    = local.enabled && var.rotate_elasticache_user
-  rotation_enabled = local.database_enabled || local.cache_enabled
+  token_enabled    = local.enabled && length(var.rotated_token_secrets) > 0
+  rotation_enabled = local.database_enabled || local.cache_enabled || local.token_enabled
 
   account_id = try(data.aws_caller_identity.current[0].account_id, "")
   partition  = try(data.aws_partition.current[0].partition, "aws")
@@ -51,6 +52,11 @@ locals {
       prefix      = "sk-lf-"
       hex         = false
     }
+    langfuse_admin_password = {
+      description = "Password of the Langfuse administrator that LANGFUSE_INIT_USER_PASSWORD creates on the first start."
+      prefix      = ""
+      hex         = false
+    }
     clickhouse_password = {
       description = "ClickHouse user password, set as CLICKHOUSE_PASSWORD."
       prefix      = ""
@@ -72,6 +78,7 @@ locals {
     slack_webhook_url      = "Slack incoming webhook URL for alerts, set as SLACK_WEBHOOK_URL."
     review_signing_key     = "OpenSSH private key that signs review verdicts, set as REVIEW_SIGNING_KEY."
     authorship_signing_key = "OpenSSH private key that signs authored artifacts, set as AUTHORSHIP_SIGNING_KEY."
+    registry_token         = "Read-only token of an external registry such as Artifactory, set as REGISTRY_TOKEN."
   }
 
   database_roles = {
@@ -79,6 +86,8 @@ locals {
     platform_app      = "Platform application role, with DML on the platform schema and read on alembic_version."
     temporal          = "Temporal server role, which owns the temporal and temporal_visibility databases."
     langfuse          = "Langfuse role, which owns the langfuse database."
+    litellm           = "LiteLLM role, which owns the litellm database."
+    monitor           = "Monitoring role, a member of pg_monitor, which the off-hours check reads pg_stat_activity as."
   }
 
   secret_catalog = merge(

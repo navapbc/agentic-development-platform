@@ -17,7 +17,7 @@ resource "aws_iam_role" "writer" {
   description          = "Pushes the rebar ticket store."
   path                 = var.iam_path
   permissions_boundary = var.permissions_boundary_arn == "" ? null : var.permissions_boundary_arn
-  assume_role_policy   = local.assume_policy
+  assume_role_policy   = local.writer_assume_policy
 
   tags = var.tags
 }

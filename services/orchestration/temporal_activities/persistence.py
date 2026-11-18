@@ -5,22 +5,18 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from database.engine import shared_platform_engine
 from database.models.schema import audit_events, executions, usage_metrics
 from observability import record_stage_cost, record_stage_latency
 from scripts.config import get_settings
-from sqlalchemy import func
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine
 from temporalio import activity
-
-_engine: AsyncEngine | None = None
 
 
 def _get_engine() -> AsyncEngine:
-    global _engine
-    if _engine is None:
-        _engine = create_async_engine(get_settings().database_url, future=True, pool_pre_ping=True)
-    return _engine
+    return shared_platform_engine()
 
 
 @dataclass
@@ -49,6 +45,7 @@ def execution_state_upsert(payload: ExecutionState) -> Any:
         workflow_id=payload.workflow_id,
         state=payload.state,
         repository=payload.repository,
+        tenant=get_settings().tenant or None,
         repository_sha=payload.repository_sha,
         policy_bundle_version=payload.policy_bundle_version,
         resolved_models=payload.resolved_models or None,
@@ -73,6 +70,18 @@ async def persist_execution_state(payload: ExecutionState) -> str:
     return payload.execution_id
 
 
+async def execution_tenant(execution_id: str, engine: AsyncEngine | None = None) -> str:
+    """Return the tenant the execution record names, or an empty string without one."""
+    resolved = engine or _get_engine()
+    async with resolved.connect() as conn:
+        tenant = (
+            await conn.execute(
+                select(executions.c.tenant).where(executions.c.execution_id == execution_id)
+            )
+        ).scalar_one_or_none()
+    return str(tenant or "")
+
+
 @dataclass
 class AuditEvent:
     event_id: str
@@ -84,6 +93,8 @@ class AuditEvent:
     new_state: str | None = None
     model_id: str | None = None
     reason: str | None = None
+    remedy: str | None = None
+    alert_channels: list[str] = field(default_factory=list)
     workflow_id: str | None = None
     decision: str | None = None
     prompt_version: str | None = None
@@ -104,6 +115,8 @@ async def record_audit_event(event: AuditEvent) -> str:
             new_state=event.new_state,
             model_id=event.model_id,
             reason=event.reason,
+            remedy=event.remedy,
+            alert_channels=event.alert_channels or None,
             workflow_id=event.workflow_id,
             decision=event.decision,
             prompt_version=event.prompt_version,
@@ -131,6 +144,8 @@ def _audit_event_body(event: AuditEvent) -> dict[str, Any]:
         "new_state": event.new_state,
         "model_id": event.model_id,
         "reason": event.reason,
+        "remedy": event.remedy,
+        "alert_channels": event.alert_channels or [],
         "workflow_id": event.workflow_id,
         "decision": event.decision,
         "prompt_version": event.prompt_version,

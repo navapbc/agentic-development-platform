@@ -73,7 +73,12 @@ def scanner_gate(name: str, scanner_factory: ScannerFactory) -> Gate:
 
         scanner = scanner_factory()
         raw = await scanner.scan(
-            ScanTarget(repo=context.repo, ref=context.ref, repo_root=context.repo_root)
+            ScanTarget(
+                repo=context.repo,
+                ref=context.ref,
+                repo_root=context.repo_root,
+                execution_id=context.execution_id,
+            )
         )
         threshold = str(context.params.get("threshold", DEFAULT_BLOCKING_THRESHOLD))
         findings = [
@@ -171,8 +176,11 @@ def engine_review_backend(config: Any, profile: str = "") -> Any:
 
     settings = get_settings()
     pod_runner = None
+    run_model_access = None
     litellm_base_url = settings.litellm_base_url
+    litellm_api_key = settings.litellm_master_key
     if settings.gate_engine_execution == "pod":
+        from services.integration.litellm_admin import RunModelAccess
         from services.orchestration.gates.pod_runner import KubectlPodOps, PodEngineRunner
 
         pod_runner = PodEngineRunner(
@@ -180,17 +188,21 @@ def engine_review_backend(config: Any, profile: str = "") -> Any:
             namespace=settings.gate_engine_namespace,
             builder_image=settings.gate_engine_builder_image,
             privileged=settings.gate_engine_privileged,
+            node_pool=settings.sandbox_node_pool,
         )
         litellm_base_url = settings.sandbox_litellm_base_url
+        litellm_api_key = ""
+        run_model_access = RunModelAccess(settings)
     return AiReviewScanner(
         name=config.name,
         config=config,
         profile=profile,
         litellm_base_url=litellm_base_url,
-        litellm_api_key=settings.litellm_master_key,
+        litellm_api_key=litellm_api_key,
         pod_runner=pod_runner,
         tls_verify=settings.gate_registry_tls_verify,
         review_model=_resolve_gate_model(config),
+        run_model_access=run_model_access,
     )
 
 

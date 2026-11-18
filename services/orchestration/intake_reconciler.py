@@ -9,7 +9,11 @@ from typing import Any, Protocol
 
 from scripts.config import Settings, get_settings
 
-from services.coordination.idempotency import SideEffectLedger, SideEffectRef
+from services.coordination.idempotency import (
+    SideEffectLedger,
+    SideEffectRef,
+    intake_start_target,
+)
 from services.integration.jira.credentials import (
     JiraCredentialResolver,
     acceptance_field,
@@ -27,10 +31,17 @@ from services.integration.jira.snapshot import (
 )
 from services.integration.source_control import source_control_repos
 from services.integration.tickets.rebar_backend import rebar_stored_payload
+from services.operator_remedy import Remedy
 from services.orchestration.intake_base import (
     UnresolvableBaseBranch,
     declared_base,
     unresolvable_base_reason,
+)
+from services.orchestration.remedies import (
+    base_conflict_remedy,
+    checks_not_configured_remedy,
+    unresolvable_base_remedy,
+    unroutable_remedy,
 )
 
 
@@ -127,6 +138,8 @@ class IntakeBaseResolver(Protocol):
 class IntakeExecutionSeeder(Protocol):
     async def seed(self, *, execution_id: str, task_id: str, repo: str) -> None: ...
 
+    async def abandon(self, *, execution_id: str, reason: str) -> None: ...
+
 
 class IntakeActiveGuard(Protocol):
     async def active_workflow(self, *, issue_key: str, repo: str) -> str | None: ...
@@ -137,7 +150,9 @@ class IntakeRunCounter(Protocol):
 
 
 class IntakeAlerter(Protocol):
-    async def unroutable(self, *, issue_key: str, project: str, reason: str) -> None: ...
+    async def unroutable(
+        self, *, issue_key: str, project: str, reason: str, remedy: Remedy
+    ) -> None: ...
 
 
 @dataclass
@@ -156,6 +171,9 @@ class RunAdmission:
             return False
         self.remaining -= 1
         return True
+
+    def release(self) -> None:
+        self.remaining += 1
 
 
 @dataclass(frozen=True)
@@ -287,9 +305,9 @@ async def route_candidate(
             candidate.task_id,
             project,
             declaration.conflict,
+            base_conflict_remedy(candidate.task_id),
             digest,
-            ctx.alerter,
-            ctx.ledger,
+            ctx,
             report,
         )
         return
@@ -301,17 +319,20 @@ async def route_candidate(
         component_map=component_map,
     )
     if not resolution.routable:
-        await _hold(
-            candidate.task_id, project, resolution.reason, digest, ctx.alerter, ctx.ledger, report
+        remedy = unroutable_remedy(
+            candidate.task_id,
+            project,
+            resolution.unlisted,
+            ticket_config="jira" if candidate.source_backend in JIRA_SOURCES else "tickets",
         )
+        await _hold(candidate.task_id, project, resolution.reason, remedy, digest, ctx, report)
         return
     if ctx.checks_repos is not None:
         unchecked = [repo for repo in resolution.repos if repo not in ctx.checks_repos]
         if unchecked:
             reason = checks_not_configured_reason(unchecked)
-            await _hold(
-                candidate.task_id, project, reason, digest, ctx.alerter, ctx.ledger, report
-            )
+            remedy = checks_not_configured_remedy(candidate.task_id, unchecked)
+            await _hold(candidate.task_id, project, reason, remedy, digest, ctx, report)
             # The fix lands in operator config rather than the ticket, so a watermark poll
             # must re-read the ticket on the next pass instead of treating it as settled.
             report.deferred.append(candidate.task_id)
@@ -328,33 +349,39 @@ async def route_candidate(
         )
 
 
+def _alert_target(digest: str, tenant: str) -> str:
+    return f"{digest}@{tenant}" if tenant else digest
+
+
 async def _hold(
     issue_key: str,
     project: str,
     reason: str,
+    remedy: Remedy,
     digest: str,
-    alerter: IntakeAlerter,
-    ledger: SideEffectLedger,
+    ctx: IntakeContext,
     report: IntakeReport,
 ) -> None:
     ref = SideEffectRef(
         task_id=issue_key,
         execution_id="",
         operation="intake_unroutable_alert",
-        target=digest,
+        target=_alert_target(digest, ctx.settings.tenant.strip()),
     )
 
     async def _send() -> dict[str, str]:
-        await alerter.unroutable(issue_key=issue_key, project=project, reason=reason)
+        await ctx.alerter.unroutable(
+            issue_key=issue_key, project=project, reason=reason, remedy=remedy
+        )
         return {"issue_key": issue_key}
 
-    outcome = await ledger.run_once(ref, _send)
+    outcome = await ctx.ledger.run_once(ref, _send)
     report.held.append(
         IntakeHoldRecord(
             issue_key=issue_key,
             project=project,
             reason=reason,
-            alerted=not outcome.replayed,
+            alerted=not (outcome.replayed or outcome.in_flight),
         )
     )
 
@@ -395,9 +422,9 @@ async def _start(
             issue_key,
             project,
             unresolvable_base_reason(base, repo),
+            unresolvable_base_remedy(issue_key),
             digest,
-            ctx.alerter,
-            ctx.ledger,
+            ctx,
             report,
         )
         return
@@ -408,50 +435,67 @@ async def _start(
         task_id=issue_key,
         execution_id="",
         operation="intake_start",
-        target=f"{issue_key}:{repo}",
+        target=intake_start_target(issue_key, repo, ctx.settings.tenant.strip()),
     )
 
     async def _launch() -> dict[str, str]:
         execution_id = f"intake-{uuid.uuid4().hex[:8]}"
         await ctx.execution_seeder.seed(execution_id=execution_id, task_id=issue_key, repo=repo)
-        if candidate.source_backend in JIRA_SOURCES:
-            snapshot = await capture_task_snapshot(
-                candidate.raw,
-                execution_id=execution_id,
-                jira_source=candidate.source_backend,
-                settings=ctx.settings,
-                store=ctx.snapshot_store,
+        try:
+            if candidate.source_backend in JIRA_SOURCES:
+                snapshot = await capture_task_snapshot(
+                    candidate.raw,
+                    execution_id=execution_id,
+                    jira_source=candidate.source_backend,
+                    settings=ctx.settings,
+                    store=ctx.snapshot_store,
+                )
+            else:
+                snapshot = await capture_candidate_snapshot(
+                    candidate.stored_payload,
+                    execution_id=execution_id,
+                    task_id=issue_key,
+                    project=project,
+                    source=candidate.source_backend,
+                    store=ctx.snapshot_store,
+                )
+            workflow_id = await ctx.starter.start(
+                IntakeStart(
+                    task_id=issue_key,
+                    execution_id=execution_id,
+                    repo=repo,
+                    issue_key=issue_key,
+                    summary=candidate.summary,
+                    description=candidate.description,
+                    jira_project=project,
+                    stored_issue=candidate.stored_payload,
+                    base=base,
+                    snapshot_version=snapshot.version,
+                    file_impact=candidate.file_impact,
+                )
             )
-        else:
-            snapshot = await capture_candidate_snapshot(
-                candidate.stored_payload,
-                execution_id=execution_id,
-                task_id=issue_key,
-                project=project,
-                source=candidate.source_backend,
-                store=ctx.snapshot_store,
+        except BaseException as exc:
+            # The seeded row would otherwise read as an active run, and a retried pass would count
+            # the ticket as a duplicate and move past it.
+            await ctx.execution_seeder.abandon(
+                execution_id=execution_id, reason=f"intake start failed: {exc!r}"[:500]
             )
-        workflow_id = await ctx.starter.start(
-            IntakeStart(
-                task_id=issue_key,
-                execution_id=execution_id,
-                repo=repo,
-                issue_key=issue_key,
-                summary=candidate.summary,
-                description=candidate.description,
-                jira_project=project,
-                stored_issue=candidate.stored_payload,
-                base=base,
-                snapshot_version=snapshot.version,
-                file_impact=candidate.file_impact,
-            )
-        )
+            raise
         return {"workflow_id": workflow_id}
 
     try:
         outcome = await ctx.ledger.run_once(ref, _launch)
     except UnresolvableBaseBranch as exc:
-        await _hold(issue_key, project, str(exc), digest, ctx.alerter, ctx.ledger, report)
+        await _hold(
+            issue_key, project, str(exc), unresolvable_base_remedy(issue_key), digest, ctx, report
+        )
+        return
+    if outcome.in_flight:
+        # Another pass, in this worker or another, is starting this ticket now. Deferring keeps
+        # the ticket offered, and the next pass replays that start instead of making a second.
+        if ctx.admission is not None:
+            ctx.admission.release()
+        report.deferred.append(issue_key)
         return
     result = outcome.result if isinstance(outcome.result, dict) else {}
     report.started.append(

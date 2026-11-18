@@ -20,6 +20,7 @@ from services.integration.github.credentials import (
     build_single_identity_resolver,
     parse_github_config,
 )
+from services.integration.repositories import parse_repositories
 
 
 def _config() -> dict:
@@ -42,8 +43,19 @@ def _config() -> dict:
     }
 
 
-def _resolver(raw: dict, allowlist: set[str], secrets: dict[str, str]) -> GitHubCredentialResolver:
-    return GitHubCredentialResolver(parse_github_config(raw), allowlist, EnvSecretResolver(secrets))
+def _resolver(
+    raw: dict,
+    allowlist: set[str],
+    secrets: dict[str, str],
+    overrides: dict[str, dict] | None = None,
+) -> GitHubCredentialResolver:
+    registry = parse_repositories(
+        {"repositories": {name: (overrides or {}).get(name, {}) for name in allowlist}},
+        root="/repos",
+    )
+    return GitHubCredentialResolver(
+        parse_github_config(raw, registry), allowlist, EnvSecretResolver(secrets)
+    )
 
 
 def test_default_resolves_any_allowlisted_repo_without_enumeration():
@@ -67,9 +79,12 @@ def test_non_allowlisted_repo_resolves_none():
 
 
 def test_per_repo_token_on_the_same_host_and_owner():
-    raw = _config()
-    raw["repositories"] = {"billing": {"token_ref": "TOKEN_BILLING"}}
-    resolver = _resolver(raw, {"svc", "billing"}, {"TOKEN_A": "aaa", "TOKEN_BILLING": "bbb"})
+    resolver = _resolver(
+        _config(),
+        {"svc", "billing"},
+        {"TOKEN_A": "aaa", "TOKEN_BILLING": "bbb"},
+        {"billing": {"token_ref": "TOKEN_BILLING"}},
+    )
 
     svc = resolver.resolve("svc")
     billing = resolver.resolve("billing")
@@ -82,9 +97,9 @@ def test_per_repo_token_on_the_same_host_and_owner():
 
 
 def test_per_repo_owner_on_github_com():
-    raw = _config()
-    raw["repositories"] = {"partner": {"owner": "partner-org"}}
-    resolver = _resolver(raw, {"partner"}, {"TOKEN_A": "aaa"})
+    resolver = _resolver(
+        _config(), {"partner"}, {"TOKEN_A": "aaa"}, {"partner": {"owner": "partner-org"}}
+    )
 
     cred = resolver.resolve("partner")
 
@@ -97,11 +112,12 @@ def test_per_repo_owner_on_github_com():
 
 
 def test_enterprise_and_github_com_coexist():
-    raw = _config()
-    raw["repositories"] = {
-        "legacy": {"host": "enterprise", "owner": "platform", "token_ref": "GHES_TOKEN"}
-    }
-    resolver = _resolver(raw, {"svc", "legacy"}, {"TOKEN_A": "aaa", "GHES_TOKEN": "ghs"})
+    resolver = _resolver(
+        _config(),
+        {"svc", "legacy"},
+        {"TOKEN_A": "aaa", "GHES_TOKEN": "ghs"},
+        {"legacy": {"host": "enterprise", "owner": "platform", "token_ref": "GHES_TOKEN"}},
+    )
 
     svc = resolver.resolve("svc")
     legacy = resolver.resolve("legacy")
@@ -123,11 +139,23 @@ def test_enterprise_and_github_com_coexist():
 def test_no_default_and_incomplete_repo_fails_closed():
     raw = _config()
     del raw["default"]
-    raw["repositories"] = {"orphan": {"token_ref": "TOKEN_A"}}
-    resolver = _resolver(raw, {"orphan"}, {"TOKEN_A": "aaa"})
+    resolver = _resolver(raw, {"orphan"}, {"TOKEN_A": "aaa"}, {"orphan": {"token_ref": "TOKEN_A"}})
 
     with pytest.raises(UnconfiguredRepositoryError):
         resolver.resolve("orphan")
+
+
+@pytest.mark.parametrize("section", ["allowlist", "repositories"])
+def test_github_yaml_with_a_moved_section_names_repositories_yaml(section: str):
+    raw = {**_config(), section: ["svc"] if section == "allowlist" else {"svc": {}}}
+
+    with pytest.raises(ConfigError, match=f"github.yaml sets {section}, which repositories.yaml"):
+        parse_github_config(raw)
+
+
+def test_a_repository_override_naming_an_unknown_host_is_refused():
+    with pytest.raises(ConfigError, match="host github.yaml does not define: nowhere"):
+        _resolver(_config(), {"svc"}, {}, {"svc": {"host": "nowhere"}})
 
 
 def test_missing_secret_reference_fails_closed():

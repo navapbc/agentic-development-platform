@@ -2,7 +2,7 @@ resource "aws_security_group" "task" {
   count = local.enabled ? 1 : 0
 
   name_prefix = "${var.name_prefix}-jumphost-task-"
-  description = "Fargate jumphost task. No ingress. Egress 443 to the shared VPC endpoints only."
+  description = "Fargate jumphost task. No ingress. Egress 443 to the VPC endpoints, S3, and the destinations callers add."
   vpc_id      = var.vpc_id
 
   tags = merge(var.tags, { Name = "${var.name_prefix}-jumphost-task" })

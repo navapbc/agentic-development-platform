@@ -19,6 +19,8 @@ from services.orchestration.temporal_activities.repair import (
     _apply_staged_files,
 )
 
+pytestmark = pytest.mark.usefixtures("allow_any_image")
+
 
 def _spec(**overrides) -> ChecksSpec:
     base: dict[str, Any] = {
@@ -149,12 +151,28 @@ def test_apply_staged_files_copies_nothing_when_the_failure_named_no_path(tmp_pa
 
 
 def test_autofix_degrades_to_agent_repair_when_the_pod_transport_fails(monkeypatch):
+    from services.orchestration.checks import config as checks_config
+    from services.orchestration.checks.config import ChecksConfig
+    from services.orchestration.checks.runner import ChecksRunner
+    from services.orchestration.temporal_activities import checks as checks_module
     from services.orchestration.temporal_activities import repair as repair_module
 
-    def explode(*args, **kwargs):
+    async def kubectl_missing(*args, **kwargs):
         raise RuntimeError("kubectl not found")
 
-    monkeypatch.setattr(repair_module, "_build_materializer", explode, raising=False)
+    outcomes: list[str] = []
+    monkeypatch.setattr(
+        checks_config,
+        "checks_for_repo",
+        lambda repo, settings: ChecksConfig(
+            repo=repo, image="img", command="make", fix_command="fix"
+        ),
+    )
+    monkeypatch.setattr(checks_module, "_clean_checkout", lambda source, destination: None)
+    monkeypatch.setattr(ChecksRunner, "run_fix", kubectl_missing)
+    monkeypatch.setattr(
+        repair_module, "_record_fix_outcome", lambda outcome, **fields: outcomes.append(outcome)
+    )
     request = ApplyCIRepairRequest(
         task_id="t",
         execution_id="e",
@@ -166,6 +184,7 @@ def test_autofix_degrades_to_agent_repair_when_the_pod_transport_fails(monkeypat
     )
 
     assert asyncio.run(repair_module._project_autofix(request, "/nonexistent")) is False
+    assert outcomes == ["pod-failed"]
 
 
 def test_fix_and_check_pods_of_one_execution_get_distinct_names():
@@ -304,7 +323,8 @@ def test_a_verified_fix_copies_the_changed_files_out_of_the_pod():
 
     assert result.verified is True
     assert result.changed_files == ("portal/a.ts", "portal/b.ts")
-    assert ops.copied_in == [("/checkout", "/workspace")]
+    assert ops.copied_in[0] == ("/checkout", "/workspace")
+    assert ops.copied_in[1][1] == "/etc/containers"
     assert ops.copied_out == [("/workspace", "/staging", "/workspace/.gatefix.list")]
     assert ops.deleted, "the fix pod must be torn down"
 
@@ -412,14 +432,27 @@ class _FakeMaterializer:
 
 
 class _FakeRuntime:
-    def __init__(self) -> None:
+    def __init__(self, status: str = "finished", summary: str = "") -> None:
+        self.image = "registry.example/sandbox@sha256:profile"
         self.task = ""
+        self._status = status
+        self._summary = summary
 
     async def run_implementation(self, *, execution_id, task, context, workspace_source, task_id):
-        from types import SimpleNamespace
+        from openhands.runtime.conversation import ImplementationOutcome
 
         self.task = task
-        return SimpleNamespace(cost=0.1, tokens=10, cache_read_tokens=1, llm_calls=2)
+        return ImplementationOutcome(
+            status=self._status,
+            terminal_reason="completed" if self._status == "finished" else "error",
+            tool_calls=1,
+            elapsed_seconds=1.0,
+            cost=0.1,
+            tokens=10,
+            cache_read_tokens=1,
+            llm_calls=2,
+            summary=self._summary,
+        )
 
 
 def _repair_request(**overrides) -> ApplyCIRepairRequest:
@@ -438,16 +471,50 @@ def _repair_request(**overrides) -> ApplyCIRepairRequest:
     return ApplyCIRepairRequest(**base)
 
 
-def _run_repair(monkeypatch, materializer, runtime):
+def _run_repair(
+    monkeypatch,
+    materializer,
+    runtime,
+    *,
+    budget_stop="",
+    runtime_keys=None,
+    failure_texts=None,
+    runtime_repos=None,
+    admitted=None,
+    admit=None,
+):
+    from services.orchestration.gates import image_admission
     from services.orchestration.temporal_activities import implementation as impl_module
     from services.orchestration.temporal_activities import repair as repair_module
 
     async def no_autofix(*args, **kwargs):
         return False
 
+    async def run_model_key(execution_id):
+        return f"sk-run-{execution_id}"
+
+    async def model_budget_stop(execution_id, failure_text):
+        if failure_texts is not None:
+            failure_texts.append(failure_text)
+        return budget_stop
+
+    def build_runtime(repo="", *, model_api_key):
+        if runtime_keys is not None:
+            runtime_keys.append(model_api_key)
+        if runtime_repos is not None:
+            runtime_repos.append(repo)
+        return runtime
+
+    async def admit_sandbox_image(image, settings, ops=None):
+        if admitted is not None:
+            admitted.append(image)
+
     monkeypatch.setattr(repair_module, "_project_autofix", no_autofix)
     monkeypatch.setattr(impl_module, "_build_materializer", lambda *a, **k: materializer)
-    monkeypatch.setattr(impl_module, "_build_runtime", lambda *a, **k: runtime)
+    monkeypatch.setattr(impl_module, "_build_runtime", build_runtime)
+    monkeypatch.setattr(impl_module, "_run_model_key", run_model_key)
+    monkeypatch.setattr(impl_module, "_model_budget_stop", model_budget_stop)
+    monkeypatch.setattr(image_admission, "admit_sandbox_image", admit or admit_sandbox_image)
     return asyncio.run(repair_module.apply_ci_repair(_repair_request()))
 
 
@@ -478,3 +545,57 @@ def test_the_repair_agent_is_told_which_task_it_must_not_undo(monkeypatch):
 
     assert "Fix the failing test." in runtime.task
     assert "Remove the Heading size prop" in runtime.task
+
+
+def test_the_repair_sandbox_is_given_the_run_key(monkeypatch):
+    materializer = _FakeMaterializer(changed=("portal/a.tsx",), surviving=("portal/a.tsx",))
+    keys: list[str] = []
+
+    _run_repair(monkeypatch, materializer, _FakeRuntime(), runtime_keys=keys)
+
+    assert keys == ["sk-run-e"]
+
+
+def test_the_repair_sandbox_runs_the_admitted_image_of_the_repository_profile(monkeypatch):
+    materializer = _FakeMaterializer(changed=("portal/a.tsx",), surviving=("portal/a.tsx",))
+    repos: list[str] = []
+    admitted: list[str] = []
+
+    _run_repair(monkeypatch, materializer, _FakeRuntime(), runtime_repos=repos, admitted=admitted)
+
+    assert repos == ["org/app"]
+    assert admitted == ["registry.example/sandbox@sha256:profile"]
+
+
+def test_a_repair_whose_sandbox_image_is_refused_runs_no_agent(monkeypatch):
+    from services.orchestration.gates.image_admission import ImageRefusedError
+
+    async def refuse(image, settings, ops=None):
+        raise ImageRefusedError(f"{image} is not allowed")
+
+    runtime = _FakeRuntime()
+
+    with pytest.raises(ImageRefusedError):
+        _run_repair(monkeypatch, _FakeMaterializer(changed=(), surviving=()), runtime, admit=refuse)
+
+    assert runtime.task == ""
+
+
+def test_a_repair_refused_for_budget_reports_the_budget_reason(monkeypatch):
+    from services.integration.litellm_admin import TENANT_MODEL_BUDGET_EXCEEDED
+
+    materializer = _FakeMaterializer(changed=(), surviving=())
+    refusal = "Budget has been exceeded! Team=acme Current cost: 20.1, Max budget: 20.0"
+    failure_texts: list[str] = []
+
+    result = _run_repair(
+        monkeypatch,
+        materializer,
+        _FakeRuntime(status="failed", summary=refusal),
+        budget_stop=TENANT_MODEL_BUDGET_EXCEEDED,
+        failure_texts=failure_texts,
+    )
+
+    assert result.applied is False
+    assert result.terminal_reason == TENANT_MODEL_BUDGET_EXCEEDED
+    assert failure_texts == [refusal]

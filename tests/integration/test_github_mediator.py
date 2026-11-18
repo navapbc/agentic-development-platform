@@ -54,6 +54,28 @@ async def test_ensure_agent_branch_is_deterministic_and_create_if_not_exists(
     assert replay.created is True
 
 
+async def test_named_tenant_branch_is_namespaced_and_find_open_pr_uses_it() -> None:
+    backend = MockGitHost()
+    backend.seed_repo(REPO, files={"README.md": "hello\nworld\n"})
+    mediator = GitHubMediator(
+        backend=backend,
+        ledger=InMemorySideEffectLedger(),
+        gate=InMemorySequenceGate(),
+        allowed_repos=frozenset({REPO}),
+        tenant="beta",
+    )
+
+    branch = await mediator.ensure_agent_branch(REPO, TASK_ID, EXECUTION_ID, "main", sequence=1)
+    assert branch.name == agent_branch_name(TASK_ID, "beta")
+
+    await mediator.open_draft_pr(
+        REPO, TASK_ID, EXECUTION_ID, branch.name, "main", "Draft", "body", sequence=2
+    )
+    found = await mediator.find_open_pr(REPO, TASK_ID)
+    assert found is not None
+    assert found.head == agent_branch_name(TASK_ID, "beta")
+
+
 def _commit_request(branch: str, tree: str) -> CommitRequest:
     return CommitRequest(
         repo=REPO,

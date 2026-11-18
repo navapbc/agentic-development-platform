@@ -1,0 +1,87 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: activity-worker-sandbox
+  namespace: agent-sandbox
+  labels:
+    app.kubernetes.io/part-of: agentic-dev-platform
+rules:
+  - resources: [pods]
+    apiGroups: [""]
+    verbs: [get, list, watch, create, patch, delete]
+  - resources: [pods/exec]
+    apiGroups: [""]
+    verbs: [get, create]
+  - resources: [pods/log]
+    apiGroups: [""]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: activity-worker-sandbox
+  namespace: agent-sandbox
+  labels:
+    app.kubernetes.io/part-of: agentic-dev-platform
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: activity-worker-sandbox
+subjects:
+  - kind: ServiceAccount
+    name: activity-worker
+    namespace: agentic-dev-platform
+---
+# The gate, checks, scanner, and image verification pods run as this account while image
+# signature verification is on. In AWS, Pod Identity binds it to a role that may only check a
+# signature's revocation status.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: image-verifier
+  namespace: agent-sandbox
+  labels:
+    app.kubernetes.io/part-of: agentic-dev-platform
+automountServiceAccountToken: false
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gate-engine-egress
+  namespace: agent-sandbox
+  labels:
+    app.kubernetes.io/part-of: agentic-dev-platform
+spec:
+  podSelector:
+    matchLabels:
+      app: gate-engine
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: agentic-dev-platform
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: litellm
+      ports:
+        - protocol: TCP
+          port: 4000
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8

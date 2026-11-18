@@ -10,14 +10,12 @@ from scripts.config import get_settings, to_host_hostport
 async def _list() -> int:
     settings = get_settings()
     try:
-        from temporalio.client import Client
+        from services import temporal_client
     except ImportError:
         print("temporalio not installed; run `pip install -e .`")
         return 1
 
-    client = await Client.connect(
-        to_host_hostport(settings.temporal_host), namespace=settings.temporal_namespace
-    )
+    client = await temporal_client.connect(to_host_hostport(settings.temporal_host), settings)
     print(
         f"[workflow-status] namespace={settings.temporal_namespace} "
         f"queue={settings.temporal_task_queue}"

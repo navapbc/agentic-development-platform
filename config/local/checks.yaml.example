@@ -15,11 +15,14 @@
 # determine the paths, so branch on it and fall back to the full suite. Convert it to an
 # argument vector with tr and xargs -0 rather than bare word splitting, so a path containing
 # a space survives.
+#
+# image names an image by digest, or a platform checks image as catalog:checks-python,
+# catalog:checks-node, catalog:checks-jvm, or catalog:checks-go, which RUNTIME_IMAGES resolves.
 config_version: 1
 
 checks:
   # example-repo:
-  #   image: python:3.12-slim
+  #   image: catalog:checks-python
   #   command: "pip install -r requirements-dev.txt && ruff check . && if [ -n \"$CHANGED_PATHS\" ]; then printf '%s' \"$CHANGED_PATHS\" | tr '\\n' '\\0' | xargs -0 pytest -q; else pytest -q; fi"
   #   fix_command: "pip install -r requirements-dev.txt && ruff check --fix ."
   #   working_dir: /workspace

@@ -4,12 +4,24 @@ from subprocess import CalledProcessError
 from typing import Any
 
 import pytest
+from database.models.schema import executions
 from services.orchestration import intake_runtime
 from services.orchestration.intake_base import UnresolvableBaseBranch
 from services.orchestration.intake_reconciler import IntakeStart
 from services.orchestration.intake_runtime import TemporalStarter
 from services.orchestration.usage_rollup import BudgetCaps
-from tests.support import hermetic_settings
+from sqlalchemy.sql import operators
+from sqlalchemy.sql.elements import BinaryExpression
+from tests.support import configure_repositories, hermetic_settings
+
+
+@pytest.fixture(autouse=True)
+def _repositories(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    configure_repositories(
+        monkeypatch,
+        tmp_path / "config",
+        "defaults:\n  default_branch: trunk\nrepositories:\n  agentic-demo-service: {}\n",
+    )
 
 
 class _Client:
@@ -68,12 +80,14 @@ async def test_start_awaits_pr_close_for_local_backend(
 ) -> None:
     monkeypatch.setattr(intake_runtime, "remote_head", lambda remote, branch, auth=None: "abc123")
     (tmp_path / "agentic-demo-service").mkdir()
-    client = _Client()
-    settings = hermetic_settings(
-        source_control_backend="local",
-        source_control_local_root=str(tmp_path),
-        source_control_local_repos="agentic-demo-service",
+    configure_repositories(
+        monkeypatch,
+        tmp_path / "config",
+        f"repositories:\n  agentic-demo-service:\n    backend: local\n"
+        f"    path: {tmp_path / 'agentic-demo-service'}\n",
     )
+    client = _Client()
+    settings = hermetic_settings(repository_root=str(tmp_path))
     starter = TemporalStarter(client, settings, _Gh())
 
     await starter.start(
@@ -164,7 +178,7 @@ async def test_start_falls_back_to_the_default_base_branch(
     await starter.start(_intake_start())
 
     (_, arg, _) = client.started[0]
-    assert arg.base == settings.github_default_base_branch
+    assert arg.base == "trunk"
     assert arg.base_sha == "main-sha"
 
 
@@ -403,3 +417,28 @@ async def test_intake_falls_back_to_the_default_caps(
         caps.max_tokens,
         caps.max_cost_usd,
     )
+
+
+def _tenant_filter_selects(predicates: list[Any], row: dict[str, Any]) -> bool:
+    for predicate in predicates:
+        assert isinstance(predicate, BinaryExpression)
+        assert predicate.operator is operators.eq
+        if row.get(predicate.left.name) != predicate.right.value:
+            return False
+    return True
+
+
+def test_the_tenant_filter_excludes_executions_recorded_without_a_tenant(monkeypatch):
+    monkeypatch.setattr("scripts.config.get_settings", lambda: hermetic_settings(tenant="adp"))
+
+    predicates = intake_runtime._this_tenant(executions)  # noqa: SLF001
+
+    assert _tenant_filter_selects(predicates, {"tenant": "adp"})
+    assert not _tenant_filter_selects(predicates, {"tenant": None})
+    assert not _tenant_filter_selects(predicates, {"tenant": "beta"})
+
+
+def test_a_process_without_a_tenant_does_not_filter_executions(monkeypatch):
+    monkeypatch.setattr("scripts.config.get_settings", lambda: hermetic_settings())
+
+    assert intake_runtime._this_tenant(executions) == []  # noqa: SLF001

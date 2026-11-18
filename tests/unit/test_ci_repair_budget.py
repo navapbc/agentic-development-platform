@@ -127,9 +127,7 @@ def _commit(*, changed: bool, excluded: list[str]) -> CommitPushResult:
 def test_a_repair_confined_to_excluded_paths_is_reported_as_dropped() -> None:
     workflow = DraftPullRequestWorkflow()
     workflow._commit = _commit(changed=False, excluded=["portal/tests/__snapshots__/a.snap"])
-    repair = ApplyCIRepairResult(
-        applied=True, changed_files=["portal/tests/__snapshots__/a.snap"]
-    )
+    repair = ApplyCIRepairResult(applied=True, changed_files=["portal/tests/__snapshots__/a.snap"])
 
     assert workflow._repair_dropped_by_scope(repair) == ["portal/tests/__snapshots__/a.snap"]
 
@@ -150,3 +148,32 @@ def test_a_repair_is_not_reported_before_any_commit_exists() -> None:
     repair = ApplyCIRepairResult(applied=True, changed_files=["portal/src/a.tsx"])
 
     assert workflow._repair_dropped_by_scope(repair) == []
+
+
+class _RefusedRepairLoop(_BudgetLoop):
+    async def _repair(
+        self,
+        params: DraftPullRequestInput,
+        impl: ImplementationOutput,
+        outcome: DraftPullRequestOutput,
+        workflow_id: str,
+        attempt: int,
+    ) -> ApplyCIRepairResult:
+        from services.integration.litellm_admin import RUN_MODEL_BUDGET_EXCEEDED
+
+        return ApplyCIRepairResult(applied=False, terminal_reason=RUN_MODEL_BUDGET_EXCEEDED)
+
+
+@pytest.mark.asyncio
+async def test_a_repair_refused_for_the_run_budget_stops_with_the_budget_reason() -> None:
+    from services.integration.litellm_admin import RUN_MODEL_BUDGET_EXCEEDED
+
+    loop = _RefusedRepairLoop([CI_FAILED], repair_applied=False)
+    outcome = await loop._ci_and_repair(
+        _params(), _impl(), DraftPullRequestOutput(execution_id="exec-1", status=CI_FAILED), "wf-1"
+    )
+
+    assert outcome.status == CI_FAILED
+    assert outcome.terminal_reason == RUN_MODEL_BUDGET_EXCEEDED
+    assert loop.ci_runs == 1
+    assert loop.audited == ["REPAIR_BUDGET_EXCEEDED"]

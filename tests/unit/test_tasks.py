@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import json
+import re
+import shlex
 from pathlib import Path
 
 import pytest
 import tasks as tasks_module
 from invoke.collection import Collection
 from invoke.context import Context
+from invoke.exceptions import Exit
+from invoke.runners import Result
+from tests.support import hermetic_settings
 
 EXPECTED_TASKS = {
     "tunnel-start",
@@ -15,12 +21,14 @@ EXPECTED_TASKS = {
     "tunnel-status",
     "connectivity-check",
     "config-check",
+    "repos-compose",
     "local-up",
     "temporal-upgrade",
     "local-down",
     "local-stop",
     "local-destroy",
     "logs",
+    "platform-logs",
     "db-migrate",
     "schedules-install",
     "db-reset",
@@ -46,9 +54,23 @@ EXPECTED_TASKS = {
     "workflow-status",
     "durability-proof",
     "prune-worker-versions",
-    "fetch-acli",
     "cbm-build",
     "publish-jumphost-image",
+    "publish-temporal-images",
+    "publish-platform-images",
+    "image-scan",
+    "aws-release",
+    "aws-destroy",
+    "go-test",
+    "temporal-certs",
+    "clickhouse-certs",
+    "webhook-certs",
+    "mcp-gateway-certs",
+    "eks-deploy",
+    "langfuse-ui",
+    "temporal-deploy",
+    "platform-deploy",
+    "temporal-ui",
     "reap",
     "scrub-workspaces",
     "intake",
@@ -64,8 +86,21 @@ EXPECTED_TASKS = {
     "approve-pr",
     "k8s-deploy",
     "k8s-delete",
+    "k8s-reload",
+    "aws-login",
+    "repos-sync",
+    "fetch-results",
+    "gate-engine-images",
+    "runtime-images",
+    "tenant-config-validate",
+    "tenant-config-publish",
+    "tenant-verify-aws",
     "webhook-setup",
     "webhook-teardown",
+    "image-exceptions-add",
+    "image-exceptions-prune",
+    "worktree-new",
+    "worktree-check",
 }
 
 
@@ -89,11 +124,19 @@ def project(tmp_path, monkeypatch):
     (tmp_path / "compose.yaml").write_text("services: {}\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("COMPOSE_FILE", raising=False)
-    return tmp_path
+    monkeypatch.setenv("TENANT", "adp")
+    from scripts.config import get_settings
+
+    get_settings.cache_clear()
+    yield tmp_path
+    get_settings.cache_clear()
 
 
 def _in_activity_worker(command: str) -> str:
-    return f"{tasks_module.COMPOSE} -f compose.yaml exec -T activity-worker {command}"
+    from scripts.config import get_settings
+    from scripts.k8s_cluster import exec_argv
+
+    return shlex.join(exec_argv(get_settings(), shlex.split(command), tty=False))
 
 
 def test_repair_runs_in_the_activity_worker(project):
@@ -130,6 +173,57 @@ def test_restart_runs_in_the_activity_worker(project):
     assert host.commands == [f"{tasks_module.HOST_PYTHON} -m scripts.restart T-1"]
 
 
+class _EnvRecordingContext(Context):
+    def __init__(self) -> None:
+        super().__init__()
+        self.runs: list[tuple[str, dict[str, str]]] = []
+
+    def run(self, command: str, **kwargs: object) -> None:
+        env = kwargs.get("env") or {}
+        assert isinstance(env, dict)
+        self.runs.append((command, env))
+
+
+@pytest.mark.parametrize(
+    ("invoke", "script"),
+    [
+        (lambda c, **kw: tasks_module.restart(c, "T-1", **kw), "scripts.restart"),
+        (lambda c, **kw: tasks_module.repair(c, "T-1", retry=True, **kw), "scripts.repair"),
+        (lambda c, **kw: tasks_module.gate(c, "T-1", "plan", approve=True, **kw), "scripts.gate"),
+    ],
+)
+def test_a_run_decision_reaches_the_worker_of_the_tenant_it_names(project, invoke, script):
+    container, host = _EnvRecordingContext(), _EnvRecordingContext()
+
+    invoke(container, tenant="acme")
+    invoke(host, tenant="acme", local=True)
+
+    argv = shlex.split(container.runs[0][0])
+    assert argv[argv.index("--namespace") + 1] == "tenant-acme"
+    assert script in host.runs[0][0]
+    assert host.runs[0][1] == {"TENANT": "acme"}
+
+
+@pytest.mark.parametrize("service", ["mcp-gateway", "activity-worker"])
+def test_logs_follows_the_tenant_deployment_in_its_namespace(project, service):
+    context = _RecordingContext()
+
+    tasks_module.logs(context, service)
+
+    argv = shlex.split(context.commands[0])
+    assert argv[argv.index("--namespace") + 1] == "tenant-adp"
+    assert f"deployment/{service}" in argv
+
+
+def test_logs_follows_a_platform_deployment_in_the_platform_namespace(project):
+    context = _RecordingContext()
+
+    tasks_module.logs(context, "inbound-webhook")
+
+    argv = shlex.split(context.commands[0])
+    assert argv[argv.index("--namespace") + 1] == "agentic-dev-platform"
+
+
 def test_host_tasks_run_the_interpreter_that_runs_invoke(project):
     """A bare `python` on the host has none of the project's dependencies, so it fails on import."""
     host = _RecordingContext()
@@ -153,14 +247,269 @@ def test_no_host_task_invokes_a_bare_python(project):
     assert 'c.run(f"python ' not in source
 
 
-def test_rebar_store_remote_runs_in_a_one_off_worker_container(project):
+def test_rebar_store_remote_runs_in_a_one_off_worker_pod(project):
     container, host = _RecordingContext(), _RecordingContext()
 
     tasks_module.rebar_store_remote(container)
     tasks_module.rebar_store_remote(host, local=True)
 
     assert container.commands == [
-        f"{tasks_module.COMPOSE} -f compose.yaml run --rm --no-deps activity-worker "
-        "python -m scripts.rebar_store_remote"
+        f"{tasks_module.HOST_PYTHON} -m scripts.k8s_cluster one-off --compose-file compose.yaml "
+        "-- python -m scripts.rebar_store_remote"
     ]
     assert host.commands == [f"{tasks_module.HOST_PYTHON} -m scripts.rebar_store_remote"]
+
+
+def test_temporal_certs_passes_each_name_and_switch_to_the_script(project):
+    context = _RecordingContext()
+
+    tasks_module.temporal_certs(
+        context,
+        "generate",
+        out="~/tls",
+        frontend_name="a.internal, b.internal",
+        internal_name="coordination.platform.internal",
+        no_frontend=True,
+        force=True,
+    )
+
+    assert context.commands == [
+        f"{tasks_module.HOST_PYTHON} -m scripts.temporal_certs generate --out '~/tls' --days 397"
+        " --frontend-name a.internal --frontend-name b.internal"
+        " --internal-name coordination.platform.internal --no-frontend --force"
+    ]
+
+
+def test_temporal_certs_put_signs_with_the_configured_profile(project, monkeypatch):
+    recorded: list[tuple[str, dict]] = []
+
+    class _EnvContext(Context):
+        def run(self, command: str, **kwargs: object) -> None:  # pyright: ignore[reportIncompatibleMethodOverride]
+            recorded.append((command, kwargs["env"]))
+
+    monkeypatch.setenv("AWS_PROFILE", "sandbox")
+    from scripts.config import get_settings
+
+    get_settings.cache_clear()
+    tasks_module.temporal_certs(_EnvContext(), "put", dir="~/tls", import_to_acm=True)
+    get_settings.cache_clear()
+
+    [(command, env)] = recorded
+    assert command.endswith("-m scripts.temporal_certs put --dir '~/tls' --import-to-acm")
+    assert env["AWS_PROFILE"] == "sandbox"
+
+
+@pytest.mark.parametrize(
+    ("action", "options", "message"),
+    [
+        ("generate", {}, "provide --out"),
+        ("put", {}, "provide --dir"),
+        ("rotate", {}, "generate or put"),
+    ],
+)
+def test_temporal_certs_refuses_an_incomplete_request(project, action, options, message):
+    from invoke import Exit
+
+    with pytest.raises(Exit, match=message):
+        tasks_module.temporal_certs(_RecordingContext(), action, **options)
+
+
+def test_mcp_gateway_certs_passes_the_domain_and_the_profile_to_the_script(project, monkeypatch):
+    recorded: list[tuple[str, dict]] = []
+
+    class _EnvContext(Context):
+        def run(self, command: str, **kwargs: object) -> None:  # pyright: ignore[reportIncompatibleMethodOverride]
+            recorded.append((command, kwargs["env"]))
+
+    monkeypatch.setenv("AWS_PROFILE", "sandbox")
+    from scripts.config import get_settings
+
+    get_settings.cache_clear()
+    tasks_module.mcp_gateway_certs(
+        _EnvContext(), "issue", dir="~/tls", domain="mcp.sandbox.internal", force=True
+    )
+    tasks_module.mcp_gateway_certs(_EnvContext(), "import", dir="~/tls", domain="ignored")
+    get_settings.cache_clear()
+
+    [(issue, issue_env), (imported, import_env)] = recorded
+    assert issue.endswith(
+        "-m scripts.mcp_gateway_certs issue --dir '~/tls' --days 397"
+        " --domain mcp.sandbox.internal --force"
+    )
+    assert imported.endswith("-m scripts.mcp_gateway_certs import --dir '~/tls'")
+    assert issue_env["AWS_PROFILE"] == import_env["AWS_PROFILE"] == "sandbox"
+    with pytest.raises(Exit, match="issue or import"):
+        tasks_module.mcp_gateway_certs(_RecordingContext(), "put", dir="~/tls")
+
+
+class _TerraformContext(Context):
+    def __init__(self, version: str, *, exited: int = 0, stderr: str = "") -> None:
+        super().__init__()
+        self.version = version
+        self.exited = exited
+        self.stderr = stderr
+        self.commands: list[str] = []
+
+    def run(self, command: str, **_: object) -> Result:
+        self.commands.append(command)
+        return Result(
+            stdout=json.dumps({"terraform_version": self.version}),
+            stderr=self.stderr,
+            exited=self.exited,
+        )
+
+
+def _pinned_terraform_version() -> str:
+    path = Path(tasks_module.__file__).parent / ".terraform-version"
+    return path.read_text(encoding="utf-8").strip()
+
+
+def test_terraform_modules_finds_a_composition_root_below_the_top_level(tmp_path):
+    (tmp_path / "ecs-cluster" / "tests").mkdir(parents=True)
+    (tmp_path / "examples" / "private-bedrock" / "tests").mkdir(parents=True)
+    (tmp_path / "ecs-cluster" / ".terraform" / "modules" / "vendored" / "tests").mkdir(parents=True)
+
+    assert tasks_module._terraform_modules(str(tmp_path)) == [
+        str(tmp_path / "ecs-cluster"),
+        str(tmp_path / "examples" / "private-bedrock"),
+    ]
+
+
+def test_terraform_test_refuses_a_version_other_than_the_pin(monkeypatch):
+    monkeypatch.delenv("TFENV_TERRAFORM_VERSION", raising=False)
+    context = _TerraformContext("0.0.0")
+
+    with pytest.raises(Exit, match=_pinned_terraform_version()):
+        tasks_module.terraform_test(context)
+
+    assert context.commands == ["terraform version -json"]
+
+
+def test_terraform_test_reports_a_terraform_it_could_not_run():
+    context = _TerraformContext("", exited=127, stderr="bash: terraform: command not found")
+
+    with pytest.raises(Exit, match="command not found"):
+        tasks_module.terraform_test(context)
+
+    assert context.commands == ["terraform version -json"]
+
+
+def test_terraform_test_names_the_tfenv_override_that_selects_the_wrong_version(monkeypatch):
+    monkeypatch.setenv("TFENV_TERRAFORM_VERSION", "1.14.3")
+
+    with pytest.raises(Exit, match="Unset TFENV_TERRAFORM_VERSION, which selects 1.14.3"):
+        tasks_module.terraform_test(_TerraformContext("1.14.3"))
+
+
+def test_terraform_test_points_past_a_shadowing_binary_when_no_override_is_set(monkeypatch):
+    monkeypatch.delenv("TFENV_TERRAFORM_VERSION", raising=False)
+
+    with pytest.raises(Exit, match="ahead of any other terraform on PATH"):
+        tasks_module.terraform_test(_TerraformContext("0.0.0"))
+
+
+def test_ci_installs_the_pinned_terraform_version():
+    workflow = Path(tasks_module.__file__).parent / ".github" / "workflows" / "ci.yml"
+
+    assert f'terraform_version: "{_pinned_terraform_version()}"' in workflow.read_text(
+        encoding="utf-8"
+    )
+
+
+def test_terraform_test_runs_every_module_on_the_pinned_version():
+    context = _TerraformContext(_pinned_terraform_version())
+
+    tasks_module.terraform_test(context)
+
+    modules = tasks_module._terraform_modules(
+        str(Path(tasks_module.__file__).parent / "infra" / "terraform")
+    )
+    assert context.commands[0] == "terraform version -json"
+    assert context.commands[1:] == [
+        command
+        for module in modules
+        for command in (
+            f"terraform -chdir={module} init -backend=false -input=false",
+            f"terraform -chdir={module} test",
+        )
+    ]
+
+
+def test_go_modules_finds_each_module_and_skips_vendored_copies(tmp_path):
+    for module in ("healthprobe", "tls-sidecar", "tls-sidecar/vendor/example.com/lib"):
+        (tmp_path / module).mkdir(parents=True)
+        (tmp_path / module / "go.mod").write_text("module example\n", encoding="utf-8")
+
+    assert tasks_module._go_modules(str(tmp_path)) == [
+        str(tmp_path / "healthprobe"),
+        str(tmp_path / "tls-sidecar"),
+    ]
+
+
+def test_ci_tests_go_with_the_version_the_images_build_with():
+    root = Path(tasks_module.__file__).parent
+    workflow = (root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    pinned = re.search(r'go-version: "(\d+\.\d+)\.\d+"', workflow).group(1)
+    builders = {
+        match.group(1)
+        for dockerfile in (root / "docker").glob("*Dockerfile")
+        for match in re.finditer(r"/golang:(\d+\.\d+)-", dockerfile.read_text(encoding="utf-8"))
+    }
+
+    assert builders == {pinned}
+
+
+class _GoContext(Context):
+    def __init__(self, *, unformatted: str = "") -> None:
+        super().__init__()
+        self.unformatted = unformatted
+        self.commands: list[str] = []
+
+    def run(self, command: str, **_: object) -> Result:
+        self.commands.append(command)
+        return Result(stdout=self.unformatted if command.startswith("gofmt") else "go version")
+
+
+def test_go_test_vets_and_tests_every_module():
+    context = _GoContext()
+
+    tasks_module.go_test(context)
+
+    modules = tasks_module._go_modules(str(Path(tasks_module.__file__).parent / "docker"))
+    assert modules and context.commands[0] == "go version"
+    assert [command for command in context.commands if "go test" in command] == [
+        f"cd {module} && go vet ./... && go test ./..." for module in modules
+    ]
+
+
+def test_go_test_refuses_unformatted_code():
+    with pytest.raises(Exit, match="gofmt would rewrite"):
+        tasks_module.go_test(_GoContext(unformatted="docker/tls-sidecar/main.go"))
+
+
+def test_operator_done_reads_the_workspace_artifacts_at_their_host_directory(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        "scripts.config.get_settings",
+        lambda: hermetic_settings(source_control_local_artifacts_root="/workspaces/.agent-publish"),
+    )
+
+    assert tasks_module._host_source_control_env() == {
+        "SOURCE_CONTROL_LOCAL_ARTIFACTS_ROOT": str(
+            tmp_path / ".agent-workspaces" / ".agent-publish"
+        )
+    }
+
+
+def test_the_jumphost_image_publishes_through_the_governed_publish_path() -> None:
+    calls: list[str] = []
+
+    class _Context(Context):
+        def run(self, command, **kwargs):
+            calls.append(command)
+
+    tasks_module.publish_jumphost_image(_Context(), "v2")
+
+    assert calls == [
+        f"{tasks_module.HOST_PYTHON} -m scripts.publish_jumphost_image --tag v2 --arch arm64"
+    ]

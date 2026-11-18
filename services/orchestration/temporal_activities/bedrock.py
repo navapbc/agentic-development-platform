@@ -10,7 +10,12 @@ from typing import Any
 
 import httpx
 import structlog
-from observability import langfuse_request_metadata, record_generation, stage_span
+from observability import (
+    current_tenant,
+    langfuse_request_metadata,
+    record_generation,
+    stage_span,
+)
 from scripts.config import get_settings
 from temporalio import activity
 from temporalio.common import RetryPolicy
@@ -128,6 +133,7 @@ async def invoke_model(req: ModelRequest) -> ModelResponse:
         task_id=req.task_id,
         stage=req.stage,
         prompt_version=prompt_version,
+        tenant=current_tenant(),
     )
     if metadata:
         payload["metadata"] = metadata

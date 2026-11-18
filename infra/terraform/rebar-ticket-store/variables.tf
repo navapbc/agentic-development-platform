@@ -9,6 +9,23 @@ variable "name_prefix" {
   type        = string
 }
 
+variable "bucket_name" {
+  description = "Name of the bucket. Set it to the name of an existing store bucket to keep that bucket, such as one created with a generated name. Empty uses <bucket_prefix><account ID>."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.bucket_name == "" || can(regex("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", var.bucket_name))
+    error_message = "bucket_name must be a valid S3 bucket name of 3 to 63 lowercase letters, digits, dots, and hyphens."
+  }
+}
+
+variable "bucket_prefix" {
+  description = "Prefix of the default bucket name, which the account ID completes. Empty uses <name_prefix>-rebar-tickets-. Ignored when bucket_name is set."
+  type        = string
+  default     = ""
+}
+
 variable "prefix" {
   description = "Key prefix the ticket store syncs under, the path part of its s3:// remote URL."
   type        = string
@@ -24,6 +41,28 @@ variable "trusted_principals" {
   description = "IAM principal ARNs allowed to assume the created reader and writer roles, such as the platform task roles or an operator. Required when the module creates the roles."
   type        = list(string)
   default     = []
+}
+
+variable "trusted_principals_by_condition" {
+  description = "IAM role or user ARNs in this account allowed to assume the created reader and writer roles through an aws:PrincipalArn condition on the account principal. Unlike trusted_principals, IAM does not require the principal to exist, so the trust creates no Terraform dependency on it and holds when the principal is deleted and recreated under the same name. Each principal needs an identity policy that allows sts:AssumeRole on the roles."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for arn in var.trusted_principals_by_condition : can(regex("^arn:[^:]+:iam::[0-9]{12}:(role|user)/[^*?]+$", arn))])
+    error_message = "trusted_principals_by_condition must hold IAM role or user ARNs without wildcards, because ArnEquals expands * and ? and would widen the trust."
+  }
+}
+
+variable "writer_github_oidc_trust" {
+  description = "GitHub Actions OIDC trust for the writer role, which lets a workflow push the store without a stored AWS key. provider_arn names the IAM OIDC provider, and the trust policy's condition keys follow the issuer host it carries, so a GitHub Enterprise Server provider works as well as token.actions.githubusercontent.com. subjects lists the fully qualified claims permitted to assume the role, such as repo:OWNER/NAME:ref:refs/heads/main. job_workflow_refs restricts which workflow file may do so. Both claims are matched with StringEquals, so a wildcard is compared literally and is rejected. Leave it null and the writer trusts only trusted_principals."
+  type = object({
+    provider_arn      = string
+    subjects          = list(string)
+    job_workflow_refs = optional(list(string), [])
+    audience          = optional(string, "sts.amazonaws.com")
+  })
+  default = null
 }
 
 variable "existing_reader_role_arn" {

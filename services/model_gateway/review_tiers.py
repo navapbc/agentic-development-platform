@@ -14,9 +14,9 @@ BEDROCK_PROVIDER = "bedrock"
 # config/platform/rebar-review.toml, which is what rebar reads at runtime. test_review_tiers
 # asserts the two stay in agreement.
 REVIEW_TIER_MODELS: dict[str, str] = {
-    "review-model": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-    "security-review-model": "us.anthropic.claude-opus-4-5-20251101-v1:0",
-    "evaluation-model": "us.anthropic.claude-opus-4-5-20251101-v1:0",
+    "review-model": "us.anthropic.claude-sonnet-5-5",
+    "security-review-model": "us.anthropic.claude-opus-5-5",
+    "evaluation-model": "us.anthropic.claude-opus-5-5",
 }
 
 

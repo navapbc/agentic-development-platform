@@ -60,22 +60,11 @@ def _mounts_aws_credentials(service: dict[str, Any]) -> bool:
     return False
 
 
-def test_a_tracked_compose_file_mounts_the_aws_directory():
+def test_no_tracked_compose_file_mounts_the_aws_directory():
+    """The Bedrock clients run in the cluster and read the Secret inv aws-login writes."""
     services = _merged_services()
 
-    assert [name for name, service in services.items() if _mounts_aws_credentials(service)]
-
-
-def test_every_service_mounting_aws_credentials_resolves_its_profile_through_the_override():
-    services = _merged_services()
-
-    for name, service in services.items():
-        if not _mounts_aws_credentials(service):
-            continue
-        assert service["environment"].get("AWS_PROFILE") == CONTAINER_PROFILE, (
-            f"{name} mounts AWS credentials without routing AWS_PROFILE "
-            "through PLATFORM_AWS_PROFILE"
-        )
+    assert [name for name, service in services.items() if _mounts_aws_credentials(service)] == []
 
 
 @pytest.mark.parametrize("compose_file", _tracked_compose_files(), ids=lambda path: path.name)

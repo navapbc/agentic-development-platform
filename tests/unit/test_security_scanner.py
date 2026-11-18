@@ -260,6 +260,35 @@ async def test_scan_change_content_hash_is_deterministic(monkeypatch):
     assert first.content_hash == second.content_hash
 
 
+async def test_scan_change_reports_the_evidence_id_the_index_stored(monkeypatch):
+    from services.orchestration.temporal_activities import security as security_activity
+
+    findings = [ScanFinding("f1", "semgrep", STATIC, HIGH, "shell injection")]
+    mediator = SecurityScanMediator(
+        backends=(MockSecurityScanner("semgrep", findings),),
+        allowed_repos=frozenset({"agentic-demo-service"}),
+        threshold=HIGH,
+    )
+    monkeypatch.setattr(security_activity, "_build_security_mediator", lambda: mediator)
+
+    class _ReplayedSink:
+        async def persist(self, record):
+            return "art-stored"
+
+    monkeypatch.setattr("services.review.evidence.PostgresEvidenceSink", _ReplayedSink)
+
+    req = security_activity.ScanChangeRequest(
+        task_id="T-1",
+        execution_id="exec-1",
+        repo="agentic-demo-service",
+        ref="c" * 40,
+        repo_root="/tmp/ws/agent-T-1",
+    )
+    result = await security_activity.scan_change(req)
+
+    assert result.evidence_id == "art-stored"
+
+
 async def test_scan_change_writes_one_evidence_record_per_scanner(monkeypatch):
     from services.orchestration.temporal_activities import security as security_activity
 
@@ -419,3 +448,39 @@ async def test_mediator_propagates_scanner_unavailable_for_retry():
 
     with pytest.raises(ScannerUnavailableError):
         await mediator.scan(_target())
+
+
+async def test_a_budget_stop_in_a_gate_engine_blocks_every_scanner_gate(monkeypatch):
+    from services.integration.litellm_admin import (
+        TENANT_MODEL_BUDGET_EXCEEDED,
+        ModelBudgetExceededError,
+    )
+    from services.orchestration.temporal_activities import security as security_activity
+
+    class _RefusedEngine:
+        name = "ai-security-review"
+
+        async def scan(self, target):
+            raise ModelBudgetExceededError(TENANT_MODEL_BUDGET_EXCEEDED)
+
+    mediator = SecurityScanMediator(
+        backends=(MockSecurityScanner("semgrep", []), _RefusedEngine()),
+        allowed_repos=frozenset({"agentic-demo-service"}),
+        threshold=HIGH,
+    )
+    monkeypatch.setattr(security_activity, "_build_security_mediator", lambda: mediator)
+
+    result = await security_activity.scan_change(
+        security_activity.ScanChangeRequest(
+            task_id="T-1",
+            execution_id="exec-1",
+            repo="agentic-demo-service",
+            ref="c" * 40,
+            repo_root="/tmp/ws/agent-T-1",
+        )
+    )
+
+    assert result.budget_stop == TENANT_MODEL_BUDGET_EXCEEDED
+    assert result.scanner_verdicts == {"semgrep": "block", "ai-security-review": "block"}
+    assert result.blocking_count == 2
+    assert {finding.rule_id for finding in result.findings} == {"gate-backend-error"}

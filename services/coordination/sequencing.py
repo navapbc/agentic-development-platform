@@ -6,11 +6,11 @@ import hashlib
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from database.engine import shared_platform_engine
 from database.models.schema import audit_events, sequence_gate
-from scripts.config import get_settings
 from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 ADMITTED = "admitted"
 DISCARDED = "discarded"
@@ -25,6 +25,7 @@ class SequencedAction:
     idempotency_key: str = ""
     operation: str = ""
     reentrant: bool = False
+    tenant: str = ""
 
 
 def _admissible(action: SequencedAction, current: int) -> bool:
@@ -80,9 +81,7 @@ class PostgresSequenceGate:
 
     def _get_engine(self) -> AsyncEngine:
         if self._engine is None:
-            self._engine = create_async_engine(
-                get_settings().database_url, future=True, pool_pre_ping=True
-            )
+            self._engine = shared_platform_engine()
         return self._engine
 
     async def admit(self, action: SequencedAction) -> SequenceDecision:
@@ -91,7 +90,10 @@ class PostgresSequenceGate:
             row = (
                 await conn.execute(
                     select(sequence_gate.c.current_sequence)
-                    .where(sequence_gate.c.task_id == action.task_id)
+                    .where(
+                        sequence_gate.c.tenant == action.tenant,
+                        sequence_gate.c.task_id == action.task_id,
+                    )
                     .with_for_update()
                 )
             ).first()
@@ -99,9 +101,13 @@ class PostgresSequenceGate:
             if _admissible(action, current):
                 await conn.execute(
                     insert(sequence_gate)
-                    .values(task_id=action.task_id, current_sequence=action.sequence)
+                    .values(
+                        tenant=action.tenant,
+                        task_id=action.task_id,
+                        current_sequence=action.sequence,
+                    )
                     .on_conflict_do_update(
-                        index_elements=[sequence_gate.c.task_id],
+                        index_elements=[sequence_gate.c.tenant, sequence_gate.c.task_id],
                         set_={"current_sequence": action.sequence},
                     )
                 )
@@ -117,21 +123,26 @@ class PostgresSequenceGate:
             DISCARDED, action.task_id, action.sequence, current, STALE_REVIEW_DISCARDED
         )
 
-    async def reset(self, task_id: str) -> None:
+    async def reset(self, task_id: str, *, tenant: str) -> None:
         engine = self._get_engine()
         async with engine.begin() as conn:
-            await conn.execute(delete(sequence_gate).where(sequence_gate.c.task_id == task_id))
+            await conn.execute(
+                delete(sequence_gate).where(
+                    sequence_gate.c.tenant == tenant, sequence_gate.c.task_id == task_id
+                )
+            )
 
 
 class InMemorySequenceGate:
     def __init__(self) -> None:
-        self._current: dict[str, int] = {}
+        self._current: dict[tuple[str, str], int] = {}
         self.receipts: list[SequenceDecision] = []
 
     async def admit(self, action: SequencedAction) -> SequenceDecision:
-        current = self._current.get(action.task_id, 0)
+        scope = (action.tenant, action.task_id)
+        current = self._current.get(scope, 0)
         if _admissible(action, current):
-            self._current[action.task_id] = action.sequence
+            self._current[scope] = action.sequence
             return SequenceDecision(
                 ADMITTED, action.task_id, action.sequence, action.sequence, None
             )
@@ -141,5 +152,5 @@ class InMemorySequenceGate:
         self.receipts.append(decision)
         return decision
 
-    async def reset(self, task_id: str) -> None:
-        self._current.pop(task_id, None)
+    async def reset(self, task_id: str, *, tenant: str) -> None:
+        self._current.pop((tenant, task_id), None)

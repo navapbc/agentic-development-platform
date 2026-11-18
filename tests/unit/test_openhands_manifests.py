@@ -5,9 +5,16 @@ from __future__ import annotations
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, cast
 
+import pytest
 import yaml
 from openhands.runtime.provisioner import (
+    NODE_POOL_LABEL,
+    PATCH_EXTRACTION_TIMEOUT_SECONDS,
+    SANDBOX_READY_TIMEOUT_SECONDS,
+    SANDBOX_TAINT_KEY,
     SandboxSpec,
     WorkspaceBinding,
     _free_port,
@@ -15,7 +22,8 @@ from openhands.runtime.provisioner import (
     build_pod_manifest,
 )
 
-MANIFESTS = Path(__file__).resolve().parents[2] / "openhands"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+MANIFESTS = REPO_ROOT / "openhands"
 POD = MANIFESTS / "images" / "agent-server-pod.yaml"
 POLICIES = MANIFESTS / "policies"
 
@@ -79,6 +87,60 @@ def test_pod_builder_matches_the_declarative_manifest() -> None:
         == pod["spec"]["containers"][0]["ports"][0]["containerPort"]
     )
     assert "runtimeClassName" not in built["spec"]
+    assert built["spec"]["activeDeadlineSeconds"] == pod["spec"]["activeDeadlineSeconds"]
+
+
+class _ReadyPodCore:
+    def __init__(self) -> None:
+        self.manifests: list[dict] = []
+        self.exists = False
+
+    def create_namespaced_pod(self, namespace: str, manifest: dict) -> None:
+        self.manifests.append(manifest)
+        self.exists = True
+
+    def read_namespaced_pod(self, name: str, namespace: str) -> SimpleNamespace:
+        from kubernetes.client.exceptions import ApiException
+
+        if not self.exists:
+            raise ApiException(status=404)
+        ready = SimpleNamespace(type="Ready", status="True")
+        return SimpleNamespace(
+            status=SimpleNamespace(phase="Running", pod_ip="10.0.0.5", conditions=[ready])
+        )
+
+    def delete_namespaced_pod(self, name: str, namespace: str, grace_period_seconds=None) -> None:
+        self.exists = False
+
+
+@pytest.mark.parametrize("max_wall_clock_seconds", [60.0, 1800.0, 7200.5])
+async def test_the_sandbox_pod_deadline_outlasts_every_bounded_phase(
+    max_wall_clock_seconds: float,
+) -> None:
+    from openhands.runtime.conversation import FakeConversationDriver
+    from openhands.runtime.provisioner import KubernetesSandboxProvisioner
+    from openhands.runtime.runtime import SandboxRuntime
+    from tests.support import hermetic_settings
+
+    core = _ReadyPodCore()
+    provisioner = KubernetesSandboxProvisioner(
+        in_cluster=False,
+        ready_timeout_seconds=SANDBOX_READY_TIMEOUT_SECONDS,
+        poll_interval_seconds=0.0,
+    )
+    cast(Any, provisioner)._core = core
+    runtime = SandboxRuntime.from_settings(
+        provisioner,
+        FakeConversationDriver(),
+        hermetic_settings(openhands_max_wall_clock_seconds=max_wall_clock_seconds),
+    )
+
+    await runtime.run_implementation(execution_id="exec-1", task="t")
+
+    deadline = core.manifests[0]["spec"]["activeDeadlineSeconds"]
+    assert deadline >= (
+        SANDBOX_READY_TIMEOUT_SECONDS + max_wall_clock_seconds + PATCH_EXTRACTION_TIMEOUT_SECONDS
+    )
 
 
 def test_builder_swaps_runtime_class_without_touching_the_pod_shape() -> None:
@@ -156,11 +218,12 @@ def test_allow_policy_permits_only_dns_litellm_and_mediators() -> None:
     selectors = []
     for rule in policy["spec"]["egress"]:
         for target in rule["to"]:
+            namespace = target.get("namespaceSelector", {}).get("matchLabels", {})
             pod_selector = target.get("podSelector", {}).get("matchLabels", {})
-            selectors.append(pod_selector)
-    assert {"k8s-app": "kube-dns"} in selectors
-    assert {"app": "litellm"} in selectors
-    assert {"agentic-dev-platform/mediator": "true"} in selectors
+            selectors.append((namespace.get("kubernetes.io/metadata.name"), pod_selector))
+    assert ("kube-system", {"k8s-app": "kube-dns"}) in selectors
+    assert ("agentic-dev-platform", {"app.kubernetes.io/name": "litellm"}) in selectors
+    assert (None, {"agentic-dev-platform/mediator": "true"}) in selectors
 
 
 def test_security_group_policy_targets_the_sandbox_pods() -> None:
@@ -168,3 +231,41 @@ def test_security_group_policy_targets_the_sandbox_pods() -> None:
     assert policy["kind"] == "SecurityGroupPolicy"
     assert policy["apiVersion"].startswith("vpcresources.k8s.aws/")
     assert policy["spec"]["podSelector"]["matchLabels"]["app"] == "openhands-sandbox"
+
+
+def test_a_session_key_reaches_the_agent_server_environment() -> None:
+    spec = SandboxSpec(execution_id="exec-1", image="agent-server:test", session_api_key="k" * 40)
+
+    env = build_pod_manifest(spec)["spec"]["containers"][0]["env"]
+
+    assert {"name": "SESSION_API_KEY", "value": "k" * 40} in env
+
+
+def test_no_session_key_leaves_the_agent_server_on_loopback() -> None:
+    env = build_pod_manifest(SandboxSpec(execution_id="exec-1", image="agent-server:test"))["spec"][
+        "containers"
+    ][0]["env"]
+
+    assert all(variable["name"] != "SESSION_API_KEY" for variable in env)
+
+
+def test_the_sandbox_pod_lands_on_the_tainted_node_pool() -> None:
+    spec = build_pod_manifest(SandboxSpec(execution_id="exec-1", image="img", node_pool="sandbox"))[
+        "spec"
+    ]
+
+    assert spec["nodeSelector"] == {NODE_POOL_LABEL: "sandbox"}
+    assert spec["tolerations"] == [
+        {"key": SANDBOX_TAINT_KEY, "operator": "Exists", "effect": "NoSchedule"}
+    ]
+    assert (
+        "nodeSelector" not in build_pod_manifest(SandboxSpec(execution_id="e", image="i"))["spec"]
+    )
+
+
+def test_the_node_pool_label_and_taint_match_the_eks_node_groups() -> None:
+    nodes = (REPO_ROOT / "infra/terraform/eks-cluster/nodes.tf").read_text(encoding="utf-8")
+
+    assert f'node_pool_label = "{NODE_POOL_LABEL}"' in nodes
+    assert f'key = "{SANDBOX_TAINT_KEY}"' in nodes
+    assert 'effect = "NO_SCHEDULE"' in nodes

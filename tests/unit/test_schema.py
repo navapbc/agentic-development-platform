@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from database.models import SCHEMA, metadata
+from sqlalchemy import UniqueConstraint
 
 EXPECTED_TABLES = {
     "executions",
@@ -43,16 +44,27 @@ def test_task_snapshot_is_immutable_per_execution_version():
     assert ("execution_id", "version") in unique_cols
 
 
-def test_work_claim_unique_per_task_work_unit():
+def test_work_claim_unique_per_tenant_task_work_unit():
     claims = metadata.tables["agent_platform.work_claims"]
     unique_cols = {
         tuple(c.name for c in constraint.columns)
         for constraint in claims.constraints
         if constraint.__class__.__name__ == "UniqueConstraint"
     }
-    assert ("task_id", "work_unit") in unique_cols
+    assert unique_cols == {("tenant", "task_id", "work_unit")}
 
 
-def test_evidence_is_content_addressed():
+def test_sequence_gate_keyed_by_tenant_and_task():
+    gate = metadata.tables["agent_platform.sequence_gate"]
+    assert tuple(c.name for c in gate.primary_key.columns) == ("tenant", "task_id")
+
+
+def test_evidence_is_content_addressed_per_execution():
     evidence = metadata.tables["agent_platform.evidence_artifacts"]
-    assert evidence.c.content_hash.unique is True
+    unique_cols = {
+        tuple(c.name for c in constraint.columns)
+        for constraint in evidence.constraints
+        if isinstance(constraint, UniqueConstraint)
+    }
+    assert unique_cols == {("execution_id", "content_hash")}
+    assert not evidence.c.content_hash.unique

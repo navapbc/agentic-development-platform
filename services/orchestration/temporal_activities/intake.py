@@ -48,8 +48,8 @@ async def _reclaim_orphaned_slots(client, execution_store, settings) -> None:
 
 async def _reconcile_jira_pass() -> IntakeReconcileReport:
     from scripts.config import get_settings
-    from temporalio.client import Client
 
+    from services import temporal_client
     from services.coordination.idempotency import PostgresSideEffectLedger
     from services.integration.jira.credentials import build_jira_credential_resolver
     from services.integration.jira.intake_read import JiraPollReadSource
@@ -63,7 +63,7 @@ async def _reconcile_jira_pass() -> IntakeReconcileReport:
 
     settings = get_settings()
     jira_resolver = build_jira_credential_resolver(settings)
-    client = await Client.connect(settings.temporal_host, namespace=settings.temporal_namespace)
+    client = await temporal_client.connect(settings.temporal_host, settings)
     execution_store = PostgresExecutionSeeder()
     starter = TemporalStarter(client, settings)
     await _reclaim_orphaned_slots(client, execution_store, settings)
@@ -99,8 +99,8 @@ async def _reconcile_rebar_pass() -> IntakeReconcileReport:
         StructlogAuditSink,
         watermark_path,
     )
-    from temporalio.client import Client
 
+    from services import temporal_client
     from services.coordination.idempotency import PostgresSideEffectLedger
     from services.integration.jira.credentials import acceptance_field
     from services.integration.source_control import source_control_repos
@@ -121,7 +121,7 @@ async def _reconcile_rebar_pass() -> IntakeReconcileReport:
     backend = load_rebar_backend_config(settings)
     poll_config = load_poll_config(settings)
     repo_root = backend.repo_root
-    client = await Client.connect(settings.temporal_host, namespace=settings.temporal_namespace)
+    client = await temporal_client.connect(settings.temporal_host, settings)
     execution_store = PostgresExecutionSeeder()
     starter = TemporalStarter(client, settings)
     await _reclaim_orphaned_slots(client, execution_store, settings)

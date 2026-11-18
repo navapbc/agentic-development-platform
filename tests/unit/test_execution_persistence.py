@@ -69,6 +69,9 @@ class _FakeEngine:
     def connect(self):
         return self._connection
 
+    def begin(self):
+        return self._connection
+
 
 class _FakeScalarResult(_FakeResult):
     def __init__(self, value):
@@ -142,3 +145,41 @@ async def test_active_count_excludes_completed_executions():
     )
     assert active_count == 0
     assert "state NOT IN ('COMPLETED', 'FAILED', 'CANCELLED')" in sql
+
+
+class _FirstConnection(_FakeConnection):
+    async def execute(self, statement):
+        self.statements.append(statement)
+        return SimpleNamespace(first=lambda: None)
+
+
+def _sql(statement) -> str:
+    return str(
+        statement.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_execution_no_workflow_was_started_for_is_not_an_active_run():
+    seeder = PostgresExecutionSeeder()
+    connection = _FirstConnection([])
+    seeder._get_engine = lambda: _FakeEngine(connection)  # type: ignore[method-assign]
+
+    active = await seeder.active_workflow(issue_key="T-1", repo="repo-a")
+
+    assert active is None
+    assert "workflow_id IS NOT NULL" in _sql(connection.statements[0])
+
+
+@pytest.mark.asyncio
+async def test_abandon_fails_only_an_execution_no_workflow_was_started_for():
+    seeder = PostgresExecutionSeeder()
+    connection = _FirstConnection([])
+    seeder._get_engine = lambda: _FakeEngine(connection)  # type: ignore[method-assign]
+
+    await seeder.abandon(execution_id="intake-abc", reason="intake start failed")
+
+    sql = _sql(connection.statements[0])
+    assert "SET state='FAILED'" in sql
+    assert "execution_id = 'intake-abc'" in sql
+    assert "workflow_id IS NULL" in sql

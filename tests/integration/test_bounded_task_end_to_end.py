@@ -568,7 +568,7 @@ async def test_no_review_status_board_moves_ticket_on_claim_only(tmp_path, bare_
 
 @pytest.mark.skipif(
     not os.getenv("BOUNDED_TASK_LIVE_SMOKE"),
-    reason="live bounded-task smoke needs VPN, JIRA_EMAIL, JIRA_API_TOKEN, acli, and a GHES token",
+    reason="live bounded-task smoke needs VPN, JIRA_EMAIL, JIRA_API_TOKEN, and a GHES token",
 )
 async def test_bounded_task_live_smoke() -> None:
     from services.integration.jira.adapter import build_jira_adapter_for_issue

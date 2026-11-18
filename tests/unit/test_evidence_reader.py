@@ -1,15 +1,21 @@
 """Reader coverage for every artifact type the platform routes through the evidence sink.
 
 Each case drives the producer, persists the record it built through a sink that stands in
-for the table, and resolves it by id through the reader.
+for the table, and resolves it by id through the reader. The reader serves one tenant, so an
+artifact of another tenant's execution resolves as absent.
 """
 
 from __future__ import annotations
 
+from dataclasses import replace
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
-from services.integration.mcp_gateway.evidence_reader import PostgresEvidenceReader
+from services.integration.mcp_gateway.evidence_reader import (
+    SECURITY_COMPONENT,
+    PostgresEvidenceReader,
+)
 from services.review.evidence import (
     APPROVAL_COMPONENT,
     BUILD_AND_TEST_COMPONENT,
@@ -47,12 +53,16 @@ class _FakeResult:
     def mappings(self) -> _FakeMappings:
         return _FakeMappings(self._row)
 
+    def first(self) -> SimpleNamespace | None:
+        return SimpleNamespace(**self._row) if self._row is not None else None
+
 
 class _FakeConnection:
-    """Stands in for the evidence table, evaluating the statement's own WHERE predicate.
+    """Stands in for the evidence table, evaluating the WHERE predicate.
 
     Matching on the compiled SQL text would accept a reader that filtered on the wrong
-    column, because the bound value appears in the text either way.
+    column, because the bound value appears in the text either way. Each row carries the
+    tenant the evidence was recorded for.
     """
 
     def __init__(self, rows: dict[str, dict[str, Any]]) -> None:
@@ -74,6 +84,8 @@ class _FakeConnection:
                 raise AssertionError(f"unsupported predicate {clause!r}")
             if clause.operator is not operators.eq:
                 raise AssertionError(f"unsupported operator in {clause!r}")
+            if clause.left.table.name != "evidence_artifacts":  # pyright: ignore[reportAttributeAccessIssue]
+                raise AssertionError(f"predicate outside the evidence table {clause!r}")
             pairs.append((clause.left.name, clause.right.value))
         return pairs
 
@@ -93,9 +105,10 @@ class _FakeEngine:
         return self._connection
 
 
-def _stored_row(record: EvidenceRecord) -> dict[str, Any]:
+def _stored_row(record: EvidenceRecord, tenant: str) -> dict[str, Any]:
     """Mirror the columns PostgresEvidenceSink writes for one record."""
     return {
+        "tenant": tenant,
         "artifact_id": record.artifact_id,
         "execution_id": record.execution_id,
         "content_hash": record.content_hash,
@@ -107,10 +120,12 @@ def _stored_row(record: EvidenceRecord) -> dict[str, Any]:
     }
 
 
-def _reader(records: list[EvidenceRecord]) -> PostgresEvidenceReader:
-    rows = {record.artifact_id: _stored_row(record) for record in records}
+def _reader(
+    records: list[EvidenceRecord], tenant: str = "adp", owner: str = "adp"
+) -> PostgresEvidenceReader:
+    rows = {record.artifact_id: _stored_row(record, owner) for record in records}
     engine = cast(AsyncEngine, _FakeEngine(_FakeConnection(rows)))
-    return PostgresEvidenceReader(engine)
+    return PostgresEvidenceReader(tenant, engine)
 
 
 @pytest.mark.parametrize("kind", sorted(PRODUCERS))
@@ -142,3 +157,52 @@ async def test_an_unknown_artifact_id_resolves_to_none(monkeypatch):
     record = await PRODUCERS["plan"](monkeypatch)
 
     assert await _reader([record]).get_artifact("art-missing") is None
+
+
+async def test_an_artifact_of_another_tenant_resolves_to_none(monkeypatch):
+    record = await PRODUCERS["plan"](monkeypatch)
+
+    assert (
+        await _reader([record], tenant="beta", owner="adp").get_artifact(record.artifact_id) is None
+    )
+
+
+async def test_security_findings_resolve_only_for_the_reader_tenant(monkeypatch):
+    record = await PRODUCERS["plan"](monkeypatch)
+    findings = replace(
+        record,
+        artifact_id="art-security",
+        source_component=SECURITY_COMPONENT,
+        metadata={"finding_count": 1},
+    )
+
+    own = await _reader([findings], tenant="adp", owner="adp").get_security_findings(
+        findings.execution_id
+    )
+    other = await _reader([findings], tenant="beta", owner="adp").get_security_findings(
+        findings.execution_id
+    )
+
+    assert own == {"finding_count": 1}
+    assert other is None
+
+
+async def test_evidence_recorded_without_a_tenant_resolves_to_none(
+    monkeypatch,
+):
+    record = await PRODUCERS["plan"](monkeypatch)
+    findings = replace(
+        record,
+        artifact_id="art-security",
+        source_component=SECURITY_COMPONENT,
+        metadata={"finding_count": 1},
+    )
+    reader = _reader([record, findings], tenant="adp", owner="")
+
+    assert await reader.get_artifact(record.artifact_id) is None
+    assert await reader.get_security_findings(findings.execution_id) is None
+
+
+def test_the_reader_refuses_to_serve_no_tenant():
+    with pytest.raises(ValueError, match="needs the tenant"):
+        PostgresEvidenceReader("")

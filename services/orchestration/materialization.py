@@ -89,6 +89,7 @@ class WorkspaceMaterializer:
     workspace_root: Path
     remote_url_for: Callable[[str], str]
     auth_for: Callable[[str], GitAuth] = no_auth_for
+    tenant: str = ""
 
     @classmethod
     def from_settings(
@@ -111,6 +112,7 @@ class WorkspaceMaterializer:
             workspace_root=Path(resolved.execution_workspace_root),
             remote_url_for=remote_url_for,
             auth_for=auth_for or build_git_auth_for(resolved),
+            tenant=resolved.tenant,
         )
 
     def _guard(self, repo: str) -> None:
@@ -130,7 +132,7 @@ class WorkspaceMaterializer:
         commit_sha: str,
     ) -> MaterializedWorkspace:
         self._guard(repo)
-        branch = agent_branch_name(task_id)
+        branch = agent_branch_name(task_id, self.tenant)
         path = self._path_for(repo, task_id, execution_id)
         await self._ensure_checkout(repo, path, branch, commit_sha)
         head = await _git("rev-parse", "HEAD", cwd=str(path))
@@ -140,6 +142,7 @@ class WorkspaceMaterializer:
                 f"{repo}:{branch}",
                 repository=repo,
                 owning_workflow=task_id,
+                tenant=self.tenant,
             )
         )
         workspace_orphan_id = await self.registry.register(
@@ -148,6 +151,7 @@ class WorkspaceMaterializer:
                 str(path),
                 repository=repo,
                 owning_workflow=execution_id,
+                tenant=self.tenant,
             )
         )
         return MaterializedWorkspace(
@@ -196,6 +200,11 @@ class WorkspaceMaterializer:
             await _git("reset", "--hard", commit_sha, cwd=str(path))
             await _git("clean", "-fd", cwd=str(path))
 
+    async def discard_changes(self, workspace: MaterializedWorkspace) -> None:
+        """Return the workspace to its materialized commit, dropping an earlier attempt's edits."""
+        await _git("reset", "--hard", workspace.commit_sha, cwd=workspace.path)
+        await _git("clean", "-fd", cwd=workspace.path)
+
     async def _drop_persisted_credential(self, repo: str, path: Path) -> None:
         """Clear the credential an earlier release left in a workspace that is being reused.
 
@@ -227,9 +236,7 @@ class WorkspaceMaterializer:
         The comparison spans the branch commits and the uncommitted worktree together, which is
         what answers whether any of the task's work survives at this moment.
         """
-        out = await _git(
-            "diff", "--name-only", "-z", "--no-renames", base, cwd=str(workspace.path)
-        )
+        out = await _git("diff", "--name-only", "-z", "--no-renames", base, cwd=str(workspace.path))
         return sorted(entry for entry in out.split("\0") if entry)
 
     async def stage(

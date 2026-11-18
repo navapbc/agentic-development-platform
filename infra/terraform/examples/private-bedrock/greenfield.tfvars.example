@@ -11,11 +11,11 @@ access_log_bucket = "agentic-platform-access-logs-123456789012"
 
 create_network   = true
 vpc_cidr         = "10.0.0.0/16"
-new_subnet_cidrs = ["10.0.1.0/24"]
+new_subnet_cidrs = ["10.0.1.0/24", "10.0.2.0/24"]
 
-management_subnet_cidrs = ["10.0.21.0/24"]
+management_subnet_cidrs = ["10.0.21.0/24", "10.0.22.0/24"]
 data_subnet_cidrs       = ["10.0.11.0/24", "10.0.12.0/24"]
-public_subnet_cidrs     = ["10.0.31.0/24"]
+public_subnet_cidrs     = ["10.0.31.0/24", "10.0.32.0/24"]
 
 # nat_instance for testing, nat_gateway for production.
 egress_mode = "nat_instance"
@@ -35,7 +35,21 @@ create_cache              = false
 create_clickhouse_storage = false
 create_langfuse_bucket    = false
 create_secret_store       = false
-create_rebar_ticket_store = false
+
+create_ecs_cluster            = false
+create_temporal_control_plane = false
+create_container_services     = false
+
+# The EKS cluster for the activity worker, its sandbox pods, LiteLLM, the inbound webhook, and
+# the MCP gateway. Each admin principal receives cluster admin through an access entry.
+create_eks               = false
+eks_admin_principal_arns = { operator = "arn:aws:iam::123456789012:role/platform-operator" }
+
+# The role the publish-images workflow assumes. Name the account's GitHub OIDC provider when
+# one exists, or leave it empty to create one.
+create_github_image_publisher = false
+github_oidc_provider_arn      = ""
+# github_repository_ids       = { owner_id = 11320847, repository_id = 1339837798 }
 
 tags = {
   project = "agentic-dev-platform"

@@ -26,8 +26,7 @@ _stage_cost: Any | None = None
 
 
 def _build_metric_reader() -> Any | None:
-    if not os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "").strip():
-        log.warning("OTEL_EXPORTER_OTLP_ENDPOINT not set; metrics will not be exported")
+    if os.getenv("OTEL_METRICS_EXPORTER", "").strip().lower() == "none":
         return None
     try:
         from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter

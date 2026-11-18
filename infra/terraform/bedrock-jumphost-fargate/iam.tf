@@ -57,10 +57,7 @@ data "aws_iam_policy_document" "execution" {
       "logs:CreateLogStream",
       "logs:PutLogEvents",
     ]
-    resources = [
-      aws_cloudwatch_log_group.exec[0].arn,
-      "${aws_cloudwatch_log_group.exec[0].arn}:log-stream:*",
-    ]
+    resources = ["${aws_cloudwatch_log_group.exec[0].arn}:log-stream:${local.container_log_stream_prefix}/*"]
   }
 
   dynamic "statement" {
@@ -90,9 +87,14 @@ data "aws_iam_policy_document" "task" {
       "ssmmessages:CreateControlChannel",
       "ssmmessages:CreateDataChannel",
       "ssmmessages:OpenControlChannel",
-      "ssmmessages:OpenDataChannel",
     ]
     resources = ["*"]
+  }
+
+  statement {
+    sid       = "EcsExecDataChannel"
+    actions   = ["ssmmessages:OpenDataChannel"]
+    resources = ["arn:${data.aws_partition.current.partition}:ssm:${var.region}:${data.aws_caller_identity.current.account_id}:session/*"]
   }
 
   statement {
@@ -123,13 +125,22 @@ data "aws_iam_policy_document" "task" {
   statement {
     sid       = "ExecLoggingS3Put"
     actions   = ["s3:PutObject"]
-    resources = ["${aws_s3_bucket.exec_logs[0].arn}/*"]
+    resources = ["${aws_s3_bucket.exec_logs[0].arn}/${local.exec_log_s3_key_prefix}/*"]
   }
 
   statement {
     sid       = "ExecLoggingS3Bucket"
     actions   = ["s3:GetBucketLocation", "s3:GetEncryptionConfiguration"]
     resources = [aws_s3_bucket.exec_logs[0].arn]
+  }
+
+  dynamic "statement" {
+    for_each = var.logs_bucket_kms_key_arn == "" ? [] : [1]
+    content {
+      sid       = "ExecLoggingS3Encrypt"
+      actions   = ["kms:GenerateDataKey", "kms:Decrypt"]
+      resources = [var.logs_bucket_kms_key_arn]
+    }
   }
 }
 

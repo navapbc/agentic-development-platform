@@ -1,4 +1,9 @@
-"""Reset a failed Jira issue's intake state so the next poll relaunches it."""
+"""Reset a failed ticket's intake state so the next poll relaunches it.
+
+Before it removes anything, the retry records an audit event that lists every intake record,
+work claim, and stale execution it is about to clear, so the state a failed run left behind
+stays inspectable after the retrigger.
+"""
 
 from __future__ import annotations
 
@@ -7,12 +12,13 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Protocol
 
+from database.engine import create_platform_engine
 from database.models.schema import executions, sequence_gate, side_effects, work_claims
 from scripts.config import Settings, get_settings, to_host_hostport, to_host_url
-from sqlalchemy import delete, select, update
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy import ColumnElement, delete, select, update
+from sqlalchemy.ext.asyncio import AsyncEngine
 
-from services.coordination.idempotency import intake_start_target_repo
+from services.coordination.idempotency import intake_start_target_repo, intake_start_target_tenant
 from services.orchestration.intake_cursor import (
     CursorRelease,
     IntakeCursorRelease,
@@ -84,8 +90,13 @@ class IntakeRetryResult:
         return f"{head}. {self.cursor_warning}" if self.cursor_warning else head
 
 
+RetryAudit = Callable[[str, dict[str, list[str]]], Awaitable[None]]
+
+
 class IntakeRetryStore(Protocol):
     async def workflow_ids(self, issue_key: str) -> list[str]: ...
+
+    async def describe(self, issue_key: str, repo: str | None) -> dict[str, list[str]]: ...
 
     async def clear_intake_dedup(self, issue_key: str, repo: str | None) -> int: ...
 
@@ -103,6 +114,7 @@ async def retry_intake(
     liveness: WorkflowLivenessProbe,
     repo: str | None = None,
     cursor: IntakeCursorRelease | None = None,
+    audit: RetryAudit | None = None,
 ) -> IntakeRetryResult:
     running: list[str] = []
     undetermined: list[str] = []
@@ -120,6 +132,8 @@ async def retry_intake(
             blocked_by=tuple(running),
             undetermined=tuple(undetermined),
         )
+    if audit is not None:
+        await audit(issue_key, await store.describe(issue_key, repo))
     intake_cleared = await store.clear_intake_dedup(issue_key, repo)
     cursor_release = await cursor.release(issue_key) if cursor is not None else CursorRelease()
     claims_cleared = await store.clear_work_claims(issue_key)
@@ -141,8 +155,24 @@ async def retry_intake(
 
 
 class PostgresIntakeRetryStore:
-    def __init__(self, engine: AsyncEngine) -> None:
+    """Read and clear the intake state one tenant recorded for an issue.
+
+    An execution without a tenant belongs to the store of the empty tenant only.
+    """
+
+    def __init__(self, engine: AsyncEngine, *, tenant: str) -> None:
         self._engine = engine
+        self._tenant = tenant
+
+    def _tenant_executions(self) -> ColumnElement[bool]:
+        if self._tenant:
+            return executions.c.tenant == self._tenant
+        return executions.c.tenant.is_(None)
+
+    def _in_scope(self, target: str, repo: str | None) -> bool:
+        if intake_start_target_tenant(target) != self._tenant:
+            return False
+        return repo is None or intake_start_target_repo(_INTAKE_START, target) == repo
 
     async def workflow_ids(self, issue_key: str) -> list[str]:
         async with self._engine.connect() as conn:
@@ -150,26 +180,65 @@ class PostgresIntakeRetryStore:
                 await conn.execute(
                     select(executions.c.workflow_id)
                     .where(executions.c.task_id == issue_key)
+                    .where(self._tenant_executions())
                     .where(executions.c.workflow_id.is_not(None))
                     .distinct()
                 )
             ).all()
         return [row.workflow_id for row in rows]
 
+    async def describe(self, issue_key: str, repo: str | None) -> dict[str, list[str]]:
+        """List the rows a retry of issue_key would clear or fail."""
+        async with self._engine.connect() as conn:
+            intake = (
+                await conn.execute(
+                    select(
+                        side_effects.c.side_effect_key,
+                        side_effects.c.target,
+                        side_effects.c.status,
+                        side_effects.c.result,
+                    )
+                    .where(side_effects.c.task_id == issue_key)
+                    .where(side_effects.c.operation == _INTAKE_START)
+                )
+            ).all()
+            claims = (
+                await conn.execute(
+                    select(work_claims.c.claim_id, work_claims.c.execution_id, work_claims.c.state)
+                    .where(work_claims.c.tenant == self._tenant)
+                    .where(work_claims.c.task_id == issue_key)
+                )
+            ).all()
+            stale = (
+                await conn.execute(
+                    select(executions.c.execution_id, executions.c.state, executions.c.workflow_id)
+                    .where(executions.c.task_id == issue_key)
+                    .where(self._tenant_executions())
+                    .where(executions.c.state.not_in(_TERMINAL_STATES))
+                )
+            ).all()
+        return {
+            "intake_records": [
+                f"{row.side_effect_key} {row.target} {row.status} {row.result}"
+                for row in intake
+                if self._in_scope(str(row.target), repo)
+            ],
+            "work_claims": [f"{row.claim_id} {row.execution_id} {row.state}" for row in claims],
+            "stale_executions": [
+                f"{row.execution_id} {row.state} {row.workflow_id or ''}".strip() for row in stale
+            ],
+        }
+
     async def clear_intake_dedup(self, issue_key: str, repo: str | None) -> int:
         clause = (side_effects.c.task_id == issue_key) & (side_effects.c.operation == _INTAKE_START)
         async with self._engine.begin() as conn:
-            if repo is None:
-                return (await conn.execute(delete(side_effects).where(clause))).rowcount or 0
             candidates = (
                 await conn.execute(
                     select(side_effects.c.side_effect_key, side_effects.c.target).where(clause)
                 )
             ).all()
             keys = [
-                row.side_effect_key
-                for row in candidates
-                if intake_start_target_repo(_INTAKE_START, str(row.target)) == repo
+                row.side_effect_key for row in candidates if self._in_scope(str(row.target), repo)
             ]
             if not keys:
                 return 0
@@ -185,6 +254,7 @@ class PostgresIntakeRetryStore:
                 await conn.execute(
                     update(executions)
                     .where(executions.c.task_id == issue_key)
+                    .where(self._tenant_executions())
                     .where(executions.c.state.not_in(_TERMINAL_STATES))
                     .values(state="FAILED")
                 )
@@ -194,25 +264,33 @@ class PostgresIntakeRetryStore:
         async with self._engine.begin() as conn:
             return (
                 await conn.execute(
-                    delete(sequence_gate).where(sequence_gate.c.task_id == issue_key)
+                    delete(sequence_gate)
+                    .where(sequence_gate.c.tenant == self._tenant)
+                    .where(sequence_gate.c.task_id == issue_key)
                 )
             ).rowcount or 0
 
     async def clear_work_claims(self, issue_key: str) -> int:
         async with self._engine.begin() as conn:
             return (
-                await conn.execute(delete(work_claims).where(work_claims.c.task_id == issue_key))
+                await conn.execute(
+                    delete(work_claims)
+                    .where(work_claims.c.tenant == self._tenant)
+                    .where(work_claims.c.task_id == issue_key)
+                )
             ).rowcount or 0
 
 
 def temporal_workflow_liveness(settings: Settings) -> WorkflowLivenessProbe:
     async def _probe(workflow_id: str) -> WorkflowLiveness:
-        from temporalio.client import Client, WorkflowExecutionStatus
+        from temporalio.client import WorkflowExecutionStatus
         from temporalio.service import RPCError, RPCStatusCode
 
+        from services import temporal_client
+
         try:
-            client = await Client.connect(
-                to_host_hostport(settings.temporal_host), namespace=settings.temporal_namespace
+            client = await temporal_client.connect(
+                to_host_hostport(settings.temporal_host), settings
             )
             description = await client.get_workflow_handle(workflow_id).describe()
         except RPCError as exc:
@@ -228,20 +306,48 @@ def temporal_workflow_liveness(settings: Settings) -> WorkflowLivenessProbe:
     return _probe
 
 
+def audit_retry(engine: AsyncEngine, settings: Settings) -> RetryAudit:
+    """Record the rows a retry clears in the audit table and the audit object store."""
+
+    async def _record(issue_key: str, removed: dict[str, list[str]]) -> None:
+        import uuid
+
+        import structlog
+        from database.models.schema import audit_events
+
+        from services.review.evidence import persist_audit_object
+
+        event = {
+            "event_id": uuid.uuid4().hex,
+            "task_id": issue_key,
+            "execution_id": "",
+            "event_type": "intake_retry",
+            "actor_type": "operator",
+            "actor_id": "inv intake --retry",
+            "reason": "operator retriggered intake",
+            "correlation_ids": removed,
+        }
+        async with engine.begin() as conn:
+            await conn.execute(audit_events.insert().values(**event))
+        await persist_audit_object(event, settings)
+        structlog.get_logger("intake").info("intake_retry_audited", **event)
+
+    return _record
+
+
 async def run_intake_retry(
     issue_key: str, *, repo: str | None = None, settings: Any = None
 ) -> IntakeRetryResult:
     resolved = settings or get_settings()
-    engine = create_async_engine(
-        to_host_url(resolved.database_url), future=True, pool_pre_ping=True
-    )
+    engine = create_platform_engine(to_host_url(resolved.database_url))
     try:
         return await retry_intake(
             issue_key,
-            store=PostgresIntakeRetryStore(engine),
+            store=PostgresIntakeRetryStore(engine, tenant=resolved.tenant),
             liveness=temporal_workflow_liveness(resolved),
             repo=repo,
             cursor=build_intake_cursor_release(resolved),
+            audit=audit_retry(engine, resolved),
         )
     finally:
         await engine.dispose()

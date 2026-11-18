@@ -15,7 +15,7 @@ locals {
   management_cidrs = var.create_network ? aws_subnet.management[*].cidr_block : var.management_cidr_blocks
 
   data_subnet_ids = var.create_network ? aws_subnet.data[*].id : var.data_subnet_ids
-  data_cidrs      = var.create_network ? aws_subnet.data[*].cidr_block : []
+  data_cidrs      = var.create_network ? aws_subnet.data[*].cidr_block : [for subnet in data.aws_subnet.data : subnet.cidr_block]
 
   data_tier_sources = distinct(concat(local.app_cidrs, local.management_cidrs))
   data_tier_ports   = [5432, 6379, 2049]
@@ -130,7 +130,7 @@ resource "aws_subnet" "public" {
   availability_zone       = local.az_pool[count.index % length(local.az_pool)]
   map_public_ip_on_launch = false
 
-  tags = merge(var.tags, { Name = "${var.name_prefix}-public-${count.index}", Tier = "public" })
+  tags = merge(var.tags, { Name = "${var.name_prefix}-public-${count.index}", Tier = "public" }, var.create_eks ? { "kubernetes.io/role/elb" = "1" } : {})
 }
 
 resource "aws_route_table" "public" {
@@ -177,7 +177,8 @@ module "dns_firewall" {
   name_prefix                = var.name_prefix
   vpc_id                     = local.vpc_id
   default_action             = var.dns_firewall_default_action
-  additional_allowed_domains = var.dns_firewall_additional_domains
+  additional_allowed_domains = distinct(concat(var.dns_firewall_additional_domains, local.container_internal_domains, local.eks_domains))
+  redirect_trusted_domains   = local.registry_domains
   kms_key_arn                = var.kms_key_arn
   tags                       = var.tags
 }

@@ -1,0 +1,31 @@
+# Runtime profiles of this tenant, beside the catalog profiles in
+# config/platform/runtime-profiles.yaml, which every tenant may use by name. A repository names its
+# profile in repositories.yaml. A tenant profile may not reuse a catalog profile's name.
+#
+# sandbox_image is the image the coding agent runs in, catalog:<name> for a catalog image or a
+# digest-pinned reference to an image the tenant publishes. checks are the default checks of a
+# repository with no checks.yaml entry, in the checks.yaml entry format. gates are gate overrides
+# in the gates.yaml entry format, applied after the tenant's gates.yaml for the profile's
+# repositories. See docs/runtime-profiles.md.
+config_version: 1
+
+profiles:
+  # A Java batch service on the catalog JVM image with a Gradle wrapper build.
+  # claims-batch:
+  #   description: Spring Batch jobs built with the Gradle wrapper.
+  #   sandbox_image: catalog:agent-server-jvm
+  #   checks:
+  #     image: docker.io/library/eclipse-temurin:21-jdk@sha256:<digest>
+  #     command: "./gradlew --no-daemon check"
+  #   gates:
+  #     - name: security-policy
+  #       enabled: true
+  #       required: true
+
+  # A tenant image built from a catalog image with the team's own tools.
+  # portal-e2e:
+  #   description: The portal frontend with Playwright browsers for end-to-end tests.
+  #   sandbox_image: 123456789012.dkr.ecr.us-east-1.amazonaws.com/agentic-platform/tenants/portal/agent-server-playwright:1.0.0@sha256:<digest>
+  #   checks:
+  #     image: mcr.microsoft.com/playwright:v1.56.0-noble@sha256:<digest>
+  #     command: "npm ci && npx playwright test"

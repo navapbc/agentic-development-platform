@@ -7,11 +7,11 @@ from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from typing import Protocol
 
+from database.engine import shared_platform_engine
 from database.models.schema import work_claims
-from scripts.config import get_settings
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 CLAIMED = "claimed"
 RELEASED = "released"
@@ -45,6 +45,7 @@ class WorkUnit:
     agent_id: str
     file_impact: tuple[str, ...] = ()
     workflow_id: str = ""
+    tenant: str = ""
 
 
 @dataclass(frozen=True)
@@ -60,8 +61,11 @@ class Schedule:
     deferred: tuple[WorkUnit, ...]
 
 
-def claim_id_for(task_id: str, work_unit: str) -> str:
-    return hashlib.sha256(f"{task_id}\x1f{work_unit}".encode()).hexdigest()
+def claim_id_for(task_id: str, work_unit: str, tenant: str) -> str:
+    canonical = f"{task_id}\x1f{work_unit}"
+    if tenant:
+        canonical = f"{canonical}\x1f{tenant}"
+    return hashlib.sha256(canonical.encode()).hexdigest()
 
 
 def partition_by_file_impact(units: Iterable[WorkUnit]) -> Schedule:
@@ -99,13 +103,11 @@ class PostgresWorkClaimStore:
 
     def _get_engine(self) -> AsyncEngine:
         if self._engine is None:
-            self._engine = create_async_engine(
-                get_settings().database_url, future=True, pool_pre_ping=True
-            )
+            self._engine = shared_platform_engine()
         return self._engine
 
     async def try_claim(self, unit: WorkUnit) -> ClaimOutcome:
-        claim_id = claim_id_for(unit.task_id, unit.work_unit)
+        claim_id = claim_id_for(unit.task_id, unit.work_unit, unit.tenant)
         engine = self._get_engine()
         async with engine.begin() as conn:
             inserted = (
@@ -113,6 +115,7 @@ class PostgresWorkClaimStore:
                     insert(work_claims)
                     .values(
                         claim_id=claim_id,
+                        tenant=unit.tenant,
                         task_id=unit.task_id,
                         work_unit=unit.work_unit,
                         execution_id=unit.execution_id,
@@ -122,7 +125,11 @@ class PostgresWorkClaimStore:
                         state=CLAIMED,
                     )
                     .on_conflict_do_nothing(
-                        index_elements=[work_claims.c.task_id, work_claims.c.work_unit]
+                        index_elements=[
+                            work_claims.c.tenant,
+                            work_claims.c.task_id,
+                            work_claims.c.work_unit,
+                        ]
                     )
                     .returning(work_claims.c.claim_version)
                 )
@@ -231,7 +238,7 @@ class InMemoryWorkClaimStore:
         self._owner_active = owner_active
 
     async def try_claim(self, unit: WorkUnit) -> ClaimOutcome:
-        claim_id = claim_id_for(unit.task_id, unit.work_unit)
+        claim_id = claim_id_for(unit.task_id, unit.work_unit, unit.tenant)
         existing = self._claims.get(claim_id)
         if existing is not None:
             reclaimable = await _is_reclaimable(

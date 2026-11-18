@@ -44,11 +44,12 @@ from temporalio.exceptions import ApplicationError
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 from temporalio.worker.workflow_sandbox import SandboxedWorkflowRunner, SandboxRestrictions
+from tests.support import hermetic_settings
 from tests.unit.test_draft_pull_request_workflow import FAILURE, _make_activities
 
 _TASK_ID = "T-1"
 _WORK_UNIT = "unit-1"
-_CLAIM_ID = claim_id_for(_TASK_ID, _WORK_UNIT)
+_CLAIM_ID = claim_id_for(_TASK_ID, _WORK_UNIT, "")
 
 
 def _claim_activities(store: InMemoryWorkClaimStore, owners: list[str]):
@@ -80,7 +81,7 @@ def _claim_activities(store: InMemoryWorkClaimStore, owners: list[str]):
 
     @activity.defn(name="finalize_work_claim")
     async def fake_finalize(req: FinalizeClaimRequest) -> FinalizeClaimResult:
-        claim_id = claim_id_for(req.task_id, req.work_unit)
+        claim_id = claim_id_for(req.task_id, req.work_unit, "")
         state = COMPLETED if req.completed else RELEASED
         if not req.owner_workflow_id:
             return FinalizeClaimResult(claim_id=claim_id, finalized=False, state=state)
@@ -371,22 +372,24 @@ async def test_the_claim_is_held_while_a_human_decides_on_a_repair():
 
 
 async def test_resetting_task_coordination_does_not_touch_the_work_claim(monkeypatch):
+    import scripts.config as config_module
     import services.coordination.claims as claims_module
     import services.coordination.sequencing as sequencing_module
     from services.orchestration.temporal_activities.implementation import (
         reset_task_coordination,
     )
 
-    reset_tasks: list[str] = []
+    reset_tasks: list[tuple[str, str]] = []
 
     class _SpyGate:
-        async def reset(self, task_id: str) -> int:
-            reset_tasks.append(task_id)
+        async def reset(self, task_id: str, *, tenant: str) -> int:
+            reset_tasks.append((tenant, task_id))
             return 1
 
     def _forbidden(*_args, **_kwargs):
         raise AssertionError("reset_task_coordination must not reach the work claim store")
 
+    monkeypatch.setattr(config_module, "get_settings", lambda: hermetic_settings(tenant="alpha"))
     monkeypatch.setattr(sequencing_module, "PostgresSequenceGate", _SpyGate)
     monkeypatch.setattr(claims_module, "PostgresWorkClaimStore", _forbidden)
 
@@ -395,7 +398,32 @@ async def test_resetting_task_coordination_does_not_touch_the_work_claim(monkeyp
     )
 
     assert result.sequence_reset is True
-    assert reset_tasks == [_TASK_ID]
+    assert reset_tasks == [("alpha", _TASK_ID)]
+
+
+async def test_finalizing_a_claim_settles_the_worker_tenant_s_claim(monkeypatch):
+    import scripts.config as config_module
+    import services.coordination.claims as claims_module
+    from services.orchestration.temporal_activities.implementation import finalize_work_claim
+
+    released: list[str] = []
+
+    class _SpyStore:
+        async def release(self, claim_id: str, *, owner_workflow_id: str) -> bool:
+            released.append(claim_id)
+            return True
+
+    monkeypatch.setattr(config_module, "get_settings", lambda: hermetic_settings(tenant="alpha"))
+    monkeypatch.setattr(claims_module, "PostgresWorkClaimStore", _SpyStore)
+
+    result = await finalize_work_claim(
+        FinalizeClaimRequest(
+            task_id=_TASK_ID, work_unit=_WORK_UNIT, owner_workflow_id="wf-1", completed=False
+        )
+    )
+
+    assert released == [claim_id_for(_TASK_ID, _WORK_UNIT, "alpha")]
+    assert result.claim_id == released[0]
 
 
 def _audit_collector(events: list[AuditEvent]):
@@ -441,7 +469,7 @@ async def test_a_claim_no_longer_held_names_the_owner_and_the_work_unit():
     @activity.defn(name="finalize_work_claim")
     async def fake_finalize(req: FinalizeClaimRequest) -> FinalizeClaimResult:
         return FinalizeClaimResult(
-            claim_id=claim_id_for(req.task_id, req.work_unit), finalized=False, state=RELEASED
+            claim_id=claim_id_for(req.task_id, req.work_unit, ""), finalized=False, state=RELEASED
         )
 
     _result, _store, _owners, parent = await _run(

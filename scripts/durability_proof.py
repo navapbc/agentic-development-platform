@@ -54,11 +54,11 @@ def _audit_trail(engine: Engine, execution_id: str) -> list[tuple[str, str | Non
 
 
 async def main() -> int:
+    from services import temporal_client
     from services.orchestration.temporal_workflows.durable_task_workflow import (
         DurableTaskInput,
         DurableTaskWorkflow,
     )
-    from temporalio.client import Client
 
     settings = get_settings()
     engine = create_engine(_sync_url(), future=True)
@@ -69,7 +69,7 @@ async def main() -> int:
 
     address = to_host_hostport(settings.temporal_host)
     print(f"[proof] connecting to Temporal at {address}")
-    client = await Client.connect(address, namespace=settings.temporal_namespace)
+    client = await temporal_client.connect(address, settings)
 
     print(f"[proof] starting {workflow_id} with a {WORK_SECONDS}s long-running task")
     handle = await client.start_workflow(

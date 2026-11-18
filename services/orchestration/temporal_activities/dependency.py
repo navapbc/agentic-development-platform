@@ -162,8 +162,8 @@ async def signal_dependency_ready(
     req: SignalDependencyReadyRequest,
 ) -> SignalDependencyReadyResult:
     from scripts.config import get_settings
-    from temporalio.client import Client
 
+    from services import temporal_client
     from services.integration.jira.adapter import project_of
     from services.integration.tickets import (
         DependencyBackend,
@@ -190,7 +190,7 @@ async def signal_dependency_ready(
         return SignalDependencyReadyResult(0)
 
     settings = get_settings()
-    client = await Client.connect(settings.temporal_host, namespace=settings.temporal_namespace)
+    client = await temporal_client.connect(settings.temporal_host, settings)
     signaled = 0
     for execution in await PostgresExecutionSeeder().list_active_executions():
         if execution.task_id in dependent_ids and execution.workflow_id:

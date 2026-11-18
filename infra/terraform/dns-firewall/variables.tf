@@ -38,6 +38,12 @@ variable "additional_allowed_domains" {
   default     = []
 }
 
+variable "redirect_trusted_domains" {
+  description = "Domains the VPC may resolve whose CNAME chain is trusted rather than inspected, for hosts served from a CDN whose target names change, such as package registries. A domain listed here must not also appear in allowed_domains or additional_allowed_domains, because the inspecting allowlist rule takes precedence."
+  type        = list(string)
+  default     = []
+}
+
 variable "default_action" {
   description = "Action for a query outside the allowlist. BLOCK answers NXDOMAIN. ALERT resolves the query and logs it, for a trial run before enforcing."
   type        = string

@@ -10,7 +10,7 @@ This README gets a new developer from a fresh clone to a running stack. Contribu
 
 ## What you will be running
 
-The stack runs under Docker Compose and talks to Amazon Bedrock over a connectivity provider you choose. The pieces are described in [System components](#system-components) below. Inference always passes through the LiteLLM container, which is the single path to Bedrock.
+The stack runs under Docker Compose and the local Kubernetes cluster, and talks to Amazon Bedrock over a connectivity provider you choose. The activity worker, the review worker, LiteLLM, and OPA run in the cluster, and everything else runs in Compose. The pieces are described in [System components](#system-components) below, and [docs/architecture.md](docs/architecture.md) diagrams the local and AWS deployments with the connections between components. Inference always passes through the LiteLLM container, which is the single path to Bedrock.
 
 ## Prerequisites
 
@@ -18,11 +18,11 @@ Install these on the host before you start.
 
 | Requirement | Why | Notes |
 | --- | --- | --- |
-| Docker Desktop with Compose v2 | Runs the whole stack | The `docker compose` command must work |
+| Docker Desktop with Compose v2 and Kubernetes enabled | Runs the Compose services and the cluster workloads | The `docker compose` command must work, and `kubectl` must reach the context in `K8S_CONTEXT`, `docker-desktop` by default. Another conformant cluster works with `K8S_CONTEXT`, `K8S_COMPOSE_ADDRESS`, and `K8S_IMAGE_LOAD` set for it |
 | Python 3.12 or newer | Task runner, migrations, local scripts | The container images use 3.12 |
 | uv 0.13.3 or newer | Installs the locked Python dependencies | Install it from [docs.astral.sh/uv](https://docs.astral.sh/uv/). `pyproject.toml` refuses an older uv |
 | git | Clone this repo and its siblings | |
-| An AWS profile with Bedrock access | Inference | An IAM principal with `bedrock:InvokeModel` and credentials under `~/.aws`. Set the profile and region in `.env` |
+| An AWS profile with Bedrock access | Inference | An IAM principal with `bedrock:InvokeModel`. Set the profile and region in `.env`. `inv aws-login` copies its credentials into the cluster. See [Credentials in the cluster](#credentials-in-the-cluster) |
 | AWS CLI v2 | The jumphost tunnel, the jumphost image push, and the secret values | The default `jumphost` connectivity provider calls it |
 | AWS Session Manager plugin | The jumphost tunnel | Install `session-manager-plugin` from the [AWS documentation](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) |
 | jq | The jumphost tunnel | The connect script parses the ECS and SSM responses with it |
@@ -37,75 +37,125 @@ Deploying the infrastructure to AWS needs these as well. See [Deploying to AWS](
 
 The review path installs `rebar` (distribution `nava-rebar`) from PyPI through the `review` extra, so no local checkout of the library is required.
 
-The Repository Intelligence profile and the demo tasks mount a set of test repositories read-only from the same parent directory. Check out the ones you plan to exercise, or remove the mounts you do not need from `compose.override.yaml`.
+Repository intelligence mounts each repository in `config/local/repositories.yaml` that names a `path`, read-only. The demo configuration lists the test repositories below in the same parent directory. Check out the ones you plan to exercise, or remove the entries you do not need.
 
 | Test repository | Used by |
 | --- | --- |
 | `agentic-demo-service` | Repository Intelligence and the demo tasks |
-| `agentic-demo-greenfield`, `agentic-demo-ts`, `agentic-demo-tf`, `agentic-demo-java`, `agentic-demo-php`, `agentic-demo-ruby` | The Repository Intelligence profile, mounted read-only |
+| `agentic-demo-greenfield`, `agentic-demo-ts`, `agentic-demo-tf`, `agentic-demo-java`, `agentic-demo-php`, `agentic-demo-ruby` | Repository Intelligence, mounted read-only |
 
-Two host tools are optional and only needed for specific paths.
+One host tool is optional and only needed for a specific path.
 
 | Optional tool | Needed for |
 | --- | --- |
-| kubeconfig under `~/.kube/config` | The OpenHands sandbox agent, used by live-agent demo runs |
-| Vendored `acli` binary | Jira Cloud writes. The worker image build installs it when `INSTALL_ACLI=true`. See [Vendored binaries](#vendored-binaries) |
 
 ## First-time setup
 
 Run these once from the repository root.
 
-1. Copy the environment file with `cp .env.example .env`, then fill in the placeholders. See [Configuration](#configuration). Never commit `.env`.
-2. Copy the integration source configs with `cp config/local/github.yaml.example config/local/github.yaml`, `cp config/local/jira.yaml.example config/local/jira.yaml`, and `cp config/local/integrations.yaml.example config/local/integrations.yaml`, then edit the copies. See [Integration credentials](#integration-credentials). Never commit the `config/local/*.yaml` operator files. If you set `TICKET_BACKEND=rebar`, also copy `config/local/tickets.yaml.example` to `config/local/tickets.yaml`. See [Ticket and source-control backends](#ticket-and-source-control-backends).
-3. Copy the gate selection config with `cp config/local/gates.yaml.example config/local/gates.yaml`. It is required for any run that evaluates gates. Copying `config/local/gate_engine.yaml.example` to `config/local/gate_engine.yaml` is optional and adds an external gate engine. See [Configurable gates](#configurable-gates).
+1. Copy the environment file with `cp .env.example .env`, then fill in the placeholders. Set `TENANT` to the tenant this workstation serves, because every activity worker refuses to start without one. See [Configuration](#configuration) and [Tenants](#tenants). Never commit `.env`.
+2. Copy the integration source configs with `cp config/local/repositories.yaml.example config/local/repositories.yaml`, `cp config/local/github.yaml.example config/local/github.yaml`, `cp config/local/jira.yaml.example config/local/jira.yaml`, and `cp config/local/integrations.yaml.example config/local/integrations.yaml`, then edit the copies. See [Integration credentials](#integration-credentials). Never commit the `config/local/*.yaml` operator files. If you set `TICKET_BACKEND=rebar`, also copy `config/local/tickets.yaml.example` to `config/local/tickets.yaml`. See [Ticket and source-control backends](#ticket-and-source-control-backends).
+3. Copy the gate selection config with `cp config/local/gates.yaml.example config/local/gates.yaml`. It is required for any run that evaluates gates. Copying `config/local/gate_engine.yaml.example` to `config/local/gate_engine.yaml` is optional and adds an external gate engine. See [Configurable gates](#configurable-gates). Copy the image policy with `cp config/local/image_policy.yaml.example config/local/image_policy.yaml`. The cluster render refuses to run without it, because it names the registries a tenant pod may pull from. See [image governance](docs/image-governance.md#the-image-policy).
 4. Provision review-verdict signing, which is on by default. Generate a key and trust root and set the signing variables in `.env` by following the local setup in [docs/review-verdict-signing.md](docs/review-verdict-signing.md). Without this the review worker fails closed at startup. To skip signing, set `REVIEW_SIGNING_ENABLED=false`.
 5. Install the locked dependencies into `.venv` with `uv sync --locked --all-extras`, then activate it with `source .venv/bin/activate`. `uv.lock` pins every package with its hashes, and `--locked` refuses a lock that no longer matches `pyproject.toml`. See [CONTRIBUTING.md](CONTRIBUTING.md) for changing a dependency.
-6. Confirm the toolchain with `inv ci`, which runs the lint, the hermetic tests, and the evaluation gate.
+6. Confirm the toolchain with `inv ci`, which runs the lint, the format check, the hermetic tests, and the evaluation gate.
 7. Choose a Bedrock connectivity provider in `.env` and open the path with `inv tunnel-start`. See [Bedrock connectivity](#bedrock-connectivity).
 8. Validate the Bedrock path and local reachability with `inv connectivity-check`.
-9. Build the images, apply database migrations, and start the stack with `inv local-up`.
-10. Register the Temporal reap and intake schedules with `inv schedules-install`. They persist in Temporal's database, so run it again only after the volumes are wiped or a schedule setting changes.
+9. Build the images, apply database migrations, and start the stack with `inv local-up`. It runs `inv repos-compose`, which writes the git-ignored `compose.repositories.yaml` that mounts `config/local/repositories.yaml`, each tenant's bundle directory, and each tenant's repositories with a `path` read-only into repository intelligence, the repositories at `/tenants/<tenant>/repositories/<name>`, then starts Compose, then deploys the cluster workloads with `inv k8s-reload`, writes the AWS credentials with `inv aws-login`, and copies the local-backend repositories in with `inv repos-sync`. See [The cluster workloads](#the-cluster-workloads).
+10. Each tenant's activity worker registers its Temporal reap and intake schedules, `orphan-reaper-<tenant>` and `<source>-intake-<tenant>`, on its task queue when it starts. `inv schedules-install` removes the untenanted schedules an earlier version registered.
 11. Publish the prompt library to Langfuse with `inv prompts-seed`. Without it each stage falls back to the static text in `services/prompts/library.py` and logs a prompt fetch warning on every run.
 12. Confirm everything is healthy with `inv smoke-test`.
 13. Load allowlisted seed data with `inv seed` when you need demo fixtures.
 
 ## Deploying to AWS
 
-These steps stand up the AWS infrastructure for one account from a workstation: the tiered network, the private Bedrock path, the Fargate jumphost, the data tier, and the secret store. Run them from the repository root unless a step changes directory, and pass the `agentic-platform` profile, or your own, to every AWS command. The platform services do not run in AWS yet. The container-platform services feature on the [roadmap](ROADMAP.md) adds them, together with the deployment steps that migrate the database and start the services.
+These steps stand up the AWS infrastructure for one account from a workstation: the tiered network, the private Bedrock path, the Fargate jumphost, the data tier, the secret store, the platform ECS cluster, the Temporal control plane, and the platform services. Run them from the repository root unless a step changes directory, and pass the `agentic-platform` profile, or your own, to every AWS command. The [AWS diagrams](docs/architecture.md#aws-environment) show what this composition provisions and how the pieces connect.
 
 1. Create the state bucket and the access-log bucket once per account. Run `cd infra/terraform/bootstrap`, copy `terraform.tfvars.example` to `terraform.tfvars` only to override a default, then run `terraform init` and `AWS_PROFILE=agentic-platform terraform apply`. This root keeps its own state locally. See the [bootstrap README](infra/terraform/bootstrap/README.md).
 2. Write the backend settings for the composition root with `terraform output -raw backend_hcl > ../examples/private-bedrock/backend.hcl`, and record the access-log bucket name from `terraform output -raw access_log_bucket`. The file belongs in `infra/terraform/examples/private-bedrock`, next to the committed `backend.hcl.example` that shows its shape, so you can also copy the example and fill in the bucket by hand. Never commit `backend.hcl`.
 3. Choose the network shape. Run `cd ../examples/private-bedrock`, then copy `greenfield.tfvars.example` to `greenfield.tfvars` to create the VPC, or `existing-network.tfvars.example` to `existing-network.tfvars` to reuse one. Set `access_log_bucket`, `region`, and `name_prefix`. Never commit the tfvars files.
-4. Choose the services in the same tfvars file by setting each toggle to `true`. `create_aurora`, `create_cache`, `create_clickhouse_storage`, and `create_langfuse_bucket` add the data tier, and `create_secret_store` adds the secret store with the per-service database credentials and their rotation. `create_rebar_ticket_store` adds the bucket the rebar ticket store syncs to, with its reader and writer roles. Set `rebar_ticket_store_trusted_principals` to the principals that assume those roles and `rebar_ticket_store_admin_principals` to the operator that seeds and empties the bucket. The data tier and the secret store together cost a few dollars a day while they run. See the [composition root README](infra/terraform/examples/private-bedrock/README.md) for every toggle.
+4. Choose the services in the same tfvars file by setting each toggle to `true`. `create_aurora`, `create_cache`, `create_clickhouse_storage`, and `create_langfuse_bucket` add the data tier, and `create_secret_store` adds the secret store with the per-service database credentials and their rotation. With `create_eks`, list the tenants in `tenants`, which gives each tenant its own worker identity, secrets, image prefix, config bundle prefix, and rebar ticket store, as [onboarding a tenant](infra/terraform/examples/private-bedrock/README.md#onboarding-a-tenant) describes. Each tenant's `ticket_store.admins` names the operators that seed and empty its store. `create_ecs_cluster` adds the platform ECS cluster, `create_temporal_control_plane` adds the Temporal control plane, which needs that cluster, and `create_container_services` adds the image repositories for the platform containers. The data tier and the secret store together cost a few dollars a day while they run. See the [composition root README](infra/terraform/examples/private-bedrock/README.md) for every toggle.
 5. Initialize the remote state with `terraform init -backend-config=backend.hcl`. A working directory that already holds a local `terraform.tfstate` from an earlier apply moves it into the bucket once with `terraform init -migrate-state -backend-config=backend.hcl`. Confirm with a plan that no changes are pending, then delete the local `terraform.tfstate` and `terraform.tfstate.backup`.
 6. Review the change set with `AWS_PROFILE=agentic-platform terraform plan -var-file=greenfield.tfvars`, then apply it with `AWS_PROFILE=agentic-platform terraform apply -var-file=greenfield.tfvars`. Use `existing-network.tfvars` in both commands for an existing network. With every service enabled the apply creates about 220 resources and takes 15 to 20 minutes, most of it Aurora and ElastiCache. A second plan reports no changes.
-7. Return to the repository root and push the jumphost image to the repository in the `jumphost_ecr_repository_url` output with `inv publish-jumphost-image --tag v1`. The tag must match `jumphost_image_tag`.
-8. Record the `bedrock_invoke_policy_arn` output. It grants `bedrock:InvokeModel` and is attached to the role of each platform service that calls Bedrock once those services run in AWS. A workstation keeps signing with the profile from the prerequisites, which already needs `bedrock:InvokeModel`, so nothing is attached at this step for local use.
-9. With the secret store and Aurora enabled, and with `.venv` active, create the per-service database roles and databases before anything connects to the cluster with `inv db-bootstrap-roles --function-name "$(AWS_PROFILE=agentic-platform terraform -chdir=infra/terraform/examples/private-bedrock output -raw role_bootstrap_function_name)"`. The task signs with `AWS_PROFILE` from `.env`. The first scheduled rotation fails until the roles exist.
-10. With the secret store enabled, set each external secret, for example `aws secretsmanager put-secret-value --profile agentic-platform --secret-id agentic-platform/external/github-token --secret-string file://github-token.txt`. The [secret-store README](infra/terraform/secret-store/README.md) lists every secret, which ones Terraform generates, and how each one rotates.
-11. With the ticket store enabled, set `store.bucket`, `roles.read_only`, and `roles.write` in `config/local/tickets.yaml` from the `rebar_ticket_store_bucket`, `rebar_ticket_store_reader_role_arn`, and `rebar_ticket_store_writer_role_arn` outputs. Add the `rebar-tickets-reader` and `rebar-tickets-writer` profiles to `~/.aws/config` with those role ARNs, as the [rebar-ticket-store README](infra/terraform/rebar-ticket-store/README.md) shows. Point the store at the bucket with `inv rebar-store-remote`, adding `--local` when the store lives on this host, then seed it once with `git -C <store> push origin tickets`. Set `AWS_USE_FIPS_ENDPOINT=true` for that push when FIPS endpoints are required.
-12. Point the local stack at the deployed jumphost. Set `BEDROCK_CONNECTIVITY_PROVIDER=jumphost`, `JUMPHOST_NAME` to the `jumphost_name` variable, which defaults to `bedrock-jumphost`, and `AWS_PROFILE` and `AWS_REGION` to the target account in `.env`.
-13. Open the tunnel with `inv tunnel-start --detach` and confirm the private Bedrock path with `inv connectivity-check`.
+7. Return to the repository root and push the jumphost image to the repository in the `jumphost_ecr_repository_url` output with `inv publish-jumphost-image --tag v1`. The tag must match `jumphost_image_tag`, and the repository must not hold it yet unless an earlier run of the task signed it. The task scans the image like the platform images and signs it with the platform signing profile inside the buildah image that `inv publish-platform-images` pushes, so run it after that task, or pass `--unsigned` when `create_container_services` is off and the root creates no signing profile. See the [bedrock-jumphost-fargate README](infra/terraform/bedrock-jumphost-fargate/README.md#image-delivery). With `create_container_services` enabled, push the platform container images to the repositories in the `container_repository_urls` output with `inv publish-platform-images`, which builds the platform, repository-intelligence, collector, TLS sidecar, OPA, buildah, OpenHands agent-server, Langfuse, ClickHouse, LiteLLM, semgrep, and trivy images on Amazon Linux 2023 from the versions `docker/al2023/versions.env` pins. It scans each image with Amazon Inspector before the push and pushes none while any carries a HIGH or CRITICAL finding that `--exceptions` does not accept, as [image governance](docs/image-governance.md) describes. It writes each reference with its digest to the git-ignored `images.auto.tfvars.json` in the composition root, which every later plan reads with no flag. Do not also set the image variables in the tfvars file, because a `-var-file` value overrides the file. In a government account the images come from CI instead. See [Publishing the images from CI](#publishing-the-images-from-ci). To add the internal load balancer, issue its certificate as the [container-services README](infra/terraform/container-services/README.md) describes, import it into ACM, set `container_internal_acm_certificate_arn` to its ARN, and apply again.
+8. Record the `bedrock_invoke_policy_arn` output. It grants `bedrock:InvokeModel`, and the composition attaches it to the task role of the review worker, the platform service that calls Bedrock. A workstation keeps signing with the profile from the prerequisites, which already needs `bedrock:InvokeModel`, so nothing is attached at this step for local use.
+9. With the secret store and Aurora enabled, and with `.venv` active, create the per-service database roles and databases before anything connects to the cluster with `inv db-bootstrap-roles --function-name "$(AWS_PROFILE=agentic-platform terraform -chdir=infra/terraform/examples/private-bedrock output -raw role_bootstrap_function_name)"`. The task signs with `AWS_PROFILE` from `.env`. The first scheduled rotation fails until the roles exist. Run it again whenever the Aurora cluster is created anew, as after a destroy and apply, because the new cluster has none of the roles. A service that connects before then fails with `password authentication failed`.
+10. With `create_temporal_control_plane` enabled, deploy the Temporal control plane. It needs `create_ecs_cluster`, `create_aurora`, `create_secret_store`, and the `temporal` database role from step 9, and the UI needs two `management_subnet_cidrs` in different Availability Zones. The [temporal-control-plane README](infra/terraform/temporal-control-plane/README.md) describes each setting.
+    1. Push the server, admin-tools, and UI images to the repositories in the `temporal_server_repository_url`, `temporal_admin_tools_repository_url`, and `temporal_ui_repository_url` outputs with `inv publish-temporal-images`, which prints each image reference with its digest.
+    2. Choose the source of the frontend and internode certificates and set its variables in the tfvars file. Keep every certificate directory outside the repository.
+        - Generated. Run `inv temporal-certs generate --out ~/.agentic-platform/temporal-tls`. It names the certificates `frontend.temporal.internal` and `internode.temporal.internal`, which are the defaults of `temporal_frontend_server_name` and `temporal_internode_server_name`. To issue other names, pass `--frontend-name` and `--internode-name` and set the two variables to match.
+        - Your PKI. Place `ca.pem`, `internode.pem`, `internode-key.pem`, `frontend.pem`, and `frontend-key.pem` in one directory. `ca.pem` holds the chain to the root, and the internode certificate carries both the server and client authentication usages. Set `temporal_frontend_server_name` and `temporal_internode_server_name` to the names on the certificates.
+        - ACM for the frontend. Request or import the frontend certificate in ACM, set `temporal_frontend_acm_certificate_arn` to its ARN and `temporal_frontend_server_name` to its name, and set `temporal_frontend_certificate_publicly_trusted = true` when it chains to a public root. The internode pair and `ca.pem` still come from one of the sources above, and the directory holds no frontend files.
+    3. Issue the UI certificate for the name operators open the UI under, either by adding `--ui-name NAME` to `generate` or from your PKI. Import it with `aws acm import-certificate --profile agentic-platform --certificate fileb://ui.pem --private-key fileb://ui-key.pem --certificate-chain fileb://ca.pem`, and set `temporal_ui_acm_certificate_arn` to the ARN it returns.
+    4. Set `temporal_server_image`, `temporal_admin_tools_image`, and `temporal_ui_image` to the references from the first step, and set `temporal_fips_140_mode = true` in a FedRAMP environment, which restricts the Temporal processes to FIPS-approved algorithms. Then plan and apply as in step 6. The server service starts at a count of zero.
+    5. Write the certificates with `inv temporal-certs put --dir DIR`. It refuses a certificate that does not verify against `ca.pem`, that has expired, or that does not carry the configured server name. To track the expiry of the internode certificate in ACM, add `--import-to-acm`, set `temporal_internode_acm_certificate_arn` to the ARN it prints, apply, and subscribe the operators to `certificate_expiry_topic_arn` in the `temporal_tls` output.
+    6. Run `inv temporal-deploy`. It applies the schema, starts the server, registers the namespace, and restarts the UI. Run it again after every apply that changes an image and after every `put`.
+    7. Open the UI with `inv temporal-ui`, which forwards `localhost:8443` to the UI load balancer through the jumphost named by `JUMPHOST_NAME` in `.env`, as step 15 sets it. Map the UI certificate name to `127.0.0.1` in `/etc/hosts`, trust the CA that issued it, and browse to `https://NAME:8443`.
+11. With the secret store enabled, set each external secret, for example `aws secretsmanager put-secret-value --profile agentic-platform --secret-id agentic-platform/external/github-token --secret-string file://github-token.txt`. The [secret-store README](infra/terraform/secret-store/README.md) lists every secret, which ones Terraform generates, and how each one rotates.
+12. With `create_container_services`, the internal load balancer from step 7, and the Temporal control plane from step 10, run the platform services. They need the `review-signing-key` external secret from step 11.
+    1. Set `container_platform_ca_file` to the `ca.pem` that issued the internal load balancer certificate. The platform and repository-intelligence images come from `images.auto.tfvars.json`.
+    2. Place the environment's config files, such as `repositories.yaml`, `github.yaml`, `tickets.yaml`, and `review-trust-root.yaml`, in a directory outside the repository and set `container_config_dir` to it. The tasks receive them through the task definitions, so a file holds settings and never a credential.
+    3. Adjust `container_service_counts`. The services find each repository in `repositories.yaml` at `/repositories/<name>` on the checkouts file system. With tenants, repository intelligence reads each tenant's repositories at `/tenants/<tenant>/repositories/<name>` instead, and indexes each repository with `index: true`. The tenant's activity worker keeps the checkout of each such GitHub repository there, at its `index_ref` or the tip of its default branch. The collector runs with the collector and TLS sidecar images from `images.auto.tfvars.json`, and exports traces to X-Ray and metrics to a Prometheus workspace unless `container_collector_exports_enabled = false`, and `container_xray_encryption_enabled = true` sets the region's X-Ray encryption to a customer managed key.
+    4. To run Langfuse and ClickHouse, which need `create_cache`, `create_clickhouse_storage`, and `create_langfuse_bucket`, set `container_langfuse_admin_email` to the administrator's email. The Langfuse, ClickHouse, and TLS sidecar images come from `images.auto.tfvars.json`. List the operator role or user that signs in first under `langfuse_admin_password` in `secret_readers`, so it can read the generated password. Issue the ClickHouse certificate from the internal load balancer CA with `inv clickhouse-certs issue --dir DIR`.
+    5. Apply as in step 6. With Langfuse, write the ClickHouse certificate to its secret with `inv clickhouse-certs put --dir DIR` after the apply.
+    6. Run `inv platform-deploy`. It migrates the database as `platform_migrator`, starts ClickHouse and migrates its Langfuse schema, moves every service to its current task definition, starts a new build of each Temporal worker in its idle slot, registers the reap and intake schedules, and prunes the drained Worker Deployment versions. It leaves an older worker slot running while executions are pinned to its build, and the next deploy scales that slot to zero once they finish. Run it after every apply that changes an image or the configuration. The [container-services README](infra/terraform/container-services/README.md) describes the services and the slots.
+    7. With Langfuse, open it with `inv langfuse-ui`, which forwards `localhost:8444` to Langfuse through the jumphost. Map `langfuse.<container_internal_domain>` to `127.0.0.1` in `/etc/hosts`, trust the internal load balancer CA, browse to `https://langfuse.<container_internal_domain>:8444`, and sign in as the administrator with the password from `aws secretsmanager get-secret-value --secret-id agentic-platform/generated/langfuse-admin-password`.
+    8. With `create_eks`, run the EKS workloads. In an environment without a public domain, issue the inbound webhook certificate with `inv webhook-certs issue --dir DIR` and import it with `inv webhook-certs import --dir DIR`. Set `eks_webhook_certificate_arn` to the ARN it prints. Issue the MCP gateway certificate for `*.<eks_mcp_gateway_domain>` from the platform CA with `inv mcp-gateway-certs issue --dir DIR --domain DOMAIN`, where DIR holds the `ca.pem` of `inv temporal-certs generate --internal-name`, and import it with `inv mcp-gateway-certs import --dir DIR`. Set `eks_mcp_gateway_domain` to DOMAIN, `eks_mcp_gateway_certificate_arn` to the ARN it prints, which may not be the webhook certificate, and `eks_mcp_gateway_client_cidrs` to the gateways' client subnets, then apply as in step 6. Each tenant's MCP gateway receives its own internal load balancer with that certificate and those subnets. With two or more tenants, the apply creates each tenant's `<name_prefix>/tenants/<tenant>/github-webhook-secret` and `<name_prefix>/tenants/<tenant>/jira-webhook-secret` without a value. Store each with `aws secretsmanager put-secret-value` before the deploy, because the webhook refuses a tenant's deliveries until its secrets hold a value. See [Inbound webhooks and CI](#inbound-webhooks-and-ci). Run `inv eks-deploy`. It starts the eks-deployer task in the management tier, which installs the AWS Load Balancer Controller, applies the [AWS overlay](deploy/kubernetes/README.md#the-aws-overlay), and waits for each deployment, so the workstation needs no kubectl, helm, or route to the private API. It leaves out any mounted secret without a value and prints the task's log. Run it after every apply that changes an image or the configuration, as `inv aws-release` does. Once it reports that every pod is selected by a NetworkPolicy, set `eks_network_policy_enforcing_mode = "strict"` and apply, which denies any pod no policy selects.
+    9. With `tenants`, check the tenant boundary with `inv tenant-verify-aws --context <eks-context>`, as [Verifying the tenant boundary in AWS](#verifying-the-tenant-boundary-in-aws) describes.
+13. To scale the platform and Temporal services to zero overnight, set `off_hours_enabled = true` and apply. The default schedule sleeps at 20:00 every day and wakes at 07:00 Monday through Friday, America/Chicago, which keeps the services at zero across the quarterly Sunday credential rotation, and the Aurora cluster pauses after an hour without a connection. Set `off_hours_timezone`, `off_hours_sleep_schedule`, and `off_hours_wake_schedule` to change it, and start the `off_hours` output's wake document with `aws ssm start-automation-execution` to wake the services early. The sleep also scales the EKS deployments that connect to Aurora to zero, and checks before and after it stops the Temporal server that no service, pod, or database connection remains, and a failed check keeps the cluster awake and publishes to the `off_hours` output's alert topic. On a cluster bootstrapped before the secret store created the `database_monitor` secret, run the step 9 bootstrap again, so the `monitor` role the check reads as exists. The [off-hours README](infra/terraform/off-hours/README.md) describes the order, the checks, and the counts it restores.
+14. For a tenant on the rebar backend, set `store.bucket`, `roles.read_only`, and `roles.write` in the tenant's `tickets.yaml` from the `bucket`, `reader_role_arn`, and `writer_role_arn` of `tenants.<tenant>.ticket_store` in `terraform output -json tenants`. Add the `rebar-tickets-reader` and `rebar-tickets-writer` profiles to `~/.aws/config` with those role ARNs, as the [rebar-ticket-store README](infra/terraform/rebar-ticket-store/README.md) shows. Point the store at the bucket with `inv rebar-store-remote`, adding `--local` when the store lives on this host, then seed it once with `git -C <store> push origin tickets`. Set `AWS_USE_FIPS_ENDPOINT=true` for that push when FIPS endpoints are required.
+15. Point the local stack at the deployed jumphost. Set `BEDROCK_CONNECTIVITY_PROVIDER=jumphost`, `JUMPHOST_NAME` to the `jumphost_name` variable, which defaults to `bedrock-jumphost`, and `AWS_PROFILE` and `AWS_REGION` to the target account in `.env`.
+16. Open the tunnel with `inv tunnel-start --detach` and confirm the private Bedrock path with `inv connectivity-check`.
 
 For a later change, run the plan and apply from step 6 again. Read the breaking changes in [CHANGELOG.md](CHANGELOG.md) before applying a new release, because some releases need a `terraform init -upgrade` or a one-time state step.
+
+### Verifying the tenant boundary in AWS
+
+`inv tenant-verify-aws` checks the tenant boundary of a deployment with read-only calls. It reads `terraform output -json` of the composition root, or the file `--outputs FILE` names, prints PASS, FAIL, or SKIP for each check, and exits 1 on any FAIL and 2 on a setup error. `--context` names the kubectl context of the EKS cluster, `--region` the region, `--admin-role-arn` a role that must read no tenant secret, `--repo TENANT=REPOSITORY`, which repeats, the repository to probe for a tenant, and `--only` a comma-separated subset of the four groups below.
+
+- `iam` runs `simulate-principal-policy` with each secret's resource policy for every tenant secret, including each secret tagged `tenant=<tenant>`. It expects each named reader to be allowed and every role of the other tenants and the admin role to be denied, and checks the tenant KMS key, the config bucket, and the bucket key the same way.
+- `env` reads the variable names in `/proc/1/environ` and the file names under `/mnt/secrets` of every container in each tenant namespace and of every `*-<tenant>` Deployment in the platform namespace, and never a value. It fails on a name of another tenant, on `REPO_INTELLIGENCE_TOKEN_KEY`, and on a SecretProviderClass that names a secret of another tenant.
+- `ri` calls repository intelligence from each tenant's activity worker and expects 401 without a token, 403 for a repository of another tenant, and 200 for the tenant's own repository.
+- `mounts` expects the worker to hold `/tenants/<tenant>` and the `.git` of the probed checkout, no root of another tenant, and only its own bundle. Through ECS Exec it expects the checkouts and the `scip` and `zoekt` indexes of repo-index-worker under `<tenant>/`, and a bundle read from the review worker.
+
+The ECS checks need `container_enable_execute_command = true` and the session-manager-plugin, and report SKIP without them. The kubectl checks need a route to the private EKS API.
+
+To verify a sandbox account end to end, run these steps from the repository root.
+
+1. In `infra/terraform/examples/private-bedrock/tenants.auto.tfvars`, define two tenants as `tenants.tfvars.example` shows, and set `tenant_config_admin_principals` and `container_enable_execute_command = true`.
+2. Publish the images with `inv publish-platform-images`, then apply with `inv aws-release --var-file greenfield.tfvars`.
+3. Publish each tenant's bundle with `inv tenant-config-publish --tenant <tenant>`.
+4. Deploy with `inv platform-deploy` and `inv eks-deploy`.
+5. Run `inv tenant-verify-aws --context <eks-context>` and expect 0 failed checks.
+6. Run one ticket per tenant to a promoted pull request. Merge a pull request of the second tenant on GitHub and confirm that the inbound webhook delivers it.
+7. Rotate a tenant's repository intelligence token with `aws secretsmanager rotate-secret --secret-id <arn>`, where the ARN is `repo_intelligence_token_arn` of the tenant in `terraform output -json tenants`. Then run `inv tenant-verify-aws --only ri`, and confirm that the repository intelligence log group shows no 401 response after the rotation other than those of the probe without a token.
+
+### Publishing the images from CI
+
+The `publish-images` workflow in `.github/workflows` builds and pushes every platform image on each `v*` tag and on manual dispatch, for `arm64` by default. It runs `inv publish-platform-images` and holds no build logic of its own, so a workflow run and a local run of the same clean commit produce the same references. The workflow runs it in stages to build in parallel. The `base` job builds and CIS-scans the hardened base and the OpenSCAP scanner and pushes both to the `al2023-base` and `al2023-openscap` repositories. One `images` job per group in `PUBLISH_GROUPS` of `scripts/publish_platform_images.py` pulls them and builds, scans, and pushes its images with `--stage group`. The `publish` job merges the groups with `--stage finalize`, which fails when a group refused an image or did not report, then signs the catalog images and writes the references. A local run without `--stage` does all of this in one process. Whichever runs first pushes, and the other finds the images already in ECR and reuses them. The workflow uploads `images.auto.tfvars.json` and a manifest as the `images-<arch>` artifact, and attaches a build provenance attestation to each image it pushed, stored in ECR beside the image. Verify one with `gh attestation verify oci://<reference> --repo navapbc/agentic-development-platform`.
+
+The workflow signs in to AWS through the account's GitHub OIDC provider, so GitHub holds no AWS key.
+
+1. Set `create_github_image_publisher = true` in the tfvars file, and `github_oidc_provider_arn` to the account's provider for `token.actions.githubusercontent.com` when one already exists, then apply. The `github_image_publisher_role_arn` output is the role. It trusts only this repository's workflows on `main` and on `v*` tags, through `github_repository` and `github_publish_refs`, and can push only to the platform repositories. This repository's tokens carry GitHub's immutable subject, so also set `github_repository_ids = { owner_id = 11320847, repository_id = 1339837798 }`.
+2. Set the repository variables with `gh variable set AWS_PUBLISH_ROLE_ARN --body <role arn>`, `gh variable set AWS_PUBLISH_REGION --body <region>`, and `gh variable set AWS_IMAGE_SIGNING_PROFILE_ARN --body "$(terraform -chdir=infra/terraform/examples/private-bedrock output -raw image_signing_profile_arn)"`. For finding exceptions, also run `gh variable set AWS_CONFIG_BUCKET --body "$(terraform -chdir=infra/terraform/examples/private-bedrock output -raw config_bucket)"` and `gh variable set AWS_IMAGE_EXCEPTION_ROLE_ARN --body "$(terraform -chdir=infra/terraform/examples/private-bedrock output -raw github_image_exception_role_arn)"`. Then create a GitHub environment named `image-exception` under Settings, Environments, add the required reviewers who approve platform finding exceptions, and enable Prevent self-review. Under Deployment branches and tags, limit the environment to `main`. The `image-exception` workflow runs only after a reviewer approves it, and its AWS role trusts no job outside that environment or off `main`.
+3. Push a `v*` tag, or run `gh workflow run publish-images.yml` once the workflow is on `main`.
+4. Download the artifact into the composition root with `gh run download <run id> --name images-arm64 --dir infra/terraform/examples/private-bedrock`, then run `inv aws-release`, which plans the root, applies after confirmation, and runs `inv platform-deploy`.
 
 ### Tearing down the AWS infrastructure
 
 The composition root protects its data by default, so a destroy needs a preparation apply first. The bootstrap root stays, because it holds the state of every other root.
 
-1. Stop the tunnel with `inv tunnel-stop`, then stop any jumphost task that is still running with `aws ecs stop-task --cluster agentic-platform-bedrock-jumphost --task <task arn>`. A running task holds a network interface that blocks the subnet delete.
-2. Empty the Langfuse bucket and the rebar ticket store bucket, including every object version, when anything has written to them. Empty the ticket store bucket as a principal in `rebar_ticket_store_admin_principals`, because its policy denies object access to everyone else. The bucket is versioned and refuses to delete while it holds objects.
-3. Set `aurora_deletion_protection = false` in the tfvars file. In a disposable environment also set `aurora_skip_final_snapshot = true` to delete the cluster without a final snapshot, and `secret_recovery_window_days = 0` so the secret names can be created again at once. Otherwise each name stays reserved for 30 days.
-4. Apply the change with `AWS_PROFILE=agentic-platform terraform apply -var-file=greenfield.tfvars`. Terraform reads these settings from state when it destroys, so this apply must come first.
-5. Destroy with `AWS_PROFILE=agentic-platform terraform destroy -var-file=greenfield.tfvars`.
+1. Set `aurora_deletion_protection = false` in the tfvars file. In a disposable environment also set `aurora_skip_final_snapshot = true` to delete the cluster without a final snapshot, and `secret_recovery_window_days = 0`. Apply the change with `AWS_PROFILE=agentic-platform terraform apply -var-file=greenfield.tfvars`. Terraform reads these settings from state when it destroys, so this apply must come first.
+2. Stop the tunnel with `inv tunnel-stop`.
+3. Run `inv aws-destroy`, or `inv aws-destroy --plan-only` to see what it removes and keeps. It plans a destroy of every resource the composition root manages except the ECR repositories, their keys, and their images, and each tenant's rebar ticket store with its bucket, key, and roles, because the store is the system of record for the tenant's tickets. It applies the destroy only after you type the account ID. It refuses to run when a kept module depends on a resource the destroy removes, which an apply of the current configuration resolves. Before the destroy it removes what Terraform does not own but would trip over, which is the load balancers, target groups, and security groups the AWS Load Balancer Controller created for Ingress resources and any ECS task started outside a service, such as a jumphost session. It also empties every bucket it destroys that Terraform would refuse to delete, such as the tenant config bucket, so run it as a principal in `tenant_config_admin_principals`. After the destroy it deletes the secrets left pending deletion, so a rebuild can reuse their names, and lists every tagged resource that still carries the name prefix. That list includes the kept repositories, the kept ticket stores, the bootstrap buckets, and, for some hours, deleted resources the tagging API still reports, such as inactive ECS clusters and task definitions. Add `--delete-images` to delete the repositories and their images too. Add `--delete-stores` to delete the ticket stores and the tickets they hold. Each store bucket carries `prevent_destroy`, so the run leaves it out of the planned destroy and applies the destroy, which removes the store's bucket policy, key, and roles. It then empties each bucket, every version and delete marker included, immediately before it deletes the bucket with `aws s3api delete-bucket`, because a writer can add versions while the destroy runs, and removes the bucket from state with `terraform state rm`. The bucket policy is gone by then, so IAM alone governs that step, and the principal that runs it needs `s3:ListBucketVersions`, `s3:DeleteObjectVersion`, and `s3:DeleteBucket` on the store buckets. A bucket the run cannot delete stays in state. The run still purges the pending secrets, then exits non-zero and prints the rerun command, such as `inv aws-destroy --var-file greenfield.tfvars --delete-stores`. A rerun with only released buckets left skips the plan and treats a bucket that no longer exists as deleted.
 
-The destroy removes the jumphost image and the external secret values, so a later deployment repeats steps 7 and 10. The KMS keys wait 30 days before deletion and can be restored with `aws kms cancel-key-deletion` during that time. A final snapshot, when one is taken, and the ClickHouse file system backups in the `aws/efs/automatic-backup-vault` vault remain after the destroy and are deleted separately.
+The destroy removes the external secret values, so a rebuild sets them again as in step 11. The KMS keys wait 30 days before deletion and can be restored with `aws kms cancel-key-deletion` during that time. A final snapshot, when one is taken, and the ClickHouse file system backups in the `aws/efs/automatic-backup-vault` vault remain after the destroy and are deleted separately.
+
+Rebuild with the steps above from step 6. The kept repositories still hold the images, and `images.auto.tfvars.json` still names them, so the rebuild needs no publish unless the sources changed. The kept ticket stores keep their bucket names and roles, and their roles trust each recreated worker role by its ARN, so each tenant's worker finds its tickets after the rebuild.
 
 ## Vendored binaries
 
-Two binaries live under `vendor/bin` and are provisioned outside the Python install.
-
-`acli` is the Atlassian CLI used for Jira Cloud writes, so only a Jira Cloud ticket source needs it. The worker images install it when `INSTALL_ACLI=true` is set in `.env`, and `inv local-up` then runs `scripts/fetch_acli.py` during the build. On Linux the script downloads the versioned Debian package from Atlassian's apt pool, verifies it against the SHA-256 committed in the script, and extracts the binary to `/app/vendor/bin/acli`. The pinned release is 1.3.39. Another `ACLI_VERSION`, or an `ACLI_DOWNLOAD_URL` mirror, needs `ACLI_SHA256`, and the build refuses a Linux download without a digest. Without acli, the Jira Cloud path fails with a message that names `INSTALL_ACLI`. To place the binary on the host for host-side runs, use `inv fetch-acli`, which writes `vendor/bin/acli`. Atlassian publishes the macOS binary only as `latest`, so a macOS fetch is verified only when `ACLI_SHA256` is set.
+One binary lives under `vendor/bin` and is provisioned outside the Python install. The Jira Cloud ticket source calls the Jira REST API v3 directly with the site's account email and API token, so it needs no Atlassian CLI.
 
 `codebase-memory-mcp` is an optional Repository Intelligence provider that supplies file-level reference and caller candidates. It has no release binary and is built from its upstream MIT-licensed source at `https://github.com/DeusData/codebase-memory-mcp`. Run `inv cbm-build`, which clones the upstream repository at the pinned tag and builds the binary into `vendor/bin/codebase-memory-mcp`. Pass `--source <path>` to build from an existing local checkout for a closed environment, or `--ref <tag>` to build a different upstream version. The Repository Intelligence services mount that path read-only and drive the binary as a per-call subprocess, so CBM engages automatically once the binary is present. When the binary is absent the provider is skipped and the stack runs on its other providers.
 
@@ -116,18 +166,21 @@ Two binaries live under `vendor/bin` and are provisioned outside the Python inst
 | Group | Keys | What to set |
 | --- | --- | --- |
 | Postgres | `POSTGRES_*`, `DATABASE_URL`, `ALEMBIC_DATABASE_URL` | Defaults work locally. Both URLs target the `postgres` service, and a host-run task rewrites the address to the published port |
-| Temporal | `TEMPORAL_HOST`, `TEMPORAL_NAMESPACE`, `TEMPORAL_TASK_QUEUE` | Defaults work locally |
+| Temporal | `TEMPORAL_HOST`, `TEMPORAL_NAMESPACE`, `TEMPORAL_TASK_QUEUE`, `TEMPORAL_TLS_CA`, `TEMPORAL_TLS_SERVER_NAME` | Defaults work locally, without TLS. A deployed client sets `TEMPORAL_TLS_CA` to the CA bundle, inline or as a file path, and `TEMPORAL_TLS_SERVER_NAME` to the name on the frontend certificate. A server name alone verifies against the system trust store, as for a public ACM certificate |
 | Bedrock | `AWS_PROFILE`, `PLATFORM_AWS_PROFILE`, `AWS_REGION`, `BEDROCK_CONNECTIVITY_PROVIDER`, `BEDROCK_ENDPOINT_URL`, provider keys | Set your profile and provider. See [Bedrock connectivity](#bedrock-connectivity) |
-| LiteLLM | `LITELLM_BASE_URL`, `LITELLM_MASTER_KEY` | Set a local master key |
+| Cluster credentials | `AWS_LOGIN_COMMAND`, `AWS_LOGIN_SESSION_SECONDS`, `AWS_LOGIN_STATIC_PASSTHROUGH`, `AWS_CREDENTIALS_WARN_SECONDS` | How `inv aws-login` obtains the credentials it copies into the cluster. See [Credentials in the cluster](#credentials-in-the-cluster) |
+| Cluster | `K8S_CONTEXT`, `K8S_NAMESPACE`, `K8S_COMPOSE_ADDRESS`, `K8S_IMAGE_LOAD`, `K8S_IMAGE_LOAD_TARGET` | The cluster, the namespace, the address pods reach Compose on, and how images reach the cluster. Defaults suit Docker Desktop. See [The cluster workloads](#the-cluster-workloads) |
+| LiteLLM | `LITELLM_BASE_URL`, `LITELLM_MASTER_KEY`, `RUN_MODEL_BUDGET_USD`, `RUN_MODEL_ACCESS_TTL_SECONDS`, `TENANT_MODEL_BUDGET_USD`, `TENANT_MODEL_BUDGET_DURATION`, `TENANT_MODEL_RPM_LIMIT`, `TENANT_MODEL_TPM_LIMIT` | Set a local master key. The model limits apply to the per-run keys pods receive. See [The cluster workloads](#the-cluster-workloads) |
 | Review (rebar) | `REBAR_LLM_*`, `REVIEW_ATTESTATION_SECRET` | Point at LiteLLM, set an attestation secret for the HMAC fallback |
 | Review signing | `REVIEW_SIGNING_ENABLED`, `REVIEW_SIGNING_KEY_PATH` or `REVIEW_SIGNING_KEY`, `REVIEW_TRUST_ROOT_PATH` | On by default. Provision a signing key and trust root, or set enabled to false. See [docs/review-verdict-signing.md](docs/review-verdict-signing.md) |
 | Authorship signing | `AUTHORSHIP_SIGNING_ENABLED`, `AUTHORSHIP_IDENTITY_ID`, `AUTHORSHIP_SIGNING_KEY_PATH` or `AUTHORSHIP_SIGNING_KEY` | On by default, active only on the rebar backend with an identity set. Jira does not participate. See [docs/authored-identity-signing.md](docs/authored-identity-signing.md) |
-| Backends | `TICKET_BACKEND`, `SOURCE_CONTROL_BACKEND`, `SOURCE_CONTROL_LOCAL_*` | Select the ticket and source-control backends. Defaults are Jira and GitHub. See [Ticket and source-control backends](#ticket-and-source-control-backends) |
-| Admission | `MAX_CONCURRENT_RUNS`, `EXECUTION_ORPHAN_GRACE_SECONDS` | Cap on runs in flight and the grace window before a dead run's slot is reclaimed. Defaults work locally |
+| Backends | `TICKET_BACKEND`, `REPOSITORY_ROOT`, `SOURCE_CONTROL_LOCAL_*` | Select the ticket backend, where repository checkouts appear in a container, and the local backend's artifacts and operators. Each repository's source-control backend is set in `repositories.yaml`. See [Ticket and source-control backends](#ticket-and-source-control-backends) |
+| Admission | `MAX_CONCURRENT_RUNS`, `EXECUTION_ORPHAN_GRACE_SECONDS` | Cap on the tenant's runs in flight and the grace window before a dead run's slot is reclaimed. Defaults work locally. See [Limits](#limits) |
 | Dependency discovery | `DEPENDENCY_DETECTION_ENABLED`, `DEPENDENCY_REPLAN_ATTEMPTS` | Enable cross-ticket dependency discovery and set the re-plan attempt cap. Defaults to off. See [Cross-ticket dependency discovery](#cross-ticket-dependency-discovery) |
 | Integration tokens | `GITHUB_TOKEN`, `JIRA_API_TOKEN`, `JIRA_PAT` | The secrets named by `token_ref` in `github.yaml` and `jira.yaml`. See [Integration credentials](#integration-credentials) |
-| Jira tooling | `JIRA_ACLI_PATH`, `INSTALL_ACLI`, `ACLI_VERSION`, `ACLI_DOWNLOAD_URL`, `ACLI_SHA256` | Path and provisioning for the vendored acli binary |
-| Policy and observability | `OPA_URL`, `LANGFUSE_*`, `OTEL_EXPORTER_OTLP_ENDPOINT` | Defaults work locally |
+| Service tokens | `COORDINATION_SHARED_SECRET`, `MCP_GATEWAY_TOKEN` | The bearer tokens the coordination service and the home tenant's MCP gateway require. Each service refuses to start while its token is empty, and `inv config-check` reports both. Every other tenant sets its own `MCP_GATEWAY_TOKEN` in `config/local/tenants/<tenant>.env`. See [A second local tenant](#a-second-local-tenant) |
+| Webhook secrets | `GITHUB_WEBHOOK_SECRET`, `JIRA_WEBHOOK_SECRET` | The home tenant's signing secrets for GitHub and Jira deliveries to the inbound webhook. Every other tenant sets its own in `config/local/tenants/<tenant>.env`. See [Inbound webhooks and CI](#inbound-webhooks-and-ci) |
+| Observability | `LANGFUSE_*`, `OTEL_EXPORTER_OTLP_ENDPOINT` | Defaults work locally |
 
 The non-secret integration settings, including the repository and project allowlists, live in the `config/local` YAML files rather than `.env`. See [Integration credentials](#integration-credentials). The gate selection and the optional AI-CLI engine live in `config/local/gates.yaml` and `config/local/gate_engine.yaml`. See [Configurable gates](#configurable-gates).
 
@@ -137,18 +190,56 @@ The tracked files under `config/platform` hold configuration the platform owns a
 
 Non-secret integration config lives in the git-ignored YAML files under `config/local`, and the secret tokens live in `.env`. The YAML never holds a secret. It names one with `token_ref`, and the platform reads the value from the environment variable of that name locally and from Secrets Manager in AWS.
 
-For example, `github.yaml` sets `token_ref: GITHUB_TOKEN` and `.env` sets `GITHUB_TOKEN=<your token>`. Do not paste a token into the YAML. Set it in `.env` under the key the config names. Every `token_ref` you use must have a matching key in `.env`. The repository and project allowlists also live in these YAML files under `allowlist`, so `.env` holds only the secrets.
+For example, `github.yaml` sets `token_ref: GITHUB_TOKEN` and `.env` sets `GITHUB_TOKEN=<your token>`. Do not paste a token into the YAML. Set it in `.env` under the key the config names. Every `token_ref` you use must have a matching key in `.env`. The repository list lives in `repositories.yaml` and the project allowlist in `jira.yaml`, so `.env` holds only the secrets.
+
+### Source-control repositories
+
+`config/local/repositories.yaml` lists every repository the platform works on, and it is the repository authorization boundary. Copy the committed template with `cp config/local/repositories.yaml.example config/local/repositories.yaml` and edit the copy. The file is git-ignored. Each entry names its source-control backend, so one installation can deliver to GitHub repositories and to local git folders together. The allowlist of the GitHub integration and the promotion policy's `allowed_repos` input are derived from this file. Repository intelligence serves and indexes each tenant's repositories from the `repositories.yaml` of that tenant's config bundle, and from this file for a tenant whose bundle has none.
+
+`defaults` sets `backend`, `default_branch`, and `index` for every entry that leaves them unset. An entry accepts these fields:
+
+| Field | Meaning |
+|---|---|
+| `backend` | `github` or `local` |
+| `default_branch` | The branch an execution bases its change on when the ticket declares no `base:` label |
+| `index` | `true` makes repository intelligence index the checkout |
+| `index_ref` | The ref repository intelligence indexes, the checkout's `HEAD` when unset |
+| `path` | The checkout on the host, absolute or relative to the platform checkout. Required for `local`, and needed by the local stack for any indexed repository |
+| `host`, `owner`, `token_ref` | Overrides of the `github.yaml` default identity, for a `github` repository only |
+
+```yaml
+config_version: 1
+
+defaults:
+  backend: github
+  default_branch: main
+
+repositories:
+  agentic-demo-service:
+    path: ../agentic-demo-service
+    index: true
+  legacy-core:
+    host: enterprise
+    owner: platform
+  local-demo:
+    backend: local
+    path: ~/src/local-demo
+```
+
+Inside a container each checkout appears at `REPOSITORY_ROOT/<name>`, `/repos` locally and `/repositories` on ECS. `inv repos-compose` mounts each repository that names a `path`, read-write into the activity worker for a `local` repository so the worker can commit to it, and read-only everywhere else. Commands that run on the host, such as `inv operator-done`, use the `path` directly.
+
+Repository intelligence and its index worker receive neither `.env` nor the `config/local` directory. They receive the settings the `x-repo-intelligence-env` anchor of `compose.yaml` lists, so a setting these services need is added there, and `compose.repositories.yaml` mounts `config/local/repositories.yaml` and each tenant's bundle directory read-only, without the signing keys or the tenant settings files. A bind mount of one file keeps the inode it was created with, so after editing a `repositories.yaml`, run `inv repos-compose`, then `docker compose -f compose.yaml -f compose.override.yaml -f compose.repositories.yaml up -d`. The generated file labels both services with `com.agentic-platform.registry-sha256`, the SHA-256 of the mounted registries, so the `up` recreates them when a registry changed. A `docker compose up` without `compose.repositories.yaml` starts both services with no registry.
+
+The settings `SOURCE_CONTROL_BACKEND`, `SOURCE_CONTROL_LOCAL_ROOT`, `SOURCE_CONTROL_LOCAL_REPOS`, `REPO_INTELLIGENCE_REPOS`, `REPO_INTELLIGENCE_REPO_ROOT`, `REPO_INTELLIGENCE_COMMIT`, and `GITHUB_DEFAULT_BASE_BRANCH` are no longer read. A process that finds one of them in its environment or in `.env` refuses to start and names the `repositories.yaml` field that replaced it.
 
 ### GitHub source configuration
 
-`config/local/github.yaml` maps each repository to the host, owner, and token used to reach it. Copy the committed template with `cp config/local/github.yaml.example config/local/github.yaml` and edit the copy. The file is git-ignored, so your edits never conflict with a repository update.
+`config/local/github.yaml` holds the connection and identity used to reach each repository with backend `github`. Copy the committed template with `cp config/local/github.yaml.example config/local/github.yaml` and edit the copy. The file is git-ignored, so your edits never conflict with a repository update.
 
-`allowlist` lists the repositories the platform may reach and is the authorization boundary. `hosts` names a connection once, its REST API base and its git base, and reuses it under a short key. `default` sets the host, owner, and token reference applied to any allowlisted repository you do not list under `repositories`. A `repositories` entry overrides the host, owner, or token for one repository, and anything it leaves unset inherits the default. A github.com repository that uses the default identity needs no entry.
+`hosts` names a connection once, its REST API base and its git base, and reuses it under a short key. `default` sets the host, owner, and token reference applied to every GitHub repository in `repositories.yaml`, and an entry there overrides any of the three for itself. A github.com repository that uses the default identity needs no override. Version 2 of the file moved the `allowlist` and `repositories` sections to `repositories.yaml`, and a file that still sets either is refused.
 
 ```yaml
-allowlist:
-  - agentic-demo-service
-  - agentic-demo-greenfield
+config_version: 2
 
 hosts:
   github-com:
@@ -162,18 +253,11 @@ default:
   host: github-com
   owner: agentic-demo
   token_ref: GITHUB_TOKEN
-
-repositories:
-  billing-svc:
-    token_ref: BILLING_TOKEN
-  legacy-core:
-    host: enterprise
-    owner: platform
 ```
 
 ### Pull request base branch
 
-Every execution opens its pull request against `github_default_base_branch`, which defaults to `main`. A ticket overrides that for itself with a `base:<branch>` label, so a change that only makes sense on top of an unmerged pull request can target that pull request's branch instead. Rebar tags and Jira labels both feed this, so the convention is the same on either backend.
+Every execution opens its pull request against its repository's `default_branch` in `repositories.yaml`, which defaults to `main`. A ticket overrides that for itself with a `base:<branch>` label, so a change that only makes sense on top of an unmerged pull request can target that pull request's branch instead. Rebar tags and Jira labels both feed this, so the convention is the same on either backend.
 
 ```
 base:alice/PLAT-482
@@ -232,9 +316,9 @@ projects:
 
 ### Ticket and source-control backends
 
-The platform reads work from a ticket backend and delivers changes to a source-control backend, and each is selected independently in `.env`. `TICKET_BACKEND` is `jira` (default) or `rebar`, and `SOURCE_CONTROL_BACKEND` is `github` (default) or `local`. Leaving both unset behaves exactly as a Jira plus GitHub deployment, so [GitHub source configuration](#github-source-configuration) and [Jira source configuration](#jira-source-configuration) apply unchanged. The two axes are orthogonal, so a rebar store can target GitHub and a Jira project can target a local folder.
+The platform reads work from a ticket backend and delivers changes to a source-control backend. `TICKET_BACKEND` in `.env` is `jira` (default) or `rebar`. Each repository in [`repositories.yaml`](#source-control-repositories) names its own source-control backend, `github` (default) or `local`. The two axes are orthogonal, so a rebar store can target GitHub and a Jira project can target a local folder.
 
-`MAX_CONCURRENT_RUNS` caps the runs in flight at once across every ticket source, and excess candidates are deferred to a later intake pass. At the start of each pass the reconciler reclaims the slot of any non-terminal execution whose workflow is missing or closed, once the execution is older than `EXECUTION_ORPHAN_GRACE_SECONDS`, so a crashed run does not hold a slot forever.
+`MAX_CONCURRENT_RUNS` caps the runs of one tenant in flight at once across every ticket source, because each tenant's worker counts and admits only its own tenant's executions, and excess candidates are deferred to a later intake pass. At the start of each pass the reconciler reclaims the slot of any non-terminal execution whose workflow is missing or closed, once the execution is older than `EXECUTION_ORPHAN_GRACE_SECONDS`, so a crashed run does not hold a slot forever.
 
 #### Rebar ticket backend
 
@@ -244,19 +328,19 @@ Set `TICKET_BACKEND=rebar` to track work in a git-backed rebar ticket store inst
 
 Seed the store from an operator-provided Excel export with `inv import-rebar-tickets --xlsx <path>`, which imports through rebar's own capability. Add `--reset` to wipe and re-initialize the store first, `--status` to import only selected statuses, and `--limit` to cap the count.
 
-The `rebar-intake` schedule starts a draft-PR execution for each ready ticket in the store. Install it with `inv intake --schedule` or `inv schedules-install`, or run one pass with `inv intake`. `inv rebar-changes` reports new tickets, field changes, and status changes since the last intake pass. It reads the intake cursor without saving it, so a report never hides a ticket from the next intake pass.
+The `rebar-intake-<tenant>` schedule starts a draft-PR execution for each ready ticket in the tenant's store. The tenant's worker installs it at startup, `inv intake --schedule` installs it on demand, and `inv intake` runs one pass. `inv rebar-changes` reports new tickets, field changes, and status changes since the last intake pass. It reads the intake cursor without saving it, so a report never hides a ticket from the next intake pass.
 
 The store can sync to S3 through the `git-remote-s3` helper, which the `review` extra installs. The `store` section of `tickets.yaml` names the bucket, the prefix, and two AWS profiles. `inv rebar-store-remote` points the store's git remote at the bucket so that it fetches under `reader_profile` and pushes under `writer_profile`. When the remote is an S3 URL, the activity worker validates the isolation rules in `tickets.yaml` and the remote at startup and refuses to start on a mismatch. A store with no remote stays local-only and skips the check.
 
-Locally the store syncs to the `rebar-tickets` bucket in MinIO. Copy `config/local/rebar-store-aws-config.example` to `config/local/rebar-store-aws-config`, which defines both profiles against MinIO with the `MINIO_ROOT_USER` and `MINIO_ROOT_PASSWORD` values, then run `inv rebar-store-remote` and push the store once with `docker compose exec activity-worker git -C <repo_root> push origin tickets`. Both local profiles use the MinIO root credentials, so the read and write split is enforced only in AWS.
+Locally the store syncs to the `rebar-tickets` bucket in MinIO. Copy `config/local/rebar-store-aws-config.example` to `config/local/rebar-store-aws-config`, which defines both profiles against MinIO with the `MINIO_ROOT_USER` and `MINIO_ROOT_PASSWORD` values. Both local profiles use the MinIO root credentials, so the read and write split is enforced only in AWS. When the activity worker starts and `repo_root` holds no store, it creates one from the bucket with `rebar init`, which fetches every ticket the bucket holds, and selects the identity in `AUTHORSHIP_IDENTITY_ID`. A new workspace volume therefore starts with the tickets the bucket holds and needs no copy from the host. `inv rebar-store-remote` repairs a store whose remote differs from `tickets.yaml`, in a one-off pod because the worker refuses to start until the remote matches.
 
 #### Local source-control backend
 
-Set `SOURCE_CONTROL_BACKEND=local` to deliver changes to a git folder on disk instead of GitHub. `SOURCE_CONTROL_LOCAL_ROOT` is the parent directory that holds the target repositories, and `SOURCE_CONTROL_LOCAL_REPOS` is an optional comma-separated allowlist where an empty value discovers every git repository under the root. The local backend commits the change to an `agent/<task_id>` branch in the repository, performs no push, and opens no pull request. It writes a `SUMMARY.md` and a `change.patch` per run under `SOURCE_CONTROL_LOCAL_ARTIFACTS_ROOT`, along with a done ledger, and an empty artifacts root defaults to `<root>/.agent-publish`.
+Set `backend: local` and `path` on a repository in `repositories.yaml` to deliver its changes to a git folder on disk instead of GitHub. `inv repos-sync` copies the repository into the cluster, and the local backend commits the change to an `agent/<task_id>` branch in that copy, performs no push, and opens no pull request. It commits a `SUMMARY.md`, a `change.patch`, and the run's pull record to `refs/agent-results/agent/<task_id>` beside the branch. A tenant worker started with `TENANT` set namespaces the branch under the tenant, so the branch becomes `agent/<tenant>/<task_id>` and its record lands on `refs/agent-results/agent/<tenant>/<task_id>`. `inv fetch-results` brings the agent branches and their results refs back into the checkout at `path`. Read the patch with `git show refs/agent-results/agent/<task_id>:change.patch`. The promotion policy does not require CI for a local repository, because the repository has no CI to report.
 
-A local-backend run has no merge webhook, so an operator completes it. When the run reaches the promoted branch it parks at `AWAITING_PR_CLOSE`. Run `inv operator-done --workflow-id ID --repo REPO --branch agent/<task_id>` to verify the published artifacts and signal completion, which advances the ticket to its terminal status. Add `--closed-unmerged` to complete as closed-unmerged rather than merged. `SOURCE_CONTROL_LOCAL_OPERATORS` is the comma-separated allowlist of operators authorized to run the command, matched against the operating system account, and the workflow id prints when the pipeline starts.
+A local-backend run has no merge webhook, so an operator completes it. When the run reaches the promoted branch it parks at `AWAITING_PR_CLOSE`. Run `inv operator-done --workflow-id ID --repo REPO --branch agent/<task_id>`, or `--branch agent/<tenant>/<task_id>` for a tenant run, which runs `inv fetch-results` for the repository, verifies the published results in the host checkout, and signals completion, which advances the ticket to its terminal status. Add `--closed-unmerged` to complete as closed-unmerged rather than merged. `SOURCE_CONTROL_LOCAL_OPERATORS` is the comma-separated allowlist of operators authorized to run the command, matched against the operating system account, and the workflow id prints when the pipeline starts.
 
-`inv operator-done` runs on the host while the workers run in containers, so it rewrites the container mount roots in `SOURCE_CONTROL_LOCAL_ROOT` and `SOURCE_CONTROL_LOCAL_ARTIFACTS_ROOT` to the host directories that back the compose mounts before it verifies artifacts. The `/repos` mount resolves to the parent directory of the platform checkout and the `/workspaces` mount resolves to `.agent-workspaces` inside it, matching `compose.override.yaml`. A value already set to a host path is left unchanged.
+`inv operator-done` records each completion in a ledger under `SOURCE_CONTROL_LOCAL_ARTIFACTS_ROOT`, so a repeated command signals nothing. An empty value keeps the ledger in `.agent-workspaces/.agent-publish` inside the platform checkout, and a `/workspaces` prefix resolves to `.agent-workspaces`.
 
 ### Cross-ticket dependency discovery
 
@@ -270,9 +354,87 @@ Detection is off by default, so a deployment that does not set the flag behaves 
 
 Both tables live in `pyproject.toml` because that is a tracked file rebar discovers on its own. A gate reads its config from an attested snapshot materialised with `git checkout-index`, which holds only tracked files, so an untracked project `rebar.toml` is invisible to it and rebar falls back to its built-in model-class defaults. Those point at direct Anthropic and cannot authenticate against this deployment, which surfaces as an authentication error for a provider the project never configured and leaves the gate returning `INDETERMINATE` rather than a verdict. A local `rebar.toml` also takes precedence over `pyproject.toml` in rebar's discovery walk, so one present in a working tree shadows these tables entirely. Do not create one.
 
-`config/platform/rebar-review.toml` holds the same model classes for the two callers that name a config file by path rather than relying on discovery. `compose.yaml` names it for the review worker through `REBAR_LLM_CONFIG_FILE`, and `inv rebar-review-plan` and `inv rebar-review-code` name it for host runs. It layers over the discovered table with identical values, so the merge changes nothing. `tests/unit/test_rebar_review_config.py` asserts the two declarations stay equal.
+`config/platform/rebar-review.toml` holds the same model classes for the two callers that name a config file by path rather than relying on discovery. The review worker manifest in `deploy/kubernetes` names it through `REBAR_LLM_CONFIG_FILE`, and `inv rebar-review-plan` and `inv rebar-review-code` name it for host runs. It layers over the discovered table with identical values, so the merge changes nothing. `tests/unit/test_rebar_review_config.py` asserts the two declarations stay equal.
 
 Naming the file is now a convenience rather than a requirement, so `rebar review-plan`, `rebar review-code` and `rebar transition ... closed` all resolve the Bedrock classes when run directly.
+
+## Tenants
+
+Teams share one deployment as tenants. A tenant is a trust boundary, a set of credentials and everything that may see them, which are its tickets, its repositories, its config bundle, its images, and its workspace. Teams that share credentials share a tenant. One tenant may hold repositories in several languages, because the language of a repository is its runtime profile, not its tenant. Every run belongs to the tenant whose activity worker started it, and the platform has no default tenant.
+
+Each tenant receives the names below, locally and in AWS.
+
+| Item | Name |
+| --- | --- |
+| Activity worker namespace | `tenant-<tenant>` |
+| Sandbox, gate, checks, and scanner pod namespace | `tenant-<tenant>-sandbox` |
+| Temporal task queue | `<TEMPORAL_TASK_QUEUE>-<tenant>`, `agent-platform-<tenant>` by default |
+| Intake and reap schedules | `<source>-intake-<tenant>` and `<REAP_SCHEDULE_ID>-<tenant>`, `orphan-reaper-<tenant>` by default |
+| Workspace | `/tenants/<tenant>` in the tenant's worker |
+| Config bundle | The directory `config/<env>/tenants/<tenant>/`, or `tenants/<tenant>/` of `TENANT_CONFIG_BUCKET` when that is set |
+| Image prefix | `tenant_prefix` of `config/<env>/image_policy.yaml`, `host.docker.internal:5001/tenants/<tenant>/` locally and `<name_prefix>/tenants/<tenant>/` in ECR |
+| LiteLLM team | The team whose ID is the tenant name |
+| Repository checkouts | `/tenants/<tenant>/repositories/<repo>`, which repository intelligence reads read-only |
+| Repository index | `<index root>/<tenant>/<repo>@<commit>` in repository intelligence |
+| Repository intelligence token | `REPO_INTELLIGENCE_TOKEN` in the tenant's worker, derived from `REPO_INTELLIGENCE_TOKEN_KEY` locally and read from the secret `<name_prefix>/tenants/<tenant>/repo-intelligence-token` in AWS, which rotates every 30 days when `create_secret_store` is set |
+| MCP gateway | The `mcp-gateway` Deployment in `tenant-<tenant>`, which runs as the tenant's worker ServiceAccount |
+| MCP gateway token | `MCP_GATEWAY_TOKEN` of the tenant's settings locally, and the secret `<name_prefix>/tenants/<tenant>/mcp-gateway-token` in AWS, which only the tenant's worker role and the operators in the tenant's `mcp_gateway_token_readers` read |
+| Jira webhook path | `/webhook/jira/<tenant>` of the inbound webhook, verified with `JIRA_WEBHOOK_SECRET_<TENANT>` |
+| GitHub webhook secret | `GITHUB_WEBHOOK_SECRET_<TENANT>` in the inbound webhook, which verifies the pull-request deliveries of the tenant's repositories |
+
+### Local tenants
+
+The local stack runs the tenants `TENANTS` names, comma-separated, or the one tenant `TENANT` names when `TENANTS` is empty, and the cluster render refuses to run without either. `inv k8s-reload` renders the two namespaces, an activity worker, and a workspace for each tenant, and the workflow worker polls the task queue of each. With `TENANT_CONFIG_BUCKET` empty, each worker reads its config bundle from the directory `config/local/tenants/<tenant>/`. A directory that does not exist is an empty bundle, so the tenant reads every tenant file from `config/local/`. `TENANT` also names the tenant the host tasks act for, such as `inv repos-sync`, `inv tenant-config-validate`, and `inv tenant-config-publish`.
+
+Repository intelligence answers a request only with the bearer token of a tenant, and only for that tenant's repositories. It answers 401 to a request without a known token and 403 to a request for another tenant's repository. Locally it derives each tenant's token from `REPO_INTELLIGENCE_TOKEN_KEY` of `.env`, and `inv k8s-reload` gives each tenant's worker its own token as `REPO_INTELLIGENCE_TOKEN` and withholds the key from every cluster pod. A host task such as `inv index-repo` sends the token of `TENANT`. Each tenant's MCP gateway sends its own tenant's token.
+
+To rotate the tokens locally, change `REPO_INTELLIGENCE_TOKEN_KEY` in `.env` and run `inv k8s-reload`. Its `docker compose up` recreates repository intelligence, which derives the tokens at startup, because its environment changed, and the cluster rollout restarts every tenant's worker and gateway with the new token. In AWS, repository intelligence reads the current and the previous version of each tenant's token secret through its task role and accepts both. It reads them again every `TENANT_CONFIG_REFRESH_SECONDS`, and at once when a request presents an unknown token, at most once every 10 seconds. A completed rotation restarts the tenant's activity worker and MCP gateway, which then present the new token, and a pod that has not restarted keeps its access with the previous one.
+
+The steps to add a second tenant locally are in [A second local tenant](#a-second-local-tenant).
+
+#### A second local tenant
+
+`.env` belongs to the home tenant, which is `TENANT`, or the first tenant `TENANTS` names when `TENANT` is not among them. Every other tenant reads its settings and credentials from `config/local/tenants/<tenant>.env` and its config bundle from `config/local/tenants/<tenant>/`. Its worker receives the shared settings of `.env`, but none of `GITHUB_TOKEN`, `JIRA_API_TOKEN`, `JIRA_PAT`, `REGISTRY_TOKEN`, `SLACK_WEBHOOK_URL`, `MCP_GATEWAY_TOKEN`, `REPO_INTELLIGENCE_TOKEN_KEY`, or the `AUTHORSHIP_*` identity of the home tenant, and none of the values another tenant's file sets. A tenant's settings file may not set `REPO_INTELLIGENCE_TOKEN` or any `REPO_INTELLIGENCE_TOKEN_*` setting. No activity worker receives the private review signing key, which only the review worker holds. With more than one tenant, `inv k8s-reload` refuses a tenant other than the home tenant without its own `repositories.yaml`, a rebar ticket store outside `/tenants/<tenant>/` or overlapping another tenant's bucket prefix, and two tenants that share an `INTAKE_SCHEDULE_ID`. The tenant's MCP gateway receives the same settings Secret and config bundle as its worker, and `inv k8s-reload` refuses a tenant without an `MCP_GATEWAY_TOKEN` of its own and two tenants that share one.
+
+The steps below add the tenant `beta` beside `adp`. Both files under `config/local/tenants/` are git-ignored.
+
+1. Keep `TENANT=adp` in `.env` and set `TENANTS=adp,beta`.
+2. Copy the examples with `cp -R config/local/tenants/beta.example config/local/tenants/beta && cp config/local/tenants/beta.env.example config/local/tenants/beta.env`. Set `path` in `beta/repositories.yaml` to the beta checkout, set the commands in `beta/checks.yaml` to that repository's, and add the credentials beta needs, such as `GITHUB_TOKEN` for a `github` repository, to `beta.env`. Replace the `MCP_GATEWAY_TOKEN` placeholder in `beta.env` with the output of `openssl rand -hex 32`, and set `GITHUB_WEBHOOK_SECRET` and `JIRA_WEBHOOK_SECRET` there when beta receives webhook deliveries.
+3. Validate the bundle, mount the beta checkout into repository intelligence, and deploy the tenant with `inv tenant-config-validate --tenant beta && inv repos-compose && inv k8s-reload`. The beta worker creates its rebar ticket store from the `beta/tickets/` prefix of the `rebar-tickets` bucket.
+4. Generate beta's authoring key with `ssh-keygen -t ed25519 -f /tmp/beta-signing-key -N "" -C beta-agent -q`.
+5. Mint beta's identity in its store with `kubectl -n tenant-beta exec deploy/activity-worker -c activity-worker -- python -c "from services.orchestration.authorship import create_authoring_identity; print(create_authoring_identity('beta-agent', 'agent-platform@users.noreply.invalid', '$(cat /tmp/beta-signing-key.pub)', repo_root='/tenants/beta/rebar-tickets'))"`. The email must be one that `poll.identity_roles` of `beta/tickets.yaml` maps to a reader role.
+6. Select the identity in the store with `kubectl -n tenant-beta exec deploy/activity-worker -c activity-worker -- sh -c 'cd /tenants/beta/rebar-tickets && rebar identity use <identity id>'`. The intake poll reads tickets as the selected identity and is denied until one is selected.
+7. Add `AUTHORSHIP_IDENTITY_ID=<identity id>` and `AUTHORSHIP_SIGNING_KEY="<the contents of /tmp/beta-signing-key>"` to `beta.env`, delete `/tmp/beta-signing-key` and `/tmp/beta-signing-key.pub`, and run `inv k8s-reload`. The worker re-selects the identity whenever it recreates the store.
+8. Copy the beta checkout into its worker with `TENANT=beta inv repos-sync`.
+9. Create a ticket with `kubectl -n tenant-beta exec deploy/activity-worker -c activity-worker -- sh -c 'cd /tenants/beta/rebar-tickets && rebar create task "<title>" --repos beta-web -d "<description>"'`. The `rebar-intake-beta` schedule starts its run within a minute, and `TENANT=beta inv rebar-changes --new` reads the store as beta's worker does.
+10. Complete a run that reached `promote_pr` with `TENANT=beta inv operator-done --workflow-id <workflow id> --repo beta-web --branch agent/beta/<ticket id>`. A host task reads the repositories of the tenant `TENANT` names.
+
+### Tenants in AWS
+
+The `tenants` map of the `private-bedrock` composition root creates each tenant's worker identity, secrets, image prefix, config bundle prefix and publisher role, signing profile, ticket store, and workspace access point. [Onboarding a tenant](infra/terraform/examples/private-bedrock/README.md#onboarding-a-tenant) is the procedure for a new tenant, and [cost attribution](infra/terraform/examples/private-bedrock/README.md#cost-attribution) splits the bill by the `tenant` tag. [docs/local-to-aws-mapping.md](docs/local-to-aws-mapping.md#tenants) maps each local tenant item to its AWS counterpart.
+
+### Config bundles and runtime profiles
+
+A tenant owns the config files that describe its work, which are `repositories.yaml`, `checks.yaml`, `gates.yaml`, `gate_engine.yaml`, `registries.yaml`, `github.yaml`, `jira.yaml`, `tickets.yaml`, `profiles.yaml`, and `image_exceptions.yaml`, and publishes them as a config bundle that layers over `config/<env>/`. Each worker checks its bundle source every `TENANT_CONFIG_REFRESH_SECONDS`, 60 by default. It validates a new bundle before it activates it, keeps the last valid bundle active when a new one fails, and alerts with the reasons. A run's first activity records the tenant and the version of each bundle file in the run's determinism manifest, and every later activity of the run reads that version. [docs/tenant-config.md](docs/tenant-config.md) documents the files, the validation, and every default.
+
+Each repository in `repositories.yaml` may name a runtime profile, which selects its sandbox image, its default checks, and its gate overrides. The platform catalog in `config/platform/runtime-profiles.yaml` defines `python-fastapi`, `node-react`, `java-spring`, and `go-service`, whose images are written `catalog:agent-server-<variant>` and `catalog:checks-<language>` and resolve through `RUNTIME_IMAGES`. A tenant adds its own profiles in `profiles.yaml`. [docs/runtime-profiles.md](docs/runtime-profiles.md) describes the catalog, the profile fields, and how a tenant brings its own sandbox image.
+
+### Image governance
+
+Every image a tenant pod runs passes five layers, which are bundle validation against `config/<env>/image_policy.yaml`, the ECR pull scope of the tenant's worker, the `agentic-dev-platform-tenant-images` admission policy on the tenant's sandbox namespace, buildah's `policy.json` inside each builder pod, and the Amazon Inspector scan gate with optional AWS Signer verification. A finding the scan gate refuses is accepted only by an entry of the platform's `platform/image_exceptions.yaml` or, for the tenant's own images, of the tenant's bundle `image_exceptions.yaml`. Locally the scan gate and the signature check are off. [docs/image-governance.md](docs/image-governance.md) describes each layer.
+
+### Limits
+
+| Limit | Set by | Default | Scope |
+| --- | --- | --- | --- |
+| Runs in flight | `MAX_CONCURRENT_RUNS` | 4 | Per tenant. A tenant's worker counts and admits only its tenant's executions, and defers the excess to a later intake pass |
+| Sandbox namespace resources | `sandbox_quota` of the tenant's entry in AWS, rendered as a ResourceQuota | None | Every pod of the tenant's sandbox namespace together. No setting counts sandboxes alone, so the `pods` hard limit caps them with the other pods. The local render sets no quota |
+| Per-run model budget | `RUN_MODEL_BUDGET_USD` | 10 | The virtual key LiteLLM issues for each run |
+| Per-run key expiry | `RUN_MODEL_ACCESS_TTL_SECONDS` | 86400 | The same key, which the run deletes when it ends |
+| Tenant model budget | `TENANT_MODEL_BUDGET_USD` over `TENANT_MODEL_BUDGET_DURATION` | 0 over `30d` | The tenant's LiteLLM team. 0 sets no budget |
+| Tenant rate limits | `TENANT_MODEL_RPM_LIMIT`, `TENANT_MODEL_TPM_LIMIT` | 0 | The tenant's LiteLLM team. 0 sets no limit |
+
+In AWS a tenant entry's `settings` and `model_limits` set these values for the tenant's worker alone. [The cluster workloads](#the-cluster-workloads) describes how the worker issues the run key and maintains the team.
 
 ## Bedrock connectivity
 
@@ -288,13 +450,17 @@ Naming the file is now a convenience rather than a requirement, so `rebar review
 
 Set `AWS_USE_FIPS_ENDPOINT=true` in a deployed environment to select FIPS-validated service endpoints on every AWS SDK path, the native review Bedrock client, the LiteLLM gateway, the evidence object store, and the rebar ticket sync. The variable is wired into the worker and LiteLLM containers and read by botocore, so it covers all of them at once. Leave it false locally, because the tunnel and MinIO use custom endpoints that have no FIPS variant.
 
-### Credentials in the containers
+### Credentials in the cluster
 
-The LiteLLM gateway and the review worker mount `~/.aws` read-only and sign with `AWS_PROFILE`. They carry no AWS CLI, so a profile that resolves through `credential_process` or another helper binary fails there with an error naming the missing program, even though the same profile works on the host. Compose also reads a shell export ahead of `.env`, so a profile exported by your shell startup files reaches the containers regardless of what `.env` says.
+LiteLLM and the review worker sign their Bedrock calls with credentials that `inv aws-login` writes to the `aws-credentials` Secret. Nothing under `~/.aws` is mounted into a pod. Each pod reads the Secret through `credential_process`, and the helper reports an expiry no later than 20 minutes ahead, so the AWS SDK rereads the Secret within that window. A renewal therefore reaches both pods without a restart, a few minutes after `inv aws-login` writes it.
 
-Set `PLATFORM_AWS_PROFILE` to the profile the containers should use when it differs from the one your shell exports. Name a profile the mounted `~/.aws` resolves on its own, such as one holding static keys or an SSO profile with a cached token. The host keeps its own `AWS_PROFILE` unchanged. Leave `PLATFORM_AWS_PROFILE` empty to pass `AWS_PROFILE` through.
+`inv aws-login` resolves the credentials in one of three ways.
 
-Host-side tooling keeps reading `AWS_PROFILE`, so `inv tunnel-start` and `inv connectivity-check` report the host profile while the containers sign with the one you set here. The two names differ by design whenever the override is in use.
+- When `AWS_LOGIN_COMMAND` is set, it runs that command attached to the terminal and reads credentials in the `credential_process` JSON format from its output. A Kion profile signs in through the browser and Okta this way with `AWS_LOGIN_COMMAND="kion favorite <name> --credential-process"`. Run `inv aws-login` again when the credentials near expiry.
+- Otherwise it resolves `PLATFORM_AWS_PROFILE`, or `AWS_PROFILE` when that is empty, through the AWS SDK. An SSO profile whose session expired runs `aws sso login` first. A profile whose `~/.aws/credentials` entry carries a session token is copied as it is.
+- A static access key, one with no session token, is exchanged for session credentials through `sts:GetSessionToken` lasting `AWS_LOGIN_SESSION_SECONDS`, 12 hours by default. Set `AWS_LOGIN_STATIC_PASSTHROUGH=true` to copy the key itself.
+
+`inv smoke-test` reports when the credentials expire and fails once they have. The review worker logs a warning naming `inv aws-login` every five minutes once the credentials are within `AWS_CREDENTIALS_WARN_SECONDS` of their expiry. `PLATFORM_AWS_PROFILE` keeps the platform's profile pinned in `.env` when your shell exports another `AWS_PROFILE`. Host-side tooling such as `inv tunnel-start` keeps reading `AWS_PROFILE`.
 
 ### Reaching the private endpoint
 
@@ -325,37 +491,61 @@ Each record carries an evidence classification that selects its retention window
 | `postgres` | 5432 | Platform, Temporal, and Langfuse databases |
 | `temporal` | 7233 | Durable workflow engine |
 | `temporal-ui` | 3001 | Workflow inspection UI |
-| `workflow-worker`, `activity-worker` | none | Temporal workers for workflows and activities |
-| `coordination-service` | none | Claims, ordering, exactly-once, orphan reaping |
+| `workflow-worker` | none | Temporal worker for workflows |
+| `coordination-service` | 8130 | Claims, ordering, exactly-once, orphan reaping. Every mutating call needs the `COORDINATION_SHARED_SECRET` bearer token |
 | `repo-intelligence` | 8120 | Context packages built from indexed repos |
 | `repo-index-worker` | none | Reindexes each repo when its commit moves |
-| `langgraph-service` | 8100 | Bounded reasoning stages |
-| `litellm` | 4000 | Single gateway to Bedrock |
-| `opa` | 8181 | Policy decisions |
 | `langfuse-web` | 3000 | LLM tracing and prompt UI |
 | `langfuse-worker` | none | Langfuse ingestion and background jobs |
 | `clickhouse` | none | Langfuse analytics store |
 | `redis` | none | Valkey cache and Langfuse ingestion queue |
 | `minio` | 9090, 9091 | Shared S3-compatible object store |
-| `otel-collector` | 4317, 4318 | Telemetry pipeline |
+| `otel-collector` | 4317, 4318 | Telemetry pipeline. It keeps the exported platform log records, structlog audit events included, in rotated JSON files on the `otel-logs` volume, which `inv platform-logs` reads |
 
 The one-shot services run under the `tasks` profile, so `up` never creates them. The `inv` tasks run them with `docker compose run --rm`, and Docker removes each container when its command exits.
 
 | Service | Run with | Role |
 | --- | --- | --- |
 | `db-migrate` | `inv db-migrate`, `inv db-reset`, `inv local-up` | Applies the migrations |
-| `schedule-bootstrap` | `inv schedules-install` | Registers the reap schedule and the intake schedule for the configured ticket source |
+| `schedule-bootstrap` | `inv schedules-install` | Removes the untenanted reap and intake schedules, which each tenant's worker replaces with its own |
 | `temporal-admin-tools` | `inv local-up`, `inv temporal-upgrade` | Applies the Temporal schemas and registers the `default` namespace |
 
 The workers and `coordination-service` check the schema revision at startup. While the database is behind the migrations their image carries, they wait and log `Run inv db-migrate` every 30 seconds. When the database holds a revision their image does not carry, as after a newer checkout migrated it, they exit.
 
-The `registry` service runs under the `registry` profile. It is the local stand-in for ECR that gate pods pull the engine image from in image mode. Start it with `docker compose --profile registry up -d registry`.
+The `registry` service runs under the `registry` profile. It is the local stand-in for ECR that the gate, checks, and scanner pods pull the gate engine, checks, semgrep, and trivy images from, because buildah inside those pods pulls from a registry rather than from the Docker image store. `inv gate-engine-images` and `inv runtime-images` start it, push those images to it as `localhost:5001`, and write them as `host.docker.internal:5001` references with `GATE_REGISTRY_TLS_VERIFY=false`, which lets the pods pull from it over plain HTTP.
+
+### The cluster workloads
+
+LiteLLM, the review worker, and the inbound webhook run in the `agentic-dev-platform` namespace of the local cluster. Each tenant's activity worker and MCP gateway run in `tenant-<tenant>`, and its sandbox, gate, checks, and scanner pods run in `tenant-<tenant>-sandbox`. No pod mounts a workstation directory. Each tenant's workspace is a hostPath PersistentVolume on the cluster node at `/var/lib/agentic-dev-platform/tenants/<tenant>`, which the tenant's worker mounts at `/tenants/<tenant>`. Every other input reaches the cluster at deploy time as an image, a ConfigMap, or a Secret, and repository data moves only when an `inv` task copies it through the Kubernetes API. The pods reach the Compose services on the ports Compose publishes, at `K8S_COMPOSE_ADDRESS`.
+
+| Workload | Host port | Role |
+| --- | --- | --- |
+| `activity-worker` | none | Temporal worker for one tenant's activities, one per tenant in its `tenant-<tenant>` namespace. Creates the tenant's sandbox and gate pods and reaches each on its pod IP |
+| `opa` | none | Policy decisions, a sidecar of the activity worker bound to its loopback |
+| `review-worker` | none | Temporal worker for the review activities, reading each execution's checkout from the tenant workspaces, which it mounts read-only at `/tenants` |
+| `litellm` | 4000 | Single gateway to Bedrock, published through a `LoadBalancer` Service |
+| `inbound-webhook` | 8140 | Webhook front door. See [Inbound webhooks and CI](#inbound-webhooks-and-ci) |
+| `mcp-gateway` | none | Read-only MCP tool gateway, one per tenant in its `tenant-<tenant>` namespace, which reads with the tenant's credentials and allowlists and only the tenant's executions. Its Service is a ClusterIP Service, so reach it with `kubectl -n tenant-<tenant> port-forward svc/mcp-gateway 8150:80`. Every `/mcp` request needs `Authorization: Bearer <MCP_GATEWAY_TOKEN>` with the tenant's token, and the health paths answer without it. See [deploy/kubernetes/README.md](deploy/kubernetes/README.md#mcp-gateway-authentication) |
+
+`inv k8s-reload` builds the platform and OPA images with the build command `inv publish-platform-images` uses, loads them into the cluster as `K8S_IMAGE_LOAD` names, renders `deploy/kubernetes/local` with the settings, config files, and policies of this checkout, and rolls every deployment. It rebuilds the Compose platform services with the same build identifier, so the cluster and Compose workers register as one Worker Deployment version. Run it after changing code or config. `inv k8s-deploy` applies the manifests for the last build without rebuilding, `inv k8s-delete` removes the workloads and keeps the workspace volume unless given `--volumes`, and `inv local-down` scales the workloads to zero.
+
+Each tenant's workspace holds the tenant's execution checkouts under `/tenants/<tenant>/workspaces`, the copies of its local-backend repositories under `/tenants/<tenant>/repositories`, its local-mode gate engines under `/tenants/<tenant>/gate-engines`, and the rebar ticket store. `inv repos-sync` sends each local-backend repository to the activity worker of `TENANT` as a git bundle over `kubectl exec`. It leaves out the `agent/*` branches and every commit the copy already holds, and only fast-forwards, so it adds commits and never replaces a branch the agent wrote. It sends each local-mode gate engine as its working tree, uncommitted edits included. Run it after committing to a local-backend repository or editing a local engine. A GitHub repository is cloned and pushed over HTTPS from the pod.
+
+The `inv` tasks that operate on the worker's state, such as `inv intake`, `inv repair`, `inv gate`, `inv restart`, `inv index-repo`, `inv rebar-changes`, and `inv import-rebar-tickets`, run in the activity worker pod through `kubectl exec`. `--local` still runs them on the host. `inv repair`, `inv gate`, and `inv restart` take `--tenant` to act on a run of another tenant, which addresses that tenant's activity worker, or with `--local` runs the host command with `TENANT` set to it. `inv logs --service NAME` follows a cluster deployment's logs as well as a Compose service's, and for `activity-worker` and `mcp-gateway` it follows the deployment of the tenant `TENANT` names.
+
+Under the `jumphost` and `ssh-bastion` providers, LiteLLM and the review worker each run a relay sidecar that forwards `bedrock-runtime.<region>.amazonaws.com:443` from the pod's loopback to the tunnel on the host, so TLS still verifies against the Bedrock certificate. Under `direct` no relay runs.
+
+Sandbox, CI repair, and gate engine pods call LiteLLM with a virtual key issued for their run, never the master key. Before a stage starts such a pod, the activity worker creates the tenant's LiteLLM team with `TENANT_MODEL_BUDGET_USD` over `TENANT_MODEL_BUDGET_DURATION`, `TENANT_MODEL_RPM_LIMIT`, and `TENANT_MODEL_TPM_LIMIT`, or updates it to those limits, and issues the run key under that team with `RUN_MODEL_BUDGET_USD` and an expiry of `RUN_MODEL_ACCESS_TTL_SECONDS`. A zero value removes that limit from the team. The worker derives the key value from the master key and the execution id, so the value is never stored or written to Temporal history, and a stage of a resumed run renews the same key. The run deletes the key when it ends, and the expiry removes a key whose run never ends. When LiteLLM refuses a call because the run or tenant budget is spent, the run stops with `run_model_budget_exceeded` or `tenant_model_budget_exceeded`, recorded as a `cap_breach` audit event. LiteLLM keeps the keys, teams, and spend in its own `litellm` Postgres database, which `inv local-up`, `inv k8s-reload`, and `inv k8s-deploy` create when it is missing and `inv db-reset` leaves in place.
+
+Every model call names the tenant of its run with the tag `tenant:<tenant>`. The run key's metadata carries the tag, so LiteLLM adds it to every request a sandbox, CI repair, or gate engine pod makes with the key. Calls that the workers make with the master key add it themselves, in the request metadata of `invoke_model`, in the `x-litellm-tags` header of the rebar review and repair calls, in the LiteLLM `extra_body` of the coding conversation, and in `ANTHROPIC_CUSTOM_HEADERS` for a gate engine. A tenant's activity worker reads the tenant from `TENANT`. The shared review worker has no `TENANT`, so it reads the tenant from the execution record of the run each activity serves. LiteLLM records the tag in its spend logs next to the tenant's team and passes it to Langfuse as a trace tag. The tenant also rides as trace metadata and as the `tenant` attribute of each span, which attributes the native Bedrock review generations that bypass LiteLLM. `inv cost-rollup` and `inv reconcile-usage` take `--tenant` to keep one tenant's executions, and without `--execution-id` they report every execution grouped by tenant.
+
+The network policies of each tenant's sandbox namespace admit sandbox egress only to DNS and LiteLLM, and gate pod egress to DNS, LiteLLM, and addresses outside the cluster. The Docker Desktop cluster enforces them through the network policy controller built into its kindnet CNI, which `inv smoke-test` confirms from a probe pod. That controller fails open, so a pod's traffic passes for the first two seconds or so after the pod starts, until its address reaches the controller, and passes whenever the controller itself is down. The activity worker sends a sandbox its first command only after the pod reports ready and the checkout is copied in.
 
 Migrations only touch the platform's own `agent_platform` schema. The `temporal-admin-tools` task applies the Temporal schemas, and Langfuse manages its own. Langfuse v4 runs as `langfuse-web` and `langfuse-worker` backed by ClickHouse, Valkey, and the shared MinIO object store, reusing the `langfuse` Postgres database.
 
 ### Temporal server
 
-`compose.yaml` runs Temporal server 1.32.1 and Temporal UI 2.57.0, both pinned by digest. The server image builds from `docker/temporal.Dockerfile`, which takes the upstream image through the `TEMPORAL_SERVER_IMAGE` build argument and adds the loopback probe. The server reads its dynamic configuration from `config/platform/temporal-dynamicconfig.yaml`. The `temporal-admin-tools` task applies the schemas to the `temporal` and `temporal_visibility` databases and registers the `default` namespace with a 24-hour retention. `inv local-up` runs the schema step before the server starts and the namespace step before the workers start, and both steps leave a current database unchanged.
+`compose.yaml` runs Temporal server 1.32.2 and Temporal UI 2.58.1, built from source on Amazon Linux 2023 by `docker/temporal.Dockerfile`, `docker/temporal-admin-tools.Dockerfile`, and `docker/temporal-ui.Dockerfile` as the [temporal-control-plane README](infra/terraform/temporal-control-plane/README.md#images) describes. The server reads its dynamic configuration from `config/platform/temporal-dynamicconfig.yaml`. The `temporal-admin-tools` task applies the schemas to the `temporal` and `temporal_visibility` databases and registers the `default` namespace with a 24-hour retention. `inv local-up` runs the schema step before the server starts and the namespace step before the workers start, and both steps leave a current database unchanged.
 
 Temporal upgrades only between consecutive minor releases, each from the highest patch of the current minor, and each server must run before the next schema change. A stack started before v0.3.0 runs server 1.29.7, and `inv local-up` refuses its database until it is upgraded. Upgrade it once, then start the stack.
 
@@ -363,7 +553,7 @@ Temporal upgrades only between consecutive minor releases, each from the highest
 inv temporal-upgrade && inv local-up
 ```
 
-`inv temporal-upgrade` starts Postgres, reads the schema versions, and backs up both databases with `pg_dump` to `~/temporal-backup/<UTC time>`, or to `--backup-dir`. It then applies the 1.30.8 schema and starts server 1.30.8, does the same for 1.31.4, and finishes on 1.32.1, waiting for each server to report healthy before the next step. Executions in flight continue on the upgraded server. The schema change is one-way, so changing the image tags back does not restore a 1.29.7 server.
+`inv temporal-upgrade` starts Postgres, reads the schema versions, and backs up both databases with `pg_dump` to `~/temporal-backup/<UTC time>`, or to `--backup-dir`. It then applies the 1.30.8 schema and starts server 1.30.8, does the same for 1.31.4, and finishes on 1.32.2, waiting for each server to report healthy before the next step. The 1.30.8 and 1.31.4 steps run the upstream server and admin-tools images through a Compose override file, and the last step builds the images from source. Executions in flight continue on the upgraded server. The schema change is one-way, so changing the image tags back does not restore a 1.29.7 server.
 
 Restoring means checking out the previous version, recreating both databases from the backup, and starting the stack. `pg_restore --clean` leaves behind the tables a newer schema added, so the command drops and recreates each database first. Run it from the previous checkout with `BACKUP` set to the backup directory.
 
@@ -415,7 +605,15 @@ A deployed environment has no working-tree mount, so its `db-migrate` image carr
 
 ## Inbound webhooks and CI
 
-The inbound front door receives Jira, pull-request, and CI deliveries. It runs on the local Kubernetes cluster alongside the MCP gateway. Deploy both with `inv k8s-deploy`, which builds the image when passed `--build` and rolls out the `inbound-webhook` and `mcp-gateway` deployments. The front door listens on `localhost:8140` and serves `/webhook/jira`, `/webhook/pr`, and `/webhook/ci`. Forward GitHub pull-request events to it during a demo with `inv webhook-setup`, and remove the forwards with `inv webhook-teardown`.
+The inbound front door receives Jira, pull-request, and CI deliveries. It runs in the `agentic-dev-platform` namespace of the local Kubernetes cluster, and `inv local-up` deploys it with each tenant's MCP gateway. See [The cluster workloads](#the-cluster-workloads). The front door listens on `localhost:8140` and serves `/webhook/jira`, `/webhook/pr`, and `/webhook/ci`. Forward GitHub pull-request events to it during a demo with `inv webhook-setup`, and remove the forwards with `inv webhook-teardown`.
+
+The webhook serves every tenant `TENANTS` names, or the one tenant `TENANT` names. It reads each tenant's `repositories.yaml` and `jira.yaml` from the tenant's config bundle, or from `config/<env>/` for a tenant whose bundle has none, and reads them again every `TENANT_CONFIG_REFRESH_SECONDS`. In the names below, `<TENANT>` is the tenant name in upper case.
+
+- A pull-request delivery to `/webhook/pr` belongs to the tenant whose `GITHUB_WEBHOOK_SECRET_<TENANT>` signs it, among the tenants whose `repositories.yaml` lists the repository as a `github` repository. It signals the execution recorded under that tenant for the task, and an execution recorded without a tenant matches no tenant. Two tenants may list the same repository, and GitHub sends one delivery per webhook installed on it, each signed with the installing tenant's secret, so the webhook routes each delivery to the tenant whose secret verifies it. A delivery that no claimant's secret verifies is refused, and a delivery that more than one claimant's secret verifies is refused and the tenants are logged, because tenants that share a secret can forge each other's deliveries.
+- Each tenant receives Jira deliveries at `/webhook/jira/<tenant>`, verified with `JIRA_WEBHOOK_SECRET_<TENANT>` and admitted only for a project in the allowlist of that tenant's `jira.yaml`. The webhook starts `JiraIssueIntakeWorkflow` on the tenant's task queue, and the tenant's activity worker reads the issue with the tenant's Jira credentials, so the webhook holds no Jira credential.
+- With one tenant, `/webhook/jira` is the same route as `/webhook/jira/<tenant>`, and the tenant may use the unsuffixed `GITHUB_WEBHOOK_SECRET` and `JIRA_WEBHOOK_SECRET`.
+
+Locally, with more than one tenant, `inv k8s-reload` gives the webhook the Secret `inbound-webhook-tenants`, which holds only each tenant's `GITHUB_WEBHOOK_SECRET_<TENANT>` and `JIRA_WEBHOOK_SECRET_<TENANT>`. It takes them from `GITHUB_WEBHOOK_SECRET` and `JIRA_WEBHOOK_SECRET` in `config/local/tenants/<tenant>.env`, and from `.env` for the home tenant, and refuses two tenants that share a value. The webhook reads the secrets when its pod starts. To rotate one, change it in the settings file and run `inv k8s-deploy`, which restarts the webhook when a secret changed. In AWS with two or more tenants, each tenant's secrets are `<name_prefix>/tenants/<tenant>/github-webhook-secret` and `<name_prefix>/tenants/<tenant>/jira-webhook-secret`, encrypted with the tenant's KMS key and readable only by the webhook's role, and the webhook reads each tenant's routing files from `tenants/<tenant>/` of the config bucket. Terraform creates the secrets without a value, and `inv eks-deploy` leaves out a secret without a value, so the webhook refuses the tenant's deliveries until an operator stores them.
 
 Local CI runs under the Compose `ci` profile, which `inv local-up` does not start. Bring up Jenkins with `docker compose --profile ci up -d jenkins`, reachable at `localhost:8080`. The job checks out the target branch, runs the repository Jenkinsfile, and notifies `/webhook/ci` on completion. A parked CI wait resumes on that notification to the same result the poll would produce, and the poller stays the fallback.
 
@@ -427,7 +625,7 @@ The scan fails on any finding that [security/sast-accepted.yaml](security/sast-a
 
 ## Verifying the stack
 
-`inv smoke-test` checks the database and the `agent_platform` schema, the LiteLLM, OPA, and Langfuse health endpoints, and a Bedrock inference round trip through LiteLLM. `inv durability-proof` shows a workflow surviving a worker restart. `inv workflow-status` lists recent Temporal executions.
+`inv smoke-test` checks the database and the `agent_platform` schema, the LiteLLM and Langfuse health endpoints, that each cluster deployment is ready, OPA on the activity worker's loopback through `kubectl exec`, the expiry of the cluster's AWS credentials, whether the cluster enforces the network policies of each tenant's sandbox namespace, probed from a pod running the agent-server image, and a Bedrock inference round trip through LiteLLM. `inv durability-proof` shows a workflow surviving a worker restart. `inv workflow-status` lists recent Temporal executions.
 
 ## Worker builds
 
@@ -454,40 +652,62 @@ Run `inv --list` for the full set. The common tasks are below.
 | Task | Purpose |
 | --- | --- |
 | `inv local-up`, `inv local-down` | Build, migrate, and start the stack, or stop it with volumes preserved |
-| `inv logs [--service NAME]` | Follow logs for the stack or one service |
+| `inv repos-compose` | Write `compose.repositories.yaml`, which mounts `config/local/repositories.yaml`, each tenant's bundle directory, and each tenant's repositories that name a `path` read-only into repository intelligence, the repositories at `/tenants/<tenant>/repositories/<name>`. Run it after editing a `repositories.yaml`. See [Source-control repositories](#source-control-repositories) |
+| `inv k8s-reload`, `inv k8s-deploy`, `inv k8s-delete [--volumes]` | Rebuild and roll the cluster workloads, apply the manifests for the last build, or remove the workloads |
+| `inv aws-login` | Sign in when needed and write the AWS credentials to the cluster |
+| `inv repos-sync [--repo NAME]`, `inv fetch-results [--repo NAME]` | Copy the local-backend repositories and local gate engines into the cluster, or bring the agent branches and their results back |
+| `inv gate-engine-images` | Build the example gate engines on the hardened base, push them to the local `registry` service, and write the digest-pinned `GATE_ENGINE_IMAGES` and `GATE_REGISTRY_TLS_VERIFY` settings for image-mode gates into `.env` |
+| `inv runtime-images` | Build the catalog sandbox images and the buildah builder into the local cluster, push the checks, semgrep, and trivy images to the local `registry` service, and write the digest-pinned `RUNTIME_IMAGES`, `OPENHANDS_AGENT_SERVER_IMAGE`, `GATE_ENGINE_BUILDER_IMAGE`, `SEMGREP_IMAGE`, and `TRIVY_IMAGE` into `.env` |
+| `inv image-scan --image REF` | Scan images the local Docker holds with the Amazon Inspector SBOM generator and Scan API, pushing nothing. See [image governance](docs/image-governance.md) |
+| `inv logs [--service NAME]` | Follow logs for the stack or one service. `activity-worker` and `mcp-gateway` follow the deployment of the tenant `TENANT` names |
+| `inv platform-logs [--match TEXT]` | Print the platform log records the collector stored, which outlive a pod or container replacement |
+| `inv cost-rollup [--execution-id ID] [--tenant NAME]` | Print one execution's per-stage cost, token, and budget rollup with its tenant, or every execution's totals with a per-tenant summary when `--execution-id` is omitted. `--tenant` keeps only the executions recorded under that tenant |
+| `inv reconcile-usage [--execution-id ID] [--tenant NAME]` | Compare the Langfuse generations with the recorded usage of one execution, or of every execution with a per-tenant summary. `--tenant` keeps only that tenant's executions and generations. Exits 2 when any execution disagrees |
 | `inv db-migrate`, `inv db-reset` | Apply migrations, or rebuild the schema then migrate |
 | `inv temporal-upgrade` | Back up the Temporal databases and upgrade them one minor release at a time |
-| `inv schedules-install` | Register the reap schedule and the intake schedule for the configured ticket source |
+| `inv schedules-install` | Remove the untenanted reap and intake schedules, which each tenant's worker replaces with its own |
 | `inv seed` | Load allowlisted seed data |
 | `inv smoke-test`, `inv connectivity-check` | Health and Bedrock path checks |
 | `inv test` | Run the pytest suite |
-| `inv ci` | Run lint, the hermetic test tiers, and the evaluation gate as CI does |
+| `inv ci` | Run lint, the format check, the hermetic test tiers, and the evaluation gate as CI does |
 | `inv sast` | Run the SAST, secret, misconfiguration, and dependency scans against the accepted-findings register. Needs Docker |
 | `inv terraform-test` | Run `terraform test` in each Terraform module that has a `tests` directory, as CI does. Needs Terraform 1.11 or later |
 | `inv tunnel-start`, `inv tunnel-stop`, `inv tunnel-status` | Manage the Bedrock connectivity tunnel |
-| `inv fetch-acli` | Vendor the Atlassian `acli` binary |
 | `inv cbm-build [--source PATH] [--ref TAG]` | Build and vendor the `codebase-memory-mcp` binary, cloning upstream by default |
 | `inv reap [--apply]` | Reap expired orphan artifacts, dry-run by default |
 | `inv resume-parked` | Repin every execution parked for a newer agent build to the current build and signal it to retry |
 | `inv prune-worker-versions` | Delete the drained versions of the Temporal worker deployment |
-| `inv scrub-workspaces [--root PATH]` | Rewrite every execution workspace remote URL that carries a credential an earlier release persisted. Add `--local` to run on the host instead of the worker container |
-| `inv intake [--source jira\|rebar] [--schedule]` | Reconcile ticket intake into runs, single pass by default. `--source` defaults to `TICKET_BACKEND` and must match it. Add `--local` to run on the host instead of the worker container |
+| `inv scrub-workspaces [--root PATH]` | Rewrite every execution workspace remote URL that carries a credential an earlier release persisted. Add `--local` to run on the host instead of the activity worker pod |
+| `inv intake [--source jira\|rebar] [--schedule]` | Reconcile ticket intake into runs, single pass by default. `--source` defaults to `TICKET_BACKEND` and must match it. Add `--local` to run on the host instead of the activity worker pod |
 | `inv rebar-changes [--new] [--field-changes] [--status-changes]` | Report rebar ticket changes since the last intake pass without starting work or moving the intake cursor |
 | `inv import-rebar-tickets --xlsx PATH [--reset] [--status S] [--limit N]` | Seed the rebar ticket store from a Jira xlsx export |
 | `inv rebar-review-plan --ticket ID [--gate-ref REF]` | Run rebar's plan-review gate against the platform tier config |
 | `inv rebar-review-code --base REF --head REF` | Run rebar's code-review gate against the platform tier config |
-| `inv operator-done --workflow-id ID --repo REPO --branch BRANCH [--closed-unmerged]` | Complete a local source-control run by verifying artifacts and signaling the workflow |
-| `inv publish-jumphost-image [--tag TAG]` | Build and push the jumphost base image to the account ECR repository |
+| `inv operator-done --workflow-id ID --repo REPO --branch BRANCH [--closed-unmerged]` | Fetch a local source-control run's results, verify them, and signal the workflow |
+| `inv publish-jumphost-image --tag TAG` | Build, scan, push, and sign the jumphost base image in the account ECR repository |
+| `inv temporal-certs generate --out DIR`, `inv temporal-certs put --dir DIR [--import-to-acm]` | Issue self-signed Temporal TLS certificates, or check a certificate directory and write it to Secrets Manager |
+| `inv eks-deploy [--command "restart DEPLOYMENT..."]` | Run the eks-deployer task, which deploys the EKS workloads from inside the VPC, or restarts the named deployments, where `tenant-workers` names every tenant's activity worker and `mcp-gateway` every tenant's MCP gateway, or with `--command check-policies` lists the pods no NetworkPolicy selects |
+| `inv tenant-verify-aws [--context CTX] [--outputs FILE] [--repo T=R] [--only GROUPS]` | Check the AWS tenant boundary with read-only calls and print PASS, FAIL, or SKIP for each check. See [Verifying the tenant boundary in AWS](#verifying-the-tenant-boundary-in-aws) |
+| `inv webhook-certs issue --dir DIR [--name NAME]`, `inv webhook-certs import --dir DIR` | Issue a self-signed certificate for the inbound webhook load balancer, or import it into ACM for `eks_webhook_certificate_arn` |
+| `inv mcp-gateway-certs issue --dir DIR [--domain DOMAIN]`, `inv mcp-gateway-certs import --dir DIR` | Sign the MCP gateway certificate for `*.<eks_mcp_gateway_domain>` with the platform CA in DIR, or import it into ACM for `eks_mcp_gateway_certificate_arn`, never into the webhook certificate |
+| `inv publish-platform-images` | Build the platform, repository-intelligence, collector, TLS sidecar, eks-deployer, OPA, and buildah images and the example gate engine images, copy the pinned Langfuse, ClickHouse, LiteLLM, OpenHands agent-server, semgrep, and trivy images, scan each with Amazon Inspector before the push, push those without a blocking finding to ECR, sign the catalog images, and write their references to `images.auto.tfvars.json` |
+| `inv aws-release [--var-file FILE] [--yes]` | Plan the composition root with the published images, apply it after confirmation, and run `inv platform-deploy` |
+| `inv aws-destroy [--var-file FILE] [--plan-only] [--delete-images] [--delete-stores]` | Destroy the composition root after the account ID is typed, keeping the bootstrap root, the images, and the ticket stores |
+| `inv temporal-deploy` | Apply the Temporal schema, replace the server tasks with its current task definition, register the namespace, and replace the UI tasks |
+| `inv temporal-ui` | Forward `localhost:8443`, or `--port`, to the Temporal UI load balancer through the jump-host |
+| `inv publish-temporal-images [--arch arm64\|amd64]` | Build and push the Temporal server and admin-tools images, skipping an image whose tag is already pushed |
 | `inv approve-pr --workflow-id ID [--reject] [--pr-closed] [--merged]` | Release an approval or PR-close pause on a running workflow |
 | `inv gate --issue KEY --gate NAME [--approve\|--reject]` | Resolve a configured human-intervention gate parked at `AWAITING_HUMAN` |
+| `inv worktree-new --path DIR --branch BRANCH [--create]` | Add a git worktree and give it a virtualenv the worktree owns |
+| `inv worktree-check [--repair]` | Report worktrees that share or lack a virtualenv, and provision them with `--repair` |
 
 See [Recovering a stuck intake](#recovering-a-stuck-intake) for the retry, repair, and restart commands that drive a ticket after a failure.
 
 ## Recovering a stuck intake
 
-The Jira intake reconciler turns a labeled ticket into a draft-PR execution on each pass, and the rebar reconciler does the same for a ready ticket in the store. `inv intake` runs one pass from the source `TICKET_BACKEND` names, and `inv intake --schedule` installs its recurring Temporal schedule, `jira-intake` or `rebar-intake`. Installing one removes the other source's schedule, so only one intake schedule runs. `INTAKE_SCHEDULE_ID` overrides the schedule name. When an execution fails, or a ticket needs another attempt, the commands below drive it without signalling Temporal by hand.
+The Jira intake reconciler turns a labeled ticket into a draft-PR execution on each pass, and the rebar reconciler does the same for a ready ticket in the store. `inv intake` runs one pass from the source `TICKET_BACKEND` names, and `inv intake --schedule` installs its recurring Temporal schedule for the tenant `TENANT` names, `jira-intake-<tenant>` or `rebar-intake-<tenant>`. Installing one removes the tenant's schedule for the other source and the untenanted `jira-intake` and `rebar-intake` schedules, so each tenant runs one intake schedule. `INTAKE_SCHEDULE_ID` overrides the schedule name. When an execution fails, or a ticket needs another attempt, the commands below drive it without signalling Temporal by hand.
 
-`inv intake --retry TICKET [--repo REPO]` clears the intake dedup for a failed ticket, marks its stale executions failed, and resets its sequence gate, so the next poll relaunches the ticket from a clean state. Add `--repo` to scope the retry to one repository when the ticket fanned out to several. It refuses while a workflow for the ticket is still running.
+`inv intake --retry TICKET [--repo REPO]` clears the intake dedup for a failed ticket, marks its stale executions failed, and resets its sequence gate, so the next poll relaunches the ticket from a clean state. Add `--repo` to scope the retry to one repository when the ticket fanned out to several. The retry acts only on the rows the tenant of the worker it runs on recorded, so a ticket key that another tenant also uses keeps that tenant's intake records, executions, work claims, and sequence gate. It refuses while a workflow for the ticket is still running. Before it clears anything it records an `intake_retry` audit event, in the `audit_events` table and the audit object store, that lists each intake record, work claim, and stale execution it removes.
 
 The two backends track admission differently, and the retry clears both cursors. Jira intake lists every open issue on each pass, so the side-effect ledger decides on its own whether a ticket is admitted again. The rebar poll instead compares each ticket against a per-ticket revision in `<repo_root>/.rebar-poll-watermark.json`, and a ticket whose revision is already recorded is reported as `rebar_poll_noop` rather than offered to intake. A retry or a restart therefore also releases the ticket from that file. The retry runs in a different process from the poll and against a shared mount whose advisory locks cannot be relied on, so it does not edit the watermark. It writes a marker file naming the ticket under `<repo_root>/.rebar-poll-releases/`, and the next pass drops the marked tickets as it loads the cursor. Each release writes its own uniquely named marker and a pass deletes only the markers it read, so a release that lands while a pass is in flight survives that pass and takes effect on the following one. Exclude `.rebar-poll-watermark.json`, `.rebar-poll-watermark.json.*.tmp`, and `.rebar-poll-releases/` from the ticket repository's version control.
 
@@ -507,15 +727,19 @@ Every decision records the operator identity in the audit trail. The identity is
 
 When the review and approval gates are enabled, a workflow instead pauses at `AWAITING_PR_APPROVAL` and `AWAITING_PR_CLOSE`. Release those with `inv approve-pr --workflow-id ID`, add `--reject` to reject the pull request, and pass `--pr-closed` with `--merged` to stand in for the GitHub PR-closed webhook. The workflow id prints when the pipeline starts. On the local source-control backend a run parks at `AWAITING_PR_CLOSE` on every run rather than only under the approval gate, because there is no merge webhook, and `inv operator-done` is what releases it. See [Local source-control backend](#local-source-control-backend).
 
+Every alert that stops or parks a run ends with a `Next step:` line that names the command resolving it, rendered for the operators `DEPLOYMENT_POSTURE` names. `host`, the default, names the `inv` tasks above with the run's tenant. `deployed` names the `kubectl` command that runs the same step in the tenant's activity worker. [docs/operator-remedies.md](docs/operator-remedies.md) records the design and the guard that checks every rendered command.
+
 ## Configurable gates
 
 The review and scan stages run a set of gates chosen from config, not a fixed sequence. `config/<env>/gates.yaml` names a shipped bundle with `profile` (`government` or `private`) and overrides individual gates by name. Each gate entry sets `enabled`, `required`, an `after` list, an `on_block` response, and a `params` map, and `fail_fast` is set per stage. A bundle names the working default, and an explicit entry overrides one gate without restating the rest. The promotion policy is data-driven over the resulting gate verdicts, so enabling or disabling a gate changes the run without a policy edit. The policy's repository and project allowlists and its continuous-integration requirement follow the configured ticket and source-control backends, so a local source-control run that runs no continuous integration is not denied for a GitHub or Jira-specific check.
 
 `gates.yaml` is required for any run that evaluates gates. Copy it from `gates.yaml.example` during setup. A run with reviews or policy enabled fails with a config-missing error until the file exists, and `inv config-check` reports it as not created. `gate_engine.yaml` is optional. With no `gate_engine.yaml`, no engine gate registers and the built-in rebar `security-review` gate stays the reviewer. Both operator files are git-ignored, and the repository ships only their `.example` templates.
 
+The tenant an activity worker serves, `TENANT`, owns `repositories.yaml`, `checks.yaml`, `gates.yaml`, `gate_engine.yaml`, `registries.yaml`, `github.yaml`, `jira.yaml`, `tickets.yaml`, and `profiles.yaml`. Its config bundle, from `config/<env>/tenants/<tenant>/` or the tenant config bucket, layers over `config/<env>/`, is validated before it activates, and is pinned for each run. [docs/tenant-config.md](docs/tenant-config.md) documents the layering, the required content, and every default. `inv tenant-config-validate` and `inv tenant-config-publish` check and publish a bundle. Each repository may name a runtime profile, which selects its sandbox image, default checks, and gate overrides from the platform catalog or the tenant's `profiles.yaml`, as [docs/runtime-profiles.md](docs/runtime-profiles.md) describes.
+
 The gate set is extended entirely through config, with one uniform mechanism for every external tool. A tool is never installed into the platform, it is named in config and run as a subprocess against a config-selected source.
 
-- External gates. One or more external tools drive their own gates and the advisory test classifier through an invocation and output contract, configured as a list in `config/<env>/gate_engine.yaml`. Each entry selects a source (`local`, `tag`, or `zip`) and an `output_format` of `sarif` or `review-json`, so a SARIF-emitting scanner such as Semgrep, Snyk, or SonarQube and an AI-CLI reviewer such as `ai-common-workflows` are added the same way, with no packaging and no code change. See [docs/gate-engine.md](docs/gate-engine.md). The path is inert until configured, so the built-in rebar `security-review` gate is the default reviewer.
+- External gates. One or more external tools drive their own gates and the advisory test classifier through an invocation and output contract, configured as a list in `config/<env>/gate_engine.yaml`. Each entry selects a source (`image`, `local`, `tag`, or `zip`) and an `output_format` of `sarif` or `review-json`, so a SARIF-emitting scanner such as Semgrep, Snyk, or SonarQube and a model-driven reviewer are added the same way, with no packaging and no code change. See [docs/gate-engine.md](docs/gate-engine.md), and [examples/gate-engines](examples/gate-engines) for a deterministic security scan and a test coverage review to copy. The path is inert until configured, so the built-in rebar `security-review` gate is the default reviewer.
 
 A gate entry set to `on_block: pause_for_human` parks the run at `AWAITING_HUMAN` on a blocking verdict rather than failing closed, and a promotion condition the policy classifies as human review parks the same way. The reserved `plan` gate is a config-only human checkpoint on the reviewed plan, off in both bundles. Resolve any parked human gate with `inv gate --issue KEY --gate NAME --approve` or `--reject`. Approve continues the run, reject cancels it, and the operator identity is read from the operating system account.
 
@@ -531,6 +755,8 @@ The demo tasks walk the platform in four acts. Each is an `inv` task with its ow
 | `inv demo-draft-pr` | Opening a draft PR through the full stack |
 
 ## System components
+
+The [architecture diagrams](docs/architecture.md) show how these components connect locally and in AWS.
 
 | Component | Backed by | Built here |
 | --- | --- | --- |
@@ -553,11 +779,12 @@ fixtures/          scripts/           tests/               docker/
 
 | Symptom | Cause and fix |
 | --- | --- |
-| `inv local-up` fails on a missing mount | A sibling demo repo is not checked out next to this one. Clone it, or remove its mount from `compose.override.yaml` |
+| `inv repos-compose` reports repository checkouts not found | A repository in `repositories.yaml` names a `path` with no checkout behind it. Clone it there, correct the `path`, or remove the entry |
 | `inv connectivity-check` fails | The Bedrock path is not open. Confirm `BEDROCK_CONNECTIVITY_PROVIDER` and its keys, then rerun `inv tunnel-start` |
 | Smoke test reports a database failure | Migrations have not run. Apply them with `inv db-migrate` |
 | Container build fails resolving `nava-rebar` | The PyPI index is unreachable. Confirm network access to install the `review` extra |
-| Live-agent demos cannot reach the cluster | No kubeconfig at `~/.kube/config`. Provide one or skip the live-agent flag |
+| A cluster deployment does not become ready | Read its logs with `inv logs --service NAME`. A worker that cannot reach a Compose service names the address. Confirm compose publishes the port and that `K8S_COMPOSE_ADDRESS` reaches the host from a pod |
+| `inv smoke-test` reports expired AWS credentials, or LiteLLM returns an expired-token error | Run `inv aws-login`. The pods read the new credentials within a few minutes without a restart |
 | A ticket is stuck at `AWAITING_HUMAN` | CI repair exhausted and the workflow parked. Fix the branch and run `inv repair ISSUE --retry`, or edit the ticket and run `inv restart ISSUE` |
 
 ## License

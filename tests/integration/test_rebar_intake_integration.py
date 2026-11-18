@@ -13,6 +13,7 @@ from scripts.rebar_poll import (
 )
 from services.coordination.idempotency import InMemorySideEffectLedger
 from services.integration.jira.snapshot import TaskSnapshot, snapshot_id_for
+from services.operator_remedy import Remedy
 from services.orchestration.intake_reconciler import (
     IntakeContext,
     IntakeStart,
@@ -86,7 +87,9 @@ class _Starter:
 
 
 class _Alerter:
-    async def unroutable(self, *, issue_key: str, project: str, reason: str) -> None:
+    async def unroutable(
+        self, *, issue_key: str, project: str, reason: str, remedy: Remedy
+    ) -> None:
         return None
 
 

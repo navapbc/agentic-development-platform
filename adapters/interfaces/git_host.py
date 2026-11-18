@@ -119,7 +119,12 @@ def reuse_from_pull_request(repo: str, head: str, pr: PullRequest | None) -> Pub
     return None
 
 
-def agent_branch_name(task_id: str) -> str:
+def agent_branch_name(task_id: str, tenant: str = "") -> str:
+    """Agent branch for a task, namespaced under the tenant so two tenants sharing a repository
+    push to separate branches. The platform tenant "" keeps the flat `agent/<task_id>` form.
+    """
+    if tenant:
+        return f"agent/{tenant}/{task_id}"
     return f"agent/{task_id}"
 
 

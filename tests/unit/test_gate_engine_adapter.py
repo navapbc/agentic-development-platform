@@ -129,6 +129,7 @@ async def test_sarif_engine_runs_without_a_model_and_parses_findings(tmp_path):
     scanner = AiReviewScanner(
         name="semgrep-sarif",
         config=GateEngineConfig(
+            classifier_entrypoint="bin/classify",
             enabled=True,
             mode="local",
             local_path=str(source_root),
@@ -151,7 +152,7 @@ async def test_sarif_engine_runs_without_a_model_and_parses_findings(tmp_path):
 
 
 def _install_entrypoint(root: Path) -> None:
-    entry = root / "engines" / "security-compliance-review" / "harness" / "ai-pr-review"
+    entry = root / "bin" / "review"
     entry.parent.mkdir(parents=True)
     entry.write_text("#!/usr/bin/env bash\n")
     entry.chmod(0o755)
@@ -184,6 +185,8 @@ async def test_scan_runs_the_entrypoint_and_maps_findings(tmp_path):
     scanner = AiReviewScanner(
         name="ai-security-review",
         config=GateEngineConfig(
+            review_entrypoint="bin/review",
+            classifier_entrypoint="bin/classify",
             enabled=True,
             mode="local",
             local_path=str(source_root),
@@ -235,7 +238,13 @@ async def test_scan_fails_closed_without_a_gateway_base_url(tmp_path):
 
     scanner = AiReviewScanner(
         name="ai-security-review",
-        config=GateEngineConfig(enabled=True, mode="local", local_path=str(source_root)),
+        config=GateEngineConfig(
+            review_entrypoint="bin/review",
+            classifier_entrypoint="bin/classify",
+            enabled=True,
+            mode="local",
+            local_path=str(source_root),
+        ),
         litellm_base_url="",
         runner=spy_runner,
         source=_resolved(str(source_root)),
@@ -259,6 +268,8 @@ async def test_scan_fails_closed_when_the_engine_errors(tmp_path):
     scanner = AiReviewScanner(
         name="ai-security-review",
         config=GateEngineConfig(
+            review_entrypoint="bin/review",
+            classifier_entrypoint="bin/classify",
             enabled=True,
             mode="local",
             local_path=str(source_root),
@@ -285,7 +296,13 @@ async def test_scan_fails_closed_when_entrypoint_missing(tmp_path):
 
     scanner = AiReviewScanner(
         name="ai-security-review",
-        config=GateEngineConfig(enabled=True, mode="local", local_path=str(source_root)),
+        config=GateEngineConfig(
+            review_entrypoint="bin/review",
+            classifier_entrypoint="bin/classify",
+            enabled=True,
+            mode="local",
+            local_path=str(source_root),
+        ),
         runner=unused_runner,
         source=_resolved(str(source_root)),
     )
@@ -299,7 +316,9 @@ async def test_scan_fails_closed_when_engine_disabled(tmp_path):
     repo_root.mkdir()
     scanner = AiReviewScanner(
         name="ai-security-review",
-        config=GateEngineConfig(enabled=False),
+        config=GateEngineConfig(
+            review_entrypoint="bin/review", classifier_entrypoint="bin/classify", enabled=False
+        ),
     )
 
     with pytest.raises(GateEngineError):
@@ -326,6 +345,7 @@ async def test_scan_drives_a_config_driven_entrypoint(tmp_path):
     scanner = AiReviewScanner(
         name="ai-security-review",
         config=GateEngineConfig(
+            classifier_entrypoint="bin/classify",
             enabled=True,
             mode="local",
             local_path=str(source_root),
@@ -427,7 +447,7 @@ def test_map_classifications_ignores_out_of_scope_application_bug():
 
 
 def _install_classifier_entrypoint(root: Path) -> None:
-    entry = root / "engines" / "test-classifier" / "harness" / "ai-test-classifier"
+    entry = root / "bin" / "classify"
     entry.parent.mkdir(parents=True)
     entry.write_text("#!/usr/bin/env bash\n")
     entry.chmod(0o755)
@@ -458,6 +478,8 @@ async def test_classify_runs_the_entrypoint_and_maps_verdicts(tmp_path):
     classifier = AiTestClassifier(
         name="test-triage",
         config=GateEngineConfig(
+            review_entrypoint="bin/review",
+            classifier_entrypoint="bin/classify",
             enabled=True,
             mode="local",
             local_path=str(source_root),
@@ -537,6 +559,8 @@ async def test_scan_uses_the_pod_runner_when_provided(tmp_path):
     scanner = AiReviewScanner(
         name="ai-security-review",
         config=GateEngineConfig(
+            review_entrypoint="bin/review",
+            classifier_entrypoint="bin/classify",
             enabled=True,
             mode="local",
             local_path=str(source_root),
@@ -590,6 +614,8 @@ async def test_scan_threads_tls_verify_into_the_pod_spec(tmp_path):
     scanner = AiReviewScanner(
         name="ai-security-review",
         config=GateEngineConfig(
+            review_entrypoint="bin/review",
+            classifier_entrypoint="bin/classify",
             enabled=True,
             mode="local",
             local_path=str(source_root),
@@ -633,6 +659,8 @@ async def test_image_acts_as_runtime_override_with_local_source(tmp_path):
     scanner = AiReviewScanner(
         name="ai-security-review",
         config=GateEngineConfig(
+            review_entrypoint="bin/review",
+            classifier_entrypoint="bin/classify",
             enabled=True,
             mode="local",
             local_path=str(source_root),
@@ -677,6 +705,8 @@ async def test_scan_raises_scanner_unavailable_when_pod_engine_fails(tmp_path):
     scanner = AiReviewScanner(
         name="ai-security-review",
         config=GateEngineConfig(
+            review_entrypoint="bin/review",
+            classifier_entrypoint="bin/classify",
             enabled=True,
             mode="local",
             local_path=str(source_root),
@@ -704,7 +734,13 @@ async def test_scan_raises_scanner_unavailable_when_pod_engine_fails(tmp_path):
 async def test_engine_env_injects_trace_headers_only_with_execution():
     from services.orchestration.gates.gate_engine import _engine_env
 
-    cfg = GateEngineConfig(enabled=True, mode="local", review_model="review-model")
+    cfg = GateEngineConfig(
+        review_entrypoint="bin/review",
+        classifier_entrypoint="bin/classify",
+        enabled=True,
+        mode="local",
+        review_model="review-model",
+    )
     with_exec = _engine_env(
         config=cfg,
         profile="cms-ars",
@@ -723,3 +759,173 @@ async def test_engine_env_injects_trace_headers_only_with_execution():
         gateway_api_key="k",
     )
     assert "ANTHROPIC_CUSTOM_HEADERS" not in without
+
+
+class _RunModelAccess:
+    def __init__(self, budget_stop: str = "") -> None:
+        self.issued: list[str] = []
+        self.checked: list[str] = []
+        self.failure_texts: list[str] = []
+        self._budget_stop = budget_stop
+
+    async def key_for(self, execution_id):
+        self.issued.append(execution_id)
+        return f"sk-run-{execution_id}"
+
+    async def budget_stop(self, execution_id, failure_text=""):
+        self.checked.append(execution_id)
+        self.failure_texts.append(failure_text)
+        return self._budget_stop
+
+
+def _pod_scanner(source_root, pod_runner, access, *, master_key="sk-master-secret"):
+    return AiReviewScanner(
+        name="ai-security-review",
+        config=GateEngineConfig(
+            review_entrypoint="bin/review",
+            classifier_entrypoint="bin/classify",
+            enabled=True,
+            mode="local",
+            local_path=str(source_root),
+            review_model="security-review-model",
+        ),
+        profile="cms-ars",
+        litellm_base_url="http://host.docker.internal:4000",
+        litellm_api_key=master_key,
+        source=_resolved(str(source_root)),
+        pod_runner=pod_runner,
+        run_model_access=access,
+    )
+
+
+_POD_TARGET = ScanTarget(
+    repo="agentic-demo-service",
+    ref="head",
+    repo_root="/checkout",
+    base_ref="base",
+    execution_id="exec-1",
+)
+
+
+async def test_an_engine_pod_is_given_the_run_key_and_never_the_master_key(tmp_path):
+    source_root = tmp_path / "engine"
+    source_root.mkdir()
+    _install_entrypoint(source_root)
+
+    class _CapturingPodRunner:
+        def __init__(self):
+            self.specs = []
+
+        async def run_engine(self, spec):
+            self.specs.append(spec)
+            return {"review_action": "COMMENT", "comments": []}
+
+    pod = _CapturingPodRunner()
+    access = _RunModelAccess()
+
+    await _pod_scanner(source_root, pod, access).scan(_POD_TARGET)
+
+    env = pod.specs[0].env
+    assert env["ANTHROPIC_API_KEY"] == "sk-run-exec-1"
+    assert env["OPENAI_API_KEY"] == "sk-run-exec-1"
+    assert "sk-master-secret" not in repr(env)
+    assert access.issued == ["exec-1"]
+
+
+async def test_an_engine_pod_refused_for_budget_raises_a_budget_stop(tmp_path):
+    from services.integration.litellm_admin import (
+        RUN_MODEL_BUDGET_EXCEEDED,
+        ModelBudgetExceededError,
+    )
+    from services.orchestration.gates.pod_runner import PodEngineError
+
+    source_root = tmp_path / "engine"
+    source_root.mkdir()
+    _install_entrypoint(source_root)
+
+    refusal = (
+        "gate 'ai-security-review' engine pod exited 2: Error code: 400 - "
+        "Budget has been exceeded! Key=run-exec-1 Current cost: 0.2, Max budget: 0.1"
+    )
+
+    class _RefusedPodRunner:
+        async def run_engine(self, spec):
+            raise PodEngineError(refusal)
+
+    access = _RunModelAccess(budget_stop=RUN_MODEL_BUDGET_EXCEEDED)
+
+    with pytest.raises(ModelBudgetExceededError) as stopped:
+        await _pod_scanner(source_root, _RefusedPodRunner(), access).scan(_POD_TARGET)
+
+    assert stopped.value.reason == RUN_MODEL_BUDGET_EXCEEDED
+    assert access.checked == ["exec-1"]
+    assert access.failure_texts == [refusal]
+
+
+async def test_an_engine_pod_failure_with_budget_left_is_a_scanner_outage(tmp_path):
+    from adapters.interfaces.security_scanner import ScannerUnavailableError
+    from services.orchestration.gates.pod_runner import PodEngineError
+
+    source_root = tmp_path / "engine"
+    source_root.mkdir()
+    _install_entrypoint(source_root)
+
+    class _FailingPodRunner:
+        async def run_engine(self, spec):
+            raise PodEngineError("gate 'ai-security-review' engine pod exited 1")
+
+    with pytest.raises(ScannerUnavailableError):
+        await _pod_scanner(source_root, _FailingPodRunner(), _RunModelAccess()).scan(_POD_TARGET)
+
+
+async def test_an_unreachable_litellm_admin_api_is_a_scanner_outage(tmp_path):
+    from adapters.interfaces.security_scanner import ScannerUnavailableError
+    from services.integration.litellm_admin import LiteLLMAdminError
+
+    source_root = tmp_path / "engine"
+    source_root.mkdir()
+    _install_entrypoint(source_root)
+
+    class _Unreachable(_RunModelAccess):
+        async def key_for(self, execution_id):
+            raise LiteLLMAdminError("LiteLLM could not be reached")
+
+    class _NeverRunPodRunner:
+        async def run_engine(self, spec):
+            raise AssertionError("no pod starts without a run key")
+
+    with pytest.raises(ScannerUnavailableError):
+        await _pod_scanner(source_root, _NeverRunPodRunner(), _Unreachable()).scan(_POD_TARGET)
+
+
+def test_the_pod_backend_carries_run_key_access_and_no_master_key(monkeypatch):
+    from services.integration.litellm_admin import RunModelAccess
+    from services.orchestration.gates import builtin
+    from services.orchestration.gates.builtin import engine_review_backend
+    from tests.support import hermetic_settings
+
+    settings = hermetic_settings(litellm_master_key="sk-master-secret", gate_engine_execution="pod")
+    monkeypatch.setattr("scripts.config.get_settings", lambda: settings)
+    monkeypatch.setattr(builtin, "_resolve_gate_model", lambda config: config.review_model)
+
+    scanner = engine_review_backend(GateEngineConfig(enabled=True, review_model="m"))
+
+    assert scanner._litellm_api_key == ""
+    assert isinstance(scanner._run_model_access, RunModelAccess)
+
+
+def test_the_subprocess_backend_keeps_the_master_key_in_the_worker(monkeypatch):
+    from services.orchestration.gates import builtin
+    from services.orchestration.gates.builtin import engine_review_backend
+    from tests.support import hermetic_settings
+
+    settings = hermetic_settings(
+        litellm_master_key="sk-master-secret", gate_engine_execution="subprocess"
+    )
+    monkeypatch.setattr("scripts.config.get_settings", lambda: settings)
+    monkeypatch.setattr(builtin, "_resolve_gate_model", lambda config: config.review_model)
+
+    scanner = engine_review_backend(GateEngineConfig(enabled=True, review_model="m"))
+
+    assert scanner._litellm_api_key == "sk-master-secret"
+    assert scanner._run_model_access is None

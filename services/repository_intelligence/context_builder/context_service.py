@@ -19,7 +19,7 @@ from services.repository_intelligence.context_builder.focus import (
     extract_file_paths,
     extract_focus_terms,
 )
-from services.repository_intelligence.indexing.reindex import reindex_repo
+from services.repository_intelligence.indexing.reindex import IndexRoots, reindex_repo
 from services.repository_intelligence.indexing.scip_builder import resolve_commit, scip_indexer_for
 from services.repository_intelligence.languages import Language, primary_language
 from services.repository_intelligence.normalization.models import (
@@ -94,12 +94,15 @@ class RepositoryIntelligenceService:
         *,
         commit: str | None = None,
         index_root: Path | None = None,
+        index_roots: IndexRoots | None = None,
         venv_python: str | Path | None = None,
         cbm_binary: str | Path | None = None,
         cbm_allowed_root: str | Path | None = None,
         cbm_cache_dir: str | Path | None = None,
     ) -> RepositoryIntelligenceService:
         root = Path(repo_root)
+        scip_root = index_roots.scip if index_roots else index_root
+        zoekt_root = index_roots.zoekt if index_roots else index_root
         language = primary_language(root)
         python = language is Language.PYTHON
         indexer = scip_indexer_for(language)
@@ -117,10 +120,10 @@ class RepositoryIntelligenceService:
             else None
         )
         router = RouterProvider(
-            scip=ScipProvider(root, commit=commit, index_root=index_root, indexer=indexer)
+            scip=ScipProvider(root, commit=commit, index_root=scip_root, indexer=indexer)
             if indexer is not None
             else None,
-            zoekt=ZoektProvider(root, commit=commit, index_root=index_root),
+            zoekt=ZoektProvider(root, commit=commit, index_root=zoekt_root),
             coverage=CoverageProvider(root, venv_python=venv_python) if python else None,
             build_metadata=build_metadata,
             custom=CustomPythonProvider(root) if python else None,
@@ -129,10 +132,21 @@ class RepositoryIntelligenceService:
             lsp=LspProvider(root, lsp_spec, commit=commit) if lsp_spec is not None else None,
         )
 
-        def reindex(repo: RepoRef, prior_commit: str | None) -> None:
-            reindex_repo(
-                root, repo, prior_commit=prior_commit, index_root=index_root, indexer=indexer
-            )
+        reindex: Callable[[RepoRef, str | None], None] | None = None
+        if indexer is not None:
+            scip_indexer = indexer
+
+            def reindex_at(repo: RepoRef, prior_commit: str | None) -> None:
+                reindex_repo(
+                    root,
+                    repo,
+                    prior_commit=prior_commit,
+                    index_root=index_root,
+                    index_roots=index_roots,
+                    indexer=scip_indexer,
+                )
+
+            reindex = reindex_at
 
         return cls(
             router,
@@ -140,7 +154,7 @@ class RepositoryIntelligenceService:
             ast_grep=ast_grep,
             cbm=cbm,
             build_metadata=build_metadata,
-            reindex=reindex if indexer is not None else None,
+            reindex=reindex,
         )
 
     @staticmethod

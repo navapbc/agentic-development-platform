@@ -21,6 +21,8 @@ from temporalio.client import Client
 from temporalio.worker import Worker
 from temporalio.worker.workflow_sandbox import SandboxedWorkflowRunner, SandboxRestrictions
 
+from services import temporal_client
+from services.orchestration.activity_heartbeat import ActivityHeartbeatInterceptor
 from services.orchestration.temporal_activities import (
     alert_human_intervention,
     analyze_ci_failure,
@@ -34,12 +36,14 @@ from services.orchestration.temporal_activities import (
     commit_and_push,
     count_tick,
     create_draft_pr,
+    delete_run_model_key,
     detect_dependency,
     evaluate_gate,
     evaluate_promotion,
     finalize_work_claim,
     find_open_pr,
     gather_repo_context,
+    intake_jira_issue,
     invoke_model,
     link_pr_to_issue,
     load_gate_plan,
@@ -79,6 +83,7 @@ from services.orchestration.temporal_workflows import (
     DurableTaskWorkflow,
     ImplementationWorkflow,
     IntakeWorkflow,
+    JiraIssueIntakeWorkflow,
     PlanReviewWorkflow,
     PullRequestWorkflow,
     ReapWorkflow,
@@ -106,6 +111,7 @@ _WORKFLOWS = [
     DraftPullRequestWorkflow,
     ReapWorkflow,
     IntakeWorkflow,
+    JiraIssueIntakeWorkflow,
 ]
 
 _REVIEW_ACTIVITIES = [
@@ -160,8 +166,10 @@ _ACTIVITIES = [
     classify_test_failures,
     record_manifest,
     reconcile_intake_pass,
+    intake_jira_issue,
     sign_authorship,
     verify_authorship_merge,
+    delete_run_model_key,
 ]
 
 
@@ -192,54 +200,61 @@ def build_worker(client: Client, task_queue: str, role: str) -> Worker:
     versioning: dict[str, Any] = {}
     if settings.worker_versioning_enabled:
         versioning = {"deployment_config": deployment_config(settings)}
+    heartbeat = ActivityHeartbeatInterceptor()
     if role == WORKER_ROLE_WORKFLOW:
         return Worker(
             client,
             task_queue=task_queue,
             workflows=_WORKFLOWS,
             workflow_runner=runner,
+            interceptors=[heartbeat],
             **versioning,
         )
+    attribution = _tenant_attribution(role, settings)
     if role == WORKER_ROLE_ACTIVITY:
-        return Worker(client, task_queue=task_queue, activities=_ACTIVITIES, **versioning)
+        return Worker(
+            client,
+            task_queue=task_queue,
+            activities=_ACTIVITIES,
+            interceptors=[heartbeat, attribution, *_tenant_interceptors()],
+            **versioning,
+        )
     if role == WORKER_ROLE_REVIEW:
-        return Worker(client, task_queue=task_queue, activities=_REVIEW_ACTIVITIES, **versioning)
+        return Worker(
+            client,
+            task_queue=task_queue,
+            activities=_REVIEW_ACTIVITIES,
+            interceptors=[heartbeat, attribution],
+            **versioning,
+        )
     return Worker(
         client,
         task_queue=task_queue,
         workflows=_WORKFLOWS,
         activities=_all_activities(),
         workflow_runner=runner,
+        interceptors=[heartbeat, attribution, *_tenant_interceptors()],
         **versioning,
     )
 
 
-def _warm_acli_auth(settings) -> None:
-    """Authenticate the cloud Jira acli client once at worker startup.
-
-    The acli credential lives in an ephemeral container path that an image
-    rebuild or task replacement discards, so ticket activities re-authenticate
-    from the configured credential here rather than failing on first use.
-    """
-    from services.integration.jira.acli_auth import ensure_acli_authenticated
-    from services.integration.jira.credentials import (
-        CLOUD,
-        build_jira_credential_resolver,
+def _tenant_attribution(role: str, settings: Any) -> Any:
+    from services.orchestration.tenant_attribution import (
+        TenantAttributionInterceptor,
+        recorded_execution_tenant,
     )
-    from services.integration.tickets import JIRA, resolve_ticket_backend_name
 
-    if resolve_ticket_backend_name(settings) != JIRA:
-        return
-    try:
-        resolver = build_jira_credential_resolver(settings)
-        for project in sorted(resolver.projects()):
-            cred = resolver.resolve(project)
-            if cred is not None and cred.auth_mode == CLOUD:
-                ensure_acli_authenticated(cred, acli_path=settings.jira_acli_path)
-                log.info("acli authenticated for cloud Jira at startup")
-                return
-    except Exception as exc:  # noqa: BLE001
-        log.warning("acli startup authentication skipped: %s", exc)
+    if role == WORKER_ROLE_REVIEW:
+        return TenantAttributionInterceptor(lookup=recorded_execution_tenant)
+    return TenantAttributionInterceptor(settings.tenant)
+
+
+def _tenant_interceptors() -> list[Any]:
+    from services.integration.tenant_config import active_tenant_config
+    from services.orchestration.tenant_pinning import TenantConfigInterceptor
+
+    config = active_tenant_config()
+    return [] if config is None else [TenantConfigInterceptor(config)]
 
 
 async def _scrub_workspace_credentials(workspace_root: str) -> None:
@@ -275,7 +290,6 @@ async def main() -> None:
     configure_logging(service_name)
     instrument_llm_tracing()
     install_litellm_header_propagation(settings.rebar_llm_base_url)
-    _warm_acli_auth(settings)
     from scripts.aws_clients import configure_aws_fips
 
     configure_aws_fips(settings)
@@ -287,16 +301,20 @@ async def main() -> None:
         settings.temporal_host,
         settings.temporal_namespace,
     )
-    client = await Client.connect(
+    client = await temporal_client.connect(
         settings.temporal_host,
-        namespace=settings.temporal_namespace,
+        settings,
         interceptors=temporal_interceptors(),
     )
 
+    from services.orchestration.task_queues import run_task_queue, workflow_task_queues
+
     if role == WORKER_ROLE_REVIEW:
-        task_queue = settings.review_task_queue
+        queues = [settings.review_task_queue]
+    elif role == WORKER_ROLE_WORKFLOW:
+        queues = workflow_task_queues(settings)
     else:
-        task_queue = settings.temporal_task_queue
+        queues = [run_task_queue(settings)]
 
     if role in (WORKER_ROLE_REVIEW, WORKER_ROLE_ALL):
         from services.orchestration.review_signing import (
@@ -309,10 +327,30 @@ async def main() -> None:
         if change is not None:
             log.info("recorded review trust-root change: %s", change)
 
+    tenant_refresh_task = None
+    index_checkout_task = None
     if role in (WORKER_ROLE_ACTIVITY, WORKER_ROLE_ALL):
         from services.integration.tickets.store_remote import tickets_store_preflight
         from services.orchestration.authorship import authorship_signing_preflight
+        from services.orchestration.index_checkouts import keep_index_checkouts
+        from services.orchestration.tenant_pinning import (
+            install_tenant_schedules,
+            refresh_tenant_config,
+            start_tenant_config,
+        )
 
+        tenant_config = start_tenant_config(settings)
+        active_bundle = tenant_config.active
+        log.info(
+            "serving tenant %s on config bundle %s",
+            tenant_config.tenant,
+            active_bundle.id if active_bundle else "none",
+        )
+        tenant_refresh_task = asyncio.create_task(
+            refresh_tenant_config(tenant_config, settings.tenant_config_refresh_seconds)
+        )
+        index_checkout_task = asyncio.create_task(keep_index_checkouts(settings))
+        await install_tenant_schedules(client, settings)
         tickets_store_preflight(settings)
         authorship_signing_preflight(settings)
         await _scrub_workspace_credentials(settings.execution_workspace_root)
@@ -322,8 +360,7 @@ async def main() -> None:
 
         evidence_object_store_preflight(settings)
 
-    workers = [build_worker(client, task_queue, role)]
-    queues = [task_queue]
+    workers = [build_worker(client, queue, role) for queue in queues]
     if role == WORKER_ROLE_ALL:
         workers.append(build_worker(client, settings.review_task_queue, WORKER_ROLE_REVIEW))
         queues.append(settings.review_task_queue)
@@ -345,14 +382,25 @@ async def main() -> None:
                 alive=lambda: all(worker.is_running for worker in workers),
             )
         )
+    watch_task = None
+    if settings.aws_credentials_file:
+        from services.aws_credentials import watch_credentials
+
+        watch_task = asyncio.create_task(
+            watch_credentials(
+                Path(settings.aws_credentials_file),
+                warn_seconds=settings.aws_credentials_warn_seconds,
+            )
+        )
     runners = [worker.run() for worker in workers]
     if settings.worker_versioning_enabled:
         runners.append(set_current_version(client, settings, queues))
     try:
         await asyncio.gather(*runners)
     finally:
-        if heartbeat_task is not None:
-            heartbeat_task.cancel()
+        for task in (heartbeat_task, watch_task, tenant_refresh_task, index_checkout_task):
+            if task is not None:
+                task.cancel()
 
 
 if __name__ == "__main__":

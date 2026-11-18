@@ -43,7 +43,14 @@ IMAGE_SOURCE_PATHS = (
     "scripts",
     "observability",
     "openhands",
+    "config/platform",
     "docker/Dockerfile",
+    "docker/platform-entrypoint.sh",
+    "docker/al2023/go-component.sh",
+    "docker/al2023/base.Dockerfile",
+    "docker/al2023/cis-scan.sh",
+    "docker/al2023/cis-accepted.txt",
+    "docker/al2023/cis-harden.sh",
 )
 
 

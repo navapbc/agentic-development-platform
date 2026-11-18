@@ -13,11 +13,11 @@ import asyncio
 import uuid
 from datetime import timedelta
 
+from services import temporal_client
 from services.orchestration.temporal_workflows.counting_workflow import (
     CountingInput,
     CountingWorkflow,
 )
-from temporalio.client import Client
 
 from scripts.config import get_settings, to_host_hostport
 
@@ -35,7 +35,7 @@ async def main() -> int:
     settings = get_settings()
     address = to_host_hostport(settings.temporal_host)
     print(f"[demo] connecting to Temporal at {address}")
-    client = await Client.connect(address, namespace=settings.temporal_namespace)
+    client = await temporal_client.connect(address, settings)
 
     workflow_id = f"durable-counter-{uuid.uuid4().hex[:8]}"
     handle = await client.start_workflow(

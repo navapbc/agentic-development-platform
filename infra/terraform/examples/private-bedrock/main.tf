@@ -3,6 +3,12 @@ data "aws_availability_zones" "available" {
   state = "available"
 }
 
+data "aws_subnet" "data" {
+  for_each = var.create_network ? toset([]) : toset(var.data_subnet_ids)
+
+  id = each.value
+}
+
 locals {
   azs = length(var.availability_zones) > 0 ? var.availability_zones : (
     var.create_network ? slice(data.aws_availability_zones.available[0].names, 0, length(var.new_subnet_cidrs)) : []
@@ -40,6 +46,10 @@ resource "terraform_data" "inputs_guard" {
       condition     = !local.create_public_tier || length(var.public_subnet_cidrs) > 0
       error_message = "An egress path needs at least one public_subnet_cidrs entry."
     }
+    precondition {
+      condition     = !var.create_eks || !local.create_public_tier || length(var.public_subnet_cidrs) >= 2
+      error_message = "create_eks needs two public_subnet_cidrs entries, because an internet-facing load balancer spans two Availability Zones."
+    }
   }
 }
 
@@ -61,7 +71,7 @@ resource "aws_subnet" "private" {
   availability_zone       = local.azs[count.index]
   map_public_ip_on_launch = false
 
-  tags = merge(var.tags, { Name = "${var.name_prefix}-private-${count.index}" })
+  tags = merge(var.tags, { Name = "${var.name_prefix}-private-${count.index}" }, var.create_eks ? { "kubernetes.io/role/internal-elb" = "1" } : {})
 }
 
 resource "aws_route_table" "private" {
@@ -81,13 +91,16 @@ resource "aws_route_table_association" "private" {
 module "cloudtrail" {
   source = "../../cloudtrail"
 
-  create_cloudtrail      = var.create_cloudtrail
-  trail_name             = var.cloudtrail_name
-  region                 = var.region
-  access_log_bucket      = var.access_log_bucket
-  data_event_bucket_arns = var.create_rebar_ticket_store ? [module.rebar_ticket_store.bucket_arn] : []
-  name_prefix            = var.name_prefix
-  tags                   = var.tags
+  create_cloudtrail = var.create_cloudtrail
+  trail_name        = var.cloudtrail_name
+  region            = var.region
+  access_log_bucket = var.access_log_bucket
+  data_event_bucket_arns = concat(
+    local.tenants_enabled && length(var.tenants) > 0 ? [module.tenant_config_store.bucket_arn] : [],
+    [for tenant in values(local.tenant_records) : tenant.ticket_store.bucket_arn],
+  )
+  name_prefix = var.name_prefix
+  tags        = var.tags
 }
 
 module "vpc_endpoints" {
@@ -112,6 +125,10 @@ module "vpc_endpoints" {
     var.create_secret_store ? ["secretsmanager"] : [],
     local.secret_store_database ? ["rds-data"] : [],
     local.secret_store_cache ? ["elasticache"] : [],
+    var.create_container_services && var.container_use_fips_endpoints ? ["bedrock-runtime-fips"] : [],
+    local.container_telemetry_exports ? [var.container_use_fips_endpoints ? "xray-fips" : "xray", "aps-workspaces"] : [],
+    module.managed_grafana.interface_services,
+    var.create_eks ? ["eks-auth"] : [],
   )
 
   name_prefix = var.name_prefix

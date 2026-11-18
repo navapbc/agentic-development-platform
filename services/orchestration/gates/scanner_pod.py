@@ -19,6 +19,8 @@ from uuid import uuid4
 from adapters.interfaces.security_scanner import ScannerUnavailableError
 from adapters.real.security_scanner import CommandResult
 
+from services.orchestration.gates import image_admission
+from services.orchestration.gates import registry_auth as registry_auth_script
 from services.orchestration.gates.pod_runner import (
     DEFAULT_BUILDER_IMAGE,
     DEFAULT_NAMESPACE,
@@ -111,7 +113,12 @@ def _restore_path(value: object, cwd: str) -> object:
     return value
 
 
-def scan_script(image: str, args: Sequence[str]) -> str:
+def scan_script(
+    image: str,
+    args: Sequence[str],
+    registry: registry_auth_script.RegistrySetup = registry_auth_script.NO_REGISTRY,
+    tls_verify: bool = True,
+) -> str:
     """Build the scanner in its own image and keep the tool's JSON alone on stdout.
 
     The tool writes to a file that is echoed as the last step, so buildah's own progress output
@@ -124,9 +131,12 @@ def scan_script(image: str, args: Sequence[str]) -> str:
     tell a registry that could not be reached from the scanner reporting a vulnerability.
     """
     command = " ".join(shlex.quote(arg) for arg in args)
+    tls_flag = "" if tls_verify else "--tls-verify=false "
     return (
         f"out=$(mktemp) || exit {SCRATCH_FILE_EXIT}\n"
-        f"ctr=$(buildah from {shlex.quote(image)}) || exit {IMAGE_PULL_EXIT}\n"
+        f"{registry.before_pull()}"
+        f"ctr=$(buildah from {tls_flag}{shlex.quote(image)}) || exit {IMAGE_PULL_EXIT}\n"
+        f"{registry.after_pull()}"
         f"buildah run --net host -v {_WORKSPACE_MOUNT}:{_WORKSPACE_MOUNT} "
         f'"$ctr" -- {command} > "$out"\n'
         "rc=$?\n"
@@ -149,14 +159,18 @@ class PodCommandRunner:
         namespace: str = DEFAULT_NAMESPACE,
         builder_image: str = DEFAULT_BUILDER_IMAGE,
         privileged: bool = False,
+        node_pool: str = "",
+        tls_verify: bool = True,
     ) -> None:
         self._image = image
         self._scanner = scanner
+        self._tls_verify = tls_verify
         self._execution_id = execution_id
         self._ops = ops or KubectlPodOps()
         self._namespace = namespace
         self._builder_image = builder_image
         self._privileged = privileged
+        self._node_pool = node_pool
 
     async def __call__(self, args: Sequence[str], cwd: str) -> CommandResult:
         """Run the scanner in a pod, classifying transport failures as unavailability.
@@ -171,15 +185,27 @@ class PodCommandRunner:
         inside that pod, so losing it surfaces as `IMAGE_PULL_EXIT` from `exec_capture`.
         """
         pod = scanner_pod_name(self._scanner, self._execution_id or uuid4().hex[:8])
-        manifest = build_pod_manifest(pod, self._namespace, self._builder_image, self._privileged)
+        manifest = build_pod_manifest(
+            pod,
+            self._namespace,
+            self._builder_image,
+            self._privileged,
+            node_pool=self._node_pool,
+            service_account=image_admission.pod_service_account(),
+        )
         try:
             await self._ops.create(manifest)
             try:
                 await self._ops.wait_ready(pod, self._namespace)
                 if cwd:
                     await self._ops.copy_in(pod, self._namespace, cwd, _WORKSPACE_MOUNT)
+                registry = await registry_auth_script.install(
+                    self._ops, pod, self._namespace, [self._image]
+                )
                 code, stdout, stderr = await self._ops.exec_capture(
-                    pod, self._namespace, scan_script(self._image, remap_paths(args, cwd))
+                    pod,
+                    self._namespace,
+                    scan_script(self._image, remap_paths(args, cwd), registry, self._tls_verify),
                 )
                 if code == IMAGE_PULL_EXIT:
                     self._unavailable(f"could not pull {self._image}: {stderr.strip()[:400]}")
@@ -219,4 +245,6 @@ def pod_command_runner(scanner: str, settings, execution_id: str = "") -> PodCom
         namespace=settings.gate_engine_namespace,
         builder_image=settings.gate_engine_builder_image,
         privileged=settings.gate_engine_privileged,
+        node_pool=settings.sandbox_node_pool,
+        tls_verify=settings.gate_registry_tls_verify,
     )

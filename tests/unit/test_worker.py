@@ -317,58 +317,6 @@ class _RecordingClient:
         self.workflow_service = _RecordingWorkflowService(self)
 
 
-class _FakeCred:
-    def __init__(self, auth_mode: str) -> None:
-        self.auth_mode = auth_mode
-
-
-class _FakeResolver:
-    def __init__(self, creds: dict) -> None:
-        self._creds = creds
-
-    def projects(self) -> set[str]:
-        return set(self._creds)
-
-    def resolve(self, project: str):
-        return self._creds.get(project)
-
-
-class _FakeSettings:
-    jira_acli_path = ""
-    ticket_backend = "jira"
-
-
-def test_warm_acli_auth_authenticates_a_cloud_project(monkeypatch: pytest.MonkeyPatch) -> None:
-    from services.integration.jira import acli_auth, credentials
-    from services.orchestration.worker import _warm_acli_auth
-
-    calls: list = []
-    resolver = _FakeResolver(
-        {"DATA": _FakeCred("datacenter"), "ADSER": _FakeCred(credentials.CLOUD)}
-    )
-    monkeypatch.setattr(credentials, "build_jira_credential_resolver", lambda _s: resolver)
-    monkeypatch.setattr(
-        acli_auth, "ensure_acli_authenticated", lambda cred, *, acli_path: calls.append(cred)
-    )
-
-    _warm_acli_auth(_FakeSettings())
-
-    assert len(calls) == 1
-    assert calls[0].auth_mode == credentials.CLOUD
-
-
-def test_warm_acli_auth_is_best_effort_on_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    from services.integration.jira import credentials
-    from services.orchestration.worker import _warm_acli_auth
-
-    def _boom(_s):
-        raise RuntimeError("resolver down")
-
-    monkeypatch.setattr(credentials, "build_jira_credential_resolver", _boom)
-
-    _warm_acli_auth(_FakeSettings())
-
-
 async def test_activity_worker_startup_clears_a_persisted_workspace_credential(
     tmp_path,
 ) -> None:

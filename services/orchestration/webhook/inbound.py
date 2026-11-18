@@ -65,6 +65,8 @@ async def handle_inbound(
         outcome = await ledger.run_once(ref, lambda: handler.dispatch(event))
     except DispatchNotReady as exc:
         return 404, {"error": str(exc) or "target not found"}
+    if outcome.in_flight:
+        return 409, {"error": "this delivery is being processed, retry it later"}
     result = outcome.result if isinstance(outcome.result, dict) else {}
     if outcome.replayed:
         return 200, {"duplicate": True, **result}

@@ -11,9 +11,9 @@ from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from database.engine import create_platform_engine
 from scripts.config import configured_log_level, get_settings
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine
 
 from services.coordination.auth import SHARED_SECRET_ENV_VAR, SHARED_SECRET_REMEDY
 from services.coordination.claims import (
@@ -46,7 +46,7 @@ PORT = 8130
 
 
 async def _ping(database_url: str) -> None:
-    engine = create_async_engine(database_url, future=True)
+    engine = create_platform_engine(database_url)
     try:
         async with engine.connect() as conn:
             await conn.execute(text("SELECT 1"))
@@ -169,13 +169,13 @@ def _temporal_owner_active() -> Callable[[str], Awaitable[bool]]:
     lock = asyncio.Lock()
 
     async def _client() -> Any:
-        from temporalio.client import Client
+        from services import temporal_client
 
         if cache["client"] is None:
             async with lock:
                 if cache["client"] is None:
-                    cache["client"] = await Client.connect(
-                        settings.temporal_host, namespace=settings.temporal_namespace
+                    cache["client"] = await temporal_client.connect(
+                        settings.temporal_host, settings
                     )
         return cache["client"]
 
@@ -214,8 +214,13 @@ def main() -> None:
         loop,
         shared_secret=settings.coordination_shared_secret,
     )
-    log.info("coordination-service listening on %s:%d", settings.bind_host, PORT)
-    ThreadingHTTPServer((settings.bind_host, PORT), handler).serve_forever()
+    from services.server_tls import wrap
+
+    server = ThreadingHTTPServer((settings.bind_host, PORT), handler)
+    wrap(server, enabled=settings.server_tls, configured_dir=settings.server_tls_dir)
+    scheme = "https" if settings.server_tls else "http"
+    log.info("coordination-service listening on %s://%s:%d", scheme, settings.bind_host, PORT)
+    server.serve_forever()
 
 
 if __name__ == "__main__":

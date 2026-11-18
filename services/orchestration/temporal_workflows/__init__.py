@@ -4,6 +4,7 @@ from services.orchestration.temporal_workflows.draft_pull_request import DraftPu
 from services.orchestration.temporal_workflows.durable_task_workflow import DurableTaskWorkflow
 from services.orchestration.temporal_workflows.implementation import ImplementationWorkflow
 from services.orchestration.temporal_workflows.intake import IntakeWorkflow
+from services.orchestration.temporal_workflows.issue_intake import JiraIssueIntakeWorkflow
 from services.orchestration.temporal_workflows.pull_request import PullRequestWorkflow
 from services.orchestration.temporal_workflows.reap import ReapWorkflow
 from services.orchestration.temporal_workflows.review import (
@@ -17,6 +18,7 @@ __all__ = [
     "DurableTaskWorkflow",
     "ImplementationWorkflow",
     "IntakeWorkflow",
+    "JiraIssueIntakeWorkflow",
     "PlanReviewWorkflow",
     "PullRequestWorkflow",
     "ReapWorkflow",

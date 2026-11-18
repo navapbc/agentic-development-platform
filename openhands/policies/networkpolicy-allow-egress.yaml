@@ -23,9 +23,12 @@ spec:
         - protocol: TCP
           port: 53
     - to:
-        - podSelector:
+        - namespaceSelector:
             matchLabels:
-              app: litellm
+              kubernetes.io/metadata.name: agentic-dev-platform
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: litellm
       ports:
         - protocol: TCP
           port: 4000

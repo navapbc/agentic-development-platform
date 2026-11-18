@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import cast
 
@@ -30,9 +32,28 @@ def _unit(work_unit: str, *files: str, task_id: str = "AGENTDEV-1") -> WorkUnit:
     )
 
 
-def test_claim_id_is_deterministic_per_task_and_unit():
-    assert claim_id_for("AGENTDEV-1", "u1") == claim_id_for("AGENTDEV-1", "u1")
-    assert claim_id_for("AGENTDEV-1", "u1") != claim_id_for("AGENTDEV-1", "u2")
+def test_claim_id_is_deterministic_per_tenant_task_and_unit():
+    assert claim_id_for("AGENTDEV-1", "u1", "") == claim_id_for("AGENTDEV-1", "u1", "")
+    assert claim_id_for("AGENTDEV-1", "u1", "") != claim_id_for("AGENTDEV-1", "u2", "")
+    assert claim_id_for("AGENTDEV-1", "u1", "alpha") != claim_id_for("AGENTDEV-1", "u1", "beta")
+
+
+def test_claim_id_matches_the_digest_the_claim_tenant_migration_writes():
+    untenanted = hashlib.sha256(b"AGENTDEV-1\x1fu1").hexdigest()
+    tenanted = hashlib.sha256(b"AGENTDEV-1\x1fu1\x1falpha").hexdigest()
+
+    assert claim_id_for("AGENTDEV-1", "u1", "") == untenanted
+    assert claim_id_for("AGENTDEV-1", "u1", "alpha") == tenanted
+
+
+async def test_two_tenants_claim_the_same_task_work_unit():
+    store = InMemoryWorkClaimStore()
+
+    alpha = await store.try_claim(replace(_unit("u1"), tenant="alpha"))
+    beta = await store.try_claim(replace(_unit("u1"), tenant="beta"))
+
+    assert alpha.won and beta.won
+    assert alpha.claim_id != beta.claim_id
 
 
 async def test_first_claim_wins():
@@ -47,7 +68,7 @@ async def test_concurrent_claims_resolve_to_exactly_one_winner():
     unit = _unit("u1")
     outcomes = await asyncio.gather(store.try_claim(unit), store.try_claim(unit))
     assert [o.won for o in outcomes].count(True) == 1
-    assert {o.claim_id for o in outcomes} == {claim_id_for("AGENTDEV-1", "u1")}
+    assert {o.claim_id for o in outcomes} == {claim_id_for("AGENTDEV-1", "u1", "")}
 
 
 async def test_distinct_units_both_win():
@@ -273,3 +294,29 @@ async def test_completing_a_claim_that_is_no_longer_claimed_changes_nothing():
     store, _engine = _store(matched=False)
 
     assert await store.complete("claim-1", owner_workflow_id="wf-parent") is False
+
+
+class _InsertCapturingConnection(_StatementCapturingConnection):
+    async def execute(self, statement):
+        compiled = statement.compile(dialect=postgresql.dialect())
+        self._engine.sql = str(compiled)
+        self._engine.params = dict(compiled.params)
+        return SimpleNamespace(first=lambda: SimpleNamespace(claim_version=1))
+
+
+class _InsertCapturingEngine(_StatementCapturingEngine):
+    def begin(self):
+        return _InsertCapturingConnection(self)
+
+
+async def test_a_postgres_claim_is_unique_per_tenant_task_and_work_unit():
+    engine = _InsertCapturingEngine(matched=True)
+    store = PostgresWorkClaimStore(cast(AsyncEngine, engine))
+
+    outcome = await store.try_claim(replace(_unit("u1"), tenant="alpha"))
+
+    assert outcome.won is True
+    assert outcome.claim_id == claim_id_for("AGENTDEV-1", "u1", "alpha")
+    assert "ON CONFLICT (tenant, task_id, work_unit) DO NOTHING" in engine.sql
+    assert engine.params["tenant"] == "alpha"
+    assert engine.params["claim_id"] == outcome.claim_id

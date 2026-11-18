@@ -9,6 +9,8 @@ from services.coordination.idempotency import InMemorySideEffectLedger, SideEffe
 from services.integration.jira import CLOUD
 from services.integration.jira.credentials import ComponentRepos
 from services.integration.jira.snapshot import TaskSnapshot, snapshot_id_for
+from services.operator_remedy import Remedy
+from services.orchestration import remedies
 from services.orchestration.checks.config import required_checks_repos
 from services.orchestration.intake_base import UnresolvableBaseBranch
 from services.orchestration.intake_reconciler import (
@@ -17,7 +19,7 @@ from services.orchestration.intake_reconciler import (
     checks_not_configured_reason,
     reconcile_intake,
 )
-from tests.support import hermetic_settings
+from tests.support import configure_repositories, hermetic_settings
 
 _ALLOW = frozenset({"repo-a", "repo-b", "repo-c"})
 _PROJECTS = {"ADEV", "ADSER"}
@@ -58,17 +60,25 @@ class _Starter:
 class _Alerter:
     def __init__(self) -> None:
         self.alerts: list[tuple[str, str, str]] = []
+        self.remedies: list[Remedy] = []
 
-    async def unroutable(self, *, issue_key: str, project: str, reason: str) -> None:
+    async def unroutable(
+        self, *, issue_key: str, project: str, reason: str, remedy: Remedy
+    ) -> None:
         self.alerts.append((issue_key, project, reason))
+        self.remedies.append(remedy)
 
 
 class _Seeder:
     def __init__(self) -> None:
         self.seeded: list[tuple[str, str, str]] = []
+        self.abandoned: list[tuple[str, str]] = []
 
     async def seed(self, *, execution_id: str, task_id: str, repo: str) -> None:
         self.seeded.append((execution_id, task_id, repo))
+
+    async def abandon(self, *, execution_id: str, reason: str) -> None:
+        self.abandoned.append((execution_id, reason))
 
 
 class _RecordingStore:
@@ -171,6 +181,7 @@ def _run(
     active_guard=None,
     base_resolver=None,
     checks_repos=None,
+    settings=None,
 ):
     return reconcile_intake(
         read_source=read_source,
@@ -178,7 +189,7 @@ def _run(
         alerter=alerter,
         ledger=ledger,
         execution_seeder=seeder or _Seeder(),
-        settings=hermetic_settings(),
+        settings=settings or hermetic_settings(),
         jira_resolver=resolver,
         snapshot_store=store,
         active_guard=active_guard,
@@ -565,6 +576,7 @@ async def test_unresolvable_declared_base_records_a_hold_naming_the_branch():
 
     assert [h.issue_key for h in report.held] == ["ADEV-1"]
     assert "gone" in report.held[0].reason
+    assert alerter.remedies == [remedies.unresolvable_base_remedy("ADEV-1")]
 
 
 async def test_a_held_ticket_does_not_stop_the_pass():
@@ -720,13 +732,17 @@ async def test_holds_a_repository_without_checks_when_ci_is_required():
     assert starter.starts == []
     assert [h.reason for h in report.held] == [checks_not_configured_reason(["repo-a"])]
     assert alerter.alerts == [("ADEV-1", "ADEV", checks_not_configured_reason(["repo-a"]))]
+    assert alerter.remedies == [remedies.checks_not_configured_remedy("ADEV-1", ["repo-a"])]
     assert report.deferred == ["ADEV-1"]
 
 
-async def test_starts_a_repository_without_checks_when_ci_is_not_required():
+async def test_starts_a_repository_without_checks_when_ci_is_not_required(monkeypatch, tmp_path):
+    configure_repositories(
+        monkeypatch, tmp_path, "repositories:\n  repo-a:\n    backend: local\n    path: /srv/a\n"
+    )
     read = _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV")]})
     starter, alerter, ledger, store, resolver = _defaults()
-    local = hermetic_settings(source_control_backend="local")
+    local = hermetic_settings()
 
     report = await _run(
         read, starter, alerter, ledger, store, resolver, checks_repos=required_checks_repos(local)
@@ -748,10 +764,182 @@ async def test_starts_a_repository_with_checks_when_ci_is_required():
     assert report.held == []
 
 
-def test_required_checks_repos_lists_configured_repositories_under_github(monkeypatch):
+def test_required_checks_repos_lists_configured_repositories_under_github(monkeypatch, tmp_path):
+    configure_repositories(monkeypatch, tmp_path, "repositories:\n  repo-a: {}\n  repo-b: {}\n")
     monkeypatch.setattr(
         "services.orchestration.checks.config.load_checks_configs",
         lambda settings=None, *, environment=None: {"repo-a": object()},
     )
 
     assert required_checks_repos(hermetic_settings()) == frozenset({"repo-a"})
+
+
+def test_a_local_repository_satisfies_the_checks_requirement_beside_a_github_one(
+    monkeypatch, tmp_path
+):
+    configure_repositories(
+        monkeypatch,
+        tmp_path,
+        "repositories:\n  repo-a: {}\n  notes:\n    backend: local\n    path: /srv/notes\n",
+    )
+    monkeypatch.setattr(
+        "services.orchestration.checks.config.load_checks_configs",
+        lambda settings=None, *, environment=None: {},
+    )
+
+    assert required_checks_repos(hermetic_settings()) == frozenset({"notes"})
+
+
+class _Executions:
+    """The executions table as the Postgres seeder and active guard read and write it."""
+
+    def __init__(self) -> None:
+        self.rows: dict[str, dict[str, str | None]] = {}
+
+    async def seed(self, *, execution_id: str, task_id: str, repo: str) -> None:
+        self.rows[execution_id] = {
+            "task_id": task_id,
+            "repo": repo,
+            "state": "TASK_RECEIVED",
+            "workflow_id": None,
+        }
+
+    async def abandon(self, *, execution_id: str, reason: str) -> None:
+        row = self.rows[execution_id]
+        if row["workflow_id"] is None:
+            row["state"] = "FAILED"
+
+    async def active_workflow(self, *, issue_key: str, repo: str) -> str | None:
+        for row in self.rows.values():
+            running = row["state"] not in ("COMPLETED", "FAILED", "CANCELLED")
+            if (
+                running
+                and row["workflow_id"]
+                and (row["task_id"], row["repo"]) == (issue_key, repo)
+            ):
+                return row["workflow_id"]
+        return None
+
+
+class _FailingOnceStarter(_Starter):
+    def __init__(self, executions: _Executions) -> None:
+        super().__init__()
+        self.executions = executions
+        self.failures = 1
+
+    async def start(self, start: IntakeStart) -> str:
+        if self.failures:
+            self.failures -= 1
+            raise RuntimeError("git ls-remote failed")
+        workflow_id = await super().start(start)
+        self.executions.rows[start.execution_id]["workflow_id"] = workflow_id
+        return workflow_id
+
+
+async def test_a_retried_pass_after_a_failed_start_starts_the_ticket():
+    read = _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV")]})
+    executions = _Executions()
+    starter = _FailingOnceStarter(executions)
+    _, alerter, ledger, store, resolver = _defaults()
+
+    with pytest.raises(RuntimeError, match="ls-remote"):
+        await _run(read, starter, alerter, ledger, store, resolver, executions, executions)
+    report = await _run(read, starter, alerter, ledger, store, resolver, executions, executions)
+
+    assert [(record.duplicate, record.workflow_id) for record in report.started] == [
+        (False, "wf-ADEV-1-repo-a")
+    ]
+    assert sorted(row["state"] for row in executions.rows.values()) == ["FAILED", "TASK_RECEIVED"]
+
+
+async def test_two_tenants_that_share_a_repository_each_start_the_same_issue_key():
+    read = _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV")]})
+    starter, alerter, _, store, resolver = _defaults()
+    ledger = _RecordingLedger()
+
+    for tenant in ("adp", "beta"):
+        await _run(
+            read,
+            starter,
+            alerter,
+            ledger,
+            store,
+            resolver,
+            settings=hermetic_settings(tenants="adp,beta", tenant=tenant),
+        )
+
+    assert [(s.issue_key, s.repo) for s in starter.starts] == [("ADEV-1", "repo-a")] * 2
+    assert [ref.target for ref in ledger.refs if ref.operation == "intake_start"] == [
+        "ADEV-1@adp:repo-a",
+        "ADEV-1@beta:repo-a",
+    ]
+
+
+async def test_a_tenant_starts_its_own_run_of_an_issue_started_without_a_tenant():
+    read = _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV")]})
+    starter, alerter, ledger, store, resolver = _defaults()
+    await _run(read, starter, alerter, ledger, store, resolver)
+
+    report = await _run(
+        read,
+        starter,
+        alerter,
+        ledger,
+        store,
+        resolver,
+        settings=hermetic_settings(tenant="adp"),
+    )
+
+    assert len(starter.starts) == 2
+    assert not report.started[0].duplicate
+
+
+async def test_each_tenant_alerts_once_for_the_same_unroutable_issue():
+    read = _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV", description="repos: ghost-repo")]})
+    starter, alerter, _, store, resolver = _defaults()
+    ledger = _RecordingLedger()
+
+    for tenant in ("adp", "beta", "beta"):
+        await _run(
+            read,
+            starter,
+            alerter,
+            ledger,
+            store,
+            resolver,
+            settings=hermetic_settings(tenants="adp,beta", tenant=tenant),
+        )
+
+    assert len(alerter.alerts) == 2
+    targets = [ref.target for ref in ledger.refs if ref.operation == "intake_unroutable_alert"]
+    assert [target.rpartition("@")[2] for target in targets] == ["adp", "beta", "beta"]
+
+
+async def test_a_base_label_conflict_sends_its_own_remedy_to_the_alerter():
+    """The remedy has to survive the trip through ``_hold`` to the alerter, not merely exist."""
+    read = _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV", labels=("base:x", "base:y"))]})
+    starter, alerter, ledger, store, resolver = _defaults()
+
+    await _run(read, starter, alerter, ledger, store, resolver)
+
+    assert alerter.remedies == [remedies.base_conflict_remedy("ADEV-1")]
+
+
+async def test_an_unroutable_ticket_is_told_where_to_name_a_repository():
+    read = _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV")]})
+    starter, alerter, ledger, store, resolver = _defaults(default_repo="")
+
+    await _run(read, starter, alerter, ledger, store, resolver)
+
+    assert alerter.remedies == [remedies.unroutable_remedy("ADEV-1", "ADEV")]
+
+
+async def test_a_ticket_naming_an_unlisted_repository_is_told_to_list_it():
+    """The two unroutable causes need opposite advice, so the discriminator has to survive the
+    trip from ``resolve_targets`` through ``_hold`` to the alerter."""
+    read = _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV", description="repos: navapbc/unlisted")]})
+    starter, alerter, ledger, store, resolver = _defaults()
+
+    await _run(read, starter, alerter, ledger, store, resolver)
+
+    assert alerter.remedies == [remedies.unroutable_remedy("ADEV-1", "ADEV", ("navapbc/unlisted",))]

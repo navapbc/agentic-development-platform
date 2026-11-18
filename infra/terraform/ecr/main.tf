@@ -4,6 +4,25 @@ locals {
   enabled        = var.create_repository
   create_kms_key = local.enabled && var.kms_key_arn == ""
   kms_key_arn    = local.create_kms_key ? aws_kms_key.this[0].arn : var.kms_key_arn
+
+  architectures = ["arm64", "amd64"]
+  tagged_retention = concat(
+    [{
+      description = "Keep the referrers indexes that protect the signatures of the retained images."
+      pattern     = "sha256-*"
+      count       = var.retained_signature_index_count
+    }],
+    [for architecture in local.architectures : {
+      description = "Keep the newest ${architecture} images."
+      pattern     = "*-${architecture}"
+      count       = var.retained_image_count
+    }],
+    [{
+      description = "Keep the newest images with any other tag."
+      pattern     = "*"
+      count       = var.retained_image_count
+    }],
+  )
 }
 
 data "aws_iam_policy_document" "kms" {
@@ -54,9 +73,20 @@ resource "aws_ecr_lifecycle_policy" "this" {
 
   repository = aws_ecr_repository.this[0].name
   policy = jsonencode({
-    rules = [
-      {
-        rulePriority = 1
+    rules = concat(
+      [for index, retention in local.tagged_retention : {
+        rulePriority = index + 1
+        description  = retention.description
+        selection = {
+          tagStatus      = "tagged"
+          tagPatternList = [retention.pattern]
+          countType      = "imageCountMoreThan"
+          countNumber    = retention.count
+        }
+        action = { type = "expire" }
+      }],
+      [{
+        rulePriority = length(local.tagged_retention) + 1
         description  = "Expire untagged images."
         selection = {
           tagStatus   = "untagged"
@@ -65,7 +95,7 @@ resource "aws_ecr_lifecycle_policy" "this" {
           countNumber = var.untagged_expiry_days
         }
         action = { type = "expire" }
-      }
-    ]
+      }],
+    )
   })
 }
