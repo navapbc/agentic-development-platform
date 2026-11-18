@@ -23,6 +23,14 @@ services:
 #    depends_on:
 #      - bedrock-tunnel
 
+  litellm:
+    environment:
+      MODEL_DIAGNOSTICS_CAPTURE_PAYLOADS: ${MODEL_DIAGNOSTICS_CAPTURE_PAYLOADS:-false}
+      MODEL_DIAGNOSTICS_DIR: /var/lib/model-diagnostics/completions
+    volumes:
+      - litellm-copilot-auth:/root/.config/litellm/github_copilot
+      - model-diagnostics:/var/lib/model-diagnostics
+
   review-worker:
 #    depends_on:
 #      - bedrock-tunnel
@@ -37,6 +45,7 @@ services:
     environment:
       LOG_LEVEL: DEBUG
       EXECUTION_WORKSPACE_ROOT: /workspaces
+      REBAR_LLM_CONFIG_FILE: ${REBAR_REVIEW_CLASS_CONFIG_FILE:-/app/config/platform/rebar-review.toml}
 
   workflow-worker:
     volumes:
@@ -72,7 +81,7 @@ services:
       - ./docker/activity-worker-entrypoint.sh:/entrypoint.sh:ro
       - ./.agent-workspaces:/workspaces
       - ./config/local/kube/kubeconfig:/home/appuser/.kube/config:ro
-      - ../demo-site:/repos/demo-site
+      - /home/james/Mass/pfml_adp:/repos/pfml
       - ../ai-common-workflows:/engines/ai-common-workflows:ro
       - ./.agent-context:/app/.agent-context:ro
     environment:
@@ -86,7 +95,7 @@ services:
       OPENHANDS_MAX_TOOL_CALLS: "100"
       INTAKE_RUN_REVIEWS: "true"
       INTAKE_RUN_POLICY: "true"
-      REPO_INTELLIGENCE_REPOS: "demo-site=/repos/demo-site"
+      REPO_INTELLIGENCE_REPOS: "pfml=/repos/pfml"
     extra_hosts:
       - "host.docker.internal:host-gateway"
       - "kubernetes.docker.internal:host-gateway"
@@ -103,16 +112,18 @@ services:
       LOG_LEVEL: DEBUG
 
   repo-intelligence:
-    volumes: &repo-intelligence-mounts
-      - /home/james/Engineering/demo-site:/repos/demo-site:ro
+    volumes:
+      - /home/james/Mass/pfml_adp:/repos/pfml
       - ./vendor/bin/codebase-memory-mcp:/usr/local/bin/codebase-memory-mcp:ro
     environment: &repo-intelligence-env
-      REPO_INTELLIGENCE_REPOS: demo-site=/repos/demo-site
+      REPO_INTELLIGENCE_REPOS: pfml=/repos/pfml
       REPO_INTELLIGENCE_CBM_BINARY: /usr/local/bin/codebase-memory-mcp
       CBM_ALLOWED_ROOT: /repos
 
   repo-index-worker:
-    volumes: *repo-intelligence-mounts
+    volumes:
+      - /home/james/Mass/pfml_adp:/repos/pfml:ro
+      - ./vendor/bin/codebase-memory-mcp:/usr/local/bin/codebase-memory-mcp:ro
     environment: *repo-intelligence-env
 
 networks:
@@ -120,4 +131,8 @@ networks:
   minikube:
     external: true
     name: minikube
+
+volumes:
+  litellm-copilot-auth:
+  model-diagnostics:
 

@@ -1,51 +1,48 @@
-# LiteLLM gateway config. Logical model names map to US Bedrock Claude inference
-# profiles, resolved under the configured AWS profile. No group carries a second
-# deployment, so a throttled call is retried against Claude rather than answered
-# by a different model family.
+# LiteLLM gateway config. Logical model names map to Claude models served by GitHub
+# Copilot. LiteLLM signs in with one GitHub account through the device flow, and the token
+# persists in the litellm-copilot-auth volume. No group carries a second deployment, so a
+# throttled call is retried against Claude rather than answered by a different model family.
 
 model_list:
   - model_name: planning-model
     litellm_params:
-      model: bedrock/us.anthropic.claude-opus-4-5-20251101-v1:0
-      aws_region_name: us-east-2
+      model: github_copilot/claude-opus-5.5
 
   - model_name: coding-model
     litellm_params:
-      model: bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0
-      aws_region_name: us-east-2
+      model: github_copilot/claude-sonnet-5.5
 
   - model_name: review-model
     litellm_params:
-      model: bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0
-      aws_region_name: us-east-2
+      model: github_copilot/claude-sonnet-5.5
+
+  - model_name: repair-model
+    litellm_params:
+      model: github_copilot/claude-sonnet-5.5
 
   - model_name: security-review-model
     litellm_params:
-      model: bedrock/us.anthropic.claude-opus-4-5-20251101-v1:0
-      aws_region_name: us-east-2
+      model: github_copilot/claude-opus-5.5
 
   - model_name: evaluation-model
     litellm_params:
-      model: bedrock/us.anthropic.claude-opus-4-5-20251101-v1:0
-      aws_region_name: us-east-2
+      model: github_copilot/claude-opus-5.5
 
   - model_name: classification-summary
     litellm_params:
-      model: bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0
-      aws_region_name: us-east-2
+      model: github_copilot/claude-haiku-4.5
 
   # Canonical-id model groups. Named by the provider model id that AI-CLI engines (claude-code)
-  # recognize, so a gate can route a review through a client-recognized model. Bedrock-backed.
+  # recognize, so a gate can route a review through a client-recognized model.
   - model_name: claude-opus-4-5-20251101
     litellm_params:
-      model: bedrock/us.anthropic.claude-opus-4-5-20251101-v1:0
-      aws_region_name: us-east-2
+      model: github_copilot/claude-opus-5.5
 
 litellm_settings:
   drop_params: true
   num_retries: 4
   request_timeout: 600
-  callbacks: ["langfuse_otel", "litellm_redaction.redactor"]
+  callbacks: ["langfuse_otel", "litellm_redaction.redactor", "litellm_diagnostics.diagnostics"]
 
 router_settings:
   routing_strategy: simple-shuffle

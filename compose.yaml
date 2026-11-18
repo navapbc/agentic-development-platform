@@ -263,6 +263,7 @@ services:
     volumes:
       - ./config/platform/litellm-config.yaml:/app/config/litellm-config.yaml:ro
       - ./config/platform/litellm_redaction.py:/app/litellm_redaction.py:ro
+      - ./config/platform/litellm_diagnostics.py:/app/litellm_diagnostics.py:ro
       - ${HOME}/.aws:/root/.aws:ro
     ports: ["${LITELLM_HOST_PORT:-4000}:4000"]
     restart: unless-stopped
@@ -428,7 +429,7 @@ services:
       LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:-change-me-locally}
 
   otel-collector:
-    profiles: ["monitoring"]
+    #profiles: ["monitoring"]
     build:
       context: .
       dockerfile: docker/otel-collector.Dockerfile
@@ -450,7 +451,7 @@ services:
     restart: unless-stopped
 
   prometheus:
-    profiles: ["monitoring"]
+    #profiles: ["monitoring"]
     image: docker.io/prom/prometheus:v3.14.0@sha256:5ce7540c3c00ef4ab0c9d2c995c6a5b9c421f44b4a115d97a2c7af3b1c21cbb0
     command: ["--config.file=/etc/prometheus/prometheus.yaml"]
     healthcheck:
@@ -469,7 +470,7 @@ services:
     restart: unless-stopped
 
   tempo:
-    profiles: ["monitoring"]
+    #profiles: ["monitoring"]
     build:
       context: .
       dockerfile: docker/tempo.Dockerfile
@@ -494,7 +495,7 @@ services:
     restart: unless-stopped
 
   grafana:
-    profiles: ["monitoring"]
+    #profiles: ["monitoring"]
     image: docker.io/grafana/grafana:11.3.0@sha256:a0f881232a6fb71a0554a47d0fe2203b6888fe77f4cefb7ea62bed7eb54e13c3
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3000/api/health"]
