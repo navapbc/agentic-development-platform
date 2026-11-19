@@ -87,7 +87,9 @@ class RemoteConversationDriver:
         session_api_key: str = "",
     ) -> ImplementationOutcome:
         from openhands.sdk import LLM, AgentContext, Conversation, Workspace
-        from openhands.sdk.event import ActionEvent
+        from openhands.sdk.event import ActionEvent, MessageEvent
+        from openhands.sdk.llm import TextContent
+        from openhands.sdk.tool.builtins import FinishAction
         from openhands.tools.preset.default import get_default_agent
         from pydantic import SecretStr
 
@@ -146,6 +148,20 @@ class RemoteConversationDriver:
             completion_tokens = int(usage.completion_tokens) if usage else 0
             cache_read_tokens = int(usage.cache_read_tokens) if usage else 0
             cache_write_tokens = int(usage.cache_write_tokens) if usage else 0
+            summary = ""
+            for event in reversed(conversation.state.events):
+                if event.source != "agent":
+                    continue
+                if isinstance(event, ActionEvent) and isinstance(event.action, FinishAction):
+                    summary = event.action.message
+                    break
+                if isinstance(event, MessageEvent) and event.llm_message.role == "assistant":
+                    summary = "".join(
+                        content.text
+                        for content in event.llm_message.content
+                        if isinstance(content, TextContent)
+                    )
+                    break
             return ImplementationOutcome(
                 status=status,
                 terminal_reason=reason,
@@ -158,6 +174,7 @@ class RemoteConversationDriver:
                 cache_read_tokens=cache_read_tokens,
                 cache_write_tokens=cache_write_tokens,
                 llm_calls=len(metrics.costs),
+                summary=summary,
             )
         except Exception as exc:
             return ImplementationOutcome(

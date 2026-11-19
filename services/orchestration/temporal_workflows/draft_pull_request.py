@@ -261,6 +261,8 @@ _DELETE_RUN_MODEL_KEY_PATCH = "delete-run-model-key"
 _RUN_MODEL_BUDGET_STOP_PATCH = "run-model-budget-stop"
 _FINALIZE_ON_CANCEL_PATCH = "finalize-on-cancel"
 _CODE_DEFECT_ALERT_PATCH = "code-defect-alert"
+_IMPLEMENTATION_TASK_DESCRIPTION_PATCH = "implementation-task-description"
+
 _OPERATOR_ACTOR = "operator"
 _SLACK_ACTOR = "slack"
 
@@ -774,6 +776,10 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         if params.work_unit:
             self._claim_owner_workflow_id = workflow_id
 
+        coding_task = params.task
+        if params.task_description and workflow.patched(_IMPLEMENTATION_TASK_DESCRIPTION_PATCH):
+            coding_task = f"{coding_task}\n\n{params.task_description}"
+
         impl: ImplementationOutput = await workflow.execute_child_workflow(
             ImplementationWorkflow.run,
             ImplementationInput(
@@ -781,7 +787,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 execution_id=params.execution_id,
                 repo=params.repo,
                 commit=self._base_sha,
-                task=params.task,
+                task=coding_task,
                 base=params.base,
                 focus=params.focus,
                 work_unit=params.work_unit,
