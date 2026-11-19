@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -37,14 +38,17 @@ def test_coding_agent_directive_loads_the_managed_prompt() -> None:
 
 
 @pytest.fixture
-def remote_conversation(monkeypatch):
+def remote_conversation(monkeypatch, tmp_path):
+    from openhands.sdk import LocalFileStore
+    from openhands.sdk.conversation.event_store import EventLog
+
     events = []
     observed = {}
 
     class Conversation:
         def __init__(self, **kwargs):
             self.callbacks = kwargs["callbacks"]
-            self.state = SimpleNamespace(events=[])
+            self.state = SimpleNamespace(events=EventLog(LocalFileStore(str(tmp_path))))
             metrics = SimpleNamespace(
                 accumulated_token_usage=SimpleNamespace(
                     prompt_tokens=2,
@@ -63,7 +67,9 @@ def remote_conversation(monkeypatch):
         def run(self):
             if "error" in observed:
                 raise RuntimeError(observed["error"])
-            self.state.events.extend(events)
+            for event in events:
+                self.state.events.append(event)
+            self.state.events = EventLog(LocalFileStore(str(tmp_path)))
             for event in events[: observed.get("callback_count", len(events))]:
                 for callback in self.callbacks:
                     callback(event)
@@ -86,8 +92,13 @@ def remote_conversation(monkeypatch):
         driver = RemoteConversationDriver(
             model="coding-model", litellm_base_url="http://litellm.invalid"
         )
-        return driver._run_sync(
-            "http://sandbox.invalid", "Task", "Context", RuntimeCaps(max_wall_clock_seconds=60)
+        return asyncio.run(
+            driver.run_task(
+                base_url="http://sandbox.invalid",
+                task="Task",
+                context="Context",
+                caps=RuntimeCaps(max_wall_clock_seconds=60),
+            )
         )
 
     return events, observed, run
@@ -188,3 +199,48 @@ def test_remote_driver_excludes_reasoning_and_prompt_extensions(remote_conversat
     )
 
     assert run().summary == "Completion report"
+
+
+@pytest.mark.parametrize("earlier_response", [None, "Work in progress"])
+def test_remote_driver_recovers_finish_action_message(remote_conversation, earlier_response):
+    from openhands.sdk.event import ActionEvent, AgentErrorEvent
+    from openhands.sdk.llm import MessageToolCall, TextContent
+    from openhands.sdk.tool.builtins import FinishAction, ThinkAction
+
+    events, observed, run = remote_conversation
+    if earlier_response is not None:
+        events.append(_message("agent", "assistant", earlier_response))
+    for index, (source, action) in enumerate(
+        [
+            ("agent", ThinkAction(thought="Ordinary tool content")),
+            ("agent", FinishAction(message="Completed the requested changes.")),
+            ("user", FinishAction(message="User supplied content")),
+        ]
+    ):
+        events.append(
+            ActionEvent(
+                source=source,
+                action=action,
+                thought=[TextContent(text="Private reasoning")],
+                reasoning_content="Additional reasoning",
+                summary="Tool description",
+                tool_name="finish" if isinstance(action, FinishAction) else "think",
+                tool_call_id=f"call-{index}",
+                tool_call=MessageToolCall(
+                    id=f"call-{index}",
+                    name="finish" if isinstance(action, FinishAction) else "think",
+                    arguments=action.model_dump_json(),
+                    origin="completion",
+                ),
+                llm_response_id=f"response-{index}",
+            )
+        )
+    events.extend(
+        [
+            AgentErrorEvent(tool_name="think", tool_call_id="failed-call", error="Tool error"),
+            _message("user", "user", "Later user message"),
+        ]
+    )
+    observed["callback_count"] = 0
+
+    assert run().summary == "Completed the requested changes."
