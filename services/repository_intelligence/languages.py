@@ -5,11 +5,11 @@ from __future__ import annotations
 import os
 from collections import Counter
 from collections.abc import Iterator
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 
 
-class Language(str, Enum):
+class Language(StrEnum):
     PYTHON = "python"
     JAVA = "java"
     TYPESCRIPT = "typescript"

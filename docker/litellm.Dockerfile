@@ -11,11 +11,11 @@ FROM ${UV_IMAGE} AS uv
 
 FROM ${AL2023_IMAGE} AS build
 ARG AL2023_RELEASE=2023.12.20261112
-RUN dnf -y --releasever="${AL2023_RELEASE}" install python3.13 nodejs24 nodejs24-npm libsndfile findutils \
+RUN dnf -y --releasever="${AL2023_RELEASE}" install python3.14 nodejs24 nodejs24-npm libsndfile findutils \
  && dnf clean all
 COPY docker/litellm/requirements.txt /tmp/litellm-requirements.txt
 RUN --mount=from=uv,source=/uv,target=/usr/local/bin/uv \
-    uv venv --quiet --python /usr/bin/python3.13 /app/.venv \
+    uv venv --quiet --python /usr/bin/python3.14 /app/.venv \
  && VIRTUAL_ENV=/app/.venv uv pip sync --quiet --no-cache --require-hashes /tmp/litellm-requirements.txt
 ENV PATH=/app/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 RUN schema="$(python -c 'import litellm, os; print(os.path.join(os.path.dirname(litellm.__file__), "proxy", "schema.prisma"))')" \
@@ -30,7 +30,7 @@ LABEL org.opencontainers.image.licenses="MIT"
 # The Prisma client runs the openssl command to pick its query engine, and without it LiteLLM
 # cannot open its database.
 RUN dnf -y --releasever="${AL2023_RELEASE}" upgrade \
- && dnf -y --releasever="${AL2023_RELEASE}" install bash python3.13 nodejs24 libsndfile openssl tzdata shadow-utils \
+ && dnf -y --releasever="${AL2023_RELEASE}" install bash python3.14 nodejs24 libsndfile openssl tzdata shadow-utils \
  && groupadd --gid 10001 litellm \
  && useradd --uid 10001 --gid 10001 --create-home --home-dir /home/litellm --shell /sbin/nologin litellm \
  && dnf -y remove shadow-utils \

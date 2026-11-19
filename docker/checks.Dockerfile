@@ -19,13 +19,13 @@ WORKDIR /workspace
 FROM checks-base AS checks-python
 ARG AL2023_RELEASE=2023.12.20261112
 LABEL org.opencontainers.image.licenses="PSF-2.0"
-RUN dnf -y --releasever="${AL2023_RELEASE}" install python3.13 python3.13-pip \
+RUN dnf -y --releasever="${AL2023_RELEASE}" install python3.14 python3.14-pip \
  && dnf clean all \
  && rm -rf /var/cache/dnf \
- && ln -s /usr/bin/python3.13 /usr/local/bin/python3 \
- && ln -s /usr/bin/python3.13 /usr/local/bin/python \
- && ln -s /usr/bin/pip3.13 /usr/local/bin/pip3 \
- && ln -s /usr/bin/pip3.13 /usr/local/bin/pip
+ && ln -s /usr/bin/python3.14 /usr/local/bin/python3 \
+ && ln -s /usr/bin/python3.14 /usr/local/bin/python \
+ && ln -s /usr/bin/pip3.14 /usr/local/bin/pip3 \
+ && ln -s /usr/bin/pip3.14 /usr/local/bin/pip
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_ROOT_USER_ACTION=ignore
 RUN cis-harden
@@ -51,7 +51,9 @@ RUN cis-harden
 FROM checks-base AS checks-go
 ARG AL2023_RELEASE=2023.12.20261112
 LABEL org.opencontainers.image.licenses="BSD-3-Clause"
-RUN dnf -y --releasever="${AL2023_RELEASE}" install golang \
+# golang-bin recommends mercurial, which would add the system Python, and subversion. Go modules
+# fetch with the git-core of checks-base.
+RUN dnf -y --releasever="${AL2023_RELEASE}" --setopt=install_weak_deps=0 install golang \
  && dnf clean all \
  && rm -rf /var/cache/dnf
 ENV GOTOOLCHAIN=local

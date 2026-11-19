@@ -82,6 +82,9 @@ async def execution_tenant(execution_id: str, engine: AsyncEngine | None = None)
     return str(tenant or "")
 
 
+PARK_KEY = "park_key"
+
+
 @dataclass
 class AuditEvent:
     event_id: str
@@ -99,6 +102,11 @@ class AuditEvent:
     decision: str | None = None
     prompt_version: str | None = None
     artifact_hashes: dict[str, Any] = field(default_factory=dict)
+    actor_type: str | None = None
+    actor_id: str | None = None
+    correlation_ids: dict[str, Any] = field(default_factory=dict)
+    """A human decision for a keyed park names it as ``park_key``, which also writes a decision
+    evidence record."""
 
 
 @activity.defn
@@ -121,6 +129,9 @@ async def record_audit_event(event: AuditEvent) -> str:
             decision=event.decision,
             prompt_version=event.prompt_version,
             artifact_hashes=event.artifact_hashes or None,
+            actor_type=event.actor_type,
+            actor_id=event.actor_id,
+            correlation_ids=event.correlation_ids or None,
         )
         .on_conflict_do_nothing(index_elements=[audit_events.c.event_id])
     )
@@ -130,7 +141,29 @@ async def record_audit_event(event: AuditEvent) -> str:
     from services.review.evidence import persist_audit_object
 
     await persist_audit_object(_audit_event_body(event))
+    if event.correlation_ids.get(PARK_KEY):
+        await _persist_decision_evidence(event)
     return event.event_id
+
+
+async def _persist_decision_evidence(event: AuditEvent) -> None:
+    from services.review.classification import CLASSIFICATION_AUDIT
+    from services.review.evidence import DECISION_COMPONENT, persist_artifact_evidence
+
+    body = {
+        "park_key": event.correlation_ids[PARK_KEY],
+        "stage": event.stage,
+        "decision": event.decision,
+        "actor_type": event.actor_type,
+        "actor_id": event.actor_id,
+    }
+    await persist_artifact_evidence(
+        execution_id=event.execution_id,
+        source_component=DECISION_COMPONENT,
+        body=body,
+        classification=CLASSIFICATION_AUDIT,
+        metadata={"task_id": event.task_id, "event_id": event.event_id, **body},
+    )
 
 
 def _audit_event_body(event: AuditEvent) -> dict[str, Any]:
@@ -150,6 +183,9 @@ def _audit_event_body(event: AuditEvent) -> dict[str, Any]:
         "decision": event.decision,
         "prompt_version": event.prompt_version,
         "artifact_hashes": event.artifact_hashes or {},
+        "actor_type": event.actor_type,
+        "actor_id": event.actor_id,
+        "correlation_ids": event.correlation_ids or {},
     }
 
 

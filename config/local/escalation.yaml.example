@@ -1,0 +1,38 @@
+# Alert channels and Slack settings. Without this file every channel is enabled, and each channel
+# delivers when its settings are present. channels lists the enabled channels, drawn from jira,
+# email, and slack. Delivery runs in the order jira, email, slack, whatever the order here.
+#
+# The slack section is required when slack is enabled. transport is socket or webhook, and a tenant
+# runs exactly one, because Slack delivers an app's clicks either over Socket Mode or to its request
+# URL. channel is the Slack channel ID alerts post to, organization_id is the Enterprise Grid
+# enterprise ID or the workspace team ID, and app_id is the ID of the tenant's Slack app. profile
+# repeats the profile of gates.yaml, and config-check refuses a file whose profile differs.
+# content is full or minimal, and defaults to minimal under the government profile and full
+# otherwise. api_base_url defaults to https://slack.com/api/, and https://slack-gov.com/api/
+# serves GovSlack. token_ttl_hours is how long an action button stays valid after a park,
+# 72 by default. approved_hosts lists the Slack hosts a government tenant may reach. allowlist
+# names, for the gate and repair decision kinds, the Slack users who may decide. An entry
+# without organization_id belongs to the organization_id above.
+
+config_version: 1
+
+channels:
+  - jira
+  - email
+  - slack
+
+slack:
+  transport: socket
+  api_base_url: https://slack.com/api/
+  channel: C0000000000
+  organization_id: T0000000000
+  app_id: A0000000000
+  profile: private
+  content: full
+  token_ttl_hours: 72
+  approved_hosts: []
+  allowlist:
+    gate:
+      - user_id: U0000000000
+    repair:
+      - user_id: U0000000000

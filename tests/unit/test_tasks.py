@@ -513,3 +513,12 @@ def test_the_jumphost_image_publishes_through_the_governed_publish_path() -> Non
     assert calls == [
         f"{tasks_module.HOST_PYTHON} -m scripts.publish_jumphost_image --tag v2 --arch arm64"
     ]
+
+
+def test_inv_refuses_an_interpreter_older_than_the_python_version_file(tmp_path):
+    pinned = tmp_path / ".python-version"
+    pinned.write_text("3.14\n")
+
+    with pytest.raises(SystemExit, match="requires 3.14"):
+        tasks_module.require_pinned_python(str(pinned), running=(3, 12))
+    tasks_module.require_pinned_python(str(pinned), running=(3, 14))

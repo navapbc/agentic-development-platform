@@ -139,7 +139,7 @@ def test_a_profile_supplies_checks_unless_the_repository_has_its_own(environment
 
     settings = _settings()
     (environment / "checks.yaml").write_text(
-        "config_version: 1\nchecks:\n  api:\n    image: python:3.12-slim\n    command: make test\n"
+        "config_version: 1\nchecks:\n  api:\n    image: python:3.14-slim\n    command: make test\n"
     )
 
     assert checks_for_repo("api", settings).command == "make test"

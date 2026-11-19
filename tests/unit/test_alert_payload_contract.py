@@ -7,7 +7,8 @@ converter ``TypeError`` fails the workflow task and retries without bound.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from services.operator_remedy import (
@@ -81,6 +82,25 @@ async def test_audit_event_carries_the_remedy_and_channels_across_the_boundary()
     assert await _round_trip(event, AuditEvent) == event
 
 
+@pytest.mark.asyncio
+async def test_the_park_key_and_decider_cross_the_boundary():
+    request = _request(park_key="exec-1:repair:1:1")
+    event = AuditEvent(
+        event_id="exec-1:HUMAN_INTERVENTION_DECISION:1",
+        task_id="T-1",
+        execution_id="exec-1",
+        event_type="HUMAN_INTERVENTION_DECISION",
+        stage="repair",
+        decision="retry",
+        actor_type="slack",
+        actor_id="slack:E1/U1",
+        correlation_ids={"park_key": "exec-1:repair:1:1"},
+    )
+
+    assert await _round_trip(request, AlertHumanInterventionRequest) == request
+    assert await _round_trip(event, AuditEvent) == event
+
+
 @dataclass
 class _OlderAlertRequest:
     task_id: str
@@ -120,3 +140,39 @@ async def test_a_remedy_step_the_receiver_does_not_know_renders_as_its_text():
     assert render(decoded.remedy, DeploymentPosture.HOST, environment="local") == (
         "Ask the platform team."
     )
+
+
+@pytest.mark.asyncio
+async def test_the_alert_activity_hands_the_park_and_its_deadline_to_the_sender(monkeypatch):
+    import time
+
+    from services.orchestration.temporal_activities.notify import alert_human_intervention
+    from temporalio.testing import ActivityEnvironment
+
+    sent: list[tuple] = []
+
+    def fake_send(alert, settings, *, issued_at, deadline):
+        sent.append((alert, issued_at, deadline))
+        return ["slack"]
+
+    monkeypatch.setattr(
+        "services.orchestration.notifications.send_human_intervention_alert", fake_send
+    )
+    request = _request(park_key="exec-1:repair:1:1")
+
+    environment = ActivityEnvironment()
+    scheduled = datetime.now(UTC) - timedelta(seconds=5)
+    environment.info = replace(
+        environment.info,
+        scheduled_time=scheduled,
+        started_time=datetime.now(UTC),
+        start_to_close_timeout=timedelta(seconds=30),
+    )
+
+    result = await environment.run(alert_human_intervention, request)
+
+    [(alert, issued_at, deadline)] = sent
+    assert (alert.park_key, alert.structured_remedy) == (request.park_key, request.remedy)
+    assert issued_at == int(scheduled.timestamp())
+    assert 25 < deadline - time.monotonic() <= 30
+    assert result.channels == ["slack"]

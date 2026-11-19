@@ -392,6 +392,11 @@ async def main() -> None:
                 warn_seconds=settings.aws_credentials_warn_seconds,
             )
         )
+    socket_mode = None
+    if role in (WORKER_ROLE_ACTIVITY, WORKER_ROLE_ALL):
+        from services.integration.slack.socket_client import start_socket_mode
+
+        socket_mode = await start_socket_mode(settings, client)
     runners = [worker.run() for worker in workers]
     if settings.worker_versioning_enabled:
         runners.append(set_current_version(client, settings, queues))
@@ -401,6 +406,8 @@ async def main() -> None:
         for task in (heartbeat_task, watch_task, tenant_refresh_task, index_checkout_task):
             if task is not None:
                 task.cancel()
+        if socket_mode is not None:
+            socket_mode.close()
 
 
 if __name__ == "__main__":

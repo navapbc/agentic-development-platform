@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # The catalog sandbox images the coding agent runs in. agent-server-python-node carries Python
-# 3.13 and Node 24, and agent-server-jvm and agent-server-go add a JDK with Maven and a Go
+# 3.14 and Node 24, and agent-server-jvm and agent-server-go add a JDK with Maven and a Go
 # toolchain to it, each from the Amazon Linux packages. The agent runs in CLI mode, which
 # disables the browser tools, so the images carry no browser, no editor server, and no kernel
 # packages.
@@ -43,19 +43,19 @@ FROM ${AL2023_IMAGE} AS agent-server-python-node
 ARG AL2023_RELEASE=2023.12.20261112
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 RUN dnf -y --releasever="${AL2023_RELEASE}" upgrade \
- && dnf -y --releasever="${AL2023_RELEASE}" install python3.13 python3.13-pip nodejs24 nodejs24-npm \
+ && dnf -y --releasever="${AL2023_RELEASE}" install python3.14 python3.14-pip nodejs24 nodejs24-npm \
       git tmux bash tar gzip unzip procps-ng findutils which file jq diffutils shadow-utils \
  && useradd --uid 10001 --create-home openhands \
  && dnf -y remove shadow-utils \
  && dnf clean all \
  && rm -rf /var/cache/dnf \
- && ln -s /usr/bin/python3.13 /usr/local/bin/python3 \
- && ln -s /usr/bin/python3.13 /usr/local/bin/python \
- && ln -s /usr/bin/pip3.13 /usr/local/bin/pip3 \
- && ln -s /usr/bin/pip3.13 /usr/local/bin/pip
+ && ln -s /usr/bin/python3.14 /usr/local/bin/python3 \
+ && ln -s /usr/bin/python3.14 /usr/local/bin/python \
+ && ln -s /usr/bin/pip3.14 /usr/local/bin/pip3 \
+ && ln -s /usr/bin/pip3.14 /usr/local/bin/pip
 COPY docker/agent-server/requirements.txt /tmp/agent-server-requirements.txt
 RUN --mount=from=uv,source=/uv,target=/usr/local/bin/uv \
-    uv venv --quiet --python /usr/bin/python3.13 /opt/agent-server \
+    uv venv --quiet --python /usr/bin/python3.14 /opt/agent-server \
  && VIRTUAL_ENV=/opt/agent-server uv pip sync --quiet --no-cache --require-hashes \
       /tmp/agent-server-requirements.txt \
  && rm /tmp/agent-server-requirements.txt \
@@ -85,7 +85,9 @@ USER openhands
 FROM agent-server-python-node AS agent-server-go
 ARG AL2023_RELEASE=2023.12.20261112
 USER root
-RUN dnf -y --releasever="${AL2023_RELEASE}" install golang \
+# golang-bin recommends mercurial, which would add the system Python, and subversion. Go modules
+# fetch with the git this image already installs.
+RUN dnf -y --releasever="${AL2023_RELEASE}" --setopt=install_weak_deps=0 install golang \
  && dnf clean all \
  && rm -rf /var/cache/dnf
 ENV GOTOOLCHAIN=local

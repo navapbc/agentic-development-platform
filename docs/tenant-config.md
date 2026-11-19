@@ -88,6 +88,10 @@ Required with `TICKET_BACKEND=jira`. `allowlist` names the projects intake reads
 
 Required with `TICKET_BACKEND=rebar`. `backend` names the store's `repo_root`, `project`, `default_repo`, and `status_flow`. `store`, `roles`, `provenance`, and `isolation` are optional together. Without `store`, the ticket store stays local to `repo_root` and syncs to no bucket. `write_back.allowed_scopes` defaults to every write scope, `status`, `comment`, `approval`, and `link`.
 
+### escalation.yaml
+
+Optional. Absent, an alert reaches every channel whose settings are present, the Jira comment, the email, and Slack through `SLACK_WEBHOOK_URL`. `channels` selects the channels, and a `slack` block names the tenant's Slack app, its transport, its channel, its allowlist, and its content level. Validation refuses a `slack.profile` other than the `gates.yaml` profile, and a `government` tenant whose Slack host is outside `approved_hosts` or whose content is `full`. [slack-escalation.md](slack-escalation.md) describes every field.
+
 ### profiles.yaml
 
 Optional. Absent, the tenant uses the catalog profiles alone. A profile's `sandbox_image` empty runs the platform's sandbox image, `checks` absent leaves a repository without a `checks.yaml` entry with no checks, and `gates` absent applies no override. [runtime-profiles.md](runtime-profiles.md) describes the catalog and every field.

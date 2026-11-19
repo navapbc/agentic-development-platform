@@ -47,6 +47,12 @@ override_resource {
 }
 
 override_resource {
+  target          = aws_secretsmanager_secret.escalation_action_key
+  override_during = plan
+  values          = { arn = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/tenants/adp/escalation-action-key-a" }
+}
+
+override_resource {
   target          = module.ticket_store.aws_s3_bucket.this
   override_during = plan
   values          = { id = "agentic-platform-tenant-adp-rebar-tickets-abc", arn = "arn:aws:s3:::agentic-platform-tenant-adp-rebar-tickets-abc" }

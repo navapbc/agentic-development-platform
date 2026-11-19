@@ -22,7 +22,7 @@ def test_every_stage_base_and_copy_and_mount_source_is_collected(tmp_path) -> No
     images = _images(
         tmp_path,
         f"""# syntax=docker/dockerfile:1
-ARG PY=python:3.13-slim@{DIGEST}
+ARG PY=python:3.14-slim@{DIGEST}
 FROM --platform=$BUILDPLATFORM ${{PY}} AS build
 RUN --mount=type=cache,target=/root/.cache \\
     --mount=type=bind,from=alpine@{OTHER},source=/etc,target=/x pip install .
@@ -34,13 +34,13 @@ COPY --from=busybox@{OTHER} /bin/sh /bin/sh
 """,
     )
 
-    assert images == [f"python:3.13-slim@{DIGEST}", f"alpine@{OTHER}", f"busybox@{OTHER}"]
+    assert images == [f"python:3.14-slim@{DIGEST}", f"alpine@{OTHER}", f"busybox@{OTHER}"]
 
 
 @pytest.mark.parametrize(
     ("text", "reason"),
     [
-        ("FROM python:3.13-slim\n", "carries no @sha256: digest"),
+        ("FROM python:3.14-slim\n", "carries no @sha256: digest"),
         (f"FROM python@{DIGEST} AS a\nCOPY --from=node:24 / /\n", "node:24, which carries no"),
         ("ARG PY\nFROM $PY\n", "has no default"),
         (f"FROM python@{DIGEST}\nARG LATE=x@{DIGEST}\nFROM $LATE\n", "has no default"),

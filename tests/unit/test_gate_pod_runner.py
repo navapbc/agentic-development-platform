@@ -26,7 +26,7 @@ def engine_source(tmp_path):
     global _engine_dir
     source = tmp_path / "engine"
     source.mkdir()
-    (source / "Dockerfile").write_text(f"FROM python:3.13-slim@{DIGEST}\n", encoding="utf-8")
+    (source / "Dockerfile").write_text(f"FROM python:3.14-slim@{DIGEST}\n", encoding="utf-8")
     _engine_dir = str(source)
     return source
 
@@ -503,13 +503,13 @@ async def test_a_source_build_admits_its_base_images_with_the_pod_images(monkeyp
 
     await PodEngineRunner(_FakePodOps(), builder_image="builder@" + DIGEST).run_engine(_spec())
 
-    assert admitted == [["builder@" + DIGEST, "python:3.13-slim@" + DIGEST]]
+    assert admitted == [["builder@" + DIGEST, "python:3.14-slim@" + DIGEST]]
 
 
 async def test_a_source_build_from_an_undigested_base_is_refused_before_the_pod(engine_source):
     from services.orchestration.gates.image_admission import ImageRefusedError
 
-    (engine_source / "Dockerfile").write_text("FROM python:3.13-slim\n", encoding="utf-8")
+    (engine_source / "Dockerfile").write_text("FROM python:3.14-slim\n", encoding="utf-8")
     ops = _FakePodOps()
 
     with pytest.raises(ImageRefusedError, match="carries no @sha256: digest"):

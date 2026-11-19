@@ -16,6 +16,7 @@ A remedy is a structured action, and the delivery layer renders it for the audie
 |---|---|---|
 | Restart a run | `inv restart --issue <issue> --tenant <tenant>` | `kubectl -n tenant-<tenant> exec -i deploy/activity-worker -c activity-worker -- python -m scripts.restart <issue>` |
 | Retry a parked repair | `inv repair --issue <issue> --retry --tenant <tenant>` | The same `kubectl exec`, running `python -m scripts.repair <issue> --retry` |
+| Abandon a parked repair | `inv repair --issue <issue> --abandon --tenant <tenant>` | The same `kubectl exec`, running `python -m scripts.repair <issue> --abandon` |
 | Approve or reject a gate | `inv gate --issue <issue> --gate <gate> --approve --tenant <tenant>`, or `--reject` | The same `kubectl exec`, running `python -m scripts.gate_decision <issue> --gate <gate> --approve`, or `--reject` |
 | Roll up a run's cost | `inv cost-rollup --execution-id <execution>` | The same `kubectl exec`, running `python -m scripts.cost_rollup --execution-id <execution>` |
 | A config key | The key in `config/<environment>/tenants/<tenant>/<file>.yaml`, or in `config/<environment>/<file>.yaml` when the tenant bundle does not hold the file | The key in `<file>.yaml` of the tenant config bundle under `tenants/<tenant>/` of the bucket `TENANT_CONFIG_BUCKET` names. A platform file is located in the directory `PLATFORM_ENV_CONFIG_DIR` names |
@@ -23,7 +24,7 @@ A remedy is a structured action, and the delivery layer renders it for the audie
 
 The deployed rendering of a run action is the command an `inv` task runs for the host operator, addressed to the tenant's worker namespace. Both reach the same module in the activity worker, so both audiences resolve a run through the same code path and the same audit trail.
 
-A step's kind crosses the Temporal payload boundary as a plain string, so a worker on an older build decodes a step it does not know and renders its prose rather than failing the workflow task. A step carries its kind, issue key, tenant, gate, and execution as separate fields, so a channel that supports interactive messages can present an action as a button rather than as a command, without parsing the rendered text.
+A step's kind crosses the Temporal payload boundary as a plain string, so a worker on an older build decodes a step it does not know and renders its prose rather than failing the workflow task. A step carries its kind, issue key, tenant, gate, and execution as separate fields, so a channel that supports interactive messages can present an action as a button rather than as a command, without parsing the rendered text. The Slack channel presents approve, reject, retry, and abandon as buttons, as [slack-escalation.md](slack-escalation.md) describes. A repair park after exhausted repairs offers retry and abandon, and a repair park on a spent budget offers abandon, because a retry at that budget parks again at once. Abandon ends the run and leaves the ticket's intake record in place, so the remedy also names `inv restart` for an operator who wants intake to admit the ticket again.
 
 The alert activity returns the rendered remedy and the channels it reached, and the workflow records both on the `HUMAN_INTERVENTION_ALERTED` audit event, in `audit_events.remedy` and `audit_events.alert_channels`. The audit record therefore holds the instruction the operator read.
 
@@ -49,7 +50,7 @@ The code-defect park is the case this covers. A push that fails on a defect in A
 
 - Assert at build time that a remedy names only commands reachable where it claims they run. A remedy authored as text makes no claim about its audience, so the assertion has nothing to check a command against. The guard below performs this check over the structured rendering instead.
 - Replace remedy text with a structured action that the delivery layer renders per audience. Chosen, as described above.
-- Make remedies executable through a callback into the platform, so validity holds by construction. A Jira comment and an email cannot carry a callback, so every channel would still need a rendered command. The structured action carries the fields such a callback needs, so a channel that supports one can offer it beside the rendered command.
+- Make remedies executable through a callback into the platform, so validity holds by construction. A Jira comment and an email cannot carry a callback, so every channel would still need a rendered command. The structured action carries the fields such a callback needs, and the Slack channel offers its decisions as buttons beside the rendered command.
 
 ## Guard
 

@@ -13,11 +13,18 @@ from typing import Any
 from scripts.eks_render import PLATFORM_NAMESPACE, RenderError
 
 WEBHOOK = "inbound-webhook"
-# Equal to the signing prefixes of services.orchestration.webhook.tenants, which a unit test checks.
 TENANT_WEBHOOK_KEYS = {
-    "github_webhook_secret": "GITHUB_WEBHOOK_SECRET_",
-    "jira_webhook_secret": "JIRA_WEBHOOK_SECRET_",
+    key: f"{key.upper()}_"
+    for key in (
+        "github_webhook_secret",
+        "jira_webhook_secret",
+        "slack_signing_secret",
+        "escalation_action_key",
+    )
 }
+# The tenant's worker signs its Slack actions with the tenant's own action key, so the webhook
+# mounts the tenant's Slack secrets even when it serves one tenant.
+SLACK_WEBHOOK_KEYS = frozenset({"slack_signing_secret", "escalation_action_key"})
 
 
 def webhook_alias(prefix: str, tenant: str) -> str:
@@ -48,27 +55,36 @@ def route_webhook_tenants(
 ) -> list[str]:
     """Mount each tenant's webhook secrets in the EKS webhook and point it at the tenant bundles.
 
-    A tenant's secrets are the github_webhook_secret and jira_webhook_secret ARNs of its
-    `secrets` input, mounted as GITHUB_WEBHOOK_SECRET_<TENANT> and JIRA_WEBHOOK_SECRET_<TENANT>.
+    A tenant's secrets are the github_webhook_secret, jira_webhook_secret, slack_signing_secret,
+    and escalation_action_key ARNs of its `secrets` input, mounted as
+    GITHUB_WEBHOOK_SECRET_<TENANT>, JIRA_WEBHOOK_SECRET_<TENANT>, SLACK_SIGNING_SECRET_<TENANT>,
+    and ESCALATION_ACTION_KEY_<TENANT>.
     A secret omitted as `<tenant>:<key>` has no current value and is left out, and its alias is
-    returned. With one tenant, the webhook keeps the platform's secrets and is left unchanged.
+    returned. With one tenant, the webhook keeps the platform's GitHub and Jira secrets and its
+    config, and mounts only the tenant's Slack signing secret and action key.
     """
     entries = list(inputs.get("tenants") or [])
-    if len(entries) < 2:
+    if not entries:
         return []
+    single = len(entries) < 2
     provider = _platform_document(documents, "SecretProviderClass", WEBHOOK)
     webhook = webhook_deployment(documents)
     if provider is None or webhook is None:
         raise RenderError(f"the overlay has no {WEBHOOK} Deployment and SecretProviderClass")
     buckets = {entry["config_bucket"] for entry in entries if entry.get("config_bucket")}
-    if len(buckets) != 1:
+    if not single and len(buckets) != 1:
         raise RenderError(f"the {WEBHOOK} reads every tenant's bundle from one config bucket")
+    keys = {
+        key: prefix
+        for key, prefix in TENANT_WEBHOOK_KEYS.items()
+        if not single or key in SLACK_WEBHOOK_KEYS
+    }
     omitted = set(omit)
     objects = json.loads(provider["spec"]["parameters"]["objects"])
     skipped: list[str] = []
     for entry in entries:
         tenant, own = entry["name"], entry.get("secrets") or {}
-        for key, prefix in TENANT_WEBHOOK_KEYS.items():
+        for key, prefix in keys.items():
             alias = webhook_alias(prefix, tenant)
             if key not in own:
                 continue
@@ -79,6 +95,8 @@ def route_webhook_tenants(
                 {"objectName": own[key], "objectType": "secretsmanager", "objectAlias": alias}
             )
     provider["spec"]["parameters"]["objects"] = json.dumps(objects)
+    if single:
+        return skipped
     container = next(
         c for c in webhook["spec"]["template"]["spec"]["containers"] if c["name"] == WEBHOOK
     )

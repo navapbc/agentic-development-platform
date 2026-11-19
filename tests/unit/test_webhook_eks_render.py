@@ -61,16 +61,22 @@ def test_the_webhook_mounts_each_tenants_webhook_secrets_and_no_other(overlay) -
     assert tenant_objects == {
         "GITHUB_WEBHOOK_SECRET_ADP": f"{ARN}/adp/github_webhook_secret",
         "JIRA_WEBHOOK_SECRET_ADP": f"{ARN}/adp/jira_webhook_secret",
+        "SLACK_SIGNING_SECRET_ADP": f"{ARN}/adp/slack_signing_secret",
+        "ESCALATION_ACTION_KEY_ADP": f"{ARN}/adp/escalation_action_key",
         "GITHUB_WEBHOOK_SECRET_BETA": f"{ARN}/beta/github_webhook_secret",
         "JIRA_WEBHOOK_SECRET_BETA": f"{ARN}/beta/jira_webhook_secret",
+        "SLACK_SIGNING_SECRET_BETA": f"{ARN}/beta/slack_signing_secret",
+        "ESCALATION_ACTION_KEY_BETA": f"{ARN}/beta/escalation_action_key",
     }
     assert _webhook_env(documents)["TENANT_CONFIG_BUCKET"] == "agentic-platform-tenant-config-abc"
     assert skipped == []
     worker = _named(documents, "SecretProviderClass", "activity-worker", "tenant-beta")
-    worker_names = [
-        entry["objectName"] for entry in json.loads(worker["spec"]["parameters"]["objects"])
-    ]
-    assert not [name for name in worker_names if "webhook" in name]
+    worker_objects = {
+        entry["objectAlias"]: entry["objectName"]
+        for entry in json.loads(worker["spec"]["parameters"]["objects"])
+    }
+    assert not [name for name in worker_objects.values() if "webhook" in name or "slack" in name]
+    assert worker_objects["ESCALATION_ACTION_KEY"] == f"{ARN}/beta/escalation_action_key"
 
 
 def test_a_tenant_webhook_secret_without_a_value_is_left_out(overlay) -> None:
@@ -87,7 +93,9 @@ def test_a_tenant_webhook_secret_without_a_value_is_left_out(overlay) -> None:
     assert "inbound-webhook:JIRA_WEBHOOK_SECRET_BETA" in skipped
 
 
-def test_a_single_tenant_webhook_keeps_the_platform_secrets(overlay) -> None:
+def test_a_single_tenant_webhook_keeps_the_platform_secrets_and_mounts_its_slack_keys(
+    overlay,
+) -> None:
     inputs = _inputs()
     inputs["tenants"] = [_with_webhook_secrets("adp")]
 
@@ -98,6 +106,8 @@ def test_a_single_tenant_webhook_keeps_the_platform_secrets(overlay) -> None:
         "TEMPORAL_TLS_CA",
         "GITHUB_WEBHOOK_SECRET",
         "JIRA_WEBHOOK_SECRET",
+        "SLACK_SIGNING_SECRET_ADP",
+        "ESCALATION_ACTION_KEY_ADP",
     }
     assert "TENANT_CONFIG_BUCKET" not in _webhook_env(documents)
 
@@ -113,13 +123,17 @@ def test_tenants_in_different_config_buckets_are_refused(overlay) -> None:
 
 def test_the_eks_webhook_aliases_match_the_names_the_webhook_reads() -> None:
     from services.orchestration.webhook.tenants import (
+        ESCALATION_ACTION_KEY_ENV_PREFIX,
         GITHUB_SIGNING_ENV_PREFIX,
         JIRA_SIGNING_ENV_PREFIX,
+        SLACK_SIGNING_ENV_PREFIX,
         secret_env_name,
     )
 
     assert webhook_eks_render.TENANT_WEBHOOK_KEYS == {
         "github_webhook_secret": GITHUB_SIGNING_ENV_PREFIX,
         "jira_webhook_secret": JIRA_SIGNING_ENV_PREFIX,
+        "slack_signing_secret": SLACK_SIGNING_ENV_PREFIX,
+        "escalation_action_key": ESCALATION_ACTION_KEY_ENV_PREFIX,
     }
     assert webhook_eks_render.webhook_alias("x", "beta") == secret_env_name("x", "beta")

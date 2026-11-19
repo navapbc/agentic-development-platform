@@ -15,6 +15,7 @@ from typing import assert_never
 
 from services.operator_remedy import (
     Remedy,
+    abandon_repair,
     approve_gate,
     config_key,
     reject_gate,
@@ -216,30 +217,34 @@ def repair_remedy(token: str, *, issue_key: str, execution_id: str) -> Remedy:
                 "Automated CI repair ran out of attempts with checks still failing. Fix the "
                 "failing checks on the branch and run ",
                 retry_repair(issue_key),
-                " to resume. To end this run and have intake admit the ticket again, run ",
+                " to resume, or run ",
+                abandon_repair(issue_key),
+                " to end the run. To end this run and have intake admit the ticket again, run ",
                 restart_run(issue_key),
                 ".",
             )
         case RepairReason.COST_BUDGET_EXCEEDED:
-            return _budget_remedy(
+            budget = _budget_remedy(
                 issue_key, execution_id, "cost budget", "IMPLEMENTATION_MAX_COST_USD"
             )
         case RepairReason.TOKEN_BUDGET_EXCEEDED:
-            return _budget_remedy(
+            budget = _budget_remedy(
                 issue_key, execution_id, "token budget", "IMPLEMENTATION_MAX_TOKENS"
             )
         case RepairReason.LLM_CALLS_EXCEEDED:
-            return _budget_remedy(
+            budget = _budget_remedy(
                 issue_key, execution_id, "LLM call budget", "IMPLEMENTATION_MAX_LLM_CALLS"
             )
         case RepairReason.RUN_MODEL_BUDGET_EXCEEDED:
-            return _budget_remedy(
+            budget = _budget_remedy(
                 issue_key, execution_id, "model spend budget", "RUN_MODEL_BUDGET_USD"
             )
         case RepairReason.TENANT_MODEL_BUDGET_EXCEEDED:
-            return _tenant_budget_remedy(issue_key)
+            budget = _tenant_budget_remedy(issue_key)
         case _:
             assert_never(reason)
+    abandon = remedy(" To end the run without restarting it, run ", abandon_repair(issue_key), ".")
+    return Remedy(budget.steps + abandon.steps)
 
 
 class IssueRecheckReason(StrEnum):

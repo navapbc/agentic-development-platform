@@ -151,6 +151,8 @@ def workload_secret_values(
         "litellm_database_url": litellm_database_url(database_url),
         "github_webhook_secret": env.get("GITHUB_WEBHOOK_SECRET") or "local-demo-secret",
         "jira_webhook_secret": env.get("JIRA_WEBHOOK_SECRET") or "local-demo-secret",
+        "slack_signing_secret": env.get("SLACK_SIGNING_SECRET", ""),
+        "escalation_action_key": env.get("ESCALATION_ACTION_KEY", ""),
         "coordination_shared_secret": env.get("COORDINATION_SHARED_SECRET", ""),
     }
 

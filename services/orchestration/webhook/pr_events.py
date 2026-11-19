@@ -85,7 +85,7 @@ def parse_pr_closed_event(
 def repository_name(body: bytes) -> str | None:
     try:
         payload = json.loads(body or b"{}")
-    except (json.JSONDecodeError, UnicodeDecodeError):
+    except json.JSONDecodeError, UnicodeDecodeError:
         return None
     if not isinstance(payload, dict):
         return None

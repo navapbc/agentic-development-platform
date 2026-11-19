@@ -4,24 +4,31 @@ from __future__ import annotations
 
 import logging
 import smtplib
-from collections.abc import Callable
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from email.message import EmailMessage
 from urllib.parse import urlsplit
 
 import httpx
 from scripts.config import Settings, get_settings
 
-from services.operator_remedy import DeploymentPosture, Remedy, render, with_remedy
+from services.integration.credentials import ConfigError
+from services.operator_remedy import DeploymentPosture, Remedy, render, render_step, with_remedy
+from services.orchestration.escalation import (
+    EMAIL,
+    JIRA,
+    SLACK,
+    EscalationChannel,
+    EscalationConfig,
+    SlackSettings,
+    load_escalation_config,
+)
 
 log = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True)
-class AlertMessage:
-    subject: str
-    body: str
-    issue_key: str
+SLACK_TIMEOUT_SECONDS = 5
+SLACK_MIN_SECONDS = 1.0
 
 
 @dataclass(frozen=True)
@@ -35,57 +42,164 @@ class HumanInterventionAlert:
     stage: str
     detail: str = ""
     remedy: str = ""
+    structured_remedy: Remedy = field(default_factory=Remedy)
+    park_key: str = ""
 
 
-def _post_jira_comment(settings: Settings, message: AlertMessage) -> bool:
-    if not message.issue_key:
-        return False
-    from services.integration.tickets import build_ticket_backend_for_issue
-
-    build_ticket_backend_for_issue(message.issue_key, settings).add_comment(
-        message.issue_key, message.body
-    )
-    return True
-
-
-def _post_slack(settings: Settings, message: AlertMessage) -> bool:
-    if not settings.slack_webhook_url:
-        return False
-    if urlsplit(settings.slack_webhook_url).scheme != "https":
-        raise ValueError("SLACK_WEBHOOK_URL must be an https URL")
-    httpx.post(
-        settings.slack_webhook_url, json={"text": message.body}, timeout=10
-    ).raise_for_status()
-    return True
+@dataclass(frozen=True)
+class AlertMessage:
+    subject: str
+    body: str
+    issue_key: str
+    alert: HumanInterventionAlert | None = None
+    issued_at: int = 0
+    """When the park's alert was first scheduled, so a retried alert signs the same buttons."""
+    deadline: float | None = None
+    """``time.monotonic()`` value after which the alert activity times out."""
 
 
-def _send_email(settings: Settings, message: AlertMessage) -> bool:
-    if not (settings.smtp_host and settings.alert_email_from and settings.alert_email_to):
-        return False
-    email = EmailMessage()
-    email["Subject"] = message.subject
-    email["From"] = settings.alert_email_from
-    email["To"] = settings.alert_email_to
-    email.set_content(message.body)
-    with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=10) as client:
-        client.send_message(email)
-    return True
+class JiraCommentChannel:
+    name = JIRA
+
+    def deliver(self, message: AlertMessage, settings: Settings, config: EscalationConfig) -> bool:
+        if not message.issue_key:
+            return False
+        from services.integration.tickets import build_ticket_backend_for_issue
+
+        build_ticket_backend_for_issue(message.issue_key, settings).add_comment(
+            message.issue_key, message.body
+        )
+        return True
+
+
+class EmailChannel:
+    name = EMAIL
+
+    def deliver(self, message: AlertMessage, settings: Settings, config: EscalationConfig) -> bool:
+        if not (settings.smtp_host and settings.alert_email_from and settings.alert_email_to):
+            return False
+        email = EmailMessage()
+        email["Subject"] = message.subject
+        email["From"] = settings.alert_email_from
+        email["To"] = settings.alert_email_to
+        email.set_content(message.body)
+        with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=10) as client:
+            client.send_message(email)
+        return True
+
+
+class SlackChannel:
+    name = SLACK
+
+    def deliver(self, message: AlertMessage, settings: Settings, config: EscalationConfig) -> bool:
+        slack = config.slack
+        if settings.slack_bot_token and slack is not None:
+            return self._post_with_bot(message, settings, slack)
+        if not settings.slack_webhook_url:
+            return False
+        if urlsplit(settings.slack_webhook_url).scheme != "https":
+            raise ValueError("SLACK_WEBHOOK_URL must be an https URL")
+        httpx.post(
+            settings.slack_webhook_url, json={"text": message.body}, timeout=10
+        ).raise_for_status()
+        return True
+
+    def _post_with_bot(
+        self, message: AlertMessage, settings: Settings, slack: SlackSettings
+    ) -> bool:
+        from services.integration.slack.client import tenant_web_client
+        from services.integration.slack.messages import ParkContext, SlackAlert, alert_payload
+
+        timeout = float(SLACK_TIMEOUT_SECONDS)
+        if message.deadline is not None:
+            timeout = min(timeout, message.deadline - time.monotonic() - SLACK_MIN_SECONDS)
+        if timeout < SLACK_MIN_SECONDS:
+            log.warning("too little of the alert deadline is left to post to Slack")
+            return False
+        alert = message.alert
+        if alert is None:
+            text, blocks = message.body, None
+        else:
+            park = None
+            if alert.park_key and settings.escalation_action_key:
+                park = ParkContext(
+                    tenant=settings.tenant.strip(),
+                    execution_id=alert.execution_id,
+                    workflow_id=alert.workflow_id,
+                    park_key=alert.park_key,
+                    issued_at=message.issued_at or int(time.time()),
+                    ttl_hours=slack.token_ttl_hours,
+                    action_key=settings.escalation_action_key.encode(),
+                )
+            text, blocks = alert_payload(
+                SlackAlert(
+                    task_id=alert.task_id,
+                    repo=alert.repo,
+                    issue_key=alert.issue_key,
+                    stage=alert.stage,
+                    reason=alert.reason,
+                    detail=_bounded_detail(alert.detail),
+                    remedy_text=alert.remedy,
+                    remedy=alert.structured_remedy.for_tenant(settings.tenant.strip()),
+                    remedy_commands=render_remedy_commands(alert.structured_remedy, settings),
+                    ticket_url=_ticket_url(alert.issue_key, settings),
+                ),
+                content=slack.content,
+                park=park,
+            )
+        client = tenant_web_client(
+            settings.slack_bot_token, slack.api_base_url, timeout=int(timeout), retry_handlers=[]
+        )
+        client.chat_postMessage(
+            channel=slack.channel,
+            text=text,
+            blocks=blocks,
+            unfurl_links=False,
+            unfurl_media=False,
+        )
+        return True
+
+
+# Slack runs last so a slow Slack call cannot delay the Jira comment or the email.
+CHANNELS: tuple[EscalationChannel, ...] = (JiraCommentChannel(), EmailChannel(), SlackChannel())
+
+
+def _ticket_url(issue_key: str, settings: Settings) -> str:
+    from services.integration.tickets.factory import ticket_url
+
+    if not issue_key:
+        return ""
+    try:
+        return ticket_url(issue_key, settings)
+    except ConfigError:
+        log.warning("the ticket link of %s could not be built", issue_key, exc_info=True)
+        return ""
+
+
+def _escalation_config(settings: Settings) -> EscalationConfig:
+    """Return the tenant's escalation config, or the default that enables every channel."""
+    try:
+        return load_escalation_config(settings)
+    except ConfigError:
+        log.error(
+            "escalation.yaml is unusable, so the alert goes to every configured channel",
+            exc_info=True,
+        )
+        return EscalationConfig()
 
 
 def deliver_alert(message: AlertMessage, settings: Settings | None = None) -> list[str]:
     settings = settings or get_settings()
-    channels: tuple[tuple[str, Callable[[], bool]], ...] = (
-        ("jira", lambda: _post_jira_comment(settings, message)),
-        ("slack", lambda: _post_slack(settings, message)),
-        ("email", lambda: _send_email(settings, message)),
-    )
+    config = _escalation_config(settings)
     delivered: list[str] = []
-    for channel, sender in channels:
+    for channel in CHANNELS:
+        if channel.name not in config.channels:
+            continue
         try:
-            if sender():
-                delivered.append(channel)
+            if channel.deliver(message, settings, config):
+                delivered.append(channel.name)
         except Exception:  # noqa: BLE001
-            log.warning("alert delivery over %s failed", channel, exc_info=True)
+            log.warning("alert delivery over %s failed", channel.name, exc_info=True)
     if not delivered:
         log.error(
             "alert for %s reached no channel. Configure a Jira issue key, SLACK_WEBHOOK_URL, "
@@ -105,6 +219,15 @@ def render_remedy(remedy: Remedy, settings: Settings) -> str:
         remedy.for_tenant(settings.tenant.strip()),
         DeploymentPosture(settings.deployment_posture),
         environment=settings.environment,
+    )
+
+
+def render_remedy_commands(remedy: Remedy, settings: Settings) -> tuple[str, ...]:
+    """Render only the actions of a remedy, each as the command ``render_remedy`` would give."""
+    posture = DeploymentPosture(settings.deployment_posture)
+    return tuple(
+        render_step(step, posture, environment=settings.environment)
+        for step in remedy.for_tenant(settings.tenant.strip()).actions
     )
 
 
@@ -133,7 +256,9 @@ def _bounded_detail(detail: str) -> str:
     return f"[{', '.join(notes)}]\n{kept}"
 
 
-def _intervention_message(alert: HumanInterventionAlert) -> AlertMessage:
+def _intervention_message(
+    alert: HumanInterventionAlert, *, issued_at: int = 0, deadline: float | None = None
+) -> AlertMessage:
     body = (
         f"Human intervention required for {alert.task_id} on {alert.repo}.\n"
         f"The run stopped at the {alert.stage} stage with reason {alert.reason}.\n"
@@ -144,13 +269,22 @@ def _intervention_message(alert: HumanInterventionAlert) -> AlertMessage:
         subject=f"Human intervention needed on {alert.repo} for {alert.task_id}",
         body=with_remedy(body, alert.remedy),
         issue_key=alert.issue_key,
+        alert=alert,
+        issued_at=issued_at,
+        deadline=deadline,
     )
 
 
 def send_human_intervention_alert(
-    alert: HumanInterventionAlert, settings: Settings | None = None
+    alert: HumanInterventionAlert,
+    settings: Settings | None = None,
+    *,
+    issued_at: int = 0,
+    deadline: float | None = None,
 ) -> list[str]:
-    return deliver_alert(_intervention_message(alert), settings)
+    return deliver_alert(
+        _intervention_message(alert, issued_at=issued_at, deadline=deadline), settings
+    )
 
 
 def send_intake_unroutable_alert(

@@ -125,3 +125,92 @@ def test_a_single_tenant_webhook_serves_its_tenant_with_the_platform_secrets(
     expected = _webhook(before)["spec"]["template"]["spec"]["containers"][0]
     expected["env"].append({"name": "TENANTS", "value": "adp"})
     assert localized == before
+
+
+ESCALATION = "config_version: 1\nchannels: [jira, email]\n"
+
+
+def _routing_projection(documents: list[dict]) -> list[dict]:
+    volume = next(
+        v
+        for v in _webhook(documents)["spec"]["template"]["spec"]["volumes"]
+        if v["name"] == webhook_render.INTEGRATION_CONFIG
+    )
+    return volume["projected"]["sources"]
+
+
+def test_a_single_tenant_webhook_reads_the_environments_escalation_file(tmp_path: Path) -> None:
+    documents = _rendered(
+        tmp_path, {"escalation.yaml": ESCALATION}, {**ADP_ENV, **WEBHOOK_ENV}, tenant="adp"
+    )
+
+    found = _in(documents, "ConfigMap", "agentic-dev-platform", webhook_render.WEBHOOK_CONFIG)
+    assert found is not None
+    assert found["data"] == {"escalation.yaml": ESCALATION}
+    assert _routing_projection(documents)[1] == {
+        "configMap": {
+            "name": webhook_render.WEBHOOK_CONFIG,
+            "items": [{"key": "escalation.yaml", "path": "escalation.yaml"}],
+        }
+    }
+
+
+def test_each_tenant_bundles_escalation_file_reaches_the_webhook(tmp_path: Path) -> None:
+    files = _beta_files(
+        **{
+            "tenants/beta.env": BETA_SETTINGS,
+            "tenants/beta/jira.yaml": BETA_JIRA,
+            "tenants/beta/escalation.yaml": ESCALATION,
+            "escalation.yaml": ESCALATION,
+        }
+    )
+    documents = _rendered(
+        tmp_path, files, {**ADP_ENV, **WEBHOOK_ENV}, tenants="adp,beta", tenant="adp"
+    )
+
+    assert {"key": "beta.escalation.yaml", "path": "tenants/beta/escalation.yaml"} in (
+        _routing_projection(documents)[1]["configMap"]["items"]
+    )
+    assert {"key": "escalation.yaml", "path": "escalation.yaml"} in (
+        _routing_projection(documents)[1]["configMap"]["items"]
+    )
+
+
+def test_the_webhook_receives_each_tenants_slack_signing_secret_and_action_key(
+    tmp_path: Path,
+) -> None:
+    from tests.unit.test_k8s_cluster import BETA_SLACK, SLACK_ENV
+
+    files = _beta_files(**{"tenants/beta.env": BETA_SLACK, "tenants/beta/jira.yaml": BETA_JIRA})
+    documents = _rendered(
+        tmp_path, files, {**ADP_ENV, **WEBHOOK_ENV, **SLACK_ENV}, tenants="adp,beta", tenant="adp"
+    )
+
+    found = _in(documents, "Secret", "agentic-dev-platform", webhook_render.WEBHOOK_TENANT_ENV)
+    assert found is not None
+    values = _decoded(found)
+    assert {key: value for key, value in values.items() if "SLACK" in key or "ACTION" in key} == {
+        "SLACK_SIGNING_SECRET_ADP": "adp-slack-signing",
+        "SLACK_SIGNING_SECRET_BETA": "beta-slack-signing",
+        "ESCALATION_ACTION_KEY_ADP": "adp-action-key",
+        "ESCALATION_ACTION_KEY_BETA": "beta-action-key",
+    }
+    assert "xoxb" not in str(values) and "xapp" not in str(values)
+
+
+def test_a_tenant_without_a_slack_signing_secret_gets_no_demo_secret() -> None:
+    values = webhook_secret_values(["adp", "beta"], "adp", {"adp": None, "beta": {}}, {})
+
+    assert not any(
+        key.startswith(("SLACK_SIGNING_SECRET", "ESCALATION_ACTION_KEY")) for key in values
+    )
+
+
+def test_two_tenants_may_not_share_a_slack_signing_secret() -> None:
+    with pytest.raises(ValueError, match="share a SLACK_SIGNING_SECRET"):
+        webhook_secret_values(
+            ["adp", "beta"],
+            "adp",
+            {"adp": None, "beta": {"SLACK_SIGNING_SECRET": "same"}},
+            {"SLACK_SIGNING_SECRET": "same"},
+        )

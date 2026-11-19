@@ -455,6 +455,12 @@ services:
       - registry-data:/var/lib/registry
     restart: unless-stopped
 
+  mailpit:
+    image: docker.io/axllent/mailpit:v1.34.0@sha256:23a2ef85bc50853ab3093645d1d64679afd8887e89da5e48a88940c172591a4e
+    profiles: ["verify"]
+    ports: ["1025:1025", "8025:8025"]
+    restart: unless-stopped
+
 volumes:
   postgres-data:
   repo-index-data:

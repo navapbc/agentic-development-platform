@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import Callable
 
 from services.integration.credentials import (
     ConfigError,
@@ -11,8 +12,9 @@ from services.integration.credentials import (
     SecretResolver,
     config_status,
 )
+from services.orchestration.escalation import load_escalation_config
 
-from scripts.config import get_settings
+from scripts.config import Settings, get_settings
 
 _CONFIGS = (
     "github",
@@ -26,7 +28,11 @@ _CONFIGS = (
     "profiles",
     "image_policy",
     "image_exceptions",
+    "escalation",
 )
+_CONTENT_CHECKS: dict[str, Callable[[Settings], object]] = {
+    "escalation": load_escalation_config,
+}
 _REQUIRED_SECRETS = (
     "COORDINATION_SHARED_SECRET",
     "MCP_GATEWAY_TOKEN",
@@ -49,7 +55,8 @@ def report_required_secrets(resolver: SecretResolver) -> int:
 
 
 def main() -> int:
-    env = get_settings().environment
+    settings = get_settings()
+    env = settings.environment
     outdated = 0
     for name in _CONFIGS:
         try:
@@ -69,6 +76,14 @@ def main() -> int:
             print(f"[config-check] {name}: not created (copy config/{env}/{name}.yaml.example)")
             continue
         if status.up_to_date:
+            check = _CONTENT_CHECKS.get(name)
+            try:
+                if check is not None:
+                    check(settings)
+            except ConfigError as exc:
+                print(f"[config-check] {name}: INVALID, {exc}")
+                outdated += 1
+                continue
             print(f"[config-check] {name}: up to date (version {status.operator_version})")
             continue
         keys = ", ".join(status.new_keys) or "(no new keys)"

@@ -7,8 +7,9 @@ cover the source component, the execution id, and the idempotent content address
 from __future__ import annotations
 
 import pytest
-from services.orchestration.temporal_activities import bedrock
+from services.orchestration.temporal_activities import bedrock, persistence
 from services.orchestration.temporal_activities.checks import RunChecksRequest, run_checks
+from services.orchestration.temporal_activities.persistence import AuditEvent, record_audit_event
 from services.orchestration.temporal_activities.planning import record_plan_evidence
 from services.orchestration.temporal_activities.pull_request import (
     promote_pr,
@@ -18,6 +19,7 @@ from services.review.classification import CLASSIFICATION_AUDIT, CLASSIFICATION_
 from services.review.evidence import (
     APPROVAL_COMPONENT,
     BUILD_AND_TEST_COMPONENT,
+    DECISION_COMPONENT,
     PLAN_COMPONENT,
     PROMPT_REFERENCE_COMPONENT,
     PULL_REQUEST_SUMMARY_COMPONENT,
@@ -244,3 +246,56 @@ async def test_every_artifact_write_shares_one_database_engine(monkeypatch):
 
     assert first is second
     assert len(built) == 1
+
+
+class _AuditConnection:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def execute(self, statement):
+        return None
+
+
+class _AuditEngine:
+    def begin(self):
+        return _AuditConnection()
+
+
+def _decision_event(attempt: int, *, park_key: str | None) -> AuditEvent:
+    return AuditEvent(
+        event_id=f"exec-1:HUMAN_INTERVENTION_DECISION:{attempt}",
+        task_id="T-1",
+        execution_id="exec-1",
+        event_type="HUMAN_INTERVENTION_DECISION",
+        stage="repair",
+        decision="retry",
+        actor_type="slack",
+        actor_id="slack:E1/U1",
+        correlation_ids={"park_key": park_key} if park_key else {},
+    )
+
+
+async def test_a_keyed_decision_writes_one_decision_record_per_park(monkeypatch):
+    audit_bodies: list[dict] = []
+
+    async def _record_audit_object(body):
+        audit_bodies.append(body)
+
+    monkeypatch.setattr(persistence, "_get_engine", _AuditEngine)
+    monkeypatch.setattr("services.review.evidence.persist_audit_object", _record_audit_object)
+    records = capture_evidence(monkeypatch)
+
+    await record_audit_event(_decision_event(1, park_key="exec-1:repair:1:1"))
+    await record_audit_event(_decision_event(2, park_key="exec-1:repair:2:2"))
+    await record_audit_event(_decision_event(3, park_key=None))
+
+    assert [record.source_component for record in records] == [DECISION_COMPONENT] * 2
+    assert records[0].classification == CLASSIFICATION_AUDIT
+    assert records[0].content_hash != records[1].content_hash
+    assert records[0].metadata["actor_id"] == "slack:E1/U1"
+    assert [(body["actor_type"], body["actor_id"]) for body in audit_bodies] == [
+        ("slack", "slack:E1/U1")
+    ] * 3

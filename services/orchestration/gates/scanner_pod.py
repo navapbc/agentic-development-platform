@@ -76,7 +76,7 @@ def restore_paths(output: str, cwd: str) -> str:
         return output
     try:
         document = json.loads(output)
-    except (json.JSONDecodeError, TypeError):
+    except json.JSONDecodeError, TypeError:
         return output
     if not isinstance(document, dict):
         return output

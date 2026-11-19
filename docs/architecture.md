@@ -477,7 +477,7 @@ flowchart LR
                     ALB["Temporal Web UI Load Balancer<br/><i>internal Application Load Balancer</i>"]
                     TUI["Temporal Web UI"]
                     TADM["Temporal Schema and Namespace Setup<br/><i>Temporal admin-tools</i>"]
-                    ROT["Secret Rotation Function<br/><i>AWS Lambda, Python 3.13, boto3</i>"]
+                    ROT["Secret Rotation Function<br/><i>AWS Lambda, Python 3.14, boto3</i>"]
                 end
 
                 subgraph DATA["Data subnets, two AZs"]

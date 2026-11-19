@@ -405,7 +405,7 @@ class ScipProvider:
             return False
         try:
             head = resolve_commit(self._root)
-        except (process.CalledProcessError, FileNotFoundError):
+        except process.CalledProcessError, FileNotFoundError:
             return False
         return head.startswith(self._commit) or self._commit.startswith(head)
 

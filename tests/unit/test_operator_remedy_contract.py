@@ -227,11 +227,41 @@ def test_abandoning_a_repair_does_not_claim_intake_will_relaunch():
         "repair_exhausted", issue_key="ADSER-24", execution_id="exec-1"
     )
 
-    assert "--abandon" not in _host(authored)
+    host = _host(authored)
     assert [step.kind for step in authored.actions] == [
         StepKind.RETRY_REPAIR,
+        StepKind.ABANDON_REPAIR,
         StepKind.RESTART_RUN,
     ]
+    abandon = host.index("--abandon")
+    assert "intake" not in host[host.rfind(".", 0, abandon) : host.find(".", abandon)]
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        "cost_budget_exceeded",
+        "token_budget_exceeded",
+        "llm_calls_exceeded",
+        "run_model_budget_exceeded",
+        "tenant_model_budget_exceeded",
+    ],
+)
+def test_a_repair_budget_park_offers_abandon_as_its_only_decision(token):
+    """A retry at a spent budget parks again at once, so abandon is the one decision that helps."""
+    authored = remedies.repair_remedy(token, issue_key="ADSER-24", execution_id="exec-1")
+
+    decisions = [step.kind for step in authored.actions if step.kind in _SIGNALLED_DECISIONS]
+    assert decisions == [StepKind.RESTART_RUN, StepKind.ABANDON_REPAIR]
+
+
+def test_an_implementation_budget_stop_offers_no_repair_decision():
+    """An implementation-stage budget stop ends the run, so no parked repair waits on abandon."""
+    authored = remedies.implementation_remedy(
+        "cost_budget_exceeded", issue_key="ADSER-24", execution_id="exec-1"
+    )
+
+    assert StepKind.ABANDON_REPAIR not in [step.kind for step in authored.actions]
 
 
 def test_the_invalidating_remedy_names_fields_that_can_invalidate_a_run():
@@ -388,7 +418,13 @@ def test_every_authored_remedy_names_at_least_one_action():
 
 
 _SIGNALLED_DECISIONS = frozenset(
-    {StepKind.RESTART_RUN, StepKind.RETRY_REPAIR, StepKind.APPROVE_GATE, StepKind.REJECT_GATE}
+    {
+        StepKind.RESTART_RUN,
+        StepKind.RETRY_REPAIR,
+        StepKind.ABANDON_REPAIR,
+        StepKind.APPROVE_GATE,
+        StepKind.REJECT_GATE,
+    }
 )
 
 

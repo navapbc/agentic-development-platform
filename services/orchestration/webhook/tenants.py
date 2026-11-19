@@ -18,7 +18,10 @@ for the projects the allowlist of that tenant's jira.yaml names.
 Each tenant signs its deliveries with its own secrets, GITHUB_WEBHOOK_SECRET_<TENANT> and
 JIRA_WEBHOOK_SECRET_<TENANT>, so one tenant cannot forge the events of another. When the webhook
 serves one tenant, that tenant without a secret of its own uses GITHUB_WEBHOOK_SECRET and
-JIRA_WEBHOOK_SECRET, the secrets of a single-tenant deployment.
+JIRA_WEBHOOK_SECRET, the secrets of a single-tenant deployment. A tenant's Slack requests verify
+with SLACK_SIGNING_SECRET_<TENANT>, and its action tokens with ESCALATION_ACTION_KEY_<TENANT>, on
+the same terms. Two tenants that declare the same Slack app ID or hold the same Slack signing secret
+have their Slack requests refused.
 """
 
 from __future__ import annotations
@@ -53,6 +56,8 @@ log = logging.getLogger(__name__)
 
 GITHUB_SIGNING_ENV_PREFIX = "GITHUB_WEBHOOK_SECRET_"
 JIRA_SIGNING_ENV_PREFIX = "JIRA_WEBHOOK_SECRET_"
+SLACK_SIGNING_ENV_PREFIX = "SLACK_SIGNING_SECRET_"
+ESCALATION_ACTION_KEY_ENV_PREFIX = "ESCALATION_ACTION_KEY_"
 JIRA_CONFIG = "jira"
 
 SourceFactory = Callable[[str], BundleSource]
@@ -82,6 +87,30 @@ def tenant_secrets(
         elif len(tenants) == 1 and platform_secret:
             secrets[tenant] = platform_secret
     return secrets
+
+
+def shared_slack_tenants(app_ids: Mapping[str, str], secrets: Mapping[str, str]) -> frozenset[str]:
+    """Return the tenants that declare the Slack app ID, or hold the Slack signing secret, of
+    another tenant.
+
+    The webhook refuses the Slack route of each, because a request of one tenant's app would
+    verify for the other.
+    """
+    refused: set[str] = set()
+    for kind, values in (("Slack app ID", app_ids), ("Slack signing secret", secrets)):
+        holders: dict[str, list[str]] = {}
+        for tenant, value in values.items():
+            if value:
+                holders.setdefault(value, []).append(tenant)
+        for tenants in holders.values():
+            if len(tenants) > 1:
+                log.error(
+                    "tenants %s share a %s, so their Slack requests are refused",
+                    ", ".join(sorted(tenants)),
+                    kind,
+                )
+                refused.update(tenants)
+    return frozenset(refused)
 
 
 def parse_jira_allowlist(text: str, tenant: str) -> frozenset[str]:
@@ -188,19 +217,28 @@ class TenantRouting:
         self._project_versions[tenant] = version
 
     def _jira_text(self, tenant: str) -> str:
+        text = self.bundle_text(tenant, JIRA_CONFIG)
+        if text is None:
+            path = env_config_dir(self._settings.environment)
+            raise ConfigError(f"tenant {tenant} has no jira.yaml in its bundle or in {path}")
+        return text
+
+    def bundle_text(self, tenant: str, name: str) -> str | None:
+        """Return the tenant's bundle file ``name``, else the environment's, else None.
+
+        This reads the bundle source, which can be S3, so an event loop calls it from a thread.
+        """
         source = self._sources.get(tenant)
         if source is None:
             source = self._sources[tenant] = self._source_factory(tenant)
-        text = source.fetch(source.latest()).files.get(JIRA_CONFIG)
+        text = source.fetch(source.latest()).files.get(name)
         if text is not None:
             return text
-        path = env_config_dir(self._settings.environment) / f"{JIRA_CONFIG}.yaml"
+        path = env_config_dir(self._settings.environment) / f"{name}.yaml"
         try:
             return path.read_text(encoding="utf-8")
-        except FileNotFoundError as exc:
-            raise ConfigError(
-                f"tenant {tenant} has no jira.yaml in its bundle or in {path.parent}"
-            ) from exc
+        except FileNotFoundError:
+            return None
 
 
 @dataclass(frozen=True)

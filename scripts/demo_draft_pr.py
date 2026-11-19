@@ -176,7 +176,7 @@ def _missing(settings: Settings) -> list[str]:
 def _jira_configured(settings: Settings, issue_key: str) -> bool:
     try:
         cred = build_jira_credential_resolver(settings).resolve(project_of(issue_key))
-    except (ConfigError, SecretNotFoundError):
+    except ConfigError, SecretNotFoundError:
         return False
     return cred is not None and cred.auth_mode == CLOUD
 

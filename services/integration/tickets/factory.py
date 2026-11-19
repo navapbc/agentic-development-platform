@@ -74,6 +74,21 @@ def build_ticket_backend_for_issue(
     return build_ticket_backend(settings, project=project_of(issue_key), resolver=resolver)
 
 
+def ticket_url(
+    issue_key: str,
+    settings: Settings | None = None,
+    *,
+    resolver: JiraCredentialResolver | None = None,
+) -> str:
+    """Return the web URL of the ticket, or ``""`` when its backend has no web view."""
+    resolved = settings or get_settings()
+    if resolve_ticket_backend_name(resolved) != JIRA:
+        return ""
+    active = resolver or build_jira_credential_resolver(resolved)
+    site = active.site_url(project_of(issue_key))
+    return f"{site.rstrip('/')}/browse/{issue_key}" if site else ""
+
+
 def ticket_projects(settings: Settings | None = None) -> set[str]:
     """Return the allowlisted ticket projects for the configured ticket backend."""
     resolved = settings or get_settings()

@@ -26,6 +26,7 @@ from services.review.classification import (
 PLAN_COMPONENT = "plan"
 PULL_REQUEST_SUMMARY_COMPONENT = "pull-request-summary"
 APPROVAL_COMPONENT = "approval"
+DECISION_COMPONENT = "decision"
 PROMPT_REFERENCE_COMPONENT = "prompt-reference"
 BUILD_AND_TEST_COMPONENT = "build-and-test"
 

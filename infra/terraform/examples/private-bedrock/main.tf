@@ -99,8 +99,9 @@ module "cloudtrail" {
     local.tenants_enabled && length(var.tenants) > 0 ? [module.tenant_config_store.bucket_arn] : [],
     [for tenant in values(local.tenant_records) : tenant.ticket_store.bucket_arn],
   )
-  name_prefix = var.name_prefix
-  tags        = var.tags
+  data_event_function_arns = module.off_hours.function_arn == null ? [] : [module.off_hours.function_arn]
+  name_prefix              = var.name_prefix
+  tags                     = var.tags
 }
 
 module "vpc_endpoints" {

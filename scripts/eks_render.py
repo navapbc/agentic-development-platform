@@ -42,9 +42,14 @@ SECURITY_GROUP_POLICIES = {
 }
 GATE_EGRESS_POLICY = "gate-engine-egress"
 LITELLM_FILES = ("litellm-config.yaml", "litellm_redaction.py")
-# Secrets the tenant module generates for every tenant, which no overlay provider lists. The
-# tenant's worker reads each as the upper-cased key.
-TENANT_GENERATED_SECRETS = ("repo_intelligence_token",)
+# Secrets only a tenant holds, which no overlay provider lists because the secret store has no key
+# for them. The worker of a tenant that holds one reads it as the upper-cased key.
+TENANT_ONLY_SECRETS = (
+    "repo_intelligence_token",
+    "escalation_action_key",
+    "slack_bot_token",
+    "slack_app_token",
+)
 # The worker's secrets the tenant's MCP gateway also reads, for its Jira and GitHub readers and
 # its repository intelligence calls.
 GATEWAY_WORKER_SECRETS = ("github_token", "jira_api_token", "jira_pat", "repo_intelligence_token")
@@ -214,7 +219,7 @@ def set_tenant_secrets(
             if d.get("kind") == "SecretProviderClass"
             and d["metadata"].get("namespace") == namespace
         ]
-        add_generated_secrets(providers, own)
+        add_tenant_only_secrets(providers, own)
         add_gateway_secrets(providers)
         mounted = {
             secret_key(item["objectName"]): item.get("objectAlias", "")
@@ -229,8 +234,7 @@ def set_tenant_secrets(
     return skipped
 
 
-def add_generated_secrets(providers: list[dict[str, Any]], own: Mapping[str, str]) -> None:
-    """Add each generated secret the tenant holds to its worker's provider."""
+def add_tenant_only_secrets(providers: list[dict[str, Any]], own: Mapping[str, str]) -> None:
     from scripts.tenant_render import WORKER
 
     for provider in providers:
@@ -244,7 +248,7 @@ def add_generated_secrets(providers: list[dict[str, Any]], own: Mapping[str, str
                 "objectType": "secretsmanager",
                 "objectAlias": key.upper(),
             }
-            for key in TENANT_GENERATED_SECRETS
+            for key in TENANT_ONLY_SECRETS
             if key in own and key not in listed
         ]
         provider["spec"]["parameters"]["objects"] = json.dumps(objects)

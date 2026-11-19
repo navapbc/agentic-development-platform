@@ -29,6 +29,7 @@ class StepKind(StrEnum):
     TEXT = "text"
     RESTART_RUN = "restart_run"
     RETRY_REPAIR = "retry_repair"
+    ABANDON_REPAIR = "abandon_repair"
     APPROVE_GATE = "approve_gate"
     REJECT_GATE = "reject_gate"
     ROLL_UP_COST = "roll_up_cost"
@@ -40,6 +41,7 @@ COMMAND_KINDS = frozenset(
     {
         StepKind.RESTART_RUN,
         StepKind.RETRY_REPAIR,
+        StepKind.ABANDON_REPAIR,
         StepKind.APPROVE_GATE,
         StepKind.REJECT_GATE,
         StepKind.ROLL_UP_COST,
@@ -99,6 +101,10 @@ def retry_repair(issue_key: str) -> RemedyStep:
     return RemedyStep(StepKind.RETRY_REPAIR, issue_key=issue_key)
 
 
+def abandon_repair(issue_key: str) -> RemedyStep:
+    return RemedyStep(StepKind.ABANDON_REPAIR, issue_key=issue_key)
+
+
 def approve_gate(issue_key: str, gate: str) -> RemedyStep:
     return RemedyStep(StepKind.APPROVE_GATE, issue_key=issue_key, gate=gate)
 
@@ -137,6 +143,8 @@ def _host_command(kind: StepKind, step: RemedyStep) -> str:
             return f"inv restart --issue {issue}{tenant}"
         case StepKind.RETRY_REPAIR:
             return f"inv repair --issue {issue} --retry{tenant}"
+        case StepKind.ABANDON_REPAIR:
+            return f"inv repair --issue {issue} --abandon{tenant}"
         case StepKind.APPROVE_GATE | StepKind.REJECT_GATE:
             decision = "--approve" if kind is StepKind.APPROVE_GATE else "--reject"
             gate = _value(step.gate, "<gate>")
@@ -156,6 +164,8 @@ def _worker_module(kind: StepKind, step: RemedyStep) -> str:
             return f"scripts.restart {issue}"
         case StepKind.RETRY_REPAIR:
             return f"scripts.repair {issue} --retry"
+        case StepKind.ABANDON_REPAIR:
+            return f"scripts.repair {issue} --abandon"
         case StepKind.APPROVE_GATE | StepKind.REJECT_GATE:
             decision = "--approve" if kind is StepKind.APPROVE_GATE else "--reject"
             return f"scripts.gate_decision {issue} --gate {_value(step.gate, '<gate>')} {decision}"
@@ -269,6 +279,7 @@ def render_step(step: RemedyStep, posture: DeploymentPosture, *, environment: st
         case (
             StepKind.RESTART_RUN
             | StepKind.RETRY_REPAIR
+            | StepKind.ABANDON_REPAIR
             | StepKind.APPROVE_GATE
             | StepKind.REJECT_GATE
             | StepKind.ROLL_UP_COST

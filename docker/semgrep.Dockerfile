@@ -12,7 +12,7 @@ FROM ${AL2023_IMAGE}
 ARG AL2023_RELEASE=2023.12.20261112
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 RUN dnf -y --releasever="${AL2023_RELEASE}" upgrade \
- && dnf -y --releasever="${AL2023_RELEASE}" install python3.13 git shadow-utils \
+ && dnf -y --releasever="${AL2023_RELEASE}" install python3.14 git shadow-utils \
  && groupadd --gid 10001 semgrep \
  && useradd --uid 10001 --gid 10001 --create-home --home-dir /home/semgrep --shell /sbin/nologin semgrep \
  && dnf -y remove shadow-utils \
@@ -23,7 +23,7 @@ RUN dnf -y --releasever="${AL2023_RELEASE}" upgrade \
 RUN git config --system --add safe.directory '*'
 COPY docker/semgrep/requirements.txt /tmp/semgrep-requirements.txt
 RUN --mount=from=uv,source=/uv,target=/usr/local/bin/uv \
-    uv venv --quiet --python /usr/bin/python3.13 /opt/semgrep \
+    uv venv --quiet --python /usr/bin/python3.14 /opt/semgrep \
  && VIRTUAL_ENV=/opt/semgrep uv pip sync --quiet --no-cache --require-hashes /tmp/semgrep-requirements.txt \
  && rm /tmp/semgrep-requirements.txt \
  && ln -s /opt/semgrep/bin/semgrep /usr/local/bin/semgrep \

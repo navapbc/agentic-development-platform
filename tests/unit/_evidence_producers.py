@@ -99,7 +99,7 @@ def patch_checks(monkeypatch: pytest.MonkeyPatch, *, exit_code: int = 0) -> None
         checks_config_mod,
         "checks_for_repo",
         lambda repo, settings: ChecksConfig(
-            repo=repo, image="python:3.12-slim", command="pytest -q"
+            repo=repo, image="python:3.14-slim", command="pytest -q"
         ),
     )
     monkeypatch.setattr(runner_mod, "ChecksRunner", _Runner)

@@ -55,7 +55,7 @@ MIRRORS = {"docker.io/library": f"{HOST}/agentic-platform-ecr-public/docker/libr
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
-        ("python:3.13@" + DIGEST, ImageReference("docker.io", "library/python", "3.13", DIGEST)),
+        ("python:3.14@" + DIGEST, ImageReference("docker.io", "library/python", "3.14", DIGEST)),
         ("aquasec/trivy:0.74.0", ImageReference("docker.io", "aquasec/trivy", "0.74.0")),
         ("localhost:5001/engine:1", ImageReference("localhost:5001", "engine", "1")),
         (f"{HOST}/a/b@{DIGEST}", ImageReference(HOST, "a/b", "", DIGEST)),
@@ -68,7 +68,7 @@ def test_a_reference_names_its_registry_the_way_the_pull_does(text, expected) ->
 def test_each_kind_of_image_is_admitted_from_its_own_entry() -> None:
     assert admit(f"{HOST}/agentic-platform/semgrep:1@{DIGEST}", POLICY, "adp").kind == CATALOG
     assert admit(f"{HOST}/agentic-platform/tenants/adp/x@{DIGEST}", POLICY, "adp").kind == TENANT
-    cached = admit(f"python:3.13@{DIGEST}", POLICY, "adp", MIRRORS)
+    cached = admit(f"python:3.14@{DIGEST}", POLICY, "adp", MIRRORS)
     assert cached.kind == CACHE
     assert cached.resolved.name == f"{HOST}/agentic-platform-ecr-public/docker/library/python"
 
@@ -182,7 +182,7 @@ def _scan(image, inspector, exceptions=(), ecr_images=(INDEX,)):
 def test_a_scanned_image_without_blocking_findings_is_admitted_on_its_platform_image() -> None:
     inspector = _Inspector(SCANNED, [])
 
-    _scan(admit(f"python:3.13@{DIGEST}", POLICY, "adp", MIRRORS), inspector)
+    _scan(admit(f"python:3.14@{DIGEST}", POLICY, "adp", MIRRORS), inspector)
 
     resource = inspector.criteria[0]["resourceId"][0]["value"]
     assert resource == (
@@ -193,7 +193,7 @@ def test_a_scanned_image_without_blocking_findings_is_admitted_on_its_platform_i
 
 
 def test_an_unscanned_image_waits_and_a_blocking_finding_refuses() -> None:
-    image = admit(f"python:3.13@{DIGEST}", POLICY, "adp", MIRRORS)
+    image = admit(f"python:3.14@{DIGEST}", POLICY, "adp", MIRRORS)
 
     with pytest.raises(ImageScanPendingError, match="PENDING_INITIAL_SCAN"):
         _scan(image, _Inspector({"statusCode": "ACTIVE", "reason": "PENDING_INITIAL_SCAN"}, []))
@@ -202,7 +202,7 @@ def test_an_unscanned_image_waits_and_a_blocking_finding_refuses() -> None:
 
 
 def test_an_unexpired_exception_accepts_its_finding_and_an_expired_one_does_not() -> None:
-    image = admit(f"python:3.13@{DIGEST}", POLICY, "adp", MIRRORS)
+    image = admit(f"python:3.14@{DIGEST}", POLICY, "adp", MIRRORS)
     accepted = FindingException(
         "docker.io/library/python@" + DIGEST, "CVE-1", "r", date(2027, 1, 1)
     )
@@ -226,7 +226,7 @@ def test_a_cache_image_missing_from_ecr_is_pulled_into_the_cache_and_waits(monke
     filled = []
     monkeypatch.setattr(registry_auth, "ecr_token", lambda account, region: "token")
     monkeypatch.setattr(image_admission, "_fill_cache", lambda *args: filled.append(args))
-    image = admit(f"python:3.13@{DIGEST}", POLICY, "adp", MIRRORS)
+    image = admit(f"python:3.14@{DIGEST}", POLICY, "adp", MIRRORS)
 
     with pytest.raises(ImageScanPendingError, match="pulled into the pull-through cache"):
         _scan(image, _Inspector(SCANNED, []), ecr_images=[])
@@ -241,7 +241,7 @@ def _admission() -> Admission:
     images = (
         admit(f"{HOST}/agentic-platform/semgrep:1@{DIGEST}", POLICY, "adp"),
         admit(f"{HOST}/agentic-platform/tenants/adp/checks@{DIGEST}", POLICY, "adp"),
-        admit(f"python:3.13@{DIGEST}", POLICY, "adp", MIRRORS),
+        admit(f"python:3.14@{DIGEST}", POLICY, "adp", MIRRORS),
     )
     return Admission(images=images, policy=POLICY, tenant="adp", mirrors=MIRRORS)
 
@@ -298,7 +298,7 @@ async def test_a_scan_still_pending_at_the_deadline_fails_with_its_reason(monkey
         raise ImageScanPendingError("scan of python pending")
 
     monkeypatch.setattr(image_admission, "require_clean_scan", pending)
-    image = admit(f"python:3.13@{DIGEST}", POLICY, "adp", MIRRORS)
+    image = admit(f"python:3.14@{DIGEST}", POLICY, "adp", MIRRORS)
     deadline = asyncio.get_running_loop().time()
 
     with pytest.raises(ImageScanPendingError, match="scan of python pending"):

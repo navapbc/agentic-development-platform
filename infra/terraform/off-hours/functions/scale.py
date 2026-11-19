@@ -1,7 +1,10 @@
 """Scale the platform to zero for the night, check that it let go of the database, and restore it.
 
-The off-hours Lambda function runs this module. Each SSM Automation step invokes the function
-through `invoke.py`, with the handler to run and its input, and `handler` dispatches to it.
+The off-hours Lambda function runs this module. EventBridge Scheduler invokes it with the run
+to start, `sleep` or `wake`, and `handler` runs one step of that run's plan from `plan.json` in
+each invocation. A step that succeeds invokes the function asynchronously for the next step, a
+step that fails records the run as Failed, and the last step records it as Completed. Every step
+writes a structured audit record when it starts and when it ends.
 
 - `sleep` records the desired count of every listed ECS service that runs tasks in an SSM
   parameter and sets it to zero. `wake` restores the recorded counts of the listed services and
@@ -15,15 +18,20 @@ through `invoke.py`, with the handler to run and its input, and `handler` dispat
   task, a listed EKS deployment runs a pod, or pg_stat_activity lists a client connection outside
   the RDS internal sessions and the allowed users.
 - `record` writes the result of a run to CloudWatch, and publishes an alert when the run failed.
+  It runs at the end of a run, not as a step.
 """
 
 import json
+import logging
 import time
+from pathlib import Path
 
 import boto3
 from botocore.exceptions import ClientError
 
 POLL_SECONDS = 10
+PLAN = Path(__file__).with_name("plan.json")
+log = logging.getLogger("off_hours")
 # A task whose containers have exited holds no connection, though ECS still finishes stopping it.
 EXITED = ("DEPROVISIONING", "STOPPED")
 RUNNING_POD = "[eks-deployer] running pod "
@@ -318,9 +326,9 @@ def check(events, context, ecs=None, logs=None, rds_data=None, sns=None, cloudwa
         _alert(
             sns or boto3.client("sns"),
             events,
-            f"Off-hours {events['Document']} check {events['Check']} failed",
+            f"Off-hours {events['Run']} check {events['Check']} failed",
             [
-                f"The off-hours {events['Document']} stopped at the {events['Check']} check. "
+                f"The off-hours {events['Run']} stopped at the {events['Check']} check. "
                 "The database cluster stays awake while the following run or hold a connection.",
                 *findings,
             ],
@@ -332,19 +340,19 @@ def check(events, context, ecs=None, logs=None, rds_data=None, sns=None, cloudwa
 def record(events, context, cloudwatch=None, sns=None):
     """Count the run as Completed or Failed, and alert on a failed run."""
     result = events["Result"]
-    _metric(
-        cloudwatch or boto3.client("cloudwatch"), events, result, 1, "Document", events["Document"]
-    )
+    _metric(cloudwatch or boto3.client("cloudwatch"), events, result, 1, "Run", events["Run"])
     if result == "Failed":
-        execution = events["ExecutionId"]
+        run_id = events["RunId"]
         _alert(
             sns or boto3.client("sns"),
             events,
-            f"Off-hours {events['Document']} failed",
+            f"Off-hours {events['Run']} failed",
             [
-                f"The off-hours {events['Document']} execution {execution} failed.",
-                f"aws ssm get-automation-execution --automation-execution-id {execution} "
-                "names the step that failed.",
+                f"The off-hours {events['Run']} run {run_id} failed at step "
+                f"{events['Step']}. {events['Error']}",
+                f"aws logs filter-log-events --log-group-name {events['LogGroup']} "
+                f"--filter-pattern '{{ $.run_id = \"{run_id}\" }}' lists the audit records of "
+                "each step of the run.",
             ],
         )
     return {"result": result}
@@ -356,13 +364,92 @@ HANDLERS = {
     "await_healthy": await_healthy,
     "scale_deployments": scale_deployments,
     "check": check,
-    "record": record,
 }
+# EventBridge Scheduler fills these from its context attributes, so an audit record names the
+# schedule, the scheduled time, and the delivery attempt that started the run.
+TRIGGER_FIELDS = ("ScheduleArn", "ScheduledTime", "SchedulerExecutionId", "Attempt")
 
 
-def handler(event, context):
-    """Run the step handler that `event["Handler"]` names with `event["Input"]`."""
-    name = event.get("Handler")
-    if name not in HANDLERS:
-        raise ValueError(f"no off-hours handler named {name!r}")
-    return HANDLERS[name](event.get("Input") or {}, context)
+def load_plan():
+    return json.loads(PLAN.read_text(encoding="utf-8"))
+
+
+def _trigger(event):
+    if event.get("Step"):
+        return "chained"
+    return "schedule" if event.get("ScheduleArn") else "direct"
+
+
+def handler(event, context, plan=None, lambda_client=None, cloudwatch=None, sns=None):
+    """Run one step of the sleep or wake plan, then invoke this function for the next step.
+
+    Each step gets its own invocation, so a run is not bounded by the function timeout. A failed
+    step records the run as Failed and ends it, and the last step records it as Completed.
+    """
+    plan = plan or load_plan()
+    run = event.get("Run")
+    if run not in plan:
+        raise ValueError(f"no off-hours run named {run!r}")
+    runbook = plan[run]
+    steps = runbook["Steps"]
+    number = int(event.get("Step", 0))
+    if not 0 <= number < len(steps):
+        raise ValueError(f"the off-hours {run} run has no step {number}")
+    step = steps[number]
+    run_id = event.get("RunId") or event.get("SchedulerExecutionId") or context.aws_request_id
+    audit = {
+        "event": "off_hours_step",
+        "run": run,
+        "run_id": run_id,
+        "step": step["name"],
+        "step_number": number + 1,
+        "steps": len(steps),
+        "handler": step["handler"],
+        "trigger": _trigger(event),
+        **{field: event[field] for field in TRIGGER_FIELDS if event.get(field)},
+    }
+    log.info("off-hours step started", extra={**audit, "phase": "started"})
+    started = time.monotonic()
+
+    def finish(phase, outcome, **fields):
+        duration_ms = round((time.monotonic() - started) * 1000)
+        level = logging.INFO if outcome == "success" else logging.ERROR
+        log.log(
+            level,
+            f"off-hours step {phase}",
+            extra={
+                **audit,
+                "phase": phase,
+                "outcome": outcome,
+                "duration_ms": duration_ms,
+                **fields,
+            },
+        )
+
+    def fail(phase, error):
+        message = f"{type(error).__name__}: {error}"
+        finish(phase, "failure", error=message)
+        failed = {**runbook["Record"], "Result": "Failed", "RunId": run_id, "Step": step["name"]}
+        record({**failed, "Error": message}, context, cloudwatch, sns)
+        return {"result": "Failed", "run_id": run_id, "step": step["name"]}
+
+    try:
+        result = HANDLERS[step["handler"]](step["payload"], context)
+    except Exception as error:  # noqa: BLE001
+        return fail("failed", error)
+    if number + 1 < len(steps):
+        following = {**event, "Step": number + 1, "RunId": run_id}
+        try:
+            (lambda_client or boto3.client("lambda")).invoke(
+                FunctionName=context.invoked_function_arn,
+                InvocationType="Event",
+                Payload=json.dumps(following).encode(),
+            )
+        except Exception as error:  # noqa: BLE001
+            return fail("handoff_failed", error)
+        finish("succeeded", "success", result=result, next_step=steps[number + 1]["name"])
+        return {"result": "Continued", "run_id": run_id, "step": step["name"]}
+    finish("succeeded", "success", result=result)
+    record({**runbook["Record"], "Result": "Completed", "RunId": run_id}, context, cloudwatch, sns)
+    log.info("off-hours run completed", extra={**audit, "phase": "completed", "outcome": "success"})
+    return {"result": "Completed", "run_id": run_id}

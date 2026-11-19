@@ -3,8 +3,8 @@ ARG AL2023_IMAGE=public.ecr.aws/amazonlinux/amazonlinux:2023-minimal@sha256:158a
 FROM ${AL2023_IMAGE}
 ARG AL2023_RELEASE=2023.12.20261112
 RUN dnf -y --releasever="${AL2023_RELEASE}" upgrade \
- && dnf -y --releasever="${AL2023_RELEASE}" install python3.12 git shadow-utils \
- && ln -s /usr/bin/python3.12 /usr/local/bin/python3 \
+ && dnf -y --releasever="${AL2023_RELEASE}" install python3.14 git shadow-utils \
+ && ln -s /usr/bin/python3.14 /usr/local/bin/python3 \
  && useradd --system --uid 10001 --home-dir /nonexistent --shell /usr/sbin/nologin engine \
  && dnf -y remove shadow-utils \
  && dnf clean all \

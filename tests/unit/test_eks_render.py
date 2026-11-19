@@ -653,3 +653,52 @@ def test_a_tenant_without_a_token_mounts_none(overlay) -> None:
     aliases = [e["objectAlias"] for e in json.loads(provider["spec"]["parameters"]["objects"])]
 
     assert "REPO_INTELLIGENCE_TOKEN" not in aliases
+
+
+def test_a_tenants_slack_tokens_reach_only_its_own_worker(overlay) -> None:
+    inputs = _inputs()
+    inputs["tenants"].append(_tenant("payments"))
+    for tenant in inputs["tenants"]:
+        for key in ("slack_bot_token", "slack_app_token"):
+            tenant["secrets"][key] = (
+                f"arn:aws:secretsmanager:us-west-2:9:secret:{tenant['name']}/{key}"
+            )
+    documents, skipped = eks_render.render(overlay, inputs, REPOSITORY)
+
+    assert skipped == []
+    for name in ("adp", "payments"):
+        provider = _named(documents, "SecretProviderClass", "activity-worker", f"tenant-{name}")
+        objects = json.loads(provider["spec"]["parameters"]["objects"])
+        slack = {e["objectAlias"]: e["objectName"] for e in objects if "slack_" in e["objectName"]}
+        assert slack == {
+            "SLACK_BOT_TOKEN": f"arn:aws:secretsmanager:us-west-2:9:secret:{name}/slack_bot_token",
+            "SLACK_APP_TOKEN": f"arn:aws:secretsmanager:us-west-2:9:secret:{name}/slack_app_token",
+        }
+    for provider in documents:
+        if (
+            provider["kind"] != "SecretProviderClass"
+            or provider["metadata"]["name"] == "activity-worker"
+        ):
+            continue
+        names = [e["objectName"] for e in json.loads(provider["spec"]["parameters"]["objects"])]
+        assert not [
+            name for name in names if "slack_bot_token" in name or "slack_app_token" in name
+        ]
+
+
+def test_a_tenant_worker_receives_its_escalation_action_key(overlay) -> None:
+    inputs = _inputs()
+    key = "arn:aws:secretsmanager:us-west-2:9:secret:tenants/adp/escalation-action-key"
+    inputs["tenants"][0]["secrets"]["escalation_action_key"] = key
+    documents, skipped = eks_render.render(overlay, inputs, REPOSITORY)
+    provider = _named(documents, "SecretProviderClass", "activity-worker", "tenant-adp")
+    objects = json.loads(provider["spec"]["parameters"]["objects"])
+
+    assert skipped == []
+    assert [e for e in objects if e["objectAlias"] == "ESCALATION_ACTION_KEY"] == [
+        {
+            "objectName": key,
+            "objectType": "secretsmanager",
+            "objectAlias": "ESCALATION_ACTION_KEY",
+        }
+    ]

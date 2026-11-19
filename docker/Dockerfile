@@ -44,11 +44,11 @@ RUN NAME=kubectl \
 
 FROM ${AL2023_IMAGE} AS build
 ARG AL2023_RELEASE=2023.12.20261112
-RUN dnf -y --releasever="${AL2023_RELEASE}" install python3.12 git tar gzip \
+RUN dnf -y --releasever="${AL2023_RELEASE}" install python3.14 git tar gzip \
  && dnf clean all
 COPY --from=uv /uv /usr/local/bin/uv
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
-    UV_PYTHON=/usr/bin/python3.12 \
+    UV_PYTHON=/usr/bin/python3.14 \
     UV_PYTHON_DOWNLOADS=never \
     UV_LINK_MODE=copy \
     UV_NO_CACHE=1 \
@@ -78,7 +78,7 @@ FROM ${AL2023_IMAGE}
 ARG AL2023_RELEASE=2023.12.20261112
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 RUN dnf -y --releasever="${AL2023_RELEASE}" upgrade \
- && dnf -y --releasever="${AL2023_RELEASE}" install python3.12 git openssh-clients tar shadow-utils \
+ && dnf -y --releasever="${AL2023_RELEASE}" install python3.14 git openssh-clients tar shadow-utils \
  && useradd --create-home --uid 10001 appuser \
  && dnf -y remove shadow-utils \
  && dnf clean all \

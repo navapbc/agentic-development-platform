@@ -104,7 +104,7 @@ def source_digest(root: Path | None = None) -> str:
 def _read_ledger(root: Path) -> dict[str, str]:
     try:
         entry = json.loads((root / LEDGER_NAME).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return {}
     return entry if isinstance(entry, dict) else {}
 

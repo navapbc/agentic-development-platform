@@ -189,7 +189,7 @@ class CustomPythonProvider:
             index.modules[rel] = module_qname
             try:
                 tree = ast.parse(path.read_text(encoding="utf-8"), filename=rel)
-            except (SyntaxError, UnicodeDecodeError):
+            except SyntaxError, UnicodeDecodeError:
                 continue
             _ModuleVisitor(index, module_qname, rel).visit(tree)
         return index
