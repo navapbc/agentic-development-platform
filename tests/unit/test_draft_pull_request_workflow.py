@@ -2071,6 +2071,95 @@ async def test_plan_stage_feeds_the_reviewed_plan_to_the_coder():
     assert impl_requests[0].context_package == {"nodes": ["feature.py"]}
 
 
+@pytest.mark.parametrize("run_planning", [False, True])
+@pytest.mark.parametrize(
+    "description",
+    ["", "\nKeep each record's original order.\nPreserve Unicode values such as café.\n"],
+)
+async def test_original_ticket_description_reaches_coding_with_or_without_a_plan(
+    run_planning, description
+):
+    impl_requests: list[ImplementationRequest] = []
+    activities = _make_activities(None, 1, [], [], [], impl_requests=impl_requests)
+    params = _ci_input(run_reviews=True, run_planning=run_planning)
+    params.task = "Add CSV export"
+    params.task_description = description
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            result = await env.client.execute_workflow(
+                DraftPullRequestWorkflow.run,
+                params,
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+
+    assert result.status == PR_PROMOTED
+    assert len(impl_requests) == 1
+    expected_task = f"{params.task}\n\n{description}" if description else params.task
+    assert impl_requests[0].task == expected_task
+    assert bool(impl_requests[0].plan) is run_planning
+
+
+async def test_a_title_only_implementation_history_replays_without_adding_the_description(
+    monkeypatch,
+):
+    from temporalio.worker import Replayer, UnsandboxedWorkflowRunner
+
+    patch_id = "implementation-task-description"
+    impl_requests: list[ImplementationRequest] = []
+    activities = _make_activities(None, 1, [], [], [], impl_requests=impl_requests)
+    children = [ImplementationWorkflow, BranchSyncWorkflow, PullRequestWorkflow, PlanReviewWorkflow]
+    params = _ci_input(run_reviews=True, run_planning=True)
+    params.task_description = "Keep each record's original order."
+    patched = workflow.patched
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        with monkeypatch.context() as pre_patch:
+            pre_patch.setattr(
+                workflow,
+                "patched",
+                lambda name: name != patch_id and patched(name),
+            )
+            async with Worker(
+                env.client,
+                task_queue=task_queue,
+                workflows=[DraftPullRequestWorkflow, *children],
+                workflow_runner=UnsandboxedWorkflowRunner(),
+                activities=activities,
+            ):
+                handle = await env.client.start_workflow(
+                    DraftPullRequestWorkflow.run,
+                    params,
+                    id=f"wf-{uuid.uuid4().hex[:8]}",
+                    task_queue=task_queue,
+                )
+                await handle.result()
+                history = await handle.fetch_history()
+
+    assert [request.task for request in impl_requests] == [params.task]
+    assert not any(patch_id in marker for marker in _patch_markers(history))
+    replayed_tasks: list[str] = []
+    execute_child_workflow = workflow.execute_child_workflow
+
+    async def capture_implementation_task(child, arg, **kwargs):
+        if child == ImplementationWorkflow.run:
+            replayed_tasks.append(arg.task)
+        return await execute_child_workflow(child, arg, **kwargs)
+
+    with monkeypatch.context() as replay:
+        replay.setattr(workflow, "execute_child_workflow", capture_implementation_task)
+        replayed = await Replayer(
+            workflows=[DraftPullRequestWorkflow, *children],
+            workflow_runner=UnsandboxedWorkflowRunner(),
+        ).replay_workflow(history, raise_on_replay_failure=False)
+
+    assert replayed.replay_failure is None
+    assert replayed_tasks == [params.task]
+
+
 async def test_plan_rejected_stops_before_implementation():
     commits: list[CommitPushRequest] = []
     pr_opens: list[OpenPrRequest] = []
