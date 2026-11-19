@@ -91,6 +91,9 @@ TENANT_OWNED_SETTINGS = frozenset(
         "JIRA_PAT",
         "REGISTRY_TOKEN",
         "SLACK_WEBHOOK_URL",
+        "SLACK_BOT_TOKEN",
+        "SLACK_APP_TOKEN",
+        "ESCALATION_ACTION_KEY",
         "AUTHORSHIP_SIGNING_KEY",
         "AUTHORSHIP_SIGNING_KEY_PATH",
         "AUTHORSHIP_IDENTITY_ID",
@@ -102,7 +105,8 @@ TENANT_OWNED_FILES = frozenset({"authorship-signing-key", "authorship-signing-ke
 # activity worker identity can read it in AWS.
 REVIEW_WORKER_FILES = frozenset({"review-signing-key"})
 REPO_INTELLIGENCE_CALLER_ENV = "REPO_INTELLIGENCE_TOKEN"
-WEBHOOK_SECRET_SETTINGS = ("GITHUB_WEBHOOK_SECRET", "JIRA_WEBHOOK_SECRET")
+WEBHOOK_SECRET_SETTINGS = ("GITHUB_WEBHOOK_SECRET", "JIRA_WEBHOOK_SECRET", "SLACK_SIGNING_SECRET")
+UNSHARED_SLACK_SETTINGS = ("SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "ESCALATION_ACTION_KEY")
 
 
 @dataclass(frozen=True)
@@ -609,9 +613,34 @@ def _webhook_secret(name: str) -> bool:
 def _withheld_from_pods(name: str) -> bool:
     """Return whether no pod's settings Secret may carry the setting.
 
-    The inbound webhook reads the webhook signing secrets from Secrets of its own.
+    The inbound webhook reads the webhook signing secrets and each tenant's action key from
+    Secrets of its own.
     """
-    return _repo_intelligence_credential(name) or _webhook_secret(name)
+    from services.orchestration.webhook.tenants import ESCALATION_ACTION_KEY_ENV_PREFIX
+
+    return (
+        _repo_intelligence_credential(name)
+        or _webhook_secret(name)
+        or name.startswith(ESCALATION_ACTION_KEY_ENV_PREFIX)
+    )
+
+
+def _refuse_shared_slack_credentials(
+    pod_env: Mapping[str, Mapping[str, str]], environment: str
+) -> None:
+    """Refuse two tenants holding one Slack credential, as either could act as the other."""
+    for setting in UNSHARED_SLACK_SETTINGS:
+        holders: dict[str, list[str]] = {}
+        for name, values in pod_env.items():
+            value = (values.get(setting) or "").strip()
+            if value:
+                holders.setdefault(value, []).append(name)
+        shared = [sorted(names) for names in holders.values() if len(names) > 1]
+        if shared:
+            raise ValueError(
+                f"tenants {', '.join(shared[0])} share one {setting}. Give each tenant its own "
+                f"in config/{environment}/tenants/<tenant>.env"
+            )
 
 
 def _refuse_tenant_tokens(own: Mapping[str, Mapping[str, str] | None], environment: str) -> None:
@@ -778,6 +807,7 @@ def localize_tenants(
     if len(names) > 1:
         refuse_shared_stores(stores)
         _refuse_shared_schedules(pod_env)
+        _refuse_shared_slack_credentials(pod_env, settings.environment)
     if any(_find_document(result, "Deployment", worker_namespace(n), GATEWAY) for n in names):
         _refuse_gateway_tokens(pod_env, home, own, settings.environment)
     return result

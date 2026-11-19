@@ -23,7 +23,13 @@ variable "is_multi_region_trail" {
 }
 
 variable "data_event_bucket_arns" {
-  description = "ARNs of buckets whose object-level reads and writes the trail records as data events, including denied requests. Empty records management events only."
+  description = "ARNs of buckets whose object-level reads and writes the trail records as data events, including denied requests."
+  type        = list(string)
+  default     = []
+}
+
+variable "data_event_function_arns" {
+  description = "ARNs of Lambda functions whose invocations the trail records as data events, naming the caller of each. The list length must be known at plan. With both data-event lists empty, the trail records management events only."
   type        = list(string)
   default     = []
 }

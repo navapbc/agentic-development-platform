@@ -976,3 +976,50 @@ def test_a_tenant_worker_reaches_litellm_by_the_name_its_header_propagation_matc
     assert beta["LITELLM_BASE_URL"] == "http://litellm.platform.svc.cluster.local:4000"
     platform = _secret_values(documents, "platform", k8s_render.PLATFORM_ENV)
     assert platform["REBAR_LLM_BASE_URL"] == "http://litellm:4000"
+
+
+SLACK_ENV = {
+    "SLACK_BOT_TOKEN": "xoxb-adp",
+    "SLACK_APP_TOKEN": "xapp-adp",
+    "ESCALATION_ACTION_KEY": "adp-action-key",
+    "SLACK_SIGNING_SECRET": "adp-slack-signing",
+}
+BETA_SLACK = (
+    "MCP_GATEWAY_TOKEN=beta-gateway-token\nSLACK_BOT_TOKEN=xoxb-beta\nSLACK_APP_TOKEN=xapp-beta\n"
+    "ESCALATION_ACTION_KEY=beta-action-key\nSLACK_SIGNING_SECRET=beta-slack-signing\n"
+)
+
+
+def test_each_tenants_slack_credentials_reach_only_its_own_worker(tmp_path: Path) -> None:
+    files = _beta_files(**{"tenants/beta.env": BETA_SLACK})
+
+    documents = _rendered(
+        tmp_path, files, {**ADP_ENV, **SLACK_ENV}, tenants="adp,beta", tenant="adp"
+    )
+
+    adp = _secret_values(documents, "tenant-adp", k8s_render.PLATFORM_ENV)
+    beta = _secret_values(documents, "tenant-beta", k8s_render.PLATFORM_ENV)
+    assert (adp["SLACK_BOT_TOKEN"], adp["SLACK_APP_TOKEN"], adp["ESCALATION_ACTION_KEY"]) == (
+        "xoxb-adp",
+        "xapp-adp",
+        "adp-action-key",
+    )
+    assert (beta["SLACK_BOT_TOKEN"], beta["SLACK_APP_TOKEN"], beta["ESCALATION_ACTION_KEY"]) == (
+        "xoxb-beta",
+        "xapp-beta",
+        "beta-action-key",
+    )
+    for pod_env in (adp, beta):
+        assert not any(key.startswith("SLACK_SIGNING_SECRET") for key in pod_env)
+    platform = _secret_values(documents, "agentic-dev-platform", k8s_render.PLATFORM_ENV)
+    assert "SLACK_SIGNING_SECRET" not in platform
+
+
+@pytest.mark.parametrize("setting", ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "ESCALATION_ACTION_KEY"])
+def test_two_tenants_may_not_share_a_slack_credential(tmp_path: Path, setting: str) -> None:
+    beta = BETA_SLACK.replace(f"{setting}=", f"{setting}=shared-{setting}\n#")
+    env = {**ADP_ENV, **SLACK_ENV, setting: f"shared-{setting}"}
+    files = _beta_files(**{"tenants/beta.env": beta})
+
+    with pytest.raises(ValueError, match=f"share one {setting}"):
+        _rendered(tmp_path, files, env, tenants="adp,beta", tenant="adp")

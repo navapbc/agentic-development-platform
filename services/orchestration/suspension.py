@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 
 RESUME_SIGNAL = "resume"
 
@@ -14,7 +14,7 @@ PARKED_BUILD_ID_ATTR = "ParkedByBuildId"
 SUSPENDED_STATE = "suspended"
 
 
-class SuspendReason(str, Enum):
+class SuspendReason(StrEnum):
     AWAITING_CI = "awaiting_ci"
     AWAITING_REVIEW = "awaiting_review"
     AWAITING_FIX = "awaiting_fix"
@@ -24,7 +24,7 @@ class SuspendReason(str, Enum):
     AWAITING_HUMAN = "awaiting_human"
 
 
-class ResumeOn(str, Enum):
+class ResumeOn(StrEnum):
     CI_RESULT = "ci_result"
     HUMAN_APPROVAL = "human_approval"
     NEWER_BUILD = "newer_build"
@@ -56,6 +56,16 @@ class Suspension:
     parked_build_id: str = ""
     detail: str = ""
     metadata: dict[str, str] = field(default_factory=dict)
+    park_key: str = ""
+
+
+def park_event_id(park_key: str, event_type: str) -> str:
+    """Return the ID of a keyed park's audit event, unique per park through the park's ordinal.
+
+    ``park_key`` is ``<execution>:<stage>:<gate list or repair attempt>:<park ordinal>``.
+    """
+    execution_id, park = park_key.split(":", 1)
+    return f"{execution_id}:{event_type}:{park}"
 
 
 def _numeric_parts(build_id: str) -> tuple[int, ...]:

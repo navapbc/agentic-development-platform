@@ -25,7 +25,7 @@ variable "description" {
 }
 
 variable "worker_role_arn" {
-  description = "Pod Identity role of the tenant's activity worker, the only principal that reads the tenant's secrets apart from repo_intelligence_reader_arns on the repository intelligence token."
+  description = "Pod Identity role of the tenant's activity worker, the only principal that reads the tenant's secrets apart from repo_intelligence_reader_arns on the repository intelligence token and webhook_reader_arn on the escalation action key."
   type        = string
   default     = ""
 }
@@ -54,6 +54,11 @@ variable "secrets" {
   validation {
     condition     = !contains(var.secrets, "mcp_gateway_token")
     error_message = "mcp_gateway_token is the generated secret the module creates for every tenant, so secrets may not name it."
+  }
+
+  validation {
+    condition     = !contains(var.secrets, "escalation_action_key")
+    error_message = "escalation_action_key is the generated secret the module creates for every tenant, so secrets may not name it."
   }
 }
 

@@ -4,38 +4,35 @@ data "aws_partition" "current" {}
 
 locals {
   enabled = var.create_off_hours_schedule && length(var.services) + length(var.foundation_services) > 0
-  # The automation and function roles do not depend on the service list, so a caller may name
-  # them in a policy that the services depend on, such as the key policy of the secrets the
-  # services read.
+  # The function role does not depend on the service list, so a caller may name it in a policy
+  # that the services depend on, such as the key policy of the secrets the services read.
   role_enabled  = var.create_off_hours_schedule
   account_id    = data.aws_caller_identity.current.account_id
   partition     = data.aws_partition.current.partition
   parameter     = "/${var.name_prefix}/off-hours/wake-counts"
   function_name = "${var.name_prefix}-off-hours"
   log_group     = "/aws/lambda/${local.function_name}"
-  # SSM caps a document at 64 KB and an aws:invokeLambdaFunction step at 300 seconds, shorter
-  # than the waits below. Each step therefore runs invoke.py through aws:executeScript, which
-  # allows 600 seconds, and the handlers run in the function. The read timeout exceeds the
-  # function timeout by more than a cold start's init phase, which the function timeout does
-  # not count.
-  invoke_script            = file("${path.module}/functions/invoke.py")
-  step_timeout_seconds     = 600
-  read_timeout_seconds     = 590
-  function_timeout_seconds = 560
-  throttle_seconds         = 20
+  function_arn  = "arn:${local.partition}:lambda:${var.region}:${local.account_id}:function:${local.function_name}"
+  # Each step runs in its own invocation, so the function timeout bounds one step's longest
+  # wait, 540 seconds, and not the whole run.
+  function_timeout_seconds = 600
+  # A step or a schedule delivery that Lambda or the scheduler cannot hand over within this
+  # window, such as under a sustained throttle, goes to its failure path instead of running late.
+  event_age_seconds = 900
 
   # Field 5 of a cron() expression is the day of the week.
   wake_days       = upper(try(split(" ", trimsuffix(trimprefix(var.wake_schedule, "cron("), ")"))[4], ""))
   wakes_weekends  = contains(["*", "?"], local.wake_days) || length(regexall("SAT|SUN|1|7", local.wake_days)) > 0
   sunday_rotation = length(regexall("SUN", upper(var.rotation_schedule_expression))) > 0
 
-  service_arns     = distinct(concat(var.foundation_services, var.services))
-  metric_namespace = "${var.name_prefix}/OffHours"
-  alert_topic_arn  = "arn:${local.partition}:sns:${var.region}:${local.account_id}:${var.name_prefix}-off-hours-alerts"
-  topic_arn        = try(aws_sns_topic.alerts[0].arn, "")
-  eks_enabled      = local.enabled && var.eks_deployer != null
-  database_enabled = local.enabled && var.database != null
-  watched_clusters = distinct(concat(var.cluster_arns, local.eks_enabled ? [var.eks_deployer.cluster_arn] : []))
+  service_arns           = distinct(concat(var.foundation_services, var.services))
+  metric_namespace       = "${var.name_prefix}/OffHours"
+  dead_letter_alarm_name = "${var.name_prefix}-off-hours-dead-letters"
+  dead_letter_alarm_arn  = "arn:${local.partition}:cloudwatch:${var.region}:${local.account_id}:alarm:${local.dead_letter_alarm_name}"
+  alert_topic_arn        = "arn:${local.partition}:sns:${var.region}:${local.account_id}:${var.name_prefix}-off-hours-alerts"
+  eks_enabled            = local.enabled && var.eks_deployer != null
+  database_enabled       = local.enabled && var.database != null
+  watched_clusters       = distinct(concat(var.cluster_arns, local.eks_enabled ? [var.eks_deployer.cluster_arn] : []))
 
   deployer = {
     Cluster        = try(var.eks_deployer.cluster_arn, "")
@@ -52,8 +49,8 @@ locals {
   }
   check = {
     Namespace           = local.metric_namespace
-    Topic               = local.topic_arn
-    Document            = "sleep"
+    Topic               = local.alert_topic_arn
+    Run                 = "sleep"
     Deployer            = local.deployer
     Deployments         = local.deployments
     DeployerWaitSeconds = 300
@@ -76,15 +73,15 @@ locals {
     local.eks_enabled ? [{ name = "ScaleUpDeployments", handler = "scale_deployments", payload = { Command = "scale-up", Deployments = local.deployments, Deployer = local.deployer, WaitSeconds = 540 } }] : [],
   )
 
-  documents = {
-    sleep = {
-      description = "Scale the ECS services and the EKS deployments that connect to the database to zero, check that none runs and that only the foundation services hold a connection, scale the foundation services to zero, and check that nothing holds a connection."
-      steps       = local.sleep_steps
-    }
-    wake = {
-      description = "Restore the foundation ECS services, wait until the Temporal server reports healthy, then restore the other ECS services and the EKS deployments."
-      steps       = local.wake_steps
-    }
+  # Each run's steps and record settings, packaged with the function as plan.json.
+  plans = {
+    sleep = { Steps = local.sleep_steps, Record = merge(local.record, { Run = "sleep" }) }
+    wake  = { Steps = local.wake_steps, Record = merge(local.record, { Run = "wake" }) }
+  }
+  record = {
+    Namespace = local.metric_namespace
+    Topic     = local.alert_topic_arn
+    LogGroup  = local.log_group
   }
 }
 
@@ -117,7 +114,7 @@ resource "aws_ssm_parameter" "wake_counts" {
 resource "aws_kms_key" "alerts" {
   count = local.enabled ? 1 : 0
 
-  description         = "Encrypts the ${var.name_prefix} off-hours alert topic and function log group."
+  description         = "Encrypts the ${var.name_prefix} off-hours alert topic, dead-letter queue, and function log group."
   enable_key_rotation = true
   policy = jsonencode({
     Version = "2012-10-17"
@@ -130,13 +127,11 @@ resource "aws_kms_key" "alerts" {
         Resource  = "*"
       },
       {
-        Sid       = "EncryptAFailedRunAlert"
+        Sid       = "EncryptTheDeadLetterAlarm"
         Effect    = "Allow"
-        Principal = { Service = "events.amazonaws.com" }
+        Principal = { Service = "cloudwatch.amazonaws.com" }
         Action    = ["kms:GenerateDataKey*", "kms:Decrypt"]
         Resource  = "*"
-        # EventBridge sends no aws:SourceAccount or aws:SourceArn to KMS when it publishes to an
-        # encrypted topic, so the statement is scoped by the topic in the encryption context.
         Condition = {
           StringEquals = { "kms:EncryptionContext:aws:sns:topicArn" = local.alert_topic_arn }
         }
@@ -182,121 +177,17 @@ resource "aws_sns_topic_policy" "alerts" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Sid       = "PublishAFailedRun"
+      Sid       = "PublishTheDeadLetterAlarm"
       Effect    = "Allow"
-      Principal = { Service = "events.amazonaws.com" }
+      Principal = { Service = "cloudwatch.amazonaws.com" }
       Action    = "sns:Publish"
       Resource  = aws_sns_topic.alerts[0].arn
-      Condition = { ArnEquals = { "aws:SourceArn" = aws_cloudwatch_event_rule.failed_run[0].arn } }
+      Condition = {
+        ArnEquals    = { "aws:SourceArn" = local.dead_letter_alarm_arn }
+        StringEquals = { "aws:SourceAccount" = local.account_id }
+      }
     }]
   })
-}
-
-# RecordFailure runs in the off-hours function, so a run that fails because the function cannot
-# run, such as a sustained throttle or a broken deploy, records nothing. This rule alerts from
-# the execution status instead.
-resource "aws_cloudwatch_event_rule" "failed_run" {
-  count = local.enabled ? 1 : 0
-
-  name        = "${var.name_prefix}-off-hours-failed-run"
-  description = "Alert when an off-hours sleep or wake execution fails, times out, or is cancelled."
-  event_pattern = jsonencode({
-    source      = ["aws.ssm"]
-    detail-type = ["EC2 Automation Execution Status-change Notification"]
-    detail = {
-      Definition = [for name in keys(local.documents) : "${var.name_prefix}-off-hours-${name}"]
-      Status     = ["Failed", "TimedOut", "Cancelled"]
-    }
-  })
-
-  tags = var.tags
-}
-
-resource "aws_cloudwatch_event_target" "failed_run" {
-  count = local.enabled ? 1 : 0
-
-  rule = aws_cloudwatch_event_rule.failed_run[0].name
-  arn  = aws_sns_topic.alerts[0].arn
-
-  input_transformer {
-    input_paths = {
-      definition = "$.detail.Definition"
-      status     = "$.detail.Status"
-      execution  = "$.detail.ExecutionId"
-    }
-    input_template = "\"The off-hours run <definition> ended <status>. aws ssm get-automation-execution --automation-execution-id <execution> names the step that failed.\""
-  }
-}
-
-resource "aws_ssm_document" "scale" {
-  for_each = toset(local.enabled ? keys(local.documents) : [])
-
-  name            = "${var.name_prefix}-off-hours-${each.key}"
-  document_type   = "Automation"
-  document_format = "YAML"
-
-  content = yamlencode({
-    schemaVersion = "0.3"
-    description   = local.documents[each.key].description
-    assumeRole    = "{{ AutomationAssumeRole }}"
-    parameters = {
-      AutomationAssumeRole = { type = "String", description = "Role the automation assumes." }
-    }
-    mainSteps = [
-      for step in concat(local.documents[each.key].steps, [
-        { name = "RecordSuccess", handler = "record", payload = { Result = "Completed", Document = each.key, Namespace = local.metric_namespace, Topic = local.topic_arn, ExecutionId = "{{ automation:EXECUTION_ID }}" } },
-        { name = "RecordFailure", handler = "record", payload = { Result = "Failed", Document = each.key, Namespace = local.metric_namespace, Topic = local.topic_arn, ExecutionId = "{{ automation:EXECUTION_ID }}" } },
-        ]) : {
-        name           = step.name
-        action         = "aws:executeScript"
-        timeoutSeconds = local.step_timeout_seconds
-        onFailure      = startswith(step.name, "Record") ? "Abort" : "step:RecordFailure"
-        isEnd          = step.name == "RecordSuccess"
-        inputs = {
-          Runtime = "python3.11"
-          Handler = "invoke"
-          Script  = local.invoke_script
-          InputPayload = {
-            Function        = aws_lambda_function.scale[0].function_name
-            Handler         = step.handler
-            Input           = step.payload
-            ReadTimeout     = local.read_timeout_seconds
-            ThrottleSeconds = local.throttle_seconds
-          }
-        }
-      }
-    ]
-  })
-
-  tags = var.tags
-}
-
-data "aws_iam_policy_document" "automation_assume" {
-  count = local.role_enabled ? 1 : 0
-
-  statement {
-    actions = ["sts:AssumeRole"]
-
-    principals {
-      type        = "Service"
-      identifiers = ["ssm.amazonaws.com"]
-    }
-
-    condition {
-      test     = "StringEquals"
-      variable = "aws:SourceAccount"
-      values   = [local.account_id]
-    }
-  }
-}
-
-resource "aws_iam_role" "automation" {
-  count = local.role_enabled ? 1 : 0
-
-  name               = "${var.name_prefix}-off-hours-automation"
-  assume_role_policy = data.aws_iam_policy_document.automation_assume[0].json
-
-  tags = var.tags
 }
 
 data "aws_iam_policy_document" "function" {
@@ -312,6 +203,12 @@ data "aws_iam_policy_document" "function" {
     sid       = "Tracing"
     actions   = ["xray:PutTraceSegments", "xray:PutTelemetryRecords"]
     resources = ["*"]
+  }
+
+  statement {
+    sid       = "InvokeTheNextStep"
+    actions   = ["lambda:InvokeFunction"]
+    resources = [local.function_arn, "${local.function_arn}:*"]
   }
 
   statement {
@@ -465,8 +362,15 @@ resource "aws_iam_role" "function" {
 data "archive_file" "scale" {
   count = local.enabled ? 1 : 0
 
-  type             = "zip"
-  source_file      = "${path.module}/functions/scale.py"
+  type = "zip"
+  source {
+    filename = "scale.py"
+    content  = file("${path.module}/functions/scale.py")
+  }
+  source {
+    filename = "plan.json"
+    content  = jsonencode(local.plans)
+  }
   output_path      = "${path.root}/.terraform/build/${var.name_prefix}-off-hours.zip"
   output_file_mode = "0644"
 }
@@ -487,7 +391,7 @@ resource "aws_lambda_function" "scale" {
   function_name    = local.function_name
   description      = "Runs the off-hours sleep and wake steps."
   role             = aws_iam_role.function[0].arn
-  runtime          = "python3.13"
+  runtime          = "python3.14"
   handler          = "scale.handler"
   filename         = data.archive_file.scale[0].output_path
   source_code_hash = data.archive_file.scale[0].output_base64sha256
@@ -495,8 +399,10 @@ resource "aws_lambda_function" "scale" {
   memory_size      = 256
 
   logging_config {
-    log_format = "JSON"
-    log_group  = aws_cloudwatch_log_group.scale[0].name
+    log_format            = "JSON"
+    log_group             = aws_cloudwatch_log_group.scale[0].name
+    application_log_level = "INFO"
+    system_log_level      = "INFO"
   }
 
   tracing_config {
@@ -508,22 +414,51 @@ resource "aws_lambda_function" "scale" {
   depends_on = [aws_iam_role_policy.function]
 }
 
-data "aws_iam_policy_document" "automation" {
+# A step that times out or crashes the runtime returns no result to the handler, so Lambda
+# publishes the invocation record to the alert topic. Retries are off because a timed-out step
+# would only wait out the same condition again.
+resource "aws_lambda_function_event_invoke_config" "scale" {
   count = local.enabled ? 1 : 0
 
-  statement {
-    sid       = "InvokeTheFunction"
-    actions   = ["lambda:InvokeFunction"]
-    resources = [aws_lambda_function.scale[0].arn]
+  function_name                = aws_lambda_function.scale[0].function_name
+  maximum_retry_attempts       = 0
+  maximum_event_age_in_seconds = local.event_age_seconds
+
+  destination_config {
+    on_failure {
+      destination = aws_sns_topic.alerts[0].arn
+    }
   }
 }
 
-resource "aws_iam_role_policy" "automation" {
+resource "aws_sqs_queue" "dead_letters" {
   count = local.enabled ? 1 : 0
 
-  name   = "scale"
-  role   = aws_iam_role.automation[0].id
-  policy = data.aws_iam_policy_document.automation[0].json
+  name                              = "${var.name_prefix}-off-hours-dead-letters"
+  message_retention_seconds         = 1209600
+  kms_master_key_id                 = aws_kms_key.alerts[0].arn
+  kms_data_key_reuse_period_seconds = 300
+
+  tags = var.tags
+}
+
+resource "aws_cloudwatch_metric_alarm" "dead_letters" {
+  count = local.enabled ? 1 : 0
+
+  alarm_name          = local.dead_letter_alarm_name
+  alarm_description   = "The scheduler could not invoke the off-hours function. Each message in ${aws_sqs_queue.dead_letters[0].name} names the schedule and the error."
+  namespace           = "AWS/SQS"
+  metric_name         = "ApproximateNumberOfMessagesVisible"
+  dimensions          = { QueueName = aws_sqs_queue.dead_letters[0].name }
+  statistic           = "Maximum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts[0].arn]
+
+  tags = var.tags
 }
 
 data "aws_iam_policy_document" "scheduler_assume" {
@@ -558,33 +493,26 @@ data "aws_iam_policy_document" "scheduler" {
   count = local.enabled ? 1 : 0
 
   statement {
-    sid     = "StartTheAutomation"
-    actions = ["ssm:StartAutomationExecution"]
-    # SSM authorizes the call against the automation definition, the document, and the
-    # execution it creates.
-    resources = flatten([
-      for document in aws_ssm_document.scale : [
-        "arn:${local.partition}:ssm:${var.region}:${local.account_id}:automation-definition/${document.name}:*",
-        "arn:${local.partition}:ssm:${var.region}:${local.account_id}:document/${document.name}",
-      ]
-    ])
+    sid       = "InvokeTheFunction"
+    actions   = ["lambda:InvokeFunction"]
+    resources = [aws_lambda_function.scale[0].arn, "${aws_lambda_function.scale[0].arn}:*"]
   }
 
   statement {
-    sid       = "TrackTheExecution"
-    actions   = ["ssm:StartAutomationExecution"]
-    resources = ["arn:${local.partition}:ssm:${var.region}:${local.account_id}:automation-execution/*"]
+    sid       = "WriteTheDeadLetters"
+    actions   = ["sqs:SendMessage"]
+    resources = [aws_sqs_queue.dead_letters[0].arn]
   }
 
   statement {
-    sid       = "PassTheAutomationRole"
-    actions   = ["iam:PassRole"]
-    resources = [aws_iam_role.automation[0].arn]
+    sid       = "EncryptTheDeadLetters"
+    actions   = ["kms:GenerateDataKey", "kms:Decrypt"]
+    resources = [aws_kms_key.alerts[0].arn]
 
     condition {
       test     = "StringEquals"
-      variable = "iam:PassedToService"
-      values   = ["ssm.amazonaws.com"]
+      variable = "kms:ViaService"
+      values   = ["sqs.${var.region}.amazonaws.com"]
     }
   }
 }
@@ -592,7 +520,7 @@ data "aws_iam_policy_document" "scheduler" {
 resource "aws_iam_role_policy" "scheduler" {
   count = local.enabled ? 1 : 0
 
-  name   = "start-automation"
+  name   = "invoke-function"
   role   = aws_iam_role.scheduler[0].id
   policy = data.aws_iam_policy_document.scheduler[0].json
 }
@@ -610,11 +538,23 @@ resource "aws_scheduler_schedule" "scale" {
   }
 
   target {
-    arn      = "arn:${local.partition}:scheduler:::aws-sdk:ssm:startAutomationExecution"
+    arn      = aws_lambda_function.scale[0].arn
     role_arn = aws_iam_role.scheduler[0].arn
     input = jsonencode({
-      DocumentName = aws_ssm_document.scale[each.key].name
-      Parameters   = { AutomationAssumeRole = [aws_iam_role.automation[0].arn] }
+      Run                  = each.key
+      ScheduleArn          = "<aws.scheduler.schedule-arn>"
+      ScheduledTime        = "<aws.scheduler.scheduled-time>"
+      SchedulerExecutionId = "<aws.scheduler.execution-id>"
+      Attempt              = "<aws.scheduler.attempt-number>"
     })
+
+    retry_policy {
+      maximum_event_age_in_seconds = local.event_age_seconds
+      maximum_retry_attempts       = 3
+    }
+
+    dead_letter_config {
+      arn = aws_sqs_queue.dead_letters[0].arn
+    }
   }
 }

@@ -1,0 +1,40 @@
+# Slack app manifest for one tenant's escalation app. Create the app from this manifest at
+# https://api.slack.com/apps for commercial Slack or https://api.slack-gov.com/apps for GovSlack,
+# one app per tenant, then install it to the workspace or Enterprise Grid org that holds the
+# tenant's escalation channel and invite the bot to that channel. docs/slack-escalation.md lists
+# the steps.
+#
+# For GovSlack, uncomment the compliance section at the end. Commercial Slack refuses a manifest
+# that carries it.
+#
+# Use one of the two transports the tenant's escalation.yaml names in slack.transport.
+# socket: keep socket_mode_enabled true and leave request_url out. Create an app-level token with
+#   the connections:write scope and set it as SLACK_APP_TOKEN.
+# webhook: set socket_mode_enabled false and request_url to the inbound webhook's
+#   https://<webhook host>/webhook/slack/<tenant>. Slack stops delivering clicks to the request
+#   URL while Socket Mode is on, so an app runs one transport.
+_metadata:
+  major_version: 1
+display_information:
+  name: ADP Escalations
+  description: Parked platform runs that need a human decision.
+features:
+  bot_user:
+    display_name: ADP Escalations
+    always_online: false
+oauth_config:
+  scopes:
+    bot:
+      - chat:write
+settings:
+  interactivity:
+    is_enabled: true
+    # request_url: https://webhook.example.gov/webhook/slack/<tenant>
+  org_deploy_enabled: false
+  socket_mode_enabled: true
+  token_rotation_enabled: false
+# GovSlack lists these on the app. They describe the platform's deployment, not Slack's.
+# compliance:
+#   fedramp_authorization: Customer Responsibility
+#   dod_srg_ilx: None
+#   itar_compliant: "No"

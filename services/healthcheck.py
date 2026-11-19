@@ -43,7 +43,7 @@ def http_ok(
     try:
         connection.request("GET", path)
         return connection.getresponse().status < 400
-    except (http.client.HTTPException, OSError, ssl.SSLError):
+    except http.client.HTTPException, OSError, ssl.SSLError:
         return False
     finally:
         connection.close()

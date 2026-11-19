@@ -7,7 +7,7 @@ config_version: 1
 
 profiles:
   python-fastapi:
-    description: Python services such as FastAPI, on Python 3.13.
+    description: Python services such as FastAPI, on Python 3.14.
     sandbox_image: catalog:agent-server-python-node
     checks:
       image: catalog:checks-python

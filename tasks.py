@@ -25,6 +25,27 @@ COMPOSE = "docker compose"
 HOST_PYTHON = shlex.quote(sys.executable)
 
 
+def require_pinned_python(
+    version_file: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".python-version"),
+    running: tuple[int, int] = (sys.version_info.major, sys.version_info.minor),
+) -> None:
+    """Refuse to run on an interpreter older than the one .python-version names."""
+    try:
+        with open(version_file, encoding="utf-8") as handle:
+            pinned = handle.read().strip()
+    except FileNotFoundError:
+        return
+    required = tuple(int(part) for part in pinned.split(".")[:2])
+    if running < required:
+        raise SystemExit(
+            f"inv runs on Python {running[0]}.{running[1]}, and .python-version requires "
+            f"{pinned}. Run `uv sync --locked --all-extras` without --python, then rerun."
+        )
+
+
+require_pinned_python()
+
+
 def _env_file_value(name: str, path: str = ".env") -> str:
     if not os.path.exists(path):
         return ""

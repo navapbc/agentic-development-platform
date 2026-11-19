@@ -69,6 +69,18 @@ spec:
                   name: agentic-platform
                   key: jira_webhook_secret
                   optional: true
+            - name: SLACK_SIGNING_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: agentic-platform
+                  key: slack_signing_secret
+                  optional: true
+            - name: ESCALATION_ACTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: agentic-platform
+                  key: escalation_action_key
+                  optional: true
           volumeMounts:
             - name: integration-config
               mountPath: /app/config/local
@@ -156,6 +168,13 @@ spec:
                 port:
                   name: http
           - path: /webhook/jira
+            pathType: Prefix
+            backend:
+              service:
+                name: inbound-webhook
+                port:
+                  name: http
+          - path: /webhook/slack
             pathType: Prefix
             backend:
               service:

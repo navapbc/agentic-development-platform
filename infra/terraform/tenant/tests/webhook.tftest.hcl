@@ -65,6 +65,12 @@ override_resource {
 }
 
 override_resource {
+  target          = aws_secretsmanager_secret.escalation_action_key
+  override_during = plan
+  values          = { arn = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/tenants/adp/escalation-action-key-a" }
+}
+
+override_resource {
   target          = module.ticket_store.aws_s3_bucket.this
   override_during = plan
   values          = { id = "agentic-platform-tenant-adp-rebar-tickets-abc", arn = "arn:aws:s3:::agentic-platform-tenant-adp-rebar-tickets-abc" }
@@ -115,14 +121,16 @@ run "only_the_inbound_webhook_reads_the_tenant_webhook_secrets" {
   command = plan
 
   variables {
-    create_tenant          = true
-    create_webhook_secrets = true
+    create_tenant               = true
+    create_webhook_secrets      = true
+    create_slack_webhook_secret = true
   }
 
   assert {
     condition = (
       aws_secretsmanager_secret.webhook["github_webhook_secret"].name == "agentic-platform/tenants/adp/github-webhook-secret" &&
       aws_secretsmanager_secret.webhook["jira_webhook_secret"].name == "agentic-platform/tenants/adp/jira-webhook-secret" &&
+      aws_secretsmanager_secret.webhook["slack_signing_secret"].name == "agentic-platform/tenants/adp/slack-signing-secret" &&
       aws_secretsmanager_secret.webhook["jira_webhook_secret"].kms_key_id == "arn:aws:kms:us-east-1:111111111111:key/tenant-adp" &&
       aws_secretsmanager_secret.webhook["jira_webhook_secret"].tags.tenant == "adp"
     )
@@ -139,6 +147,22 @@ run "only_the_inbound_webhook_reads_the_tenant_webhook_secrets" {
   }
 
   assert {
+    condition = (
+      jsondecode(aws_secretsmanager_secret_policy.webhook["slack_signing_secret"].policy).Statement[0].Principal.AWS == "arn:aws:iam::111111111111:role/agentic-platform-eks-inbound-webhook" &&
+      jsondecode(aws_secretsmanager_secret_policy.webhook["slack_signing_secret"].policy).Statement[1].Condition.ArnNotEquals["aws:PrincipalArn"] == "arn:aws:iam::111111111111:role/agentic-platform-eks-inbound-webhook"
+    )
+    error_message = "The Slack signing secret admits a reader other than the inbound webhook."
+  }
+
+  assert {
+    condition = (
+      jsondecode(aws_secretsmanager_secret_policy.this["github_token"].policy).Statement[1].Effect == "Deny" &&
+      jsondecode(aws_secretsmanager_secret_policy.this["github_token"].policy).Statement[1].Condition.ArnNotEquals["aws:PrincipalArn"] == "arn:aws:iam::111111111111:role/agentic-platform-eks-tenant-adp"
+    )
+    error_message = "The tenant's github_token admits the inbound webhook, which reads only the webhook secrets and the escalation action key."
+  }
+
+  assert {
     condition     = !contains(jsondecode(aws_iam_policy.worker[0].policy).Statement[0].Resource, "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/tenants/adp/webhook-secret-a")
     error_message = "The tenant worker reads a webhook secret."
   }
@@ -148,6 +172,8 @@ run "only_the_inbound_webhook_reads_the_tenant_webhook_secrets" {
       output.webhook.secret_arns == {
         github_webhook_secret = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/tenants/adp/webhook-secret-a"
         jira_webhook_secret   = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/tenants/adp/webhook-secret-a"
+        slack_signing_secret  = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/tenants/adp/webhook-secret-a"
+        escalation_action_key = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/tenants/adp/escalation-action-key-a"
       } &&
       output.webhook.kms_key_arn == "arn:aws:kms:us-east-1:111111111111:key/tenant-adp"
     )
@@ -179,6 +205,18 @@ run "a_tenant_secret_may_not_name_a_webhook_secret" {
     create_tenant          = true
     create_webhook_secrets = true
     secrets                = ["github_token", "jira_webhook_secret"]
+  }
+
+  expect_failures = [terraform_data.webhook_guard]
+}
+
+run "a_tenant_secret_may_not_name_the_slack_signing_secret" {
+  command = plan
+
+  variables {
+    create_tenant          = true
+    create_webhook_secrets = true
+    secrets                = ["github_token", "slack_signing_secret"]
   }
 
   expect_failures = [terraform_data.webhook_guard]

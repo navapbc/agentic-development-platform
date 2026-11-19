@@ -3,7 +3,7 @@ name = "agentic-dev-platform"
 version = "0.3.0"
 description = "Local agentic SDLC platform POC (Jira -> plan -> code -> test -> scan -> PR) with HITL, audit, and observability."
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
 authors = [{ name = "Nava PBC" }]
@@ -12,7 +12,7 @@ dependencies = [
     "invoke>=2.2,<3",
     "sqlalchemy[asyncio]>=2.0,<3",
     "alembic>=1.13,<2",
-    "asyncpg>=0.29,<0.31",
+    "asyncpg>=0.31,<0.32",
     "psycopg[binary]>=3.1,<4",
     "pydantic>=2.7,<3",
     "pydantic-settings>=2.3,<3",
@@ -22,6 +22,7 @@ dependencies = [
     "temporalio>=1.6,<2",
     "structlog>=24.1,<25",
     "cryptography>=50,<51",
+    "slack_sdk>=3.33,<4",
 ]
 
 [project.optional-dependencies]
@@ -53,7 +54,7 @@ storage = [
     "boto3>=1.34,<2",
 ]
 dev = [
-    "ruff>=0.5,<0.13",
+    "ruff>=0.17,<0.18",
     "pytest>=9.0.3,<10",
     "pytest-asyncio>=1.4,<2",
     "coverage>=7.5,<8",
@@ -69,7 +70,7 @@ all = [
 worker = [
     "agentic-dev-platform[reasoning,sandbox,review,observability,prompts,storage]",
     "pydantic-ai-slim[openai]>=1.107.7,<2",
-    "ruff>=0.5,<0.13",
+    "ruff>=0.17,<0.18",
 ]
 
 [tool.uv]
@@ -84,7 +85,7 @@ build-backend = "hatchling.build"
 packages = ["services", "adapters", "schemas", "database", "scripts", "observability"]
 
 [tool.ruff]
-target-version = "py312"
+target-version = "py314"
 line-length = 100
 src = ["services", "adapters", "schemas", "database", "scripts", "observability", "openhands", "tests"]
 extend-exclude = ["services/review/eval/acceptance_cases"]
@@ -101,7 +102,7 @@ asyncio_mode = "auto"
 addopts = "-ra"
 
 [tool.basedpyright]
-pythonVersion = "3.12"
+pythonVersion = "3.14"
 typeCheckingMode = "standard"
 venvPath = "."
 venv = ".venv"

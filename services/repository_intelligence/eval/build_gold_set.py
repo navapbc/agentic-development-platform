@@ -291,7 +291,7 @@ def _tool_version(command: list[str]) -> str:
             capture_output=True,
             text=True,
         )
-    except (process.CalledProcessError, FileNotFoundError):
+    except process.CalledProcessError, FileNotFoundError:
         return "unknown"
     return (completed.stdout or completed.stderr).strip().splitlines()[0]
 

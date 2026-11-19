@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
+import threading
+import time
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any, cast
+from urllib.parse import urlencode
 
 import pytest
 from services.coordination.idempotency import InMemorySideEffectLedger
@@ -24,10 +28,12 @@ from services.orchestration.webhook.pr_events import (
 )
 from services.orchestration.webhook.server import (
     Route,
+    TenantSlackSettings,
     build_routes_for,
     require_intake_tenant,
     require_webhook_secrets,
     route_inbound,
+    slack_routes,
 )
 from services.orchestration.webhook.tenants import (
     RoutedRepositories,
@@ -91,8 +97,12 @@ def _routing(
     jira: dict[str, str] | None = None,
     *,
     settings: Any = None,
+    files: dict[str, dict[str, str]] | None = None,
 ) -> TenantRouting:
-    sources = {tenant: _Source({"jira": text}) for tenant, text in (jira or {}).items()}
+    bundles = {tenant: dict(named) for tenant, named in (files or {}).items()}
+    for tenant, text in (jira or {}).items():
+        bundles.setdefault(tenant, {})["jira"] = text
+    sources = {tenant: _Source(named) for tenant, named in bundles.items()}
     return TenantRouting(
         settings or hermetic_settings(tenants=",".join(by_tenant)),
         registries=cast(Any, _Registries({t: _Registry(repos) for t, repos in by_tenant.items()})),
@@ -586,3 +596,108 @@ async def test_the_webhook_resolves_no_workflow_for_an_execution_recorded_withou
     )
     assert "executions.tenant = 'adp'" in sql
     assert "IS NULL" not in sql
+
+
+def _escalation_yaml(app_id: str) -> str:
+    return (
+        "config_version: 1\n"
+        "channels: [jira, slack]\n"
+        "slack:\n"
+        "  transport: webhook\n"
+        "  channel: C0123\n"
+        "  organization_id: T0123\n"
+        f"  app_id: {app_id}\n"
+        "  profile: private\n"
+        "  content: full\n"
+    )
+
+
+def _slack_request(secret: str, app_id: str) -> tuple[bytes, dict[str, str]]:
+    payload = {"type": "view_submission", "api_app_id": app_id}
+    body = urlencode({"payload": json.dumps(payload)}).encode()
+    stamp = str(int(time.time()))
+    digest = hmac.new(secret.encode(), f"v0:{stamp}:".encode() + body, hashlib.sha256)
+    return body, {
+        "X-Slack-Request-Timestamp": stamp,
+        "X-Slack-Signature": f"v0={digest.hexdigest()}",
+    }
+
+
+@pytest.mark.parametrize(
+    ("apps", "secrets"),
+    [
+        (
+            {"adp": "A0SAME", "beta": "A0SAME", "gamma": "A0GAMMA"},
+            {"adp": "adp-signing", "beta": "beta-signing", "gamma": "gamma-signing"},
+        ),
+        (
+            {"adp": "A0ADP", "beta": "A0BETA", "gamma": "A0GAMMA"},
+            {"adp": "shared-signing", "beta": "shared-signing", "gamma": "gamma-signing"},
+        ),
+    ],
+    ids=["same-app-id", "same-signing-secret"],
+)
+async def test_two_tenants_that_share_a_slack_app_or_signing_secret_are_refused(
+    monkeypatch, caplog: pytest.LogCaptureFixture, apps: dict[str, str], secrets: dict[str, str]
+):
+    for tenant, secret in secrets.items():
+        monkeypatch.setenv(f"SLACK_SIGNING_SECRET_{tenant.upper()}", secret)
+        monkeypatch.setenv(f"ESCALATION_ACTION_KEY_{tenant.upper()}", f"{tenant}-action-key")
+    settings = hermetic_settings(tenants="adp,beta,gamma")
+    routing = _routing(
+        {"adp": {}, "beta": {}, "gamma": {}},
+        settings=settings,
+        files={tenant: {"escalation": _escalation_yaml(app)} for tenant, app in apps.items()},
+    )
+    slack = TenantSlackSettings(settings, routing)
+    slack.refresh()
+
+    routes = slack_routes(
+        settings,
+        routing,
+        slack=slack.slack,
+        decisions=cast(Any, None),
+        records=cast(Any, None),
+    )
+
+    statuses = {}
+    for tenant in ("adp", "beta", "gamma"):
+        body, headers = _slack_request(secrets[tenant], apps[tenant])
+        statuses[tenant] = (await routes[f"/webhook/slack/{tenant}"].handle(body, headers)).status
+    assert statuses == {"adp": 404, "beta": 404, "gamma": 200}
+    assert any("adp, beta" in record.getMessage() for record in caplog.records)
+
+
+class _CountingRouting:
+    def __init__(self, files: dict[str, dict[str, str]]) -> None:
+        self.files = files
+        self.reads: list[str] = []
+
+    def tenants(self) -> list[str]:
+        return list(self.files)
+
+    def bundle_text(self, tenant: str, name: str) -> str | None:
+        self.reads.append(threading.current_thread().name)
+        return self.files[tenant].get(name)
+
+
+async def test_a_click_reads_the_slack_snapshot_and_the_refresh_reads_bundles_on_a_thread():
+    routing = _CountingRouting({"adp": {"escalation": _escalation_yaml("A0ADP")}})
+    settings = hermetic_settings(tenants="adp", tenant_config_refresh_seconds=0)
+    slack = TenantSlackSettings(settings, cast(Any, routing))
+    slack.refresh()
+    reads = len(routing.reads)
+
+    for _ in range(3):
+        served = slack.slack("adp")
+        assert served is not None and served.app_id == "A0ADP"
+    assert len(routing.reads) == reads
+
+    slack.start()
+    for _ in range(100):
+        if len(routing.reads) > reads:
+            break
+        await asyncio.sleep(0.01)
+    cast(Any, slack)._refreshing.cancel()
+    assert routing.reads[reads:]
+    assert threading.current_thread().name not in routing.reads[reads:]

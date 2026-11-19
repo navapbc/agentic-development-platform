@@ -10,17 +10,17 @@ Every catalog image is built for arm64 and pinned by digest.
 
 | Catalog name | Base image | Adds | Toolchains |
 |---|---|---|---|
-| `agent-server-python-node` | Amazon Linux 2023 minimal, the platform's `OPENHANDS_AGENT_SERVER_IMAGE` | The `openhands-agent-server` package the platform's SDK version pins, installed from a hash-locked requirements file | Python 3.13, pip, Node 24, npm, git, tmux |
+| `agent-server-python-node` | Amazon Linux 2023 minimal, the platform's `OPENHANDS_AGENT_SERVER_IMAGE` | The `openhands-agent-server` package the platform's SDK version pins, installed from a hash-locked requirements file | Python 3.14, pip, Node 24, npm, git, tmux |
 | `agent-server-jvm` | `agent-server-python-node` | Corretto 21 and Maven 3.8.4 from the Amazon Linux packages | Everything above, plus `java`, `javac`, and `mvn`. Gradle projects use their `./gradlew` wrapper |
 | `agent-server-go` | `agent-server-python-node` | Go 1.26 from the Amazon Linux package | Everything above, plus `go` |
 
-The platform builds all three as targets of [agent-server.Dockerfile](../docker/agent-server.Dockerfile). `agent-server-python-node` serves both Python and Node, including ReactJS. The agent runs in CLI mode, which turns the browser tools off, so the images carry no browser, no editor server, and no kernel packages. [docker/agent-server/requirements.txt](../docker/agent-server/requirements.txt) locks the agent server's Python dependencies with hashes. Regenerate it with `uv pip compile --no-config docker/agent-server/requirements.in --override docker/agent-server/overrides.txt --python-platform linux --python-version 3.13 --generate-hashes -o docker/agent-server/requirements.txt` after a change to the SDK version.
+The platform builds all three as targets of [agent-server.Dockerfile](../docker/agent-server.Dockerfile). `agent-server-python-node` serves both Python and Node, including ReactJS. The agent runs in CLI mode, which turns the browser tools off, so the images carry no browser, no editor server, and no kernel packages. [docker/agent-server/requirements.txt](../docker/agent-server/requirements.txt) locks the agent server's Python dependencies with hashes. Regenerate it with `uv pip compile --no-config docker/agent-server/requirements.in --override docker/agent-server/overrides.txt --python-platform linux --python-version 3.14 --generate-hashes -o docker/agent-server/requirements.txt` after a change to the SDK version.
 
 ### Checks images
 
 | Catalog name | Profile | Toolchain from the Amazon Linux packages | Default command |
 |---|---|---|---|
-| `checks-python` | `python-fastapi` | Python 3.13 and pip | `pip install -r requirements-dev.txt && pytest -q` |
+| `checks-python` | `python-fastapi` | Python 3.14 and pip | `pip install -r requirements-dev.txt && pytest -q` |
 | `checks-node` | `node-react` | Node 24 and npm | `npm ci && npm test -- --watchAll=false` |
 | `checks-jvm` | `java-spring` | Corretto 21 and Maven 3.8.4 | `mvn -B -q verify` |
 | `checks-go` | `go-service` | Go 1.26 | `go vet ./... && go test ./...` |

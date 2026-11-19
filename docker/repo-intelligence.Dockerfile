@@ -104,14 +104,14 @@ ENV PYTHONUNBUFFERED=1 \
     BIND_HOST=0.0.0.0 \
     VIRTUAL_ENV=/opt/venv \
     UV_PROJECT_ENVIRONMENT=/opt/venv \
-    UV_PYTHON=/usr/bin/python3.13 \
+    UV_PYTHON=/usr/bin/python3.14 \
     UV_PYTHON_DOWNLOADS=never \
     UV_LINK_MODE=copy \
     UV_NO_CACHE=1 \
     JAVA_HOME=/usr/lib/jvm/java-21-amazon-corretto \
     PATH=/opt/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 RUN dnf -y --releasever="${AL2023_RELEASE}" upgrade \
- && dnf -y --releasever="${AL2023_RELEASE}" install python3.13 git nodejs24 nodejs24-npm \
+ && dnf -y --releasever="${AL2023_RELEASE}" install python3.14 git nodejs24 nodejs24-npm \
       php8.4-cli php8.4-mbstring php8.4-xml java-21-amazon-corretto-devel maven-amazon-corretto21 shadow-utils \
  && npm install --global --prefix /usr/local "@ast-grep/cli@${AST_GREP_VERSION}" \
  && npm install --global --prefix /usr/local "@sourcegraph/scip-typescript@${SCIP_TYPESCRIPT_VERSION}" \

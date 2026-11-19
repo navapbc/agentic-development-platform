@@ -347,6 +347,13 @@ class JiraCredentialResolver:
         _validate_flow(effective.flow, effective.statuses)
         return effective.flow
 
+    def site_url(self, project: str) -> str:
+        """Return the URL of the project's Jira site without resolving its token, or ``""``."""
+        if project not in self._allowlist:
+            return ""
+        effective = self._effective(project)
+        return effective.site.url if effective is not None else ""
+
     def _effective(self, project: str) -> _Effective | None:
         override = self._config.projects.get(project)
         default = self._config.default

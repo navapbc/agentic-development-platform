@@ -94,7 +94,7 @@ def from_profile(profile: str, session_factory: Callable[[str], Any] | None = No
 
     try:
         return resolve()
-    except (SSOTokenLoadError, TokenRetrievalError, UnauthorizedSSOTokenError):
+    except SSOTokenLoadError, TokenRetrievalError, UnauthorizedSSOTokenError:
         print(f"{LOG} the SSO session of {profile} has expired, signing in", file=sys.stderr)
         process.run(
             ["aws", "sso", "login", "--profile", profile],

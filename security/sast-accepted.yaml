@@ -242,7 +242,7 @@
   rule: python.lang.security.audit.httpsconnection-detected.httpsconnection-detected
   path: services/healthcheck.py
   match: connection = http.client.HTTPSConnection(LOOPBACK, port, timeout=timeout, context=context)
-  justification: The probe passes an explicit context from services.server_tls.probe_context, which verifies the loopback certificate against the certificate the service issued itself and checks the host name. The rule flags any HTTPSConnection because older Python versions did not verify by default, and the images run Python 3.12 or later.
+  justification: The probe passes an explicit context from services.server_tls.probe_context, which verifies the loopback certificate against the certificate the service issued itself and checks the host name. The rule flags any HTTPSConnection because older Python versions did not verify by default, and the platform runs Python 3.14.
 - tool: trivy
   rule: DS-0026
   path: docker/tls-sidecar.Dockerfile
@@ -378,13 +378,3 @@
   path: docker/image-scan.Dockerfile
   match: ''
   justification: The image runs the SBOM generator once against an image archive and exits, so it serves nothing to check.
-- tool: bandit
-  rule: B105
-  path: scripts/webhook_eks_render.py
-  match: '"github_webhook_secret": "GITHUB_WEBHOOK_SECRET_",'
-  justification: GITHUB_WEBHOOK_SECRET_ is the prefix of the per-tenant environment variable name the inbound webhook reads its GitHub signing secret from, joined with the upper-cased tenant name. Bandit matches the word secret in the dictionary key, and the value is a variable name prefix, not a credential.
-- tool: bandit
-  rule: B105
-  path: scripts/webhook_eks_render.py
-  match: '"jira_webhook_secret": "JIRA_WEBHOOK_SECRET_",'
-  justification: JIRA_WEBHOOK_SECRET_ is the prefix of the per-tenant environment variable name the inbound webhook reads its Jira signing secret from, joined with the upper-cased tenant name. Bandit matches the word secret in the dictionary key, and the value is a variable name prefix, not a credential.

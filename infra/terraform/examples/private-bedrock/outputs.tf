@@ -226,11 +226,11 @@ output "temporal_deploy" {
 }
 
 output "off_hours" {
-  description = "The automation documents that put the services to sleep and wake them, the role they assume, the function that runs their steps, the parameter holding the counts the wake restores, the alert topic, and the metric namespace."
+  description = "The function that runs the sleep and wake steps, the dead-letter queue of the schedule deliveries it did not receive, the parameter holding the counts the wake restores, the alert topic, and the metric namespace."
   value = {
-    documents             = module.off_hours.documents
-    automation_role_arn   = module.off_hours.automation_role_arn
     function_name         = module.off_hours.function_name
+    function_arn          = module.off_hours.function_arn
+    dead_letter_queue_url = module.off_hours.dead_letter_queue_url
     wake_counts_parameter = module.off_hours.wake_counts_parameter
     alert_topic_arn       = module.off_hours.alert_topic_arn
     metric_namespace      = module.off_hours.metric_namespace

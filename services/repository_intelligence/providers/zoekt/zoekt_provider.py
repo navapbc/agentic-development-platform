@@ -139,5 +139,5 @@ class ZoektProvider:
     def _current_commit(self) -> str | None:
         try:
             return resolve_commit(self._root)
-        except (process.CalledProcessError, FileNotFoundError):
+        except process.CalledProcessError, FileNotFoundError:
             return None

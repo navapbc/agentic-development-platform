@@ -3,17 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 
 
-class ReviewStage(str, Enum):
+class ReviewStage(StrEnum):
     PLAN_REVIEW = "plan-review"
     CODE_REVIEW = "code-review"
     SECURITY_REVIEW = "security-review"
     ACCEPTANCE_VERIFICATION = "acceptance-verification"
 
 
-class Verdict(str, Enum):
+class Verdict(StrEnum):
     PASS = "pass"
     BLOCK = "block"
     INDETERMINATE = "indeterminate"

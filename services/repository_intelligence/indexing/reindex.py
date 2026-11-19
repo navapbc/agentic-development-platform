@@ -51,7 +51,7 @@ def changed_paths(
             capture_output=True,
             text=True,
         )
-    except (process.CalledProcessError, OSError):
+    except process.CalledProcessError, OSError:
         return None
     return tuple(line for line in completed.stdout.splitlines() if line)
 

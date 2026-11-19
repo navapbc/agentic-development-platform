@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 import yaml
+from scripts.eks_render import TENANT_ONLY_SECRETS
 from scripts.tenant_render import tenant_root, worker_env
 from services import process
 
@@ -114,6 +115,9 @@ def test_each_workload_mounts_the_secrets_its_role_may_read(documents) -> None:
         if name == "mcp-gateway":
             readable = terraform["activity-worker"] | TENANT_GENERATED_SECRETS
             assert _provider_keys(documents, name) <= readable, name
+        elif name == "activity-worker":
+            expected = terraform[name] - set(TENANT_ONLY_SECRETS)
+            assert _provider_keys(documents, name) == expected, name
         else:
             assert _provider_keys(documents, name) == terraform[name], name
         provider = _named(documents, "SecretProviderClass", name)

@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import replace
 
 import httpx
 import pytest
 from scripts.config import Settings
 from services.operator_remedy import NEXT_STEP_PREFIX
-from services.orchestration import remedies
+from services.orchestration import notifications, remedies
 from services.orchestration.notifications import (
     HumanInterventionAlert,
     render_remedy,
@@ -267,3 +268,214 @@ def test_a_config_key_is_located_where_the_operators_posture_keeps_it(posture, l
     unlisted = remedies.unroutable_remedy("ADSER-24", "ADSER", ("navapbc/x",))
 
     assert location in render_remedy(unlisted, settings)
+
+
+def _every_channel(monkeypatch, tmp_path) -> tuple[Settings, list[str]]:
+    reached: list[str] = []
+
+    class _Adapter:
+        def add_comment(self, issue_key, body):
+            reached.append("jira")
+
+    class _SMTP:
+        def __init__(self, host, port, timeout=0):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def send_message(self, message):
+            reached.append("email")
+
+    def fake_post(url, *, json, timeout):
+        reached.append("slack")
+        return httpx.Response(200, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(
+        "services.integration.tickets.build_ticket_backend_for_issue",
+        lambda issue_key, settings=None: _Adapter(),
+    )
+    monkeypatch.setattr("services.orchestration.notifications.smtplib.SMTP", _SMTP)
+    monkeypatch.setattr("services.orchestration.notifications.httpx.post", fake_post)
+    monkeypatch.setenv("PLATFORM_ENV_CONFIG_DIR", str(tmp_path))
+    settings = Settings(
+        tenant="",
+        slack_webhook_url="https://hooks.slack.test/x",
+        smtp_host="mail.local",
+        alert_email_from="agent@example.com",
+        alert_email_to="oncall@example.com",
+    )
+    return settings, reached
+
+
+def test_a_tenant_without_an_escalation_file_reaches_every_configured_channel(
+    monkeypatch, tmp_path
+):
+    settings, reached = _every_channel(monkeypatch, tmp_path)
+
+    delivered = send_human_intervention_alert(_alert(), settings)
+
+    assert delivered == ["jira", "email", "slack"]
+    assert reached == ["jira", "email", "slack"]
+
+
+def test_an_escalation_file_without_email_delivers_to_jira_and_slack_only(monkeypatch, tmp_path):
+    settings, reached = _every_channel(monkeypatch, tmp_path)
+    (tmp_path / "escalation.yaml").write_text(
+        "config_version: 1\n"
+        "channels: [jira, slack]\n"
+        "slack:\n"
+        "  transport: webhook\n"
+        "  channel: C0123456789\n"
+        "  organization_id: T0123456789\n"
+        "  app_id: A0123456789\n"
+        "  profile: private\n"
+    )
+
+    delivered = send_human_intervention_alert(_alert(), settings)
+
+    assert delivered == ["jira", "slack"]
+    assert reached == ["jira", "slack"]
+
+
+def test_an_unusable_escalation_file_still_reaches_every_configured_channel(
+    monkeypatch, tmp_path, caplog
+):
+    settings, reached = _every_channel(monkeypatch, tmp_path)
+    (tmp_path / "escalation.yaml").write_text("config_version: 1\nchannels: [pager]\n")
+
+    with caplog.at_level(logging.ERROR, logger="services.orchestration.notifications"):
+        delivered = send_human_intervention_alert(_alert(), settings)
+
+    assert delivered == ["jira", "email", "slack"]
+    assert "escalation.yaml is unusable" in caplog.text
+
+
+_SLACK_FILE = (
+    "config_version: 1\n"
+    "slack:\n"
+    "  transport: socket\n"
+    "  channel: C0123456789\n"
+    "  organization_id: T0123456789\n"
+    "  app_id: A0123456789\n"
+    "  profile: private\n"
+    "  api_base_url: {base}\n"
+)
+
+
+class _WebClient:
+    built: list[dict] = []
+    posts: list[dict] = []
+    error: Exception | None = None
+
+    def __init__(self, **kwargs):
+        _WebClient.built.append(kwargs)
+
+    def chat_postMessage(self, **kwargs):
+        if _WebClient.error is not None:
+            raise _WebClient.error
+        _WebClient.posts.append(kwargs)
+
+
+def _bot_channels(monkeypatch, tmp_path, *, base: str = "https://slack.com/api/"):
+    settings, reached = _every_channel(monkeypatch, tmp_path)
+    (tmp_path / "escalation.yaml").write_text(_SLACK_FILE.format(base=base))
+    _WebClient.built, _WebClient.posts, _WebClient.error = [], [], None
+    monkeypatch.setattr("services.integration.slack.client.WebClient", _WebClient)
+    settings = settings.model_copy(
+        update={"slack_bot_token": "xoxb-test", "escalation_action_key": "key"}
+    )
+    return settings, reached
+
+
+def _keyed_alert() -> HumanInterventionAlert:
+    return replace(
+        _alert(),
+        reason="gate_paused:security-review",
+        stage="review",
+        structured_remedy=remedies.gate_decision_remedy("T-1", "security-review"),
+        park_key="exec-1:review:security-review:1",
+    )
+
+
+def test_the_bot_posts_an_actionable_message_and_the_incoming_webhook_stays_quiet(
+    monkeypatch, tmp_path
+):
+    settings, reached = _bot_channels(monkeypatch, tmp_path)
+
+    delivered = send_human_intervention_alert(_keyed_alert(), settings, issued_at=1_000)
+
+    assert delivered == ["jira", "email", "slack"]
+    assert reached == ["jira", "email"]
+    [post] = _WebClient.posts
+    assert post["channel"] == "C0123456789"
+    assert (post["unfurl_links"], post["unfurl_media"]) == (False, False)
+    actions = [block for block in post["blocks"] if block["type"] == "actions"]
+    assert [button["action_id"] for button in actions[0]["elements"]] == ["approve", "reject"]
+    assert _WebClient.built[0]["retry_handlers"] == []
+
+
+def test_a_govslack_api_host_receives_the_post(monkeypatch, tmp_path):
+    settings, _ = _bot_channels(monkeypatch, tmp_path, base="https://slack-gov.com/api/")
+
+    send_human_intervention_alert(_keyed_alert(), settings, issued_at=1_000)
+
+    assert _WebClient.built[0]["base_url"] == "https://slack-gov.com/api/"
+
+
+def test_a_slack_timeout_leaves_slack_out_while_jira_and_email_deliver(monkeypatch, tmp_path):
+    settings, reached = _bot_channels(monkeypatch, tmp_path)
+    _WebClient.error = TimeoutError("timed out")
+
+    delivered = send_human_intervention_alert(
+        _keyed_alert(), settings, issued_at=1_000, deadline=time.monotonic() + 20
+    )
+
+    assert delivered == ["jira", "email"]
+    assert _WebClient.built[0]["timeout"] <= 5
+
+
+def test_slack_is_skipped_when_under_a_second_is_left_before_the_activity_deadline(
+    monkeypatch, tmp_path
+):
+    settings, _ = _bot_channels(monkeypatch, tmp_path)
+
+    delivered = send_human_intervention_alert(
+        _keyed_alert(), settings, issued_at=1_000, deadline=time.monotonic() + 0.5
+    )
+
+    assert "slack" not in delivered
+    assert _WebClient.built == []
+
+
+def test_the_slack_sdk_logs_no_request_bodies_when_the_platform_logs_at_debug(
+    monkeypatch, tmp_path
+):
+    settings, _ = _bot_channels(monkeypatch, tmp_path)
+    monkeypatch.setattr(logging.getLogger("slack_sdk"), "level", logging.NOTSET)
+    logging.getLogger().setLevel(logging.DEBUG)
+    try:
+        send_human_intervention_alert(_keyed_alert(), settings, issued_at=1_000)
+        assert not logging.getLogger("slack_sdk.web.base_client").isEnabledFor(logging.DEBUG)
+    finally:
+        logging.getLogger().setLevel(logging.WARNING)
+
+
+def test_an_alert_reads_the_escalation_file_once_for_every_channel(monkeypatch, tmp_path):
+    settings, reached = _bot_channels(monkeypatch, tmp_path)
+    loads: list[Settings] = []
+    load = notifications.load_escalation_config
+
+    def counting_load(settings):
+        loads.append(settings)
+        return load(settings)
+
+    monkeypatch.setattr(notifications, "load_escalation_config", counting_load)
+
+    delivered = send_human_intervention_alert(_keyed_alert(), settings, issued_at=1_000)
+
+    assert delivered == ["jira", "email", "slack"]
+    assert len(loads) == 1

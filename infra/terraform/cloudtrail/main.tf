@@ -2,7 +2,7 @@ data "aws_caller_identity" "current" {}
 
 locals {
   enabled            = var.create_cloudtrail
-  record_data_events = length(var.data_event_bucket_arns) > 0
+  record_data_events = length(var.data_event_bucket_arns) + length(var.data_event_function_arns) > 0
   trail_arn          = "arn:aws:cloudtrail:${var.region}:${data.aws_caller_identity.current.account_id}:trail/${var.trail_name}"
 }
 
@@ -209,7 +209,7 @@ resource "aws_cloudtrail" "this" {
   kms_key_id                    = aws_kms_key.trail[0].arn
 
   # Advanced selectors replace the default management-event recording, so management events
-  # need their own selector once object-level events are recorded.
+  # need their own selector once data events are recorded.
   dynamic "advanced_event_selector" {
     for_each = local.record_data_events ? [1] : []
     content {
@@ -223,7 +223,7 @@ resource "aws_cloudtrail" "this" {
   }
 
   dynamic "advanced_event_selector" {
-    for_each = local.record_data_events ? [1] : []
+    for_each = length(var.data_event_bucket_arns) > 0 ? [1] : []
     content {
       name = "Object-level events on the listed buckets"
 
@@ -240,6 +240,28 @@ resource "aws_cloudtrail" "this" {
       field_selector {
         field       = "resources.ARN"
         starts_with = [for arn in var.data_event_bucket_arns : "${arn}/"]
+      }
+    }
+  }
+
+  dynamic "advanced_event_selector" {
+    for_each = length(var.data_event_function_arns) > 0 ? [1] : []
+    content {
+      name = "Invocations of the listed functions"
+
+      field_selector {
+        field  = "eventCategory"
+        equals = ["Data"]
+      }
+
+      field_selector {
+        field  = "resources.type"
+        equals = ["AWS::Lambda::Function"]
+      }
+
+      field_selector {
+        field  = "resources.ARN"
+        equals = var.data_event_function_arns
       }
     }
   }

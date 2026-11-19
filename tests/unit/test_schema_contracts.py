@@ -13,10 +13,12 @@ import json
 from pathlib import Path
 
 import pytest
+from database.models.schema import audit_events
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 from services.orchestration.temporal_activities.persistence import AuditEvent
 from services.review.evidence import EvidenceRecord
+from sqlalchemy import String
 
 _ROOT = Path(__file__).resolve().parents[2]
 _AUDIT_SCHEMA = _ROOT / "schemas/audit_events/audit-event.schema.json"
@@ -84,6 +86,17 @@ def test_evidence_record_write_shape_conforms():
 def test_audit_event_fields_are_all_in_the_schema():
     props = set(_load(_AUDIT_SCHEMA)["properties"])
     assert {f.name for f in dataclasses.fields(AuditEvent)} <= props
+
+
+def test_audit_schema_string_bounds_match_the_audit_events_columns():
+    props = _load(_AUDIT_SCHEMA)["properties"]
+    column_lengths = {
+        column.name: column.type.length
+        for column in audit_events.columns
+        if isinstance(column.type, String) and column.type.length
+    }
+    schema_lengths = {name: props[name].get("maxLength") for name in column_lengths}
+    assert schema_lengths == column_lengths
 
 
 def test_evidence_record_fields_are_all_in_the_schema():

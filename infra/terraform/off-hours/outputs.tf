@@ -1,13 +1,3 @@
-output "documents" {
-  description = "Automation documents that put the services to sleep and wake them, for a run outside the schedule with aws ssm start-automation-execution. Empty when disabled."
-  value       = { for name, document in aws_ssm_document.scale : name => document.name }
-}
-
-output "automation_role_arn" {
-  description = "Role the documents assume, the AutomationAssumeRole of a run outside the schedule. Null when disabled."
-  value       = try(aws_iam_role.automation[0].arn, null)
-}
-
 output "function_role_arn" {
   description = "Role the off-hours function runs as, which reads the monitor secret. Null when disabled."
   value       = try(aws_iam_role.function[0].arn, null)
@@ -16,6 +6,16 @@ output "function_role_arn" {
 output "function_name" {
   description = "Lambda function that runs the off-hours steps. Null when disabled."
   value       = try(aws_lambda_function.scale[0].function_name, null)
+}
+
+output "function_arn" {
+  description = "Lambda function that runs the off-hours steps, for a run outside the schedule with aws lambda invoke and for the CloudTrail data-event selector. Null when disabled."
+  value       = local.enabled ? local.function_arn : null
+}
+
+output "dead_letter_queue_url" {
+  description = "SQS queue holding each schedule delivery the scheduler could not hand to the function. Null when disabled."
+  value       = try(aws_sqs_queue.dead_letters[0].url, null)
 }
 
 output "wake_counts_parameter" {

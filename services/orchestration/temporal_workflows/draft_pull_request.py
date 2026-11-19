@@ -100,6 +100,7 @@ with workflow.unsafe.imports_passed_through():
         alert_human_intervention,
     )
     from services.orchestration.temporal_activities.persistence import (
+        PARK_KEY,
         AuditEvent,
         ExecutionState,
         UsageMetrics,
@@ -195,8 +196,14 @@ with workflow.unsafe.imports_passed_through():
 
 from adapters.interfaces.policy_engine import PolicyGate
 
-from services.orchestration.suspension import ResumeOn, SuspendReason, Suspension
+from services.orchestration.suspension import (
+    ResumeOn,
+    SuspendReason,
+    Suspension,
+    park_event_id,
+)
 from services.orchestration.temporal_workflows.suspendable import (
+    REPAIR_STAGE,
     SuspendableWorkflow,
     is_code_defect,
 )
@@ -254,6 +261,8 @@ _DELETE_RUN_MODEL_KEY_PATCH = "delete-run-model-key"
 _RUN_MODEL_BUDGET_STOP_PATCH = "run-model-budget-stop"
 _FINALIZE_ON_CANCEL_PATCH = "finalize-on-cancel"
 _CODE_DEFECT_ALERT_PATCH = "code-defect-alert"
+_OPERATOR_ACTOR = "operator"
+_SLACK_ACTOR = "slack"
 
 _GATE_FAILED_PREFIX = "gate_failed:"
 
@@ -360,6 +369,11 @@ class _PrClosed:
 class _RepairDecision:
     retry: bool
     actor: str = ""
+    actor_type: str = _OPERATOR_ACTOR
+
+    @property
+    def label(self) -> str:
+        return "retry" if self.retry else "abandon"
 
 
 @dataclass(frozen=True)
@@ -367,6 +381,25 @@ class _GateDecision:
     gate: str
     approved: bool
     actor: str = ""
+    actor_type: str = _OPERATOR_ACTOR
+
+    @property
+    def label(self) -> str:
+        return "approved" if self.approved else "rejected"
+
+
+@dataclass
+class ParkDecisionOutcome:
+    """The decision that resolves a park, returned to the caller that sent a decision update.
+
+    ``applied`` is false when an earlier decision for the same park already stood, in which
+    case the other fields describe that earlier decision.
+    """
+
+    decision: str
+    actor: str
+    actor_type: str
+    applied: bool
 
 
 @dataclass
@@ -436,6 +469,20 @@ def _change_subject(impl: ImplementationOutput, commit_sha: str) -> str:
     if impl.summary:
         subject = f"{subject}\n\nImplementation summary:\n{impl.summary}"
     return subject
+
+
+def _intervention_event_id(
+    params: DraftPullRequestInput, event_type: str, park_key: str, unkeyed_subject: str
+) -> str:
+    """Return the ID of a park's intervention audit event.
+
+    A keyed park takes its ID from the park key, so a park repeated on one gate or repair
+    attempt writes its own events. An unkeyed park keeps the ID of runs recorded before the
+    park-decision-key patch.
+    """
+    if park_key:
+        return park_event_id(park_key, event_type)
+    return f"{params.execution_id}:{event_type}:{unkeyed_subject}"
 
 
 @workflow.defn
@@ -515,15 +562,57 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
 
     @workflow.signal(name="submit_repair_decision")
     def submit_repair_decision(self, retry: bool, actor: str = "") -> None:
+        if self._park_keys:
+            if self._waiting_park_key(repair=True) and self._repair_decision is None:
+                self._repair_decision = _RepairDecision(retry=retry, actor=actor)
+            return
         self._repair_decision = _RepairDecision(retry=retry, actor=actor)
         self._resume_trigger = ResumeOn.HUMAN_APPROVAL.value
         self._resume_requested = True
 
     @workflow.signal(name="submit_gate_decision")
     def submit_gate_decision(self, gate: str, approved: bool, actor: str = "") -> None:
+        if self._park_keys:
+            if self._waiting_park_key(repair=False) and self._gate_decision is None:
+                self._gate_decision = _GateDecision(gate=gate, approved=approved, actor=actor)
+            return
         self._gate_decision = _GateDecision(gate=gate, approved=approved, actor=actor)
         self._resume_trigger = ResumeOn.HUMAN_APPROVAL.value
         self._resume_requested = True
+
+    @workflow.update(name="apply_gate_decision")
+    def apply_gate_decision(
+        self, park_key: str, approved: bool, actor: str, actor_type: str = _SLACK_ACTOR
+    ) -> ParkDecisionOutcome:
+        recorded = self._gate_decision
+        applied = recorded is None
+        if recorded is None:
+            recorded = _GateDecision(gate="", approved=approved, actor=actor, actor_type=actor_type)
+            self._gate_decision = recorded
+        return ParkDecisionOutcome(recorded.label, recorded.actor, recorded.actor_type, applied)
+
+    @apply_gate_decision.validator
+    def _validate_gate_decision(
+        self, park_key: str, approved: bool, actor: str, actor_type: str = _SLACK_ACTOR
+    ) -> None:
+        self._require_waiting_park(park_key, repair=False)
+
+    @workflow.update(name="apply_repair_decision")
+    def apply_repair_decision(
+        self, park_key: str, retry: bool, actor: str, actor_type: str = _SLACK_ACTOR
+    ) -> ParkDecisionOutcome:
+        recorded = self._repair_decision
+        applied = recorded is None
+        if recorded is None:
+            recorded = _RepairDecision(retry=retry, actor=actor, actor_type=actor_type)
+            self._repair_decision = recorded
+        return ParkDecisionOutcome(recorded.label, recorded.actor, recorded.actor_type, applied)
+
+    @apply_repair_decision.validator
+    def _validate_repair_decision(
+        self, park_key: str, retry: bool, actor: str, actor_type: str = _SLACK_ACTOR
+    ) -> None:
+        self._require_waiting_park(park_key, repair=True)
 
     @workflow.run
     async def run(self, params: DraftPullRequestInput) -> DraftPullRequestOutput:
@@ -852,8 +941,15 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         if outcome.status == BRANCH_READY:
             outcome = await self._ci_and_repair(params, impl, outcome, workflow_id)
             while outcome.status == CI_FAILED:
-                await self._alert_human_intervention(params, outcome, workflow_id)
-                decision = await self._await_repair_decision(params, outcome, workflow_id)
+                park_key = self._next_park_key(
+                    params.execution_id, REPAIR_STAGE, str(outcome.repair_attempts)
+                )
+                await self._alert_human_intervention(
+                    params, outcome, workflow_id, park_key=park_key
+                )
+                decision = await self._await_repair_decision(
+                    params, outcome, workflow_id, park_key=park_key
+                )
                 if not decision.retry:
                     commit_sha = self._commit.commit_sha if self._commit else params.base_sha
                     await workflow.execute_activity(
@@ -1125,6 +1221,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         stage: str,
         detail: str = "",
         remedy: Remedy,
+        park_key: str = "",
     ) -> str:
         """Alert the operators and audit the alert. Returns the remedy as the alert rendered it."""
         retry = RetryPolicy(maximum_attempts=3)
@@ -1141,6 +1238,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 stage=stage,
                 detail=detail,
                 remedy=remedy,
+                park_key=park_key,
             ),
             start_to_close_timeout=short,
             retry_policy=retry,
@@ -1177,6 +1275,8 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         params: DraftPullRequestInput,
         outcome: DraftPullRequestOutput,
         workflow_id: str,
+        *,
+        park_key: str = "",
     ) -> None:
         failure_summary = self._checks_output
         reason = "repair_exhausted"
@@ -1196,6 +1296,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             remedy=repair_remedy(
                 reason, issue_key=params.issue_key, execution_id=params.execution_id
             ),
+            park_key=park_key,
         )
 
     async def _await_repair_decision(
@@ -1203,6 +1304,8 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         params: DraftPullRequestInput,
         outcome: DraftPullRequestOutput,
         workflow_id: str,
+        *,
+        park_key: str = "",
     ) -> _RepairDecision:
         retry = RetryPolicy(maximum_attempts=3)
         short = timedelta(seconds=30)
@@ -1221,7 +1324,9 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             start_to_close_timeout=short,
             retry_policy=retry,
         )
-        requested_id = f"{params.execution_id}:HUMAN_INTERVENTION_REQUESTED:{attempts}"
+        requested_id = _intervention_event_id(
+            params, "HUMAN_INTERVENTION_REQUESTED", park_key, str(attempts)
+        )
         await self._audit(
             AuditEvent(
                 event_id=requested_id,
@@ -1241,11 +1346,15 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 resume_on=ResumeOn.HUMAN_APPROVAL,
                 stage="repair",
                 parked_build_id=params.build_id,
-            )
+                park_key=park_key,
+            ),
+            until=(lambda: self._repair_decision is not None) if park_key else None,
         )
         decision = self._repair_decision or _RepairDecision(retry=False)
         self._repair_decision = None
-        decided_id = f"{params.execution_id}:HUMAN_INTERVENTION_DECISION:{attempts}"
+        decided_id = _intervention_event_id(
+            params, "HUMAN_INTERVENTION_DECISION", park_key, str(attempts)
+        )
         await self._audit(
             AuditEvent(
                 event_id=decided_id,
@@ -1255,8 +1364,11 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 stage="repair",
                 new_state=AWAITING_HUMAN,
                 workflow_id=workflow_id,
-                decision="retry" if decision.retry else "abandon",
+                decision=decision.label,
                 reason=decision.actor,
+                actor_type=decision.actor_type if park_key else None,
+                actor_id=(decision.actor or None) if park_key else None,
+                correlation_ids={PARK_KEY: park_key} if park_key else {},
             )
         )
         return decision
@@ -1272,6 +1384,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         parked_build_id: str = "",
         remedy: Remedy,
     ) -> bool:
+        park_key = self._next_park_key(params.execution_id, stage, gate)
         retry = RetryPolicy(maximum_attempts=3)
         short = timedelta(seconds=30)
         commit_sha = self._commit.commit_sha if self._commit else params.base_sha
@@ -1295,10 +1408,13 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             stage=stage,
             detail=detail,
             remedy=remedy,
+            park_key=park_key,
         )
         await self._audit(
             AuditEvent(
-                event_id=f"{params.execution_id}:HUMAN_INTERVENTION_REQUESTED:{stage}:{gate}",
+                event_id=_intervention_event_id(
+                    params, "HUMAN_INTERVENTION_REQUESTED", park_key, f"{stage}:{gate}"
+                ),
                 task_id=params.task_id,
                 execution_id=params.execution_id,
                 event_type="HUMAN_INTERVENTION_REQUESTED",
@@ -1316,21 +1432,28 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 resume_on=ResumeOn.HUMAN_APPROVAL,
                 stage=stage,
                 parked_build_id=parked_build_id,
-            )
+                park_key=park_key,
+            ),
+            until=(lambda: self._gate_decision is not None) if park_key else None,
         )
         decision = self._gate_decision or _GateDecision(gate=gate, approved=False)
         self._gate_decision = None
         await self._audit(
             AuditEvent(
-                event_id=f"{params.execution_id}:HUMAN_INTERVENTION_DECISION:{stage}:{gate}",
+                event_id=_intervention_event_id(
+                    params, "HUMAN_INTERVENTION_DECISION", park_key, f"{stage}:{gate}"
+                ),
                 task_id=params.task_id,
                 execution_id=params.execution_id,
                 event_type="HUMAN_INTERVENTION_DECISION",
                 stage=stage,
                 new_state=AWAITING_HUMAN,
                 workflow_id=workflow_id,
-                decision="approved" if decision.approved else "rejected",
+                decision=decision.label,
                 reason=decision.actor,
+                actor_type=decision.actor_type if park_key else None,
+                actor_id=(decision.actor or None) if park_key else None,
+                correlation_ids={PARK_KEY: park_key} if park_key else {},
             )
         )
         return decision.approved

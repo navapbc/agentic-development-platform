@@ -8,6 +8,7 @@ output "tenant" {
       { for name, secret in aws_secretsmanager_secret.this : name => secret.arn },
       { repo_intelligence_token = local.repo_intelligence_token_arn },
       { mcp_gateway_token = local.mcp_gateway_token_arn },
+      { escalation_action_key = local.escalation_action_key_arn },
     )
     repo_intelligence_token_arn = local.repo_intelligence_token_arn
     mcp_gateway_token_arn       = local.mcp_gateway_token_arn

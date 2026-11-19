@@ -72,7 +72,7 @@ _TUNNEL_LOGFILE = Path(tempfile.gettempdir()) / "agentic-dev-platform-bedrock-tu
 def _read_tunnel_pid() -> int | None:
     try:
         return int(_TUNNEL_PIDFILE.read_text().strip())
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return None
 
 

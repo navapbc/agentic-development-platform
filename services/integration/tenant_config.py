@@ -50,6 +50,7 @@ TENANT_FILES = (
     "jira",
     "tickets",
     "profiles",
+    "escalation",
 )
 BUNDLE_ONLY_FILES = ("image_exceptions",)
 DIRECTORY = "directory"
@@ -321,6 +322,7 @@ def _loaders(settings: Settings) -> list[tuple[str, Callable[[], object]]]:
     from services.integration.tickets.store_config import load_tickets_store_config
     from services.integration.tickets.write_contract import load_write_back_scopes
     from services.orchestration.checks.config import load_checks_configs
+    from services.orchestration.escalation import load_escalation_config
     from services.orchestration.gates.config import load_gates_config
     from services.orchestration.gates.engine_source import load_gate_engine_configs
     from services.orchestration.gates.registry_mirrors import current as load_registries
@@ -339,6 +341,8 @@ def _loaders(settings: Settings) -> list[tuple[str, Callable[[], object]]]:
         loaders.append(("github", lambda: build_github_credential_resolver(settings)))
     if present("jira"):
         loaders.append(("jira", lambda: build_jira_credential_resolver(settings)))
+    if present("escalation"):
+        loaders.append(("escalation", lambda: load_escalation_config(settings)))
     if present("tickets"):
         loaders.extend(
             [

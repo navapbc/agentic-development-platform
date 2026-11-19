@@ -125,7 +125,8 @@ module "tenant" {
   worker_role_name              = "${var.name_prefix}-eks-tenant-${each.key}"
   secrets                       = each.value.secrets
   create_webhook_secrets        = local.tenant_webhooks
-  webhook_reader_arn            = local.tenant_webhooks ? module.eks_cluster.pod_identity_role_arns["inbound_webhook"] : ""
+  create_slack_webhook_secret   = true
+  webhook_reader_arn            = module.eks_cluster.pod_identity_role_arns["inbound_webhook"]
   repo_intelligence_reader_arns = compact([try(module.container_services.repository_intelligence_roles.token_reader_role_arn, "")])
   mcp_gateway_token_reader_arns = each.value.mcp_gateway_token_readers
   secret_recovery_window_days   = var.secret_recovery_window_days

@@ -79,6 +79,9 @@ class Settings(BaseSettings):
     evidence_retention_classification_days: Annotated[dict[str, int], NoDecode] = {}
 
     slack_webhook_url: str = ""
+    slack_bot_token: str = ""
+    slack_app_token: str = ""
+    escalation_action_key: str = ""
     alert_email_from: str = ""
     alert_email_to: str = ""
     smtp_host: str = ""
@@ -211,6 +214,7 @@ class Settings(BaseSettings):
 
     github_webhook_secret: str = ""
     jira_webhook_secret: str = ""
+    slack_signing_secret: str = ""
 
     semgrep_binary: str = "semgrep"
     trivy_binary: str = "trivy"

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 
 from temporalio import activity
 
@@ -20,6 +23,8 @@ class AlertHumanInterventionRequest:
     stage: str
     detail: str = ""
     remedy: Remedy = field(default_factory=Remedy)
+    park_key: str = ""
+    """The park this alert announces. Empty when the alert offers no decision to act on."""
 
 
 @dataclass
@@ -43,7 +48,13 @@ async def alert_human_intervention(
 
     settings = get_settings()
     remedy = render_remedy(req.remedy, settings)
-    channels = send_human_intervention_alert(
+    info = activity.info()
+    deadline = None
+    if info.start_to_close_timeout is not None:
+        elapsed = (datetime.now(UTC) - info.started_time).total_seconds()
+        deadline = time.monotonic() + info.start_to_close_timeout.total_seconds() - elapsed
+    channels = await asyncio.to_thread(
+        send_human_intervention_alert,
         HumanInterventionAlert(
             task_id=req.task_id,
             execution_id=req.execution_id,
@@ -54,7 +65,11 @@ async def alert_human_intervention(
             stage=req.stage,
             detail=req.detail,
             remedy=remedy,
+            structured_remedy=req.remedy,
+            park_key=req.park_key,
         ),
         settings,
+        issued_at=int(info.scheduled_time.timestamp()),
+        deadline=deadline,
     )
     return AlertHumanInterventionResult(channels=channels, remedy=remedy)

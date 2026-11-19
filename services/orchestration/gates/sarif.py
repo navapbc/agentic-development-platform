@@ -52,7 +52,7 @@ def _security_severity(*sources: dict[str, Any]) -> str | None:
             continue
         try:
             return _severity_from_score(float(raw))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             continue
     return None
 

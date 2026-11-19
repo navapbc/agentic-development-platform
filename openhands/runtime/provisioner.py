@@ -512,7 +512,7 @@ def _http_ready(port: int, path: str = "/health") -> bool:
         connection.request("GET", path)
         connection.getresponse()
         return True
-    except (http.client.HTTPException, OSError):
+    except http.client.HTTPException, OSError:
         return False
     finally:
         connection.close()

@@ -106,7 +106,7 @@ task_snapshots = Table(
 audit_events = Table(
     "audit_events",
     metadata,
-    Column("event_id", String(64), primary_key=True),
+    Column("event_id", String(255), primary_key=True),
     Column("task_id", String(64), nullable=False, index=True),
     Column("execution_id", String(64), nullable=False, index=True),
     Column("workflow_id", String(255), nullable=True),
