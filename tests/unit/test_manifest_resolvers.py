@@ -3,11 +3,8 @@
 from __future__ import annotations
 
 import httpx
-import pytest
 from services.orchestration.temporal_activities.bedrock import resolve_logical_models
 from services.orchestration.temporal_activities.review import review_prompt_versions
-
-pytestmark = pytest.mark.asyncio
 
 
 def test_prompt_versions_map_enabled_review_gates():

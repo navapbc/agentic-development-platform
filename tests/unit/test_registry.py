@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from services.repository_intelligence.context_builder import registry as registry_module
 from services.repository_intelligence.context_builder.registry import (
     RepositoryIntelligenceRegistry,
     RepoSpec,
 )
+from services.repository_intelligence.indexing.reindex import IndexRoots
 from services.repository_intelligence.languages import Language
 
 
@@ -25,7 +27,7 @@ def _registry(recorder):
 
 
 def test_registry_lists_registered_repos():
-    assert _registry([]).repos() == {"service", "greenfield"}
+    assert _registry([]).repos() == {("", "service"), ("", "greenfield")}
 
 
 def test_registry_routes_to_the_matching_repo():
@@ -73,3 +75,59 @@ def test_registry_rebuilds_service_when_language_changes(monkeypatch):
     assert first is not second
     assert second is third
     assert len(builds) == 2
+
+
+def test_registry_keys_services_by_tenant_and_passes_each_tenants_index_roots():
+    built: list[tuple[str, object]] = []
+
+    def builder(root, *, commit=None, cbm_binary=None, index_roots=None) -> Any:
+        built.append((str(root), index_roots))
+        return object()
+
+    adp_roots = IndexRoots(Path("/idx/scip/adp"), Path("/idx/zoekt/adp"))
+    beta_roots = IndexRoots(Path("/idx/scip/beta"), Path("/idx/zoekt/beta"))
+    registry = RepositoryIntelligenceRegistry(
+        [
+            RepoSpec(
+                "web", Path("/tenants/adp/repositories/web"), tenant="adp", index_roots=adp_roots
+            ),
+            RepoSpec(
+                "web", Path("/tenants/beta/repositories/web"), tenant="beta", index_roots=beta_roots
+            ),
+        ],
+        builder=builder,
+    )
+
+    adp = registry.service("web", "adp")
+    beta = registry.service("web", "beta")
+
+    assert adp is not beta
+    assert registry.service("web") is None
+    assert built == [
+        ("/tenants/adp/repositories/web", adp_roots),
+        ("/tenants/beta/repositories/web", beta_roots),
+    ]
+
+
+def _any_builder(root, **_options) -> Any:
+    return object()
+
+
+def test_replace_specs_keeps_unchanged_services_and_drops_changed_ones():
+    registry = RepositoryIntelligenceRegistry(
+        [RepoSpec("svc", Path("/repos/svc"), "sha-a"), RepoSpec("old", Path("/repos/old"))],
+        builder=_any_builder,
+    )
+    kept = registry.service("svc")
+    registry.service("old")
+
+    registry.replace_specs(
+        [RepoSpec("svc", Path("/repos/svc"), "sha-a"), RepoSpec("new", Path("/repos/new"))]
+    )
+
+    assert registry.service("svc") is kept
+    assert registry.service("old") is None
+    assert registry.service("new") is not None
+
+    registry.replace_specs([RepoSpec("svc", Path("/repos/svc"), "sha-b")])
+    assert registry.service("svc") is not kept

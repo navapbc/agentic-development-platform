@@ -14,6 +14,7 @@ from services.coordination.idempotency import InMemorySideEffectLedger
 from services.integration.integrations import HYBRID, POLLING, WEBHOOK
 from services.integration.jira import DATACENTER
 from services.integration.jira.snapshot import TaskSnapshot, snapshot_id_for
+from services.operator_remedy import Remedy
 from services.orchestration.intake_reconciler import (
     IntakeContext,
     IntakeStart,
@@ -26,6 +27,11 @@ from tests.support import hermetic_settings
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "webhooks"
 _ALLOWED_PROJECTS = frozenset({"ADSER"})
 _ALLOWED_REPOS = frozenset({"agentic-demo-service"})
+_SECRET = "s3cr3t"
+
+
+def _signature(body: bytes, secret: str = _SECRET) -> str:
+    return "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
 
 
 def _fixture(name: str) -> bytes:
@@ -58,17 +64,25 @@ class _Starter:
 class _Alerter:
     def __init__(self) -> None:
         self.alerts: list[tuple[str, str, str]] = []
+        self.remedies: list[Remedy] = []
 
-    async def unroutable(self, *, issue_key: str, project: str, reason: str) -> None:
+    async def unroutable(
+        self, *, issue_key: str, project: str, reason: str, remedy: Remedy
+    ) -> None:
         self.alerts.append((issue_key, project, reason))
+        self.remedies.append(remedy)
 
 
 class _Seeder:
     def __init__(self) -> None:
         self.seeded: list[tuple[str, str, str]] = []
+        self.abandoned: list[tuple[str, str]] = []
 
     async def seed(self, *, execution_id: str, task_id: str, repo: str) -> None:
         self.seeded.append((execution_id, task_id, repo))
+
+    async def abandon(self, *, execution_id: str, reason: str) -> None:
+        self.abandoned.append((execution_id, reason))
 
 
 class _RecordingStore:
@@ -126,16 +140,14 @@ def _context(world: _World) -> IntakeContext:
     )
 
 
-def _handler(world: _World, *, secret: str = "") -> JiraIntakeHandler:
-    return JiraIntakeHandler(
-        secret=secret, jira_resolver=world.resolver, context=_context(world)
-    )
+def _handler(world: _World, *, secret: str = _SECRET) -> JiraIntakeHandler:
+    return JiraIntakeHandler(secret=secret, jira_resolver=world.resolver, context=_context(world))
 
 
-async def _post(world: _World, *, body: bytes, mode: str, headers=None, secret: str = ""):
+async def _post(world: _World, *, body: bytes, mode: str, headers=None, secret: str = _SECRET):
     return await handle_inbound(
         body,
-        headers or {},
+        headers if headers is not None else {"X-Hub-Signature": _signature(body, secret)},
         handler=_handler(world, secret=secret),
         allowed=_ALLOWED_PROJECTS,
         ledger=world.ledger,
@@ -214,7 +226,6 @@ async def test_unverified_payload_is_refused():
         body=_fixture("jira_datacenter_issue_created.json"),
         mode=WEBHOOK,
         headers={"X-Hub-Signature": "sha256=deadbeef"},
-        secret="s3cr3t",
     )
     assert code == 401
     assert world.starter.starts == []
@@ -223,9 +234,8 @@ async def test_unverified_payload_is_refused():
 async def test_valid_signature_is_accepted():
     world = _world()
     body = _fixture("jira_datacenter_issue_created.json")
-    signature = "sha256=" + hmac.new(b"s3cr3t", body, hashlib.sha256).hexdigest()
     code, payload = await _post(
-        world, body=body, mode=WEBHOOK, headers={"X-Hub-Signature": signature}, secret="s3cr3t"
+        world, body=body, mode=WEBHOOK, headers={"X-Hub-Signature": _signature(body)}
     )
     assert code == 200
     assert payload["started"] == 1
@@ -265,9 +275,7 @@ async def test_poll_then_webhook_starts_one_execution():
 
 async def test_cloud_adf_webhook_starts_and_normalizes_description():
     world = _world()
-    code, payload = await _post(
-        world, body=_fixture("jira_cloud_issue_created.json"), mode=WEBHOOK
-    )
+    code, payload = await _post(world, body=_fixture("jira_cloud_issue_created.json"), mode=WEBHOOK)
     assert code == 200
     assert payload["started"] == 1
     assert [(s.issue_key, s.repo) for s in world.starter.starts] == [
@@ -277,3 +285,38 @@ async def test_cloud_adf_webhook_starts_and_normalizes_description():
     expected = "Add a GET /health endpoint that returns 200 with a body of ok."
     assert snapshot.payload["description"] == expected
 
+
+async def test_a_poll_during_an_in_flight_start_defers_instead_of_starting_twice():
+    world = _world()
+    issue = json.loads(_fixture("jira_datacenter_issue_created.json"))["issue"]
+    overlapping: list[Any] = []
+    start = world.starter.start
+
+    async def start_with_an_overlapping_pass(request: IntakeStart) -> str:
+        overlapping.append(await _poll(world, issue=issue))
+        return await start(request)
+
+    world.starter.start = start_with_an_overlapping_pass  # type: ignore[method-assign]
+    await _poll(world, issue=issue)
+
+    assert overlapping[0].deferred == ["ADSER-42"]
+    assert overlapping[0].started == []
+    assert len(world.starter.starts) == 1
+
+
+async def test_a_delivery_during_its_own_in_flight_dispatch_is_told_to_retry():
+    world = _world()
+    body = _fixture("jira_datacenter_issue_created.json")
+    redelivered: list[tuple[int, dict]] = []
+    start = world.starter.start
+
+    async def start_with_a_redelivery(request: IntakeStart) -> str:
+        redelivered.append(await _post(world, body=body, mode=WEBHOOK))
+        return await start(request)
+
+    world.starter.start = start_with_a_redelivery  # type: ignore[method-assign]
+    code, _ = await _post(world, body=body, mode=WEBHOOK)
+
+    assert code == 200
+    assert redelivered[0][0] == 409
+    assert len(world.starter.starts) == 1

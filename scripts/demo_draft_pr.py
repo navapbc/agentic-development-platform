@@ -6,13 +6,13 @@ import argparse
 import asyncio
 import contextlib
 import os
-import subprocess
 import uuid
 from datetime import timedelta
 from typing import Any
 
 from adapters.interfaces.git_host import agent_branch_name
 from adapters.real.git_host import RealGitHost
+from services import process
 from services.coordination import (
     InMemorySequenceGate,
     InMemorySideEffectLedger,
@@ -22,15 +22,14 @@ from services.coordination.orphans import InMemoryOrphanRegistry
 from services.integration.credentials import ConfigError, SecretNotFoundError
 from services.integration.github.credentials import (
     UnconfiguredRepositoryError,
-    allowed_repos,
     build_github_credential_resolver,
 )
+from services.integration.github.git_auth import GitAuth
 from services.integration.github.mediator import GitHubMediator
 from services.integration.jira import (
     CLOUD,
     DATACENTER,
     TaskSnapshot,
-    ensure_acli_authenticated,
 )
 from services.integration.jira.adapter import build_jira_adapter_for_issue, project_of
 from services.integration.jira.credentials import (
@@ -41,6 +40,7 @@ from services.integration.jira.credentials import (
 from services.integration.jira.linkback import post_pr_linkback
 from services.integration.jira.normalize import normalize_issue
 from services.integration.jira.snapshot import SnapshotCandidate, snapshot_id_for
+from services.integration.repositories import load_repository_registry
 from services.orchestration.bounded_task_pipeline import (
     DRAFT_PR_OPEN,
     EXISTING_PR_REUSED,
@@ -64,12 +64,14 @@ def _demo_status_flow(settings: Settings, issue_key: str) -> StatusFlow:
         return StatusFlow()
 
 
-def _remote_head(remote: str, branch: str) -> str:
-    proc = subprocess.run(
-        ["git", "ls-remote", remote, f"refs/heads/{branch}"],
+def _remote_head(remote: str, branch: str, auth: GitAuth) -> str:
+    proc = process.run(
+        ["git", *auth.config_args(), "ls-remote", "--", remote, f"refs/heads/{branch}"],
+        timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS,
         check=True,
         capture_output=True,
         text=True,
+        env={**os.environ, **auth.env()},
     )
     return proc.stdout.split()[0] if proc.stdout.strip() else ""
 
@@ -164,7 +166,7 @@ def _missing(settings: Settings) -> list[str]:
         resolver = build_github_credential_resolver(settings)
         repos = sorted(resolver.repos())
         if not repos:
-            return ["config/<env>/github.yaml has no allowlisted repository with an identity"]
+            return ["config/<env>/repositories.yaml lists no repository with backend github"]
         resolver.resolve(repos[0])
     except (ConfigError, SecretNotFoundError, UnconfiguredRepositoryError) as exc:
         return [str(exc)]
@@ -259,6 +261,7 @@ async def _run_via_temporal(
     full_pipeline: bool = False,
     await_pr_close: bool = False,
 ) -> int:
+    from services import temporal_client
     from services.orchestration.temporal_workflows.draft_pull_request import (
         DRAFT_PR_OPEN,
         EXISTING_PR_REUSED,
@@ -267,16 +270,15 @@ async def _run_via_temporal(
         DraftPullRequestInput,
         DraftPullRequestWorkflow,
     )
-    from temporalio.client import Client
+    from services.orchestration.usage_rollup import BudgetCaps
 
-    stored_issue = normalize_issue(
-        raw_issue, acceptance_field=acceptance_field(settings)
-    ).to_dict()
+    caps = BudgetCaps.from_settings(settings)
+    stored_issue = normalize_issue(raw_issue, acceptance_field=acceptance_field(settings)).to_dict()
     execution_id = f"exec-{uuid.uuid4().hex[:8]}"
     workflow_id = f"draft-pr-{task_id}-{execution_id}"
     address = to_host_hostport(settings.temporal_host)
     print(f"[demo] connecting to Temporal at {address}")
-    client = await Client.connect(address, namespace=settings.temporal_namespace)
+    client = await temporal_client.connect(address, settings)
     print(f"[demo] starting {workflow_id} on task queue {settings.temporal_task_queue}")
     if full_pipeline:
         print(
@@ -314,6 +316,9 @@ async def _run_via_temporal(
             await_pr_close=await_pr_close,
             jira_project=project_of(task_id),
             plan_approved=full_pipeline,
+            max_cost_usd=caps.max_cost_usd,
+            max_llm_calls=caps.max_llm_calls,
+            max_tokens=caps.max_tokens,
         ),
         id=workflow_id,
         task_queue=settings.temporal_task_queue,
@@ -381,14 +386,17 @@ async def main() -> int:
     missing = _missing(settings)
     if missing:
         print("Configure GitHub before running the demo.")
-        print("Set the host, owner, and token_ref in config/<env>/github.yaml.")
+        print("Set the host, owner, and token_ref in config/<env>/github.yaml or for the")
+        print("repository in config/<env>/repositories.yaml.")
         print("Export the token named by token_ref, for example GITHUB_TOKEN, in .env.")
         print(f"Blocked: {', '.join(missing)}")
         return 2
 
     args = _parse_args()
     repo = args.repo
-    base = args.base or settings.github_default_base_branch or "main"
+    registry = load_repository_registry(settings)
+    configured = registry.get(repo)
+    base = args.base or (configured.default_branch if configured else "main")
     task_id = args.task
     execution_id = f"exec-{uuid.uuid4().hex[:8]}"
 
@@ -401,7 +409,7 @@ async def main() -> int:
             print("[demo]   `inv connectivity-check`, then retry.")
             return 2
 
-    allowlist = sorted(allowed_repos(settings))
+    allowlist = sorted(registry.names())
     if repo not in allowlist:
         print(f"Repo '{repo}' is not allowlisted. Choose one of: {', '.join(allowlist)}")
         return 2
@@ -415,7 +423,10 @@ async def main() -> int:
     def remote_url_for(name: str) -> str:
         return gh_resolver.git_remote_url(name)
 
-    base_sha = _remote_head(remote_url_for(repo), base)
+    def auth_for(name: str) -> GitAuth:
+        return gh_resolver.git_auth(name)
+
+    base_sha = _remote_head(remote_url_for(repo), base, auth_for(repo))
     if not base_sha:
         print(f"Could not read {base} on the remote. Confirm the repo exists and the token works.")
         return 2
@@ -424,20 +435,24 @@ async def main() -> int:
     ledger = InMemorySideEffectLedger()
     gate = InMemorySequenceGate()
     mediator = GitHubMediator(
-        backend=host, ledger=ledger, gate=gate, allowed_repos=frozenset(allowlist)
+        backend=host,
+        ledger=ledger,
+        gate=gate,
+        allowed_repos=frozenset(allowlist),
+        tenant=settings.tenant,
     )
     materializer = WorkspaceMaterializer.from_settings(
-        InMemoryOrphanRegistry(), remote_url_for=remote_url_for, settings=settings
+        InMemoryOrphanRegistry(),
+        remote_url_for=remote_url_for,
+        auth_for=auth_for,
+        settings=settings,
     )
     synchronizer = GitBranchSynchronizer.from_settings(
-        remote_url_for=remote_url_for, settings=settings
+        remote_url_for=remote_url_for, auth_for=auth_for, settings=settings
     )
     existing_pr = await mediator.find_open_pr(repo, task_id)
     if _jira_configured(settings, task_id):
         jira_resolver = build_jira_credential_resolver(settings)
-        cloud_cred = jira_resolver.resolve(project_of(task_id))
-        if cloud_cred is not None:
-            ensure_acli_authenticated(cloud_cred, acli_path=settings.jira_acli_path)
         adapter = build_jira_adapter_for_issue(task_id, settings, resolver=jira_resolver)
         ok, detail = _jira_task_actionable(adapter, task_id, settings.jira_parked_status)
         print(f"[demo] jira preflight {task_id}: [{'ok' if ok else 'FAIL'}] {detail}")
@@ -533,7 +548,7 @@ async def main() -> int:
     if result.status == EXISTING_PR_REUSED:
         print("[demo] existing draft PR detected for this task; reused instead of duplicating")
 
-    branch = agent_branch_name(task_id)
+    branch = agent_branch_name(task_id, settings.tenant)
     print(f"  branch                {branch}")
     print(f"  draft pr number       {result.pr_number}")
     print(f"  draft pr url          {result.pr_url}")

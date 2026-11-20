@@ -22,8 +22,6 @@ from services.orchestration.gates.registry import (
 )
 from services.orchestration.temporal_activities.review import ReviewOutcome
 
-pytestmark = pytest.mark.asyncio
-
 
 def _context(**overrides) -> GateContext:
     base = {
@@ -150,3 +148,18 @@ def test_builtin_registry_exposes_the_built_in_gates():
     )
     assert registry.resolve("code-review").kind == REVIEW
     assert registry.resolve("semgrep").kind == SCANNER
+
+
+async def test_review_gate_propagates_acceptance_criteria_to_the_request():
+    seen: dict[str, str] = {}
+
+    async def fake_review(req) -> ReviewOutcome:
+        seen["criteria"] = req.acceptance_criteria
+        return ReviewOutcome(
+            verdict=PASS, attestation_hash="sha256:acc", prompt_version="acceptance/v1"
+        )
+
+    gate = review_gate("acceptance", fake_review)
+    await gate.evaluate(_context(acceptance_criteria="The size prop is removed"))
+
+    assert seen["criteria"] == "The size prop is removed"

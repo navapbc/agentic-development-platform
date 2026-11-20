@@ -19,25 +19,22 @@ class PromotionPolicyMediator:
     engine: PolicyEngine
     allowed_repos: frozenset[str]
     allowed_projects: frozenset[str] = field(default_factory=frozenset)
-    ci_required: bool = True
+    ci_exempt_repos: frozenset[str] = field(default_factory=frozenset)
 
     @classmethod
     def from_settings(
         cls, engine: PolicyEngine, settings: Settings | None = None
     ) -> PromotionPolicyMediator:
-        from services.integration.github.factory import (
-            GITHUB,
-            resolve_source_control_backend_name,
-        )
-        from services.integration.source_control import source_control_repos
+        from services.integration.repositories import LOCAL, load_repository_registry
         from services.integration.tickets.factory import ticket_projects
 
         resolved = settings or get_settings()
+        registry = load_repository_registry(resolved)
         return cls(
             engine=engine,
-            allowed_repos=frozenset(source_control_repos(resolved)),
+            allowed_repos=frozenset(registry.names()),
             allowed_projects=frozenset(ticket_projects(resolved)),
-            ci_required=resolve_source_control_backend_name(resolved) == GITHUB,
+            ci_exempt_repos=frozenset(registry.names(LOCAL)),
         )
 
     def _guard(self, repo: str) -> None:
@@ -50,6 +47,6 @@ class PromotionPolicyMediator:
             decision_input,
             allowed_projects=sorted(self.allowed_projects),
             allowed_repos=sorted(self.allowed_repos),
-            ci_required=self.ci_required,
+            ci_required=decision_input.repository not in self.ci_exempt_repos,
         )
         return await self.engine.evaluate(enriched)

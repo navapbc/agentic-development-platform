@@ -23,6 +23,7 @@ from services.orchestration.temporal_activities.gates import (
 )
 from services.orchestration.temporal_activities.implementation import (
     claim_work_unit,
+    finalize_work_claim,
     reset_task_coordination,
     run_implementation_stage,
 )
@@ -31,14 +32,19 @@ from services.orchestration.temporal_activities.intake import (
     IntakeReconcileRequest,
     reconcile_intake_pass,
 )
+from services.orchestration.temporal_activities.issue_intake import intake_jira_issue
 from services.orchestration.temporal_activities.manifest import record_manifest
+from services.orchestration.temporal_activities.model_access import delete_run_model_key
 from services.orchestration.temporal_activities.notify import alert_human_intervention
 from services.orchestration.temporal_activities.persistence import (
     persist_execution_state,
     record_audit_event,
     record_usage_metrics,
 )
-from services.orchestration.temporal_activities.planning import gather_repo_context
+from services.orchestration.temporal_activities.planning import (
+    gather_repo_context,
+    record_plan_evidence,
+)
 from services.orchestration.temporal_activities.policy import evaluate_promotion
 from services.orchestration.temporal_activities.pull_request import (
     apply_task_status,
@@ -80,18 +86,21 @@ __all__ = [
     "capture_base_head",
     "check_dependency_cycle",
     "claim_work_unit",
+    "finalize_work_claim",
     "reset_task_coordination",
     "classify_test_failures",
     "clear_suspension",
     "commit_and_push",
     "count_tick",
     "create_draft_pr",
+    "delete_run_model_key",
     "detect_dependency",
     "evaluate_gate",
     "load_gate_plan",
     "evaluate_promotion",
     "find_open_pr",
     "gather_repo_context",
+    "intake_jira_issue",
     "invoke_model",
     "link_pr_to_issue",
     "mark_task_parked",
@@ -104,6 +113,7 @@ __all__ = [
     "record_audit_event",
     "record_dependency_link",
     "record_manifest",
+    "record_plan_evidence",
     "record_pr_approval",
     "record_suspension",
     "record_usage_metrics",

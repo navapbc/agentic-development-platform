@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import shlex
-import subprocess
 from pathlib import Path
+
+from services import process
 
 DEFAULT_ZOEKT_INDEX_CMD = "zoekt-index"
 DEFAULT_ZOEKT_SEARCH_CMD = "zoekt"
@@ -42,8 +43,9 @@ def default_index_root() -> Path:
 
 def resolve_commit(repo_root: Path) -> str:
     """Return the current commit SHA of the repository at repo_root."""
-    completed = subprocess.run(
+    completed = process.run(
         ["git", "rev-parse", "HEAD"],
+        timeout=process.SHORT_COMMAND_TIMEOUT_SECONDS,
         cwd=repo_root,
         check=True,
         capture_output=True,
@@ -97,7 +99,7 @@ def _generate_shards(
     repo_root: Path, target: Path, zoekt_index_cmd: str, ignore_dirs: tuple[str, ...]
 ) -> None:
     try:
-        subprocess.run(
+        process.run(
             [
                 *shlex.split(zoekt_index_cmd),
                 "-index",
@@ -106,9 +108,10 @@ def _generate_shards(
                 ",".join(ignore_dirs),
                 str(repo_root),
             ],
+            timeout=process.LONG_COMMAND_TIMEOUT_SECONDS,
             check=True,
             capture_output=True,
             text=True,
         )
-    except subprocess.CalledProcessError as error:
+    except process.CalledProcessError as error:
         raise ZoektBuildError(f"zoekt-index failed: {error.stderr.strip()}") from error

@@ -15,13 +15,18 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_VERSION_KEY = "config_version"
 
 _CURRENT_CONFIG_VERSIONS: dict[str, int] = {
-    "github": 1,
+    "github": 2,
     "jira": 1,
     "integrations": 1,
     "gates": 1,
     "gate_engine": 1,
     "checks": 1,
     "tickets": 1,
+    "repositories": 1,
+    "registries": 1,
+    "profiles": 1,
+    "image_policy": 1,
+    "image_exceptions": 1,
 }
 
 
@@ -41,12 +46,18 @@ class ConfigError(RuntimeError):
 class SecretNotFoundError(KeyError):
     """Raised when a secret reference resolves to no value."""
 
-    def __init__(self, ref: str) -> None:
+    def __init__(self, ref: str, *, env_file: Path | None = None) -> None:
         super().__init__(ref)
         self.ref = ref
+        self.env_file = env_file
 
     def __str__(self) -> str:
-        return f"secret reference not found: {self.ref}"
+        where = f" or in {self.env_file}" if self.env_file is not None else ""
+        return (
+            f"the secret {self.ref} is not set in the process environment{where}. "
+            f"Export {self.ref}, or add a {self.ref}= line to the .env file, then restart the "
+            "stack with inv local-up so the workers pick it up."
+        )
 
 
 @runtime_checkable
@@ -70,7 +81,7 @@ class EnvSecretResolver:
         source = self._source if self._source is not None else self._load()
         value = source.get(ref)
         if not value:
-            raise SecretNotFoundError(ref)
+            raise SecretNotFoundError(ref, env_file=self._env_file)
         return value
 
     def _load(self) -> Mapping[str, str]:
@@ -83,12 +94,53 @@ class EnvSecretResolver:
         return merged
 
 
-def load_env_config(name: str, *, environment: str, root: Path | None = None) -> dict[str, Any]:
-    """Load config/<environment>/<name>.yaml as a mapping."""
+def env_config_dir(environment: str, *, root: Path | None = None) -> Path:
+    """Return config/<environment>, or the directory PLATFORM_ENV_CONFIG_DIR names.
+
+    A deployed task has no repository checkout, so its entrypoint writes the environment's
+    config files to PLATFORM_ENV_CONFIG_DIR. An explicit root still selects the checkout layout.
+    """
+    configured = os.environ.get("PLATFORM_ENV_CONFIG_DIR", "")
+    if root is None and configured:
+        return Path(configured)
     base = root if root is not None else _REPO_ROOT
-    path = base / "config" / environment / f"{name}.yaml"
+    return base / "config" / environment
+
+
+def env_config_path(name: str, *, environment: str, root: Path | None = None) -> Path:
+    """Return the file config/<environment>/<name>.yaml resolves to.
+
+    A tenant file comes from the tenant's bundle when the bundle holds it, and otherwise from
+    the environment directory. An explicit root selects the checkout layout and no bundle.
+    """
+    if root is None:
+        from services.integration.tenant_config import tenant_file
+
+        bundled = tenant_file(name)
+        if bundled is not None:
+            return bundled
+    return env_config_dir(environment, root=root) / f"{name}.yaml"
+
+
+def load_env_config(name: str, *, environment: str, root: Path | None = None) -> dict[str, Any]:
+    """Load config/<environment>/<name>.yaml, or the tenant bundle's copy, as a mapping."""
+    path = env_config_path(name, environment=environment, root=root)
     if not path.exists():
         raise ConfigError(f"config file missing: {path}; copy {path.name}.example to create it")
+    parsed = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if parsed is None:
+        return {}
+    if not isinstance(parsed, dict):
+        raise ConfigError(f"config file is not a mapping: {path}")
+    return parsed
+
+
+def load_platform_config(name: str, *, root: Path | None = None) -> dict[str, Any]:
+    """Load config/platform/<name>.yaml, the tracked configuration shared by every environment."""
+    base = root if root is not None else _REPO_ROOT
+    path = base / "config" / "platform" / f"{name}.yaml"
+    if not path.exists():
+        raise ConfigError(f"platform config file missing: {path}")
     parsed = yaml.safe_load(path.read_text(encoding="utf-8"))
     if parsed is None:
         return {}
@@ -100,8 +152,11 @@ def load_env_config(name: str, *, environment: str, root: Path | None = None) ->
 def _read_config_file(
     name: str, *, environment: str, root: Path | None, suffix: str
 ) -> dict[str, Any] | None:
-    base = root if root is not None else _REPO_ROOT
-    path = base / "config" / environment / f"{name}.yaml{suffix}"
+    path = (
+        env_config_path(name, environment=environment, root=root)
+        if suffix == ""
+        else env_config_dir(environment, root=root) / f"{name}.yaml{suffix}"
+    )
     if not path.exists():
         return None
     parsed = yaml.safe_load(path.read_text(encoding="utf-8"))

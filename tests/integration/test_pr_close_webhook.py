@@ -18,6 +18,7 @@ from services.orchestration.webhook.pr_events import (
 _ALLOWED = frozenset({"agentic-demo-service"})
 _SIGNATURE_HEADER = "X-Hub-Signature-256"
 _DELIVERY_HEADER = "X-GitHub-Delivery"
+_SECRET = "shh"
 
 
 class _FakeResolver:
@@ -61,7 +62,7 @@ def _sign(secret: str, body: bytes) -> str:
 
 
 def _handler(
-    *, secret: str = "", workflow_id: str | None = "wf-1"
+    *, secret: str = _SECRET, workflow_id: str | None = "wf-1"
 ) -> tuple[PrClosedHandler, _FakeResolver, _FakeSignaller]:
     resolver = _FakeResolver(workflow_id)
     signaller = _FakeSignaller()
@@ -73,12 +74,15 @@ async def _deliver(
     handler: PrClosedHandler,
     body: bytes,
     *,
-    signature: str = "",
+    signature: str | None = None,
     delivery: str = "d1",
     mode: str = WEBHOOK,
     ledger: InMemorySideEffectLedger | None = None,
 ):
-    headers = {_SIGNATURE_HEADER: signature, _DELIVERY_HEADER: delivery}
+    headers = {
+        _SIGNATURE_HEADER: signature if signature is not None else _sign(_SECRET, body),
+        _DELIVERY_HEADER: delivery,
+    }
     return await handle_inbound(
         body,
         headers,
@@ -94,6 +98,17 @@ def test_parse_pr_closed_event_extracts_task_id_from_branch():
     assert event == PrClosedEvent(
         repo="agentic-demo-service", number=5, branch="agent/T-1", task_id="T-1", merged=True
     )
+
+
+def test_parse_strips_the_tenant_segment_once_the_tenant_is_known():
+    payload = _payload()
+    payload["pull_request"]["head"]["ref"] = "agent/beta/T-1"
+
+    scoped = parse_pr_closed_event(payload, tenant="beta")
+    legacy = parse_pr_closed_event(_payload(), tenant="beta")
+
+    assert scoped is not None and scoped.task_id == "T-1" and scoped.tenant == "beta"
+    assert legacy is not None and legacy.task_id == "T-1" and legacy.tenant == "beta"
 
 
 def test_parse_ignores_non_closed_actions():
@@ -116,17 +131,26 @@ async def test_closed_unmerged_event_signals_workflow_with_merged_false():
 
 
 async def test_valid_signature_is_accepted():
-    handler, _resolver, signaller = _handler(secret="shh")
+    handler, _resolver, signaller = _handler()
     body = _body(_payload())
-    code, _ = await _deliver(handler, body, signature=_sign("shh", body))
+    code, _ = await _deliver(handler, body, signature=_sign(_SECRET, body))
     assert code == 200
     assert signaller.calls == [("wf-1", True)]
 
 
 async def test_invalid_signature_is_rejected():
-    handler, _resolver, signaller = _handler(secret="shh")
+    handler, _resolver, signaller = _handler()
     body = _body(_payload())
     code, response = await _deliver(handler, body, signature="sha256=deadbeef")
+    assert code == 401
+    assert response == {"error": "invalid signature"}
+    assert signaller.calls == []
+
+
+async def test_empty_secret_refuses_the_delivery():
+    handler, _resolver, signaller = _handler(secret="")
+    body = _body(_payload())
+    code, response = await _deliver(handler, body, signature=_sign(_SECRET, body))
     assert code == 401
     assert response == {"error": "invalid signature"}
     assert signaller.calls == []

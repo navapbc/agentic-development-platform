@@ -19,17 +19,11 @@ ExecuteFn = Callable[[GateNode, GateContext], Awaitable[GateResult]]
 def gate_levels(specs: Sequence[GateNode]) -> list[list[GateNode]]:
     order = [spec.name for spec in specs]
     by_name = {spec.name: spec for spec in specs}
-    remaining = {
-        spec.name: {dep for dep in spec.after if dep in by_name} for spec in specs
-    }
+    remaining = {spec.name: {dep for dep in spec.after if dep in by_name} for spec in specs}
     placed: set[str] = set()
     levels: list[list[GateNode]] = []
     while len(placed) < len(specs):
-        ready = [
-            name
-            for name in order
-            if name not in placed and remaining[name] <= placed
-        ]
+        ready = [name for name in order if name not in placed and remaining[name] <= placed]
         if not ready:
             raise ValueError("gate stage has a cyclic after edge")
         levels.append([by_name[name] for name in ready])
@@ -56,9 +50,7 @@ async def run_gate_stage(
     remaining_levels = gate_levels(specs)
     for index, level in enumerate(remaining_levels):
         if not fail_fast:
-            results.extend(
-                await asyncio.gather(*(execute(spec, context) for spec in level))
-            )
+            results.extend(await asyncio.gather(*(execute(spec, context) for spec in level)))
             continue
 
         pending = {asyncio.ensure_future(execute(spec, context)): spec for spec in level}
@@ -83,4 +75,3 @@ async def run_gate_stage(
                 results.extend(_cancelled(spec) for spec in later)
             break
     return results
-

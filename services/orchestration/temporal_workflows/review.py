@@ -10,6 +10,7 @@ from temporalio.common import RetryPolicy
 
 with workflow.unsafe.imports_passed_through():
     from services.orchestration.temporal_activities.bedrock import (
+        MODEL_RETRY_POLICY,
         ModelRequest,
         ModelResponse,
         invoke_model,
@@ -159,7 +160,7 @@ class PlanReviewWorkflow:
                 system_prompt_name="planning",
             ),
             start_to_close_timeout=model_timeout,
-            retry_policy=retry,
+            retry_policy=MODEL_RETRY_POLICY,
         )
         plan = draft.content or params.plan
         await audit(
@@ -303,7 +304,7 @@ class PlanReviewWorkflow:
                     system_prompt_name="planning",
                 ),
                 start_to_close_timeout=model_timeout,
-                retry_policy=retry,
+                retry_policy=MODEL_RETRY_POLICY,
             )
             plan = revised.content or plan
             await audit(

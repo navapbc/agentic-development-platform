@@ -7,6 +7,7 @@ from logging.config import fileConfig
 
 from alembic import context
 from database.models import SCHEMA, metadata
+from scripts.config import alembic_database_url
 from sqlalchemy import engine_from_config, pool
 
 config = context.config
@@ -14,10 +15,7 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-_db_url = os.environ.get(
-    "ALEMBIC_DATABASE_URL",
-    "postgresql+psycopg://platform:change-me-locally@localhost:5432/agent_platform",
-)
+_db_url = alembic_database_url()
 config.set_main_option("sqlalchemy.url", _db_url)
 
 target_metadata = metadata

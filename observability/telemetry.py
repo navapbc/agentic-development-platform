@@ -23,6 +23,7 @@ from opentelemetry.trace import Span, Tracer
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
 from observability import attributes as attrs
+from observability.gateway import tenant_tag
 
 log = logging.getLogger("observability")
 
@@ -44,7 +45,7 @@ class ContextStampingSpanProcessor(SpanProcessor):
                     span.set_attribute(key, str(value))
             self._stamp_langfuse_join(span, items)
         except Exception:  # noqa: BLE001 - instrumentation must not raise
-            pass
+            log.debug("span baggage stamping failed", exc_info=True)
 
     @staticmethod
     def _stamp_langfuse_join(span: Span, items: Mapping[str, Any]) -> None:
@@ -52,16 +53,20 @@ class ContextStampingSpanProcessor(SpanProcessor):
 
         Langfuse groups OTEL observations into a session by ``langfuse.session.id``,
         the same join the proxied path carried as the LiteLLM ``session_id``. The
-        stage, task, and prompt version ride as trace metadata so a native review
-        generation is attributable to its execution and stage in Langfuse.
+        stage, task, prompt version, and tenant ride as trace metadata, and the tenant
+        as a trace tag, so a native review generation is attributable to its execution,
+        stage, and tenant in Langfuse.
         """
         execution_id = items.get(attrs.EXECUTION_ID)
         if execution_id is not None:
             span.set_attribute(attrs.LANGFUSE_SESSION_ID, str(execution_id))
-        for key in (attrs.STAGE, attrs.TASK_ID, attrs.PROMPT_VERSION):
+        for key in (attrs.STAGE, attrs.TASK_ID, attrs.PROMPT_VERSION, attrs.TENANT):
             value = items.get(key)
             if value is not None:
                 span.set_attribute(f"{attrs.LANGFUSE_TRACE_METADATA_PREFIX}{key}", str(value))
+        tenant = items.get(attrs.TENANT)
+        if tenant:
+            span.set_attribute(attrs.LANGFUSE_TRACE_TAGS, [tenant_tag(str(tenant))])
 
     def on_end(self, span: Any) -> None:
         return None
@@ -108,6 +113,8 @@ def _composite_propagator() -> CompositePropagator:
 
 
 def _build_exporter() -> SpanExporter | None:
+    if os.getenv("OTEL_TRACES_EXPORTER", "").strip().lower() == "none":
+        return None
     try:
         from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 
@@ -202,7 +209,7 @@ def force_flush(timeout_millis: int = 5000) -> None:
         if _provider is not None:
             _provider.force_flush(timeout_millis)
     except Exception:  # noqa: BLE001
-        pass
+        log.debug("span flush failed", exc_info=True)
 
 
 def get_tracer() -> Tracer:
@@ -258,7 +265,7 @@ def stage_span(
             if attributes:
                 _apply_attributes(span, attributes)
         except Exception:  # noqa: BLE001
-            pass
+            log.debug("span attribute stamping failed", exc_info=True)
         yield span
 
 

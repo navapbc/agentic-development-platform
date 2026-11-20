@@ -3,18 +3,47 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import http.client
+import math
 import re
+import shlex
 import socket
-import subprocess
-import urllib.error
-import urllib.request
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
+
+from services import process
 
 _NAME_SANITISE = re.compile(r"[^a-z0-9-]+")
 _SANDBOX_UID = 10001
+_SANDBOX_HOME = "/home/sandbox"
 _BASE_TAG = "__openhands_base"
+# Untracked paths matching these never reach the patch. A pattern excludes only untracked files,
+# so an edit to a tracked file under one of them still does.
+BUILD_ARTIFACT_EXCLUDES = (
+    "__pycache__/",
+    "*.pyc",
+    ".pytest_cache/",
+    "node_modules/",
+    "target/",
+    "build/",
+    "dist/",
+    ".venv/",
+)
+# The eks-cluster module labels its nodes with the pool name and taints the sandbox pool.
+NODE_POOL_LABEL = "agentic-dev-platform/node-pool"
+SANDBOX_TAINT_KEY = "agentic-dev-platform/sandbox"
+PLATFORM_LABEL = "app.kubernetes.io/part-of"
+PLATFORM_LABEL_VALUE = "agentic-dev-platform"
+PLATFORM_LABEL_SELECTOR = f"{PLATFORM_LABEL}={PLATFORM_LABEL_VALUE}"
+EXECUTION_LABEL = "agentic-dev-platform/execution-id"
+SANDBOX_READY_TIMEOUT_SECONDS = 600.0
+PATCH_EXTRACTION_TIMEOUT_SECONDS = process.MEDIUM_COMMAND_TIMEOUT_SECONDS
+# Covers the phases with no bound of their own in the deadline: the copy-in, which has no timeout,
+# the port-forward wait, and the overrun of the soft wall-clock cap, which stops the conversation
+# only after its current model call and tool call finish.
+SANDBOX_DEADLINE_BUFFER_SECONDS = 900
 
 
 class SandboxExecError(RuntimeError):
@@ -37,6 +66,9 @@ class SandboxSpec:
     labels: Mapping[str, str] = field(default_factory=dict)
     env: Mapping[str, str] = field(default_factory=dict)
     workspace: WorkspaceBinding | None = None
+    session_api_key: str = ""
+    node_pool: str = ""
+    max_wall_clock_seconds: float = 1800.0
 
 
 @dataclass(frozen=True)
@@ -44,11 +76,20 @@ class SandboxHandle:
     name: str
     namespace: str
     base_url: str
+    session_api_key: str = ""
 
 
 def pod_name_for(execution_id: str) -> str:
     slug = _NAME_SANITISE.sub("-", execution_id.lower()).strip("-")
     return f"agent-sandbox-{slug or 'exec'}"[:63].rstrip("-")
+
+
+def active_deadline_seconds(
+    max_wall_clock_seconds: float, ready_timeout_seconds: float = SANDBOX_READY_TIMEOUT_SECONDS
+) -> int:
+    """Bound a sandbox pod's life, counted from pod start, by the sum of its phases' limits."""
+    bounded = ready_timeout_seconds + max_wall_clock_seconds + PATCH_EXTRACTION_TIMEOUT_SECONDS
+    return math.ceil(bounded) + SANDBOX_DEADLINE_BUFFER_SECONDS
 
 
 def _pod_ready(pod: object) -> bool:
@@ -65,18 +106,47 @@ def _workspace_volume(binding: WorkspaceBinding) -> tuple[dict, dict]:
     return volume, mount
 
 
-def build_pod_manifest(spec: SandboxSpec) -> dict:
+def node_pool_scheduling(node_pool: str) -> dict:
+    """Return the pod spec fields that place a pod on the tainted node pool, or none without one."""
+    if not node_pool:
+        return {}
+    return {
+        "nodeSelector": {NODE_POOL_LABEL: node_pool},
+        "tolerations": [{"key": SANDBOX_TAINT_KEY, "operator": "Exists", "effect": "NoSchedule"}],
+    }
+
+
+def build_pod_manifest(
+    spec: SandboxSpec, *, ready_timeout_seconds: float = SANDBOX_READY_TIMEOUT_SECONDS
+) -> dict:
     labels = {
         "app": "openhands-sandbox",
-        "app.kubernetes.io/part-of": "agentic-dev-platform",
-        "agentic-dev-platform/execution-id": spec.execution_id,
+        PLATFORM_LABEL: PLATFORM_LABEL_VALUE,
+        EXECUTION_LABEL: spec.execution_id,
         **dict(spec.labels),
     }
-    env = [{"name": "LLM_BASE_URL", "value": spec.litellm_base_url}]
+    env = [
+        {"name": "LLM_BASE_URL", "value": spec.litellm_base_url},
+        {"name": "HOME", "value": _SANDBOX_HOME},
+        {"name": "PYTHONDONTWRITEBYTECODE", "value": "1"},
+    ]
     env += [{"name": key, "value": value} for key, value in spec.env.items()]
+    # The agent server binds the pod IP only when a session key is set, and then requires
+    # that key on every call, so the in-cluster driver can reach it and nothing else can.
+    if spec.session_api_key:
+        env.append({"name": "SESSION_API_KEY", "value": spec.session_api_key})
+    volumes = [
+        {"name": "agent-tmp", "emptyDir": {}},
+        {"name": "agent-home", "emptyDir": {}},
+    ]
+    mounts = [
+        {"name": "agent-tmp", "mountPath": "/tmp"},
+        {"name": "agent-home", "mountPath": _SANDBOX_HOME},
+    ]
     container = {
         "name": "agent-server",
         "image": spec.image,
+        "workingDir": _SANDBOX_HOME,
         "ports": [{"containerPort": spec.server_port}],
         "env": env,
         "resources": {
@@ -85,6 +155,7 @@ def build_pod_manifest(spec: SandboxSpec) -> dict:
         },
         "securityContext": {
             "allowPrivilegeEscalation": False,
+            "readOnlyRootFilesystem": True,
             "runAsNonRoot": True,
             "runAsUser": _SANDBOX_UID,
             "runAsGroup": _SANDBOX_UID,
@@ -108,18 +179,24 @@ def build_pod_manifest(spec: SandboxSpec) -> dict:
     }
     spec_body: dict = {
         "restartPolicy": "Never",
+        "activeDeadlineSeconds": active_deadline_seconds(
+            spec.max_wall_clock_seconds, ready_timeout_seconds
+        ),
         "automountServiceAccountToken": False,
         "securityContext": {"seccompProfile": {"type": "RuntimeDefault"}},
         "containers": [container],
+        "volumes": volumes,
+        **node_pool_scheduling(spec.node_pool),
     }
     if spec.runtime_class:
         spec_body["runtimeClassName"] = spec.runtime_class
     if spec.workspace is not None:
         volume, mount = _workspace_volume(spec.workspace)
         container["workingDir"] = spec.workspace.mount_path
-        container["volumeMounts"] = [mount]
+        mounts.append(mount)
         env.append({"name": "WORKSPACE_BASE", "value": spec.workspace.mount_path})
-        spec_body["volumes"] = [volume]
+        volumes.append(volume)
+    container["volumeMounts"] = mounts
     return {
         "apiVersion": "v1",
         "kind": "Pod",
@@ -143,6 +220,83 @@ class SandboxProvisioner(Protocol):
     async def extract_patch(self, handle: SandboxHandle, project_dir: str) -> str: ...
 
 
+async def _discard(provisioner: SandboxProvisioner, handle: SandboxHandle) -> None:
+    """Tear down a sandbox whose provisioning failed without masking the provisioning error.
+
+    The caller receives no handle from a failed provision, so it cannot tear the pod down itself.
+    """
+    with contextlib.suppress(Exception):
+        await provisioner.teardown(handle)
+
+
+def _core_v1_api(in_cluster: bool):
+    from kubernetes import client, config
+
+    if in_cluster:
+        config.load_incluster_config()
+    else:
+        config.load_kube_config()
+    return client.CoreV1Api()
+
+
+@dataclass(frozen=True)
+class SandboxPod:
+    name: str
+    namespace: str
+    execution_id: str
+    uid: str = ""
+
+
+class KubernetesSandboxPods:
+    """List and delete the platform-labelled pods of a sandbox namespace."""
+
+    def __init__(self, *, in_cluster: bool = True) -> None:
+        self._in_cluster = in_cluster
+        self._core: Any = None
+
+    def _client(self):
+        if self._core is None:
+            self._core = _core_v1_api(self._in_cluster)
+        return self._core
+
+    async def list_platform_pods(self, namespace: str) -> list[SandboxPod]:
+        listing = await asyncio.to_thread(
+            self._client().list_namespaced_pod, namespace, label_selector=PLATFORM_LABEL_SELECTOR
+        )
+        return [
+            SandboxPod(
+                name=pod.metadata.name,
+                namespace=namespace,
+                execution_id=(pod.metadata.labels or {}).get(EXECUTION_LABEL, ""),
+                uid=pod.metadata.uid or "",
+            )
+            for pod in listing.items
+        ]
+
+    async def delete_pod(self, pod: SandboxPod) -> bool:
+        """Delete the listed pod, returning False when it is gone or its name now holds another pod.
+
+        The uid precondition keeps a pod created under the same name after the listing, which the
+        provisioner does when it replaces a conflicting pod, from being deleted in its place.
+        """
+        from kubernetes import client
+        from kubernetes.client.exceptions import ApiException
+
+        options = client.V1DeleteOptions(
+            grace_period_seconds=0,
+            preconditions=client.V1Preconditions(uid=pod.uid) if pod.uid else None,
+        )
+        try:
+            await asyncio.to_thread(
+                self._client().delete_namespaced_pod, pod.name, pod.namespace, body=options
+            )
+        except ApiException as exc:
+            if exc.status in (404, 409):
+                return False
+            raise
+        return True
+
+
 class KubernetesSandboxProvisioner:
     def __init__(
         self,
@@ -160,31 +314,38 @@ class KubernetesSandboxProvisioner:
 
     def _client(self):
         if self._core is None:
-            from kubernetes import client, config
-
-            if self._in_cluster:
-                config.load_incluster_config()
-            else:
-                config.load_kube_config()
-            self._core = client.CoreV1Api()
+            self._core = _core_v1_api(self._in_cluster)
         return self._core
 
     async def provision(self, spec: SandboxSpec) -> SandboxHandle:
         core = self._client()
         from kubernetes.client.exceptions import ApiException
 
-        manifest = build_pod_manifest(spec)
+        manifest = build_pod_manifest(spec, ready_timeout_seconds=self._ready_timeout)
         name = manifest["metadata"]["name"]
+        pending = SandboxHandle(name=name, namespace=spec.namespace, base_url="")
         try:
             await asyncio.to_thread(core.create_namespaced_pod, spec.namespace, manifest)
         except ApiException as exc:
             if exc.status != 409:
                 raise
-            await self._wait_absent(core, name, spec.namespace)
+            # The pod name comes from the execution id, so a pod already holding it belongs to
+            # an earlier attempt of this stage, either still terminating or orphaned by a worker
+            # that stopped. Neither is used again, and removing it lets this attempt start.
+            await self.teardown(pending)
             await asyncio.to_thread(core.create_namespaced_pod, spec.namespace, manifest)
-        pod_ip = await self._wait_ready(core, name, spec.namespace)
+        try:
+            pod_ip = await self._wait_ready(core, name, spec.namespace)
+        except BaseException:
+            await _discard(self, pending)
+            raise
         base_url = f"http://{pod_ip}:{spec.server_port}"
-        return SandboxHandle(name=name, namespace=spec.namespace, base_url=base_url)
+        return SandboxHandle(
+            name=name,
+            namespace=spec.namespace,
+            base_url=base_url,
+            session_api_key=spec.session_api_key,
+        )
 
     async def _wait_absent(self, core, name: str, namespace: str) -> None:
         from kubernetes.client.exceptions import ApiException
@@ -236,18 +397,26 @@ class KubernetesSandboxProvisioner:
         await asyncio.to_thread(self._copy_in_sync, handle, source_dir, dest_dir)
 
     def _copy_in_sync(self, handle: SandboxHandle, source_dir: str, dest_dir: str) -> None:
+        # The base tag has to name the tree as copied in, not the checkout's HEAD. A reused
+        # repair workspace arrives dirty with an earlier attempt's edits, and tagging HEAD would
+        # put those edits inside the extracted patch, which then fails to apply back onto the
+        # workspace that already contains them.
+        # Signing and hooks are disabled because the copied-in .git carries the project's own
+        # configuration, and neither a signing key nor a hook toolchain exists in the sandbox.
+        quoted_dest = shlex.quote(dest_dir)
         extract = (
-            f"mkdir -p {dest_dir} && "
-            f"tar xmf - --no-overwrite-dir --no-same-owner -C {dest_dir} && "
-            f"cd {dest_dir} && "
+            f"mkdir -p {quoted_dest} && "
+            f"tar xmf - --no-overwrite-dir --no-same-owner -C {quoted_dest} && "
+            f"cd {quoted_dest} && "
             f'git config user.email "openhands@all-hands.dev" && '
             f'git config user.name "openhands" && '
+            f"git add -A && "
+            f"git -c commit.gpgsign=false commit --no-verify -q --allow-empty "
+            f'-m "openhands base" && '
             f"git tag -f {_BASE_TAG} HEAD"
         )
-        tar = subprocess.Popen(
-            ["tar", "-C", source_dir, "-cf", "-", "."], stdout=subprocess.PIPE
-        )
-        exec_proc = subprocess.Popen(
+        tar = process.popen(["tar", "-C", source_dir, "-cf", "-", "."], stdout=process.PIPE)
+        exec_proc = process.popen(
             [
                 self._kubectl,
                 "exec",
@@ -261,7 +430,7 @@ class KubernetesSandboxProvisioner:
                 extract,
             ],
             stdin=tar.stdout,
-            stderr=subprocess.PIPE,
+            stderr=process.PIPE,
         )
         if tar.stdout is not None:
             tar.stdout.close()
@@ -274,7 +443,7 @@ class KubernetesSandboxProvisioner:
         return await asyncio.to_thread(self._extract_patch_sync, handle, project_dir)
 
     def _extract_patch_sync(self, handle: SandboxHandle, project_dir: str) -> str:
-        result = subprocess.run(
+        result = process.run(
             [
                 self._kubectl,
                 "exec",
@@ -284,9 +453,13 @@ class KubernetesSandboxProvisioner:
                 "--",
                 "sh",
                 "-c",
-                f"cd {project_dir} && git add -A && "
-                f"(git diff --cached {_BASE_TAG} 2>/dev/null || git diff --cached)",
+                f"cd {shlex.quote(project_dir)} && excludes=$(mktemp) && "
+                f"printf '%s\\n' {' '.join(shlex.quote(p) for p in BUILD_ARTIFACT_EXCLUDES)} "
+                f'> "$excludes" && git -c core.excludesFile="$excludes" add -A && '
+                f"(git diff --cached --binary {_BASE_TAG} 2>/dev/null || "
+                f"git diff --cached --binary)",
             ],
+            timeout=PATCH_EXTRACTION_TIMEOUT_SECONDS,
             capture_output=True,
             text=True,
         )
@@ -296,9 +469,7 @@ class KubernetesSandboxProvisioner:
 
 
 class FakeSandboxProvisioner:
-    def __init__(
-        self, *, base_url: str = "http://fake-sandbox:8000", patch: str = ""
-    ) -> None:
+    def __init__(self, *, base_url: str = "http://fake-sandbox:8000", patch: str = "") -> None:
         self._base_url = base_url
         self._patch = patch
         self.provisioned: list[SandboxHandle] = []
@@ -312,6 +483,7 @@ class FakeSandboxProvisioner:
             name=pod_name_for(spec.execution_id),
             namespace=spec.namespace,
             base_url=self._base_url,
+            session_api_key=spec.session_api_key,
         )
         self.specs.append(spec)
         self.provisioned.append(handle)
@@ -335,13 +507,15 @@ def _free_port() -> int:
 
 
 def _http_ready(port: int, path: str = "/health") -> bool:
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=1)
     try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=1):
-            return True
-    except urllib.error.HTTPError:
+        connection.request("GET", path)
+        connection.getresponse()
         return True
-    except (urllib.error.URLError, OSError):
+    except (http.client.HTTPException, OSError):
         return False
+    finally:
+        connection.close()
 
 
 class PortForwardSandboxProvisioner:
@@ -363,33 +537,38 @@ class PortForwardSandboxProvisioner:
         self._inner = inner or KubernetesSandboxProvisioner(in_cluster=False)
         self._kubectl = kubectl
         self._ready_timeout = ready_timeout_seconds
-        self._forwards: dict[str, subprocess.Popen] = {}
+        self._forwards: dict[str, process.Popen] = {}
 
     async def provision(self, spec: SandboxSpec) -> SandboxHandle:
         handle = await self._inner.provision(spec)
-        local_port = _free_port()
-        proc = await asyncio.to_thread(
-            subprocess.Popen,
-            [
-                self._kubectl,
-                "port-forward",
-                "-n",
-                handle.namespace,
-                f"pod/{handle.name}",
-                f"{local_port}:{spec.server_port}",
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        self._forwards[handle.name] = proc
-        await self._wait_forward(local_port, proc)
+        try:
+            local_port = _free_port()
+            proc = await asyncio.to_thread(
+                process.Popen,
+                [
+                    self._kubectl,
+                    "port-forward",
+                    "-n",
+                    handle.namespace,
+                    f"pod/{handle.name}",
+                    f"{local_port}:{spec.server_port}",
+                ],
+                stdout=process.DEVNULL,
+                stderr=process.DEVNULL,
+            )
+            self._forwards[handle.name] = proc
+            await self._wait_forward(local_port, proc)
+        except BaseException:
+            await _discard(self, handle)
+            raise
         return SandboxHandle(
             name=handle.name,
             namespace=handle.namespace,
             base_url=f"http://127.0.0.1:{local_port}",
+            session_api_key=handle.session_api_key,
         )
 
-    async def _wait_forward(self, port: int, proc: subprocess.Popen) -> None:
+    async def _wait_forward(self, port: int, proc: process.Popen) -> None:
         deadline = asyncio.get_running_loop().time() + self._ready_timeout
         while True:
             if proc.poll() is not None:
@@ -406,7 +585,7 @@ class PortForwardSandboxProvisioner:
             proc.terminate()
             try:
                 await asyncio.to_thread(proc.wait, 5)
-            except subprocess.TimeoutExpired:
+            except process.TimeoutExpired:
                 proc.kill()
         await self._inner.teardown(handle)
 

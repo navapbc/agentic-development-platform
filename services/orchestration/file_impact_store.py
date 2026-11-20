@@ -21,12 +21,9 @@ class FileImpactStore:
 
     def _get_engine(self) -> Any:
         if self._engine is None:
-            from scripts.config import get_settings
-            from sqlalchemy.ext.asyncio import create_async_engine
+            from database.engine import shared_platform_engine
 
-            self._engine = create_async_engine(
-                get_settings().database_url, future=True, pool_pre_ping=True
-            )
+            self._engine = shared_platform_engine()
         return self._engine
 
     async def write(self, task_id: str, paths: Sequence[str], execution_id: str) -> None:

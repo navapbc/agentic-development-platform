@@ -9,9 +9,9 @@ from __future__ import annotations
 import base64
 import json
 import shlex
-import subprocess
 from pathlib import Path
 
+from services import process
 from services.repository_intelligence.indexing.zoekt_builder import (
     DEFAULT_ZOEKT_INDEX_CMD,
     DEFAULT_ZOEKT_SEARCH_CMD,
@@ -108,7 +108,7 @@ class ZoektProvider:
 
     def _run_search(self, shard_dir: Path, query: str) -> str:
         try:
-            completed = subprocess.run(
+            completed = process.run(
                 [
                     *shlex.split(self._zoekt_search_cmd),
                     "-index_dir",
@@ -116,11 +116,12 @@ class ZoektProvider:
                     "-jsonl",
                     query,
                 ],
+                timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS,
                 check=True,
                 capture_output=True,
                 text=True,
             )
-        except subprocess.CalledProcessError as error:
+        except process.CalledProcessError as error:
             raise ZoektSearchError(f"zoekt search failed: {error.stderr.strip()}") from error
         return completed.stdout
 
@@ -138,5 +139,5 @@ class ZoektProvider:
     def _current_commit(self) -> str | None:
         try:
             return resolve_commit(self._root)
-        except (subprocess.CalledProcessError, FileNotFoundError):
+        except (process.CalledProcessError, FileNotFoundError):
             return None

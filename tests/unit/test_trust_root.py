@@ -31,9 +31,7 @@ def _bundle(keys: list[dict]) -> dict:
 
 
 def test_active_key_renders_into_allowed_signers():
-    tr = parse_trust_root(
-        _bundle([{"id": "k1", "public_key": "ssh-ed25519 AAAAkey1"}])
-    )
+    tr = parse_trust_root(_bundle([{"id": "k1", "public_key": "ssh-ed25519 AAAAkey1"}]))
     signers = tr.allowed_signers()
     assert signers == f"{_PRINCIPAL} ssh-ed25519 AAAAkey1"
     assert tr.active_key_ids() == ["k1"]
@@ -178,4 +176,3 @@ def test_diff_trust_roots_initialized_when_no_prior():
     change, affected = diff_trust_roots(None, new)
     assert change == "initialized"
     assert affected == ["k1"]
-

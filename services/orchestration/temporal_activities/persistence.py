@@ -5,21 +5,18 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from database.engine import shared_platform_engine
 from database.models.schema import audit_events, executions, usage_metrics
 from observability import record_stage_cost, record_stage_latency
 from scripts.config import get_settings
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine
 from temporalio import activity
-
-_engine: AsyncEngine | None = None
 
 
 def _get_engine() -> AsyncEngine:
-    global _engine
-    if _engine is None:
-        _engine = create_async_engine(get_settings().database_url, future=True, pool_pre_ping=True)
-    return _engine
+    return shared_platform_engine()
 
 
 @dataclass
@@ -34,30 +31,55 @@ class ExecutionState:
     resolved_models: dict[str, Any] = field(default_factory=dict)
 
 
-@activity.defn
-async def persist_execution_state(payload: ExecutionState) -> str:
+def execution_state_upsert(payload: ExecutionState) -> Any:
+    """Build the execution upsert, refreshing updated_at on conflict.
+
+    The column's onupdate default fires only for UPDATE statements, not for the
+    set_ mapping of ON CONFLICT DO UPDATE, so updated_at has to be named here or
+    it stays frozen at insert time and the orphan reconciler reads every long run
+    as stale.
+    """
     stmt = insert(executions).values(
         execution_id=payload.execution_id,
         task_id=payload.task_id,
         workflow_id=payload.workflow_id,
         state=payload.state,
         repository=payload.repository,
+        tenant=get_settings().tenant or None,
         repository_sha=payload.repository_sha,
         policy_bundle_version=payload.policy_bundle_version,
         resolved_models=payload.resolved_models or None,
     )
-    stmt = stmt.on_conflict_do_update(
+    return stmt.on_conflict_do_update(
         index_elements=[executions.c.execution_id],
         set_={
             "state": payload.state,
             "workflow_id": payload.workflow_id,
             "resolved_models": payload.resolved_models or None,
+            "updated_at": func.now(),
         },
     )
+
+
+@activity.defn
+async def persist_execution_state(payload: ExecutionState) -> str:
+    stmt = execution_state_upsert(payload)
     engine = _get_engine()
     async with engine.begin() as conn:
         await conn.execute(stmt)
     return payload.execution_id
+
+
+async def execution_tenant(execution_id: str, engine: AsyncEngine | None = None) -> str:
+    """Return the tenant the execution record names, or an empty string without one."""
+    resolved = engine or _get_engine()
+    async with resolved.connect() as conn:
+        tenant = (
+            await conn.execute(
+                select(executions.c.tenant).where(executions.c.execution_id == execution_id)
+            )
+        ).scalar_one_or_none()
+    return str(tenant or "")
 
 
 @dataclass
@@ -71,6 +93,8 @@ class AuditEvent:
     new_state: str | None = None
     model_id: str | None = None
     reason: str | None = None
+    remedy: str | None = None
+    alert_channels: list[str] = field(default_factory=list)
     workflow_id: str | None = None
     decision: str | None = None
     prompt_version: str | None = None
@@ -91,6 +115,8 @@ async def record_audit_event(event: AuditEvent) -> str:
             new_state=event.new_state,
             model_id=event.model_id,
             reason=event.reason,
+            remedy=event.remedy,
+            alert_channels=event.alert_channels or None,
             workflow_id=event.workflow_id,
             decision=event.decision,
             prompt_version=event.prompt_version,
@@ -101,7 +127,30 @@ async def record_audit_event(event: AuditEvent) -> str:
     engine = _get_engine()
     async with engine.begin() as conn:
         await conn.execute(stmt)
+    from services.review.evidence import persist_audit_object
+
+    await persist_audit_object(_audit_event_body(event))
     return event.event_id
+
+
+def _audit_event_body(event: AuditEvent) -> dict[str, Any]:
+    return {
+        "event_id": event.event_id,
+        "task_id": event.task_id,
+        "execution_id": event.execution_id,
+        "event_type": event.event_type,
+        "stage": event.stage,
+        "prev_state": event.prev_state,
+        "new_state": event.new_state,
+        "model_id": event.model_id,
+        "reason": event.reason,
+        "remedy": event.remedy,
+        "alert_channels": event.alert_channels or [],
+        "workflow_id": event.workflow_id,
+        "decision": event.decision,
+        "prompt_version": event.prompt_version,
+        "artifact_hashes": event.artifact_hashes or {},
+    }
 
 
 @dataclass

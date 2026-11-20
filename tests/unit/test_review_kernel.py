@@ -147,9 +147,7 @@ def _patch_gate_source(monkeypatch, cfg) -> None:
 
     monkeypatch.setattr(gate_source, "resolve_gate_handle", lambda *a, **k: object())
     monkeypatch.setattr(gate_source, "apply_handle", lambda config, handle: config)
-    monkeypatch.setattr(
-        gate_source, "gate_read_root", lambda handle: contextlib.nullcontext()
-    )
+    monkeypatch.setattr(gate_source, "gate_read_root", lambda handle: contextlib.nullcontext())
     monkeypatch.setattr(review_llm, "review_llm_config", lambda tier: cfg)
 
 
@@ -185,4 +183,3 @@ def test_run_propagates_a_non_failover_error(monkeypatch):
 
     with pytest.raises(ValueError, match="a real bug"):
         RebarReviewKernel().run(_review_input())
-

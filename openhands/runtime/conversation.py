@@ -7,6 +7,7 @@ import threading
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
+from observability.gateway import tenant_tag
 from openhands.runtime.caps import (
     COMPLETED,
     ERROR,
@@ -50,6 +51,7 @@ class ConversationDriver(Protocol):
         caps: RuntimeCaps,
         working_dir: str = "",
         metadata: dict[str, str] | None = None,
+        session_api_key: str = "",
     ) -> ImplementationOutcome: ...
 
 
@@ -68,9 +70,10 @@ class RemoteConversationDriver:
         caps: RuntimeCaps,
         working_dir: str = "",
         metadata: dict[str, str] | None = None,
+        session_api_key: str = "",
     ) -> ImplementationOutcome:
         return await asyncio.to_thread(
-            self._run_sync, base_url, task, context, caps, working_dir, metadata
+            self._run_sync, base_url, task, context, caps, working_dir, metadata, session_api_key
         )
 
     def _run_sync(
@@ -81,9 +84,12 @@ class RemoteConversationDriver:
         caps: RuntimeCaps,
         working_dir: str = "",
         metadata: dict[str, str] | None = None,
+        session_api_key: str = "",
     ) -> ImplementationOutcome:
         from openhands.sdk import LLM, AgentContext, Conversation, Workspace
-        from openhands.sdk.event import ActionEvent
+        from openhands.sdk.event import ActionEvent, MessageEvent
+        from openhands.sdk.llm import TextContent
+        from openhands.sdk.tool.builtins import FinishAction
         from openhands.tools.preset.default import get_default_agent
         from pydantic import SecretStr
 
@@ -107,7 +113,11 @@ class RemoteConversationDriver:
             agent = agent.model_copy(
                 update={"agent_context": AgentContext(system_message_suffix=suffix)}
             )
-        workspace = Workspace(host=base_url, working_dir=working_dir or "workspace/project")
+        workspace = Workspace(
+            host=base_url,
+            working_dir=working_dir or "workspace/project",
+            api_key=session_api_key or None,
+        )
 
         def on_event(event: object) -> None:
             if isinstance(event, ActionEvent):
@@ -138,6 +148,20 @@ class RemoteConversationDriver:
             completion_tokens = int(usage.completion_tokens) if usage else 0
             cache_read_tokens = int(usage.cache_read_tokens) if usage else 0
             cache_write_tokens = int(usage.cache_write_tokens) if usage else 0
+            summary = ""
+            for event in reversed(conversation.state.events):
+                if event.source != "agent":
+                    continue
+                if isinstance(event, ActionEvent) and isinstance(event.action, FinishAction):
+                    summary = event.action.message
+                    break
+                if isinstance(event, MessageEvent) and event.llm_message.role == "assistant":
+                    summary = "".join(
+                        content.text
+                        for content in event.llm_message.content
+                        if isinstance(content, TextContent)
+                    )
+                    break
             return ImplementationOutcome(
                 status=status,
                 terminal_reason=reason,
@@ -150,6 +174,7 @@ class RemoteConversationDriver:
                 cache_read_tokens=cache_read_tokens,
                 cache_write_tokens=cache_write_tokens,
                 llm_calls=len(metrics.costs),
+                summary=summary,
             )
         except Exception as exc:
             return ImplementationOutcome(
@@ -201,7 +226,8 @@ def _coding_extra_body(metadata: dict[str, str] | None) -> dict[str, object]:
 
     The Bedrock ``requestMetadata`` carries the AWS-side attribution. The LiteLLM
     ``metadata`` carries the Langfuse join keys, so the coding generation groups
-    under the execution session with its stage and prompt version.
+    under the execution session with its stage and prompt version, and the tenant
+    tag, which LiteLLM records with the request and Langfuse stores as a trace tag.
     """
     if not metadata:
         return {}
@@ -214,10 +240,11 @@ def _coding_extra_body(metadata: dict[str, str] | None) -> dict[str, object]:
     version = _coding_agent_version()
     if version:
         join["version"] = version
-    if metadata.get("execution_id") or metadata.get("ticket"):
-        join["trace_metadata"] = {
-            key: metadata[key] for key in ("execution_id", "ticket") if metadata.get(key)
-        }
+    trace_keys = ("execution_id", "ticket", "tenant")
+    if any(metadata.get(key) for key in trace_keys):
+        join["trace_metadata"] = {key: metadata[key] for key in trace_keys if metadata.get(key)}
+    if metadata.get("tenant"):
+        join["tags"] = [tenant_tag(metadata["tenant"])]
     if join:
         extra_body["metadata"] = join
     return extra_body
@@ -241,6 +268,7 @@ class FakeConversationDriver:
         self._summary = summary
         self._fail = fail
         self.calls: list[str] = []
+        self.session_api_keys: list[str] = []
         self.metadata: dict[str, str] | None = None
 
     async def run_task(
@@ -252,8 +280,10 @@ class FakeConversationDriver:
         caps: RuntimeCaps,
         working_dir: str = "",
         metadata: dict[str, str] | None = None,
+        session_api_key: str = "",
     ) -> ImplementationOutcome:
         self.calls.append(base_url)
+        self.session_api_keys.append(session_api_key)
         self.metadata = metadata
         tracker = CapTracker(caps)
         if self._fail:

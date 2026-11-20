@@ -1,0 +1,57 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: agentic-platform-checkouts
+  labels:
+    app.kubernetes.io/part-of: agentic-dev-platform
+spec:
+  capacity:
+    storage: 50Gi
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  mountOptions:
+    - tls
+    - iam
+  csi:
+    driver: efs.csi.aws.com
+    volumeHandle: fs-00000000000000000::fsap-00000000000000000
+---
+apiVersion: vpcresources.k8s.aws/v1beta1
+kind: SecurityGroupPolicy
+metadata:
+  name: temporal-clients
+  namespace: agentic-dev-platform
+  labels:
+    app.kubernetes.io/part-of: agentic-dev-platform
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [activity-worker, inbound-webhook]
+  securityGroups:
+    groupIds:
+      - sg-00000000000000001
+      - sg-00000000000000002
+      - sg-00000000000000003
+---
+apiVersion: vpcresources.k8s.aws/v1beta1
+kind: SecurityGroupPolicy
+metadata:
+  name: internal-clients
+  namespace: agentic-dev-platform
+  labels:
+    app.kubernetes.io/part-of: agentic-dev-platform
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [litellm, mcp-gateway]
+  securityGroups:
+    groupIds:
+      - sg-00000000000000001
+      - sg-00000000000000003

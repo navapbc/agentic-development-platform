@@ -18,6 +18,8 @@ from adapters.interfaces.security_scanner import (
     ScanFinding,
     ScanTarget,
 )
+from observability import current_tenant, tenant_tag
+from observability.generation import GENERATION_NAME_HEADER, SESSION_HEADER, TAGS_HEADER
 
 from services.orchestration.gates.engine_source import (
     SARIF,
@@ -54,10 +56,7 @@ def map_review_findings(review: dict, *, scanner: str) -> list[ScanFinding]:
                 severity=severity,
                 title=str(comment.get("title") or comment.get("message") or "AI review finding"),
                 detail=str(
-                    comment.get("detail")
-                    or comment.get("description")
-                    or comment.get("body")
-                    or ""
+                    comment.get("detail") or comment.get("description") or comment.get("body") or ""
                 ),
                 location=location,
                 rule_id=str(comment.get("perspective") or comment.get("category") or ""),
@@ -67,21 +66,20 @@ def map_review_findings(review: dict, *, scanner: str) -> list[ScanFinding]:
 
 
 async def _default_runner(args: Sequence[str], cwd: str, env: dict[str, str]) -> CommandResult:
-    import asyncio
     import os
 
-    proc = await asyncio.create_subprocess_exec(
-        *args,
+    from services import process
+
+    result = await process.run_async(
+        args,
+        timeout=process.LONG_COMMAND_TIMEOUT_SECONDS,
         cwd=cwd or None,
         env={**os.environ, **env},
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
     )
-    out, err = await proc.communicate()
     return CommandResult(
-        returncode=proc.returncode or 0,
-        stdout=out.decode("utf-8", "replace"),
-        stderr=err.decode("utf-8", "replace"),
+        returncode=result.returncode,
+        stdout=result.stdout.decode("utf-8", "replace"),
+        stderr=result.stderr.decode("utf-8", "replace"),
     )
 
 
@@ -94,6 +92,7 @@ def _engine_env(
     execution_id: str = "",
     generation_name: str = "",
     model: str = "",
+    tenant: str = "",
 ) -> dict[str, str]:
     """The environment the engine harness reads, shared by the subprocess and pod paths.
 
@@ -102,7 +101,8 @@ def _engine_env(
     SARIF tool needs no gateway or model configuration. When an execution id is present, the
     ``langfuse_`` join headers are injected through the CLI's ``ANTHROPIC_CUSTOM_HEADERS`` so the
     engine's model calls group under the execution and its stage in Langfuse, the same headers the
-    platform stamps on its own calls to the gateway.
+    platform stamps on its own calls to the gateway. The tenant rides in the same variable as the
+    ``x-litellm-tags`` header, which tags each call with ``tenant:<tenant>``.
     """
     env = {"AI_REVIEW_SCM": "github"}
     if profile:
@@ -121,10 +121,14 @@ def _engine_env(
         )
         if config.tool == "claude" and config.max_output_tokens > 0:
             env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(config.max_output_tokens)
+        headers: list[str] = []
         if execution_id:
-            headers = [f"langfuse_session_id: {execution_id}"]
+            headers.append(f"{SESSION_HEADER}: {execution_id}")
             if generation_name:
-                headers.append(f"langfuse_generation_name: {generation_name}")
+                headers.append(f"{GENERATION_NAME_HEADER}: {generation_name}")
+        if tenant:
+            headers.append(f"{TAGS_HEADER}: {tenant_tag(tenant)}")
+        if headers:
             env["ANTHROPIC_CUSTOM_HEADERS"] = "\n".join(headers)
     return env
 
@@ -184,6 +188,7 @@ class AiReviewScanner:
         pod_runner: Any | None = None,
         tls_verify: bool = True,
         review_model: str = "",
+        run_model_access: Any | None = None,
     ) -> None:
         self._name = name
         self._config = config
@@ -194,6 +199,7 @@ class AiReviewScanner:
         self._source = source
         self._pod_runner = pod_runner
         self._tls_verify = tls_verify
+        self._run_model_access = run_model_access
         # The model actually sent to the gateway, resolved by the caller to a client-recognized id.
         # Falls back to the config value when the caller does not resolve.
         self._review_model = review_model or config.review_model
@@ -214,16 +220,36 @@ class AiReviewScanner:
             raise GateEngineError(f"gate {self._name!r} engine is not enabled")
         return resolved
 
+    def _pod_model_access(self) -> Any | None:
+        """The per-run key resolution, which applies only to a model-driven engine in a pod."""
+        if self._pod_runner is None or not self._config.needs_model:
+            return None
+        return self._run_model_access
+
+    async def _gateway_api_key(self, execution_id: str) -> str:
+        access = self._pod_model_access()
+        if access is None:
+            return self._litellm_api_key
+        from adapters.interfaces.security_scanner import ScannerUnavailableError
+
+        from services.integration.litellm_admin import LiteLLMAdminError
+
+        try:
+            return await access.key_for(execution_id)
+        except LiteLLMAdminError as exc:
+            raise ScannerUnavailableError(str(exc)) from exc
+
     async def scan(self, target: ScanTarget) -> list[ScanFinding]:
         source = await self._resolve()
         env = _engine_env(
             config=self._config,
             profile=self._profile,
             gateway_base_url=self._litellm_base_url,
-            gateway_api_key=self._litellm_api_key,
+            gateway_api_key=await self._gateway_api_key(target.execution_id),
             execution_id=target.execution_id,
             generation_name=self._name,
             model=self._review_model,
+            tenant=current_tenant(),
         )
         against = target.base_ref or target.ref
         if self._pod_runner is not None:
@@ -231,9 +257,7 @@ class AiReviewScanner:
         else:
             document = await _run_engine_json(
                 name=self._name,
-                entrypoint=Path(source.path).joinpath(
-                    *self._config.review_entrypoint.split("/")
-                ),
+                entrypoint=Path(source.path).joinpath(*self._config.review_entrypoint.split("/")),
                 repo_root=target.repo_root,
                 base_ref=against,
                 env=env,
@@ -280,6 +304,16 @@ class AiReviewScanner:
         try:
             return await runner.run_engine(spec)
         except PodEngineError as exc:
+            access = self._pod_model_access()
+            reason = (
+                await access.budget_stop(target.execution_id, failure_text=str(exc))
+                if access is not None
+                else ""
+            )
+            if reason:
+                from services.integration.litellm_admin import ModelBudgetExceededError
+
+                raise ModelBudgetExceededError(reason) from exc
             raise ScannerUnavailableError(str(exc)) from exc
 
 
@@ -348,9 +382,7 @@ def map_classifications(payload: dict) -> FailureTriage:
             )
         )
     should_patch = any(item.verdict in _PATCHABLE and item.in_scope for item in classifications)
-    has_environment_issue = any(
-        item.verdict == ENVIRONMENT_ISSUE for item in classifications
-    )
+    has_environment_issue = any(item.verdict == ENVIRONMENT_ISSUE for item in classifications)
     non_patchable = [item for item in classifications if item.verdict not in _PATCHABLE]
     flaky_only = (
         not should_patch
@@ -406,6 +438,7 @@ class AiTestClassifier:
             gateway_api_key=self._litellm_api_key,
             execution_id=target.execution_id,
             generation_name=self._name,
+            tenant=current_tenant(),
         )
         payload = await _run_engine_json(
             name=self._name,

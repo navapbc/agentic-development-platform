@@ -1,16 +1,19 @@
 """OpenTelemetry log export setup.
 
 Attaches an OTLP logging handler to the root logger so platform log records are
-exported to the collector logs pipeline alongside the traces and metrics. Every
-entry point is best effort and never raises into a caller. A redaction filter
-scrubs AWS credential material from every record before it is exported or
-printed, so a worker that holds Bedrock credentials never leaks them to logs.
+exported to the collector logs pipeline alongside the traces and metrics. structlog
+events, which the audit events of the intake poll and the reclaimers use, are routed
+through the standard library logger so the same handler exports them. Every entry
+point is best effort and never raises into a caller. A redaction filter scrubs AWS
+credential material from every record before it is exported or printed, so a worker
+that holds Bedrock credentials never leaks them to logs.
 """
 
 from __future__ import annotations
 
 import contextlib
 import logging
+import os
 import re
 from typing import Any
 
@@ -74,6 +77,8 @@ def _redact_handler(handler: logging.Handler) -> None:
 
 
 def _build_log_exporter() -> Any | None:
+    if os.getenv("OTEL_LOGS_EXPORTER", "").strip().lower() == "none":
+        return None
     try:
         from opentelemetry.exporter.otlp.proto.grpc._log_exporter import OTLPLogExporter
 
@@ -83,16 +88,41 @@ def _build_log_exporter() -> Any | None:
         return None
 
 
+def route_structlog_to_logging() -> None:
+    """Send structlog events through the standard library logger. Never raises.
+
+    structlog prints to stdout by default, which bypasses the root logger and so the OTLP
+    handler. Each event is rendered as key=value pairs with the event name first, so the
+    console and the exported record carry the same fields.
+    """
+    with contextlib.suppress(Exception):
+        import structlog
+
+        structlog.configure(
+            processors=[
+                structlog.contextvars.merge_contextvars,
+                structlog.stdlib.filter_by_level,
+                structlog.processors.format_exc_info,
+                structlog.processors.KeyValueRenderer(key_order=["event"], sort_keys=True),
+            ],
+            logger_factory=structlog.stdlib.LoggerFactory(),
+            wrapper_class=structlog.stdlib.BoundLogger,
+            cache_logger_on_first_use=False,
+        )
+
+
 def configure_logging(
     service_name: str, *, exporter: Any | None = None, level: int = logging.INFO
 ) -> bool:
     """Attach an OTLP logging handler to the root logger once. Returns True when active."""
     global _configured, _provider, _handler
     install_log_redaction()
+    route_structlog_to_logging()
     if _configured:
         return True
     try:
-        from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+        from opentelemetry.instrumentation.logging.handler import LoggingHandler
+        from opentelemetry.sdk._logs import LoggerProvider
         from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 
         log_exporter = exporter if exporter is not None else _build_log_exporter()
@@ -100,7 +130,7 @@ def configure_logging(
             return False
         provider = LoggerProvider(resource=Resource.create({"service.name": service_name}))
         provider.add_log_record_processor(BatchLogRecordProcessor(log_exporter))
-        handler = LoggingHandler(level=level, logger_provider=provider)
+        handler = LoggingHandler(level=level, logger_provider=provider, log_code_attributes=True)
         _redact_handler(handler)
         logging.getLogger().addHandler(handler)
         _provider = provider
@@ -128,3 +158,7 @@ def reset_logging_for_testing() -> None:
     _provider = None
     _handler = None
     _redaction_installed = False
+    with contextlib.suppress(Exception):
+        import structlog
+
+        structlog.reset_defaults()

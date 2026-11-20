@@ -19,6 +19,7 @@ class ActiveExecution:
     task_id: str
     workflow_id: str
     updated_at: datetime
+    state: str = ""
 
 
 class ActiveExecutionStore(Protocol):
@@ -44,6 +45,11 @@ def workflow_id_for(execution: ActiveExecution) -> str:
     return f"draft-pr-{execution.task_id}-{execution.execution_id}"
 
 
+def orphan_reason(execution: ActiveExecution, workflow_id: str) -> str:
+    """Describe why the execution was reclaimed, recording the state it was reclaimed from."""
+    return f"workflow {workflow_id} not live (state={execution.state or 'unknown'})"
+
+
 async def reconcile_orphaned_executions(
     *,
     store: ActiveExecutionStore,
@@ -59,6 +65,8 @@ async def reconcile_orphaned_executions(
         wf_id = workflow_id_for(execution)
         if await liveness.is_live(wf_id):
             continue
-        if await store.mark_orphaned(execution.execution_id, reason=f"workflow {wf_id} not live"):
+        if await store.mark_orphaned(
+            execution.execution_id, reason=orphan_reason(execution, wf_id)
+        ):
             orphaned += 1
     return ReconcileReport(scanned=len(active), orphaned=orphaned)

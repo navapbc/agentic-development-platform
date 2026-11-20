@@ -6,7 +6,7 @@ A spoken script for a recorded walkthrough of an in-progress build. Each act lis
 
 Show the cover slide with the title, subtitle, and your name.
 
-> Thank you all for joining. My name is Joe Robinson, and this is a state of development update on the Agentic Development Platform. In the next few minutes I will introduce what the platform is, show the guarantees it already provides, and walk through it carrying a tracked ticket all the way to a pull request.
+> Thank you all for joining. My name is [presenter], and this is a state of development update on the Agentic Development Platform. In the next few minutes I will introduce what the platform is, show the guarantees it already provides, and walk through it carrying a tracked ticket all the way to a pull request.
 
 ## Agenda
 
@@ -42,7 +42,7 @@ Walk the audience through this table on screen, one row at a time. The status co
 | Section | Technology | What we use it for | Status in this demo |
 | --- | --- | --- | --- |
 | Durable orchestration | Temporal | Runs every execution as a workflow with automatic retry, timeout, and resume. A worker crash does not lose state. The workflow continues from its last durable step. | Live (Acts 1 and 4) |
-| Model access | LiteLLM in front of AWS Bedrock | A single doorway to the Claude and Amazon Nova AI models with an ordered backup list, so if one model is down it falls back to the next instead of failing. | Live in Act 1 when the stack and Bedrock path are up |
+| Model access | LiteLLM in front of AWS Bedrock | A single doorway to the Claude AI models. Every tier is Claude with no substitute, so a throttled call is retried with a widening wait rather than answered by a different model family. | Live in Act 1 when the stack and Bedrock path are up |
 | Repository intelligence (RIS) | Zoekt code search plus SCIP and LSP code maps, merged by a router | Reads the repository and builds a short briefing pack of the code that matters for this task: the key functions, the files most likely to change, what calls what, the related tests, the libraries involved, and recent changes. The most relevant items come first, and each one is labeled with where it came from. This is how the agent knows where to work instead of blindly searching text. | Live (Act 2) when the target repo is indexed |
 | Coding agent | OpenHands agent server in a sandboxed pod | Carries out one small, well-defined task from the briefing pack, under hard limits on cost, tokens, tool calls, and wall-clock time. | Live (Act 4): the sandbox agent authors the change under enforced caps. |
 | Ticket integration | Custom Jira adapter for Cloud and Data Center | Jira is the single source of truth. We capture a locked snapshot of the issue, re-check it before opening a PR, and post follow-up links that never duplicate. | Live (Act 4): snapshot, re-check, follow-up link that never duplicates, and status changes against the real Jira Cloud ticket. |
@@ -202,14 +202,14 @@ Say over the second run:
 
 What happens: the same durable workflow now runs every gate before the pull request is promoted. It authors the change in the OpenHands sandbox pod on Kubernetes, runs continuous integration, repairs on a failure and reruns until the build is green, runs code and security review through the rebar kernel, runs Semgrep and Trivy scans, asks OPA for a promotion decision, then pauses for a human approval. An operator releases the pause with a second command. On approval the workflow re-checks the Jira ticket, promotes the draft to a ready pull request, and then parks for the pull-request-closed signal so the merge closes the loop. Every gate runs against a backend with no mock in the path.
 
-The pieces that need Kubernetes run on Kubernetes. The coding agent runs in a sandbox pod in the agent-sandbox namespace. The mcp-gateway and the inbound-webhook run as deployments in the agentic-dev-platform namespace on the local cluster.
+The pieces that need Kubernetes run on Kubernetes. The coding agent runs in a sandbox pod in the agent-sandbox namespace. The inbound-webhook runs as a deployment in the agentic-dev-platform namespace on the local cluster, and each tenant's mcp-gateway runs as a deployment in that tenant's tenant-<tenant> namespace.
 
 Prerequisite runbook for this act:
 
 1. Bring the stack up with `inv local-up` so Temporal, Postgres, and the workers are running.
 2. Bring the Bedrock path up with `inv tunnel-start --detach` and confirm it with `inv connectivity-check`.
-3. Deploy the Kubernetes pieces with `inv k8s-deploy --build`. This builds the local image, creates the agent-sandbox and agentic-dev-platform namespaces, and rolls out the mcp-gateway and inbound-webhook deployments. Confirm both are ready with `kubectl get pods -n agentic-dev-platform`.
-4. Port-forward the two services for the demo with `kubectl port-forward -n agentic-dev-platform svc/mcp-gateway 8150:80` and `kubectl port-forward -n agentic-dev-platform svc/inbound-webhook 8140:80` in separate terminals.
+3. Deploy the Kubernetes pieces with `inv k8s-deploy --build`. This builds the local image, creates the agent-sandbox and agentic-dev-platform namespaces, and rolls out the mcp-gateway and inbound-webhook deployments. Confirm both are ready with `kubectl get pods -n agentic-dev-platform` and `kubectl get pods -n tenant-<tenant>`, where `<tenant>` is the `TENANT` of `.env`.
+4. Port-forward the two services for the demo with `kubectl port-forward -n tenant-<tenant> svc/mcp-gateway 8150:80` and `kubectl port-forward -n agentic-dev-platform svc/inbound-webhook 8140:80` in separate terminals. A gateway client presents the `MCP_GATEWAY_TOKEN` of that tenant.
 5. Set the backend credentials the gates need. Jenkins or GitHub Actions for CI, Semgrep and Trivy on PATH for scans, OPA reachable for the policy decision, LiteLLM in front of Bedrock for review and authoring, a GitHub token with contents and pull-request write, and Jira Cloud credentials.
 6. Choose a not-done Jira ticket whose work is not already implemented and name it on the command.
 

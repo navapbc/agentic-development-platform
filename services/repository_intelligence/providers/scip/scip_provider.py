@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import re
-import subprocess
 from pathlib import Path
 
+from services import process
 from services.repository_intelligence.indexing.scip_builder import (
     DEFAULT_SCIP_CLI,
     SCIP_PYTHON_INDEXER,
@@ -405,7 +405,7 @@ class ScipProvider:
             return False
         try:
             head = resolve_commit(self._root)
-        except (subprocess.CalledProcessError, FileNotFoundError):
+        except (process.CalledProcessError, FileNotFoundError):
             return False
         return head.startswith(self._commit) or self._commit.startswith(head)
 

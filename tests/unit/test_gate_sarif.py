@@ -11,14 +11,30 @@ def _doc(results, *, rules=None, tool="semgrep"):
 def test_security_severity_maps_cvss_bands():
     doc = _doc(
         [
-            {"ruleId": "r-crit", "level": "error", "message": {"text": "crit"},
-             "properties": {"security-severity": "9.5"}},
-            {"ruleId": "r-high", "level": "warning", "message": {"text": "high"},
-             "properties": {"security-severity": "7.0"}},
-            {"ruleId": "r-med", "level": "warning", "message": {"text": "med"},
-             "properties": {"security-severity": "4.2"}},
-            {"ruleId": "r-low", "level": "note", "message": {"text": "low"},
-             "properties": {"security-severity": "1.0"}},
+            {
+                "ruleId": "r-crit",
+                "level": "error",
+                "message": {"text": "crit"},
+                "properties": {"security-severity": "9.5"},
+            },
+            {
+                "ruleId": "r-high",
+                "level": "warning",
+                "message": {"text": "high"},
+                "properties": {"security-severity": "7.0"},
+            },
+            {
+                "ruleId": "r-med",
+                "level": "warning",
+                "message": {"text": "med"},
+                "properties": {"security-severity": "4.2"},
+            },
+            {
+                "ruleId": "r-low",
+                "level": "note",
+                "message": {"text": "low"},
+                "properties": {"security-severity": "1.0"},
+            },
         ]
     )
     findings = parse_sarif(doc, scanner="semgrep")
@@ -56,10 +72,12 @@ def test_extracts_location_and_rule_id():
                 "level": "error",
                 "message": {"text": "SQL injection\nmore detail"},
                 "locations": [
-                    {"physicalLocation": {
-                        "artifactLocation": {"uri": "app/db.py"},
-                        "region": {"startLine": 42},
-                    }}
+                    {
+                        "physicalLocation": {
+                            "artifactLocation": {"uri": "app/db.py"},
+                            "region": {"startLine": 42},
+                        }
+                    }
                 ],
             }
         ]

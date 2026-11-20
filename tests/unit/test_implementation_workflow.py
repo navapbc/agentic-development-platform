@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import uuid
 
-from openhands.runtime.caps import COMPLETED, TOOL_CALLS_EXCEEDED
+import pytest
+from openhands.runtime.caps import COMPLETED, ERROR, TOOL_CALLS_EXCEEDED
+from services.integration.litellm_admin import (
+    RUN_MODEL_BUDGET_EXCEEDED,
+    TENANT_MODEL_BUDGET_EXCEEDED,
+)
 from services.orchestration.temporal_activities.implementation import (
     ClaimRequest,
     ClaimResult,
@@ -44,6 +49,7 @@ async def _run_workflow(
     max_tokens: int = 2_000_000,
     work_unit: str = "unit-1",
     existing_pr: FindOpenPrResult | None = None,
+    summary: str = "done",
 ):
     states: list[str] = []
     audits: list[AuditEvent] = []
@@ -101,7 +107,7 @@ async def _run_workflow(
             prompt_version="implementation/v1",
             workspace_path="/tmp/ws/agent-T-1",
             changed_files=["README.md", "feature.py"],
-            summary="done",
+            summary=summary,
         )
 
     async with await WorkflowEnvironment.start_time_skipping() as env:
@@ -188,6 +194,30 @@ async def test_tool_call_cap_breach_fails_bounded():
     assert failed.decision == "cap_breach"
     assert failed.reason == TOOL_CALLS_EXCEEDED
     assert failed.new_state == "FAILED"
+
+
+@pytest.mark.parametrize("reason", [RUN_MODEL_BUDGET_EXCEEDED, TENANT_MODEL_BUDGET_EXCEEDED])
+async def test_a_model_budget_refusal_fails_bounded(reason):
+    result, states, audits, _claims, _stages = await _run_workflow(terminal_reason=reason)
+
+    assert result.status == "failed"
+    assert result.terminal_reason == reason
+    assert states[-1] == "FAILED"
+    failed = audits[-1]
+    assert failed.event_type == "IMPLEMENTATION_FAILED"
+    assert failed.decision == "cap_breach"
+    assert failed.reason == reason
+
+
+async def test_failure_output_carries_exception_summary():
+    detail = "ModuleNotFoundError: No module named 'portal.helpers'"
+    result, _states, _audits, _claims, _stages = await _run_workflow(
+        terminal_reason=ERROR, summary=detail
+    )
+
+    assert result.status == "failed"
+    assert result.terminal_reason == ERROR
+    assert result.summary == detail
 
 
 async def test_cost_budget_breach_fails_bounded():

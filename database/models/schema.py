@@ -13,6 +13,7 @@ from sqlalchemy import (
     Integer,
     MetaData,
     Numeric,
+    PrimaryKeyConstraint,
     String,
     Table,
     Text,
@@ -76,6 +77,7 @@ executions = Table(
         server_default="TASK_RECEIVED",
     ),
     Column("repository", String(255), nullable=True),
+    Column("tenant", String(32), nullable=True, index=True),
     Column("repository_sha", String(64), nullable=True),
     Column("policy_bundle_version", String(64), nullable=True),
     Column("resolved_models", JSON, nullable=True),
@@ -116,6 +118,8 @@ audit_events = Table(
     Column("new_state", String(64), nullable=True),
     Column("decision", String(64), nullable=True),
     Column("reason", Text, nullable=True),
+    Column("remedy", Text, nullable=True),
+    Column("alert_channels", JSON, nullable=True),
     Column("prompt_version", String(64), nullable=True),
     Column("model_id", String(128), nullable=True),
     Column("policy_version", String(64), nullable=True),
@@ -130,13 +134,17 @@ evidence_artifacts = Table(
     metadata,
     Column("artifact_id", String(64), primary_key=True),
     Column("execution_id", String(64), nullable=False, index=True),
-    Column("content_hash", String(128), nullable=False, unique=True),
+    Column("content_hash", String(128), nullable=False),
     Column("source_component", String(64), nullable=False),
     Column("classification", String(32), nullable=True),
     Column("retention", String(32), nullable=True),
     Column("location", Text, nullable=True),  # filesystem path or object ref
     Column("metadata", JSON, nullable=True),
     _created_at(),
+    Column("tenant", String(32), nullable=False, server_default="", index=True),
+    UniqueConstraint(
+        "execution_id", "content_hash", name="uq_evidence_artifacts_execution_content_hash"
+    ),
 )
 
 
@@ -154,16 +162,19 @@ work_claims = Table(
     Column("claim_version", Integer, nullable=False, server_default="1"),
     _created_at(),
     Column("released_at", DateTime(timezone=True), nullable=True),
-    UniqueConstraint("task_id", "work_unit", name="task_work_unit"),
+    Column("tenant", String(32), nullable=False, server_default=""),
+    UniqueConstraint("tenant", "task_id", "work_unit", name="uq_work_claims_tenant_task_work_unit"),
 )
 
 
 sequence_gate = Table(
     "sequence_gate",
     metadata,
-    Column("task_id", String(64), primary_key=True),
+    Column("task_id", String(64), nullable=False),
     Column("current_sequence", BigInteger, nullable=False, server_default="0"),
     Column("updated_at", DateTime(timezone=True), server_default=func.now(), onupdate=func.now()),
+    Column("tenant", String(32), nullable=False, server_default=""),
+    PrimaryKeyConstraint("tenant", "task_id"),
 )
 
 
@@ -178,6 +189,7 @@ orphan_artifacts = Table(
     Column("state", String(32), nullable=False, server_default="active"),
     Column("ttl_at", DateTime(timezone=True), nullable=True),
     Column("platform_tagged", Boolean, nullable=False, server_default="true"),
+    Column("tenant", String(32), nullable=False, server_default=""),
     _created_at(),
 )
 

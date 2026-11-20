@@ -9,7 +9,7 @@
       "scip_reader": "scip version v0.9.0-dev",
       "structure": "scip-python@0.6.6"
     },
-    "path": "/Users/joerobinson/Documents/Projects/Nava/agentic-dev-platform/services/repository_intelligence/eval/gold/agentic-demo-service@0744a6e.jsonl",
+    "path": "services/repository_intelligence/eval/gold/agentic-demo-service@0744a6e.jsonl",
     "records": 80
   },
   "harness_version": "r2-harness/1",
@@ -237,7 +237,7 @@
   "repo": "agentic-demo-service",
   "runs_per_provider": 3,
   "toolchain": {
-    "cbm_binary": "/Users/joerobinson/Documents/Projects/Nava/codebase-memory-mcp/build/c/codebase-memory-mcp",
+    "cbm_binary": "vendor/bin/codebase-memory-mcp",
     "cbm_binary_bytes": 296169792,
     "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
     "python": "3.14.6"

@@ -17,6 +17,7 @@ with workflow.unsafe.imports_passed_through():
         WALL_CLOCK_EXCEEDED,
     )
 
+    from services.integration.litellm_admin import MODEL_BUDGET_REASONS
     from services.orchestration.temporal_activities.implementation import (
         IMPLEMENTATION_PROMPT_VERSION,
         ClaimRequest,
@@ -45,7 +46,7 @@ with workflow.unsafe.imports_passed_through():
         find_open_pr,
     )
 
-_CAP_BREACH_REASONS = frozenset({TOOL_CALLS_EXCEEDED, WALL_CLOCK_EXCEEDED})
+_CAP_BREACH_REASONS = frozenset({TOOL_CALLS_EXCEEDED, WALL_CLOCK_EXCEEDED, *MODEL_BUDGET_REASONS})
 COST_BUDGET_EXCEEDED = "cost_budget_exceeded"
 LLM_CALLS_EXCEEDED = "llm_calls_exceeded"
 TOKEN_BUDGET_EXCEEDED = "token_budget_exceeded"
@@ -70,6 +71,7 @@ class ImplementationInput:
     activity_timeout_seconds: float = 2400.0
     plan: str = ""
     context_package: dict[str, Any] = field(default_factory=dict)
+    owner_workflow_id: str = ""
 
 
 @dataclass
@@ -91,6 +93,7 @@ class ImplementationOutput:
     cache_read_tokens: int = 0
     llm_calls: int = 0
     claim_version: int = 0
+    claim_owner_workflow_id: str = ""
     summary: str = ""
 
 
@@ -99,7 +102,8 @@ class ImplementationWorkflow:
     @workflow.run
     async def run(self, params: ImplementationInput) -> ImplementationOutput:
         retry = RetryPolicy(maximum_attempts=3)
-        once = RetryPolicy(maximum_attempts=1)
+        # The stage refuses every retry except one after its worker stopped mid-attempt.
+        lost_worker_retry = RetryPolicy(maximum_attempts=2)
         short = timedelta(seconds=30)
         context_timeout = timedelta(minutes=5)
         stage_timeout = timedelta(seconds=params.activity_timeout_seconds)
@@ -131,6 +135,7 @@ class ImplementationWorkflow:
         await persist("IMPLEMENTING")
 
         claim_version = 0
+        claim_owner = ""
         if params.work_unit:
             claim: ClaimResult = await workflow.execute_activity(
                 claim_work_unit,
@@ -140,6 +145,7 @@ class ImplementationWorkflow:
                     work_unit=params.work_unit,
                     agent_id=params.agent_id or params.execution_id,
                     file_impact=list(params.file_impact),
+                    owner_workflow_id=params.owner_workflow_id,
                 ),
                 start_to_close_timeout=short,
                 retry_policy=retry,
@@ -166,6 +172,7 @@ class ImplementationWorkflow:
                     claimed=False,
                 )
             claim_version = claim.claim_version
+            claim_owner = claim.owner_workflow_id or params.owner_workflow_id or workflow_id
 
         if params.repo:
             existing: FindOpenPrResult = await workflow.execute_activity(
@@ -198,6 +205,7 @@ class ImplementationWorkflow:
                     branch=existing.head,
                     pr_number=existing.number,
                     pr_url=existing.url,
+                    claim_owner_workflow_id=claim_owner,
                 )
 
         context_package = params.context_package
@@ -243,7 +251,7 @@ class ImplementationWorkflow:
                 plan=params.plan,
             ),
             start_to_close_timeout=stage_timeout,
-            retry_policy=once,
+            retry_policy=lost_worker_retry,
         )
 
         await workflow.execute_activity(
@@ -316,6 +324,8 @@ class ImplementationWorkflow:
                 tokens=result.tokens,
                 cache_read_tokens=result.cache_read_tokens,
                 llm_calls=result.llm_calls,
+                claim_owner_workflow_id=claim_owner,
+                summary=result.summary,
             )
 
         await audit(
@@ -350,5 +360,6 @@ class ImplementationWorkflow:
             cache_read_tokens=result.cache_read_tokens,
             llm_calls=result.llm_calls,
             claim_version=claim_version,
+            claim_owner_workflow_id=claim_owner,
             summary=result.summary,
         )

@@ -11,13 +11,16 @@ from services.integration.credentials import (
     EnvSecretResolver,
     SecretNotFoundError,
     load_env_config,
+    load_platform_config,
 )
 from services.integration.github.credentials import (
     GitHubCredentialResolver,
     GitHubRepoCredential,
     UnconfiguredRepositoryError,
+    build_single_identity_resolver,
     parse_github_config,
 )
+from services.integration.repositories import parse_repositories
 
 
 def _config() -> dict:
@@ -40,8 +43,19 @@ def _config() -> dict:
     }
 
 
-def _resolver(raw: dict, allowlist: set[str], secrets: dict[str, str]) -> GitHubCredentialResolver:
-    return GitHubCredentialResolver(parse_github_config(raw), allowlist, EnvSecretResolver(secrets))
+def _resolver(
+    raw: dict,
+    allowlist: set[str],
+    secrets: dict[str, str],
+    overrides: dict[str, dict] | None = None,
+) -> GitHubCredentialResolver:
+    registry = parse_repositories(
+        {"repositories": {name: (overrides or {}).get(name, {}) for name in allowlist}},
+        root="/repos",
+    )
+    return GitHubCredentialResolver(
+        parse_github_config(raw, registry), allowlist, EnvSecretResolver(secrets)
+    )
 
 
 def test_default_resolves_any_allowlisted_repo_without_enumeration():
@@ -65,9 +79,12 @@ def test_non_allowlisted_repo_resolves_none():
 
 
 def test_per_repo_token_on_the_same_host_and_owner():
-    raw = _config()
-    raw["repositories"] = {"billing": {"token_ref": "TOKEN_BILLING"}}
-    resolver = _resolver(raw, {"svc", "billing"}, {"TOKEN_A": "aaa", "TOKEN_BILLING": "bbb"})
+    resolver = _resolver(
+        _config(),
+        {"svc", "billing"},
+        {"TOKEN_A": "aaa", "TOKEN_BILLING": "bbb"},
+        {"billing": {"token_ref": "TOKEN_BILLING"}},
+    )
 
     svc = resolver.resolve("svc")
     billing = resolver.resolve("billing")
@@ -80,9 +97,9 @@ def test_per_repo_token_on_the_same_host_and_owner():
 
 
 def test_per_repo_owner_on_github_com():
-    raw = _config()
-    raw["repositories"] = {"partner": {"owner": "partner-org"}}
-    resolver = _resolver(raw, {"partner"}, {"TOKEN_A": "aaa"})
+    resolver = _resolver(
+        _config(), {"partner"}, {"TOKEN_A": "aaa"}, {"partner": {"owner": "partner-org"}}
+    )
 
     cred = resolver.resolve("partner")
 
@@ -95,11 +112,12 @@ def test_per_repo_owner_on_github_com():
 
 
 def test_enterprise_and_github_com_coexist():
-    raw = _config()
-    raw["repositories"] = {
-        "legacy": {"host": "enterprise", "owner": "platform", "token_ref": "GHES_TOKEN"}
-    }
-    resolver = _resolver(raw, {"svc", "legacy"}, {"TOKEN_A": "aaa", "GHES_TOKEN": "ghs"})
+    resolver = _resolver(
+        _config(),
+        {"svc", "legacy"},
+        {"TOKEN_A": "aaa", "GHES_TOKEN": "ghs"},
+        {"legacy": {"host": "enterprise", "owner": "platform", "token_ref": "GHES_TOKEN"}},
+    )
 
     svc = resolver.resolve("svc")
     legacy = resolver.resolve("legacy")
@@ -121,11 +139,23 @@ def test_enterprise_and_github_com_coexist():
 def test_no_default_and_incomplete_repo_fails_closed():
     raw = _config()
     del raw["default"]
-    raw["repositories"] = {"orphan": {"token_ref": "TOKEN_A"}}
-    resolver = _resolver(raw, {"orphan"}, {"TOKEN_A": "aaa"})
+    resolver = _resolver(raw, {"orphan"}, {"TOKEN_A": "aaa"}, {"orphan": {"token_ref": "TOKEN_A"}})
 
     with pytest.raises(UnconfiguredRepositoryError):
         resolver.resolve("orphan")
+
+
+@pytest.mark.parametrize("section", ["allowlist", "repositories"])
+def test_github_yaml_with_a_moved_section_names_repositories_yaml(section: str):
+    raw = {**_config(), section: ["svc"] if section == "allowlist" else {"svc": {}}}
+
+    with pytest.raises(ConfigError, match=f"github.yaml sets {section}, which repositories.yaml"):
+        parse_github_config(raw)
+
+
+def test_a_repository_override_naming_an_unknown_host_is_refused():
+    with pytest.raises(ConfigError, match="host github.yaml does not define: nowhere"):
+        _resolver(_config(), {"svc"}, {}, {"svc": {"host": "nowhere"}})
 
 
 def test_missing_secret_reference_fails_closed():
@@ -196,12 +226,43 @@ def test_load_env_config_missing_file_raises(tmp_path):
         load_env_config("github", environment="local", root=tmp_path)
 
 
+def test_load_platform_config_reads_tracked_yaml(tmp_path):
+    platform_dir = tmp_path / "config" / "platform"
+    platform_dir.mkdir(parents=True)
+    (platform_dir / "litellm-config.yaml").write_text("model_list: []\n", encoding="utf-8")
+
+    assert load_platform_config("litellm-config", root=tmp_path) == {"model_list": []}
+
+
+def test_load_platform_config_missing_file_raises(tmp_path):
+    with pytest.raises(ConfigError):
+        load_platform_config("litellm-config", root=tmp_path)
+
+
+def test_repository_platform_config_holds_the_gateway_catalog():
+    assert "model_list" in load_platform_config("litellm-config")
+
+
 def test_env_secret_resolver_reads_dotenv(tmp_path):
     env_file = tmp_path / ".env"
     env_file.write_text("TOKEN_A=from-dotenv\n", encoding="utf-8")
     resolver = EnvSecretResolver(env_file=env_file)
 
     assert resolver.resolve("TOKEN_A") == "from-dotenv"
+
+
+def test_a_missing_secret_names_the_variable_the_env_file_and_the_next_command(tmp_path):
+    """An operator has to learn which name to set and where, not only that one is absent."""
+    env_file = tmp_path / ".env"
+    env_file.write_text("OTHER=value\n", encoding="utf-8")
+
+    with pytest.raises(SecretNotFoundError) as caught:
+        EnvSecretResolver(env_file=env_file).resolve("GITHUB_TOKEN")
+
+    message = str(caught.value)
+    assert "GITHUB_TOKEN" in message
+    assert str(env_file) in message
+    assert "inv local-up" in message
 
 
 def test_committed_example_template_is_valid_and_resolves():
@@ -217,3 +278,35 @@ def test_committed_example_template_is_valid_and_resolves():
     assert cred.token == "tok"
     assert cred.git_base_url == "https://github.com"
     assert resolver.resolve("not-an-allowlisted-repo") is None
+
+
+def test_a_single_identity_without_a_token_reports_the_repository_unconfigured():
+    """The token reference is synthetic, so an empty token must not resolve it as a secret."""
+    resolver = build_single_identity_resolver(
+        api_url="https://ghe.corp/api/v3",
+        owner="platform",
+        git_base_url="https://ghe.corp",
+        token="",
+        repos={"repo-x"},
+    )
+
+    assert resolver.repos() == set()
+    with pytest.raises(UnconfiguredRepositoryError):
+        resolver.resolve("repo-x")
+
+
+def test_a_single_identity_with_a_token_resolves_the_credential():
+    resolver = build_single_identity_resolver(
+        api_url="https://ghe.corp/api/v3",
+        owner="platform",
+        git_base_url="https://ghe.corp",
+        token="ghs-single",
+        repos={"repo-x"},
+    )
+
+    assert resolver.resolve("repo-x") == GitHubRepoCredential(
+        api_url="https://ghe.corp/api/v3",
+        owner="platform",
+        git_base_url="https://ghe.corp",
+        token="ghs-single",
+    )

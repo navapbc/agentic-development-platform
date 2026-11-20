@@ -9,6 +9,7 @@ The coupling evaluation that gates this capability is recorded in [authored-iden
 - `AUTHORSHIP_SIGNING_ENABLED` turns the capability on. It defaults to `true`. Set it to `false` to skip authorship signing.
 - `AUTHORSHIP_IDENTITY_ID` is the rebar identity ticket id for the authoring agent. Signing is inactive when it is unset, so a deployment that does not set it does not participate.
 - `AUTHORSHIP_SIGNING_KEY_PATH` is the filesystem path to the agent's OpenSSH private signing key.
+- `AUTHORSHIP_SIGNING_KEY` holds the private key itself. When it is set it takes precedence over the path, and the worker writes it once to a private file with its derived `.pub` counterpart alongside. A deployed environment injects it from the secret store.
 
 The capability is active only when `AUTHORSHIP_SIGNING_ENABLED` is true, the ticket backend is rebar, and `AUTHORSHIP_IDENTITY_ID` is set. On a capable backend a missing key raises rather than silently skipping, so a run never merges an unsigned change when signing is expected.
 
@@ -32,7 +33,7 @@ The activity worker runs an authorship signing preflight at startup. When the ca
 
 ## Deployed environments
 
-Store the private signing key in the deployment secret store, the same path other worker secrets take, and mount it at `AUTHORSHIP_SIGNING_KEY_PATH`, with its `.pub` counterpart alongside it. Provision the identity and its genesis key in the rebar store out of band, then set `AUTHORSHIP_IDENTITY_ID` to the identity id. Rebuild or repull the activity-worker image so it carries `openssh-client`. The startup preflight validates this provisioning before the worker accepts work.
+Store the private signing key in the `authorship_signing_key` secret of the [secret-store](../infra/terraform/secret-store) module and inject it into the activity worker as `AUTHORSHIP_SIGNING_KEY`. Provision the identity and its genesis key in the rebar store out of band, then set `AUTHORSHIP_IDENTITY_ID` to the identity id. Rebuild or repull the activity-worker image so it carries `openssh-client`. The startup preflight validates this provisioning before the worker accepts work.
 
 ## Rotation and revocation
 

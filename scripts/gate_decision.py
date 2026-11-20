@@ -30,9 +30,7 @@ def main() -> int:
     group.add_argument(
         "--approve", action="store_true", help="Approve the gate and continue the run."
     )
-    group.add_argument(
-        "--reject", action="store_true", help="Reject the gate and cancel the run."
-    )
+    group.add_argument("--reject", action="store_true", help="Reject the gate and cancel the run.")
     args = parser.parse_args()
     return asyncio.run(
         _decide(args.issue, gate=args.gate, approved=args.approve, actor=local_operator())

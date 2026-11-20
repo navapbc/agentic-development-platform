@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 
 from adapters.interfaces.git_host import (
     BranchRef,
@@ -26,12 +27,36 @@ def _sha(*parts: str) -> str:
     return hashlib.sha256(_UNIT_SEPARATOR.join(parts).encode()).hexdigest()[:40]
 
 
+def _read_workspace(path: str) -> dict[str, str] | None:
+    """The whole workspace tree, or None when there is no directory to read.
+
+    A whole tree rather than a set of touched paths so that a deletion reaches the branch, which
+    a per-path update could not express. None distinguishes a caller with no workspace on disk
+    from one whose workspace is empty, because the first must leave the seeded tree alone.
+
+    `surrogateescape` keeps a file whose bytes are not valid UTF-8 in the tree, and round-trips
+    those bytes back out on encode. Skipping such a file would make this backend disagree with
+    the git-backed ones about which paths a commit carries.
+    """
+    root = Path(path)
+    if not root.is_dir():
+        return None
+    files: dict[str, str] = {}
+    for candidate in root.rglob("*"):
+        if not candidate.is_file() or ".git" in candidate.relative_to(root).parts:
+            continue
+        files[str(candidate.relative_to(root))] = candidate.read_text(
+            encoding="utf-8", errors="surrogateescape"
+        )
+    return files
+
+
 @dataclass
 class _Repo:
     default_branch: str = "main"
     heads: dict[str, str] = field(default_factory=dict)
     trees: dict[str, dict[str, str]] = field(default_factory=dict)
-    applied: dict[str, set[str]] = field(default_factory=dict)
+    published: dict[str, str] = field(default_factory=dict)
     prs: list[PullRequest] = field(default_factory=list)
     comments: dict[int, list[PRComment]] = field(default_factory=dict)
 
@@ -95,26 +120,28 @@ class MockGitHost:
         record = self._repo(request.repo)
         if request.branch not in record.heads:
             await self.ensure_branch(request.repo, request.branch, request.base)
-        applied = record.applied.setdefault(request.branch, set())
-        if request.execution_id in applied:
+        if record.published.get(request.branch) == request.tree:
             return CommitResult(
                 repo=request.repo,
                 branch=request.branch,
                 commit_sha=record.heads[request.branch],
                 pushed=False,
                 replayed=True,
+                published_tree=record.published[request.branch],
             )
-        tree = record.trees.setdefault(request.branch, {})
-        tree.update(request.files)
-        head = _sha(record.heads[request.branch], request.execution_id, request.message)
+        published = _read_workspace(request.workspace)
+        if published is not None:
+            record.trees[request.branch] = published
+        head = _sha(record.heads[request.branch], request.tree)
         record.heads[request.branch] = head
-        applied.add(request.execution_id)
+        record.published[request.branch] = request.tree
         return CommitResult(
             repo=request.repo,
             branch=request.branch,
             commit_sha=head,
             pushed=True,
             replayed=False,
+            published_tree=record.published[request.branch],
         )
 
     async def open_draft_pr(
@@ -202,6 +229,3 @@ class MockGitHost:
                 record.prs[index] = ready
                 return ready
         raise KeyError(f"pull request missing: {repo}#{number}")
-
-    def add_pr_comment(self, repo: str, number: int, author: str, body: str) -> None:
-        self._repo(repo).comments.setdefault(number, []).append(PRComment(author, body))

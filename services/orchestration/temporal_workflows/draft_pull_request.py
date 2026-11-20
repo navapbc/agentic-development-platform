@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from datetime import timedelta
 from typing import Any
@@ -13,8 +15,31 @@ from temporalio.exceptions import ActivityError
 with workflow.unsafe.imports_passed_through():
     from adapters.interfaces.git_host import PublishResult
 
+    from services.integration.litellm_admin import MODEL_BUDGET_REASONS
+    from services.operator_remedy import Remedy
+    from services.orchestration.change_narrative import (
+        PullRequestNarrative,
+        compose_pull_request_body,
+        compose_testing_evidence,
+    )
     from services.orchestration.gates.contract import PAUSE_FOR_HUMAN, GateContext
     from services.orchestration.gates.runner import run_gate_stage
+    from services.orchestration.intake_base import declared_issue_key
+    from services.orchestration.remedies import (
+        approval_rejected_remedy,
+        branch_sync_remedy,
+        claim_denied_remedy,
+        code_defect_remedy,
+        existing_pr_remedy,
+        gate_decision_remedy,
+        gate_rejected_remedy,
+        implementation_remedy,
+        issue_recheck_remedy,
+        plan_rejected_remedy,
+        policy_denied_remedy,
+        repair_remedy,
+        review_blocked_remedy,
+    )
     from services.orchestration.temporal_activities.authorship import (
         SignAuthorshipRequest,
         VerifyAuthorshipRequest,
@@ -48,21 +73,30 @@ with workflow.unsafe.imports_passed_through():
         ClassifyTestFailuresRequest,
         EvaluateGateRequest,
         GatePlan,
+        LoadGatePlanRequest,
         TriageResult,
         classify_test_failures,
         evaluate_gate,
         load_gate_plan,
     )
     from services.orchestration.temporal_activities.implementation import (
+        FinalizeClaimRequest,
+        FinalizeClaimResult,
         ResetCoordinationRequest,
+        finalize_work_claim,
         reset_task_coordination,
     )
     from services.orchestration.temporal_activities.manifest import (
         RecordManifestRequest,
         record_manifest,
     )
+    from services.orchestration.temporal_activities.model_access import (
+        DeleteRunModelKeyRequest,
+        delete_run_model_key,
+    )
     from services.orchestration.temporal_activities.notify import (
         AlertHumanInterventionRequest,
+        AlertHumanInterventionResult,
         alert_human_intervention,
     )
     from services.orchestration.temporal_activities.persistence import (
@@ -76,7 +110,9 @@ with workflow.unsafe.imports_passed_through():
     from services.orchestration.temporal_activities.planning import (
         ContextRequest,
         ContextResult,
+        PlanEvidenceRequest,
         gather_repo_context,
+        record_plan_evidence,
     )
     from services.orchestration.temporal_activities.policy import (
         EvaluatePromotionRequest,
@@ -197,17 +233,40 @@ PR_CLOSED_UNMERGED = "pr_closed_unmerged"
 
 _SEQUENCE_STRIDE = 100
 _COMMIT_OFFSET = 2
-_OPEN_PR_OFFSET = 3
+_REPAIR_BASE_OFFSET = 3
 _CI_TRIGGER_OFFSET = 4
 _REPAIR_STRIDE = 2
 _APPROVAL_OFFSET = 1
 _PROMOTE_OFFSET = 2
+
+# A commit clones the target repository. On an established repository that transfer has overrun
+# a five-minute budget under load, and the sequence gate discards every retry that follows.
+_COMMIT_TIMEOUT = timedelta(minutes=15)
 
 _CODE_REVIEW = "code-review"
 _SECURITY_REVIEW = "security-review"
 _ACCEPTANCE = "acceptance"
 _REVIEW = "REVIEW"
 _REVIEW_KIND = "review"
+
+# Patch ids that keep executions started before these branches existed replaying deterministically.
+_DELETE_RUN_MODEL_KEY_PATCH = "delete-run-model-key"
+_RUN_MODEL_BUDGET_STOP_PATCH = "run-model-budget-stop"
+_FINALIZE_ON_CANCEL_PATCH = "finalize-on-cancel"
+_CODE_DEFECT_ALERT_PATCH = "code-defect-alert"
+_IMPLEMENTATION_TASK_DESCRIPTION_PATCH = "implementation-task-description"
+
+_GATE_FAILED_PREFIX = "gate_failed:"
+
+
+def _gate_names(human_review: Sequence[str]) -> str:
+    """Render policy human-review entries as the gate names an operator passes to `inv gate`.
+
+    The promotion policy emits each entry as ``gate_failed:<name>``. Carried through verbatim the
+    operator is told to approve a gate called ``gate_failed:security-review``, which is not the
+    name on any gate.
+    """
+    return ",".join(entry.removeprefix(_GATE_FAILED_PREFIX) for entry in human_review)
 
 
 @dataclass
@@ -331,6 +390,10 @@ def _project_from_issue(issue_key: str) -> str:
     return issue_key.split("-", 1)[0] if "-" in issue_key else ""
 
 
+def _model_budget_reason(terminal_reason: str) -> str:
+    return terminal_reason if terminal_reason in MODEL_BUDGET_REASONS else ""
+
+
 def _scanner_unavailable_result(plan: GatePlan) -> ScanChangeResult:
     names = [node.name for node in plan.scanner]
     findings = [
@@ -357,6 +420,17 @@ def _scanner_unavailable_result(plan: GatePlan) -> ScanChangeResult:
     )
 
 
+def _acceptance_criteria(params: DraftPullRequestInput) -> str:
+    """Resolve the acceptance criteria the completion gate judges against.
+
+    Backends that expose a dedicated criteria field supply it on the stored issue.
+    The rebar backend has no such field and carries the criteria inside the ticket
+    description, so the description is the fallback.
+    """
+    stated = str(params.stored_issue.get("acceptance_criteria") or "").strip()
+    return stated or params.task_description.strip()
+
+
 def _change_subject(impl: ImplementationOutput, commit_sha: str) -> str:
     files = "\n".join(impl.changed_files) if impl.changed_files else "(no file list)"
     subject = f"Change on branch {impl.branch} at {commit_sha}.\nChanged files:\n{files}"
@@ -372,6 +446,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         self._sync: BranchSyncOutput | None = None
         self._commit: CommitPushResult | None = None
         self._pr: PullRequestOutput | None = None
+        self._pr_body: str = ""
         self._pr_approval: _PrApproval | None = None
         self._pr_closed: _PrClosed | None = None
         self._repair_decision: _RepairDecision | None = None
@@ -389,6 +464,9 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         self._dependency_seq: int = 0
         self._base_sha: str = ""
         self._authorship: dict[str, dict] = {}
+        self._claim_owner_workflow_id: str = ""
+        self._claim_completed: bool = False
+        self._run_model_key_deleted: bool = False
 
     async def _sign_authorship(
         self,
@@ -450,11 +528,105 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
 
     @workflow.run
     async def run(self, params: DraftPullRequestInput) -> DraftPullRequestOutput:
+        """Drive the orchestration and settle the work claim however the run ends.
+
+        Every exit has to settle the claim, otherwise the work unit stays claimed and no
+        later run can take it. `inv restart` drops a row this leaves behind.
+        """
+        try:
+            outcome = await self._orchestrate(params)
+        except asyncio.CancelledError:
+            # Temporal delivers a workflow cancel to the run task once, so the activities the
+            # cleanup schedules after catching it run to completion and are not cancelled.
+            if workflow.patched(_FINALIZE_ON_CANCEL_PATCH):
+                await self._finalize_claim(params)
+            raise
+        except Exception:
+            await self._finalize_claim(params)
+            raise
+        await self._finalize_claim(params)
+        return outcome
+
+    async def _finalize_claim(self, params: DraftPullRequestInput) -> None:
+        await self._delete_run_model_key(params)
+        owner = self._claim_owner_workflow_id
+        if not owner:
+            return
+        self._claim_owner_workflow_id = ""
+        settled: FinalizeClaimResult | None = None
+        try:
+            settled = await workflow.execute_activity(
+                finalize_work_claim,
+                FinalizeClaimRequest(
+                    task_id=params.task_id,
+                    work_unit=params.work_unit,
+                    owner_workflow_id=owner,
+                    completed=self._claim_completed,
+                ),
+                start_to_close_timeout=timedelta(seconds=30),
+                retry_policy=RetryPolicy(maximum_attempts=3),
+            )
+        except Exception:
+            settled = None
+        try:
+            await self._audit(self._settlement_event(params, owner, settled))
+        except Exception:
+            # Neither settling the claim nor recording the attempt may replace the run's
+            # own outcome. A claim left unsettled is recoverable with inv restart.
+            return
+
+    async def _delete_run_model_key(self, params: DraftPullRequestInput) -> None:
+        if self._run_model_key_deleted or not workflow.patched(_DELETE_RUN_MODEL_KEY_PATCH):
+            return
+        self._run_model_key_deleted = True
+        try:
+            await workflow.execute_activity(
+                delete_run_model_key,
+                DeleteRunModelKeyRequest(execution_id=params.execution_id),
+                start_to_close_timeout=timedelta(seconds=30),
+                schedule_to_close_timeout=timedelta(minutes=5),
+                retry_policy=RetryPolicy(maximum_attempts=3),
+            )
+        except Exception:
+            # The key expires at the access TTL, so a failed delete never replaces the outcome.
+            return
+
+    def _settlement_event(
+        self,
+        params: DraftPullRequestInput,
+        owner: str,
+        settled: FinalizeClaimResult | None,
+    ) -> AuditEvent:
+        if settled is None:
+            decision = "not_settled"
+            reason = "finalize_work_claim did not complete"
+        elif not settled.finalized:
+            decision = "not_settled"
+            reason = f"no claim held by {owner} for work unit {params.work_unit}"
+        else:
+            decision = settled.state
+            reason = None
+        return AuditEvent(
+            event_id=f"{params.execution_id}:WORK_UNIT_SETTLED",
+            task_id=params.task_id,
+            execution_id=params.execution_id,
+            event_type="WORK_UNIT_SETTLED",
+            stage="SETTLING",
+            decision=decision,
+            reason=reason,
+            workflow_id=owner,
+        )
+
+    async def _orchestrate(self, params: DraftPullRequestInput) -> DraftPullRequestOutput:
         retry = RetryPolicy(maximum_attempts=3)
         short = timedelta(seconds=30)
         workflow_id = workflow.info().workflow_id
 
-        title = params.title or f"[{params.task_id}] {params.task}"
+        tracker_key = declared_issue_key(params.stored_issue.get("labels") or ())
+        default_title = (
+            f"{tracker_key}: {params.task}" if tracker_key else f"[{params.task_id}] {params.task}"
+        )
+        title = params.title or default_title
 
         await workflow.execute_activity(
             record_manifest,
@@ -463,6 +635,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 task_id=params.task_id,
                 repository_sha=params.base_sha,
                 snapshot_version=params.snapshot_version,
+                repo=params.repo,
             ),
             start_to_close_timeout=short,
             retry_policy=retry,
@@ -510,6 +683,13 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             params, kind="plan", artifact=plan_text or params.task, commit=self._base_sha
         )
 
+        if params.work_unit:
+            self._claim_owner_workflow_id = workflow_id
+
+        coding_task = params.task
+        if params.task_description and workflow.patched(_IMPLEMENTATION_TASK_DESCRIPTION_PATCH):
+            coding_task = f"{coding_task}\n\n{params.task_description}"
+
         impl: ImplementationOutput = await workflow.execute_child_workflow(
             ImplementationWorkflow.run,
             ImplementationInput(
@@ -517,7 +697,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 execution_id=params.execution_id,
                 repo=params.repo,
                 commit=self._base_sha,
-                task=params.task,
+                task=coding_task,
                 base=params.base,
                 focus=params.focus,
                 work_unit=params.work_unit,
@@ -529,9 +709,16 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 activity_timeout_seconds=params.activity_timeout_seconds,
                 plan=plan_text,
                 context_package=context_package,
+                owner_workflow_id=workflow_id,
             ),
             id=f"{workflow_id}-impl",
         )
+        if impl.claimed:
+            # A child that completed under the previous build reports no owner, and the claim
+            # row it wrote names the child workflow rather than this one.
+            self._claim_owner_workflow_id = impl.claim_owner_workflow_id or f"{workflow_id}-impl"
+        else:
+            self._claim_owner_workflow_id = ""
 
         if impl.status == EXISTING_PR_REUSED:
             action = await linkback_existing(impl.pr_url, impl.branch)
@@ -541,6 +728,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 reason=EXISTING_PR_REUSED,
                 stage="implementation",
                 detail=impl.pr_url,
+                remedy=existing_pr_remedy(params.issue_key, impl.pr_url),
             )
             return DraftPullRequestOutput(
                 execution_id=params.execution_id,
@@ -560,6 +748,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 reason=CLAIM_DENIED,
                 stage="claim",
                 detail=impl.terminal_reason,
+                remedy=claim_denied_remedy(params.issue_key),
             )
             return DraftPullRequestOutput(
                 execution_id=params.execution_id,
@@ -573,7 +762,12 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 workflow_id,
                 reason=impl.terminal_reason or IMPL_FAILED,
                 stage="implementation",
-                detail=impl.terminal_reason,
+                detail=impl.summary or impl.terminal_reason,
+                remedy=implementation_remedy(
+                    impl.terminal_reason or IMPL_FAILED,
+                    issue_key=params.issue_key,
+                    execution_id=params.execution_id,
+                ),
             )
             return DraftPullRequestOutput(
                 execution_id=params.execution_id,
@@ -621,6 +815,15 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                     start_to_close_timeout=short,
                     retry_policy=retry,
                 )
+                if workflow.patched(_CODE_DEFECT_ALERT_PATCH):
+                    await self._terminal_alert(
+                        params,
+                        workflow_id,
+                        reason=SuspendReason.AWAITING_FIX.value,
+                        stage="push_branch",
+                        detail=str(exc),
+                        remedy=code_defect_remedy(str(exc)),
+                    )
                 parked_from = ""
                 if params.issue_key and params.parked_status:
                     park: ParkTaskResult = await workflow.execute_activity(
@@ -698,7 +901,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         workflow_id: str,
     ) -> DraftPullRequestOutput:
         retry = RetryPolicy(maximum_attempts=3)
-        commit_timeout = timedelta(minutes=5)
+        commit_timeout = _COMMIT_TIMEOUT
         sequence_base = impl.claim_version * _SEQUENCE_STRIDE
 
         if self._sync is None:
@@ -724,7 +927,12 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 workflow_id,
                 reason=sync.terminal_reason or SYNC_PAUSED,
                 stage="branch_sync",
-                detail=sync.terminal_reason,
+                detail=sync.detail or sync.terminal_reason,
+                remedy=branch_sync_remedy(
+                    sync.terminal_reason or SYNC_PAUSED,
+                    issue_key=params.issue_key,
+                    branch=impl.branch,
+                ),
             )
             return DraftPullRequestOutput(
                 execution_id=params.execution_id,
@@ -744,6 +952,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                     commit=params.base_sha,
                     message=params.commit_message,
                     sequence=sequence_base + _COMMIT_OFFSET,
+                    file_impact=list(params.file_impact),
                 ),
                 start_to_close_timeout=commit_timeout,
                 retry_policy=retry,
@@ -757,6 +966,27 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             branch=commit.branch,
         )
 
+    @staticmethod
+    def _testing_evidence(params: DraftPullRequestInput) -> str:
+        return compose_testing_evidence(
+            reviewed=params.run_reviews, policy_evaluated=params.run_policy
+        )
+
+    def _post_repair_sequence_base(
+        self, params: DraftPullRequestInput, impl: ImplementationOutput
+    ) -> int:
+        """The first sequence that clears every repair commit this run could have made.
+
+        The gate admits a sequence only when it exceeds the one before it, so each stage has
+        to outrank the stages that already ran. Repair commits occupy
+        ``_REPAIR_BASE_OFFSET + _REPAIR_STRIDE * attempt`` and all of them land before the pull
+        request opens, so opening the PR and promoting it both start from here.
+        """
+        attempts = max(params.max_repair_attempts, self._max_attempt_used)
+        return (
+            impl.claim_version * _SEQUENCE_STRIDE + _CI_TRIGGER_OFFSET + _REPAIR_STRIDE * attempts
+        )
+
     async def _open_pull_request(
         self,
         params: DraftPullRequestInput,
@@ -765,15 +995,21 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         workflow_id: str,
         title: str,
     ) -> DraftPullRequestOutput:
-        sequence_base = impl.claim_version * _SEQUENCE_STRIDE
         commit = self._commit
         commit_branch = commit.branch if commit else outcome.branch
 
-        body = params.body or (
-            f"Automated change for {params.issue_key} (execution {params.execution_id})."
+        body = params.body or compose_pull_request_body(
+            commit.pr_template if commit else "",
+            PullRequestNarrative(
+                issue_key=declared_issue_key(params.stored_issue.get("labels") or ())
+                or params.issue_key,
+                execution_id=params.execution_id,
+                summary=impl.summary or params.task,
+                description=params.task_description,
+                testing=self._testing_evidence(params),
+            ),
         )
-        if impl.summary:
-            body = f"{body}\n\n{impl.summary}"
+        self._pr_body = body
         if self._pr is None:
             self._pr = await workflow.execute_child_workflow(
                 PullRequestWorkflow.run,
@@ -787,7 +1023,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                     body=body,
                     issue_key=params.issue_key,
                     base_sha=params.base_sha,
-                    sequence=sequence_base + _OPEN_PR_OFFSET,
+                    sequence=self._post_repair_sequence_base(params, impl),
                 ),
                 id=f"{workflow_id}-pr",
             )
@@ -828,17 +1064,16 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             repair = await self._repair(params, impl, result, workflow_id, attempt)
             if repair is None:
                 break
-            self._repair_cost += repair.cost
-            self._repair_tokens += repair.tokens
-            self._repair_cache_read_tokens += repair.cache_read_tokens
-            self._repair_llm_calls += repair.llm_calls
-            budget_reason = self._budget_breach(params, impl)
-            if repair.applied:
-                repairs = attempt
-                flaky_reran = False
-            if budget_reason or not repair.applied:
+            budget_reason = self._budget_breach(params, impl) or _model_budget_reason(
+                repair.terminal_reason
+            )
+            if not repair.applied:
                 break
+            repairs = attempt
+            flaky_reran = False
             result = await self._run_ci(params, impl, result, workflow_id, attempt=repairs)
+            if budget_reason:
+                break
 
         self._max_attempt_used = max(self._max_attempt_used, repairs)
         if budget_reason:
@@ -854,6 +1089,8 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                     reason=budget_reason,
                 )
             )
+            if result.status == CI_PASSED:
+                return replace(result, repair_attempts=repairs)
             return replace(result, repair_attempts=repairs, terminal_reason=budget_reason)
         if result.status == CI_FAILED:
             await self._audit(
@@ -892,10 +1129,12 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         reason: str,
         stage: str,
         detail: str = "",
-    ) -> None:
+        remedy: Remedy,
+    ) -> str:
+        """Alert the operators and audit the alert. Returns the remedy as the alert rendered it."""
         retry = RetryPolicy(maximum_attempts=3)
         short = timedelta(seconds=30)
-        await workflow.execute_activity(
+        alert: AlertHumanInterventionResult = await workflow.execute_activity(
             alert_human_intervention,
             AlertHumanInterventionRequest(
                 task_id=params.task_id,
@@ -906,6 +1145,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 reason=reason,
                 stage=stage,
                 detail=detail,
+                remedy=remedy,
             ),
             start_to_close_timeout=short,
             retry_policy=retry,
@@ -914,8 +1154,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         await self._audit(
             AuditEvent(
                 event_id=(
-                    f"{params.execution_id}:HUMAN_INTERVENTION_ALERTED"
-                    f":{stage}:{self._alert_seq}"
+                    f"{params.execution_id}:HUMAN_INTERVENTION_ALERTED:{stage}:{self._alert_seq}"
                 ),
                 task_id=params.task_id,
                 execution_id=params.execution_id,
@@ -923,6 +1162,8 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 stage=stage,
                 workflow_id=workflow_id,
                 reason=reason,
+                remedy=alert.remedy or None,
+                alert_channels=list(alert.channels),
             )
         )
         await workflow.execute_activity(
@@ -930,11 +1171,11 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             ResetCoordinationRequest(
                 task_id=params.task_id,
                 work_unit=params.work_unit,
-                workflow_id=workflow_id,
             ),
             start_to_close_timeout=short,
             retry_policy=retry,
         )
+        return alert.remedy
 
     async def _alert_human_intervention(
         self,
@@ -948,6 +1189,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             COST_BUDGET_EXCEEDED,
             TOKEN_BUDGET_EXCEEDED,
             LLM_CALLS_EXCEEDED,
+            *MODEL_BUDGET_REASONS,
         ):
             reason = outcome.terminal_reason
         await self._terminal_alert(
@@ -956,6 +1198,9 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             reason=reason,
             stage="repair",
             detail=failure_summary,
+            remedy=repair_remedy(
+                reason, issue_key=params.issue_key, execution_id=params.execution_id
+            ),
         )
 
     async def _await_repair_decision(
@@ -1030,6 +1275,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         stage: str,
         detail: str = "",
         parked_build_id: str = "",
+        remedy: Remedy,
     ) -> bool:
         retry = RetryPolicy(maximum_attempts=3)
         short = timedelta(seconds=30)
@@ -1047,12 +1293,13 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             start_to_close_timeout=short,
             retry_policy=retry,
         )
-        await self._terminal_alert(
+        rendered_remedy = await self._terminal_alert(
             params,
             workflow_id,
             reason=f"gate_paused:{gate}",
             stage=stage,
             detail=detail,
+            remedy=remedy,
         )
         await self._audit(
             AuditEvent(
@@ -1064,6 +1311,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 new_state=AWAITING_HUMAN,
                 workflow_id=workflow_id,
                 reason=gate,
+                remedy=rendered_remedy or None,
             )
         )
         self._gate_decision = None
@@ -1142,7 +1390,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
     ) -> ApplyCIRepairResult | None:
         retry = RetryPolicy(maximum_attempts=3)
         short = timedelta(seconds=30)
-        commit_timeout = timedelta(minutes=5)
+        commit_timeout = _COMMIT_TIMEOUT
         commit_sha = self._commit.commit_sha if self._commit else params.base_sha
 
         await workflow.execute_activity(
@@ -1174,7 +1422,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
 
         plan: AnalyzeCIFailureResult = await workflow.execute_activity(
             analyze_ci_failure,
-            AnalyzeCIFailureRequest(failure_summary=self._checks_output),
+            AnalyzeCIFailureRequest(failure_summary=self._checks_output, repo=params.repo),
             start_to_close_timeout=short,
             retry_policy=retry,
         )
@@ -1191,10 +1439,17 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 commit=commit_sha,
                 instruction=plan.instruction,
                 failure_summary=self._checks_output,
+                changed_paths=tuple(params.file_impact),
+                task=params.focus or params.task,
+                base_commit=params.base_sha,
             ),
             start_to_close_timeout=timedelta(seconds=params.activity_timeout_seconds),
             retry_policy=RetryPolicy(maximum_attempts=1),
         )
+        self._repair_cost += repair.cost
+        self._repair_tokens += repair.tokens
+        self._repair_cache_read_tokens += repair.cache_read_tokens
+        self._repair_llm_calls += repair.llm_calls
         await workflow.execute_activity(
             record_usage_metrics,
             UsageMetrics(
@@ -1202,9 +1457,10 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 task_id=params.task_id,
                 stage="REPAIRING",
                 workflow_id=workflow_id,
-                total_tokens=repair.tokens,
-                llm_calls=repair.llm_calls,
-                cost_usd=repair.cost,
+                total_tokens=self._repair_tokens,
+                cache_read_tokens=self._repair_cache_read_tokens,
+                llm_calls=self._repair_llm_calls,
+                cost_usd=self._repair_cost,
             ),
             start_to_close_timeout=short,
             retry_policy=retry,
@@ -1213,7 +1469,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             return repair
 
         sequence = (
-            impl.claim_version * _SEQUENCE_STRIDE + _OPEN_PR_OFFSET + _REPAIR_STRIDE * attempt
+            impl.claim_version * _SEQUENCE_STRIDE + _REPAIR_BASE_OFFSET + _REPAIR_STRIDE * attempt
         )
         self._commit = await workflow.execute_activity(
             commit_and_push,
@@ -1225,6 +1481,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 commit=commit_sha,
                 message=params.commit_message,
                 sequence=sequence,
+                file_impact=list(params.file_impact),
             ),
             start_to_close_timeout=commit_timeout,
             retry_policy=retry,
@@ -1242,7 +1499,38 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 artifact_hashes={"files": ",".join(repair.changed_files)},
             )
         )
+        dropped = self._repair_dropped_by_scope(repair)
+        if dropped:
+            await self._audit(
+                AuditEvent(
+                    event_id=f"{params.execution_id}:REPAIR_OUT_OF_SCOPE:{attempt}",
+                    task_id=params.task_id,
+                    execution_id=params.execution_id,
+                    event_type="REPAIR_OUT_OF_SCOPE",
+                    stage="repair",
+                    new_state=REPAIRING,
+                    workflow_id=workflow_id,
+                    reason=(
+                        "the repair only changed files the ticket's file_impact excludes, so the "
+                        "commit dropped it: " + ", ".join(dropped)
+                    ),
+                )
+            )
+            return replace(repair, applied=False)
         return repair
+
+    def _repair_dropped_by_scope(self, repair: ApplyCIRepairResult) -> list[str]:
+        """Repair-authored paths the commit discarded, when the commit kept nothing at all.
+
+        A repair that only writes files outside the ticket's declared `file_impact` never reaches
+        the branch, so re-running the checks would fail the same way until the budget runs out.
+        Paths are reported only when the commit staged nothing, because a commit that did land
+        something made progress even though it also dropped an unrelated file such as a lockfile.
+        """
+        commit = self._commit
+        if commit is None or commit.changed:
+            return []
+        return sorted(set(commit.excluded_paths) & set(repair.changed_files))
 
     async def _run_ci(
         self,
@@ -1277,6 +1565,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 execution_id=params.execution_id,
                 workspace_path=impl.workspace_path or "",
                 commit_sha=commit_sha,
+                changed_paths=tuple(params.file_impact),
             ),
             start_to_close_timeout=timedelta(minutes=params.checks_timeout_minutes),
             retry_policy=RetryPolicy(maximum_attempts=2),
@@ -1335,7 +1624,10 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         subject = _change_subject(impl, commit_sha)
 
         plan: GatePlan = await workflow.execute_activity(
-            load_gate_plan, start_to_close_timeout=short, retry_policy=retry
+            load_gate_plan,
+            LoadGatePlanRequest(execution_id=params.execution_id, repo=params.repo),
+            start_to_close_timeout=short,
+            retry_policy=retry,
         )
         if not plan.review:
             return replace(outcome, status=REVIEW_PASSED, review_status="passed")
@@ -1361,6 +1653,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             ref=commit_sha,
             repo_root=impl.workspace_path or "",
             subject=subject,
+            acceptance_criteria=_acceptance_criteria(params),
         )
 
         async def execute(spec: Any, gate_context: GateContext) -> Any:
@@ -1445,6 +1738,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                     stage="review",
                     detail=f"paused gates: {', '.join(paused)}",
                     parked_build_id=params.build_id,
+                    remedy=gate_decision_remedy(params.issue_key, ",".join(paused)),
                 )
                 blocked = not approved
                 if not approved:
@@ -1454,6 +1748,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                         reason=REVIEW_BLOCKED,
                         stage="review",
                         detail=f"gate decision rejected: {', '.join(paused)}",
+                        remedy=gate_rejected_remedy(params.issue_key, ",".join(paused)),
                     )
             else:
                 await self._terminal_alert(
@@ -1462,6 +1757,9 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                     reason=REVIEW_BLOCKED,
                     stage="review",
                     detail=f"blocking gates: {', '.join(blocking)}",
+                    remedy=review_blocked_remedy(
+                        params.issue_key, ", ".join(fail_closed or blocking)
+                    ),
                 )
 
         return replace(
@@ -1477,9 +1775,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             review_summaries=summaries,
         )
 
-    async def _produce_plan(
-        self, params: DraftPullRequestInput, workflow_id: str
-    ) -> _PlanResult:
+    async def _produce_plan(self, params: DraftPullRequestInput, workflow_id: str) -> _PlanResult:
         retry = RetryPolicy(maximum_attempts=3)
         short = timedelta(seconds=30)
         gathered: ContextResult = await workflow.execute_activity(
@@ -1519,6 +1815,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 reason=PLAN_REJECTED,
                 stage="plan",
                 detail=plan_out.verdict,
+                remedy=plan_rejected_remedy(params.issue_key),
             )
             return _PlanResult(
                 rejected=True,
@@ -1532,7 +1829,10 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             )
         self._plan_approved = True
         plan: GatePlan = await workflow.execute_activity(
-            load_gate_plan, start_to_close_timeout=short, retry_policy=retry
+            load_gate_plan,
+            LoadGatePlanRequest(execution_id=params.execution_id, repo=params.repo),
+            start_to_close_timeout=short,
+            retry_policy=retry,
         )
         if plan.plan_pause:
             approved = await self._park_for_gate_decision(
@@ -1541,6 +1841,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 gate="plan",
                 stage="plan",
                 detail="plan approval requested",
+                remedy=gate_decision_remedy(params.issue_key, "plan"),
             )
             if not approved:
                 await self._terminal_alert(
@@ -1549,6 +1850,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                     reason=PLAN_REJECTED,
                     stage="plan",
                     detail="plan rejected by human gate",
+                    remedy=gate_rejected_remedy(params.issue_key, "plan"),
                 )
                 return _PlanResult(
                     rejected=True,
@@ -1560,6 +1862,17 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                         plan_verdict=plan_out.verdict,
                     ),
                 )
+        await workflow.execute_activity(
+            record_plan_evidence,
+            PlanEvidenceRequest(
+                execution_id=params.execution_id,
+                task_id=params.task_id,
+                plan=plan_out.plan,
+                verdict=plan_out.verdict,
+            ),
+            start_to_close_timeout=short,
+            retry_policy=retry,
+        )
         return _PlanResult(
             rejected=False,
             plan_text=plan_out.plan,
@@ -1567,9 +1880,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             context_package=context_package,
         )
 
-    async def _recapture_base(
-        self, params: DraftPullRequestInput, workflow_id: str
-    ) -> str:
+    async def _recapture_base(self, params: DraftPullRequestInput, workflow_id: str) -> str:
         retry = RetryPolicy(maximum_attempts=3)
         short = timedelta(seconds=30)
         result: CaptureBaseHeadResult = await workflow.execute_activity(
@@ -1861,7 +2172,10 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         )
 
         plan: GatePlan = await workflow.execute_activity(
-            load_gate_plan, start_to_close_timeout=short, retry_policy=retry
+            load_gate_plan,
+            LoadGatePlanRequest(execution_id=params.execution_id, repo=params.repo),
+            start_to_close_timeout=short,
+            retry_policy=retry,
         )
 
         try:
@@ -1893,6 +2207,10 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             }
             for finding in scan.findings
         ]
+        if scan.budget_stop and workflow.patched(_RUN_MODEL_BUDGET_STOP_PATCH):
+            return await self._model_budget_stop(
+                params, outcome, workflow_id, scan, scan_findings, commit_sha
+            )
 
         gates: list[PolicyGate] = []
         for node in plan.review:
@@ -1917,9 +2235,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                         on_block=node.on_block,
                     )
                 )
-        required_gates = [
-            node.name for node in [*plan.review, *plan.scanner] if node.required
-        ]
+        required_gates = [node.name for node in [*plan.review, *plan.scanner] if node.required]
 
         ci_status = "success" if outcome.ci_status == "passed" else (outcome.ci_status or "unknown")
         decision: EvaluatePromotionResult = await workflow.execute_activity(
@@ -1960,13 +2276,15 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
 
         allowed = decision.allow
         if not decision.allow and not decision.reasons and decision.human_review:
+            review_gates = _gate_names(decision.human_review)
             allowed = await self._park_for_gate_decision(
                 params,
                 workflow_id,
-                gate=",".join(decision.human_review),
+                gate=review_gates,
                 stage="policy",
-                detail=f"policy human review: {', '.join(decision.human_review)}",
+                detail=f"policy human review: {review_gates}",
                 parked_build_id=params.build_id,
+                remedy=gate_decision_remedy(params.issue_key, review_gates),
             )
             if not allowed:
                 await self._terminal_alert(
@@ -1974,7 +2292,8 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                     workflow_id,
                     reason=POLICY_DENIED,
                     stage="policy",
-                    detail=f"policy human review rejected: {', '.join(decision.human_review)}",
+                    detail=f"policy human review rejected: {review_gates}",
+                    remedy=gate_rejected_remedy(params.issue_key, review_gates),
                 )
         elif not decision.allow:
             await self._terminal_alert(
@@ -1983,6 +2302,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 reason=POLICY_DENIED,
                 stage="policy",
                 detail=",".join(decision.reasons),
+                remedy=policy_denied_remedy(params.issue_key, ", ".join(decision.reasons)),
             )
 
         return replace(
@@ -1992,6 +2312,63 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             policy_bundle_version=decision.bundle_version,
             policy_next_action=decision.next_action,
             policy_reasons=list(decision.reasons),
+            scan_blocking_findings=scan.blocking_count,
+            scan_findings=scan_findings,
+            scan_severity_counts=dict(scan.severity_counts),
+        )
+
+    async def _model_budget_stop(
+        self,
+        params: DraftPullRequestInput,
+        outcome: DraftPullRequestOutput,
+        workflow_id: str,
+        scan: ScanChangeResult,
+        scan_findings: list[dict[str, Any]],
+        commit_sha: str,
+    ) -> DraftPullRequestOutput:
+        reason = scan.budget_stop
+        await workflow.execute_activity(
+            persist_execution_state,
+            ExecutionState(
+                execution_id=params.execution_id,
+                task_id=params.task_id,
+                state="FAILED",
+                workflow_id=workflow_id,
+                repository=params.repo or None,
+                repository_sha=commit_sha or None,
+            ),
+            start_to_close_timeout=timedelta(seconds=30),
+            retry_policy=RetryPolicy(maximum_attempts=3),
+        )
+        await self._audit(
+            AuditEvent(
+                event_id=f"{params.execution_id}:MODEL_BUDGET_EXCEEDED:policy",
+                task_id=params.task_id,
+                execution_id=params.execution_id,
+                event_type="MODEL_BUDGET_EXCEEDED",
+                stage="policy",
+                prev_state=POLICY_EVALUATION,
+                new_state="FAILED",
+                workflow_id=workflow_id,
+                decision="cap_breach",
+                reason=reason,
+            )
+        )
+        await self._terminal_alert(
+            params,
+            workflow_id,
+            reason=reason,
+            stage="policy",
+            remedy=implementation_remedy(
+                reason, issue_key=params.issue_key, execution_id=params.execution_id
+            ),
+        )
+        return replace(
+            outcome,
+            status=POLICY_DENIED,
+            terminal_reason=reason,
+            policy_status="denied",
+            policy_reasons=[reason],
             scan_blocking_findings=scan.blocking_count,
             scan_findings=scan_findings,
             scan_severity_counts=dict(scan.severity_counts),
@@ -2007,10 +2384,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         retry = RetryPolicy(maximum_attempts=3)
         short = timedelta(seconds=30)
         commit_sha = self._commit.commit_sha if self._commit else params.base_sha
-        sequence_base = impl.claim_version * _SEQUENCE_STRIDE
-        promotion_base = _CI_TRIGGER_OFFSET + _REPAIR_STRIDE * max(
-            params.max_repair_attempts, self._max_attempt_used
-        )
+        promotion_base = self._post_repair_sequence_base(params, impl)
 
         async def persist(state: str) -> None:
             await workflow.execute_activity(
@@ -2026,6 +2400,8 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 start_to_close_timeout=short,
                 retry_policy=retry,
             )
+            if state == COMPLETED:
+                self._claim_completed = True
 
         approver = ""
         approved = True
@@ -2112,7 +2488,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                     number=outcome.pr_number,
                     approved=approved,
                     approver=approver,
-                    sequence=sequence_base + promotion_base + _APPROVAL_OFFSET,
+                    sequence=promotion_base + _APPROVAL_OFFSET,
                     issue_key=params.issue_key,
                     project=_project_from_issue(params.issue_key),
                 ),
@@ -2154,6 +2530,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                     reason=PROMOTION_CANCELLED,
                     stage="approval",
                     detail="approval_rejected",
+                    remedy=approval_rejected_remedy(params.issue_key),
                 )
                 return replace(
                     outcome,
@@ -2195,7 +2572,8 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                     workflow_id,
                     reason=PROMOTION_CANCELLED,
                     stage="approval",
-                    detail=recheck.category,
+                    detail=recheck.reason or recheck.category,
+                    remedy=issue_recheck_remedy(recheck.category, issue_key=params.issue_key),
                 )
                 return replace(
                     outcome,
@@ -2221,7 +2599,8 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 task_id=params.task_id,
                 execution_id=params.execution_id,
                 number=outcome.pr_number,
-                sequence=sequence_base + promotion_base + _PROMOTE_OFFSET,
+                sequence=promotion_base + _PROMOTE_OFFSET,
+                summary=self._pr_body,
             ),
             start_to_close_timeout=short,
             retry_policy=retry,
@@ -2262,6 +2641,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             pr_url=ready.url or outcome.pr_url,
         )
         if not params.await_pr_close:
+            await persist(COMPLETED)
             return promoted
         return await self._await_pr_close(params, promoted, workflow_id)
 
@@ -2287,6 +2667,8 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 start_to_close_timeout=short,
                 retry_policy=retry,
             )
+            if state == COMPLETED:
+                self._claim_completed = True
 
         await persist(AWAITING_PR_CLOSE)
         await self.await_resume(

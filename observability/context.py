@@ -13,7 +13,7 @@ from collections.abc import Iterator
 from opentelemetry import baggage
 from opentelemetry import context as otel_context
 
-from observability.attributes import PLATFORM_KEYS
+from observability.attributes import PLATFORM_KEYS, TENANT
 
 
 def current_identifiers() -> dict[str, str]:
@@ -24,6 +24,12 @@ def current_identifiers() -> dict[str, str]:
         if value is not None:
             values[key] = str(value)
     return values
+
+
+def current_tenant() -> str:
+    """Return the tenant bound to the current baggage, or an empty string."""
+    value = baggage.get_baggage(TENANT)
+    return str(value) if value else ""
 
 
 @contextlib.contextmanager

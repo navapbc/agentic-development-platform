@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import subprocess
 import time
 import uuid
 from datetime import timedelta
 
-from database.models import SCHEMA
+from database.models.schema import audit_events, executions
+from services import process
 from services.repository_intelligence.normalization.serialization import render_context_summary
-from sqlalchemy import Engine, create_engine, text
+from sqlalchemy import Engine, create_engine, select
 
 from scripts.config import get_settings, to_host_hostport
 from scripts.connectivity import preflight as bedrock_preflight
@@ -44,8 +44,7 @@ _EVIDENCE_LABELS = {
 def _execution_state(engine: Engine, execution_id: str) -> str | None:
     with engine.connect() as conn:
         row = conn.execute(
-            text(f'SELECT state FROM "{SCHEMA}".executions WHERE execution_id = :eid'),
-            {"eid": execution_id},
+            select(executions.c.state).where(executions.c.execution_id == execution_id)
         ).first()
     return row[0] if row else None
 
@@ -62,11 +61,9 @@ def _wait_for_state(engine: Engine, execution_id: str, target: str, timeout: flo
 def _audit_trail(engine: Engine, execution_id: str) -> list[tuple[str, str | None, str | None]]:
     with engine.connect() as conn:
         rows = conn.execute(
-            text(
-                f'SELECT event_type, new_state, model_id FROM "{SCHEMA}".audit_events '
-                "WHERE execution_id = :eid ORDER BY created_at"
-            ),
-            {"eid": execution_id},
+            select(audit_events.c.event_type, audit_events.c.new_state, audit_events.c.model_id)
+            .where(audit_events.c.execution_id == execution_id)
+            .order_by(audit_events.c.created_at)
         ).all()
     return [(r[0], r[1], r[2]) for r in rows]
 
@@ -114,11 +111,11 @@ def _parse_args() -> argparse.Namespace:
 
 
 async def main() -> int:
+    from services import temporal_client
     from services.orchestration.temporal_workflows.durable_task_workflow import (
         DurableTaskInput,
         DurableTaskWorkflow,
     )
-    from temporalio.client import Client
 
     args = _parse_args()
     settings = get_settings()
@@ -139,7 +136,7 @@ async def main() -> int:
 
     address = to_host_hostport(settings.temporal_host)
     print(f"[demo] connecting to Temporal at {address}")
-    client = await Client.connect(address, namespace=settings.temporal_namespace)
+    client = await temporal_client.connect(address, settings)
 
     if args.repo:
         print(f"[demo] reading repository '{args.repo}' to build a briefing pack for the task")
@@ -216,7 +213,11 @@ async def main() -> int:
             last_step = completed
         if args.auto_restart and not restarted and total and completed >= max(1, total // 3):
             print(f"[demo] auto-restarting '{WORKER_SERVICE}' to simulate a crash mid-task...")
-            subprocess.run([*_compose_cmd(), "restart", WORKER_SERVICE], check=True)
+            process.run(
+                [*_compose_cmd(), "restart", WORKER_SERVICE],
+                timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS,
+                check=True,
+            )
             restarted = True
         if total and completed >= total:
             break

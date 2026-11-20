@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import httpx
+import pytest
 from adapters.real.git_host import RealGitHost
 from services.integration.credentials import EnvSecretResolver
 from services.integration.github.credentials import (
     GitHubCredentialResolver,
+    UnconfiguredRepositoryError,
     parse_github_config,
 )
+from services.integration.repositories import parse_repositories
 
 RAW = {
     "hosts": {
@@ -16,15 +19,21 @@ RAW = {
         "globex": {"api_url": "https://globex.ghe/api/v3", "git_base_url": "https://globex.ghe"},
     },
     "default": {"host": "acme", "owner": "acme-org", "token_ref": "ACME_TOKEN"},
-    "repositories": {
-        "repo-b": {"host": "globex", "owner": "globex-org", "token_ref": "GLOBEX_TOKEN"},
-    },
 }
+REGISTRY = parse_repositories(
+    {
+        "repositories": {
+            "repo-a": {},
+            "repo-b": {"host": "globex", "owner": "globex-org", "token_ref": "GLOBEX_TOKEN"},
+        }
+    },
+    root="/repos",
+)
 
 
 def _resolver() -> GitHubCredentialResolver:
     return GitHubCredentialResolver(
-        parse_github_config(RAW),
+        parse_github_config(RAW, REGISTRY),
         {"repo-a", "repo-b"},
         EnvSecretResolver({"ACME_TOKEN": "tok-a", "GLOBEX_TOKEN": "tok-b"}),
     )
@@ -78,18 +87,43 @@ async def test_rest_calls_use_each_repository_own_owner_and_token() -> None:
     assert not any("tok-a" in (auth or "") for _, auth in b_calls)
 
 
-def test_git_remote_url_carries_each_repository_own_token_and_owner() -> None:
+def test_git_remote_url_carries_each_repository_own_owner_and_no_token() -> None:
     resolver = _resolver()
 
-    assert (
-        resolver.git_remote_url("repo-a")
-        == "https://x-access-token:tok-a@acme.ghe/acme-org/repo-a.git"
-    )
-    assert (
-        resolver.git_remote_url("repo-b")
-        == "https://x-access-token:tok-b@globex.ghe/globex-org/repo-b.git"
-    )
+    assert resolver.git_remote_url("repo-a") == "https://acme.ghe/acme-org/repo-a.git"
+    assert resolver.git_remote_url("repo-b") == "https://globex.ghe/globex-org/repo-b.git"
+
+
+def test_git_auth_carries_each_repository_own_token() -> None:
+    resolver = _resolver()
+
+    assert resolver.git_auth("repo-a").token == "tok-a"
+    assert resolver.git_auth("repo-b").token == "tok-b"
 
 
 def test_non_allowlisted_repository_resolves_nothing() -> None:
     assert _resolver().resolve("repo-c") is None
+
+
+def test_git_auth_refuses_a_non_allowlisted_repository() -> None:
+    with pytest.raises(UnconfiguredRepositoryError):
+        _resolver().git_auth("repo-c")
+
+
+async def test_delete_branch_deletes_the_ref_through_rest_with_the_repository_token() -> None:
+    calls: list[tuple[str, str, str | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((request.method, str(request.url), request.headers.get("authorization")))
+        if request.url.path.endswith("/git/refs/heads/agent/beta/T-1"):
+            return httpx.Response(204)
+        return httpx.Response(422, json={"message": "Reference does not exist"})
+
+    host = RealGitHost(_resolver(), transport=httpx.MockTransport(handler))
+
+    assert await host.delete_branch("repo-b", "agent/beta/T-1") is True
+    assert await host.delete_branch("repo-b", "agent/beta/T-2") is False
+    method, url, auth = calls[0]
+    assert method == "DELETE"
+    assert url == "https://globex.ghe/api/v3/repos/globex-org/repo-b/git/refs/heads/agent/beta/T-1"
+    assert auth is not None and auth.endswith(" tok-b")

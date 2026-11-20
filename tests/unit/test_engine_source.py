@@ -6,14 +6,16 @@ import zipfile
 from pathlib import Path
 
 import pytest
+from services.integration.credentials import ConfigError
+from services.orchestration.gates import engine_source
 from services.orchestration.gates.engine_source import (
     CommandResult,
     EngineSourceError,
     GateEngineConfig,
+    locate_local_engines,
+    parse_gate_engine_configs,
     resolve_engine_source,
 )
-
-pytestmark = pytest.mark.asyncio
 
 
 class _FakeGit:
@@ -243,12 +245,9 @@ async def test_zip_mode_descends_into_a_single_wrapper_directory(tmp_path):
     assert (Path(resolved.path) / "engines" / "_common" / "CONTRACT.md").is_file()
 
 
-
 async def test_unknown_mode_fails_fast():
     with pytest.raises(EngineSourceError):
-        await resolve_engine_source(
-            GateEngineConfig(enabled=True, mode="svn"), runner=_FakeGit({})
-        )
+        await resolve_engine_source(GateEngineConfig(enabled=True, mode="svn"), runner=_FakeGit({}))
 
 
 def test_parse_disabled_config_is_inert():
@@ -264,6 +263,7 @@ def test_parse_reads_the_mode_and_fields():
     config = parse_gate_engine_config(
         {
             "enabled": True,
+            "review_entrypoint": "bin/review",
             "mode": "tag",
             "repo_url": "https://example.com/x.git",
             "tag": "v2",
@@ -281,13 +281,17 @@ def test_parse_rejects_an_unknown_mode():
     from services.orchestration.gates.engine_source import parse_gate_engine_config
 
     with pytest.raises(ConfigError):
-        parse_gate_engine_config({"enabled": True, "mode": "svn"})
+        parse_gate_engine_config(
+            {"enabled": True, "review_entrypoint": "bin/review", "mode": "svn"}
+        )
 
 
 def test_on_unavailable_defaults_to_abort():
     from services.orchestration.gates.engine_source import parse_gate_engine_config
 
-    config = parse_gate_engine_config({"enabled": True, "mode": "local", "local_path": "/e"})
+    config = parse_gate_engine_config(
+        {"enabled": True, "review_entrypoint": "bin/review", "mode": "local", "local_path": "/e"}
+    )
     assert config.on_unavailable == "abort"
 
 
@@ -295,7 +299,13 @@ def test_on_unavailable_reads_warn():
     from services.orchestration.gates.engine_source import parse_gate_engine_config
 
     config = parse_gate_engine_config(
-        {"enabled": True, "mode": "local", "local_path": "/e", "on_unavailable": "warn"}
+        {
+            "enabled": True,
+            "review_entrypoint": "bin/review",
+            "mode": "local",
+            "local_path": "/e",
+            "on_unavailable": "warn",
+        }
     )
     assert config.on_unavailable == "warn"
 
@@ -306,17 +316,80 @@ def test_parse_rejects_an_unknown_on_unavailable():
 
     with pytest.raises(ConfigError):
         parse_gate_engine_config(
-            {"enabled": True, "mode": "local", "local_path": "/e", "on_unavailable": "explode"}
+            {
+                "enabled": True,
+                "review_entrypoint": "bin/review",
+                "mode": "local",
+                "local_path": "/e",
+                "on_unavailable": "explode",
+            }
         )
 
 
-def test_entrypoints_default_to_the_reference_engine_layout():
+def test_an_enabled_engine_needs_a_review_entrypoint():
+    from services.integration.credentials import ConfigError
     from services.orchestration.gates.engine_source import parse_gate_engine_config
 
-    config = parse_gate_engine_config({"enabled": True, "mode": "local", "local_path": "/e"})
+    with pytest.raises(ConfigError, match="needs a review_entrypoint"):
+        parse_gate_engine_config(
+            {"name": "x", "enabled": True, "mode": "local", "local_path": "/e"}
+        )
 
-    assert config.review_entrypoint == "engines/security-compliance-review/harness/ai-pr-review"
-    assert config.classifier_entrypoint == "engines/test-classifier/harness/ai-test-classifier"
+
+def test_the_classifier_is_off_unless_configured():
+    from services.orchestration.gates.engine_source import parse_gate_engine_config
+
+    config = parse_gate_engine_config(
+        {"enabled": True, "mode": "local", "local_path": "/e", "review_entrypoint": "bin/review"}
+    )
+
+    assert config.classifier_entrypoint == ""
+
+
+def test_an_image_mode_engine_takes_its_published_image():
+    from services.orchestration.gates.engine_source import (
+        attach_published_images,
+        parse_gate_engine_configs,
+    )
+
+    configs = parse_gate_engine_configs(
+        {
+            "engines": [
+                {"name": "published", "enabled": True, "mode": "image", "review_entrypoint": "s"},
+                {
+                    "name": "pinned",
+                    "enabled": True,
+                    "mode": "image",
+                    "image": "registry.example/pinned:1",
+                    "review_entrypoint": "s",
+                },
+            ]
+        }
+    )
+
+    attached = attach_published_images(
+        configs, {"published": "registry.example/published:2", "pinned": "ignored"}
+    )
+
+    assert [c.image for c in attached] == [
+        "registry.example/published:2",
+        "registry.example/pinned:1",
+    ]
+
+
+def test_an_image_mode_engine_without_an_image_is_refused():
+    from services.integration.credentials import ConfigError
+    from services.orchestration.gates.engine_source import (
+        attach_published_images,
+        parse_gate_engine_configs,
+    )
+
+    configs = parse_gate_engine_configs(
+        {"engines": [{"name": "scan", "enabled": True, "mode": "image", "review_entrypoint": "s"}]}
+    )
+
+    with pytest.raises(ConfigError, match="GATE_ENGINE_IMAGES"):
+        attach_published_images(configs, {})
 
 
 def test_entrypoints_are_config_driven_for_another_engine():
@@ -337,9 +410,12 @@ def test_entrypoints_are_config_driven_for_another_engine():
 
 
 def test_load_is_inert_when_no_config_file_exists():
+    from scripts.config import get_settings
     from services.orchestration.gates.engine_source import load_gate_engine_configs
 
-    configs = load_gate_engine_configs(environment="no-such-environment")
+    settings = get_settings().model_copy(update={"gate_engine_images": {}})
+
+    configs = load_gate_engine_configs(settings, environment="no-such-environment")
 
     assert configs == ()
 
@@ -353,6 +429,7 @@ def test_parse_reads_a_list_of_named_engines():
                 {
                     "name": "ai-security-review",
                     "enabled": True,
+                    "review_entrypoint": "bin/review",
                     "mode": "local",
                     "local_path": "/a",
                 },
@@ -375,9 +452,7 @@ def test_parse_rejects_a_duplicate_engine_name():
     from services.orchestration.gates.engine_source import parse_gate_engine_configs
 
     with pytest.raises(ConfigError):
-        parse_gate_engine_configs(
-            {"engines": [{"name": "dup"}, {"name": "dup"}]}
-        )
+        parse_gate_engine_configs({"engines": [{"name": "dup"}, {"name": "dup"}]})
 
 
 def test_parse_rejects_an_entry_without_a_name():
@@ -385,7 +460,9 @@ def test_parse_rejects_an_entry_without_a_name():
     from services.orchestration.gates.engine_source import parse_gate_engine_configs
 
     with pytest.raises(ConfigError):
-        parse_gate_engine_configs({"engines": [{"enabled": True}]})
+        parse_gate_engine_configs(
+            {"engines": [{"enabled": True, "review_entrypoint": "bin/review"}]}
+        )
 
 
 def test_triage_engine_picks_the_first_enabled_with_a_classifier():
@@ -397,8 +474,18 @@ def test_triage_engine_picks_the_first_enabled_with_a_classifier():
     configs = parse_gate_engine_configs(
         {
             "engines": [
-                {"name": "review-only", "enabled": True, "classifier_entrypoint": ""},
-                {"name": "full", "enabled": True, "classifier_entrypoint": "bin/classify"},
+                {
+                    "name": "review-only",
+                    "enabled": True,
+                    "review_entrypoint": "bin/review",
+                    "classifier_entrypoint": "",
+                },
+                {
+                    "name": "full",
+                    "enabled": True,
+                    "review_entrypoint": "bin/review",
+                    "classifier_entrypoint": "bin/classify",
+                },
             ]
         }
     )
@@ -414,8 +501,73 @@ def test_triage_engine_is_none_when_no_enabled_classifier():
     )
 
     configs = parse_gate_engine_configs(
-        {"engines": [{"name": "review-only", "enabled": True, "classifier_entrypoint": ""}]}
+        {
+            "engines": [
+                {
+                    "name": "review-only",
+                    "enabled": True,
+                    "review_entrypoint": "bin/review",
+                    "classifier_entrypoint": "",
+                }
+            ]
+        }
     )
 
     assert triage_engine(configs) is None
 
+
+def test_a_local_engine_reads_the_synced_copy_inside_the_image() -> None:
+    configs = parse_gate_engine_configs(
+        {
+            "engines": [
+                {
+                    "name": "review",
+                    "enabled": True,
+                    "review_entrypoint": "bin/review",
+                    "mode": "local",
+                    "local_path": "../e",
+                }
+            ]
+        }
+    )
+
+    located = locate_local_engines(configs, engine_root="/workspaces/engines/", in_image=True)
+
+    assert located[0].local_path == "/workspaces/engines/review"
+
+
+def test_a_local_engine_resolves_a_relative_path_from_the_platform_checkout_on_the_host() -> None:
+    configs = parse_gate_engine_configs(
+        {
+            "engines": [
+                {
+                    "name": "review",
+                    "enabled": True,
+                    "review_entrypoint": "bin/review",
+                    "mode": "local",
+                    "local_path": "../e",
+                }
+            ]
+        }
+    )
+
+    located = locate_local_engines(configs, engine_root="/workspaces/engines", in_image=False)
+
+    assert located[0].local_path == str((engine_source._PLATFORM_ROOT.parent / "e").resolve())
+
+
+def test_a_local_engine_name_must_be_usable_as_a_directory() -> None:
+    with pytest.raises(ConfigError, match="names its directory"):
+        parse_gate_engine_configs(
+            {
+                "engines": [
+                    {
+                        "name": "../x",
+                        "enabled": True,
+                        "review_entrypoint": "bin/review",
+                        "mode": "local",
+                        "local_path": "e",
+                    }
+                ]
+            }
+        )

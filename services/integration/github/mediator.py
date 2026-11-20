@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Any
 
+import structlog
 from adapters.interfaces.git_host import (
     BranchRef,
     CodeHit,
@@ -26,6 +27,16 @@ from services.coordination.sequencing import (
     SequenceDecision,
     SequenceGate,
 )
+
+log = structlog.get_logger("github_mediator")
+
+
+class PublishedTreeMismatch(Exception):
+    """The tree a host published is not the tree the platform checked.
+
+    Unrecoverable rather than advisory. Reporting a passing check against content the pull
+    request does not carry is the failure this contract exists to prevent.
+    """
 
 
 class RepoNotAllowedError(Exception):
@@ -49,6 +60,7 @@ class GitHubMediator:
     ledger: SideEffectLedger
     gate: SequenceGate
     allowed_repos: frozenset[str]
+    tenant: str = ""
 
     @classmethod
     def from_settings(
@@ -66,6 +78,7 @@ class GitHubMediator:
             ledger=ledger,
             gate=gate,
             allowed_repos=frozenset(source_control_repos(resolved)),
+            tenant=resolved.tenant,
         )
 
     def _guard(self, repo: str) -> None:
@@ -86,7 +99,7 @@ class GitHubMediator:
 
     async def find_open_pr(self, repo: str, task_id: str) -> PullRequest | None:
         self._guard(repo)
-        return await self.backend.find_open_pr(repo, agent_branch_name(task_id))
+        return await self.backend.find_open_pr(repo, agent_branch_name(task_id, self.tenant))
 
     async def ensure_agent_branch(
         self,
@@ -98,8 +111,10 @@ class GitHubMediator:
         sequence: int,
     ) -> BranchRef:
         self._guard(repo)
-        name = agent_branch_name(task_id)
-        action = SequencedAction(task_id, execution_id, sequence, operation="github.ensure_branch")
+        name = agent_branch_name(task_id, self.tenant)
+        action = SequencedAction(
+            task_id, execution_id, sequence, operation="github.ensure_branch", tenant=self.tenant
+        )
         ref = SideEffectRef(task_id, execution_id, "github.ensure_branch", f"{repo}:{name}")
 
         async def effect() -> dict[str, Any]:
@@ -110,19 +125,37 @@ class GitHubMediator:
     async def commit_and_push(self, request: CommitRequest, *, sequence: int) -> CommitResult:
         self._guard(request.repo)
         action = SequencedAction(
-            request.task_id, request.execution_id, sequence, operation="github.commit"
+            request.task_id,
+            request.execution_id,
+            sequence,
+            operation="github.commit",
+            tenant=self.tenant,
         )
         ref = SideEffectRef(
             request.task_id,
             request.execution_id,
             "github.commit",
-            f"{request.repo}:{request.branch}",
+            f"{request.repo}:{request.branch}@{request.tree}",
         )
 
         async def effect() -> dict[str, Any]:
             return asdict(await self.backend.commit_and_push(request))
 
-        return CommitResult(**await self._gated(action, ref, effect))
+        result = CommitResult(**await self._gated(action, ref, effect))
+        if result.published_tree != request.tree:
+            log.error(
+                "publish.tree_mismatch",
+                repo=result.repo,
+                branch=result.branch,
+                commit_sha=result.commit_sha,
+                verified_tree=request.tree,
+                published_tree=result.published_tree,
+            )
+            raise PublishedTreeMismatch(
+                f"{result.repo}:{result.branch} published {result.published_tree}, "
+                f"checks ran against {request.tree}"
+            )
+        return result
 
     async def open_draft_pr(
         self,
@@ -137,7 +170,9 @@ class GitHubMediator:
         sequence: int,
     ) -> PullRequest:
         self._guard(repo)
-        action = SequencedAction(task_id, execution_id, sequence, operation="github.open_pr")
+        action = SequencedAction(
+            task_id, execution_id, sequence, operation="github.open_pr", tenant=self.tenant
+        )
         ref = SideEffectRef(task_id, execution_id, "github.open_pr", f"{repo}:{head}")
 
         async def effect() -> dict[str, Any]:
@@ -149,7 +184,9 @@ class GitHubMediator:
         self, repo: str, task_id: str, execution_id: str, number: int, *, sequence: int
     ) -> PullRequest:
         self._guard(repo)
-        action = SequencedAction(task_id, execution_id, sequence, operation="github.mark_ready")
+        action = SequencedAction(
+            task_id, execution_id, sequence, operation="github.mark_ready", tenant=self.tenant
+        )
         ref = SideEffectRef(task_id, execution_id, "github.mark_ready", f"{repo}#{number}")
 
         async def effect() -> dict[str, Any]:
@@ -170,7 +207,11 @@ class GitHubMediator:
     ) -> dict[str, Any]:
         self._guard(repo)
         action = SequencedAction(
-            task_id, execution_id, sequence, operation="github.promotion_approval"
+            task_id,
+            execution_id,
+            sequence,
+            operation="github.promotion_approval",
+            tenant=self.tenant,
         )
         ref = SideEffectRef(task_id, execution_id, "github.promotion_approval", f"{repo}#{number}")
 
@@ -188,6 +229,8 @@ class GitHubMediator:
         reserved = await self.ledger.reserve(ref)
         if reserved.replayed:
             return reserved.result
+        if reserved.reentrant:
+            action = replace(action, reentrant=True)
         decision = await self.gate.admit(action)
         if decision.outcome != ADMITTED:
             raise StaleActionError(decision)

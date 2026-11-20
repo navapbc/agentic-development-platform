@@ -6,7 +6,9 @@ the request body, but the coding agent and the rebar-run review and repair calls
 build their own HTTP clients with no metadata seam. This module derives the join
 headers from the ambient execution baggage and installs an ``httpx`` transport
 that adds them to every request bound for the proxy, so those generations group
-under the execution session rather than landing orphaned.
+under the execution session rather than landing orphaned. The tenant in the baggage
+rides as the ``x-litellm-tags`` header, which LiteLLM merges into the request tags that
+its spend logs record and Langfuse stores as trace tags.
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ from urllib.parse import urlparse
 
 from observability import attributes as attrs
 from observability.context import current_identifiers
+from observability.gateway import tenant_tag
 
 log = logging.getLogger("observability")
 
@@ -24,6 +27,7 @@ SESSION_HEADER = "langfuse_session_id"
 GENERATION_NAME_HEADER = "langfuse_generation_name"
 VERSION_HEADER = "langfuse_version"
 TRACE_ID_HEADER = "langfuse_trace_id"
+TAGS_HEADER = "x-litellm-tags"
 
 _HEADER_MAP: tuple[tuple[str, str], ...] = (
     (attrs.EXECUTION_ID, SESSION_HEADER),
@@ -33,12 +37,15 @@ _HEADER_MAP: tuple[tuple[str, str], ...] = (
 
 
 def langfuse_headers_from_identifiers(identifiers: Mapping[str, str]) -> dict[str, str]:
-    """Build the ``langfuse_`` request headers from the platform identifiers."""
+    """Build the ``langfuse_`` join headers and the tenant tag header from the identifiers."""
     headers: dict[str, str] = {}
     for key, header in _HEADER_MAP:
         value = identifiers.get(key)
         if value:
             headers[header] = str(value)
+    tenant = identifiers.get(attrs.TENANT)
+    if tenant:
+        headers[TAGS_HEADER] = tenant_tag(tenant)
     return headers
 
 
@@ -51,7 +58,7 @@ def current_trace_id() -> str:
         if context.is_valid:
             return format(context.trace_id, "032x")
     except Exception:  # noqa: BLE001 - trace lookup must not break a request
-        pass
+        log.debug("current trace id lookup failed", exc_info=True)
     return ""
 
 
@@ -104,7 +111,7 @@ def install_litellm_header_propagation(base_url: str | None) -> bool:
                         if header not in request.headers:
                             request.headers[header] = value
             except Exception:  # noqa: BLE001 - header enrichment must not break a request
-                pass
+                log.debug("model request header enrichment failed", exc_info=True)
             return await super().handle_async_request(request)
 
     httpx.AsyncHTTPTransport = _HeaderInjectingAsyncHTTPTransport

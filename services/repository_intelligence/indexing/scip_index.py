@@ -331,15 +331,6 @@ class ScipIndex:
                     best_span = span
         return best
 
-    def implementations_of(self, base_symbol: str) -> list[SymbolInfo]:
-        results = []
-        for info in self.symbols.values():
-            if not info.is_project:
-                continue
-            if any(target == base_symbol and is_impl for target, is_impl in info.relationships):
-                results.append(info)
-        return results
-
     def base_symbols(self) -> dict[str, list[SymbolInfo]]:
         bases: dict[str, list[SymbolInfo]] = {}
         for info in self.symbols.values():

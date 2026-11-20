@@ -65,9 +65,7 @@ def test_rotation_admits_new_key_and_audits(tmp_path):
         identity_id, new_pub, current_key_path=genesis_key, repo_root=str(store), audit=sink
     )
 
-    assert verify_authorship_record(
-        _record_signed_by(new_key, identity_id), repo_root=str(store)
-    )
+    assert verify_authorship_record(_record_signed_by(new_key, identity_id), repo_root=str(store))
     assert verify_authorship_record(
         _record_signed_by(genesis_key, identity_id), repo_root=str(store)
     )

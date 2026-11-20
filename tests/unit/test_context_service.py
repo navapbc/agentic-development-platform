@@ -170,8 +170,8 @@ def test_ensure_fresh_resolves_empty_commit_to_head(tmp_path, monkeypatch):
         reindex=lambda repo, prior: reindexed.append((repo, prior)),
     )
 
-    assert service.ensure_fresh(RepoRef("archive-massgov-pfml", "")) is False
-    assert reindexed == [(RepoRef("archive-massgov-pfml", "headsha1"), None)]
+    assert service.ensure_fresh(RepoRef("example-service", "")) is False
+    assert reindexed == [(RepoRef("example-service", "headsha1"), None)]
 
 
 def test_ensure_fresh_reindexes_when_index_stale(tmp_path):

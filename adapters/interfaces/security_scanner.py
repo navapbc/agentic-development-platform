@@ -28,6 +28,7 @@ class ScannerUnavailableError(Exception):
     failing the gate closed.
     """
 
+
 _SEVERITY_RANK = {
     CRITICAL: 5,
     HIGH: 4,

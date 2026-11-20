@@ -1,6 +1,6 @@
 """Pinned span attribute keys for platform telemetry.
 
-The platform keys correlate a span to a task execution and stage. The GenAI keys
+The platform keys correlate a span to a task execution, its stage, and its tenant. The GenAI keys
 follow the OpenTelemetry generative-AI semantic conventions.
 """
 
@@ -12,6 +12,7 @@ STAGE = "stage"
 GATE = "gate"
 PROMPT_VERSION = "prompt_version"
 MODEL_ID = "model_id"
+TENANT = "tenant"
 
 PLATFORM_KEYS: tuple[str, ...] = (
     EXECUTION_ID,
@@ -20,6 +21,7 @@ PLATFORM_KEYS: tuple[str, ...] = (
     GATE,
     PROMPT_VERSION,
     MODEL_ID,
+    TENANT,
 )
 
 GEN_AI_SYSTEM = "gen_ai.system"
@@ -32,3 +34,4 @@ GEN_AI_PREFIX = "gen_ai."
 
 LANGFUSE_SESSION_ID = "langfuse.session.id"
 LANGFUSE_TRACE_METADATA_PREFIX = "langfuse.trace.metadata."
+LANGFUSE_TRACE_TAGS = "langfuse.trace.tags"

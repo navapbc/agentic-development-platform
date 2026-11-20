@@ -4,19 +4,25 @@ from __future__ import annotations
 
 import hashlib
 import inspect
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any, Protocol
 
+from database.engine import shared_platform_engine
 from database.models.schema import side_effects
-from scripts.config import get_settings
-from sqlalchemy import select, update
+from sqlalchemy import Interval, func, literal, select, update
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 _COMPLETED = "completed"
 _PENDING = "pending"
+# A reservation older than this, still pending, belongs to a holder that crashed, so run_once may
+# take it over and run the effect again.
+CLAIM_LEASE_SECONDS = 300
+_INTAKE_START = "intake_start"
 _UNIT_SEPARATOR = "\x1f"
+_TENANT_MARK = "@"
 
 Effect = Callable[[], Any] | Callable[[], Awaitable[Any]]
 
@@ -34,11 +40,75 @@ class SideEffectOutcome:
     key: str
     replayed: bool
     result: Any
+    reentrant: bool = False
+    # Another caller holds a live reservation and is running the effect now, so this caller ran
+    # nothing and has no result.
+    in_flight: bool = False
+
+
+def _seconds(seconds: int) -> Any:
+    return literal(timedelta(seconds=seconds), Interval())
 
 
 def side_effect_key(ref: SideEffectRef) -> str:
     canonical = _UNIT_SEPARATOR.join((ref.task_id, ref.execution_id, ref.operation, ref.target))
     return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def intake_start_target(issue_key: str, repo: str, tenant: str = "") -> str:
+    """Return the intake start target of an issue in a repository, scoped to the tenant."""
+    scope = f"{issue_key}{_TENANT_MARK}{tenant}" if tenant else issue_key
+    return f"{scope}:{repo}"
+
+
+def intake_start_target_repo(operation: str, target: str) -> str:
+    if operation != _INTAKE_START:
+        return ""
+    _, separator, repo = target.rpartition(":")
+    if not separator:
+        return ""
+    return repo
+
+
+def intake_start_target_tenant(target: str) -> str:
+    scope, separator, _ = target.rpartition(":")
+    if not separator:
+        return ""
+    _, mark, tenant = scope.rpartition(_TENANT_MARK)
+    return tenant if mark else ""
+
+
+def _intake_start_repo(ref: SideEffectRef) -> str:
+    return intake_start_target_repo(ref.operation, ref.target)
+
+
+def _in_intake_start_scope(ref: SideEffectRef, target: str) -> bool:
+    """Whether a recorded target starts the ref's issue in the same repository for its tenant."""
+    repo = _intake_start_repo(ref)
+    return (
+        bool(repo)
+        and intake_start_target_repo(ref.operation, target) == repo
+        and intake_start_target_tenant(target) == intake_start_target_tenant(ref.target)
+    )
+
+
+def _same_intake_start_scope(left: SideEffectRef, right: SideEffectRef) -> bool:
+    return (
+        left.task_id == right.task_id
+        and left.execution_id == right.execution_id
+        and left.operation == right.operation
+        and _in_intake_start_scope(left, right.target)
+    )
+
+
+def _matching_ref_key(refs: Mapping[str, SideEffectRef], ref: SideEffectRef) -> str | None:
+    key = side_effect_key(ref)
+    if key in refs:
+        return key
+    for candidate_key, candidate in refs.items():
+        if _same_intake_start_scope(ref, candidate):
+            return candidate_key
+    return None
 
 
 async def _resolve(effect: Effect) -> Any:
@@ -62,9 +132,7 @@ class PostgresSideEffectLedger:
 
     def _get_engine(self) -> AsyncEngine:
         if self._engine is None:
-            self._engine = create_async_engine(
-                get_settings().database_url, future=True, pool_pre_ping=True
-            )
+            self._engine = shared_platform_engine()
         return self._engine
 
     async def reserve(self, ref: SideEffectRef) -> SideEffectOutcome:
@@ -73,13 +141,36 @@ class PostgresSideEffectLedger:
         async with engine.begin() as conn:
             existing = (
                 await conn.execute(
-                    select(side_effects.c.status, side_effects.c.result).where(
-                        side_effects.c.side_effect_key == key
-                    )
+                    select(
+                        side_effects.c.side_effect_key,
+                        side_effects.c.status,
+                        side_effects.c.result,
+                    ).where(side_effects.c.side_effect_key == key)
                 )
             ).first()
+            if existing is None and _intake_start_repo(ref):
+                scoped_rows = (
+                    await conn.execute(
+                        select(
+                            side_effects.c.side_effect_key,
+                            side_effects.c.status,
+                            side_effects.c.result,
+                            side_effects.c.target,
+                        )
+                        .where(side_effects.c.task_id == ref.task_id)
+                        .where(side_effects.c.execution_id == ref.execution_id)
+                        .where(side_effects.c.operation == ref.operation)
+                        .order_by(side_effects.c.updated_at.desc())
+                    )
+                ).all()
+                existing = next(
+                    (row for row in scoped_rows if _in_intake_start_scope(ref, str(row.target))),
+                    None,
+                )
             if existing is not None and existing.status == _COMPLETED:
-                return SideEffectOutcome(key, replayed=True, result=existing.result)
+                return SideEffectOutcome(
+                    existing.side_effect_key, replayed=True, result=existing.result
+                )
             await conn.execute(
                 insert(side_effects)
                 .values(
@@ -92,7 +183,7 @@ class PostgresSideEffectLedger:
                 )
                 .on_conflict_do_nothing(index_elements=[side_effects.c.side_effect_key])
             )
-        return SideEffectOutcome(key, replayed=False, result=None)
+        return SideEffectOutcome(key, replayed=False, result=None, reentrant=existing is not None)
 
     async def record(self, ref: SideEffectRef, result: Any) -> SideEffectOutcome:
         key = side_effect_key(ref)
@@ -105,32 +196,144 @@ class PostgresSideEffectLedger:
             )
         return SideEffectOutcome(key, replayed=False, result=result)
 
+    async def claim(self, ref: SideEffectRef) -> SideEffectOutcome:
+        """Take the reservation exclusively, so two concurrent callers never both run an effect.
+
+        A completed key replays its result. A pending key whose holder renewed it within
+        CLAIM_LEASE_SECONDS is in flight. An older pending key is taken over, because its holder
+        crashed between the reservation and the record.
+        """
+        key = side_effect_key(ref)
+        engine = self._get_engine()
+        async with engine.begin() as conn:
+            completed = await self._completed(conn, ref, key)
+            if completed is not None:
+                return SideEffectOutcome(completed[0], replayed=True, result=completed[1])
+            inserted = (
+                await conn.execute(
+                    insert(side_effects)
+                    .values(
+                        side_effect_key=key,
+                        task_id=ref.task_id,
+                        execution_id=ref.execution_id,
+                        operation=ref.operation,
+                        target=ref.target,
+                        status=_PENDING,
+                    )
+                    .on_conflict_do_nothing(index_elements=[side_effects.c.side_effect_key])
+                    .returning(side_effects.c.side_effect_key)
+                )
+            ).first()
+            if inserted is not None:
+                return SideEffectOutcome(key, replayed=False, result=None)
+            row = (
+                await conn.execute(
+                    select(side_effects.c.status, side_effects.c.result, side_effects.c.updated_at)
+                    .where(side_effects.c.side_effect_key == key)
+                    .with_for_update()
+                )
+            ).first()
+            if row is not None and row.status == _COMPLETED:
+                return SideEffectOutcome(key, replayed=True, result=row.result)
+            stale = (
+                await conn.execute(
+                    update(side_effects)
+                    .where(side_effects.c.side_effect_key == key)
+                    .where(side_effects.c.status == _PENDING)
+                    .where(side_effects.c.updated_at < func.now() - _seconds(CLAIM_LEASE_SECONDS))
+                    .values(updated_at=func.now())
+                    .returning(side_effects.c.side_effect_key)
+                )
+            ).first()
+        if stale is None:
+            return SideEffectOutcome(key, replayed=False, result=None, in_flight=True)
+        return SideEffectOutcome(key, replayed=False, result=None, reentrant=True)
+
+    async def _completed(self, conn: Any, ref: SideEffectRef, key: str) -> tuple[str, Any] | None:
+        row = (
+            await conn.execute(
+                select(side_effects.c.result)
+                .where(side_effects.c.side_effect_key == key)
+                .where(side_effects.c.status == _COMPLETED)
+            )
+        ).first()
+        if row is not None:
+            return key, row.result
+        if not _intake_start_repo(ref):
+            return None
+        scoped_rows = (
+            await conn.execute(
+                select(side_effects.c.side_effect_key, side_effects.c.result, side_effects.c.target)
+                .where(side_effects.c.task_id == ref.task_id)
+                .where(side_effects.c.execution_id == ref.execution_id)
+                .where(side_effects.c.operation == ref.operation)
+                .where(side_effects.c.status == _COMPLETED)
+                .order_by(side_effects.c.updated_at.desc())
+            )
+        ).all()
+        for scoped in scoped_rows:
+            if _in_intake_start_scope(ref, str(scoped.target)):
+                return scoped.side_effect_key, scoped.result
+        return None
+
+    async def release(self, ref: SideEffectRef) -> None:
+        """Leave a pending reservation for the next caller to take over at once."""
+        async with self._get_engine().begin() as conn:
+            await conn.execute(
+                update(side_effects)
+                .where(side_effects.c.side_effect_key == side_effect_key(ref))
+                .where(side_effects.c.status == _PENDING)
+                .values(updated_at=func.now() - _seconds(CLAIM_LEASE_SECONDS + 1))
+            )
+
     async def run_once(self, ref: SideEffectRef, effect: Effect) -> SideEffectOutcome:
-        reserved = await self.reserve(ref)
-        if reserved.replayed:
-            return reserved
-        result = await _resolve(effect)
+        claimed = await self.claim(ref)
+        if claimed.replayed or claimed.in_flight:
+            return claimed
+        try:
+            result = await _resolve(effect)
+        except BaseException:
+            await self.release(ref)
+            raise
         return await self.record(ref, result)
 
 
 class InMemorySideEffectLedger:
     def __init__(self) -> None:
-        self._records: dict[str, Any] = {}
+        self._records: dict[str, tuple[SideEffectRef, Any]] = {}
+        self._pending: dict[str, SideEffectRef] = {}
+        self._running: set[str] = set()
 
     async def reserve(self, ref: SideEffectRef) -> SideEffectOutcome:
         key = side_effect_key(ref)
-        if key in self._records:
-            return SideEffectOutcome(key, replayed=True, result=self._records[key])
-        return SideEffectOutcome(key, replayed=False, result=None)
+        existing_key = _matching_ref_key(
+            {record_key: record[0] for record_key, record in self._records.items()}, ref
+        )
+        if existing_key is not None:
+            return SideEffectOutcome(
+                existing_key, replayed=True, result=self._records[existing_key][1]
+            )
+        pending_key = _matching_ref_key(self._pending, ref)
+        reentrant = pending_key is not None
+        self._pending[key] = ref
+        return SideEffectOutcome(key, replayed=False, result=None, reentrant=reentrant)
 
     async def record(self, ref: SideEffectRef, result: Any) -> SideEffectOutcome:
         key = side_effect_key(ref)
-        self._records[key] = result
+        self._records[key] = (ref, result)
+        self._pending.pop(key, None)
         return SideEffectOutcome(key, replayed=False, result=result)
 
     async def run_once(self, ref: SideEffectRef, effect: Effect) -> SideEffectOutcome:
+        key = side_effect_key(ref)
+        if key in self._running:
+            return SideEffectOutcome(key, replayed=False, result=None, in_flight=True)
         reserved = await self.reserve(ref)
         if reserved.replayed:
             return reserved
-        result = await _resolve(effect)
+        self._running.add(key)
+        try:
+            result = await _resolve(effect)
+        finally:
+            self._running.discard(key)
         return await self.record(ref, result)

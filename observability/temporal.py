@@ -53,7 +53,5 @@ class _PlatformActivityInbound(ActivityInboundInterceptor):
 
 
 class PlatformTelemetryInterceptor(ClientInterceptor, WorkerInterceptor):
-    def intercept_activity(
-        self, next: ActivityInboundInterceptor
-    ) -> ActivityInboundInterceptor:
+    def intercept_activity(self, next: ActivityInboundInterceptor) -> ActivityInboundInterceptor:
         return _PlatformActivityInbound(next)

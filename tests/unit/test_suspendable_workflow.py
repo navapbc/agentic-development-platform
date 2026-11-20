@@ -123,7 +123,12 @@ async def test_park_resume_history_replays_deterministically():
             restrictions=SandboxRestrictions.default.with_passthrough_modules("beartype")
         ),
     )
-    await replayer.replay_workflow(history)
+
+    async def _histories():
+        yield history
+
+    results = await replayer.replay_workflows(_histories())
+    assert results.replay_failures == {}
 
 
 async def test_signalled_reason_ignores_mismatched_trigger_and_resumes_on_match():

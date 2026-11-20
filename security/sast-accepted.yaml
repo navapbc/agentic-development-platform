@@ -1,0 +1,390 @@
+- tool: bandit
+  rule: B108
+  path: openhands/runtime/provisioner.py
+  match: '{"name": "agent-tmp", "mountPath": "/tmp"},'
+  justification: The string is the mount path of an emptyDir volume inside the sandbox pod, which gives the agent a private writable /tmp under a read-only root filesystem. No host temporary file is created.
+- tool: bandit
+  rule: B105
+  path: scripts/upstream_releases.py
+  match: AL2023_TOKEN = "https://public.ecr.aws/token/?scope=repository:amazonlinux/amazonlinux:pull"
+  justification: AL2023_TOKEN is the URL of the ECR Public endpoint that issues an anonymous pull token for the amazonlinux repository, which the release check calls before it lists the image tags. Bandit matches the word TOKEN in the name, and the value is a public endpoint URL, not a credential.
+- tool: bandit
+  rule: B105
+  path: services/coordination/auth.py
+  match: SHARED_SECRET_ENV_VAR = "COORDINATION_SHARED_SECRET"
+  justification: COORDINATION_SHARED_SECRET is the name of the environment variable the coordination service and its workers read the shared secret from. Bandit matches the word SECRET in the assignment, and the value is the variable name the process looks up, not the secret itself.
+- tool: bandit
+  rule: B106
+  path: services/integration/github/credentials.py
+  match: identity = _Identity(host="default", owner=owner, token_ref="__token__") if token else None
+  justification: __token__ is the key under which the in-memory EnvSecretResolver stores the token passed to build_single_identity_resolver. It is a lookup name, not a credential.
+- tool: bandit
+  rule: B106
+  path: services/integration/jira/credentials.py
+  match: token_ref="__token__",
+  justification: __token__ is the key under which the in-memory EnvSecretResolver stores the token passed to build_single_project_resolver. It is a lookup name, not a credential.
+- tool: bandit
+  rule: B105
+  path: services/integration/jira/cloud_client.py
+  match: token = ""
+  justification: token holds the nextPageToken cursor that Jira Cloud returns with each JQL search page, and it starts empty to request the first page. Bandit matches the name token assigned a string literal, and the value is a pagination position, not a credential.
+- tool: bandit
+  rule: B105
+  path: services/orchestration/gates/contract.py
+  match: PASS = "pass"
+  justification: PASS is the gate outcome constant that every gate and the gate runner compare against. Bandit matches the word pass in the value, which is an outcome name, not a credential.
+- tool: bandit
+  rule: B105
+  path: services/orchestration/remedies.py
+  match: TOKEN_BUDGET_EXCEEDED = "token_budget_exceeded"
+  justification: ImplementationReason and RepairReason narrow the terminal reason token so each budget stop renders its own operator remedy. TOKEN_BUDGET_EXCEEDED is the stop reason recorded when a run exhausts its model token budget. It names a usage limit, not a credential.
+- tool: bandit
+  rule: B105
+  path: services/orchestration/temporal_workflows/implementation.py
+  match: TOKEN_BUDGET_EXCEEDED = "token_budget_exceeded"
+  justification: TOKEN_BUDGET_EXCEEDED is the stop reason recorded when a run exhausts its model token budget. It names a usage limit, not a credential.
+- tool: bandit
+  rule: B105
+  path: services/orchestration/usage_rollup.py
+  match: TOKEN_BUDGET_EXCEEDED = "token_budget_exceeded"
+  justification: TOKEN_BUDGET_EXCEEDED is the stop reason recorded when a run exhausts its model token budget. It names a usage limit, not a credential.
+- tool: bandit
+  rule: B404
+  path: services/process.py
+  match: import subprocess
+  justification: services/process.py is the one module that imports subprocess. Every other module starts processes through it, so this import is the single reviewed process-execution boundary.
+- tool: bandit
+  rule: B603
+  path: services/process.py
+  match: return subprocess.Popen(argv, executable=executable, shell=False, **checked)
+  justification: Bandit reports every subprocess call that does not use a shell. The call takes an argument list, refuses shell and executable overrides, resolves the executable to an absolute path, and takes an explicit timeout. tests/unit/test_process.py covers each of those properties.
+- tool: bandit
+  rule: B603
+  path: services/process.py
+  match: return subprocess.run(argv, executable=executable, shell=False, timeout=timeout, **checked)
+  justification: Bandit reports every subprocess call that does not use a shell. The call takes an argument list, refuses shell and executable overrides, resolves the executable to an absolute path, and takes an explicit timeout. tests/unit/test_process.py covers each of those properties.
+- tool: bandit
+  rule: B606
+  path: services/process.py
+  match: os.execve(resolve_executable(argv[0], path=env.get("PATH")), argv, dict(env))
+  justification: replace_process hands an interactive tunnel or demo the current process through os.execve. It takes an argument list, resolves the executable to an absolute path, and passes an explicit environment. No shell is involved.
+- tool: bandit
+  rule: B105
+  path: services/review/types.py
+  match: PASS = "pass"
+  justification: Verdict.PASS is the review verdict value. The string pass is persisted in review records and signed review verdicts, so it cannot change.
+- tool: semgrep
+  rule: package_managers.uv.uv-missing-dependency-cooldown.uv-missing-dependency-cooldown
+  path: pyproject.toml
+  match: '[tool.uv]'
+  justification: A uv exclude-newer cooldown blocks a security release until it ages past the window, and a per-package exemption is a fixed cutoff that must be removed by a second change, so a cooldown in the resolver cannot coexist with one-step security fixes. The scan covers the same risk instead. pip-audit queries OSV, which carries the OpenSSF malicious-package records and fails the scan on any locked release later flagged malicious, and inv sast reports every locked release younger than seven days with its PyPI provenance for the reviewer.
+- tool: trivy
+  rule: DS-0026
+  path: docker/Dockerfile
+  match: ''
+  justification: The platform image runs many roles, including the Temporal workers, the coordination, LangGraph, webhook, and MCP services, the scheduler, and one-shot migrations. Most roles serve no health endpoint, so one image-level HEALTHCHECK cannot be correct for all of them. Health is declared per service where the orchestrator runs it, as the probes in deploy/kubernetes show.
+- tool: trivy
+  rule: DS-0026
+  path: docker/cbm-build.Dockerfile
+  match: ''
+  justification: The image is a build stage that exports one binary to a scratch layer for docker build --output. It never runs as a container, so it has no health to check.
+- tool: trivy
+  rule: DS-0026
+  path: docker/jumphost-base/Dockerfile
+  match: ''
+  justification: The jumphost runs as an ECS Fargate task, and ECS ignores a Dockerfile HEALTHCHECK. The task exits on its own TTL, and ECS reports its state from the task lifecycle.
+- tool: trivy
+  rule: DS-0026
+  path: docker/repo-intelligence.Dockerfile
+  match: ''
+  justification: The repository-intelligence image runs both the HTTP server and the indexing worker, which serves no endpoint, so one image-level HEALTHCHECK cannot be correct for both roles. Health is declared per service where the orchestrator runs it.
+- tool: trivy
+  rule: DS-0026
+  path: docker/temporal-admin-tools.Dockerfile
+  match: ''
+  justification: The admin-tools image runs one-shot tasks that apply the Temporal schemas or register the namespace and then exit. It serves nothing between start and exit, so it has no health to check, and ECS ignores a Dockerfile HEALTHCHECK.
+- tool: trivy
+  rule: DS-0002
+  path: docker/al2023/base.Dockerfile
+  match: ''
+  justification: The file builds the hardened base and the OpenSCAP scanner, which are build inputs and never run as a service. Every platform Dockerfile starts FROM the base and runs dnf and cis-harden as root in its own steps, so a non-root USER in the base would force each image to switch back to root. Each image that runs as a service sets its own non-root USER in its final stage. The checks image and the buildah builder image set no USER and run as root, which the DS-0002 entries for docker/checks.Dockerfile and docker/buildah.Dockerfile accept. The OpenSCAP stages install packages and scan a mounted root file system, which also needs root.
+- tool: trivy
+  rule: DS-0026
+  path: docker/al2023/base.Dockerfile
+  match: ''
+  justification: The base is the FROM image of the platform images and the OpenSCAP scanner runs once in a build step to scan a root file system. Neither runs as a service, so neither has health to check.
+- tool: trivy
+  rule: DS-0002
+  path: docker/checks.Dockerfile
+  match: ''
+  justification: A checks pod runs the repository's checks command in this image through buildah run, against the workspace the pod copies in owned by root. The command installs the project's dependencies into the image toolchain and writes build output and fixes into that workspace, so it runs as root, as it does in a checks image a repository builds itself. The builder pod runs in the tenant's sandbox namespace on the tainted sandbox node pool and carries no service account token.
+- tool: trivy
+  rule: DS-0026
+  path: docker/checks.Dockerfile
+  match: ''
+  justification: A checks pod runs one command in this image through buildah run and exits with the command's status, which the worker reports. It serves nothing, so it has no health to check.
+- tool: trivy
+  rule: DS-0026
+  path: docker/clickhouse.Dockerfile
+  match: ''
+  justification: compose.yaml and the ECS task definition each declare the ClickHouse health check where they run it. ECS probes the HTTPS port with the platform CA the setup container writes when the task starts, and compose probes the HTTP port, so no single build-time HEALTHCHECK fits both, and ECS ignores a Dockerfile HEALTHCHECK.
+- tool: trivy
+  rule: DS-0026
+  path: docker/langfuse.Dockerfile
+  match: ''
+  justification: The file builds the Langfuse web and worker images, which serve their health endpoints on different ports. compose.yaml and the ECS task definitions declare the check where they run each service, and ECS ignores a Dockerfile HEALTHCHECK.
+- tool: trivy
+  rule: DS-0026
+  path: docker/litellm.Dockerfile
+  match: ''
+  justification: LiteLLM runs as a Kubernetes Deployment whose readiness and liveness probes call /health/readiness and /health/liveliness. Kubernetes ignores a Dockerfile HEALTHCHECK.
+- tool: trivy
+  rule: DS-0026
+  path: docker/semgrep.Dockerfile
+  match: ''
+  justification: A scanner pod runs semgrep once in this image through buildah run and returns its JSON output and exit code to the worker. It serves nothing, so it has no health to check.
+- tool: trivy
+  rule: DS-0026
+  path: docker/trivy.Dockerfile
+  match: ''
+  justification: A scanner pod runs trivy once in this image through buildah run and returns its JSON output and exit code to the worker. It serves nothing, so it has no health to check.
+- tool: trivy
+  rule: DS-0005
+  path: docker/litellm.Dockerfile
+  match: ADD --checksum=sha256:${RDS_CA_BUNDLE_SHA256} --chmod=0444 ${RDS_CA_BUNDLE_URL} /etc/ssl/rds-global-bundle.pem
+  justification: ADD fetches the RDS CA bundle from its URL, which COPY cannot do, and --checksum fails the build unless the download matches the pinned SHA-256, so the image cannot carry a different bundle than the one reviewed.
+- tool: trivy
+  rule: DS-0005
+  path: docker/temporal-admin-tools.Dockerfile
+  match: ADD --checksum=sha256:${RDS_CA_BUNDLE_SHA256} --chmod=0444 ${RDS_CA_BUNDLE_URL} /etc/ssl/rds-global-bundle.pem
+  justification: ADD fetches the RDS CA bundle from its URL, which COPY cannot do, and --checksum fails the build unless the download matches the pinned SHA-256, so the image cannot carry a different bundle than the one reviewed.
+- tool: trivy
+  rule: DS-0005
+  path: docker/temporal.Dockerfile
+  match: ADD --checksum=sha256:${RDS_CA_BUNDLE_SHA256} --chmod=0444 ${RDS_CA_BUNDLE_URL} /etc/ssl/rds-global-bundle.pem
+  justification: ADD fetches the RDS CA bundle from its URL, which COPY cannot do, and --checksum fails the build unless the download matches the pinned SHA-256, so the image cannot carry a different bundle than the one reviewed.
+- tool: trivy
+  rule: KSV-0125
+  path: openhands/images/agent-server-pod.yaml
+  match: '- name: agent-server'
+  justification: The agent-server image is the upstream OpenHands release that matches openhands-sdk 1.56.0, pinned by digest. Trivy's default trusted-registry list has no ghcr.io entry. A deployment that mirrors the image into its own registry sets OPENHANDS_AGENT_SERVER_IMAGE to the mirrored digest.
+- tool: gitleaks-history
+  rule: generic-api-key
+  path: tests/unit/test_litellm_redaction.py
+  match: 0364f6205b3e434b7823d016ee9e5ab7a474748c:tests/unit/test_litellm_redaction.py:generic-api-key:42
+  justification: A synthetic token-shaped fixture in a redaction test, committed before the fixtures were built at runtime. Commits are immutable, so the finding stays in history. The value was never a credential for any service.
+- tool: gitleaks-history
+  rule: github-pat
+  path: tests/unit/test_litellm_redaction.py
+  match: 0364f6205b3e434b7823d016ee9e5ab7a474748c:tests/unit/test_litellm_redaction.py:github-pat:19
+  justification: A synthetic token-shaped fixture in a redaction test, committed before the fixtures were built at runtime. Commits are immutable, so the finding stays in history. The value was never a credential for any service.
+- tool: gitleaks-history
+  rule: github-pat
+  path: tests/unit/test_litellm_redaction.py
+  match: 0364f6205b3e434b7823d016ee9e5ab7a474748c:tests/unit/test_litellm_redaction.py:github-pat:24
+  justification: A synthetic token-shaped fixture in a redaction test, committed before the fixtures were built at runtime. Commits are immutable, so the finding stays in history. The value was never a credential for any service.
+- tool: gitleaks-history
+  rule: generic-api-key
+  path: tests/unit/test_metrics_and_logs.py
+  match: 3fcf369cd920565dc165584cd0decbaa4966008e:tests/unit/test_metrics_and_logs.py:generic-api-key:117
+  justification: A synthetic token-shaped fixture in a redaction test, committed before the fixtures were built at runtime. Commits are immutable, so the finding stays in history. The value was never a credential for any service.
+- tool: gitleaks
+  rule: sourcegraph-access-token
+  path: docker/repo-intelligence.Dockerfile
+  match: sha256:7ba5cf5cf55a2261130e62407e1329de8b6ae0b4051a508d4651ec63264add24
+  justification: The line is ARG ZOEKT_COMMIT, the 40-character hash of commit 2cb19912 in github.com/sourcegraph/zoekt, which the zoekt stage fetches and builds because zoekt publishes no releases. The rule matches any 40-character hexadecimal string in a file that names sourcegraph, and the value is a public commit hash, not a credential.
+- tool: gitleaks-history
+  rule: sourcegraph-access-token
+  path: docker/repo-intelligence.Dockerfile
+  match: 434ffc1b15c36cb08d71f76ecec0732a7287737f:docker/repo-intelligence.Dockerfile:sourcegraph-access-token:67
+  justification: The commit added ARG ZOEKT_COMMIT, the 40-character hash of commit 2cb19912 in github.com/sourcegraph/zoekt, which the zoekt stage fetches and builds. The rule matches any 40-character hexadecimal string in a file that names sourcegraph, and the value is a public commit hash, not a credential.
+- tool: semgrep
+  rule: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
+  path: services/orchestration/worker.py
+  match: log.warning(
+  justification: The rule fires on the word credential in the format string. The arguments are the count of rewritten checkouts, the count of scanned checkouts, and the workspace root path from EXECUTION_WORKSPACE_ROOT. No token value is in scope at the call.
+- tool: semgrep
+  rule: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
+  path: services/orchestration/worker.py
+  match: log.error(
+  justification: The rule fires on the word credential in the format string. The arguments are the count of failed checkouts and a comma-joined list of workspace directory paths. No token value is in scope at the call.
+- tool: semgrep
+  rule: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
+  path: services/orchestration/workspace_scrub.py
+  match: 'log.error("workspace credential scrub failed for %s: %s", workspace, exc)'
+  justification: The rule fires on the word credential in the format string. The arguments are a workspace directory path and an OSError or RuntimeError raised by git config. The RuntimeError carries git stderr, which reports the config file and line number rather than the line content, and the only value the scrub passes on the git command line is the URL it already stripped the userinfo from.
+- tool: semgrep
+  rule: terraform.aws.security.insecure-load-balancer-tls-version.insecure-load-balancer-tls-version
+  path: infra/terraform/temporal-control-plane/network.tf
+  match: 'ssl_policy = local.frontend_from_secrets ? null : "ELBSecurityPolicy-TLS13-1-2-FIPS-2023-04"'
+  justification: The rule accepts a fixed list of policy names and does not list the FIPS policies. ELBSecurityPolicy-TLS13-1-2-FIPS-2023-04 negotiates TLS 1.3 and TLS 1.2 only, with FIPS 140-3 validated cryptography, which FedRAMP requires. When the frontend certificate comes from secrets, the listener is TCP and the Temporal server terminates TLS 1.2 or later itself.
+- tool: semgrep
+  rule: terraform.aws.security.insecure-load-balancer-tls-version.insecure-load-balancer-tls-version
+  path: infra/terraform/temporal-control-plane/ui.tf
+  match: ssl_policy = "ELBSecurityPolicy-TLS13-1-2-FIPS-2023-04"
+  justification: The rule accepts a fixed list of policy names and does not list the FIPS policies. ELBSecurityPolicy-TLS13-1-2-FIPS-2023-04 negotiates TLS 1.3 and TLS 1.2 only, with FIPS 140-3 validated cryptography, which FedRAMP requires.
+- tool: trivy
+  rule: DS-0026
+  path: docker/temporal-ui.Dockerfile
+  match: ''
+  justification: The UI serves HTTPS with a certificate the start script issues when the task starts, so a build-time HEALTHCHECK has no certificate to verify against. ECS ignores a Dockerfile HEALTHCHECK, and the ALB target group checks the UI over HTTPS.
+- tool: trivy
+  rule: DS-0005
+  path: docker/Dockerfile
+  match: ADD --checksum=sha256:${RDS_CA_BUNDLE_SHA256} --chmod=0444 ${RDS_CA_BUNDLE_URL} /etc/ssl/rds-global-bundle.pem
+  justification: ADD fetches the RDS CA bundle from its URL, which COPY cannot do, and --checksum fails the build unless the download matches the pinned SHA-256, so the image cannot carry a different bundle than the one reviewed.
+- tool: semgrep
+  rule: terraform.aws.security.insecure-load-balancer-tls-version.insecure-load-balancer-tls-version
+  path: infra/terraform/container-services/internal_lb.tf
+  match: ssl_policy = "ELBSecurityPolicy-TLS13-1-2-FIPS-2023-04"
+  justification: The rule accepts a fixed list of policy names and does not list the FIPS policies. ELBSecurityPolicy-TLS13-1-2-FIPS-2023-04 negotiates TLS 1.3 and TLS 1.2 only, with FIPS 140-3 validated cryptography, which FedRAMP requires.
+- tool: semgrep
+  rule: python.lang.security.audit.httpsconnection-detected.httpsconnection-detected
+  path: services/healthcheck.py
+  match: connection = http.client.HTTPSConnection(LOOPBACK, port, timeout=timeout, context=context)
+  justification: The probe passes an explicit context from services.server_tls.probe_context, which verifies the loopback certificate against the certificate the service issued itself and checks the host name. The rule flags any HTTPSConnection because older Python versions did not verify by default, and the images run Python 3.12 or later.
+- tool: trivy
+  rule: DS-0026
+  path: docker/tls-sidecar.Dockerfile
+  match: ''
+  justification: The image runs as a proxy sidecar or as an init container that issues a certificate and exits, so no single image-level HEALTHCHECK fits both. ECS ignores a Dockerfile HEALTHCHECK, and the task definition probes the proxy with the bundled healthprobe binary.
+- tool: trivy
+  rule: KSV-0048
+  path: deploy/kubernetes/sandbox.yaml
+  match: '- resources: [pods]'
+  justification: The activity worker creates and deletes short-lived pods, which is the function of the Role. They are the OpenHands sandbox pod of each execution, the image verification pod that checks the signature of the sandbox image before the sandbox pod pulls it when image signature verification is on, one pod per external review gate, which builds the gate engine image when the gate names no image, the project checks pod and the project fix pod, which run the checks image or build it from the repository, and the semgrep and trivy scanner pods. Every pod but the sandbox pod runs the buildah builder image. The tenant renderer copies the namespaced Role into each tenant sandbox namespace and binds it only to that tenant's activity-worker ServiceAccount, so it grants nothing outside that namespace, and it covers pods alone, with no Deployment, Job, Secret, or RBAC resource.
+- tool: trivy
+  rule: KSV-0053
+  path: deploy/kubernetes/sandbox.yaml
+  match: '- resources: [pods/exec]'
+  justification: The activity worker copies the execution checkout and the registry credentials into the pods it creates, runs their scripts, and reads their results back through pods/exec, the tar-over-exec transport the pod runner uses. The tenant renderer copies the Role into each tenant sandbox namespace and binds it only to that tenant's activity-worker ServiceAccount, and the pods it reaches are the short-lived ones that worker created.
+- tool: semgrep
+  rule: terraform.lang.security.iam.no-iam-creds-exposure.no-iam-creds-exposure
+  path: infra/terraform/examples/private-bedrock/eks.tf
+  match: Action = "ecr:GetAuthorizationToken"
+  justification: The gate, checks, scanner, and image verification pods carry no AWS identity that may pull from ECR, so the tenant's activity worker requests the ECR token their in-pod pulls use and copies it into the pod over the exec stream. The action supports no resource-level scoping. The token authorizes only the pulls the PullTheSandboxImages statement grants, which covers every platform catalog repository in local.image_catalog_repositories, the gate engine repositories in var.eks_gate_image_repository_arns, and every repository under each ECR pull-through cache prefix in local.registry_cache_repository_arns, which exist only in the aws registry mode. The pod deletes the token after the pull and before any project or scanner code runs.
+- tool: semgrep
+  rule: terraform.aws.security.aws-secretsmanager-secret-unencrypted.aws-secretsmanager-secret-unencrypted
+  path: infra/terraform/examples/private-bedrock/registry.tf
+  match: resource "aws_secretsmanager_secret" "registry_upstream" {
+  justification: ECR reads a pull-through cache credential only from a secret encrypted with the AWS managed aws/secretsmanager key and does not support a customer managed key for it. The secret holds a read-only upstream registry token, and only ECR and the operators who fill it read it.
+- tool: semgrep
+  rule: terraform.lang.security.iam.no-iam-creds-exposure.no-iam-creds-exposure
+  path: infra/terraform/eks-deployer/main.tf
+  match: Action = "ecr:GetAuthorizationToken"
+  justification: ECS signs in to ECR with the token this action returns to pull the eks-deployer image, and the action supports no resource-level scoping. The token authorizes only the pull the role's other statement grants, which is limited to the eks-deployer repository.
+- tool: semgrep
+  rule: terraform.lang.security.iam.no-iam-creds-exposure.no-iam-creds-exposure
+  path: infra/terraform/github-image-publisher/main.tf
+  match: 'Action = "ecr:GetAuthorizationToken" # sast-accepted: image-exception role'
+  justification: The image-exception workflow pulls the platform image it records an exception for and scans it, and Docker signs in to ECR with the token this action returns. ECR authorizes GetAuthorizationToken only on the * resource. The token authorizes only the pulls the role's PullThePlatformImages statement grants, which are limited to the platform repositories, and only a workflow of the repository's exception environment running on exception_ref, refs/heads/main by default, can assume the role.
+- tool: semgrep
+  rule: terraform.lang.security.iam.no-iam-data-exfiltration.no-iam-data-exfiltration
+  path: infra/terraform/github-image-publisher/main.tf
+  match: 'Action = ["s3:GetObject", "s3:GetObjectVersion", "s3:PutObject"] # sast-accepted: image-exception role'
+  justification: The rule reports every S3 read action in a policy that holds any statement on the * resource, and the exception policy holds two, for ecr:GetAuthorizationToken and inspector-scan:ScanSbom, which AWS authorizes only on *. This statement names one object, platform/image_exceptions.yaml in the config bucket, which the workflow reads and rewrites to record the exception.
+- tool: semgrep
+  rule: terraform.lang.security.iam.no-iam-data-exfiltration.no-iam-data-exfiltration
+  path: infra/terraform/github-image-publisher/main.tf
+  match: 'Action = ["s3:GetObject", "s3:GetObjectVersion"] # sast-accepted: image-exception role'
+  justification: The rule reports every S3 read action in a policy that holds any statement on the * resource, and the exception policy holds two, for ecr:GetAuthorizationToken and inspector-scan:ScanSbom, which AWS authorizes only on *. This statement names one object, platform/image_policy.yaml in the config bucket, which the workflow reads to validate the exception against the image policy.
+- tool: trivy
+  rule: KSV-0037
+  path: deploy/kubernetes/aws/kube-system-network-policies.yaml
+  match: 'app.kubernetes.io/part-of: agentic-dev-platform'
+  justification: Trivy reports each NetworkPolicy in this file because it sits in kube-system, at the spec, labels, or part-of label line its parser maps the object to, and each of those lines repeats in every object of the file. The file holds only the kube-system policies of strict network policy mode, system-baseline, coredns-ingress, and load-balancer-controller-webhook, and a unit test keeps it that way. They let CoreDNS, the EFS CSI controller, the Load Balancer Controller, and the other kube-system pods run in strict mode, and a NetworkPolicy applies only in its own namespace, so they must live in kube-system. They grant traffic to the system pods and run nothing there.
+- tool: trivy
+  rule: DS-0026
+  path: docker/eks-deployer.Dockerfile
+  match: ''
+  justification: The eks-deployer runs as a one-shot ECS Fargate task that deploys and exits, so it serves nothing to check, and ECS ignores a Dockerfile HEALTHCHECK.
+- tool: trivy
+  rule: KSV-0037
+  path: deploy/kubernetes/aws/kube-system-network-policies.yaml
+  match: 'spec:'
+  justification: Trivy reports each NetworkPolicy in this file because it sits in kube-system, at the spec, labels, or part-of label line its parser maps the object to, and each of those lines repeats in every object of the file. The file holds only the kube-system policies of strict network policy mode, system-baseline, coredns-ingress, and load-balancer-controller-webhook, and a unit test keeps it that way. They let CoreDNS, the EFS CSI controller, the Load Balancer Controller, and the other kube-system pods run in strict mode, and a NetworkPolicy applies only in its own namespace, so they must live in kube-system. They grant traffic to the system pods and run nothing there.
+- tool: trivy
+  rule: KSV-0037
+  path: deploy/kubernetes/aws/kube-system-network-policies.yaml
+  match: 'labels:'
+  justification: Trivy reports each NetworkPolicy in this file because it sits in kube-system, at the spec, labels, or part-of label line its parser maps the object to, and each of those lines repeats in every object of the file. The file holds only the kube-system policies of strict network policy mode, system-baseline, coredns-ingress, and load-balancer-controller-webhook, and a unit test keeps it that way. They let CoreDNS, the EFS CSI controller, the Load Balancer Controller, and the other kube-system pods run in strict mode, and a NetworkPolicy applies only in its own namespace, so they must live in kube-system. They grant traffic to the system pods and run nothing there.
+- tool: bandit
+  rule: B404
+  path: examples/gate-engines/security-policy/policy.py
+  match: import subprocess
+  justification: The example engine runs in its own image without the platform's services.process wrapper, and it starts only git to read the change under review. The one call resolves git to an absolute path, passes an argument list without a shell, and sets a timeout.
+- tool: bandit
+  rule: B603
+  path: examples/gate-engines/security-policy/policy.py
+  match: return subprocess.run(
+  justification: Bandit reports every subprocess call that does not use a shell. The call runs git, resolved to an absolute path, with an argument list the engine builds from fixed subcommands and the base ref the platform passes, and with a timeout. Git receives the ref as one argument, so it cannot inject a command.
+- tool: bandit
+  rule: B404
+  path: examples/gate-engines/test-policy/policy.py
+  match: import subprocess
+  justification: The example engine runs in its own image without the platform's services.process wrapper, and it starts only git to read the change under review. The one call resolves git to an absolute path, passes an argument list without a shell, and sets a timeout.
+- tool: bandit
+  rule: B603
+  path: examples/gate-engines/test-policy/policy.py
+  match: return subprocess.run(
+  justification: Bandit reports every subprocess call that does not use a shell. The call runs git, resolved to an absolute path, with an argument list the engine builds from fixed subcommands, the base ref the platform passes, and paths git itself reported, and with a timeout. Git receives each value as one argument, so none can inject a command.
+- tool: bandit
+  rule: B310
+  path: examples/gate-engines/test-policy/policy.py
+  match: 'with urllib.request.urlopen(request, timeout=MODEL_TIMEOUT_SECONDS) as response:'
+  justification: The URL is the model gateway the platform injects in ANTHROPIC_BASE_URL, and suggest_tests refuses any value that does not start with http:// or https:// before building the request, so no file or custom scheme reaches urlopen.
+- tool: semgrep
+  rule: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
+  path: examples/gate-engines/test-policy/policy.py
+  match: 'with urllib.request.urlopen(request, timeout=MODEL_TIMEOUT_SECONDS) as response:'
+  justification: The URL is the model gateway the platform injects in ANTHROPIC_BASE_URL, and suggest_tests refuses any value that does not start with http:// or https:// before building the request, so no file or custom scheme reaches urlopen.
+- tool: semgrep
+  rule: terraform.lang.security.iam.no-iam-resource-exposure.no-iam-resource-exposure
+  path: infra/terraform/tenant/images.tf
+  match: Action = ["kms:CreateGrant", "kms:RetireGrant", "kms:DescribeKey"]
+  justification: ECR assumes the tenant's repository creation role and creates a KMS grant for each repository it creates on push, which AWS documents as required for a creation template that uses KMS. The statement names only the tenant's own key, and only ECR can assume the role.
+- tool: semgrep
+  rule: terraform.lang.security.iam.no-iam-creds-exposure.no-iam-creds-exposure
+  path: infra/terraform/tenant/publisher.tf
+  match: Action = "ecr:GetAuthorizationToken"
+  justification: Docker signs in to ECR with the token this action returns, so the tenant publisher that pushes the tenant's images needs it, and the action supports no resource-level scoping. The token authorizes only the pushes the role's other statement grants, which are limited to the tenant's image prefix, and only the workflows of the tenant's config repository on its allowed refs can assume the role.
+- tool: semgrep
+  rule: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
+  path: services/orchestration/gates/image_admission.py
+  match: 'with urllib.request.urlopen(request, timeout=60) as response:  # noqa: S310 - https only'
+  justification: The URL is https:// followed by an ECR registry host that the _ECR_HOST pattern matched and a repository and digest from an admitted image reference, so no caller can supply a file or custom scheme. The request pulls a manifest through the pull-through cache so ECR imports the image for scanning.
+- tool: bandit
+  rule: B310
+  path: services/orchestration/gates/image_admission.py
+  match: 'with urllib.request.urlopen(request, timeout=60) as response:  # noqa: S310 - https only'
+  justification: The URL is https:// followed by an ECR registry host that the _ECR_HOST pattern matched and a repository and digest from an admitted image reference, so no caller can supply a file or custom scheme. The request pulls a manifest through the pull-through cache so ECR imports the image for scanning.
+- tool: trivy
+  rule: DS-0002
+  path: docker/buildah.Dockerfile
+  match: ''
+  justification: The builder runs buildah, which unpacks image layers and runs the gate, checks, and scanner containers, and that needs root inside the pod. The pod spec sets runAsUser 0 explicitly, runs in the tenant's sandbox namespace on the tainted sandbox node pool, carries no service account token, and reaches only DNS, LiteLLM, the registries, and the Pod Identity agent.
+- tool: trivy
+  rule: DS-0026
+  path: docker/buildah.Dockerfile
+  match: ''
+  justification: The builder pod runs sleep infinity while the worker execs the build and scan steps into it, then deletes it. It serves nothing, so it has no health to check, and the worker reports each step's exit code.
+- tool: trivy
+  rule: DS-0001
+  path: docker/image-scan.Dockerfile
+  match: FROM download-${TARGETARCH} AS unpack
+  justification: download-${TARGETARCH} names the build stage that holds the checksum-pinned SBOM generator for the target architecture, not an image, so it carries no tag. Trivy cannot resolve the stage through the variable and reads it as an untagged image. Every image the Dockerfile pulls is pinned by digest.
+- tool: trivy
+  rule: DS-0026
+  path: docker/image-scan.Dockerfile
+  match: ''
+  justification: The image runs the SBOM generator once against an image archive and exits, so it serves nothing to check.
+- tool: bandit
+  rule: B105
+  path: scripts/webhook_eks_render.py
+  match: '"github_webhook_secret": "GITHUB_WEBHOOK_SECRET_",'
+  justification: GITHUB_WEBHOOK_SECRET_ is the prefix of the per-tenant environment variable name the inbound webhook reads its GitHub signing secret from, joined with the upper-cased tenant name. Bandit matches the word secret in the dictionary key, and the value is a variable name prefix, not a credential.
+- tool: bandit
+  rule: B105
+  path: scripts/webhook_eks_render.py
+  match: '"jira_webhook_secret": "JIRA_WEBHOOK_SECRET_",'
+  justification: JIRA_WEBHOOK_SECRET_ is the prefix of the per-tenant environment variable name the inbound webhook reads its Jira signing secret from, joined with the upper-cased tenant name. Bandit matches the word secret in the dictionary key, and the value is a variable name prefix, not a credential.

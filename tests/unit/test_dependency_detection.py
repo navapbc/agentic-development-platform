@@ -96,9 +96,7 @@ def test_no_peers_yields_none():
 
 def test_file_overlap_takes_precedence_over_symbol():
     peers = [PeerRun("e2", "T2", ("shared.ts",))]
-    finding = detect_dependency(
-        touch_set=["shared.ts"], symbol_files=["shared.ts"], peers=peers
-    )
+    finding = detect_dependency(touch_set=["shared.ts"], symbol_files=["shared.ts"], peers=peers)
     assert finding is not None
     assert finding.reason == FILE_OVERLAP
 
@@ -159,9 +157,7 @@ def _patch(monkeypatch, backend, execs, store=None):
     monkeypatch.setattr(
         "services.orchestration.intake_runtime.PostgresExecutionSeeder", _seeder(execs)
     )
-    monkeypatch.setattr(
-        "services.orchestration.file_impact_store.FileImpactStore", lambda: store
-    )
+    monkeypatch.setattr("services.orchestration.file_impact_store.FileImpactStore", lambda: store)
     return dep, store
 
 
@@ -171,7 +167,7 @@ async def test_activity_detects_and_publishes(monkeypatch):
     dep, store = _patch(monkeypatch, backend, [_Exec("e2", "T2")], store=store)
     result = await dep.detect_dependency(
         dep.DetectDependencyRequest(
-            repo="archive-massgov-pfml",
+            repo="example-service",
             task_id="T1",
             execution_id="e1",
             issue_key="T1",
@@ -188,9 +184,7 @@ async def test_activity_detects_and_publishes(monkeypatch):
 async def test_activity_without_capability_is_inactive(monkeypatch):
     dep, _store = _patch(monkeypatch, _PlainBackend(), [])
     result = await dep.detect_dependency(
-        dep.DetectDependencyRequest(
-            repo="r", task_id="T1", execution_id="e1", issue_key="T1"
-        )
+        dep.DetectDependencyRequest(repo="r", task_id="T1", execution_id="e1", issue_key="T1")
     )
     assert result.detected is False
     assert result.active is False

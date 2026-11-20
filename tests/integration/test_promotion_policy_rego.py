@@ -15,7 +15,11 @@ from pathlib import Path
 
 import pytest
 
-_OPA_IMAGE = "openpolicyagent/opa:1.20.1"
+_OPA_IMAGE = (
+    "docker.io/"
+    "openpolicyagent/opa:1.20.1"
+    "@sha256:39daf255ae7f25d81103f03a0c18308a50b7b5bb67907bed6166f70e24a970ff"
+)
 _POLICIES = Path(__file__).resolve().parents[2] / "config" / "policies"
 _RUNTIMES = ("docker", "podman", "nerdctl")
 
@@ -42,8 +46,6 @@ def _decision(document: dict) -> dict:
             _RUNTIME,
             "run",
             "--rm",
-            "--platform",
-            "linux/amd64",
             "-i",
             "-v",
             f"{_POLICIES}:/policies:ro",
@@ -68,6 +70,7 @@ def _compliant(**overrides) -> dict:
     document = {
         "jira_project": "AGENTDEV",
         "repository": "agentic-demo-service",
+        "allowed_repos": ["agentic-demo-service"],
         "ci_status": "success",
         "repair_attempts": 0,
         "max_repair_attempts": 2,
@@ -88,7 +91,7 @@ def test_compliant_change_is_allowed():
     assert decision["allow"] is True
     assert decision["reasons"] == []
     assert decision["human_review"] == []
-    assert decision["bundle_version"] == "0.4.0"
+    assert decision["bundle_version"] == "0.5.0"
     assert decision["next_action"] == "proceed"
 
 
@@ -141,12 +144,26 @@ def test_a_deployment_invariant_still_denies():
     assert "ci_not_successful" in decision["reasons"]
 
 
+def test_a_repository_outside_the_passed_list_is_denied():
+    decision = _decision(_compliant(repository="other-service"))
+    assert decision["allow"] is False
+    assert "repository_not_allowlisted" in decision["reasons"]
+
+
+def test_no_repository_list_allows_no_repository():
+    document = _compliant()
+    del document["allowed_repos"]
+    decision = _decision(document)
+    assert decision["allow"] is False
+    assert "repository_not_allowlisted" in decision["reasons"]
+
+
 def test_input_allowlists_admit_a_backend_the_defaults_omit():
     document = _compliant(
-        jira_project="PFMLPB",
-        repository="archive-massgov-pfml",
-        allowed_projects=["PFMLPB"],
-        allowed_repos=["archive-massgov-pfml"],
+        jira_project="PROJ",
+        repository="example-service",
+        allowed_projects=["PROJ"],
+        allowed_repos=["example-service"],
         ci_status="skipped",
         ci_required=False,
     )
@@ -208,3 +225,10 @@ def test_a_fail_closed_gate_denies_even_beside_a_pause_gate():
     assert "gate_failed:code-review" in decision["reasons"]
     assert "gate_failed:security-review" in decision["human_review"]
     assert decision["next_action"] == "block_and_report"
+
+
+def test_skipped_ci_reports_ci_skipped():
+    decision = _decision(_compliant(ci_status="skipped"))
+    assert decision["allow"] is False
+    assert "ci_skipped" in decision["reasons"]
+    assert "ci_not_successful" not in decision["reasons"]

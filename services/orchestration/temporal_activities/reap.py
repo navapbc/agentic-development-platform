@@ -1,4 +1,4 @@
-"""Temporal activity for reaping TTL-expired platform orphan artifacts."""
+"""Temporal activity that reaps TTL-expired orphan artifacts and orphaned sandbox pods."""
 
 from __future__ import annotations
 
@@ -44,6 +44,20 @@ def _build_backend():
     return build_git_host()
 
 
+def _build_sandbox_sweep(settings, executions):
+    from openhands.runtime.provisioner import KubernetesSandboxPods
+
+    from services.coordination.reaper import SandboxSweep
+    from services.orchestration.temporal_activities.persistence import record_audit_event
+
+    return SandboxSweep(
+        pods=KubernetesSandboxPods(in_cluster=settings.openhands_in_cluster),
+        namespace=settings.openhands_sandbox_namespace,
+        executions=executions,
+        audit=record_audit_event,
+    )
+
+
 @activity.defn
 async def reap_orphans(request: ReapRequest) -> ReapReport:
     from scripts.config import get_settings
@@ -52,12 +66,15 @@ async def reap_orphans(request: ReapRequest) -> ReapReport:
     from services.integration.source_control import source_control_repos
 
     settings = get_settings()
+    registry = _build_registry()
     receipt = await reap(
-        registry=_build_registry(),
+        registry=registry,
         backend=_build_backend(),
         allowed_repos=frozenset(source_control_repos(settings)),
         now=datetime.now(UTC),
+        tenant=settings.tenant,
         dry_run=request.dry_run,
+        sandbox=_build_sandbox_sweep(settings, registry),
     )
     return ReapReport(
         dry_run=receipt.dry_run,

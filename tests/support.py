@@ -5,11 +5,30 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
 from scripts.config import Settings
+from services.review.evidence import EvidenceRecord
 
 
 def hermetic_settings(**overrides: object) -> Settings:
     return Settings(_env_file=None, **overrides)  # pyright: ignore[reportCallIssue]
+
+
+def capture_evidence(monkeypatch: pytest.MonkeyPatch) -> list[EvidenceRecord]:
+    """Swap the Postgres evidence sink for a recorder and return the records it collects.
+
+    ``build_evidence_sink`` resolves ``PostgresEvidenceSink`` by name at call time, so
+    patching the attribute reaches every producer without touching the factory.
+    """
+    records: list[EvidenceRecord] = []
+
+    class _RecordingSink:
+        async def persist(self, record: EvidenceRecord) -> str:
+            records.append(record)
+            return record.artifact_id
+
+    monkeypatch.setattr("services.review.evidence.PostgresEvidenceSink", _RecordingSink)
+    return records
 
 
 def seed_rebar_store(root: Path, tickets: list[dict] | None = None) -> list[str]:
@@ -72,3 +91,35 @@ _DEFAULT_TICKETS: list[dict] = [
         "tags": ["enhancement", "api"],
     },
 ]
+
+
+def configure_repositories(
+    monkeypatch: pytest.MonkeyPatch,
+    directory: Path,
+    repositories: str,
+    *,
+    github: str | None = None,
+) -> Path:
+    """Write repositories.yaml, and github.yaml when given, as the environment config.
+
+    The config loaders read PLATFORM_ENV_CONFIG_DIR before config/<env>, so a test that calls a
+    settings-driven factory sees these files and not the operator's own.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "repositories.yaml").write_text(
+        "config_version: 1\n" + repositories, encoding="utf-8"
+    )
+    if github is not None:
+        (directory / "github.yaml").write_text("config_version: 2\n" + github, encoding="utf-8")
+    monkeypatch.setenv("PLATFORM_ENV_CONFIG_DIR", str(directory))
+    return directory
+
+
+# Admits the images the settings default to, so a test of another concern validates its bundle.
+PERMISSIVE_IMAGE_POLICY = """config_version: 1
+registries: [docker.io/, quay.io/, ghcr.io/, host.docker.internal:5001/, registry.example/]
+"""
+
+
+def write_image_policy(directory: Path, policy: str = PERMISSIVE_IMAGE_POLICY) -> None:
+    (directory / "image_policy.yaml").write_text(policy, encoding="utf-8")

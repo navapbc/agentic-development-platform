@@ -8,7 +8,7 @@
       "scip_reader": "scip version v0.9.0",
       "structure": "scip-ruby@0.4.7"
     },
-    "path": "/app/services/repository_intelligence/eval/gold/agentic-demo-ruby@dc6e9de.jsonl",
+    "path": "services/repository_intelligence/eval/gold/agentic-demo-ruby@dc6e9de.jsonl",
     "records": 67
   },
   "harness_version": "harness/1",
@@ -162,7 +162,7 @@
   "repo": "agentic-demo-ruby",
   "runs_per_provider": 3,
   "toolchain": {
-    "cbm_binary": "/tmp/Documents/Projects/Nava/codebase-memory-mcp/build/c/codebase-memory-mcp",
+    "cbm_binary": "vendor/bin/codebase-memory-mcp",
     "cbm_binary_bytes": null,
     "platform": "Linux-6.12.54-linuxkit-aarch64-with-glibc2.36",
     "python": "3.11.2"

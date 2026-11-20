@@ -2,25 +2,32 @@
 
 from __future__ import annotations
 
-import subprocess
+import os
 from typing import Any
 
 import structlog
 from scripts.config import Settings
 
+from services import process
+from services.integration.github.git_auth import NO_AUTH, GitAuth
 from services.integration.jira.credentials import acceptance_field
+from services.operator_remedy import Remedy
+from services.orchestration.change_narrative import compose_commit_message
 from services.orchestration.execution_reconciler import ActiveExecution
+from services.orchestration.intake_base import UnresolvableBaseBranch, declared_issue_key
 from services.orchestration.intake_reconciler import IntakeContext, IntakeStart
 
 _log = structlog.get_logger(__name__)
 
 
-def remote_head(remote: str, branch: str) -> str:
-    proc = subprocess.run(
-        ["git", "ls-remote", remote, f"refs/heads/{branch}"],
+def remote_head(remote: str, branch: str, auth: GitAuth = NO_AUTH) -> str:
+    proc = process.run(
+        ["git", *auth.config_args(), "ls-remote", "--", remote, f"refs/heads/{branch}"],
+        timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS,
         check=True,
         capture_output=True,
         text=True,
+        env={**os.environ, **auth.env()},
     )
     return proc.stdout.split()[0] if proc.stdout.strip() else ""
 
@@ -31,12 +38,18 @@ class TemporalStarter:
         self._settings = settings
         self._gh = gh_resolver
 
-    async def start(self, start: IntakeStart) -> str:
-        from services.integration.github.factory import (
-            LOCAL,
-            build_git_host,
-            resolve_source_control_backend_name,
+    async def resolve_base(self, *, repo: str, branch: str) -> str:
+        from services.integration.github.factory import build_git_auth_for, build_git_host
+
+        return remote_head(
+            build_git_host(self._settings).source_location(repo),
+            branch,
+            build_git_auth_for(self._settings)(repo),
         )
+
+    async def start(self, start: IntakeStart) -> str:
+        from services.integration.github.factory import build_git_auth_for, build_git_host
+        from services.integration.repositories import LOCAL, load_repository_registry
         from services.orchestration.gates.engine_source import (
             load_gate_engine_configs,
             triage_engine,
@@ -45,12 +58,21 @@ class TemporalStarter:
             DraftPullRequestInput,
             DraftPullRequestWorkflow,
         )
+        from services.orchestration.usage_rollup import BudgetCaps
 
-        base = self._settings.github_default_base_branch
-        base_sha = remote_head(build_git_host(self._settings).source_location(start.repo), base)
+        repository = load_repository_registry(self._settings).require(start.repo)
+        base = start.base or repository.default_branch
+        source_location = build_git_host(self._settings).source_location(start.repo)
+        base_auth = build_git_auth_for(self._settings)(start.repo)
+        base_sha = remote_head(source_location, base, base_auth)
+        if start.base and not base_sha:
+            raise UnresolvableBaseBranch(base, start.repo)
         run_test_triage = triage_engine(load_gate_engine_configs(self._settings)) is not None
-        await_pr_close = resolve_source_control_backend_name(self._settings) == LOCAL
+        await_pr_close = repository.backend == LOCAL
+        caps = BudgetCaps.from_settings(self._settings)
         workflow_id = f"draft-pr-{start.issue_key}-{start.execution_id}"
+        from services.orchestration.task_queues import run_task_queue
+
         await self._client.start_workflow(
             DraftPullRequestWorkflow.run,
             DraftPullRequestInput(
@@ -63,6 +85,12 @@ class TemporalStarter:
                 issue_key=start.issue_key,
                 focus=start.summary,
                 task_description=start.description,
+                commit_message=compose_commit_message(
+                    issue_key=declared_issue_key(start.stored_issue.get("labels") or ())
+                    or start.issue_key,
+                    summary=start.summary,
+                    description=start.description,
+                ),
                 stored_issue=start.stored_issue,
                 build_id=self._settings.agent_build_id,
                 parked_status=self._settings.jira_parked_status,
@@ -77,9 +105,13 @@ class TemporalStarter:
                 snapshot_version=start.snapshot_version,
                 run_test_triage=run_test_triage,
                 await_pr_close=await_pr_close,
+                file_impact=list(start.file_impact),
+                max_cost_usd=caps.max_cost_usd,
+                max_llm_calls=caps.max_llm_calls,
+                max_tokens=caps.max_tokens,
             ),
             id=workflow_id,
-            task_queue=self._settings.temporal_task_queue,
+            task_queue=run_task_queue(self._settings),
         )
         return workflow_id
 
@@ -88,12 +120,29 @@ class NotificationsAlerter:
     def __init__(self, settings: Any) -> None:
         self._settings = settings
 
-    async def unroutable(self, *, issue_key: str, project: str, reason: str) -> None:
-        from services.orchestration.notifications import send_intake_unroutable_alert
+    async def unroutable(
+        self, *, issue_key: str, project: str, reason: str, remedy: Remedy
+    ) -> None:
+        from services.orchestration.notifications import (
+            render_remedy,
+            send_intake_unroutable_alert,
+        )
 
         send_intake_unroutable_alert(
-            issue_key=issue_key, project=project, reason=reason, settings=self._settings
+            issue_key=issue_key,
+            project=project,
+            reason=reason,
+            remedy=render_remedy(remedy, self._settings),
+            settings=self._settings,
         )
+
+
+def _this_tenant(executions: Any) -> list[Any]:
+    """Limit a query to this process's tenant, whose worker owns the runs it admits and reaps."""
+    from scripts.config import get_settings
+
+    tenant = get_settings().tenant
+    return [executions.c.tenant == tenant] if tenant else []
 
 
 class PostgresExecutionSeeder:
@@ -102,16 +151,14 @@ class PostgresExecutionSeeder:
 
     def _get_engine(self) -> Any:
         if self._engine is None:
-            from scripts.config import get_settings
-            from sqlalchemy.ext.asyncio import create_async_engine
+            from database.engine import shared_platform_engine
 
-            self._engine = create_async_engine(
-                get_settings().database_url, future=True, pool_pre_ping=True
-            )
+            self._engine = shared_platform_engine()
         return self._engine
 
     async def seed(self, *, execution_id: str, task_id: str, repo: str) -> None:
         from database.models.schema import executions
+        from scripts.config import get_settings
         from sqlalchemy.dialects.postgresql import insert
 
         stmt = (
@@ -121,13 +168,34 @@ class PostgresExecutionSeeder:
                 task_id=task_id,
                 state="TASK_RECEIVED",
                 repository=repo,
+                tenant=get_settings().tenant or None,
             )
             .on_conflict_do_nothing(index_elements=[executions.c.execution_id])
         )
         async with self._get_engine().begin() as conn:
             await conn.execute(stmt)
 
+    async def abandon(self, *, execution_id: str, reason: str) -> None:
+        from database.models.schema import executions
+        from sqlalchemy import update
+
+        stmt = (
+            update(executions)
+            .where(executions.c.execution_id == execution_id)
+            .where(executions.c.workflow_id.is_(None))
+            .values(state="FAILED")
+        )
+        async with self._get_engine().begin() as conn:
+            await conn.execute(stmt)
+        _log.info("intake_execution_abandoned", execution_id=execution_id, reason=reason)
+
     async def active_workflow(self, *, issue_key: str, repo: str) -> str | None:
+        """Return the workflow of a running execution, ignoring rows no workflow was started for.
+
+        An execution is seeded before its workflow starts. A row without a workflow is a start
+        in progress, which the intake ledger reports as in flight, or one that failed, which the
+        orphan reclaimer closes, so neither is a run to treat the ticket as a duplicate of.
+        """
         from database.models.schema import executions
         from sqlalchemy import select
 
@@ -135,22 +203,25 @@ class PostgresExecutionSeeder:
             select(executions.c.workflow_id)
             .where(executions.c.task_id == issue_key)
             .where(executions.c.repository == repo)
+            .where(executions.c.workflow_id.is_not(None))
             .where(executions.c.state.not_in(("COMPLETED", "FAILED", "CANCELLED")))
+            .where(*_this_tenant(executions))
             .order_by(executions.c.updated_at.desc())
             .limit(1)
         )
         async with self._get_engine().connect() as conn:
             row = (await conn.execute(stmt)).first()
-        if row is None:
-            return None
-        return row.workflow_id or ""
+        return None if row is None else row.workflow_id
 
     async def count_active_runs(self) -> int:
         from database.models.schema import executions
         from sqlalchemy import func, select
 
-        stmt = select(func.count()).select_from(executions).where(
-            executions.c.state.not_in(("COMPLETED", "FAILED", "CANCELLED"))
+        stmt = (
+            select(func.count())
+            .select_from(executions)
+            .where(executions.c.state.not_in(("COMPLETED", "FAILED", "CANCELLED")))
+            .where(*_this_tenant(executions))
         )
         async with self._get_engine().connect() as conn:
             return int((await conn.execute(stmt)).scalar_one())
@@ -159,14 +230,15 @@ class PostgresExecutionSeeder:
         from database.models.schema import executions
         from sqlalchemy import select
 
-        stmt = (
-            select(
-                executions.c.execution_id,
-                executions.c.task_id,
-                executions.c.workflow_id,
-                executions.c.updated_at,
-            )
-            .where(executions.c.state.not_in(("COMPLETED", "FAILED", "CANCELLED")))
+        stmt = select(
+            executions.c.execution_id,
+            executions.c.task_id,
+            executions.c.workflow_id,
+            executions.c.updated_at,
+            executions.c.state,
+        ).where(
+            executions.c.state.not_in(("COMPLETED", "FAILED", "CANCELLED")),
+            *_this_tenant(executions),
         )
         async with self._get_engine().connect() as conn:
             rows = (await conn.execute(stmt)).all()
@@ -176,6 +248,7 @@ class PostgresExecutionSeeder:
                 task_id=row.task_id,
                 workflow_id=row.workflow_id or "",
                 updated_at=row.updated_at,
+                state=row.state or "",
             )
             for row in rows
         ]
@@ -223,10 +296,12 @@ class TemporalWorkflowLiveness:
 def build_intake_context(settings: Settings, *, client: Any, gh_resolver: Any) -> IntakeContext:
     from services.coordination.idempotency import PostgresSideEffectLedger
     from services.integration.source_control import source_control_repos
+    from services.orchestration.checks.config import required_checks_repos
 
     execution_store = PostgresExecutionSeeder()
+    starter = TemporalStarter(client, settings)
     return IntakeContext(
-        starter=TemporalStarter(client, settings),
+        starter=starter,
         alerter=NotificationsAlerter(settings),
         ledger=PostgresSideEffectLedger(),
         execution_seeder=execution_store,
@@ -235,4 +310,6 @@ def build_intake_context(settings: Settings, *, client: Any, gh_resolver: Any) -
         field_id=acceptance_field(settings),
         settings=settings,
         active_guard=execution_store,
+        base_resolver=starter,
+        checks_repos=required_checks_repos(settings),
     )

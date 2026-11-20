@@ -4,12 +4,14 @@ A project declares how the platform runs its deterministic checks (lint, unit te
 build-tool convention. Each repo names an environment, either a base ``image`` the command runs in
 or a ``build`` Dockerfile that produces a test-capable image, and the ``command`` that runs the
 checks. The command performs its own dependency setup the way the project's existing CI already
-does. A repo with no entry has no declared checks and the gate skips with a warning.
+does. A repo may also declare ``fix_command``, the project's own formatter or auto-fixer, which the
+repair stage runs in the same image before re-running ``command`` to verify the failure is gone.
+A repo with no entry has no declared checks and the gate skips with a warning.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 
 @dataclass(frozen=True)
@@ -18,6 +20,7 @@ class ChecksConfig:
     image: str = ""
     build: str = ""
     command: str = ""
+    fix_command: str = ""
     working_dir: str = "/workspace"
     timeout_minutes: int = 15
 
@@ -28,6 +31,7 @@ def parse_checks_config(repo: str, raw: dict) -> ChecksConfig:
     image = str(raw.get("image", "")).strip()
     build = str(raw.get("build", "")).strip()
     command = str(raw.get("command", "")).strip()
+    fix_command = str(raw.get("fix_command", "")).strip()
     if not command:
         raise ConfigError(f"checks entry {repo!r} needs a command")
     if not image and not build:
@@ -43,6 +47,7 @@ def parse_checks_config(repo: str, raw: dict) -> ChecksConfig:
         image=image,
         build=build,
         command=command,
+        fix_command=fix_command,
         working_dir=working_dir,
         timeout_minutes=timeout,
     )
@@ -68,14 +73,14 @@ def load_checks_configs(
     from scripts.config import get_settings
 
     from services.integration.credentials import (
-        _REPO_ROOT,
+        env_config_path,
         load_env_config,
         require_current_config,
     )
 
     resolved = settings or get_settings()
     env = environment or resolved.environment
-    if not (_REPO_ROOT / "config" / env / "checks.yaml").exists():
+    if not env_config_path("checks", environment=env).exists():
         return {}
     require_current_config("checks", environment=env)
     return parse_checks_configs(load_env_config("checks", environment=env))
@@ -84,4 +89,46 @@ def load_checks_configs(
 def checks_for_repo(
     repo: str, settings=None, *, environment: str | None = None
 ) -> ChecksConfig | None:
-    return load_checks_configs(settings, environment=environment).get(repo)
+    """Return the repository's checks.yaml entry, or else its runtime profile's default checks.
+
+    An image written catalog:<name> is returned resolved through RUNTIME_IMAGES.
+    """
+    from services.integration.runtime_profiles import repository_profile, resolve_image
+
+    config = load_checks_configs(settings, environment=environment).get(repo)
+    if config is None:
+        profile = repository_profile(repo, settings)
+        if profile is None or profile.checks is None:
+            return None
+        config = parse_checks_config(repo, dict(profile.checks))
+    if not config.image:
+        return config
+    return replace(config, image=resolve_image(config.image, settings))
+
+
+def required_checks_repos(
+    settings=None, *, environment: str | None = None
+) -> frozenset[str] | None:
+    """Repositories that satisfy the CI requirement, or None when no repository requires CI.
+
+    A GitHub repository requires a checks entry, its own or its runtime profile's. A local
+    repository has no CI to wait on, so it always satisfies the requirement.
+    """
+    from scripts.config import get_settings
+
+    from services.integration.repositories import GITHUB, LOCAL, load_repository_registry
+
+    resolved = settings or get_settings()
+    registry = load_repository_registry(resolved, environment=environment)
+    if not registry.names(GITHUB):
+        return None
+    from services.integration.runtime_profiles import load_profiles
+
+    profiles = load_profiles(resolved)
+    profiled = {
+        repository.name
+        for repository in registry.repositories.values()
+        if repository.profile in profiles and profiles[repository.profile].checks is not None
+    }
+    checked = frozenset(load_checks_configs(resolved, environment=environment)) | profiled
+    return checked | frozenset(registry.names(LOCAL))

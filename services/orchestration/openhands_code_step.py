@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, replace
 from pathlib import Path
 
-from openhands.runtime.conversation import RemoteConversationDriver
+from openhands.runtime.conversation import ConversationDriver, RemoteConversationDriver
 from openhands.runtime.provisioner import (
+    SANDBOX_READY_TIMEOUT_SECONDS,
     KubernetesSandboxProvisioner,
     PortForwardSandboxProvisioner,
 )
@@ -24,9 +26,13 @@ class OpenHandsCodeStep:
     runtime: SandboxRuntime
     workspace_root: Path
     context: str = ""
+    driver_for_run: Callable[[str], Awaitable[ConversationDriver]] | None = None
 
     async def run(self, *, workspace: MaterializedWorkspace, task: str) -> CodeResult:
-        outcome = await self.runtime.run_implementation(
+        runtime = self.runtime
+        if self.driver_for_run is not None:
+            runtime = replace(runtime, driver=await self.driver_for_run(workspace.execution_id))
+        outcome = await runtime.run_implementation(
             execution_id=workspace.execution_id,
             task=task,
             context=self.context,
@@ -50,17 +56,27 @@ def build_openhands_code_step(
     context: str = "",
     in_cluster: bool = False,
 ) -> OpenHandsCodeStep:
+    from services.integration.litellm_admin import ensure_run_model_key
+
     resolved = settings or get_settings()
     llm_url = litellm_base_url or _DEFAULT_LITELLM_URL
-    driver = RemoteConversationDriver(
-        model=resolved.coding_model,
-        litellm_base_url=llm_url,
-        api_key=resolved.litellm_master_key,
-    )
+
+    def driver_with_key(api_key: str) -> RemoteConversationDriver:
+        return RemoteConversationDriver(
+            model=resolved.coding_model, litellm_base_url=llm_url, api_key=api_key
+        )
+
+    async def driver_for_run(execution_id: str) -> ConversationDriver:
+        return driver_with_key(await ensure_run_model_key(execution_id, settings=resolved))
+
     provisioner = PortForwardSandboxProvisioner(
-        KubernetesSandboxProvisioner(in_cluster=in_cluster, ready_timeout_seconds=600.0)
+        KubernetesSandboxProvisioner(
+            in_cluster=in_cluster, ready_timeout_seconds=SANDBOX_READY_TIMEOUT_SECONDS
+        )
     )
-    runtime = SandboxRuntime.from_settings(provisioner, driver, resolved)
+    runtime = SandboxRuntime.from_settings(provisioner, driver_with_key(""), resolved)
     runtime.litellm_base_url = llm_url
     root = Path(workspace_root or resolved.execution_workspace_root)
-    return OpenHandsCodeStep(runtime=runtime, workspace_root=root, context=context)
+    return OpenHandsCodeStep(
+        runtime=runtime, workspace_root=root, context=context, driver_for_run=driver_for_run
+    )

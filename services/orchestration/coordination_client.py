@@ -9,9 +9,15 @@ from typing import Any
 import httpx
 from scripts.config import get_settings
 
+from services.coordination.auth import (
+    SHARED_SECRET_ENV_VAR,
+    SHARED_SECRET_REMEDY,
+    CoordinationAuthError,
+)
 from services.coordination.claims import ClaimOutcome, Schedule, WorkUnit
 from services.coordination.idempotency import SideEffectOutcome, SideEffectRef
 from services.coordination.sequencing import SequencedAction, SequenceDecision
+from services.http_front_door import bearer_header
 
 Effect = Callable[[], Any] | Callable[[], Awaitable[Any]]
 
@@ -24,13 +30,26 @@ async def _resolve(effect: Effect) -> Any:
 
 
 class CoordinationClient:
-    def __init__(self, base_url: str | None = None, *, timeout: float = 30.0) -> None:
+    def __init__(
+        self, base_url: str | None = None, *, timeout: float = 30.0, token: str | None = None
+    ) -> None:
         self._base_url = base_url or get_settings().coordination_url
+        resolved = token if token is not None else get_settings().coordination_shared_secret
+        if not resolved:
+            raise CoordinationAuthError(
+                f"the coordination client has no {SHARED_SECRET_ENV_VAR}. {SHARED_SECRET_REMEDY}"
+            )
+        self._token = resolved
         self._timeout = timeout
 
     async def _post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
         async with httpx.AsyncClient(base_url=self._base_url, timeout=self._timeout) as client:
-            resp = await client.post(path, json=body)
+            resp = await client.post(path, json=body, headers=bearer_header(self._token))
+            if resp.status_code == httpx.codes.UNAUTHORIZED:
+                raise CoordinationAuthError(
+                    f"the coordination service refused the bearer token on {path}, so the "
+                    f"worker and the service hold different values. {SHARED_SECRET_REMEDY}"
+                )
             resp.raise_for_status()
             return resp.json()
 
@@ -75,6 +94,7 @@ class CoordinationClient:
                 "sequence": action.sequence,
                 "idempotency_key": action.idempotency_key,
                 "operation": action.operation,
+                "tenant": action.tenant,
             },
         )
         return SequenceDecision(**data)
@@ -102,6 +122,7 @@ def _work_unit_body(unit: WorkUnit) -> dict[str, Any]:
         "agent_id": unit.agent_id,
         "file_impact": list(unit.file_impact),
         "workflow_id": unit.workflow_id,
+        "tenant": unit.tenant,
     }
 
 

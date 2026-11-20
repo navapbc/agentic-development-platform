@@ -21,9 +21,7 @@ def test_modes_parse_and_default_to_polling() -> None:
 
 
 def test_webhook_enabled_for_webhook_and_hybrid_only() -> None:
-    config = parse_integrations_config(
-        {"modes": {"a": WEBHOOK, "b": HYBRID, "c": POLLING}}
-    )
+    config = parse_integrations_config({"modes": {"a": WEBHOOK, "b": HYBRID, "c": POLLING}})
 
     assert config.webhook_enabled("a") is True
     assert config.webhook_enabled("b") is True

@@ -19,6 +19,12 @@ class TargetResolution:
     repos: tuple[str, ...]
     routable: bool
     reason: str
+    unlisted: tuple[str, ...] = ()
+    """Repositories the ticket named that the allowlist does not carry.
+
+    Empty when nothing named a repository at all. The two cases need opposite advice, so the
+    operator alert branches on this rather than on the reason text.
+    """
 
 
 def _marker_names(description: str) -> tuple[str, ...] | None:
@@ -37,9 +43,7 @@ def _scanned_names(description: str, allowlist: frozenset[str]) -> tuple[str, ..
     return tuple(found)
 
 
-def _component_names(
-    components: Sequence[str], component_map: ComponentMap
-) -> tuple[str, ...]:
+def _component_names(components: Sequence[str], component_map: ComponentMap) -> tuple[str, ...]:
     found: list[str] = []
     for component in components:
         found.extend(component_map.repos_for(component))
@@ -93,6 +97,7 @@ def resolve_targets(
             repos=(),
             routable=False,
             reason=f"{source} names repositories outside the allowlist: {', '.join(unlisted)}",
+            unlisted=tuple(unlisted),
         )
 
     ordered = tuple(dict.fromkeys(candidates))

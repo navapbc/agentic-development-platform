@@ -109,9 +109,7 @@ class _BlockingKernel:
 
     def run(self, review):
         blocks = "os.system(" in review.instructions
-        findings = (
-            [Finding("f1", "high", True, "shell-injection", "")] if blocks else []
-        )
+        findings = [Finding("f1", "high", True, "shell-injection", "")] if blocks else []
         verdict = Verdict.BLOCK if blocks else Verdict.PASS
         return RawReview(verdict=verdict, findings=findings)
 

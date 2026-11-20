@@ -54,18 +54,45 @@ async def test_ensure_agent_branch_is_deterministic_and_create_if_not_exists(
     assert replay.created is True
 
 
-async def test_commit_is_idempotent_under_a_forced_retry(mediator: GitHubMediator) -> None:
-    branch = agent_branch_name(TASK_ID)
-    await mediator.ensure_agent_branch(REPO, TASK_ID, EXECUTION_ID, "main", sequence=1)
-    request = CommitRequest(
+async def test_named_tenant_branch_is_namespaced_and_find_open_pr_uses_it() -> None:
+    backend = MockGitHost()
+    backend.seed_repo(REPO, files={"README.md": "hello\nworld\n"})
+    mediator = GitHubMediator(
+        backend=backend,
+        ledger=InMemorySideEffectLedger(),
+        gate=InMemorySequenceGate(),
+        allowed_repos=frozenset({REPO}),
+        tenant="beta",
+    )
+
+    branch = await mediator.ensure_agent_branch(REPO, TASK_ID, EXECUTION_ID, "main", sequence=1)
+    assert branch.name == agent_branch_name(TASK_ID, "beta")
+
+    await mediator.open_draft_pr(
+        REPO, TASK_ID, EXECUTION_ID, branch.name, "main", "Draft", "body", sequence=2
+    )
+    found = await mediator.find_open_pr(REPO, TASK_ID)
+    assert found is not None
+    assert found.head == agent_branch_name(TASK_ID, "beta")
+
+
+def _commit_request(branch: str, tree: str) -> CommitRequest:
+    return CommitRequest(
         repo=REPO,
         branch=branch,
         base="main",
         message="apply change",
-        files={"src/app.py": "print('hi')\n"},
+        workspace="",
+        tree=tree,
         task_id=TASK_ID,
         execution_id=EXECUTION_ID,
     )
+
+
+async def test_commit_is_idempotent_under_a_forced_retry(mediator: GitHubMediator) -> None:
+    branch = agent_branch_name(TASK_ID)
+    await mediator.ensure_agent_branch(REPO, TASK_ID, EXECUTION_ID, "main", sequence=1)
+    request = _commit_request(branch, "tree-one")
 
     first = await mediator.commit_and_push(request, sequence=2)
     assert first.pushed is True
@@ -73,6 +100,21 @@ async def test_commit_is_idempotent_under_a_forced_retry(mediator: GitHubMediato
 
     retry = await mediator.commit_and_push(request, sequence=2)
     assert retry == first
+
+
+async def test_a_later_commit_on_one_branch_is_not_served_the_earlier_ledger_entry(
+    mediator: GitHubMediator,
+) -> None:
+    """The repair loop publishes distinct trees on one branch under one execution."""
+    branch = agent_branch_name(TASK_ID)
+    await mediator.ensure_agent_branch(REPO, TASK_ID, EXECUTION_ID, "main", sequence=1)
+
+    first = await mediator.commit_and_push(_commit_request(branch, "tree-one"), sequence=2)
+    second = await mediator.commit_and_push(_commit_request(branch, "tree-two"), sequence=3)
+
+    assert second.pushed is True
+    assert second.replayed is False
+    assert second.commit_sha != first.commit_sha
 
 
 async def test_open_draft_pr_updates_an_existing_open_pr_instead_of_duplicating(
@@ -162,3 +204,24 @@ async def test_record_promotion_approval_is_idempotent(mediator: GitHubMediator)
         REPO, TASK_ID, EXECUTION_ID, created.number, approved=True, approver="rm", sequence=3
     )
     assert retry == first
+
+
+async def test_retry_after_a_failed_effect_is_admitted(mediator: GitHubMediator) -> None:
+    attempts: list[int] = []
+    backend_ensure = mediator.backend.ensure_branch
+
+    async def failing_once(*args, **kwargs):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise RuntimeError("transient clone failure")
+        return await backend_ensure(*args, **kwargs)
+
+    mediator.backend.ensure_branch = failing_once
+
+    with pytest.raises(RuntimeError):
+        await mediator.ensure_agent_branch(REPO, TASK_ID, EXECUTION_ID, "main", sequence=5)
+
+    branch = await mediator.ensure_agent_branch(REPO, TASK_ID, EXECUTION_ID, "main", sequence=5)
+
+    assert branch.name == agent_branch_name(TASK_ID)
+    assert len(attempts) == 2

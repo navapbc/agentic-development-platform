@@ -1,3 +1,13 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mcp-gateway
+  namespace: agentic-dev-platform
+  labels:
+    app.kubernetes.io/name: mcp-gateway
+    app.kubernetes.io/part-of: agentic-dev-platform
+automountServiceAccountToken: false
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -17,14 +27,15 @@ spec:
         app.kubernetes.io/name: mcp-gateway
         app.kubernetes.io/part-of: agentic-dev-platform
     spec:
+      serviceAccountName: mcp-gateway
       automountServiceAccountToken: false
       securityContext:
         seccompProfile:
           type: RuntimeDefault
       containers:
         - name: mcp-gateway
-          image: REGISTRY/agentic-dev-platform/mcp-gateway:latest
-          command:
+          image: 123456789012.dkr.ecr.us-east-1.amazonaws.com/agentic-dev-platform/mcp-gateway:0.3.0
+          args:
             - python
             - -m
             - services.integration.mcp_gateway.server
@@ -37,25 +48,24 @@ spec:
                 secretKeyRef:
                   name: agentic-platform
                   key: database_url
-            - name: ALLOWED_REPOS
-              valueFrom:
-                configMapKeyRef:
-                  name: agentic-platform
-                  key: allowed_repos
             - name: REPO_INTELLIGENCE_URL
               valueFrom:
                 configMapKeyRef:
                   name: agentic-platform
                   key: repo_intelligence_url
-            - name: JIRA_ACCEPTANCE_FIELD
+            - name: MCP_GATEWAY_TOKEN
               valueFrom:
-                configMapKeyRef:
+                secretKeyRef:
                   name: agentic-platform
-                  key: jira_acceptance_field
+                  key: mcp_gateway_token
+            - name: MCP_ALLOWED_HOSTS
+              value: mcp.internal.example,mcp.internal.example:443
           volumeMounts:
             - name: integration-config
               mountPath: /app/config/local
               readOnly: true
+            - name: tmp
+              mountPath: /tmp
           resources:
             requests:
               cpu: 100m
@@ -65,6 +75,7 @@ spec:
               memory: 512Mi
           securityContext:
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
             runAsNonRoot: true
             runAsUser: 10001
             runAsGroup: 10001
@@ -72,14 +83,16 @@ spec:
               drop:
                 - ALL
           readinessProbe:
-            tcpSocket:
+            httpGet:
+              path: /health
               port: http
             initialDelaySeconds: 2
             periodSeconds: 5
             timeoutSeconds: 3
             failureThreshold: 12
           livenessProbe:
-            tcpSocket:
+            httpGet:
+              path: /health
               port: http
             initialDelaySeconds: 5
             periodSeconds: 10
@@ -87,6 +100,8 @@ spec:
         - name: integration-config
           configMap:
             name: integration-config
+        - name: tmp
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service
@@ -114,11 +129,17 @@ metadata:
     app.kubernetes.io/part-of: agentic-dev-platform
   annotations:
     alb.ingress.kubernetes.io/scheme: internal
+    alb.ingress.kubernetes.io/inbound-cidrs: 192.0.2.0/24
     alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS13-1-2-2021-06
+    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:us-east-1:123456789012:certificate/00000000-0000-0000-0000-000000000000
 spec:
   ingressClassName: alb
   rules:
-    - http:
+    - host: mcp.internal.example
+      http:
         paths:
           - path: /mcp
             pathType: Prefix

@@ -4,7 +4,8 @@ Reduces the recorded per-stage usage rows into per-stage, per-gate, and per-mode
 spend, breaks out the repair spend, compares the implementation and repair spend
 against the implementation budget caps to surface the breach reason with the same
 precedence the draft-pull-request workflow applies, and carries the Langfuse
-session link for the execution.
+session link for the execution. Each row carries the tenant recorded on its
+execution, so the rollups also group by tenant.
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from database.models.schema import usage_metrics
+from database.models.schema import executions, usage_metrics
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncEngine
@@ -53,6 +54,7 @@ class UsageRow:
     tool_calls: int = 0
     cost_usd: float = 0.0
     elapsed_seconds: float = 0.0
+    tenant: str = ""
 
 
 @dataclass(frozen=True)
@@ -121,6 +123,15 @@ class ExecutionCostRollup:
     repair: Spend
     budget: BudgetStatus
     langfuse_session_url: str
+    tenant: str = ""
+
+
+@dataclass(frozen=True)
+class TenantCostRollup:
+    tenant: str
+    execution_count: int
+    totals: Spend
+    by_model: tuple[ModelSpend, ...]
 
 
 def _accumulate(rows: Iterable[UsageRow]) -> Spend:
@@ -177,6 +188,7 @@ def build_rollup(
 ) -> ExecutionCostRollup:
     execution_id = rows[0].execution_id if rows else ""
     task_id = next((row.task_id for row in rows if row.task_id), "")
+    tenant = next((row.tenant for row in rows if row.tenant), "")
 
     stages = sorted({row.stage for row in rows})
     by_stage = tuple(
@@ -184,14 +196,7 @@ def build_rollup(
         for stage in stages
     )
 
-    models = sorted({row.model_id or _UNKNOWN_MODEL for row in rows})
-    by_model = tuple(
-        ModelSpend(
-            model,
-            _accumulate(row for row in rows if (row.model_id or _UNKNOWN_MODEL) == model),
-        )
-        for model in models
-    )
+    by_model = _by_model(rows)
 
     gates = tuple(item for item in by_stage if _is_gate(item.stage))
     repair = _accumulate(row for row in rows if _is_repair(row.stage))
@@ -209,7 +214,44 @@ def build_rollup(
         repair=repair,
         budget=_budget_status(counted, caps),
         langfuse_session_url=langfuse_session_url,
+        tenant=tenant,
     )
+
+
+def _by_model(rows: Sequence[UsageRow]) -> tuple[ModelSpend, ...]:
+    models = sorted({row.model_id or _UNKNOWN_MODEL for row in rows})
+    return tuple(
+        ModelSpend(
+            model,
+            _accumulate(row for row in rows if (row.model_id or _UNKNOWN_MODEL) == model),
+        )
+        for model in models
+    )
+
+
+def rows_by_execution(rows: Iterable[UsageRow]) -> dict[str, list[UsageRow]]:
+    """Group usage rows by execution, in the order each execution first appears."""
+    grouped: dict[str, list[UsageRow]] = {}
+    for row in rows:
+        grouped.setdefault(row.execution_id, []).append(row)
+    return grouped
+
+
+def build_tenant_rollups(rows: Sequence[UsageRow]) -> tuple[TenantCostRollup, ...]:
+    """Roll usage rows up per tenant, sorted by tenant, with untenanted rows under ``""``."""
+    tenants = sorted({row.tenant for row in rows})
+    rollups: list[TenantCostRollup] = []
+    for tenant in tenants:
+        tenant_rows = [row for row in rows if row.tenant == tenant]
+        rollups.append(
+            TenantCostRollup(
+                tenant=tenant,
+                execution_count=len({row.execution_id for row in tenant_rows}),
+                totals=_accumulate(tenant_rows),
+                by_model=_by_model(tenant_rows),
+            )
+        )
+    return tuple(rollups)
 
 
 def _spend_to_dict(spend: Spend) -> dict[str, float | int]:
@@ -230,6 +272,7 @@ def rollup_to_dict(rollup: ExecutionCostRollup) -> dict[str, object]:
     return {
         "execution_id": rollup.execution_id,
         "task_id": rollup.task_id,
+        "tenant": rollup.tenant or None,
         "langfuse_session_url": rollup.langfuse_session_url,
         "totals": _spend_to_dict(rollup.totals),
         "by_stage": [
@@ -253,11 +296,51 @@ def rollup_to_dict(rollup: ExecutionCostRollup) -> dict[str, object]:
     }
 
 
-async def read_usage_rows(engine: AsyncEngine, execution_id: str) -> list[UsageRow]:
-    """Read the recorded usage rows for one execution from the usage_metrics table."""
+def execution_summary_to_dict(rollup: ExecutionCostRollup) -> dict[str, object]:
+    """One execution's row in a multi-execution rollup: identity, tenant, totals, and breach."""
+    return {
+        "execution_id": rollup.execution_id,
+        "task_id": rollup.task_id,
+        "tenant": rollup.tenant or None,
+        "langfuse_session_url": rollup.langfuse_session_url,
+        "totals": _spend_to_dict(rollup.totals),
+        "breach_reason": rollup.budget.breach_reason,
+    }
+
+
+def tenant_rollup_to_dict(rollup: TenantCostRollup) -> dict[str, object]:
+    return {
+        "tenant": rollup.tenant or None,
+        "executions": rollup.execution_count,
+        "totals": _spend_to_dict(rollup.totals),
+        "by_model": [
+            {"model_id": item.model_id, **_spend_to_dict(item.spend)} for item in rollup.by_model
+        ],
+    }
+
+
+async def read_usage_rows(
+    engine: AsyncEngine, execution_id: str = "", *, tenant: str = ""
+) -> list[UsageRow]:
+    """Read recorded usage rows with the tenant recorded on each row's execution.
+
+    An empty execution id reads every execution, and an empty tenant reads every tenant.
+    usage_metrics has no foreign key to executions, so the join is outer and a row
+    without an execution record, or from a run that predates the tenant column, carries
+    an empty tenant.
+    """
     from sqlalchemy import select
 
-    stmt = select(usage_metrics).where(usage_metrics.c.execution_id == execution_id)
+    stmt = select(usage_metrics, executions.c.tenant.label("execution_tenant")).select_from(
+        usage_metrics.outerjoin(
+            executions, usage_metrics.c.execution_id == executions.c.execution_id
+        )
+    )
+    if execution_id:
+        stmt = stmt.where(usage_metrics.c.execution_id == execution_id)
+    if tenant:
+        stmt = stmt.where(executions.c.tenant == tenant)
+    stmt = stmt.order_by(usage_metrics.c.execution_id, usage_metrics.c.stage)
     async with engine.begin() as conn:
         result = await conn.execute(stmt)
         return [
@@ -275,6 +358,7 @@ async def read_usage_rows(engine: AsyncEngine, execution_id: str) -> list[UsageR
                 tool_calls=row["tool_calls"],
                 cost_usd=float(row["cost_usd"]),
                 elapsed_seconds=float(row["elapsed_seconds"]),
+                tenant=row["execution_tenant"] or "",
             )
             for row in result.mappings()
         ]

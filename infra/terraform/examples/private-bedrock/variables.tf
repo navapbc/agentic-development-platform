@@ -129,3 +129,809 @@ variable "jumphost_session_duration_seconds" {
   type        = number
   default     = 3600
 }
+
+variable "management_subnet_cidrs" {
+  description = "CIDRs for the management tier subnets when create_network is true. The jumphost and administrative tasks run here."
+  type        = list(string)
+  default     = ["10.0.21.0/24"]
+}
+
+variable "data_subnet_cidrs" {
+  description = "CIDRs for the data tier subnets when create_network is true. Aurora requires two subnets in different Availability Zones, so supply at least two."
+  type        = list(string)
+  default     = ["10.0.11.0/24", "10.0.12.0/24"]
+}
+
+variable "public_subnet_cidrs" {
+  description = "CIDRs for the public tier subnets when create_network is true and an egress path is selected. Only the NAT instance or NAT Gateway runs here."
+  type        = list(string)
+  default     = ["10.0.31.0/24"]
+}
+
+variable "management_subnet_ids" {
+  description = "Existing management tier subnets when create_network is false. Empty runs management workloads in subnet_ids."
+  type        = list(string)
+  default     = []
+}
+
+variable "management_cidr_blocks" {
+  description = "CIDRs of the existing management tier when create_network is false. Admitted to the endpoints and the data tier."
+  type        = list(string)
+  default     = []
+}
+
+variable "data_subnet_ids" {
+  description = "Existing data tier subnets spanning at least two Availability Zones, required when create_network is false and a data tier service is enabled. The Temporal server and admin-tools tasks may reach their CIDRs on the database port."
+  type        = list(string)
+  default     = []
+}
+
+variable "egress_mode" {
+  description = "Outbound internet path for the application and management tiers. none, nat_instance, or nat_gateway. Null selects nat_instance for a created network and none for an existing one."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.egress_mode == null || contains(["none", "nat_instance", "nat_gateway"], coalesce(var.egress_mode, "none"))
+    error_message = "egress_mode must be none, nat_instance, or nat_gateway."
+  }
+}
+
+variable "create_dns_firewall" {
+  description = "Filter VPC DNS with a Route 53 Resolver DNS Firewall allowlist. Null enables it for a created network and disables it for an existing one."
+  type        = bool
+  default     = null
+}
+
+variable "dns_firewall_default_action" {
+  description = "Action for a query outside the allowlist. BLOCK enforces. ALERT resolves and logs, for a trial run."
+  type        = string
+  default     = "BLOCK"
+}
+
+variable "dns_firewall_additional_domains" {
+  description = "Domains added to the DNS Firewall allowlist, such as the SMTP relay host."
+  type        = list(string)
+  default     = []
+}
+
+variable "access_log_bucket" {
+  description = "Bucket that receives S3 server access logs from every bucket this root creates. The bootstrap root creates it and prints it as the access_log_bucket output."
+  type        = string
+
+  validation {
+    condition     = length(trim(var.access_log_bucket, " ")) > 0
+    error_message = "access_log_bucket must name the bucket that receives S3 server access logs."
+  }
+}
+
+variable "kms_key_arn" {
+  description = "Customer managed KMS key for the data tier, the NAT instance volume, and the log groups. Empty uses each service's AWS managed key."
+  type        = string
+  default     = ""
+}
+
+variable "create_aurora" {
+  description = "Create the Aurora PostgreSQL cluster in the data tier."
+  type        = bool
+  default     = false
+}
+
+variable "aurora_instance_count" {
+  description = "Aurora instances. 1 for evaluation. 2 or more adds a reader that a failover promotes."
+  type        = number
+  default     = 1
+}
+
+variable "aurora_serverless_max_capacity" {
+  description = "Maximum Aurora Serverless v2 capacity in ACUs."
+  type        = number
+  default     = 4
+}
+
+variable "aurora_deletion_protection" {
+  description = "Block deletion of the Aurora cluster. Set false before an intentional destroy."
+  type        = bool
+  default     = true
+}
+
+variable "aurora_skip_final_snapshot" {
+  description = "Destroy the Aurora cluster without a final snapshot. Set true only in a disposable environment."
+  type        = bool
+  default     = false
+}
+
+variable "aurora_bedtime_tags" {
+  description = "Tags an organization scheduler reads to stop the cluster off hours, such as CustodianRdsBedtime."
+  type        = map(string)
+  default     = {}
+}
+
+variable "create_cache" {
+  description = "Create the ElastiCache for Valkey cache in the data tier."
+  type        = bool
+  default     = false
+}
+
+variable "cache_num_nodes" {
+  description = "Cache nodes. 1 for evaluation."
+  type        = number
+  default     = 1
+}
+
+variable "create_clickhouse_storage" {
+  description = "Create the encrypted EFS file system that backs the ClickHouse task."
+  type        = bool
+  default     = false
+}
+
+variable "create_langfuse_bucket" {
+  description = "Create the S3 bucket for Langfuse event and media uploads."
+  type        = bool
+  default     = false
+}
+
+variable "create_secret_store" {
+  description = "Create the secret store. With create_aurora it adds the per-service database credentials, the role bootstrap, and their rotation. With create_cache it rotates the cache user."
+  type        = bool
+  default     = false
+}
+
+variable "secret_readers" {
+  description = "IAM role or user ARNs allowed to read each secret, keyed by secret key. See the secret-store module README."
+  type        = map(list(string))
+  default     = {}
+}
+
+variable "secret_restart_services" {
+  description = "ECS service ARNs to redeploy after each secret changes, keyed by secret key."
+  type        = map(list(string))
+  default     = {}
+}
+
+variable "secret_recovery_window_days" {
+  description = "Days a deleted secret stays recoverable. A secret name cannot be reused during the window, so set 0 in a disposable environment that is destroyed and applied again."
+  type        = number
+  default     = 30
+}
+
+variable "create_ecs_cluster" {
+  description = "Create the platform ECS cluster that the Temporal control plane, the platform services, and other teams' services run on."
+  type        = bool
+  default     = false
+}
+
+variable "ecs_deployer_passable_role_arns" {
+  description = "Task and execution role ARNs, wildcards allowed, that the ECS cluster deployer policy may pass to tasks."
+  type        = list(string)
+  default     = []
+}
+
+variable "create_eks" {
+  description = "Create the EKS cluster for the activity worker, its sandbox pods, LiteLLM, the inbound webhook, and the MCP gateway, in the application subnets."
+  type        = bool
+  default     = false
+}
+
+variable "eks_kubernetes_version" {
+  description = "Kubernetes minor version of the EKS control plane and node groups."
+  type        = string
+  default     = "1.37"
+}
+
+variable "eks_admin_principal_arns" {
+  description = "IAM principals granted cluster admin through EKS access entries, keyed by a static label, such as { operator = \"arn:aws:iam::123456789012:role/platform-operator\" }."
+  type        = map(string)
+  default     = {}
+}
+
+variable "eks_platform_node_group" {
+  description = "Graviton instance types and scaling of the platform node group."
+  type = object({
+    instance_types = optional(list(string), ["m7g.large"])
+    min_size       = optional(number, 1)
+    max_size       = optional(number, 3)
+    desired_size   = optional(number, 2)
+    disk_size_gib  = optional(number, 50)
+  })
+  default = {}
+}
+
+variable "eks_sandbox_node_group" {
+  description = "Graviton instance types and scaling of the tainted sandbox node group."
+  type = object({
+    instance_types = optional(list(string), ["m7g.xlarge"])
+    min_size       = optional(number, 1)
+    max_size       = optional(number, 3)
+    desired_size   = optional(number, 1)
+    disk_size_gib  = optional(number, 100)
+  })
+  default = {}
+}
+
+variable "eks_network_policy_enforcing_mode" {
+  description = "VPC CNI network policy mode, standard or strict. Create the cluster in standard mode and set strict once the kube-system and platform NetworkPolicies are applied."
+  type        = string
+  default     = "standard"
+}
+
+variable "eks_webhook_certificate_arn" {
+  description = "ACM certificate the internet-facing inbound webhook load balancer presents, such as the one inv webhook-certs imports."
+  type        = string
+  default     = ""
+}
+
+variable "eks_mcp_gateway_certificate_arn" {
+  description = "ACM certificate the internal load balancer of each tenant's MCP gateway presents. It must cover mcp-<tenant>.<eks_mcp_gateway_domain>, or the tenant's mcp_gateway_host, for every tenant, such as with *.<eks_mcp_gateway_domain>, and inv eks-deploy refuses one that does not. It may not be eks_webhook_certificate_arn. inv mcp-gateway-certs issues one from the platform CA and imports it. Empty renders no gateway Ingress."
+  type        = string
+  default     = ""
+}
+
+variable "eks_mcp_gateway_domain" {
+  description = "Private DNS domain each tenant's MCP gateway is named under, as mcp-<tenant>.<domain>. With eks_mcp_gateway_certificate_arn, the root creates a private hosted zone of this name in the VPC, and inv eks-deploy points each tenant's name at the load balancer of the tenant's gateway. It may not be container_internal_domain, whose zone the internal load balancer uses."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.eks_mcp_gateway_domain == "" || can(regex("^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$", var.eks_mcp_gateway_domain))
+    error_message = "eks_mcp_gateway_domain is a lowercase DNS name of two or more labels, such as mcp.example.internal."
+  }
+
+  validation {
+    condition     = var.eks_mcp_gateway_domain != var.container_internal_domain
+    error_message = "eks_mcp_gateway_domain may not be container_internal_domain, because a VPC takes one private hosted zone per name."
+  }
+}
+
+variable "eks_mcp_gateway_client_cidrs" {
+  description = "CIDRs of the subnets that hold the MCP gateway's clients, which its internal load balancer admits."
+  type        = list(string)
+  default     = []
+}
+
+variable "eks_deployer_image" {
+  description = "eks-deployer image, which inv publish-platform-images writes to images.auto.tfvars.json."
+  type        = string
+  default     = ""
+}
+
+variable "eks_load_balancer_controller_image_repository" {
+  description = "Repository of the AWS Load Balancer Controller image. Empty selects the EKS registry of the region."
+  type        = string
+  default     = ""
+}
+
+variable "eks_gate_image_repository_arns" {
+  description = "ECR repositories of the gate engine images the gate pods pull in image mode, beyond the semgrep and trivy repositories the scanner pods pull from."
+  type        = list(string)
+  default     = []
+}
+
+variable "registry_mode" {
+  description = "Where the gate, checks, and scanner pods pull images and packages from. aws mirrors images through ECR pull-through caches and allows the package registries in DNS Firewall, external uses an Artifactory or compatible service that config/<env>/registries.yaml names, and none leaves the pods with no route to a public registry."
+  type        = string
+  default     = "none"
+
+  validation {
+    condition     = contains(["none", "aws", "external"], var.registry_mode)
+    error_message = "registry_mode must be none, aws, or external."
+  }
+}
+
+variable "registry_package_domains" {
+  description = "Package registry domains DNS Firewall resolves in aws mode, for the package installs of the checks pods. Their CNAME chains are trusted, because they are served from CDNs. The gate pods reach them on 443 only, so OS package sources that use plain HTTP, such as the Debian mirrors, stay unreachable."
+  type        = list(string)
+  default     = ["pypi.org", "files.pythonhosted.org", "registry.npmjs.org", "proxy.golang.org", "sum.golang.org"]
+}
+
+variable "registry_upstream_credentials" {
+  description = "Upstreams whose pull-through rule needs credentials, docker-hub and ghcr, in aws mode. The composition creates an ecr-pullthroughcache/ secret for each, which an operator fills with the upstream username and access token."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = length(setsubtract(var.registry_upstream_credentials, ["docker-hub", "ghcr"])) == 0
+    error_message = "registry_upstream_credentials accepts docker-hub and ghcr."
+  }
+}
+
+variable "registry_external_host" {
+  description = "Host name of the external registry in external mode, which DNS Firewall resolves."
+  type        = string
+  default     = ""
+}
+
+variable "registry_external_cidrs" {
+  description = "Address ranges of the external registry in external mode, which the gate pods may reach on 443."
+  type        = list(string)
+  default     = []
+}
+
+variable "eks_addon_versions" {
+  description = "EKS add-on version by add-on name. An add-on not listed gets the default version for the cluster version."
+  type        = map(string)
+  default     = {}
+}
+
+variable "eks_opa_image" {
+  description = "OPA image the activity worker runs as a sidecar. inv publish-platform-images writes it to images.auto.tfvars.json."
+  type        = string
+  default     = ""
+}
+
+variable "eks_litellm_image" {
+  description = "LiteLLM image. inv publish-platform-images writes it to images.auto.tfvars.json."
+  type        = string
+  default     = ""
+}
+
+variable "eks_agent_server_image" {
+  description = "OpenHands agent-server image of the sandbox pods, for OPENHANDS_AGENT_SERVER_IMAGE. inv publish-platform-images writes it to images.auto.tfvars.json."
+  type        = string
+  default     = ""
+}
+
+variable "eks_buildah_image" {
+  description = "buildah image of the gate, checks, and scanner pods, for GATE_ENGINE_BUILDER_IMAGE. inv publish-platform-images writes it to images.auto.tfvars.json."
+  type        = string
+  default     = ""
+}
+
+variable "eks_semgrep_image" {
+  description = "semgrep image of the scanner pods, for SEMGREP_IMAGE. inv publish-platform-images writes it to images.auto.tfvars.json."
+  type        = string
+  default     = ""
+}
+
+variable "eks_gate_engine_images" {
+  description = "Image of each example gate engine by engine name, for GATE_ENGINE_IMAGES, which an image-mode engine in gate_engine.yaml without an image reference runs. inv publish-platform-images writes it to images.auto.tfvars.json."
+  type        = map(string)
+  default     = {}
+}
+
+variable "eks_runtime_images" {
+  description = "Image of each catalog image beside the agent-server image, the agent-server-jvm and agent-server-go sandbox images and the checks-python, checks-node, checks-jvm, and checks-go checks images, by catalog name, for RUNTIME_IMAGES, which runtime profiles name as catalog:<name>. inv publish-platform-images writes it to images.auto.tfvars.json."
+  type        = map(string)
+  default     = {}
+}
+
+variable "eks_trivy_image" {
+  description = "trivy image of the scanner pods, for TRIVY_IMAGE. inv publish-platform-images writes it to images.auto.tfvars.json."
+  type        = string
+  default     = ""
+}
+
+variable "create_container_services" {
+  description = "Create the platform container services on the platform ECS cluster, starting with the ECR repositories for their images."
+  type        = bool
+  default     = false
+}
+
+variable "container_internal_acm_certificate_arn" {
+  description = "ACM certificate the internal load balancer presents, naming coordination, repo-intelligence, otel-collector, and langfuse under container_internal_domain. Empty creates no internal load balancer."
+  type        = string
+  default     = ""
+}
+
+variable "container_internal_domain" {
+  description = "Private hosted zone that names the platform services behind the internal load balancer."
+  type        = string
+  default     = "platform.internal"
+}
+
+variable "container_internal_allowed_cidr_blocks" {
+  description = "CIDRs allowed to reach the internal load balancer in addition to the members of its client security group."
+  type        = list(string)
+  default     = []
+}
+
+variable "container_platform_image" {
+  description = "Platform image reference with its digest, as inv publish-platform-images prints it. Empty creates no platform service."
+  type        = string
+  default     = ""
+}
+
+variable "container_repo_intelligence_image" {
+  description = "Repository-intelligence image reference with its digest. Empty creates no platform service."
+  type        = string
+  default     = ""
+}
+
+variable "container_environment" {
+  description = "ENVIRONMENT the platform tasks report, which names their config/<environment> files."
+  type        = string
+  default     = "aws"
+}
+
+variable "container_config_dir" {
+  description = "Directory outside the repository holding the environment's config files, such as tickets.yaml, which the tasks receive. Empty sends none. The plan fails when it holds image_exceptions.yaml, because platform finding exceptions live in the tenant config bucket and are added through the image-exception workflow."
+  type        = string
+  default     = ""
+}
+
+variable "container_platform_ca_file" {
+  description = "PEM file of the CA that issued container_internal_acm_certificate_arn, which the platform clients trust beside the system roots."
+  type        = string
+  default     = ""
+}
+
+variable "container_service_counts" {
+  description = "Tasks inv platform-deploy runs per platform service."
+  type        = map(number)
+  default = {
+    workflow-worker   = 1
+    review-worker     = 1
+    coordination      = 1
+    repo-intelligence = 1
+    repo-index-worker = 1
+  }
+}
+
+variable "container_use_fips_endpoints" {
+  description = "Run the platform tasks with AWS_USE_FIPS_ENDPOINT=true and add the bedrock-runtime-fips interface endpoint they call."
+  type        = bool
+  default     = true
+}
+
+variable "container_https_proxy" {
+  description = "HTTPS_PROXY for the platform tasks on networks whose organization supplies egress."
+  type        = string
+  default     = ""
+}
+
+variable "container_enable_execute_command" {
+  description = "Allow ECS Exec into the platform tasks."
+  type        = bool
+  default     = false
+}
+
+variable "container_langfuse_web_image" {
+  description = "Langfuse web image reference with its digest, as inv publish-platform-images prints it. Empty with any other Langfuse image empty runs no Langfuse or ClickHouse."
+  type        = string
+  default     = ""
+}
+
+variable "container_langfuse_worker_image" {
+  description = "Langfuse worker image reference with its digest."
+  type        = string
+  default     = ""
+}
+
+variable "container_clickhouse_image" {
+  description = "ClickHouse image reference with its digest."
+  type        = string
+  default     = ""
+}
+
+variable "container_tls_sidecar_image" {
+  description = "TLS sidecar image reference with its digest, which fronts Langfuse web and issues the collector's certificate."
+  type        = string
+  default     = ""
+}
+
+variable "container_collector_image" {
+  description = "Collector image reference with its digest, as inv publish-platform-images prints it. Set with container_tls_sidecar_image, it runs the collector and points the platform tasks at it."
+  type        = string
+  default     = ""
+}
+
+variable "container_collector_exports_enabled" {
+  description = "Export the collector's traces to X-Ray, its metrics to a Prometheus workspace, and its generation spans to Langfuse, and add the xray and aps-workspaces interface endpoints. False runs the collector with only the debug exporter."
+  type        = bool
+  default     = true
+}
+
+variable "container_xray_encryption_enabled" {
+  description = "Set the region's X-Ray encryption to the telemetry KMS key. It is one setting per account and region, so it changes X-Ray encryption for every X-Ray user in the region."
+  type        = bool
+  default     = false
+}
+
+variable "create_managed_grafana" {
+  description = "Provision the managed-grafana module, an Amazon Managed Grafana workspace in the application tier with IAM Identity Center sign-in over the collector's Prometheus workspace and X-Ray traces, and the aps-workspaces, grafana-workspace, and xray interface endpoints. Needs the collector exports and an IAM Identity Center instance."
+  type        = bool
+  default     = false
+}
+
+variable "grafana_admin_group_ids" {
+  description = "IAM Identity Center group IDs granted the Grafana Admin role, which adds the data sources. create_managed_grafana needs at least one."
+  type        = list(string)
+  default     = []
+}
+
+variable "grafana_editor_group_ids" {
+  description = "IAM Identity Center group IDs granted the Grafana Editor role."
+  type        = list(string)
+  default     = []
+}
+
+variable "grafana_viewer_group_ids" {
+  description = "IAM Identity Center group IDs granted the Grafana Viewer role."
+  type        = list(string)
+  default     = []
+}
+
+variable "grafana_query_principal_arns" {
+  description = "IAM principals that may assume the Prometheus query role, which may only query the Prometheus workspace, such as an operator SSO permission set role. Empty creates no query role."
+  type        = list(string)
+  default     = []
+}
+
+variable "grafana_private_access" {
+  description = "Admit only the grafana-workspace interface endpoint to the Grafana workspace, so operators reach it from inside the VPC. False admits any network, and IAM Identity Center still authenticates every user."
+  type        = bool
+  default     = false
+}
+
+variable "container_langfuse_admin_email" {
+  description = "Email of the Langfuse administrator created on the first start, whose password is the langfuse_admin_password secret."
+  type        = string
+  default     = ""
+}
+
+variable "container_langfuse_public_url" {
+  description = "URL operators open Langfuse under through inv langfuse-ui, set as NEXTAUTH_URL. Empty uses https://langfuse.<container_internal_domain>:8444."
+  type        = string
+  default     = ""
+}
+
+variable "container_langfuse_task_sizes" {
+  description = "CPU units and memory in MiB of the clickhouse, langfuse-web, and langfuse-worker tasks. Null keeps the module defaults."
+  type        = map(object({ cpu = number, memory = number }))
+  default     = null
+}
+
+variable "create_temporal_control_plane" {
+  description = "Create the Temporal control plane on the platform ECS cluster, starting with the ECR repositories for its images."
+  type        = bool
+  default     = false
+}
+
+variable "temporal_frontend_acm_certificate_arn" {
+  description = "ACM certificate the Temporal NLB presents to clients. Empty serves the frontend certificate inv temporal-certs put writes to Secrets Manager."
+  type        = string
+  default     = ""
+}
+
+variable "temporal_internode_acm_certificate_arn" {
+  description = "ACM certificate that tracks the Temporal internode certificate for expiry. The server reads the certificate from Secrets Manager."
+  type        = string
+  default     = ""
+}
+
+variable "temporal_frontend_server_name" {
+  description = "Name on the Temporal frontend certificate, which clients verify the frontend against. With temporal_frontend_acm_certificate_arn, the name on that certificate."
+  type        = string
+  default     = "frontend.temporal.internal"
+}
+
+variable "temporal_internode_server_name" {
+  description = "Name on the Temporal internode certificate."
+  type        = string
+  default     = "internode.temporal.internal"
+}
+
+variable "temporal_frontend_certificate_publicly_trusted" {
+  description = "The certificate in temporal_frontend_acm_certificate_arn chains to a public root, so clients verify it against the system trust store instead of the Temporal CA secret."
+  type        = bool
+  default     = false
+}
+
+variable "temporal_fips_140_mode" {
+  description = "Run the Temporal server, admin-tools, and UI processes in Go's FIPS 140-3 mode. Set true in a FedRAMP environment."
+  type        = bool
+  default     = false
+}
+
+variable "temporal_server_image" {
+  description = "Temporal server image reference with its digest, as inv publish-temporal-images prints it. Empty creates no server."
+  type        = string
+  default     = ""
+}
+
+variable "temporal_admin_tools_image" {
+  description = "Temporal admin-tools image reference with its digest."
+  type        = string
+  default     = ""
+}
+
+variable "temporal_ui_image" {
+  description = "Temporal UI image reference with its digest. Empty creates no UI."
+  type        = string
+  default     = ""
+}
+
+variable "temporal_server_count" {
+  description = "Temporal server tasks that inv temporal-deploy runs."
+  type        = number
+  default     = 1
+}
+
+variable "temporal_ui_acm_certificate_arn" {
+  description = "ACM certificate the Temporal UI load balancer presents. Empty creates no UI."
+  type        = string
+  default     = ""
+}
+
+variable "temporal_ui_allowed_cidr_blocks" {
+  description = "CIDRs, such as a VPN client range, allowed to reach the Temporal UI load balancer in addition to the jumphost task."
+  type        = list(string)
+  default     = []
+}
+
+variable "temporal_enable_execute_command" {
+  description = "Allow ECS Exec into the Temporal tasks."
+  type        = bool
+  default     = false
+}
+
+variable "off_hours_enabled" {
+  description = "Scale the platform and Temporal ECS services to zero at off_hours_sleep_schedule and restore them at off_hours_wake_schedule, so the Aurora cluster pauses overnight."
+  type        = bool
+  default     = false
+}
+
+variable "off_hours_timezone" {
+  description = "IANA time zone of the off-hours schedules."
+  type        = string
+  default     = "America/Chicago"
+}
+
+variable "off_hours_sleep_schedule" {
+  description = "EventBridge Scheduler expression that scales the services to zero."
+  type        = string
+  default     = "cron(0 20 ? * * *)"
+}
+
+variable "off_hours_wake_schedule" {
+  description = "EventBridge Scheduler expression that restores the services. It must not wake on a weekend while the secret store rotates on a Sunday."
+  type        = string
+  default     = "cron(0 7 ? * MON-FRI *)"
+}
+
+variable "create_github_image_publisher" {
+  description = "Create the role the publish-images GitHub Actions workflow assumes to push the platform images. Needs create_container_services."
+  type        = bool
+  default     = false
+}
+
+variable "github_oidc_provider_arn" {
+  description = "ARN of the account's existing GitHub OIDC provider. Empty creates one, which fails when the account already holds a provider for token.actions.githubusercontent.com."
+  type        = string
+  default     = ""
+}
+
+variable "github_repository" {
+  description = "The owner/name of the repository whose publish-images workflow may assume the role."
+  type        = string
+  default     = "navapbc/agentic-development-platform"
+}
+
+variable "github_repository_ids" {
+  description = "Numeric owner and repository IDs of github_repository when its OIDC tokens carry GitHub's immutable subject. Null matches the name form."
+  type = object({
+    owner_id      = number
+    repository_id = number
+  })
+  default = null
+}
+
+variable "github_publish_refs" {
+  description = "The refs whose workflow runs may assume the publisher role."
+  type        = list(string)
+  default     = ["refs/heads/main", "refs/tags/v*"]
+}
+
+variable "tenants" {
+  description = "Tenants that share the deployment, keyed by a name of 2 to 16 lowercase letters and digits. Each tenant is a trust boundary with its own activity worker identity, secrets, image prefix, config bundle prefix, ticket store, and workspace. secrets lists the secrets created empty under <name_prefix>/tenants/<tenant>/ for the tenant to fill. shared_secrets lists secret store keys the tenant's worker may also read. config_repository names the GitHub repository whose workflows publish the tenant's config bundle and images. ticket_store sets the bucket name, operators, admins, and GitHub OIDC writer of the tenant's rebar store. mcp_gateway_token_readers are the principals besides the tenant's gateway that may read its MCP gateway token, such as the operators who give it to the tenant's MCP clients. mcp_gateway_host replaces mcp-<tenant>.<eks_mcp_gateway_domain> as the host name of the tenant's MCP gateway with another <label>.<eks_mcp_gateway_domain>. settings are environment variables only the tenant's worker receives, such as TICKET_BACKEND, and override container_platform_settings. model_limits sets the tenant's LiteLLM spend and rate limits in the worker environment. monthly_budget_usd is the tenant team's monthly budget in US dollars, rpm_limit and tpm_limit are the tenant team's requests and tokens per minute, and 0 sets no limit for each of the three. run_budget_usd is the budget of each run's virtual key in US dollars. sandbox_quota is the ResourceQuota hard limits of the tenant's sandbox namespace, such as requests.cpu or pods. create_eks requires at least one tenant."
+  type = map(object({
+    description    = string
+    secrets        = optional(list(string), ["github_token", "jira_api_token", "jira_pat", "authorship_signing_key", "registry_token", "slack_webhook_url"])
+    shared_secrets = optional(list(string), [])
+    config_repository = optional(object({
+      github_repository = string
+      allowed_refs      = optional(list(string), ["refs/heads/main"])
+      github_repository_ids = optional(object({
+        owner_id      = number
+        repository_id = number
+      }))
+    }))
+    ticket_store = optional(object({
+      bucket_name = optional(string, "")
+      operators   = optional(list(string), [])
+      admins      = optional(list(string), [])
+      writer_github_oidc_trust = optional(object({
+        provider_arn      = string
+        subjects          = list(string)
+        job_workflow_refs = optional(list(string), [])
+        audience          = optional(string, "sts.amazonaws.com")
+      }))
+    }), {})
+    mcp_gateway_token_readers = optional(list(string), [])
+    mcp_gateway_host          = optional(string, "")
+    settings                  = optional(map(string), {})
+    model_limits = optional(object({
+      monthly_budget_usd = optional(number, 0)
+      rpm_limit          = optional(number, 0)
+      tpm_limit          = optional(number, 0)
+      run_budget_usd     = optional(number, 10)
+    }), {})
+    sandbox_quota = optional(map(string), {})
+  }))
+  default = {}
+
+  validation {
+    condition     = alltrue([for name in keys(var.tenants) : can(regex("^[a-z][a-z0-9]{1,15}$", name)) && name != "default"])
+    error_message = "A tenant name is 2 to 16 lowercase letters and digits starting with a letter, and default is not a tenant name."
+  }
+
+  validation {
+    condition     = alltrue(flatten([for tenant in values(var.tenants) : [for name in keys(tenant.settings) : can(regex("^[A-Z][A-Z0-9_]*$", name)) && !can(regex("(KEY|TOKEN|SECRET|PASSWORD|PAT)", name))]]))
+    error_message = "A tenant setting name is an upper-case variable name and may not contain KEY, TOKEN, SECRET, PASSWORD, or PAT, because a secret belongs in the tenant's secrets."
+  }
+
+  validation {
+    condition = alltrue(flatten([for tenant in values(var.tenants) : [for name in keys(tenant.settings) : !contains([
+      "TENANT", "TENANTS", "TENANT_CONFIG_BUCKET", "OPENHANDS_SANDBOX_NAMESPACE", "GATE_ENGINE_NAMESPACE",
+      "REPOSITORY_ROOT", "EXECUTION_WORKSPACE_ROOT", "GATE_ENGINE_ROOT",
+      "TENANT_MODEL_BUDGET_USD", "TENANT_MODEL_RPM_LIMIT", "TENANT_MODEL_TPM_LIMIT", "RUN_MODEL_BUDGET_USD",
+    ], name)]]))
+    error_message = "A tenant setting may not set TENANT, TENANTS, TENANT_CONFIG_BUCKET, the model limits model_limits sets, or the namespaces and paths the deployment derives from the tenant name."
+  }
+
+  validation {
+    condition     = alltrue(flatten([for tenant in values(var.tenants) : [for value in values(tenant.model_limits) : value >= 0]]))
+    error_message = "A tenant's model_limits values are 0 or greater."
+  }
+
+  validation {
+    condition     = alltrue([for tenant in values(var.tenants) : floor(tenant.model_limits.rpm_limit) == tenant.model_limits.rpm_limit && floor(tenant.model_limits.tpm_limit) == tenant.model_limits.tpm_limit])
+    error_message = "A tenant's model_limits rpm_limit and tpm_limit are whole numbers."
+  }
+}
+
+variable "tenant_config_admin_principals" {
+  description = "IAM principal ARNs allowed to read, write, and restore every tenant's config bundle, and to empty the tenant config bucket before a destroy."
+  type        = list(string)
+  default     = []
+}
+
+variable "container_platform_settings" {
+  description = "Platform-wide settings the platform tasks and the EKS workers receive in their environment, such as TICKET_BACKEND or AUTHORSHIP_IDENTITY_ID. A setting may not name a secret, which belongs in the secret store, or a variable the container-services module sets."
+  type        = map(string)
+  default     = {}
+
+  validation {
+    condition     = alltrue([for name in keys(var.container_platform_settings) : can(regex("^[A-Z][A-Z0-9_]*$", name)) && !can(regex("(KEY|TOKEN|SECRET|PASSWORD|PAT)", name))])
+    error_message = "A platform setting name is an upper-case variable name and may not contain KEY, TOKEN, SECRET, PASSWORD, or PAT, because a secret belongs in the secret store."
+  }
+}
+
+variable "image_scanning_enabled" {
+  description = "Turn on Amazon Inspector enhanced scanning for every ECR repository in the account and region, and refuse a tenant pod image that Inspector has not scanned or that carries an active finding at image_finding_severity or above, unless an entry of platform/image_exceptions.yaml or the tenant's bundle image_exceptions.yaml in the tenant config bucket accepts it. Enhanced scanning is an account setting, billed per image scanned."
+  type        = bool
+  default     = false
+}
+
+variable "image_finding_severity" {
+  description = "The lowest Amazon Inspector severity that refuses a tenant pod image: LOW, MEDIUM, HIGH, or CRITICAL."
+  type        = string
+  default     = "HIGH"
+
+  validation {
+    condition     = contains(["LOW", "MEDIUM", "HIGH", "CRITICAL"], var.image_finding_severity)
+    error_message = "image_finding_severity is LOW, MEDIUM, HIGH, or CRITICAL."
+  }
+}
+
+variable "image_signature_verification" {
+  description = "Verify the AWS Signer signature of each catalog and tenant image before a pod pulls it. Catalog images must be signed with the platform profile and tenant images with the tenant's profile. Runs the pull pods as the image-verifier ServiceAccount, whose only permission is signer:GetRevocationStatus, adds the Signer revocation host to the DNS Firewall allowlist, and lets the pull pods reach addresses outside the VPC on 443, because no interface endpoint serves the revocation check."
+  type        = bool
+  default     = false
+}
+
+variable "image_policy_registries" {
+  description = "Registry repositories or prefixes, ending in /, a tenant pod may pull from besides the catalog, the tenant's prefix, and the pull-through caches."
+  type        = list(string)
+  default     = []
+}

@@ -38,8 +38,11 @@ gates:
   #   params:
   #     org: my-org
   #     threshold: high
-  # - name: ai-security-review
+  # - name: security-policy
+  #   enabled: true
+  #   required: true
+  #   params:
+  #     threshold: high
+  # - name: test-policy
   #   enabled: true
   #   required: false
-  #   params:
-  #     profile: cms-ars

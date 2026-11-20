@@ -4,11 +4,9 @@ import rego.v1
 
 default allow := false
 
-bundle_version := "0.4.0"
+bundle_version := "0.5.0"
 
 default_allowed_projects := {"AGENTDEV", "ADSER", "ADEV"}
-
-default_allowed_repos := {"agentic-demo-service", "agentic-demo-greenfield"}
 
 input_projects := {p | some p in object.get(input, "allowed_projects", [])}
 
@@ -18,9 +16,8 @@ effective_projects := input_projects if {
 	count(input_projects) > 0
 } else := default_allowed_projects
 
-effective_repos := input_repos if {
-	count(input_repos) > 0
-} else := default_allowed_repos
+# The platform passes the repositories.yaml list. A missing list allows no repository.
+effective_repos := input_repos
 
 ci_required := object.get(input, "ci_required", true)
 
@@ -32,9 +29,14 @@ reasons contains "repository_not_allowlisted" if {
 	not effective_repos[input.repository]
 }
 
+reasons contains "ci_skipped" if {
+	ci_required
+	input.ci_status == "skipped"
+}
+
 reasons contains "ci_not_successful" if {
 	ci_required
-	input.ci_status != "success"
+	not input.ci_status in {"success", "skipped"}
 }
 
 reasons contains "repair_attempts_exceeded" if {

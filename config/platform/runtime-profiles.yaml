@@ -1,0 +1,63 @@
+# Catalog runtime profiles every tenant may assign to a repository by name in repositories.yaml.
+# A profile names the sandbox image the coding agent runs in, the default checks of a repository
+# without its own checks.yaml entry, and gate overrides applied over the tenant's gates.yaml.
+# A sandbox or checks image catalog:<name> resolves through RUNTIME_IMAGES, which the platform's
+# publish step writes. See docs/runtime-profiles.md for the images and why Python and Node share one.
+config_version: 1
+
+profiles:
+  python-fastapi:
+    description: Python services such as FastAPI, on Python 3.13.
+    sandbox_image: catalog:agent-server-python-node
+    checks:
+      image: catalog:checks-python
+      command: "pip install -r requirements-dev.txt && pytest -q"
+    gates:
+      - name: security-policy
+        enabled: true
+        required: true
+      - name: test-policy
+        enabled: true
+        required: false
+
+  node-react:
+    description: Node and ReactJS applications, on Node 24, in the sandbox image shared with Python.
+    sandbox_image: catalog:agent-server-python-node
+    checks:
+      image: catalog:checks-node
+      command: "npm ci && npm test -- --watchAll=false"
+    gates:
+      - name: security-policy
+        enabled: true
+        required: true
+      - name: test-policy
+        enabled: true
+        required: false
+
+  java-spring:
+    description: Java services such as Spring Boot, on JDK 21 with Maven. Gradle projects use their wrapper.
+    sandbox_image: catalog:agent-server-jvm
+    checks:
+      image: catalog:checks-jvm
+      command: "mvn -B -q verify"
+    gates:
+      - name: security-policy
+        enabled: true
+        required: true
+      - name: test-policy
+        enabled: true
+        required: false
+
+  go-service:
+    description: Go services, on Go 1.26.
+    sandbox_image: catalog:agent-server-go
+    checks:
+      image: catalog:checks-go
+      command: "go vet ./... && go test ./..."
+    gates:
+      - name: security-policy
+        enabled: true
+        required: true
+      - name: test-policy
+        enabled: true
+        required: false

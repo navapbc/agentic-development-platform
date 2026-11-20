@@ -8,12 +8,12 @@ statuses through the configured status flow.
 
 from __future__ import annotations
 
-import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from services import process
 from services.integration.jira.render import (
     BulletList,
     Code,
@@ -46,8 +46,9 @@ def _repair_store_worktrees(repo_root: str) -> None:
     if root.is_dir():
         for child in root.iterdir():
             if (child / ".git").is_file():
-                subprocess.run(
+                process.run(
                     ["git", "-C", str(root), "worktree", "repair", str(child)],
+                    timeout=process.SHORT_COMMAND_TIMEOUT_SECONDS,
                     capture_output=True,
                     text=True,
                     check=False,
@@ -133,8 +134,7 @@ class RebarTicketBackend:
                 issue_key,
                 current,
                 target_status,
-                force=True,
-                reason="agent-platform lifecycle",
+                force="agent-platform lifecycle",
                 repo_root=self.repo_root,
             )
         except rebar.ConcurrencyError:

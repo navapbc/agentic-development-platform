@@ -20,6 +20,7 @@ def test_clone_command_pins_the_ref_and_depth():
         "1",
         "--branch",
         "v0.9.0",
+        "--",
         "https://example.com/cbm.git",
         "/tmp/cbm",
     ]

@@ -5,10 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from database.engine import create_platform_engine
 from database.models.schema import executions
 from scripts.config import Settings, get_settings, to_host_hostport, to_host_url
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine
+
+from services.orchestration.execution_tenant import tenant_executions
 
 _REPAIR_DECISION_SIGNAL = "submit_repair_decision"
 _AWAITING_HUMAN = "AWAITING_HUMAN"
@@ -58,8 +61,12 @@ async def resume_repair(
 
 
 class PostgresRepairDecisionStore:
-    def __init__(self, engine: AsyncEngine) -> None:
+    """Find the parked workflows of one tenant, so a decision never reaches another tenant's run
+    on the same issue in the shared Temporal namespace."""
+
+    def __init__(self, engine: AsyncEngine, *, tenant: str) -> None:
         self._engine = engine
+        self._tenant = tenant
 
     async def parked_workflow_ids(self, issue_key: str) -> list[str]:
         async with self._engine.connect() as conn:
@@ -67,6 +74,7 @@ class PostgresRepairDecisionStore:
                 await conn.execute(
                     select(executions.c.workflow_id)
                     .where(executions.c.task_id == issue_key)
+                    .where(tenant_executions(self._tenant))
                     .where(executions.c.state == _AWAITING_HUMAN)
                     .where(executions.c.workflow_id.is_not(None))
                     .distinct()
@@ -79,15 +87,13 @@ class TemporalRepairSignaller:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
 
-    async def signal_repair_decision(
-        self, workflow_id: str, *, retry: bool, actor: str
-    ) -> None:
-        from temporalio.client import Client
+    async def signal_repair_decision(self, workflow_id: str, *, retry: bool, actor: str) -> None:
         from temporalio.service import RPCError, RPCStatusCode
 
-        client = await Client.connect(
-            to_host_hostport(self._settings.temporal_host),
-            namespace=self._settings.temporal_namespace,
+        from services import temporal_client
+
+        client = await temporal_client.connect(
+            to_host_hostport(self._settings.temporal_host), self._settings
         )
         handle = client.get_workflow_handle(workflow_id)
         try:
@@ -102,15 +108,13 @@ async def run_repair_decision(
     issue_key: str, *, retry: bool, actor: str = "operator", settings: Any = None
 ) -> RepairDecisionResult:
     resolved = settings or get_settings()
-    engine = create_async_engine(
-        to_host_url(resolved.database_url), future=True, pool_pre_ping=True
-    )
+    engine = create_platform_engine(to_host_url(resolved.database_url))
     try:
         return await resume_repair(
             issue_key,
             retry=retry,
             actor=actor,
-            store=PostgresRepairDecisionStore(engine),
+            store=PostgresRepairDecisionStore(engine, tenant=resolved.tenant.strip()),
             signaller=TemporalRepairSignaller(resolved),
         )
     finally:
