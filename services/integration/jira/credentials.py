@@ -6,8 +6,6 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from scripts.config import Settings, get_settings
-
 from services.integration.credentials import (
     ConfigError,
     EnvSecretResolver,
@@ -414,15 +412,11 @@ class JiraCredentialResolver:
 
 
 def build_jira_credential_resolver(
-    settings: Settings | None = None,
     *,
     secret_resolver: SecretResolver | None = None,
-    environment: str | None = None,
 ) -> JiraCredentialResolver:
-    resolved = settings or get_settings()
-    env = environment or resolved.environment
-    require_current_config("jira", environment=env)
-    raw = load_env_config("jira", environment=env)
+    require_current_config("jira")
+    raw = load_env_config("jira")
     config = parse_jira_config(raw)
     secrets = secret_resolver or EnvSecretResolver()
     resolver = JiraCredentialResolver(config, set(config.allowlist), secrets)
@@ -432,30 +426,22 @@ def build_jira_credential_resolver(
 
 
 def allowed_projects(
-    settings: Settings | None = None,
     *,
-    environment: str | None = None,
     root: Path | None = None,
 ) -> set[str]:
-    """Return the allowlisted projects declared in config/<env>/jira.yaml."""
-    resolved = settings or get_settings()
-    env = environment or resolved.environment
-    require_current_config("jira", environment=env, root=root)
-    raw = load_env_config("jira", environment=env, root=root)
+    """Return the allowlisted projects declared in the tenant's jira.yaml."""
+    require_current_config("jira", root=root)
+    raw = load_env_config("jira", root=root)
     return set(parse_jira_config(raw).allowlist)
 
 
 def acceptance_field(
-    settings: Settings | None = None,
     *,
-    environment: str | None = None,
     root: Path | None = None,
 ) -> str:
-    """Return the acceptance-criteria field id declared in config/<env>/jira.yaml."""
-    resolved = settings or get_settings()
-    env = environment or resolved.environment
-    require_current_config("jira", environment=env, root=root)
-    raw = load_env_config("jira", environment=env, root=root)
+    """Return the acceptance-criteria field id declared in the tenant's jira.yaml."""
+    require_current_config("jira", root=root)
+    raw = load_env_config("jira", root=root)
     return parse_jira_config(raw).acceptance_field
 
 

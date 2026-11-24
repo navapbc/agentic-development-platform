@@ -1,12 +1,10 @@
-"""Non-secret integration delivery settings from config/<env>/integrations.yaml."""
+"""Non-secret integration delivery settings from config/local/integrations.yaml."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
-
-from scripts.config import Settings, get_settings
 
 from services.integration.credentials import (
     ConfigError,
@@ -46,11 +44,7 @@ def parse_integrations_config(raw: Mapping[str, Any]) -> IntegrationsConfig:
     return IntegrationsConfig(modes=modes)
 
 
-def load_integrations_config(
-    settings: Settings | None = None, *, environment: str | None = None
-) -> IntegrationsConfig:
-    resolved = settings or get_settings()
-    env = environment or resolved.environment
-    require_current_config("integrations", environment=env)
-    raw = load_env_config("integrations", environment=env)
+def load_integrations_config() -> IntegrationsConfig:
+    require_current_config("integrations")
+    raw = load_env_config("integrations")
     return parse_integrations_config(raw)

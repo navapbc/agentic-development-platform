@@ -73,8 +73,62 @@ def test_every_operator_config_is_ignored_and_has_an_example(example):
     )
 
 
+TENANTS_DIR = "config/local/tenants"
+TENANT_TEMPLATES = sorted(
+    [f"tenant.example/{p.name}" for p in (REPO_ROOT / TENANTS_DIR / "tenant.example").iterdir()]
+    + ["tenant.example.env"]
+)
+
+
+@pytest.mark.parametrize("template", TENANT_TEMPLATES)
+def test_every_tenant_template_is_tracked_and_a_tenant_copy_is_ignored(template):
+    copy = template.replace("tenant.example", "adp", 1).removesuffix(".example")
+
+    assert f"{TENANTS_DIR}/{template}" in set(_git("ls-files").splitlines()), (
+        f"{TENANTS_DIR}/{template} is ignored or missing, so an operator has no template to copy"
+    )
+    assert _git("check-ignore", "-v", "--no-index", f"{TENANTS_DIR}/{copy}").strip(), (
+        f"{TENANTS_DIR}/{copy} has no ignore rule, so a tenant's copy can be committed"
+    )
+
+
+# Records of past work, which name the config layout as it stood when they were written.
+_CONFIG_LAYOUT_HISTORY = ("docs/plans/", "docs/solutions/", "CHANGELOG.md")
+
+
+def test_no_file_names_a_config_environment_directory():
+    import re
+
+    listed = _git("ls-files") + _git("ls-files", "--others", "--exclude-standard")
+    pattern = re.compile(r"config/<env(?:ironment)?>")
+    stale = []
+    for name in sorted(set(listed.splitlines())):
+        path = REPO_ROOT / name
+        if name == THIS_FILE or name.startswith(_CONFIG_LAYOUT_HISTORY) or not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError, OSError:
+            continue
+        stale.extend(
+            f"{name}:{number}"
+            for number, line in enumerate(text.splitlines(), start=1)
+            if pattern.search(line)
+        )
+    assert stale == [], (
+        "config/local/ holds the platform config and config/local/tenants/<tenant>/ a tenant's"
+    )
+
+
 def test_project_compose_overlays_are_ignored():
     assert _git("check-ignore", "-v", "--no-index", "compose.pilot.yaml").strip()
+
+
+def test_the_platform_settings_file_is_ignored_and_its_example_is_tracked():
+    tracked = set(_git("ls-files").splitlines())
+
+    assert _git("check-ignore", "-v", "--no-index", "config/local/platform.env").strip()
+    assert "config/local/platform.env.example" in tracked
 
 
 def test_the_platform_compose_files_stay_tracked():

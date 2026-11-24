@@ -148,11 +148,11 @@ def _issue(key: str, project: str) -> dict:
 def _allowlist_from_config(monkeypatch):
     monkeypatch.setattr(
         "services.integration.jira.snapshot.allowed_projects",
-        lambda settings=None: {"CLOUDP", "DCP"},
+        lambda: {"CLOUDP", "DCP"},
     )
     monkeypatch.setattr(
         "services.integration.jira.snapshot.acceptance_field",
-        lambda settings=None: "",
+        lambda: "",
     )
 
 

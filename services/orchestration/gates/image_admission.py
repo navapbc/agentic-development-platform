@@ -111,22 +111,22 @@ class Admission:
         return signed
 
 
-def _environment() -> tuple[str, str, Mapping[str, str]]:
+def _tenant_mirrors() -> tuple[str, Mapping[str, str]]:
     from scripts.config import get_settings
 
     from services.orchestration.gates import registry_mirrors
 
     settings = get_settings()
     config = registry_mirrors.current()
-    return settings.environment, settings.tenant, dict(config.mirrors) if config else {}
+    return settings.tenant, dict(config.mirrors) if config else {}
 
 
 async def admit_images(images: Iterable[str]) -> Admission:
     """Admit every image or raise ImageRefusedError, or ImageScanPendingError for a pending scan."""
-    environment, tenant, mirrors = _environment()
+    tenant, mirrors = _tenant_mirrors()
     try:
-        policy = load_policy(environment)
-        exceptions = load_exceptions(environment)
+        policy = load_policy()
+        exceptions = load_exceptions()
         admitted = tuple(admit(image, policy, tenant, mirrors) for image in dict.fromkeys(images))
     except ConfigError as exc:
         raise ImageRefusedError(str(exc)) from exc
@@ -383,10 +383,9 @@ def pod_service_account() -> str:
     The identity may only read a signature's revocation status, so a pod runs as it only while
     signature verification is on.
     """
-    from scripts.config import get_settings
 
     try:
-        policy = load_policy(get_settings().environment)
+        policy = load_policy()
     except ConfigError:
         return ""
     return VERIFIER_SERVICE_ACCOUNT if policy.signatures.verification else ""

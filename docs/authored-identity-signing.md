@@ -23,9 +23,9 @@ Run these once from the repository root, with the rebar ticket backend selected.
 
 1. Generate the agent signing key. `ssh-keygen -t ed25519 -f config/local/authorship-signing-key -N "" -C "code-agent@nava" -q`
 2. Mint the identity and seed its genesis key from the generated public key, then record the returned id in `AUTHORSHIP_IDENTITY_ID`. Use `services.orchestration.authorship.create_authoring_identity` against the rebar store.
-3. Set `AUTHORSHIP_SIGNING_KEY_PATH=config/local/authorship-signing-key` in `.env`.
+3. Add the key to the tenant's settings file `config/local/tenants/<tenant>.env` as `AUTHORSHIP_SIGNING_KEY="<the contents of config/local/authorship-signing-key>"`, beside `AUTHORSHIP_IDENTITY_ID`, then delete `config/local/authorship-signing-key` and its `.pub`. `config/local/platform.env` refuses both settings, because the authoring key belongs to one tenant.
 
-The signing key files are gitignored. The compose stack mounts `config/local` into the activity worker, so the worker reads the key at the path above.
+The signing key files are git-ignored. The render withholds `config/local/authorship-signing-key` from every tenant's pods, so a tenant's worker reads its key only from its own settings.
 
 ## Startup preflight
 

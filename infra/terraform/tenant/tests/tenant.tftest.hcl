@@ -29,9 +29,21 @@ override_resource {
 }
 
 override_resource {
+  target          = aws_iam_role.claims_probe
+  override_during = plan
+  values          = { arn = "arn:aws:iam::111111111111:role/agentic-platform-tenant-adp-claims-probe" }
+}
+
+override_resource {
   target          = aws_secretsmanager_secret.this
   override_during = plan
   values          = { arn = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/tenants/adp/x" }
+}
+
+override_resource {
+  target          = aws_secretsmanager_secret.review_signing_key
+  override_during = plan
+  values          = { arn = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/tenants/adp/review-signing-key-a" }
 }
 
 override_resource {
@@ -77,6 +89,7 @@ variables {
   access_log_bucket = "agentic-platform-access-logs-111111111111"
   worker_role_arn   = "arn:aws:iam::111111111111:role/agentic-platform-eks-tenant-adp"
   worker_role_name  = "agentic-platform-eks-tenant-adp"
+  review_role_arn   = "arn:aws:iam::111111111111:role/agentic-platform-eks-tenant-adp-review"
   secrets           = ["github_token", "jira_api_token"]
   config_store = {
     bucket_arn  = "arn:aws:s3:::agentic-platform-tenant-config-abc"
@@ -122,7 +135,7 @@ run "only_the_tenant_worker_reads_its_secrets" {
   assert {
     condition = (
       jsondecode(aws_secretsmanager_secret_policy.this["jira_api_token"].policy).Statement[1].Effect == "Deny" &&
-      jsondecode(aws_secretsmanager_secret_policy.this["jira_api_token"].policy).Statement[1].Condition.ArnNotEquals["aws:PrincipalArn"] == "arn:aws:iam::111111111111:role/agentic-platform-eks-tenant-adp"
+      jsondecode(aws_secretsmanager_secret_policy.this["jira_api_token"].policy).Statement[1].Condition.ArnNotEquals["aws:PrincipalArn"] == ["arn:aws:iam::111111111111:role/agentic-platform-eks-tenant-adp"]
     )
     error_message = "A tenant secret admits a reader other than the tenant worker."
   }
@@ -184,6 +197,90 @@ run "no_publisher_without_a_repository" {
   }
 }
 
+run "no_claims_probe_without_a_pull_request_subject" {
+  command = plan
+
+  variables {
+    create_tenant = true
+    config_publisher = {
+      oidc_provider_arn = "arn:aws:iam::111111111111:oidc-provider/token.actions.githubusercontent.com"
+      github_repository = "navapbc/adp-tenant-config"
+    }
+  }
+
+  assert {
+    condition     = length(aws_iam_role.claims_probe) == 0 && output.tenant.claims_probe_role_arn == null
+    error_message = "A claims probe role was created with no pull_request_subject."
+  }
+}
+
+run "the_claims_probe_trusts_pull_requests_and_only_lists_one_claim_digest" {
+  command = plan
+
+  variables {
+    create_tenant = true
+    config_publisher = {
+      oidc_provider_arn     = "arn:aws:iam::111111111111:oidc-provider/token.actions.githubusercontent.com"
+      github_repository     = "navapbc/adp-tenant-config"
+      github_repository_ids = { owner_id = 101, repository_id = 202 }
+      pull_request_subject  = "pull_request"
+    }
+  }
+
+  assert {
+    condition = (
+      aws_iam_role.claims_probe[0].name == "agentic-platform-tenant-adp-claims-probe" &&
+      jsondecode(aws_iam_role.claims_probe[0].assume_role_policy).Statement[0].Action == "sts:AssumeRoleWithWebIdentity" &&
+      jsondecode(aws_iam_role.claims_probe[0].assume_role_policy).Statement[0].Condition == {
+        StringEquals = {
+          "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+          "token.actions.githubusercontent.com:sub" = "repo:navapbc@101/adp-tenant-config@202:pull_request"
+        }
+      }
+    )
+    error_message = "The claims probe trusts a subject other than the config repository's pull requests."
+  }
+
+  assert {
+    condition = (
+      !contains(keys(aws_iam_role.claims_probe[0].tags), "tenant-config-publisher") &&
+      !contains(keys(aws_iam_role.claims_probe[0].tags), "tenant-config-reader")
+    )
+    error_message = "The claims probe carries a principal tag that admits it to a tenant's config prefix."
+  }
+
+  assert {
+    condition = jsondecode(aws_iam_role_policy.claims_probe[0].policy).Statement == [
+      {
+        Sid       = "ListOneClaimDigest"
+        Effect    = "Allow"
+        Action    = ["s3:ListBucket", "s3:ListBucketVersions"]
+        Resource  = "arn:aws:s3:::agentic-platform-tenant-config-abc"
+        Condition = { StringLike = { "s3:prefix" = ["claims/*/*/"] } }
+      },
+      {
+        Sid      = "ReadTheClaimsProtocol"
+        Effect   = "Allow"
+        Action   = "s3:GetObject"
+        Resource = "arn:aws:s3:::agentic-platform-tenant-config-abc/platform/claims-protocol.json"
+      },
+      {
+        Sid       = "DecryptThroughS3"
+        Effect    = "Allow"
+        Action    = "kms:Decrypt"
+        Resource  = "arn:aws:kms:us-east-1:111111111111:key/config"
+        Condition = { StringEquals = { "kms:ViaService" = "s3.us-east-1.amazonaws.com" } }
+      },
+    ]
+    error_message = "The claims probe may do more than list one claim digest and read the claims-protocol object."
+  }
+
+  assert {
+    condition     = output.tenant.claims_probe_role_arn == "arn:aws:iam::111111111111:role/agentic-platform-tenant-adp-claims-probe"
+    error_message = "The tenant output does not name the claims probe role."
+  }
+}
+
 run "the_publisher_trusts_one_repository_and_writes_one_prefix" {
   command = plan
 
@@ -205,6 +302,24 @@ run "the_publisher_trusts_one_repository_and_writes_one_prefix" {
       aws_signer_signing_profile.this[0].name_prefix == "agentic_platform_tenant_adp_"
     )
     error_message = "The publisher trusts another repository, reaches beyond the tenant's prefixes, or signs with another profile."
+  }
+
+  assert {
+    condition = (
+      one([for s in jsondecode(aws_iam_role_policy.publisher[0].policy).Statement : s if s.Sid == "PublishTheTenantBundle"]).Action == ["s3:PutObject", "s3:PutObjectTagging", "s3:DeleteObject"] &&
+      one([for s in jsondecode(aws_iam_role_policy.publisher[0].policy).Statement : s if s.Sid == "ManageTheTenantClaims"]).Action == ["s3:PutObject", "s3:DeleteObject"] &&
+      one([for s in jsondecode(aws_iam_role_policy.publisher[0].policy).Statement : s if s.Sid == "ManageTheTenantClaims"]).Resource == [
+        "arn:aws:s3:::agentic-platform-tenant-config-abc/claims/*/*/adp",
+        "arn:aws:s3:::agentic-platform-tenant-config-abc/claims/_owners/adp.json",
+      ] &&
+      one([for s in jsondecode(aws_iam_role_policy.publisher[0].policy).Statement : s if s.Sid == "ReadTheTenantClaimIndex"]).Action == "s3:GetObject" &&
+      one([for s in jsondecode(aws_iam_role_policy.publisher[0].policy).Statement : s if s.Sid == "ReadTheTenantClaimIndex"]).Resource == "arn:aws:s3:::agentic-platform-tenant-config-abc/claims/_owners/adp.json" &&
+      one([for s in jsondecode(aws_iam_role_policy.publisher[0].policy).Statement : s if s.Sid == "ReadTheClaimsProtocol"]).Action == "s3:GetObject" &&
+      one([for s in jsondecode(aws_iam_role_policy.publisher[0].policy).Statement : s if s.Sid == "ReadTheClaimsProtocol"]).Resource == "arn:aws:s3:::agentic-platform-tenant-config-abc/platform/claims-protocol.json" &&
+      one([for s in jsondecode(aws_iam_role_policy.publisher[0].policy).Statement : s if s.Sid == "ListOneClaimDigest"]).Action == ["s3:ListBucket", "s3:ListBucketVersions"] &&
+      one([for s in jsondecode(aws_iam_role_policy.publisher[0].policy).Statement : s if s.Sid == "ListOneClaimDigest"]).Condition.StringLike["s3:prefix"] == ["claims/*/*/"]
+    )
+    error_message = "The publisher cannot tag its bundle, or manages, reads, or lists claims beyond its own markers, its own index, and one digest."
   }
 
   assert {
@@ -560,4 +675,169 @@ run "disabled_module_creates_no_gateway_token" {
     condition     = length(aws_secretsmanager_secret.mcp_gateway_token) == 0 && output.tenant == null
     error_message = "A disabled tenant module creates a gateway token."
   }
+}
+
+run "only_the_review_worker_reads_its_signing_key" {
+  command = plan
+
+  variables {
+    create_tenant = true
+    secrets       = ["github_token", "registry_token"]
+  }
+
+  assert {
+    condition = (
+      aws_secretsmanager_secret.review_signing_key[0].name == "agentic-platform/tenants/adp/review-signing-key" &&
+      aws_secretsmanager_secret.review_signing_key[0].kms_key_id == "arn:aws:kms:us-east-1:111111111111:key/tenant-adp" &&
+      aws_secretsmanager_secret.review_signing_key[0].tags.tenant == "adp" &&
+      output.tenant.review_signing_key_arn == "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/tenants/adp/review-signing-key-a" &&
+      output.tenant.review_namespace == "tenant-adp-review" &&
+      !contains(values(output.tenant.secret_arns), output.tenant.review_signing_key_arn)
+    )
+    error_message = "The review signing key is not named under the tenant prefix, encrypted with the tenant key, and kept out of the worker's secrets."
+  }
+
+  assert {
+    condition = (
+      jsondecode(aws_secretsmanager_secret_policy.review_signing_key[0].policy).Statement[0].Principal.AWS == var.review_role_arn &&
+      jsondecode(aws_secretsmanager_secret_policy.review_signing_key[0].policy).Statement[1].Effect == "Deny" &&
+      jsondecode(aws_secretsmanager_secret_policy.review_signing_key[0].policy).Statement[1].Condition.ArnNotEquals["aws:PrincipalArn"] == var.review_role_arn
+    )
+    error_message = "The review signing key admits a reader other than the tenant's review worker."
+  }
+
+  assert {
+    condition = (
+      jsondecode(aws_secretsmanager_secret_policy.this["registry_token"].policy).Statement[1].Condition.ArnNotEquals["aws:PrincipalArn"] == [var.worker_role_arn, var.review_role_arn] &&
+      jsondecode(aws_secretsmanager_secret_policy.this["github_token"].policy).Statement[1].Condition.ArnNotEquals["aws:PrincipalArn"] == [var.worker_role_arn]
+    )
+    error_message = "The review worker does not read the tenant's registry token, or reads another tenant secret."
+  }
+
+  assert {
+    condition     = !contains(one([for s in jsondecode(aws_iam_policy.worker[0].policy).Statement : s.Resource if s.Sid == "ReadTheTenantSecrets"]), output.tenant.review_signing_key_arn)
+    error_message = "The activity worker policy reads the review signing key."
+  }
+}
+
+run "the_review_role_reads_only_its_own_secrets_and_prefix" {
+  command = plan
+
+  variables {
+    create_tenant = true
+    secrets       = ["github_token", "registry_token"]
+  }
+
+  assert {
+    condition = (
+      length(one([for s in jsondecode(aws_iam_policy.review[0].policy).Statement : s.Resource if s.Sid == "ReadTheReviewSecrets"])) == 2 &&
+      contains(one([for s in jsondecode(aws_iam_policy.review[0].policy).Statement : s.Resource if s.Sid == "ReadTheReviewSecrets"]), output.tenant.review_signing_key_arn) &&
+      one([for s in jsondecode(aws_iam_policy.review[0].policy).Statement : s if s.Sid == "DecryptTheReviewSecrets"]).Resource == "arn:aws:kms:us-east-1:111111111111:key/tenant-adp" &&
+      one([for s in jsondecode(aws_iam_policy.review[0].policy).Statement : s if s.Sid == "DecryptTheReviewSecrets"]).Condition.ArnEquals["kms:EncryptionContext:SecretARN"] == one([for s in jsondecode(aws_iam_policy.review[0].policy).Statement : s.Resource if s.Sid == "ReadTheReviewSecrets"]) &&
+      one([for s in jsondecode(aws_iam_policy.review[0].policy).Statement : s if s.Sid == "ReadTheTenantBundle"]).Resource == "arn:aws:s3:::agentic-platform-tenant-config-abc/tenants/adp/*" &&
+      one([for s in jsondecode(aws_iam_policy.review[0].policy).Statement : s if s.Sid == "ListTheTenantBundle"]).Condition.StringLike["s3:prefix"] == ["tenants/adp/*"] &&
+      one([for s in jsondecode(aws_iam_policy.review[0].policy).Statement : s if s.Sid == "PullTheTenantImages"]).Resource == "arn:aws:ecr:us-east-1:111111111111:repository/agentic-platform/tenants/adp/*"
+    )
+    error_message = "The review policy reaches beyond the tenant's review secrets, bundle prefix, or image prefix."
+  }
+
+  assert {
+    condition = (
+      length([for s in jsondecode(aws_iam_policy.review[0].policy).Statement : s if contains(flatten([s.Action]), "s3:PutObject")]) == 0 &&
+      length([for s in jsondecode(aws_iam_policy.review[0].policy).Statement : s if contains(flatten([s.Action]), "sts:AssumeRole")]) == 0
+    )
+    error_message = "Without an evidence store, the review worker may write an object, or it assumes the ticket store roles."
+  }
+}
+
+run "the_review_role_of_another_tenant_names_no_resource_of_adp" {
+  command = plan
+
+  variables {
+    create_tenant    = true
+    tenant           = "beta"
+    worker_role_arn  = "arn:aws:iam::111111111111:role/agentic-platform-eks-tenant-beta"
+    worker_role_name = "agentic-platform-eks-tenant-beta"
+    review_role_arn  = "arn:aws:iam::111111111111:role/agentic-platform-eks-tenant-beta-review"
+    secrets          = ["registry_token"]
+  }
+
+  override_resource {
+    target          = aws_secretsmanager_secret.this
+    override_during = plan
+    values          = { arn = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/tenants/beta/registry-token-b" }
+  }
+
+  override_resource {
+    target          = aws_secretsmanager_secret.review_signing_key
+    override_during = plan
+    values          = { arn = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/tenants/beta/review-signing-key-b" }
+  }
+
+  override_resource {
+    target          = aws_kms_key.this
+    override_during = plan
+    values          = { arn = "arn:aws:kms:us-east-1:111111111111:key/tenant-beta" }
+  }
+
+  assert {
+    condition = alltrue([
+      for resource in flatten([for s in jsondecode(aws_iam_policy.review[0].policy).Statement : flatten([s.Resource])]) :
+      !strcontains(resource, "adp") && (!strcontains(resource, "tenants/") || strcontains(resource, "tenants/beta/"))
+    ])
+    error_message = "The beta review policy names a resource of another tenant."
+  }
+
+  assert {
+    condition = (
+      toset(one([for s in jsondecode(aws_iam_policy.review[0].policy).Statement : s.Resource if s.Sid == "ReadTheReviewSecrets"])) == toset([
+        "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/tenants/beta/review-signing-key-b",
+        "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/tenants/beta/registry-token-b",
+      ]) &&
+      jsondecode(aws_secretsmanager_secret_policy.review_signing_key[0].policy).Statement[1].Condition.ArnNotEquals["aws:PrincipalArn"] == var.review_role_arn
+    )
+    error_message = "The beta review role does not read exactly its own signing key and registry token."
+  }
+}
+
+run "the_review_role_writes_the_evidence_store" {
+  command = plan
+
+  variables {
+    create_tenant = true
+    evidence_store = {
+      bucket_arn  = "arn:aws:s3:::agentic-platform-evidence-abc"
+      kms_key_arn = "arn:aws:kms:us-east-1:111111111111:key/evidence"
+    }
+  }
+
+  assert {
+    condition = (
+      one([for s in jsondecode(aws_iam_policy.review[0].policy).Statement : s if s.Sid == "WriteTheEvidence"]).Resource == "arn:aws:s3:::agentic-platform-evidence-abc/*" &&
+      one([for s in jsondecode(aws_iam_policy.review[0].policy).Statement : s if s.Sid == "EncryptTheEvidence"]).Resource == "arn:aws:kms:us-east-1:111111111111:key/evidence" &&
+      length([for s in jsondecode(aws_iam_policy.worker[0].policy).Statement : s if s.Sid == "WriteTheEvidence"]) == 0
+    )
+    error_message = "The review role does not write the evidence store, or the activity worker does."
+  }
+}
+
+run "a_tenant_needs_a_review_role" {
+  command = plan
+
+  variables {
+    create_tenant   = true
+    review_role_arn = ""
+  }
+
+  expect_failures = [terraform_data.review_inputs_guard]
+}
+
+run "a_tenant_secret_may_not_name_the_review_signing_key" {
+  command = plan
+
+  variables {
+    secrets = ["github_token", "review_signing_key"]
+  }
+
+  expect_failures = [var.secrets]
 }

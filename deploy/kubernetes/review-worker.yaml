@@ -6,7 +6,6 @@ metadata:
   labels:
     app.kubernetes.io/name: review-worker
     app.kubernetes.io/part-of: agentic-dev-platform
-automountServiceAccountToken: false
 ---
 apiVersion: apps/v1
 kind: Deployment

@@ -87,12 +87,12 @@ def review_prompt_versions(gate_names: Iterable[str]) -> dict[str, str]:
     }
 
 
-def build_review_gate(stage: ReviewStage | None = None):
+def build_review_gate(stage: ReviewStage | None = None, *, tenant: str = ""):
     from services.review.evidence import build_evidence_sink
     from services.review.gate import ReviewGate, select_attestor
     from services.review.kernel import RebarReviewKernel
 
-    attestor = select_attestor(stage) if stage is not None else None
+    attestor = select_attestor(stage, tenant=tenant) if stage is not None else None
     return ReviewGate(RebarReviewKernel(), build_evidence_sink(), attestor)
 
 
@@ -163,11 +163,6 @@ def _registry_checkout(repo: str) -> str | None:
 
     settings = get_settings()
     served = tenants.served_tenants(settings)
-    if not served:
-        from services.integration.repositories import load_repository_registry
-
-        entry = load_repository_registry(settings).indexed().get(repo)
-        return entry[0] if entry else None
     tenant = current_tenant() or (served[0] if len(served) == 1 else "")
     if tenant not in served:
         return None
@@ -185,7 +180,8 @@ async def _run_gate(stage: ReviewStage, spec: _PromptSpec, req: ReviewRequest) -
     from services.review.types import ReviewInput
 
     loaded = load_prompt(spec.name)
-    gate = build_review_gate(stage)
+    # The review worker's attribution interceptor binds the tenant of the run's execution record.
+    gate = build_review_gate(stage, tenant=current_tenant())
     repo_root = _resolve_repo_root(req) if stage in _REPO_GROUNDED_STAGES else None
     review_input = ReviewInput(
         stage=stage,

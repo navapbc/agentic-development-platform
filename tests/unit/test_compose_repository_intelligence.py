@@ -32,12 +32,12 @@ def test_the_service_reads_no_env_file_and_mounts_no_config_directory(name: str)
 
 
 @pytest.mark.parametrize("name", READERS)
-def test_the_service_declares_the_tenant_settings_from_the_compose_environment(name: str) -> None:
+def test_the_service_takes_the_tenant_list_only_from_the_repos_compose_override(name: str) -> None:
     environment = _services()[name]["environment"]
 
-    assert environment["TENANTS"] == "${TENANTS:-}"
-    assert environment["TENANT"] == "${TENANT:-}"
-    assert environment["ENVIRONMENT"] == "${ENVIRONMENT:-local}"
+    assert "TENANTS" not in environment
+    assert "TENANT" not in environment
+    assert "ENVIRONMENT" not in environment
 
 
 def test_only_repository_intelligence_receives_the_token_key() -> None:

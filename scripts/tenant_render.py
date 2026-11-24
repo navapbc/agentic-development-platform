@@ -14,6 +14,11 @@ worker's ServiceAccount, whose identity alone reads the tenant's secrets, and re
 settings and config in place of every platform ConfigMap and Secret the platform gateway read. It
 keeps its own secret provider, Service, Ingress, and the platform network and security group
 policies that select it by name.
+
+The review worker moves into tenant-<tenant>-review the same way, one copy per tenant with its
+ServiceAccount, the config it reads, and the platform policies that select it by name. It reads only
+its own tenant's workspace, and the sandbox namespace binds its ServiceAccount to the sandbox Role,
+so it starts the tenant's gate and scanner pods in the tenant's sandbox namespace only.
 """
 
 from __future__ import annotations
@@ -28,6 +33,7 @@ PLATFORM_NAMESPACE = "agentic-dev-platform"
 SANDBOX_NAMESPACE = "agent-sandbox"
 WORKER = "activity-worker"
 GATEWAY = "mcp-gateway"
+REVIEW_WORKER = "review-worker"
 WORKSPACE_CLAIM = "workspaces"
 NAME_LABEL = "app.kubernetes.io/name"
 PART_OF_LABEL = "app.kubernetes.io/part-of"
@@ -35,6 +41,7 @@ TENANT_LABEL = "agentic-dev-platform/tenant"
 ROLE_LABEL = "agentic-dev-platform/namespace-role"
 WORKER_ROLE = "worker"
 SANDBOX_ROLE = "sandbox"
+REVIEW_ROLE = "review"
 
 # Objects a deployment rendered before tenants, which the deployers delete by kind and name.
 RETIRED = (
@@ -51,6 +58,8 @@ RETIRED = (
     ("serviceaccount", PLATFORM_NAMESPACE, GATEWAY),
     ("ingress", PLATFORM_NAMESPACE, GATEWAY),
     ("secretproviderclass", PLATFORM_NAMESPACE, GATEWAY),
+    ("deployment", PLATFORM_NAMESPACE, REVIEW_WORKER),
+    ("serviceaccount", PLATFORM_NAMESPACE, REVIEW_WORKER),
 )
 
 
@@ -63,10 +72,15 @@ class Tenant:
     quota: Mapping[str, str] = field(default_factory=dict)
     init_containers: tuple[dict[str, Any], ...] = ()
     image_prefixes: tuple[str, ...] = ()
+    review_workspace: tuple[dict[str, Any], ...] = ()
 
     @property
     def namespace(self) -> str:
         return worker_namespace(self.name)
+
+    @property
+    def review_namespace(self) -> str:
+        return review_namespace(self.name)
 
     @property
     def sandbox_namespace(self) -> str:
@@ -83,6 +97,10 @@ def worker_namespace(tenant: str) -> str:
 
 def sandbox_namespace(tenant: str) -> str:
     return f"tenant-{tenant}-sandbox"
+
+
+def review_namespace(tenant: str) -> str:
+    return f"tenant-{tenant}-review"
 
 
 def tenant_root(tenant: str) -> str:
@@ -272,13 +290,29 @@ def _fqdn_services(value: str, services: Iterable[str]) -> str:
 
 
 def _tenant_worker(deployment: dict[str, Any], tenant: Tenant, services: list[str]) -> dict:
+    return _tenant_workload(deployment, tenant, tenant.namespace, services, tenant.init_containers)
+
+
+def _tenant_review_worker(
+    deployment: dict[str, Any], tenant: Tenant, services: list[str]
+) -> dict[str, Any]:
+    return _tenant_workload(deployment, tenant, tenant.review_namespace, services, ())
+
+
+def _tenant_workload(
+    deployment: dict[str, Any],
+    tenant: Tenant,
+    namespace: str,
+    services: list[str],
+    init_containers: Iterable[dict[str, Any]],
+) -> dict[str, Any]:
     worker = copy.deepcopy(deployment)
-    worker["metadata"]["namespace"] = tenant.namespace
+    worker["metadata"]["namespace"] = namespace
     worker["metadata"].setdefault("labels", {})[TENANT_LABEL] = tenant.name
     template = worker["spec"]["template"]
     template.setdefault("metadata", {}).setdefault("labels", {})[TENANT_LABEL] = tenant.name
     spec = template["spec"]
-    spec["initContainers"] = [*tenant.init_containers, *spec.get("initContainers", [])]
+    spec["initContainers"] = [*init_containers, *spec.get("initContainers", [])]
     for container in spec["containers"]:
         env = [
             {**variable, "value": _fqdn_services(variable["value"], services)}
@@ -389,6 +423,40 @@ def _gateway_policy(
     if "ingress" in policy["spec"]:
         policy["spec"]["ingress"] = rules
     return policy
+
+
+def _selects_review_worker(selector: Mapping[str, Any] | None) -> bool:
+    if selector is None:
+        return False
+    empty = not selector.get("matchLabels") and not selector.get("matchExpressions")
+    return empty or _names(selector, REVIEW_WORKER)
+
+
+def _review_policy(policy: dict[str, Any], tenant: Tenant) -> dict[str, Any]:
+    """Copy a platform policy that selects the review worker into the tenant's review namespace."""
+    policy = _worker_policy(policy, tenant)
+    policy["metadata"]["namespace"] = tenant.review_namespace
+    return policy
+
+
+def _binds_worker(binding: Mapping[str, Any]) -> bool:
+    return any(
+        subject.get("kind") == "ServiceAccount"
+        and subject.get("name") == WORKER
+        and subject.get("namespace") == PLATFORM_NAMESPACE
+        for subject in binding.get("subjects", [])
+    )
+
+
+def _review_sandbox_binding(binding: dict[str, Any], tenant: Tenant) -> dict[str, Any]:
+    """Bind the tenant's review worker to the sandbox Role the activity worker holds."""
+    binding = copy.deepcopy(binding)
+    binding["metadata"]["name"] = binding["metadata"]["name"].replace(WORKER, REVIEW_WORKER)
+    binding["metadata"]["namespace"] = tenant.sandbox_namespace
+    binding["subjects"] = [
+        {"kind": "ServiceAccount", "name": REVIEW_WORKER, "namespace": tenant.review_namespace}
+    ]
+    return binding
 
 
 def _namespace(name: str, tenant: str, role: str) -> dict[str, Any]:
@@ -524,6 +592,45 @@ def _quota(tenant: Tenant) -> dict[str, Any]:
     }
 
 
+def _tenant_review_objects(
+    documents: list[dict[str, Any]],
+    review: dict[str, Any],
+    tenant: Tenant,
+    services: list[str],
+    copied: set[tuple[str, str]],
+) -> list[dict[str, Any]]:
+    """Render the tenant's review namespace from the platform review worker.
+
+    The namespace holds the review worker, its ServiceAccount, the config it reads, the platform
+    policies that select it, and the tenant's review workspace. The binding in the tenant's sandbox
+    namespace lets it start the tenant's gate and scanner pods there.
+    """
+    rendered = [
+        _namespace(tenant.review_namespace, tenant.name, REVIEW_ROLE),
+        _tenant_review_worker(review, tenant, services),
+    ]
+    for document in documents:
+        kind, namespace, name = _key(document)
+        if namespace == SANDBOX_NAMESPACE and kind == "RoleBinding" and _binds_worker(document):
+            rendered.append(_review_sandbox_binding(document, tenant))
+        if namespace != PLATFORM_NAMESPACE:
+            continue
+        selector = (document.get("spec") or {}).get("podSelector")
+        if (kind, name) in copied:
+            document = copy.deepcopy(document)
+            document["metadata"]["namespace"] = tenant.review_namespace
+            if kind == "ConfigMap" and name in tenant.config:
+                document["data"] = dict(tenant.config[name])
+            rendered.append(document)
+        elif kind == "NetworkPolicy" and _selects_review_worker(selector):
+            rendered.append(_review_policy(document, tenant))
+        elif kind == "SecurityGroupPolicy" and _names(selector, REVIEW_WORKER):
+            document = copy.deepcopy(document)
+            document["metadata"]["namespace"] = tenant.review_namespace
+            rendered.append(document)
+    return rendered + [copy.deepcopy(document) for document in tenant.review_workspace]
+
+
 def tenantize(documents: list[dict[str, Any]], tenants: Iterable[Tenant]) -> list[dict[str, Any]]:
     """Render each tenant's namespaces from the platform worker and the sandbox namespace."""
     tenants = list(tenants)
@@ -548,16 +655,27 @@ def tenantize(documents: list[dict[str, Any]], tenants: Iterable[Tenant]) -> lis
         else set()
     )
     services = [name for kind, namespace, name in map(_key, documents) if kind == "Service"]
+    review = _find(documents, "Deployment", PLATFORM_NAMESPACE, REVIEW_WORKER)
+    review_spec = (_pod_spec(review) if review is not None else None) or {}
+    review_config = _referenced_config(review_spec)
+    review_objects = (
+        {("ServiceAccount", REVIEW_WORKER), ("SecretProviderClass", _secret_provider(review_spec))}
+        if review is not None
+        else set()
+    )
+    review_retired = (
+        review_objects | {("Deployment", REVIEW_WORKER)} if review is not None else set()
+    )
     shared = set().union(
         *(
             _referenced_config(_pod_spec(d))
             for d in documents
             if _pod_spec(d) is not None
             and d["metadata"].get("namespace") == PLATFORM_NAMESPACE
-            and d["metadata"]["name"] not in (WORKER, GATEWAY)
+            and d["metadata"]["name"] not in (WORKER, GATEWAY, REVIEW_WORKER)
         )
     )
-    moved_config = (config | gateway_config) - shared
+    moved_config = (config | gateway_config | review_config) - shared
     claim = _find(documents, "PersistentVolumeClaim", PLATFORM_NAMESPACE, WORKSPACE_CLAIM)
     volume = (claim or {}).get("spec", {}).get("volumeName", "")
 
@@ -567,7 +685,9 @@ def tenantize(documents: list[dict[str, Any]], tenants: Iterable[Tenant]) -> lis
             return True
         if kind == "PersistentVolume" and volume and name == volume:
             return True
-        if namespace == PLATFORM_NAMESPACE and (kind, name) in moved_config | gateway_retired:
+        if namespace == PLATFORM_NAMESPACE and (kind, name) in (
+            moved_config | gateway_retired | review_retired
+        ):
             return True
         return namespace == PLATFORM_NAMESPACE and (kind, name) in {
             ("Deployment", WORKER),
@@ -651,6 +771,10 @@ def tenantize(documents: list[dict[str, Any]], tenants: Iterable[Tenant]) -> lis
                     rendered.append(copied)
         for document in tenant.workspace:
             rendered.append(copy.deepcopy(document))
+        if review is not None:
+            rendered += _tenant_review_objects(
+                documents, review, tenant, services, review_config | review_objects
+            )
         if tenant.quota:
             rendered.append(_quota(tenant))
         if tenant.image_prefixes:

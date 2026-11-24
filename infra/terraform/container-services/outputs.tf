@@ -25,7 +25,7 @@ output "execution_role_arns" {
 }
 
 output "repository_intelligence_roles" {
-  description = "The repository intelligence execution role, the repository intelligence task role, which reads each tenant's repository intelligence token at runtime, and the task roles of repository intelligence, the index worker, and the review worker, which read each tenant's config bundle. Null without the services."
+  description = "The repository intelligence execution role, the repository intelligence task role, which reads each tenant's repository intelligence token at runtime, and the task roles of repository intelligence and the index worker, which read each tenant's config bundle. Null without the services."
   value = local.services_enabled ? {
     execution_role_arn    = aws_iam_role.workload_execution["repo-intelligence"].arn
     token_reader_role_arn = aws_iam_role.workload_task["repo-intelligence"].arn
@@ -161,9 +161,10 @@ output "clickhouse" {
 }
 
 output "langfuse" {
-  description = "The internal Langfuse URL the platform services export to, and the URL operators open through the jumphost. Null without Langfuse."
+  description = "The internal Langfuse URL the platform services export to, the URL operators open through the jumphost, and direct_span_exports, true when no collector runs, so a workload that traces its model generations exports them to Langfuse itself. Null without Langfuse."
   value = local.langfuse_enabled ? {
-    url        = "https://langfuse.${var.internal_domain}"
-    public_url = local.lf.public_url
+    url                 = "https://langfuse.${var.internal_domain}"
+    public_url          = local.lf.public_url
+    direct_span_exports = !local.collector_enabled
   } : null
 }

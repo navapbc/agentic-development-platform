@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Iterable, Mapping
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal
@@ -11,12 +12,12 @@ from pydantic import ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from scripts.build_id import recorded_build_id
+from scripts.env_file import PLATFORM_ENV_FILE, platform_env_path, tenant_env_path
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore", case_sensitive=False)
+    model_config = SettingsConfigDict(extra="ignore", case_sensitive=False)
 
-    environment: str = "local"
     log_level: str = "INFO"
 
     database_url: str = (
@@ -39,6 +40,8 @@ class Settings(BaseSettings):
     bind_host: str = "127.0.0.1"
     server_tls: bool = False
     server_tls_dir: str = ""
+    server_tls_certificate_file: str = ""
+    server_tls_key_file: str = ""
     health_heartbeat_file: str = ""
     health_heartbeat_interval_seconds: float = 15.0
 
@@ -81,6 +84,10 @@ class Settings(BaseSettings):
     slack_webhook_url: str = ""
     slack_bot_token: str = ""
     slack_app_token: str = ""
+    slack_shared_bot_token: str = ""
+    slack_posting_url: str = ""
+    slack_posting_token_file: str = ""
+    slack_posting_ca_file: str = ""
     escalation_action_key: str = ""
     alert_email_from: str = ""
     alert_email_to: str = ""
@@ -215,6 +222,8 @@ class Settings(BaseSettings):
     github_webhook_secret: str = ""
     jira_webhook_secret: str = ""
     slack_signing_secret: str = ""
+    slack_shared_signing_secret: str = ""
+    slack_shared_app_token: str = ""
 
     semgrep_binary: str = "semgrep"
     trivy_binary: str = "trivy"
@@ -316,38 +325,137 @@ REMOVED_SETTINGS = {
 }
 
 
+RETIRED_SETTINGS = {
+    "ENVIRONMENT": (
+        "A checkout reads config/local, and a deployed task reads PLATFORM_ENV_CONFIG_DIR."
+    ),
+}
+
+
+# The secrets each tenant holds on its own in AWS, plus the identity it signs its own ticket
+# store with, which exists only in that store.
+TENANT_OWNED_SETTINGS = frozenset(
+    {
+        "GITHUB_TOKEN",
+        "JIRA_API_TOKEN",
+        "JIRA_PAT",
+        "REGISTRY_TOKEN",
+        "SLACK_WEBHOOK_URL",
+        "SLACK_BOT_TOKEN",
+        "SLACK_APP_TOKEN",
+        "ESCALATION_ACTION_KEY",
+        "AUTHORSHIP_SIGNING_KEY",
+        "AUTHORSHIP_SIGNING_KEY_PATH",
+        "AUTHORSHIP_IDENTITY_ID",
+        "MCP_GATEWAY_TOKEN",
+    }
+)
+WEBHOOK_SIGNING_SETTINGS = frozenset(
+    {
+        "GITHUB_WEBHOOK_SECRET",
+        "JIRA_WEBHOOK_SECRET",
+        "SLACK_SIGNING_SECRET",
+        "ESCALATION_ACTION_KEY",
+    }
+)
+PLATFORM_ENV_REFUSED_SETTINGS = (
+    frozenset({"TENANT", "TENANTS", "REGISTRY_TOKEN", "REVIEW_SIGNING_KEY"})
+    | TENANT_OWNED_SETTINGS
+    | WEBHOOK_SIGNING_SETTINGS
+)
+
+
+def is_tenant_setting(name: str) -> bool:
+    """Return whether only a tenant's settings may set the name, a suffixed secret included."""
+    upper = name.upper()
+    return upper in PLATFORM_ENV_REFUSED_SETTINGS or any(
+        upper.startswith(f"{setting}_") for setting in WEBHOOK_SIGNING_SETTINGS
+    )
+
+
 class RemovedSettingError(RuntimeError):
     """Raised when the environment still sets a setting that repositories.yaml replaced."""
 
 
-def refuse_removed_settings(env_file: str | Path | None = ".env") -> None:
-    """Fail when the process environment or the env file still sets a removed setting."""
-    present: dict[str, str] = {}
-    if env_file is not None and Path(env_file).exists():
-        from dotenv import dotenv_values
+class TenantSettingError(RuntimeError):
+    """Raised when the platform settings file sets a setting that belongs to one tenant."""
 
-        present.update({key.upper(): key for key in dotenv_values(env_file)})
+
+def settings_files(environ: Mapping[str, str] | None = None) -> tuple[Path, ...]:
+    """Return config/local/platform.env and, when TENANT names a tenant, its settings file.
+
+    A host command for one tenant reads the tenant's file after the platform file, so a tenant
+    value replaces the platform value of the same name. The process environment replaces both.
+    Only the files that exist are returned.
+    """
+    values = os.environ if environ is None else environ
+    files = [platform_env_path()]
+    tenant = values.get("TENANT", "").strip()
+    if tenant:
+        files.append(tenant_env_path(tenant))
+    return tuple(path for path in files if path.is_file())
+
+
+def _setting_names(env_files: Iterable[Path]) -> dict[str, str]:
+    from dotenv import dotenv_values
+
+    return {key.upper(): key for path in env_files for key in dotenv_values(path)}
+
+
+def refuse_removed_settings(*env_files: str | Path) -> None:
+    """Fail when the process environment or a settings file still sets a removed setting.
+
+    Without env_files, the settings files this process reads are checked.
+    """
+    files = [Path(path) for path in env_files] or list(settings_files())
+    present = _setting_names(path for path in files if path.exists())
     present.update({key.upper(): key for key in os.environ})
+    retired = sorted(name for name in RETIRED_SETTINGS if name in present)
+    if retired:
+        reasons = " ".join(RETIRED_SETTINGS[name] for name in retired)
+        raise RemovedSettingError(
+            f"{', '.join(retired)} {'is' if len(retired) == 1 else 'are'} no longer read. "
+            f"{reasons} Remove {'it' if len(retired) == 1 else 'them'} from the process "
+            "environment and the settings files."
+        )
     found = sorted(name for name in REMOVED_SETTINGS if name in present)
     if found:
         replacements = "; ".join(f"{name} by {REMOVED_SETTINGS[name]}" for name in found)
         raise RemovedSettingError(
             f"{', '.join(found)} {'is' if len(found) == 1 else 'are'} no longer read. "
-            f"config/<env>/repositories.yaml replaces {replacements}. Remove them from the "
-            "environment and .env, and copy repositories.yaml.example to configure the "
-            "repositories."
+            f"config/local/tenants/<tenant>/repositories.yaml replaces {replacements}. Remove "
+            "them from the environment and the settings files, and configure the repositories "
+            "from config/local/tenants/tenant.example/repositories.yaml."
         )
+
+
+def refuse_tenant_settings(names: Iterable[str], source: str | Path = PLATFORM_ENV_FILE) -> None:
+    """Refuse platform settings that name a setting only a tenant's settings file holds."""
+    found = sorted({name.upper() for name in names if is_tenant_setting(name)})
+    if not found:
+        return
+    one = len(found) == 1
+    raise TenantSettingError(
+        f"{source} sets {', '.join(found)}, which only a tenant's settings hold. Move "
+        f"{'it' if one else 'each'} to config/local/tenants/<tenant>.env. The local tenants are "
+        "the folders of config/local/tenants/ with their settings files, and the render gives "
+        "each pod its TENANT and TENANTS."
+    )
 
 
 @lru_cache
 def get_settings() -> Settings:
-    refuse_removed_settings()
-    return Settings()
+    files = settings_files()
+    refuse_removed_settings(*files)
+    platform = platform_env_path()
+    if platform in files:
+        refuse_tenant_settings(_setting_names([platform]))
+    return Settings(_env_file=files)  # pyright: ignore[reportCallIssue]
 
 
 def configured_log_level() -> str:
     """Return LOG_LEVEL without populating the settings cache, for module-import logging setup."""
-    return Settings().log_level
+    return Settings(_env_file=settings_files()).log_level  # pyright: ignore[reportCallIssue]
 
 
 _COMPOSE_PUBLISHED_PORTS: dict[str, dict[int, str]] = {
@@ -386,7 +494,8 @@ def _published_port(service: str, port: int | None, settings: Settings | None) -
     """Map a service's in-network port to the host port Compose publishes it on.
 
     compose.yaml publishes each port through the same ``*_HOST_PORT`` variable that backs
-    the matching setting, so an operator who remaps a port in .env moves both sides at once.
+    the matching setting, so an operator who remaps a port in config/local/platform.env moves
+    both sides at once.
     """
     if port is None:
         return None
@@ -399,9 +508,9 @@ def _published_port(service: str, port: int | None, settings: Settings | None) -
 def to_host_url(url: str, settings: Settings | None = None) -> str:
     """Rewrite a Compose-internal service URL to its host-published localhost equivalent.
 
-    Host-run tooling shares .env with in-network services, which address each other by
-    Compose service name. Those names do not resolve on the host, where the same ports
-    are published on localhost. Inside the platform image the service names do resolve
+    Host-run tooling shares config/local/platform.env with in-network services, which address
+    each other by Compose service name. Those names do not resolve on the host, where the same
+    ports are published on localhost. Inside the platform image the service names do resolve
     and localhost is the container itself, so the rewrite is inert there.
     """
     if _in_platform_image():

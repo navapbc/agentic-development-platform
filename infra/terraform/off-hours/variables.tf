@@ -44,7 +44,7 @@ variable "health_checked_services" {
 }
 
 variable "eks_deployer" {
-  description = "The eks-deployer task the off-hours function runs to scale and check the EKS deployments that connect to the database, and those deployments, each as namespace/name, a platform deployment name, tenant-workers, or mcp-gateway. Null leaves EKS out."
+  description = "The eks-deployer task the off-hours function runs to scale and check the EKS deployments that connect to the database, and those deployments, each as namespace/name, a platform deployment name, tenant-workers, tenant-review-workers, or mcp-gateway. Null leaves EKS out."
   type = object({
     cluster_arn        = string
     task_family        = string

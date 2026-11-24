@@ -5,8 +5,8 @@ locals {
   region           = data.aws_region.current.region
   runtime_volume   = "tmp"
   checkouts_path   = "/repositories"
-  # Each tenant's worker writes its checkouts under /tenants/<tenant>, and the review worker,
-  # repository intelligence, and the index worker read them at the same path.
+  # Each tenant's worker writes its checkouts under /tenants/<tenant>, and repository
+  # intelligence and the index worker read them at the same path.
   tenants_path = "/tenants"
   index_path   = "/app/repository_indexes"
   # The platform image's entrypoint writes environment_config here, under TMPDIR.
@@ -19,7 +19,6 @@ locals {
     [{ volume = "index", path = local.index_path, read_only = false }],
   )
   repository_intelligence_environment = {
-    ENVIRONMENT           = var.environment
     LOG_LEVEL             = var.log_level
     TMPDIR                = "/tmp"
     AWS_REGION            = local.region
@@ -29,8 +28,7 @@ locals {
     TENANT_CONFIG_BUCKET  = var.tenant_config_bucket_arn != "" ? element(split(":", var.tenant_config_bucket_arn), 5) : ""
     PLATFORM_ENV_CONFIG   = local.platform_environment.PLATFORM_ENV_CONFIG
   }
-  # The review worker resolves its fallback checkout through the run tenant's repositories.yaml.
-  tenant_config_readers = toset(["repo-intelligence", "repo-index-worker", "review-worker"])
+  tenant_config_readers = toset(["repo-intelligence", "repo-index-worker"])
 
   # Each service names what it reaches. `database` injects the platform_app credentials,
   # `temporal` the Temporal client settings and group, `internal_client` the group that
@@ -49,37 +47,6 @@ locals {
       secrets         = {}
       environment     = { WORKER_ROLE = "workflow", HEALTH_HEARTBEAT_FILE = "/tmp/worker.heartbeat" }
       health          = ["CMD", "python", "-m", "services.healthcheck", "heartbeat", "/tmp/worker.heartbeat", "--max-age", "60"]
-    }
-    review-worker = {
-      image           = var.platform_image
-      command         = ["python", "-m", "services.orchestration.worker"]
-      cpu             = 1024
-      memory          = 2048
-      database        = true
-      temporal        = true
-      internal_client = true
-      target          = ""
-      mounts = concat(
-        [{ volume = "checkouts", path = local.checkouts_path, read_only = true }],
-        length(var.tenant_workspaces) > 0 ? [{ volume = "tenants", path = local.tenants_path, read_only = true }] : [],
-      )
-      secrets = merge(
-        { REVIEW_SIGNING_KEY = "review_signing_key", REVIEW_ATTESTATION_SECRET = "review_attestation_secret" },
-        local.review_exports_to_langfuse ? { LANGFUSE_PUBLIC_KEY = "langfuse_public_key", LANGFUSE_SECRET_KEY = "langfuse_secret_key" } : {},
-      )
-      environment = {
-        WORKER_ROLE                   = "review"
-        HEALTH_HEARTBEAT_FILE         = "/tmp/worker.heartbeat"
-        REBAR_REVIEW_NATIVE           = "true"
-        REBAR_LLM_CONFIG_FILE         = "/app/config/platform/rebar-review.toml"
-        EVIDENCE_OBJECT_STORE_ENABLED = var.evidence_bucket_arn != "" ? "true" : "false"
-        EVIDENCE_OBJECT_STORE_BUCKET  = var.evidence_bucket_arn != "" ? element(split(":", var.evidence_bucket_arn), 5) : ""
-        EVIDENCE_OBJECT_STORE_REGION  = local.region
-        REVIEW_TRUST_ROOT_PATH        = contains(keys(var.environment_config), "review-trust-root.yaml") ? "${local.env_config_dir}/review-trust-root.yaml" : ""
-        LANGFUSE_HOST                 = local.review_exports_to_langfuse ? "https://langfuse.${var.internal_domain}" : ""
-        TENANT_CONFIG_BUCKET          = local.repository_intelligence_environment.TENANT_CONFIG_BUCKET
-      }
-      health = ["CMD", "python", "-m", "services.healthcheck", "heartbeat", "/tmp/worker.heartbeat", "--max-age", "60"]
     }
     coordination = {
       image           = var.platform_image
@@ -162,7 +129,7 @@ locals {
   # A PINNED execution runs only on workers of the build that started it, so each Temporal
   # worker has a blue and a green service. inv platform-deploy moves the idle slot to a new
   # build and scales the old slot to zero once no execution is pinned to its build.
-  versioned_workers = toset(["workflow-worker", "review-worker"])
+  versioned_workers = toset(["workflow-worker"])
   slots             = ["blue", "green"]
   service_instances = merge(
     { for name, spec in local.services : name => { workload = name, spec = spec } if !contains(local.versioned_workers, name) },
@@ -184,7 +151,6 @@ locals {
   )
   module_environment = merge(
     {
-      ENVIRONMENT                   = var.environment
       LOG_LEVEL                     = var.log_level
       TMPDIR                        = "/tmp"
       AWS_REGION                    = local.region
@@ -223,15 +189,6 @@ locals {
 
   all_workloads = merge(local.workloads, local.langfuse_workloads, local.collector_workloads)
 
-  # With the collector running, the review worker's generation spans reach Langfuse through it.
-  # Its execution role stays a reader of the Langfuse keys, because a draining worker slot runs
-  # an older revision that may still inject them, and the secret store admits only the roles
-  # listed here. A task receives the keys only with LANGFUSE_HOST, because a tracing library
-  # given the keys without a host sends to Langfuse Cloud.
-  review_exports_to_langfuse = local.langfuse_enabled && !local.collector_enabled
-  extra_secret_reads = {
-    for name, keys in { review-worker = ["langfuse_public_key", "langfuse_secret_key"] } : name => keys if local.langfuse_enabled
-  }
   extra_task_statements = merge(
     local.langfuse_task_statements,
     { for name in keys(local.collector_workloads) : name => local.collector_statements if length(local.collector_statements) > 0 },
@@ -284,9 +241,9 @@ resource "terraform_data" "services_guard" {
         var.cluster_arn != "" && length(var.management_subnet_ids) > 0 && length(var.data_subnet_ids) > 0 &&
         var.endpoints_security_group_id != "" && var.database_host != "" && length(var.database_cidr_blocks) > 0 &&
         var.database_app_secret_arn != "" && var.database_migrator_secret_arn != "" && var.secret_kms_key_arn != "" &&
-        alltrue([for key in ["coordination_shared_secret", "review_signing_key", "review_attestation_secret"] : lookup(var.secret_arns, key, "") != ""])
+        lookup(var.secret_arns, "coordination_shared_secret", "") != ""
       )
-      error_message = "The platform services need cluster_arn, the management and data subnets, endpoints_security_group_id, the database host, CIDRs, and the platform_app and platform_migrator secrets, secret_kms_key_arn, and the coordination_shared_secret, review_signing_key, and review_attestation_secret secret ARNs."
+      error_message = "The platform services need cluster_arn, the management and data subnets, endpoints_security_group_id, the database host, CIDRs, and the platform_app and platform_migrator secrets, secret_kms_key_arn, and the coordination_shared_secret secret ARN."
     }
     precondition {
       condition     = length(var.repo_intelligence_tokens) == 0 || toset(keys(var.repo_intelligence_tokens)) == toset(var.tenant_workspaces)

@@ -17,7 +17,7 @@ from services.integration.runtime_profiles import (
     sandbox_image,
 )
 from services.integration.tenant_config import validate_bundle
-from tests.support import write_image_policy
+from tests.support import configure_tenant, tenant_dir, write_image_policy
 
 ENGINE_IMAGES = {
     "security-policy": "registry.example/gate-engine-security-policy:1@sha256:" + "a" * 64,
@@ -70,19 +70,18 @@ backend:
 """
 
 
+TENANT_FILES = {"repositories.yaml": REPOSITORIES, "github.yaml": GITHUB, "tickets.yaml": TICKETS}
+
+
 @pytest.fixture
 def environment(tmp_path, monkeypatch):
     env = tmp_path / "env"
     env.mkdir()
-    for name, text in {
-        "repositories.yaml": REPOSITORIES,
-        "github.yaml": GITHUB,
-        "gates.yaml": GATES,
-        "tickets.yaml": TICKETS,
-    }.items():
-        (env / name).write_text(text)
+    (env / "gates.yaml").write_text(GATES)
+    for name, text in TENANT_FILES.items():
+        (tenant_dir(env) / name).write_text(text)
     write_image_policy(env)
-    monkeypatch.setenv("PLATFORM_ENV_CONFIG_DIR", str(env))
+    configure_tenant(monkeypatch, env)
     tenant_config.reset()
     yield env
     tenant_config.reset()
@@ -138,7 +137,7 @@ def test_a_profile_supplies_checks_unless_the_repository_has_its_own(environment
     from services.orchestration.checks.config import checks_for_repo, required_checks_repos
 
     settings = _settings()
-    (environment / "checks.yaml").write_text(
+    (tenant_dir(environment) / "checks.yaml").write_text(
         "config_version: 1\nchecks:\n  api:\n    image: python:3.14-slim\n    command: make test\n"
     )
 
@@ -152,7 +151,7 @@ def test_a_catalog_checks_image_resolves_through_the_runtime_images(environment)
     from services.orchestration.checks.config import checks_for_repo
 
     settings = _settings()
-    (environment / "checks.yaml").write_text(
+    (tenant_dir(environment) / "checks.yaml").write_text(
         "config_version: 1\nchecks:\n  api:\n    image: catalog:checks-go\n    command: go test\n"
     )
 
@@ -177,18 +176,20 @@ def test_the_bound_repositorys_profile_overrides_the_tenant_gates(environment) -
 
 
 def test_a_tenant_profile_may_not_reuse_a_catalog_name(environment) -> None:
-    (environment / "profiles.yaml").write_text(
+    (tenant_dir(environment) / "profiles.yaml").write_text(
         "config_version: 1\nprofiles:\n  node-react:\n    sandbox_image: x\n"
         "  claims-batch:\n    sandbox_image: catalog:agent-server-jvm\n"
     )
 
     with pytest.raises(ConfigError, match="reuses the catalog profile names node-react"):
-        load_profiles(_settings())
+        load_profiles()
 
 
 def test_a_bundle_whose_repository_cannot_run_its_profile_is_refused(environment, tmp_path) -> None:
     bundle = tmp_path / "bundle"
     bundle.mkdir()
+    for name, text in TENANT_FILES.items():
+        (bundle / name).write_text(text)
 
     validate_bundle(bundle, _settings())
     with pytest.raises(ConfigError, match="agent-server-jvm is not published"):
@@ -205,7 +206,7 @@ def test_a_bundle_whose_repository_cannot_run_its_profile_is_refused(environment
 def test_a_tenant_engine_may_not_reuse_a_catalog_engine_name(environment) -> None:
     from services.orchestration.gates.engine_source import load_gate_engine_configs
 
-    (environment / "gate_engine.yaml").write_text(
+    (tenant_dir(environment) / "gate_engine.yaml").write_text(
         "config_version: 1\nengines:\n  - name: security-policy\n    enabled: true\n"
         "    mode: image\n    review_entrypoint: bin/scan\n"
     )
@@ -227,7 +228,9 @@ async def test_each_activity_binds_the_repository_its_input_names(environment, t
     from services.orchestration.tenant_pinning import TenantConfigInterceptor
 
     config = tenant_config.configure(
-        _settings(), source=DirectorySource(tmp_path / "none", "adp"), store_root=tmp_path / "s"
+        _settings(),
+        source=DirectorySource(tenant_dir(environment), "adp"),
+        store_root=tmp_path / "s",
     )
     seen = []
 

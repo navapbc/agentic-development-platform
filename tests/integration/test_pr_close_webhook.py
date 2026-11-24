@@ -13,6 +13,7 @@ from services.orchestration.webhook.pr_events import (
     PrClosedEvent,
     PrClosedHandler,
     parse_pr_closed_event,
+    verify_signature,
 )
 
 _ALLOWED = frozenset({"agentic-demo-service"})
@@ -61,12 +62,20 @@ def _sign(secret: str, body: bytes) -> str:
     return "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
 
 
+class _OneTenant:
+    def __init__(self, secret: str) -> None:
+        self._secret = secret
+
+    def select_tenant(self, repository: str | None, body: bytes, signature: str) -> str | None:
+        return "adp" if verify_signature(self._secret, body, signature) else None
+
+
 def _handler(
     *, secret: str = _SECRET, workflow_id: str | None = "wf-1"
 ) -> tuple[PrClosedHandler, _FakeResolver, _FakeSignaller]:
     resolver = _FakeResolver(workflow_id)
     signaller = _FakeSignaller()
-    handler = PrClosedHandler(secret=secret, resolver=resolver, signaller=signaller)
+    handler = PrClosedHandler(tenants=_OneTenant(secret), resolver=resolver, signaller=signaller)
     return handler, resolver, signaller
 
 
@@ -89,7 +98,7 @@ async def _deliver(
         handler=handler,
         allowed=_ALLOWED,
         ledger=ledger or InMemorySideEffectLedger(),
-        mode=mode,
+        mode=lambda tenant: mode,
     )
 
 

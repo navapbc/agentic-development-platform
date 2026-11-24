@@ -143,7 +143,7 @@ def _snapshot_from(candidate: SnapshotCandidate, snapshot_id: str, version: int)
 
 
 def _enforce_allowlist(project: str, settings: Settings) -> None:
-    allowed = allowed_projects(settings)
+    allowed = allowed_projects()
     if project not in allowed:
         raise AllowlistError(
             f"jira project {project!r} is not allowlisted (allowed: {sorted(allowed)})"
@@ -185,7 +185,7 @@ async def capture_task_snapshot(
     normalized = normalize_issue(
         raw_issue,
         raw_comments=raw_comments,
-        acceptance_field=acceptance_field(settings),
+        acceptance_field=acceptance_field(),
     )
     _enforce_allowlist(normalized.project, settings)
     payload = normalized.to_dict()

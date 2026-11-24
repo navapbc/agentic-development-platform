@@ -25,7 +25,7 @@ git -C <store> remote add origin s3://rebar-tickets-reader@<bucket>/<prefix>
 git -C <store> remote set-url --push origin s3://rebar-tickets-writer@<bucket>/<prefix>
 ```
 
-`inv rebar-store-remote` sets both from `config/<env>/tickets.yaml`, and the activity worker refuses to start when the remote does not match that file. Each profile assumes its role. On a workstation that is `source_profile` plus `role_arn`, and in an ECS task it is `credential_source = EcsContainer` plus `role_arn`.
+`inv rebar-store-remote` sets both from the tenant's `tickets.yaml`, and the activity worker refuses to start when the remote does not match that file. Each profile assumes its role. On a workstation that is `source_profile` plus `role_arn`, and in an ECS task it is `credential_source = EcsContainer` plus `role_arn`.
 
 ```ini
 [profile rebar-tickets-reader]

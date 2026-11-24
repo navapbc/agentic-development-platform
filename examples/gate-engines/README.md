@@ -35,7 +35,7 @@ When there are findings, the engine calls the gateway's Anthropic Messages endpo
 Both engines are catalog engines, defined in [config/platform/gate-engines.yaml](../../config/platform/gate-engines.yaml). They run in image mode, where the gate pod pulls the published image and runs the harness inside it, and they register wherever `GATE_ENGINE_IMAGES` names their images. A tenant enables them by name in `gates.yaml`, or through a runtime profile, and its `gate_engine.yaml` may not reuse their names. Every catalog runtime profile enables both, as [docs/runtime-profiles.md](../../docs/runtime-profiles.md) lists.
 
 ```yaml
-# config/<env>/gates.yaml
+# config/local/gates.yaml, or the tenant's own gates.yaml that replaces it
 gates:
   - name: security-policy
     enabled: true
@@ -47,7 +47,7 @@ gates:
     required: false
 ```
 
-- On a workstation, start the local registry with `docker compose --profile registry up -d registry`, run `inv gate-engine-images`, set the `GATE_REGISTRY_TLS_VERIFY` and `GATE_ENGINE_IMAGES` lines it prints in `.env`, and run `inv k8s-reload`.
+- On a workstation, start the local registry with `docker compose --profile registry up -d registry`, run `inv gate-engine-images`, set the `GATE_REGISTRY_TLS_VERIFY` and `GATE_ENGINE_IMAGES` lines it prints in `config/local/platform.env`, and run `inv k8s-reload`.
 - In AWS, `inv publish-platform-images` and the `publish-images` workflow push both images to the `gate-engine-security-policy` and `gate-engine-test-policy` ECR repositories and write them to `eks_gate_engine_images` in `images.auto.tfvars.json`, and `inv eks-deploy` sets `GATE_ENGINE_IMAGES` on the activity worker.
 
 ## Writing your own

@@ -9,6 +9,13 @@ import pytest
 from scripts.config import Settings
 from services.review.evidence import EvidenceRecord
 
+SHARED_APP_ID = "A0SHARED001"
+SHARED_ORGANIZATION_ID = "E0SHARED001"
+SHARED_APP_YAML = (
+    f"config_version: 1\napp_id: {SHARED_APP_ID}\norganization_id: {SHARED_ORGANIZATION_ID}\n"
+    "api_base_url: https://slack.com/api/\n"
+)
+
 
 def hermetic_settings(**overrides: object) -> Settings:
     return Settings(_env_file=None, **overrides)  # pyright: ignore[reportCallIssue]
@@ -93,6 +100,51 @@ _DEFAULT_TICKETS: list[dict] = [
 ]
 
 
+TEST_TENANT = "adp"
+
+
+def configure_tenant(
+    monkeypatch: pytest.MonkeyPatch, directory: Path, tenant: str = TEST_TENANT
+) -> Path:
+    """Serve the tenant with the platform config in directory, and return its bundle directory.
+
+    A tenant-only file is read only from the tenant's bundle, so a test of a settings-driven
+    loader writes it into the returned directory.
+    """
+    from scripts.config import get_settings
+
+    directory.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("PLATFORM_ENV_CONFIG_DIR", str(directory))
+    monkeypatch.setenv("TENANT", tenant)
+    get_settings.cache_clear()
+    bundle = directory / "tenants" / tenant
+    bundle.mkdir(parents=True, exist_ok=True)
+    return bundle
+
+
+def tenant_dir(directory: Path, tenant: str = TEST_TENANT) -> Path:
+    """Return the bundle directory of the tenant under the platform directory, created."""
+    bundle = directory / "tenants" / tenant
+    bundle.mkdir(parents=True, exist_ok=True)
+    return bundle
+
+
+def local_tenants(monkeypatch: pytest.MonkeyPatch, root: Path, *names: str) -> Path:
+    """Make root the checkout whose config/local/tenants/ holds each named tenant.
+
+    Each tenant gets its folder and an empty settings file. Return the tenants directory.
+    """
+    import scripts.env_file
+
+    monkeypatch.setattr(scripts.env_file, "CHECKOUT_ROOT", root)
+    tenants = root / "config" / "local" / "tenants"
+    tenants.mkdir(parents=True, exist_ok=True)
+    for name in names:
+        (tenants / name).mkdir(exist_ok=True)
+        (tenants / f"{name}.env").touch()
+    return tenants
+
+
 def configure_repositories(
     monkeypatch: pytest.MonkeyPatch,
     directory: Path,
@@ -100,19 +152,18 @@ def configure_repositories(
     *,
     github: str | None = None,
 ) -> Path:
-    """Write repositories.yaml, and github.yaml when given, as the environment config.
+    """Write repositories.yaml, and github.yaml when given, into the test tenant's bundle.
 
-    The config loaders read PLATFORM_ENV_CONFIG_DIR before config/<env>, so a test that calls a
-    settings-driven factory sees these files and not the operator's own.
+    The platform config is directory, so a test that calls a settings-driven factory sees these
+    files and not the operator's own. Return the bundle directory.
     """
-    directory.mkdir(parents=True, exist_ok=True)
-    (directory / "repositories.yaml").write_text(
+    bundle = configure_tenant(monkeypatch, directory)
+    (bundle / "repositories.yaml").write_text(
         "config_version: 1\n" + repositories, encoding="utf-8"
     )
     if github is not None:
-        (directory / "github.yaml").write_text("config_version: 2\n" + github, encoding="utf-8")
-    monkeypatch.setenv("PLATFORM_ENV_CONFIG_DIR", str(directory))
-    return directory
+        (bundle / "github.yaml").write_text("config_version: 2\n" + github, encoding="utf-8")
+    return bundle
 
 
 # Admits the images the settings default to, so a test of another concern validates its bundle.

@@ -244,7 +244,7 @@ def test_parse_rejects_a_non_string_or_list_component_value():
 
 
 def test_committed_example_template_is_valid_and_resolves():
-    example = Path(__file__).resolve().parents[2] / "config" / "local" / "jira.yaml.example"
+    example = Path(__file__).resolve().parents[2] / "config/local/tenants/tenant.example/jira.yaml"
     raw = yaml.safe_load(example.read_text(encoding="utf-8"))
     resolver = JiraCredentialResolver(
         parse_jira_config(raw), {"AGENTDEV"}, EnvSecretResolver({"JIRA_API_TOKEN": "tok"})

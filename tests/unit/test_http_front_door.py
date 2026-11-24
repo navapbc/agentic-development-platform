@@ -264,23 +264,17 @@ def test_jira_verification_fails_on_an_empty_secret():
     assert verify_jira_signature("", b"{}", "sha256=deadbeef") is False
 
 
-def test_webhook_mode_without_a_secret_refuses_to_start(monkeypatch):
-    monkeypatch.setattr(
-        "services.orchestration.webhook.server.load_integrations_config",
-        lambda settings: _ModesConfig({"pr_closed": "webhook", "jira_intake": "hybrid"}),
-    )
+def test_webhook_mode_without_a_secret_refuses_to_start():
+    modes = _ModesConfig({"pr_closed": "webhook", "jira_intake": "hybrid"})
     with pytest.raises(SystemExit) as excinfo:
-        require_webhook_secrets(hermetic_settings())
+        require_webhook_secrets(hermetic_settings(tenant="adp"), modes=lambda tenant: modes)
     assert "GITHUB_WEBHOOK_SECRET" in str(excinfo.value)
     assert "JIRA_WEBHOOK_SECRET" in str(excinfo.value)
 
 
-def test_polling_mode_starts_without_a_secret(monkeypatch):
-    monkeypatch.setattr(
-        "services.orchestration.webhook.server.load_integrations_config",
-        lambda settings: _ModesConfig({"pr_closed": "polling", "jira_intake": "polling"}),
-    )
-    require_webhook_secrets(hermetic_settings())
+def test_polling_mode_starts_without_a_secret():
+    modes = _ModesConfig({"pr_closed": "polling", "jira_intake": "polling"})
+    require_webhook_secrets(hermetic_settings(tenant="adp"), modes=lambda tenant: modes)
 
 
 class _ModesConfig:

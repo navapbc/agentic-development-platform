@@ -224,7 +224,7 @@ def build_worker(client: Client, task_queue: str, role: str) -> Worker:
             client,
             task_queue=task_queue,
             activities=_REVIEW_ACTIVITIES,
-            interceptors=[heartbeat, attribution],
+            interceptors=[heartbeat, attribution, *_tenant_interceptors()],
             **versioning,
         )
     return Worker(
@@ -245,8 +245,29 @@ def _tenant_attribution(role: str, settings: Any) -> Any:
     )
 
     if role == WORKER_ROLE_REVIEW:
-        return TenantAttributionInterceptor(lookup=recorded_execution_tenant)
+        return TenantAttributionInterceptor(settings.tenant, lookup=recorded_execution_tenant)
     return TenantAttributionInterceptor(settings.tenant)
+
+
+def _task_queues(role: str, settings: Any) -> list[str]:
+    """Return the queues the role polls, refusing a review worker without a tenant."""
+    from services.integration.credentials import ConfigError
+    from services.orchestration.task_queues import (
+        review_task_queue,
+        run_task_queue,
+        workflow_task_queues,
+    )
+
+    if role == WORKER_ROLE_WORKFLOW:
+        return workflow_task_queues(settings)
+    if role != WORKER_ROLE_REVIEW:
+        return [run_task_queue(settings)]
+    if not settings.tenant:
+        raise ConfigError(
+            "TENANT is not set. Every review worker serves the review queue of one tenant, and "
+            "there is no default."
+        )
+    return [review_task_queue(settings, settings.tenant)]
 
 
 def _tenant_interceptors() -> list[Any]:
@@ -284,6 +305,7 @@ async def _scrub_workspace_credentials(workspace_root: str) -> None:
 async def main() -> None:
     settings = get_settings()
     role = _resolve_role()
+    queues = _task_queues(role, settings)
     service_name = f"workflow-worker.{role}"
     configure_tracing(service_name)
     configure_metrics(service_name)
@@ -307,15 +329,6 @@ async def main() -> None:
         interceptors=temporal_interceptors(),
     )
 
-    from services.orchestration.task_queues import run_task_queue, workflow_task_queues
-
-    if role == WORKER_ROLE_REVIEW:
-        queues = [settings.review_task_queue]
-    elif role == WORKER_ROLE_WORKFLOW:
-        queues = workflow_task_queues(settings)
-    else:
-        queues = [run_task_queue(settings)]
-
     if role in (WORKER_ROLE_REVIEW, WORKER_ROLE_ALL):
         from services.orchestration.review_signing import (
             audit_review_trust_root,
@@ -329,12 +342,8 @@ async def main() -> None:
 
     tenant_refresh_task = None
     index_checkout_task = None
-    if role in (WORKER_ROLE_ACTIVITY, WORKER_ROLE_ALL):
-        from services.integration.tickets.store_remote import tickets_store_preflight
-        from services.orchestration.authorship import authorship_signing_preflight
-        from services.orchestration.index_checkouts import keep_index_checkouts
+    if role in (WORKER_ROLE_ACTIVITY, WORKER_ROLE_REVIEW, WORKER_ROLE_ALL):
         from services.orchestration.tenant_pinning import (
-            install_tenant_schedules,
             refresh_tenant_config,
             start_tenant_config,
         )
@@ -349,6 +358,12 @@ async def main() -> None:
         tenant_refresh_task = asyncio.create_task(
             refresh_tenant_config(tenant_config, settings.tenant_config_refresh_seconds)
         )
+    if role in (WORKER_ROLE_ACTIVITY, WORKER_ROLE_ALL):
+        from services.integration.tickets.store_remote import tickets_store_preflight
+        from services.orchestration.authorship import authorship_signing_preflight
+        from services.orchestration.index_checkouts import keep_index_checkouts
+        from services.orchestration.tenant_pinning import install_tenant_schedules
+
         index_checkout_task = asyncio.create_task(keep_index_checkouts(settings))
         await install_tenant_schedules(client, settings)
         tickets_store_preflight(settings)
@@ -362,8 +377,11 @@ async def main() -> None:
 
     workers = [build_worker(client, queue, role) for queue in queues]
     if role == WORKER_ROLE_ALL:
-        workers.append(build_worker(client, settings.review_task_queue, WORKER_ROLE_REVIEW))
-        queues.append(settings.review_task_queue)
+        from services.orchestration.task_queues import review_task_queue
+
+        tenant_review_queue = review_task_queue(settings, settings.tenant)
+        workers.append(build_worker(client, tenant_review_queue, WORKER_ROLE_REVIEW))
+        queues.append(tenant_review_queue)
 
     log.info(
         "worker started on task queues %s (role=%s, build=%s)",

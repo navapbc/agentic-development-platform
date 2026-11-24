@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import pytest
+from services.integration.credentials import ConfigError
 from services.orchestration.worker import (
     _ACTIVITIES,
     _REVIEW_ACTIVITIES,
     WORKER_ROLE_ACTIVITY,
     WORKER_ROLE_REVIEW,
     _all_activities,
+    _task_queues,
     build_worker,
 )
 from temporalio.testing import WorkflowEnvironment
+from tests.support import hermetic_settings
 
 
 def _activity_names(activities) -> set[str]:
@@ -61,3 +65,14 @@ async def test_review_and_activity_roles_use_distinct_queues():
         async with review, activity:
             assert review.task_queue == "review-queue"
             assert activity.task_queue == "activity-queue"
+
+
+def test_a_review_worker_without_a_tenant_refuses_to_start():
+    with pytest.raises(ConfigError, match="TENANT is not set"):
+        _task_queues(WORKER_ROLE_REVIEW, hermetic_settings(tenant=""))
+
+
+def test_a_review_worker_polls_only_its_tenants_review_queue():
+    settings = hermetic_settings(review_task_queue="agent-platform-review", tenant="beta")
+
+    assert _task_queues(WORKER_ROLE_REVIEW, settings) == ["agent-platform-review-beta"]

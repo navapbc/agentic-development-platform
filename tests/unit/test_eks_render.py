@@ -33,8 +33,6 @@ def _inputs() -> dict[str, Any]:
         "jira_pat",
         "slack_webhook_url",
         "registry_token",
-        "github_webhook_secret",
-        "jira_webhook_secret",
         "langfuse_public_key",
         "langfuse_secret_key",
         "temporal_ca",
@@ -87,6 +85,7 @@ def _tenant(name: str) -> dict[str, Any]:
         "authorship_signing_key",
         "registry_token",
         "mcp_gateway_token",
+        "review_signing_key",
     )
     return {
         "name": name,
@@ -177,13 +176,13 @@ def test_each_container_runs_the_published_image(overlay) -> None:
 
 def test_providers_name_the_secret_arns_and_leave_out_unset_ones(overlay) -> None:
     documents, skipped = eks_render.render(
-        overlay, _inputs(), REPOSITORY, omit_secrets=["adp:github_token", "jira_webhook_secret"]
+        overlay, _inputs(), REPOSITORY, omit_secrets=["adp:github_token"]
     )
     provider = _named(documents, "SecretProviderClass", "activity-worker", "tenant-adp")
     activity = json.loads(provider["spec"]["parameters"]["objects"])
     names = [entry["objectName"] for entry in activity]
 
-    assert sorted(skipped) == ["inbound-webhook:JIRA_WEBHOOK_SECRET", "tenant-adp:GITHUB_TOKEN"]
+    assert skipped == ["tenant-adp:GITHUB_TOKEN"]
     assert "arn:aws:secretsmanager:us-west-2:9:secret:temporal_ca" in names
     assert "arn:aws:secretsmanager:us-west-2:9:secret:tenants/adp/jira_pat" in names
     assert not [name for name in names if name.endswith("github_token")]
@@ -573,6 +572,100 @@ def test_a_tenant_mounts_no_other_tenants_secrets(overlay) -> None:
 
     assert not [name for name in names if "/adp/" in name]
     assert "arn:aws:secretsmanager:us-west-2:9:secret:tenants/payments/github_token" in names
+
+
+def test_each_tenant_runs_one_review_worker_with_its_own_secret_provider(overlay) -> None:
+    inputs = _inputs()
+    inputs["tenants"].append(_tenant("payments"))
+    documents, _ = eks_render.render(overlay, inputs, REPOSITORY)
+    reviewers = {
+        d["metadata"]["namespace"]
+        for d in documents
+        if d["kind"] == "Deployment" and d["metadata"]["name"] == "review-worker"
+    }
+
+    assert reviewers == {"tenant-adp-review", "tenant-payments-review"}
+    for tenant, other in (("adp", "payments"), ("payments", "adp")):
+        namespace = f"tenant-{tenant}-review"
+        deployment = _named(documents, "Deployment", "review-worker", namespace)
+        spec = deployment["spec"]["template"]["spec"]
+        container = next(c for c in spec["containers"] if c["name"] == "review-worker")
+        env = {e["name"]: e.get("value") for e in container["env"]}
+        provider = _named(documents, "SecretProviderClass", "review-worker", namespace)
+        objects = json.loads(provider["spec"]["parameters"]["objects"])
+        secrets = {entry["objectAlias"]: entry["objectName"] for entry in objects}
+        volume = next(v for v in spec["volumes"] if v["name"] == "secrets")
+        claim = _named(documents, "PersistentVolumeClaim", "workspaces", namespace)
+        binding = _named(
+            documents, "RoleBinding", "review-worker-sandbox", f"tenant-{tenant}-sandbox"
+        )
+        activity = _named(documents, "SecretProviderClass", "activity-worker", f"tenant-{tenant}")
+
+        assert env["TENANT"] == tenant
+        assert env["GATE_ENGINE_NAMESPACE"] == f"tenant-{tenant}-sandbox"
+        assert spec["serviceAccountName"] == "review-worker"
+        assert _named(documents, "ServiceAccount", "review-worker", namespace)
+        assert volume["csi"]["volumeAttributes"]["secretProviderClass"] == "review-worker"
+        assert secrets["REVIEW_SIGNING_KEY"] == (
+            f"arn:aws:secretsmanager:us-west-2:9:secret:tenants/{tenant}/review_signing_key"
+        )
+        assert not [name for name in secrets.values() if f"/{other}/" in name]
+        assert "review_signing_key" not in activity["spec"]["parameters"]["objects"]
+        assert claim["spec"]["accessModes"] == ["ReadOnlyMany"]
+        assert claim["spec"]["volumeName"] == f"tenant-{tenant}-review-workspace"
+        assert binding["subjects"] == [
+            {"kind": "ServiceAccount", "name": "review-worker", "namespace": namespace}
+        ]
+    assert not [
+        d
+        for d in documents
+        if d["metadata"].get("namespace") == "agentic-dev-platform"
+        and d["metadata"]["name"] == "review-worker"
+    ]
+
+
+def _review_langfuse(overlay, exports: bool) -> tuple[dict[str, str], dict[str, str], set[str]]:
+    inputs = _inputs()
+    review = ["database_platform_app", "review_attestation_secret", "temporal_ca"]
+    langfuse = ["langfuse_public_key", "langfuse_secret_key"] if exports else []
+    inputs["tenants"][0]["review_platform_secrets"] = review + langfuse
+    documents, skipped = eks_render.render(overlay, inputs, REPOSITORY)
+    assert skipped == []
+    provider = _named(documents, "SecretProviderClass", "review-worker", "tenant-adp-review")
+    secrets = {
+        entry["objectAlias"]: entry["objectName"]
+        for entry in json.loads(provider["spec"]["parameters"]["objects"])
+    }
+    activity = _named(documents, "SecretProviderClass", "activity-worker", "tenant-adp")
+    deployment = _named(documents, "Deployment", "review-worker", "tenant-adp-review")
+    container = deployment["spec"]["template"]["spec"]["containers"][0]
+    sources = {ref["configMapRef"]["name"] for ref in container.get("envFrom", [])}
+    settings = _named(documents, "ConfigMap", "agentic-platform-eks", "tenant-adp-review")["data"]
+    assert "agentic-platform-eks" in sources
+    assert "LANGFUSE" not in activity["spec"]["parameters"]["objects"]
+    return secrets, settings, {e["name"] for e in container["env"]}
+
+
+def test_without_a_collector_the_review_worker_mounts_the_langfuse_keys(overlay) -> None:
+    secrets, settings, env = _review_langfuse(overlay, exports=True)
+
+    assert secrets["LANGFUSE_PUBLIC_KEY"] == (
+        "arn:aws:secretsmanager:us-west-2:9:secret:langfuse_public_key"
+    )
+    assert secrets["LANGFUSE_SECRET_KEY"] == (
+        "arn:aws:secretsmanager:us-west-2:9:secret:langfuse_secret_key"
+    )
+    assert settings["LANGFUSE_HOST"] == "https://langfuse.example.internal"
+    assert "LANGFUSE_HOST" not in env
+
+
+def test_with_a_collector_or_without_langfuse_the_review_worker_holds_no_langfuse_key(
+    overlay,
+) -> None:
+    secrets, _, _ = _review_langfuse(overlay, exports=False)
+
+    assert not [alias for alias in secrets if alias.startswith("LANGFUSE_")]
+    assert secrets["REVIEW_ATTESTATION_SECRET"].endswith(":review_attestation_secret")
 
 
 def test_a_deployment_without_tenants_is_refused(overlay) -> None:

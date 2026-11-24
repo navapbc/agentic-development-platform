@@ -62,7 +62,7 @@ async def _reconcile_jira_pass() -> IntakeReconcileReport:
     )
 
     settings = get_settings()
-    jira_resolver = build_jira_credential_resolver(settings)
+    jira_resolver = build_jira_credential_resolver()
     client = await temporal_client.connect(settings.temporal_host, settings)
     execution_store = PostgresExecutionSeeder()
     starter = TemporalStarter(client, settings)
@@ -118,8 +118,8 @@ async def _reconcile_rebar_pass() -> IntakeReconcileReport:
     from services.orchestration.rebar_intake import reconcile_rebar_intake
 
     settings = get_settings()
-    backend = load_rebar_backend_config(settings)
-    poll_config = load_poll_config(settings)
+    backend = load_rebar_backend_config()
+    poll_config = load_poll_config()
     repo_root = backend.repo_root
     client = await temporal_client.connect(settings.temporal_host, settings)
     execution_store = PostgresExecutionSeeder()
@@ -133,7 +133,7 @@ async def _reconcile_rebar_pass() -> IntakeReconcileReport:
         execution_seeder=execution_store,
         snapshot_store=None,
         github_allow=frozenset(source_control_repos(settings)),
-        field_id=acceptance_field(settings),
+        field_id=acceptance_field(),
         settings=settings,
         active_guard=execution_store,
         admission=await build_admission(settings, execution_store),

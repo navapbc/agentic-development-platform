@@ -215,7 +215,7 @@ class RebarTicketBackend:
 def build_rebar_ticket_backend(
     settings: Settings | None = None, *, project: str = ""
 ) -> RebarTicketBackend:
-    config = load_rebar_backend_config(settings)
+    config = load_rebar_backend_config()
     return RebarTicketBackend(
         repo_root=config.repo_root,
         status_flow=config.status_flow,

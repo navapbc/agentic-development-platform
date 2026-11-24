@@ -20,7 +20,7 @@
 # catalog:checks-node, catalog:checks-jvm, or catalog:checks-go, which RUNTIME_IMAGES resolves.
 config_version: 1
 
-checks:
+checks: {}
   # example-repo:
   #   image: catalog:checks-python
   #   command: "pip install -r requirements-dev.txt && ruff check . && if [ -n \"$CHANGED_PATHS\" ]; then printf '%s' \"$CHANGED_PATHS\" | tr '\\n' '\\0' | xargs -0 pytest -q; else pytest -q; fi"

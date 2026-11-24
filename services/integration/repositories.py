@@ -1,4 +1,4 @@
-"""The source-control repositories an environment works on, from config/<env>/repositories.yaml.
+"""The source-control repositories an environment works on, from config/local/repositories.yaml.
 
 Each repository names its source-control backend, its default branch, whether repository
 intelligence indexes it, and the runtime profile whose containers its runs use. A GitHub
@@ -209,16 +209,16 @@ def parse_repositories(
 def load_repository_registry(
     settings: Settings | None = None,
     *,
-    environment: str | None = None,
     root: Path | None = None,
+    directory: Path | None = None,
 ) -> RepositoryRegistry:
-    """Load config/<env>/repositories.yaml, the repositories this environment works on.
+    """Load the tenant's repositories.yaml, the repositories the tenant works on.
 
-    Outside the platform image the registry locates each repository at its host path.
+    An explicit directory reads that directory's file. Outside the platform image the registry
+    locates each repository at its host path.
     """
     resolved = settings or get_settings()
-    env = environment or resolved.environment
-    require_current_config(CONFIG_NAME, environment=env, root=root)
-    raw = load_env_config(CONFIG_NAME, environment=env, root=root)
+    require_current_config(CONFIG_NAME, root=root, directory=directory)
+    raw = load_env_config(CONFIG_NAME, root=root, directory=directory)
     host_base = None if in_platform_image() else _PLATFORM_ROOT
     return parse_repositories(raw, root=resolved.repository_root, host_base=host_base)

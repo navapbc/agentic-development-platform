@@ -270,12 +270,12 @@ def test_the_gate_honours_each_file_within_its_scope_and_ignores_an_unusable_one
     write(tenant_file, entry(TENANT_IMAGE, finding="CVE-2"))
 
     with caplog.at_level(logging.WARNING):
-        assert [e.finding for e in gate_exceptions("test")] == ["CVE-2"]
+        assert [e.finding for e in gate_exceptions()] == ["CVE-2"]
     assert "is missing, so the pull gate accepts no platform finding" in caplog.text
 
     write(env / "image_exceptions.yaml", entry())
     write(tenant_file, entry(PLATFORM_IMAGE, finding="CVE-2"))
-    assert [e.finding for e in gate_exceptions("test")] == ["CVE-1"]
+    assert [e.finding for e in gate_exceptions()] == ["CVE-1"]
 
 
 def run_cli(*argv: str) -> int:

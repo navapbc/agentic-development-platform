@@ -1,14 +1,15 @@
 config_version: 1
 
 # Operational config for the rebar ticket backend. repo_root points at the
-# git-backed rebar store working tree. It must be an absolute path that
-# resolves to the same store on the host and inside the worker container,
-# because operator commands run on the host while the poll runs in the worker.
+# git-backed rebar store working tree, an absolute path in the tenant's
+# workspace /tenants/<tenant>. Replace <tenant> here and in store.prefix with
+# the tenant name, because the render refuses a store outside the tenant's
+# workspace or a prefix that overlaps another tenant's.
 # status_flow resolves the platform's logical lifecycle stages to the store's
 # own statuses. rebar's status vocabulary is idea, open, in_progress, closed,
 # blocked, cancelled, deleted.
 backend:
-  repo_root: /srv/rebar-tickets
+  repo_root: /tenants/<tenant>/rebar-tickets
   project: ADSER
   default_repo: agentic-demo-service
   status_flow:
@@ -42,7 +43,7 @@ poll:
 # profiles that assume the roles below. inv rebar-store-remote sets the remote.
 store:
   bucket: rebar-tickets
-  prefix: tickets/
+  prefix: <tenant>/tickets/
   reader_profile: rebar-tickets-reader
   writer_profile: rebar-tickets-writer
 
@@ -54,11 +55,3 @@ roles:
 provenance:
   require_actor: true
   require_run_id: true
-
-# The buckets and writer roles the tickets store must never reuse. Validation
-# fails closed on any overlap.
-isolation:
-  evidence_bucket: agentic-evidence
-  audit_bucket: agentic-audit
-  evidence_writer_role: arn:aws:iam::000000000000:role/evidence-writer
-  audit_writer_role: arn:aws:iam::000000000000:role/audit-writer

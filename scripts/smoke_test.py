@@ -10,12 +10,11 @@ import httpx
 from database.models.schema import executions
 from services import process
 from services.aws_credentials import expiry_of, expiry_report
-from services.orchestration.task_queues import tenant_names
 from sqlalchemy import create_engine, literal, select
 
 from scripts.config import Settings, get_settings, to_host_url
 from scripts.db_reset import _sync_url
-from scripts.k8s_cluster import deployments, exec_argv, kubectl, namespaced
+from scripts.k8s_cluster import deployments, exec_argv, kubectl, namespaced, tenants
 from scripts.tenant_render import sandbox_namespace, worker_namespace
 
 
@@ -181,10 +180,15 @@ def main() -> int:
     results.append(_check("postgres + agent_platform schema", db_check))
     results.append(_check("litellm", lambda: http_check(litellm_health)))
     results.append(_check("cluster deployments ready", lambda: _deployments_ready(settings)))
-    results.append(_check("opa on loopback", lambda: _opa_on_loopback(settings)))
     results.append(_check("aws credentials", lambda: _credentials(settings)))
     image = settings.openhands_agent_server_image
-    for tenant in tenant_names(settings) or [settings.tenant]:
+    for tenant in tenants():
+        worker = settings.model_copy(update={"tenant": tenant})
+        results.append(
+            _check(
+                f"{worker_namespace(tenant)} opa on loopback", lambda w=worker: _opa_on_loopback(w)
+            )
+        )
         namespace = sandbox_namespace(tenant)
         results.append(
             _check(

@@ -1,7 +1,6 @@
 locals {
   role_labels = {
     workflow-worker    = "workflow"
-    review-worker      = "review"
     coordination       = "coord"
     repo-intelligence  = "repo-intel"
     repo-index-worker  = "repo-index"
@@ -30,10 +29,9 @@ locals {
   })
 
   workload_secret_names = {
-    for name, spec in local.all_workloads : name => distinct(concat(
+    for name, spec in local.all_workloads : name => distinct(
       [for reference in concat(values(spec.secrets), values(try(spec.setup_secrets, {}))) : split(":", reference)[0]],
-      lookup(local.extra_secret_reads, name, []),
-    ))
+    )
   }
   workload_secret_arns = {
     for name, spec in local.all_workloads : name => distinct(concat(
@@ -152,22 +150,6 @@ locals {
             StringEquals = { "elasticfilesystem:AccessPointArn" = aws_efs_access_point.workspace[mount.volume].arn }
           }
         }],
-        name == "review-worker" && var.evidence_bucket_arn != "" ? [
-          {
-            Sid      = "WriteTheEvidence"
-            Effect   = "Allow"
-            Action   = ["s3:PutObject", "s3:PutObjectRetention", "s3:GetObject", "s3:GetObjectRetention"]
-            Resource = "${var.evidence_bucket_arn}/*"
-          },
-        ] : [],
-        name == "review-worker" && var.evidence_bucket_arn != "" && var.evidence_kms_key_arn != "" ? [
-          {
-            Sid      = "EncryptTheEvidence"
-            Effect   = "Allow"
-            Action   = ["kms:GenerateDataKey", "kms:Decrypt"]
-            Resource = var.evidence_kms_key_arn
-          },
-        ] : [],
         [for statement in local.tenant_config_statements : statement if contains(local.tenant_config_readers, name)],
         lookup(local.extra_task_statements, name, []),
         lookup(local.tenant_token_statements, name, []),
@@ -207,19 +189,12 @@ resource "aws_iam_role" "workload_task" {
 resource "aws_iam_role_policy" "workload_task" {
   for_each = {
     for name, spec in local.all_workloads : name => spec
-    if length(spec.mounts) > 0 || (name == "review-worker" && var.evidence_bucket_arn != "") || length(lookup(local.extra_task_statements, name, [])) > 0 || length(lookup(local.tenant_token_statements, name, [])) > 0
+    if length(spec.mounts) > 0 || length(lookup(local.extra_task_statements, name, [])) > 0 || length(lookup(local.tenant_token_statements, name, [])) > 0
   }
 
   name   = "task"
   role   = aws_iam_role.workload_task[each.key].id
   policy = local.workload_task_policies[each.key]
-}
-
-resource "aws_iam_role_policy_attachment" "review_bedrock" {
-  count = local.services_enabled ? length(var.bedrock_invoke_policy_arns) : 0
-
-  role       = aws_iam_role.workload_task["review-worker"].name
-  policy_arn = var.bedrock_invoke_policy_arns[count.index]
 }
 
 resource "aws_iam_role_policy_attachment" "workload_exec" {

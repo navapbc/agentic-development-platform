@@ -59,7 +59,7 @@ from scripts.connectivity import preflight as bedrock_preflight
 
 def _demo_status_flow(settings: Settings, issue_key: str) -> StatusFlow:
     try:
-        return build_jira_credential_resolver(settings).status_flow(project_of(issue_key))
+        return build_jira_credential_resolver().status_flow(project_of(issue_key))
     except ConfigError:
         return StatusFlow()
 
@@ -166,7 +166,7 @@ def _missing(settings: Settings) -> list[str]:
         resolver = build_github_credential_resolver(settings)
         repos = sorted(resolver.repos())
         if not repos:
-            return ["config/<env>/repositories.yaml lists no repository with backend github"]
+            return ["config/local/repositories.yaml lists no repository with backend github"]
         resolver.resolve(repos[0])
     except (ConfigError, SecretNotFoundError, UnconfiguredRepositoryError) as exc:
         return [str(exc)]
@@ -175,7 +175,7 @@ def _missing(settings: Settings) -> list[str]:
 
 def _jira_configured(settings: Settings, issue_key: str) -> bool:
     try:
-        cred = build_jira_credential_resolver(settings).resolve(project_of(issue_key))
+        cred = build_jira_credential_resolver().resolve(project_of(issue_key))
     except ConfigError, SecretNotFoundError:
         return False
     return cred is not None and cred.auth_mode == CLOUD
@@ -273,7 +273,7 @@ async def _run_via_temporal(
     from services.orchestration.usage_rollup import BudgetCaps
 
     caps = BudgetCaps.from_settings(settings)
-    stored_issue = normalize_issue(raw_issue, acceptance_field=acceptance_field(settings)).to_dict()
+    stored_issue = normalize_issue(raw_issue, acceptance_field=acceptance_field()).to_dict()
     execution_id = f"exec-{uuid.uuid4().hex[:8]}"
     workflow_id = f"draft-pr-{task_id}-{execution_id}"
     address = to_host_hostport(settings.temporal_host)
@@ -386,9 +386,10 @@ async def main() -> int:
     missing = _missing(settings)
     if missing:
         print("Configure GitHub before running the demo.")
-        print("Set the host, owner, and token_ref in config/<env>/github.yaml or for the")
-        print("repository in config/<env>/repositories.yaml.")
-        print("Export the token named by token_ref, for example GITHUB_TOKEN, in .env.")
+        print("Set the host, owner, and token_ref in config/local/tenants/<tenant>/github.yaml or")
+        print("for the repository in config/local/tenants/<tenant>/repositories.yaml.")
+        print("Set the token named by token_ref, for example GITHUB_TOKEN, in")
+        print("config/local/tenants/<tenant>.env.")
         print(f"Blocked: {', '.join(missing)}")
         return 2
 
@@ -452,7 +453,7 @@ async def main() -> int:
     )
     existing_pr = await mediator.find_open_pr(repo, task_id)
     if _jira_configured(settings, task_id):
-        jira_resolver = build_jira_credential_resolver(settings)
+        jira_resolver = build_jira_credential_resolver()
         adapter = build_jira_adapter_for_issue(task_id, settings, resolver=jira_resolver)
         ok, detail = _jira_task_actionable(adapter, task_id, settings.jira_parked_status)
         print(f"[demo] jira preflight {task_id}: [{'ok' if ok else 'FAIL'}] {detail}")

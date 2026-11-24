@@ -1,0 +1,187 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: slack-poster
+  namespace: agentic-dev-platform
+  labels:
+    app.kubernetes.io/name: slack-poster
+    app.kubernetes.io/part-of: agentic-dev-platform
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: agentic-dev-platform-slack-poster-tokenreview
+  labels:
+    app.kubernetes.io/name: slack-poster
+    app.kubernetes.io/part-of: agentic-dev-platform
+rules:
+  - apiGroups: [authentication.k8s.io]
+    resources: [tokenreviews]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: agentic-dev-platform-slack-poster-tokenreview
+  labels:
+    app.kubernetes.io/name: slack-poster
+    app.kubernetes.io/part-of: agentic-dev-platform
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: agentic-dev-platform-slack-poster-tokenreview
+subjects:
+  - kind: ServiceAccount
+    name: slack-poster
+    namespace: agentic-dev-platform
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: slack-poster
+  namespace: agentic-dev-platform
+  labels:
+    app.kubernetes.io/name: slack-poster
+    app.kubernetes.io/part-of: agentic-dev-platform
+spec:
+  # The per-tenant post rate, the in-flight cap, and the pause after a Slack rate limit are held
+  # in process, so they hold only while one pod sees every post.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: slack-poster
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: slack-poster
+        app.kubernetes.io/part-of: agentic-dev-platform
+    spec:
+      serviceAccountName: slack-poster
+      securityContext:
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: slack-poster
+          image: 123456789012.dkr.ecr.us-east-1.amazonaws.com/agentic-dev-platform/platform:0.3.0
+          args:
+            - python
+            - -m
+            - services.slack_poster.server
+          ports:
+            - name: https
+              containerPort: 8160
+          env:
+            - name: SERVER_TLS
+              value: "true"
+            - name: SERVER_TLS_CERTIFICATE_FILE
+              value: /etc/slack-poster-tls/tls.crt
+            - name: SERVER_TLS_KEY_FILE
+              value: /etc/slack-poster-tls/tls.key
+            - name: SERVER_TLS_CA_FILE
+              value: /etc/slack-poster-ca/ca.pem
+            - name: SLACK_SHARED_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: slack-poster
+                  key: slack_shared_bot_token
+          volumeMounts:
+            - name: integration-config
+              mountPath: /app/config/local
+              readOnly: true
+            - name: slack-poster-tls
+              mountPath: /etc/slack-poster-tls
+              readOnly: true
+            - name: slack-poster-ca
+              mountPath: /etc/slack-poster-ca
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            capabilities:
+              drop:
+                - ALL
+          readinessProbe:
+            exec:
+              command: [python, -m, services.healthcheck, http, "8160", /ready, --tls]
+            initialDelaySeconds: 2
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            exec:
+              command: [python, -m, services.healthcheck, http, "8160", /health, --tls]
+            initialDelaySeconds: 5
+            periodSeconds: 15
+            timeoutSeconds: 5
+      volumes:
+        - name: integration-config
+          configMap:
+            name: integration-config
+        - name: slack-poster-tls
+          secret:
+            secretName: slack-poster-tls
+            defaultMode: 0440
+        - name: slack-poster-ca
+          configMap:
+            name: slack-poster-ca
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: slack-poster
+  namespace: agentic-dev-platform
+  labels:
+    app.kubernetes.io/name: slack-poster
+    app.kubernetes.io/part-of: agentic-dev-platform
+spec:
+  selector:
+    app.kubernetes.io/name: slack-poster
+  ports:
+    - name: https
+      port: 8160
+      targetPort: https
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: slack-poster-ingress
+  namespace: agentic-dev-platform
+  labels:
+    app.kubernetes.io/part-of: agentic-dev-platform
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: slack-poster
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchExpressions:
+              - key: agentic-dev-platform/tenant
+                operator: Exists
+              - key: agentic-dev-platform/namespace-role
+                operator: In
+                values: [worker]
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: activity-worker
+      ports:
+        - protocol: TCP
+          port: 8160

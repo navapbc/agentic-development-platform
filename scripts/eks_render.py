@@ -14,9 +14,11 @@ The inputs are the JSON the eks-deployer task definition carries in DEPLOY_INPUT
 - `security_groups`, the cluster, Temporal client, and internal client group IDs
 - `secrets`, each secret store key, and `temporal_ca`, mapped to its secret ARN
 - `tenants`, each tenant's name, the volume handle of its workspace access point, its ticket store
-  roles, its secret ARNs, the platform secret keys it reads, its settings, its model limits, its
+  roles, its secret ARNs, the platform secret keys its worker reads and those its review worker
+  reads, its settings, its model limits, its
   sandbox quota, the image prefixes its sandbox pods may run, the config bucket, and the host name
-  of its MCP gateway, from which `scripts.tenant_render` renders its worker and sandbox namespaces
+  of its MCP gateway, from which `scripts.tenant_render` renders its worker, review, and sandbox
+  namespaces
 - `vpc_cidr`, `service_cidr`, `gate_egress_cidrs`, and `gate_egress_internet`
 - `ingress`, the webhook and gateway certificate ARNs and the gateway client CIDRs
 """
@@ -165,6 +167,26 @@ def tenant_workspace(
     return volume, claim
 
 
+def tenant_review_workspace(
+    documents: list[dict[str, Any]], tenant: str, volume_handle: str
+) -> tuple[dict[str, Any], ...]:
+    """Return a read-only volume and claim of the tenant's workspace for its review namespace.
+
+    A claim binds one volume, so the review namespace's claim binds a second volume of the same
+    access point.
+    """
+    from scripts.tenant_render import review_namespace
+
+    volume, claim = tenant_workspace(documents, tenant, volume_handle)
+    volume["metadata"]["name"] = f"tenant-{tenant}-review-workspace"
+    volume["spec"]["accessModes"] = ["ReadOnlyMany"]
+    volume["spec"]["csi"]["readOnly"] = True
+    claim["metadata"]["namespace"] = review_namespace(tenant)
+    claim["spec"]["accessModes"] = ["ReadOnlyMany"]
+    claim["spec"]["volumeName"] = volume["metadata"]["name"]
+    return volume, claim
+
+
 def tenant_specs(documents: list[dict[str, Any]], inputs: Mapping[str, Any]) -> list[Any]:
     from scripts.tenant_render import Tenant, worker_env
 
@@ -183,6 +205,9 @@ def tenant_specs(documents: list[dict[str, Any]], inputs: Mapping[str, Any]) -> 
                 name=name,
                 env=env,
                 workspace=tenant_workspace(documents, name, entry["workspace_volume_handle"]),
+                review_workspace=tenant_review_workspace(
+                    documents, name, entry["workspace_volume_handle"]
+                ),
                 config={"rebar-store-aws-config": {"config": rebar_profiles(entry["rebar_roles"])}},
                 quota=entry.get("sandbox_quota") or {},
                 image_prefixes=tuple(entry.get("image_prefixes") or ()),
@@ -198,20 +223,29 @@ def set_tenant_secrets(
 ) -> list[str]:
     """Point the platform providers at the platform secrets and each tenant's at its own.
 
-    A tenant's provider mounts the platform secrets its role may read and its own secrets, and
-    leaves out every other key. An omitted key is `<key>` for a platform secret and
-    `<tenant>:<key>` for a tenant secret without a current value.
+    A provider of a tenant's worker or review namespace mounts the platform secrets its role may
+    read, `platform_secrets` for the worker and `review_platform_secrets` for the review worker,
+    and the tenant's own secrets it lists, and leaves out every other key. An omitted key is
+    `<key>` for a platform secret and `<tenant>:<key>` for a tenant secret without a current value.
     """
-    from scripts.tenant_render import worker_namespace
+    from scripts.tenant_render import review_namespace, worker_namespace
 
     omitted = set(omit)
-    tenants = {worker_namespace(entry["name"]): entry for entry in inputs.get("tenants") or []}
+    tenants = {
+        namespace(entry["name"]): (entry, readable)
+        for entry in inputs.get("tenants") or []
+        for namespace, readable in (
+            (worker_namespace, "platform_secrets"),
+            (review_namespace, "review_platform_secrets"),
+        )
+    }
     platform = [d for d in documents if d.get("metadata", {}).get("namespace") not in tenants]
     skipped = set_secrets(platform, inputs["secrets"], {key for key in omitted if ":" not in key})
-    for namespace, entry in tenants.items():
+    for namespace, (entry, readable) in tenants.items():
         name = entry["name"]
         own = entry.get("secrets") or {}
-        arns = {key: inputs["secrets"][key] for key in entry.get("platform_secrets") or []}
+        keys = entry.get(readable, entry.get("platform_secrets")) or []
+        arns = {key: inputs["secrets"][key] for key in keys}
         arns.update(own)
         providers = [
             d
@@ -464,7 +498,12 @@ def render(
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Return the environment's manifests and the secret aliases left out of them."""
     from scripts.tenant_render import tenantize
-    from scripts.webhook_eks_render import route_webhook_tenants
+    from scripts.webhook_eks_render import (
+        route_action_key_fingerprints,
+        route_slack_poster,
+        route_webhook_tenants,
+        slack_poster_ca,
+    )
 
     documents = copy.deepcopy(overlay_documents)
     set_images(documents, inputs["images"])
@@ -482,10 +521,12 @@ def render(
     tenants = tenant_specs(documents, inputs)
     if not tenants:
         raise RenderError("the inputs name no tenant, and every activity worker serves one")
-    documents = tenantize(documents + generated, tenants)
+    generated += slack_poster_ca(inputs)
+    documents = route_slack_poster(tenantize(documents + generated, tenants), inputs)
     set_gateway_hosts(documents, gateway_hosts(inputs))
     omit_secrets = list(omit_secrets)
     skipped = set_tenant_secrets(documents, inputs, omit_secrets)
     skipped += route_webhook_tenants(documents, inputs, omit_secrets)
+    route_action_key_fingerprints(documents, inputs)
     stamp_config_hash(documents, [])
     return documents, skipped

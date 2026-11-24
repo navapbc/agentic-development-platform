@@ -137,9 +137,7 @@ async def test_a_remedy_step_the_receiver_does_not_know_renders_as_its_text():
 
     decoded = await _round_trip(request, AlertHumanInterventionRequest)
 
-    assert render(decoded.remedy, DeploymentPosture.HOST, environment="local") == (
-        "Ask the platform team."
-    )
+    assert render(decoded.remedy, DeploymentPosture.HOST) == ("Ask the platform team.")
 
 
 @pytest.mark.asyncio

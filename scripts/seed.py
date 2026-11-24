@@ -10,7 +10,7 @@ from scripts.config import get_settings
 
 def main() -> int:
     settings = get_settings()
-    print("[seed] allowlisted projects:", ", ".join(sorted(allowed_projects(settings))))
+    print("[seed] allowlisted projects:", ", ".join(sorted(allowed_projects())))
     print("[seed] allowlisted repos   :", ", ".join(sorted(source_control_repos(settings))))
     print("[seed] no ticket seeding (Jira canonical)")
     return 0

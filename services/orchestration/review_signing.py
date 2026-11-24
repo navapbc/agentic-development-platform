@@ -1,7 +1,8 @@
 """Review-worker startup checks for verdict signing and trust-root change auditing.
 
 The preflight fails the worker fast when signing is enabled without a usable key or
-trust root, so a misconfiguration surfaces at startup rather than on the first review.
+trust root, or when the signing key is not an active key of the worker's ``TENANT``, so a
+misconfiguration surfaces at startup rather than on the first review.
 The audit records a trust-root change to the platform audit store when the loaded
 bundle differs from the last one recorded, so every change leaves an audit trail.
 """
@@ -14,7 +15,11 @@ from typing import Any
 
 from scripts.config import Settings, get_settings
 
-from services.orchestration.signing_keys import SigningKeyError, review_signing_key_path
+from services.orchestration.signing_keys import (
+    SigningKeyError,
+    public_key_of,
+    review_signing_key_path,
+)
 from services.review.trust_root import (
     TrustRoot,
     TrustRootError,
@@ -36,7 +41,11 @@ class ReviewSigningConfigError(RuntimeError):
 
 
 def review_signing_preflight(settings: Settings | None = None) -> None:
-    """Fail fast when signing is enabled without a usable key and trust root."""
+    """Fail fast when signing is enabled without a usable key and trust root.
+
+    The signing key must be an active key of the worker's ``TENANT`` in the trust root, so a
+    worker without ``TENANT`` or holding another tenant's key refuses to start.
+    """
     resolved = settings or get_settings()
     if not resolved.review_signing_enabled:
         return
@@ -64,10 +73,34 @@ def review_signing_preflight(settings: Settings | None = None) -> None:
         raise ReviewSigningConfigError(str(exc)) from exc
     if not Path(key_path).is_file():
         raise ReviewSigningConfigError(f"review signing key not found at {key_path}")
-    load_trust_root(resolved.review_trust_root_path)
+    trust_root = load_trust_root(resolved.review_trust_root_path)
     from rebar.attest.sshsig import ensure_available
 
     ensure_available()
+    _require_tenant_signing_key(trust_root, resolved.tenant.strip(), key_path)
+
+
+def _key_material(public_key: str) -> tuple[str, ...]:
+    return tuple(public_key.split()[:2])
+
+
+def _require_tenant_signing_key(trust_root: TrustRoot, tenant: str, key_path: str) -> None:
+    if not tenant:
+        raise ReviewSigningConfigError(
+            "review signing is enabled but TENANT is not set, so the review worker has no "
+            "tenant key in the trust root. Set TENANT, or set REVIEW_SIGNING_ENABLED=false."
+        )
+    try:
+        signing_key = _key_material(public_key_of(key_path))
+    except SigningKeyError as exc:
+        raise ReviewSigningConfigError(str(exc)) from exc
+    active = {_key_material(key.public_key) for key in trust_root.active_keys(tenant)}
+    if signing_key not in active:
+        raise ReviewSigningConfigError(
+            f"the review signing key is not an active key of tenant {tenant!r} in the trust "
+            "root. Provision the tenant's own signing key, or add its public key to the trust "
+            f"root under tenant {tenant!r}."
+        )
 
 
 class _CollectingSink:

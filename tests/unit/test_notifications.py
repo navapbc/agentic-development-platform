@@ -17,6 +17,12 @@ from services.orchestration.notifications import (
     send_human_intervention_alert,
     send_intake_unroutable_alert,
 )
+from tests.support import SHARED_APP_YAML, configure_tenant, hermetic_settings, tenant_dir
+
+
+@pytest.fixture(autouse=True)
+def _no_environment_files(monkeypatch, tmp_path_factory) -> None:
+    configure_tenant(monkeypatch, tmp_path_factory.mktemp("environment"))
 
 
 def _alert() -> HumanInterventionAlert:
@@ -33,7 +39,7 @@ def _alert() -> HumanInterventionAlert:
 
 
 def test_no_channels_configured_delivers_nothing():
-    settings = Settings(
+    settings = hermetic_settings(
         slack_webhook_url="",
         smtp_host="",
         alert_email_from="",
@@ -51,7 +57,7 @@ def test_slack_channel_posts_webhook(monkeypatch):
         return httpx.Response(200, request=httpx.Request("POST", url))
 
     monkeypatch.setattr("services.orchestration.notifications.httpx.post", fake_post)
-    settings = Settings(
+    settings = hermetic_settings(
         smtp_host="",
         alert_email_from="",
         alert_email_to="",
@@ -70,7 +76,7 @@ def test_slack_channel_refuses_a_non_https_webhook(monkeypatch):
         "services.orchestration.notifications.httpx.post",
         lambda *args, **kwargs: calls.append(args),
     )
-    settings = Settings(
+    settings = hermetic_settings(
         smtp_host="",
         alert_email_from="",
         alert_email_to="",
@@ -98,7 +104,7 @@ def test_email_backup_sends_via_smtp(monkeypatch):
             sent.append(message["To"])
 
     monkeypatch.setattr("services.orchestration.notifications.smtplib.SMTP", _SMTP)
-    settings = Settings(
+    settings = hermetic_settings(
         slack_webhook_url="",
         smtp_host="mail.local",
         smtp_port=25,
@@ -124,7 +130,7 @@ def test_jira_channel_posts_comment(monkeypatch):
         "services.integration.tickets.build_ticket_backend_for_issue",
         lambda issue_key, settings=None: _Adapter(),
     )
-    settings = Settings(
+    settings = hermetic_settings(
         slack_webhook_url="",
         smtp_host="",
         alert_email_from="",
@@ -142,7 +148,7 @@ def test_channel_error_is_swallowed(monkeypatch):
         raise RuntimeError("no jira")
 
     monkeypatch.setattr("services.integration.tickets.build_ticket_backend_for_issue", boom)
-    settings = Settings(
+    settings = hermetic_settings(
         slack_webhook_url="",
         smtp_host="",
         alert_email_from="",
@@ -153,7 +159,7 @@ def test_channel_error_is_swallowed(monkeypatch):
 
 
 def _unconfigured() -> Settings:
-    return Settings(
+    return hermetic_settings(
         slack_webhook_url="",
         smtp_host="",
         alert_email_from="",
@@ -162,7 +168,7 @@ def _unconfigured() -> Settings:
 
 
 def _slack_only() -> Settings:
-    return Settings(
+    return hermetic_settings(
         slack_webhook_url="https://hooks.slack.test/x",
         smtp_host="",
         alert_email_from="",
@@ -237,7 +243,7 @@ def test_the_unroutable_intake_alert_renders_its_remedy(monkeypatch):
 
 
 def test_a_host_operator_is_told_the_inv_task_for_the_runs_tenant():
-    settings = Settings(deployment_posture="host", tenant="acme", environment="local")
+    settings = hermetic_settings(deployment_posture="host", tenant="acme")
 
     text = render_remedy(remedies.plan_rejected_remedy("ADSER-24"), settings)
 
@@ -245,7 +251,7 @@ def test_a_host_operator_is_told_the_inv_task_for_the_runs_tenant():
 
 
 def test_a_deployed_operator_is_told_the_kubectl_command_in_the_tenants_namespace():
-    settings = Settings(deployment_posture="deployed", tenant="acme", environment="aws")
+    settings = hermetic_settings(deployment_posture="deployed", tenant="acme")
 
     text = render_remedy(remedies.plan_rejected_remedy("ADSER-24"), settings)
 
@@ -264,7 +270,7 @@ def test_a_deployed_operator_is_told_the_kubectl_command_in_the_tenants_namespac
     ],
 )
 def test_a_config_key_is_located_where_the_operators_posture_keeps_it(posture, location):
-    settings = Settings(deployment_posture=posture, tenant="acme", environment="local")
+    settings = hermetic_settings(deployment_posture=posture, tenant="acme")
     unlisted = remedies.unroutable_remedy("ADSER-24", "ADSER", ("navapbc/x",))
 
     assert location in render_remedy(unlisted, settings)
@@ -300,8 +306,8 @@ def _every_channel(monkeypatch, tmp_path) -> tuple[Settings, list[str]]:
     )
     monkeypatch.setattr("services.orchestration.notifications.smtplib.SMTP", _SMTP)
     monkeypatch.setattr("services.orchestration.notifications.httpx.post", fake_post)
-    monkeypatch.setenv("PLATFORM_ENV_CONFIG_DIR", str(tmp_path))
-    settings = Settings(
+    configure_tenant(monkeypatch, tmp_path)
+    settings = hermetic_settings(
         tenant="",
         slack_webhook_url="https://hooks.slack.test/x",
         smtp_host="mail.local",
@@ -324,7 +330,7 @@ def test_a_tenant_without_an_escalation_file_reaches_every_configured_channel(
 
 def test_an_escalation_file_without_email_delivers_to_jira_and_slack_only(monkeypatch, tmp_path):
     settings, reached = _every_channel(monkeypatch, tmp_path)
-    (tmp_path / "escalation.yaml").write_text(
+    (tenant_dir(tmp_path) / "escalation.yaml").write_text(
         "config_version: 1\n"
         "channels: [jira, slack]\n"
         "slack:\n"
@@ -345,7 +351,7 @@ def test_an_unusable_escalation_file_still_reaches_every_configured_channel(
     monkeypatch, tmp_path, caplog
 ):
     settings, reached = _every_channel(monkeypatch, tmp_path)
-    (tmp_path / "escalation.yaml").write_text("config_version: 1\nchannels: [pager]\n")
+    (tenant_dir(tmp_path) / "escalation.yaml").write_text("config_version: 1\nchannels: [pager]\n")
 
     with caplog.at_level(logging.ERROR, logger="services.orchestration.notifications"):
         delivered = send_human_intervention_alert(_alert(), settings)
@@ -382,7 +388,7 @@ class _WebClient:
 
 def _bot_channels(monkeypatch, tmp_path, *, base: str = "https://slack.com/api/"):
     settings, reached = _every_channel(monkeypatch, tmp_path)
-    (tmp_path / "escalation.yaml").write_text(_SLACK_FILE.format(base=base))
+    (tenant_dir(tmp_path) / "escalation.yaml").write_text(_SLACK_FILE.format(base=base))
     _WebClient.built, _WebClient.posts, _WebClient.error = [], [], None
     monkeypatch.setattr("services.integration.slack.client.WebClient", _WebClient)
     settings = settings.model_copy(
@@ -469,9 +475,9 @@ def test_an_alert_reads_the_escalation_file_once_for_every_channel(monkeypatch, 
     loads: list[Settings] = []
     load = notifications.load_escalation_config
 
-    def counting_load(settings):
+    def counting_load(settings, **kwargs):
         loads.append(settings)
-        return load(settings)
+        return load(settings, **kwargs)
 
     monkeypatch.setattr(notifications, "load_escalation_config", counting_load)
 
@@ -479,3 +485,110 @@ def test_an_alert_reads_the_escalation_file_once_for_every_channel(monkeypatch, 
 
     assert delivered == ["jira", "email", "slack"]
     assert len(loads) == 1
+
+
+_SHARED_SLACK_FILE = (
+    "config_version: 1\n"
+    "slack:\n"
+    "  app: shared\n"
+    "  transport: webhook\n"
+    "  channel: C0123456789\n"
+    "  profile: private\n"
+)
+
+
+def _shared_channels(monkeypatch, tmp_path, *, status=200, reply=None, error=None):
+    settings, reached = _every_channel(monkeypatch, tmp_path)
+    (tenant_dir(tmp_path) / "escalation.yaml").write_text(_SHARED_SLACK_FILE)
+    (tmp_path / "slack-shared-app.yaml").write_text(SHARED_APP_YAML)
+    token_file = tmp_path / "slack-posting-token"
+    token_file.write_text("projected-token")
+    _WebClient.built, _WebClient.posts, _WebClient.error = [], [], None
+    monkeypatch.setattr("services.integration.slack.client.WebClient", _WebClient)
+    posts: list[dict] = []
+
+    def fake_post(url, **kwargs):
+        posts.append({"url": url, **kwargs})
+        if error is not None:
+            raise error
+        return httpx.Response(
+            status, json=reply or {"ts": "1700000000.000100"}, request=httpx.Request("POST", url)
+        )
+
+    class _PostingClient:
+        post = staticmethod(fake_post)
+
+    monkeypatch.setattr(
+        "services.integration.slack.poster_client._client", lambda ca_file: _PostingClient()
+    )
+    settings = settings.model_copy(
+        update={
+            "slack_bot_token": "xoxb-own-app",
+            "escalation_action_key": "key",
+            "slack_posting_url": "https://slack-poster.platform.svc.cluster.local:8160",
+            "slack_posting_token_file": str(token_file),
+            "slack_posting_ca_file": str(tmp_path / "slack-poster-ca.pem"),
+            "tenant": "adp",
+        }
+    )
+    return settings, reached, posts
+
+
+def test_a_shared_app_tenant_posts_its_alert_through_the_posting_service(monkeypatch, tmp_path):
+    settings, reached, posts = _shared_channels(monkeypatch, tmp_path)
+
+    delivered = send_human_intervention_alert(
+        _keyed_alert(), settings, issued_at=1_000, deadline=time.monotonic() + 20
+    )
+
+    assert delivered == ["jira", "email", "slack"]
+    assert reached == ["jira", "email"]
+    assert _WebClient.built == []
+    [post] = posts
+    assert post["url"] == "https://slack-poster.platform.svc.cluster.local:8160/v1/messages"
+    assert set(post["json"]) == {"text", "blocks"}
+    actions = [block for block in post["json"]["blocks"] if block["type"] == "actions"]
+    assert [button["action_id"] for button in actions[0]["elements"]] == ["approve", "reject"]
+    assert post["headers"]["Authorization"] == "Bearer projected-token"
+    assert 1 <= float(post["headers"]["X-Alert-Deadline-Seconds"]) <= 5
+
+
+def test_a_posting_service_refusal_leaves_slack_out_and_names_the_code(
+    monkeypatch, tmp_path, caplog
+):
+    settings, _, posts = _shared_channels(
+        monkeypatch, tmp_path, status=502, reply={"error": "not_in_channel"}
+    )
+
+    with caplog.at_level(logging.WARNING, logger="services.orchestration.notifications"):
+        delivered = send_human_intervention_alert(_keyed_alert(), settings, issued_at=1_000)
+
+    assert delivered == ["jira", "email"]
+    assert len(posts) == 1
+    assert "not_in_channel" in caplog.text
+
+
+def test_a_malformed_shared_app_file_still_delivers_jira_and_email(monkeypatch, tmp_path, caplog):
+    settings, reached, posts = _shared_channels(monkeypatch, tmp_path)
+    (tmp_path / "slack-shared-app.yaml").write_text("app_id: [unclosed\n")
+
+    with caplog.at_level(logging.ERROR, logger="services.orchestration.notifications"):
+        delivered = send_human_intervention_alert(_keyed_alert(), settings, issued_at=1_000)
+
+    assert delivered[:2] == ["jira", "email"]
+    assert reached[:2] == ["jira", "email"]
+    assert posts == []
+    assert "escalation.yaml is unusable" in caplog.text
+
+
+def test_a_shared_app_post_is_skipped_when_under_a_second_is_left_before_the_deadline(
+    monkeypatch, tmp_path
+):
+    settings, _, posts = _shared_channels(monkeypatch, tmp_path)
+
+    delivered = send_human_intervention_alert(
+        _keyed_alert(), settings, issued_at=1_000, deadline=time.monotonic() + 0.5
+    )
+
+    assert "slack" not in delivered
+    assert posts == []

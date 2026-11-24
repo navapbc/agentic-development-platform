@@ -5,11 +5,13 @@ deployed environment. It creates an Object-Lock bucket, writes an evidence objec
 a compliance retention through the sink, and asserts that the locked version cannot be
 deleted or overwritten within the window and that a read returns the original bytes.
 
-Skipped unless MinIO is reachable at the configured endpoint.
+Skipped unless RUN_LIVE_MINIO=1 and MinIO answers at the configured endpoint. The test leaves a
+compliance-locked object that outlives the run, so it never runs without the opt-in.
 """
 
 from __future__ import annotations
 
+import os
 import socket
 import uuid
 from urllib.parse import urlparse
@@ -37,7 +39,10 @@ def _minio_reachable() -> bool:
         return False
 
 
-pytestmark = pytest.mark.skipif(not _minio_reachable(), reason="MinIO must be reachable")
+pytestmark = pytest.mark.skipif(
+    os.environ.get("RUN_LIVE_MINIO") != "1" or not _minio_reachable(),
+    reason="set RUN_LIVE_MINIO=1 with MinIO at localhost:9090 to run the WORM test",
+)
 
 
 class _CapturingIndex:

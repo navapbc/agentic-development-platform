@@ -4,8 +4,10 @@ The workstation needs no kubectl, helm, or route to the private Kubernetes API. 
 `eks` output of the composition root, checks which secrets the overlay mounts hold a current value,
 and starts the eks-deployer one-shot task on the platform ECS cluster with the `deploy` command and
 the secrets to leave out. A pod whose SecretProviderClass names a secret without a value never
-starts, so a workload runs without an external secret its environment has not set yet. The task's
-log is printed once it stops.
+starts, so a workload runs without an external secret its environment has not set yet. A tenant's
+review worker is the exception, because it refuses to start without its review signing key while
+review signing is enabled, so the deploy names each tenant whose key is unset. The task's log is
+printed once it stops.
 
 When the output names MCP gateway hosts, the deploy first checks that the gateway certificate
 covers each host, and after the task succeeds it points each tenant's host in the gateway zone at
@@ -36,6 +38,7 @@ PROVIDERS = REPO_ROOT / "deploy" / "kubernetes" / "aws" / "secret-provider-class
 TASK = "eks-deployer"
 TASK_WAIT = {"Delay": 10, "MaxAttempts": 180}
 LOG = "[eks-deploy]"
+REVIEW_SIGNING_KEY = "review_signing_key"
 CLUSTER_TAG = "elbv2.k8s.aws/cluster"
 INGRESS_STACK_TAG = "ingress.k8s.aws/stack"
 
@@ -78,6 +81,17 @@ def unset_tenant_secrets(tenants: list[dict[str, Any]], secretsmanager: Any) -> 
         for key, arn in sorted((tenant.get("secrets") or {}).items())
         if not _has_value(arn, secretsmanager)
     ]
+
+
+def unset_message(key: str) -> str:
+    tenant, _, name = key.rpartition(":")
+    if tenant and name == REVIEW_SIGNING_KEY:
+        return (
+            f"{key} has no value, so the review worker of {tenant} refuses to start while review "
+            f"signing is enabled. Write the key to the tenant's review-signing-key secret and add "
+            f"its public key to the trust root under tenant {tenant}."
+        )
+    return f"{key} has no value, so the pods that mount it start without it"
 
 
 def platform_mounted_keys(
@@ -249,7 +263,7 @@ def deploy(session: Any, eks: dict[str, Any] | None, command: list[str]) -> int:
         unset = unset_secrets(keys, eks["secret_arns"], secretsmanager)
         unset += unset_tenant_secrets(tenants, secretsmanager)
         for key in unset:
-            print(f"{LOG} {key} has no value, so the pods that mount it start without it")
+            print(f"{LOG} {unset_message(key)}")
         command = command + [part for key in unset for part in ("--omit-secret", key)]
     exit_code = run_deployer(
         session.client("ecs"), session.client("logs"), eks["deployer"], command
@@ -273,7 +287,7 @@ def main(argv: list[str] | None = None) -> int:
         default=["deploy"],
         help=(
             "deploy, check-policies, or restart DEPLOYMENT... "
-            "(namespace/name, tenant-workers, or mcp-gateway)"
+            "(namespace/name, tenant-workers, tenant-review-workers, or mcp-gateway)"
         ),
     )
     args = parser.parse_args(argv)

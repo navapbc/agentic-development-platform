@@ -58,29 +58,6 @@ spec:
                 secretKeyRef:
                   name: agentic-platform
                   key: database_url
-            - name: GITHUB_WEBHOOK_SECRET
-              valueFrom:
-                secretKeyRef:
-                  name: agentic-platform
-                  key: github_webhook_secret
-            - name: JIRA_WEBHOOK_SECRET
-              valueFrom:
-                secretKeyRef:
-                  name: agentic-platform
-                  key: jira_webhook_secret
-                  optional: true
-            - name: SLACK_SIGNING_SECRET
-              valueFrom:
-                secretKeyRef:
-                  name: agentic-platform
-                  key: slack_signing_secret
-                  optional: true
-            - name: ESCALATION_ACTION_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: agentic-platform
-                  key: escalation_action_key
-                  optional: true
           volumeMounts:
             - name: integration-config
               mountPath: /app/config/local

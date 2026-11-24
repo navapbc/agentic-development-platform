@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+import pytest
 from services.orchestration.gates import config as gates_config
 from services.orchestration.gates.config import parse_gates_config
 from services.orchestration.temporal_activities.gates import load_gate_plan
+from tests.support import configure_tenant
+
+
+@pytest.fixture(autouse=True)
+def _tenant(monkeypatch, tmp_path) -> None:
+    configure_tenant(monkeypatch, tmp_path)
 
 
 def _patch_config(monkeypatch, raw) -> None:

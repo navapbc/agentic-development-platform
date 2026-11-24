@@ -130,7 +130,7 @@ def _issue(
 def _hermetic_config(monkeypatch):
     monkeypatch.setattr(
         "services.orchestration.intake_reconciler.jira_allowed_projects",
-        lambda settings=None: set(_PROJECTS),
+        lambda: set(_PROJECTS),
     )
     monkeypatch.setattr(
         "services.orchestration.intake_reconciler.source_control_repos",
@@ -138,15 +138,15 @@ def _hermetic_config(monkeypatch):
     )
     monkeypatch.setattr(
         "services.orchestration.intake_reconciler.acceptance_field",
-        lambda settings=None: "",
+        lambda: "",
     )
     monkeypatch.setattr(
         "services.integration.jira.snapshot.allowed_projects",
-        lambda settings=None: set(_PROJECTS),
+        lambda: set(_PROJECTS),
     )
     monkeypatch.setattr(
         "services.integration.jira.snapshot.acceptance_field",
-        lambda settings=None: "",
+        lambda: "",
     )
 
 
@@ -768,7 +768,7 @@ def test_required_checks_repos_lists_configured_repositories_under_github(monkey
     configure_repositories(monkeypatch, tmp_path, "repositories:\n  repo-a: {}\n  repo-b: {}\n")
     monkeypatch.setattr(
         "services.orchestration.checks.config.load_checks_configs",
-        lambda settings=None, *, environment=None: {"repo-a": object()},
+        lambda: {"repo-a": object()},
     )
 
     assert required_checks_repos(hermetic_settings()) == frozenset({"repo-a"})
@@ -784,7 +784,7 @@ def test_a_local_repository_satisfies_the_checks_requirement_beside_a_github_one
     )
     monkeypatch.setattr(
         "services.orchestration.checks.config.load_checks_configs",
-        lambda settings=None, *, environment=None: {},
+        lambda: {},
     )
 
     assert required_checks_repos(hermetic_settings()) == frozenset({"notes"})

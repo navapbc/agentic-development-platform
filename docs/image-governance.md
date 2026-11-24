@@ -18,7 +18,7 @@ The admission policy matches each image as the pod spec writes it, because the k
 
 ## The image policy
 
-`config/<environment>/image_policy.yaml` belongs to the platform. A tenant's bundle never overrides it. In AWS the `private-bedrock` root generates it. Locally, copy `config/local/image_policy.yaml.example`.
+`image_policy.yaml` belongs to the platform, `config/local/image_policy.yaml` locally. A tenant's bundle never overrides it. In AWS the `private-bedrock` root generates it. Locally, copy `config/local/image_policy.yaml.example`.
 
 | Key | Meaning |
 | --- | --- |
@@ -41,8 +41,8 @@ A finding exception accepts one Inspector finding in one image digest until its 
 
 | File | Accepts findings in | Local path | AWS key in the tenant config bucket |
 |---|---|---|---|
-| Platform | The `catalog` images and the `platform_registries` repositories outside `tenant_prefix` | `config/<environment>/image_exceptions.yaml` | `platform/image_exceptions.yaml` |
-| Tenant | The tenant's `tenant_prefix` and its `registries.yaml` mirrors | `config/<environment>/tenants/<tenant>/image_exceptions.yaml` | `tenants/<tenant>/image_exceptions.yaml` |
+| Platform | The `catalog` images and the `platform_registries` repositories outside `tenant_prefix` | `config/local/image_exceptions.yaml` | `platform/image_exceptions.yaml` |
+| Tenant | The tenant's `tenant_prefix` and its `registries.yaml` mirrors | `config/local/tenants/<tenant>/image_exceptions.yaml` | `tenants/<tenant>/image_exceptions.yaml` |
 
 With `TENANT_CONFIG_BUCKET` unset the platform reads the local paths, and with it set the bucket keys. The pull gate applies the platform entries and the run tenant's entries, each limited to its own scope. The pre-push scan of both publish commands applies the platform entries, or the local file `--exceptions` names. A loader refuses an entry outside its file's scope and names it.
 
@@ -118,4 +118,4 @@ The gate, checks, and scanner pods start from the platform's buildah image, `doc
 
 ## Local development
 
-The workstation runs the same layers with `scan.gate: off` and `signatures.verification: false`, because it has no Inspector and no Signer. `inv runtime-images` builds the catalog sandbox images and the builder image into the cluster's image store, pushes the checks, semgrep, and trivy images to the local registry the gate pods pull from, and writes `RUNTIME_IMAGES`, `OPENHANDS_AGENT_SERVER_IMAGE`, `GATE_ENGINE_BUILDER_IMAGE`, `SEMGREP_IMAGE`, and `TRIVY_IMAGE` into `.env`, each pinned by digest. `inv k8s-reload` builds the LiteLLM image beside the platform and OPA images, and Compose builds the Langfuse web, Langfuse worker, and ClickHouse images. On Docker Desktop it also pulls each image into the cluster's nodes by tag, because the nodes resolve a digest only for an image they hold. `inv gate-engine-images` pushes the example engines to the local registry and writes `GATE_ENGINE_IMAGES` with their digests. The local policy example admits `public.ecr.aws/amazonlinux/`, because the example engine Dockerfiles start `FROM` the Amazon Linux 2023 base, and the workstation pulls it directly. In AWS the `ecr-public` pull-through cache mirrors all of `public.ecr.aws`, so the same line resolves through the cache.
+The workstation runs the same layers with `scan.gate: off` and `signatures.verification: false`, because it has no Inspector and no Signer. `inv runtime-images` builds the catalog sandbox images and the builder image into the cluster's image store, pushes the checks, semgrep, and trivy images to the local registry the gate pods pull from, and writes `RUNTIME_IMAGES`, `OPENHANDS_AGENT_SERVER_IMAGE`, `GATE_ENGINE_BUILDER_IMAGE`, `SEMGREP_IMAGE`, and `TRIVY_IMAGE` into `config/local/platform.env`, each pinned by digest. `inv k8s-reload` builds the LiteLLM image beside the platform and OPA images, and Compose builds the Langfuse web, Langfuse worker, and ClickHouse images. On Docker Desktop it also pulls each image into the cluster's nodes by tag, because the nodes resolve a digest only for an image they hold. `inv gate-engine-images` pushes the example engines to the local registry and writes `GATE_ENGINE_IMAGES` with their digests. The local policy example admits `public.ecr.aws/amazonlinux/`, because the example engine Dockerfiles start `FROM` the Amazon Linux 2023 base, and the workstation pulls it directly. In AWS the `ecr-public` pull-through cache mirrors all of `public.ecr.aws`, so the same line resolves through the cache.

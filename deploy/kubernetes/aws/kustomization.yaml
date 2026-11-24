@@ -1,12 +1,13 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-# The review worker runs on ECS in AWS, so this overlay leaves out review-worker.yaml.
 resources:
   - namespaces.yaml
   - ../mcp-gateway.yaml
   - ../inbound-webhook.yaml
+  - ../slack-poster.yaml
   - ../activity-worker.yaml
+  - ../review-worker.yaml
   - ../litellm.yaml
   - ../sandbox.yaml
   - ../../../openhands/policies/networkpolicy-default-deny-egress.yaml
@@ -108,6 +109,12 @@ patches:
                     value: /app/config/env
                   - name: AWS_CONFIG_FILE
                     value: /app/config/aws/config
+                  - name: SLACK_POSTING_URL
+                    value: https://slack-poster:8160
+                  - name: SLACK_POSTING_TOKEN_FILE
+                    value: /var/run/secrets/slack-posting/token
+                  - name: SLACK_POSTING_CA_FILE
+                    value: /etc/slack-poster-ca/ca.pem
                 volumeMounts:
                   - $patch: replace
                   - name: workspaces
@@ -125,6 +132,12 @@ patches:
                     mountPath: /tmp
                   - name: home
                     mountPath: /home/appuser
+                  - name: slack-posting-token
+                    mountPath: /var/run/secrets/slack-posting
+                    readOnly: true
+                  - name: slack-poster-ca
+                    mountPath: /etc/slack-poster-ca
+                    readOnly: true
             volumes:
               - $patch: replace
               - name: workspaces
@@ -148,6 +161,154 @@ patches:
               - name: tmp
                 emptyDir: {}
               - name: home
+                emptyDir: {}
+              - name: slack-posting-token
+                projected:
+                  sources:
+                    - serviceAccountToken:
+                        audience: slack-posting-service
+                        expirationSeconds: 600
+                        path: token
+              - name: slack-poster-ca
+                configMap:
+                  name: slack-poster-ca
+                  optional: true
+  - target:
+      kind: Deployment
+      name: review-worker
+    patch: |
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: review-worker
+      spec:
+        template:
+          spec:
+            containers:
+              - name: review-worker
+                envFrom:
+                  - configMapRef:
+                      name: agentic-platform-env
+                  - configMapRef:
+                      name: agentic-platform-eks
+                env:
+                  - $patch: replace
+                  - name: WORKER_ROLE
+                    value: review
+                  - name: HEALTH_HEARTBEAT_FILE
+                    value: /tmp/worker.heartbeat
+                  - name: REPOSITORY_ROOT
+                    value: /repositories
+                  - name: EXECUTION_WORKSPACE_ROOT
+                    value: /repositories/.agent-workspaces
+                  - name: GATE_ENGINE_ROOT
+                    value: /repositories/.gate-engines
+                  - name: LITELLM_BASE_URL
+                    value: http://litellm:4000
+                  - name: REBAR_REVIEW_NATIVE
+                    value: "true"
+                  - name: REBAR_LLM_CONFIG_FILE
+                    value: /app/config/platform/rebar-review.toml
+                  - name: REVIEW_TRUST_ROOT_PATH
+                    value: /app/config/env/review-trust-root.yaml
+                  - name: PLATFORM_SECRETS_DIR
+                    value: /mnt/secrets
+                  - name: PLATFORM_ENV_CONFIG_DIR
+                    value: /app/config/env
+                volumeMounts:
+                  - $patch: replace
+                  - name: workspaces
+                    mountPath: /repositories
+                    readOnly: true
+                  - name: platform-config
+                    mountPath: /app/config/env
+                    readOnly: true
+                  - name: secrets
+                    mountPath: /mnt/secrets
+                    readOnly: true
+                  - name: tmp
+                    mountPath: /tmp
+                  - name: home
+                    mountPath: /home/appuser
+            volumes:
+              - $patch: replace
+              - name: workspaces
+                persistentVolumeClaim:
+                  claimName: workspaces
+                  readOnly: true
+              - name: platform-config
+                configMap:
+                  name: platform-config
+              - name: secrets
+                csi:
+                  driver: secrets-store.csi.k8s.io
+                  readOnly: true
+                  volumeAttributes:
+                    secretProviderClass: review-worker
+              - name: tmp
+                emptyDir: {}
+              - name: home
+                emptyDir: {}
+  - target:
+      kind: Deployment
+      name: slack-poster
+    patch: |
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: slack-poster
+      spec:
+        template:
+          spec:
+            containers:
+              - name: slack-poster
+                envFrom:
+                  - configMapRef:
+                      name: agentic-platform-env
+                  - configMapRef:
+                      name: agentic-platform-eks
+                env:
+                  - $patch: replace
+                  - name: SERVER_TLS
+                    value: "true"
+                  - name: SERVER_TLS_CERTIFICATE_FILE
+                    value: /mnt/secrets/SLACK_POSTER_TLS_CERTIFICATE
+                  - name: SERVER_TLS_KEY_FILE
+                    value: /mnt/secrets/SLACK_POSTER_TLS_KEY
+                  - name: SERVER_TLS_CA_FILE
+                    value: /etc/slack-poster-ca/ca.pem
+                  - name: PLATFORM_SECRETS_DIR
+                    value: /mnt/secrets
+                  - name: PLATFORM_ENV_CONFIG_DIR
+                    value: /app/config/env
+                volumeMounts:
+                  - $patch: replace
+                  - name: platform-config
+                    mountPath: /app/config/env
+                    readOnly: true
+                  - name: secrets
+                    mountPath: /mnt/secrets
+                    readOnly: true
+                  - name: slack-poster-ca
+                    mountPath: /etc/slack-poster-ca
+                    readOnly: true
+                  - name: tmp
+                    mountPath: /tmp
+            volumes:
+              - $patch: replace
+              - name: platform-config
+                configMap:
+                  name: platform-config
+              - name: secrets
+                csi:
+                  driver: secrets-store.csi.k8s.io
+                  readOnly: true
+                  volumeAttributes:
+                    secretProviderClass: slack-poster
+              - name: slack-poster-ca
+                configMap:
+                  name: slack-poster-ca
+              - name: tmp
                 emptyDir: {}
   - target:
       kind: Deployment

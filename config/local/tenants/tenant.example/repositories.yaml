@@ -1,6 +1,6 @@
 config_version: 1
 
-# The source-control repositories this environment works on. backend is github or local.
+# The source-control repositories this tenant works on. backend is github or local.
 # A github repository reaches its remote through the identity in github.yaml, and may
 # override host, owner, or token_ref for itself. A local repository names its checkout on
 # the host in path, absolute or relative to this platform's checkout, and the platform

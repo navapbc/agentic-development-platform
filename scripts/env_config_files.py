@@ -1,7 +1,7 @@
 """Write the environment's config files from PLATFORM_ENV_CONFIG into a directory.
 
 A deployed task has no repository checkout and a read-only root, so Terraform passes the
-operator's config/<environment> files as one JSON object of file name to content, and the
+operator's config/local files as one JSON object of file name to content, and the
 platform image's entrypoint writes them here before the service starts.
 """
 

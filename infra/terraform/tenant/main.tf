@@ -25,6 +25,10 @@ locals {
   kms_key_arn     = try(aws_kms_key.this[0].arn, "")
 
   worker_role_principal_arn = "arn:${local.partition}:iam::${local.account_id}:role/${var.worker_role_name}"
+
+  tenant_secret_readers = {
+    for name in var.secrets : name => contains(local.review_tenant_secrets, name) ? [var.worker_role_arn, var.review_role_arn] : [var.worker_role_arn]
+  }
 }
 
 resource "terraform_data" "inputs_guard" {
@@ -87,7 +91,7 @@ resource "aws_secretsmanager_secret" "this" {
   for_each = local.enabled ? toset(var.secrets) : toset([])
 
   name                    = "${local.secret_prefix}${replace(each.key, "_", "-")}"
-  description             = "${each.key} of the ${var.tenant} tenant, which only its activity worker reads."
+  description             = "${each.key} of the ${var.tenant} tenant, which only its activity worker${contains(local.review_tenant_secrets, each.key) ? " and its review worker read" : " reads"}."
   kms_key_id              = aws_kms_key.this[0].arn
   recovery_window_in_days = var.secret_recovery_window_days
 
@@ -105,7 +109,7 @@ resource "aws_secretsmanager_secret_policy" "this" {
       {
         Sid       = "AllowTheTenantWorker"
         Effect    = "Allow"
-        Principal = { AWS = var.worker_role_arn }
+        Principal = { AWS = local.tenant_secret_readers[each.key] }
         Action    = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
         Resource  = "*"
       },
@@ -115,7 +119,7 @@ resource "aws_secretsmanager_secret_policy" "this" {
         Principal = { AWS = "*" }
         Action    = "secretsmanager:GetSecretValue"
         Resource  = "*"
-        Condition = { ArnNotEquals = { "aws:PrincipalArn" = var.worker_role_arn } }
+        Condition = { ArnNotEquals = { "aws:PrincipalArn" = local.tenant_secret_readers[each.key] } }
       },
     ]
   })

@@ -61,12 +61,14 @@ def _patch_builders(monkeypatch: pytest.MonkeyPatch) -> dict[str, _Recorder]:
     monkeypatch.setattr(factory, "build_git_host", recorders["git_host"].build)
     monkeypatch.setattr(idempotency, "PostgresSideEffectLedger", object)
     monkeypatch.setattr(sequencing, "PostgresSequenceGate", object)
-    monkeypatch.setattr(tools, "acceptance_field", lambda settings: "customfield_accept")
+    monkeypatch.setattr(tools, "acceptance_field", lambda: "customfield_accept")
     return recorders
 
 
-def _bundle(directory: Path, repositories: list[str]) -> Path:
+def _bundle(directory: Path, repositories: list[str], *, jira: bool = True) -> Path:
     directory.mkdir(parents=True)
+    if jira:
+        (directory / "jira.yaml").write_text("config_version: 1\nallowlist: [BETA]\n")
     entries = "".join(
         f"  {name}:\n    backend: local\n    path: {directory / name}\n" for name in repositories
     )
@@ -104,6 +106,20 @@ async def test_a_repository_outside_the_tenant_bundle_is_refused(monkeypatch, tm
 
     with pytest.raises(RepoNotAllowedError):
         await toolset.github_read_file("adp-web", "README.md", "main")
+
+
+async def test_a_tenant_without_jira_yaml_starts_and_refuses_each_jira_read(monkeypatch, tmp_path):
+    recorders = _patch_builders(monkeypatch)
+    settings = hermetic_settings(tenant="beta", ticket_backend="rebar")
+    bundle = _bundle(tmp_path / "beta", ["beta-web"], jira=False)
+
+    with pinned(bundle):
+        toolset = ReadOnlyToolset.from_settings(settings)
+
+    assert recorders["jira"].settings == []
+    assert toolset.acceptance_field == ""
+    with pytest.raises(ConfigError, match="tenant beta has no jira.yaml"):
+        await toolset.jira_get_task("BETA-1")
 
 
 def test_the_toolset_refuses_a_gateway_without_a_tenant(monkeypatch):

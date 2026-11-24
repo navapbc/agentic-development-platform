@@ -5,6 +5,10 @@ read-only polling and for writes. This module fails a config closed when those
 roles collapse together, when they reuse the evidence or audit writer roles, or
 when the store reuses an evidence or audit bucket. It also requires actor and
 run provenance on tickets-branch ref writes.
+
+The store, roles, and provenance come from the tenant's tickets.yaml. The evidence and audit buckets
+and writer roles the store may not reuse are platform config, tickets_isolation.yaml, so a tenant
+cannot weaken the check by naming other buckets.
 """
 
 from __future__ import annotations
@@ -78,11 +82,22 @@ def _required_bool(section: Mapping[str, Any], key: str, source: str) -> bool:
     return value
 
 
-def parse_tickets_store_config(raw: Mapping[str, Any]) -> TicketsStoreConfig:
+ISOLATION_CONFIG = "tickets_isolation"
+_ISOLATION_SOURCE = "tickets_isolation.yaml"
+
+
+def parse_tickets_store_config(
+    raw: Mapping[str, Any], isolation_raw: Mapping[str, Any]
+) -> TicketsStoreConfig:
+    """Parse the tenant's tickets.yaml store sections against the platform's isolation config."""
+    if "isolation" in raw:
+        raise ConfigError(
+            "tickets.yaml sets isolation, which the platform holds in tickets_isolation.yaml. "
+            "Remove the isolation section from tickets.yaml"
+        )
     store_raw = _section(raw, "store")
     roles_raw = _section(raw, "roles")
     provenance_raw = _section(raw, "provenance")
-    isolation_raw = _section(raw, "isolation")
 
     store = TicketsStore(
         bucket=_required_str(store_raw, "bucket", "store"),
@@ -99,10 +114,12 @@ def parse_tickets_store_config(raw: Mapping[str, Any]) -> TicketsStoreConfig:
         require_run_id=_required_bool(provenance_raw, "require_run_id", "provenance"),
     )
     isolation = TicketsIsolation(
-        evidence_bucket=_required_str(isolation_raw, "evidence_bucket", "isolation"),
-        audit_bucket=_required_str(isolation_raw, "audit_bucket", "isolation"),
-        evidence_writer_role=_required_str(isolation_raw, "evidence_writer_role", "isolation"),
-        audit_writer_role=_required_str(isolation_raw, "audit_writer_role", "isolation"),
+        evidence_bucket=_required_str(isolation_raw, "evidence_bucket", _ISOLATION_SOURCE),
+        audit_bucket=_required_str(isolation_raw, "audit_bucket", _ISOLATION_SOURCE),
+        evidence_writer_role=_required_str(
+            isolation_raw, "evidence_writer_role", _ISOLATION_SOURCE
+        ),
+        audit_writer_role=_required_str(isolation_raw, "audit_writer_role", _ISOLATION_SOURCE),
     )
 
     _validate(store, roles, provenance, isolation)
@@ -128,14 +145,12 @@ def _validate(
         raise ConfigError("tickets store config must require actor and run provenance on writes")
 
 
-def load_tickets_store_config(
-    settings: Any = None, *, environment: str | None = None, root: Path | None = None
-) -> TicketsStoreConfig:
-    from scripts.config import get_settings
+def load_tickets_store_config(*, root: Path | None = None) -> TicketsStoreConfig:
 
     from services.integration.credentials import load_env_config, require_current_config
 
-    resolved = settings or get_settings()
-    env = environment or resolved.environment
-    require_current_config("tickets", environment=env, root=root)
-    return parse_tickets_store_config(load_env_config("tickets", environment=env, root=root))
+    require_current_config("tickets", root=root)
+    require_current_config(ISOLATION_CONFIG, root=root)
+    return parse_tickets_store_config(
+        load_env_config("tickets", root=root), load_env_config(ISOLATION_CONFIG, root=root)
+    )

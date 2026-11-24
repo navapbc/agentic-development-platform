@@ -1,10 +1,11 @@
 """Container health probes and the heartbeat that long-running workers refresh.
 
 `python -m services.healthcheck http PORT [PATH] [--tls]` succeeds when a loopback request
-answers below 400. `--tls` calls over HTTPS and trusts only the certificate the service issued
-itself under `SERVER_TLS_DIR`. `python -m services.healthcheck heartbeat FILE --max-age SECONDS`
-succeeds when a worker refreshed FILE within the window. A worker that serves no endpoint
-runs `heartbeat` or calls `touch` from its own loop, so the file goes stale when the loop stops.
+answers below 400. `--tls` calls over HTTPS and trusts only the CA file `SERVER_TLS_CA_FILE`
+names, or without it the certificate the service issued itself under `SERVER_TLS_DIR`.
+`python -m services.healthcheck heartbeat FILE --max-age SECONDS` succeeds when a worker
+refreshed FILE within the window. A worker that serves no endpoint runs `heartbeat` or calls
+`touch` from its own loop, so the file goes stale when the loop stops.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import http.client
+import os
 import ssl
 import time
 from collections.abc import Callable, Sequence
@@ -72,7 +74,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.tls:
             from services.server_tls import probe_context
 
-            context = probe_context()
+            context = probe_context(ca_file=os.environ.get("SERVER_TLS_CA_FILE", ""))
         healthy = http_ok(args.port, args.path, context=context)
     else:
         healthy = heartbeat_fresh(args.file, args.max_age)

@@ -25,6 +25,6 @@ class JiraPollReadSource:
 
     async def list_candidate_issues(self, project: str) -> list[dict[str, Any]]:
         cred = self.resolver.resolve(project)
-        adapter = build_jira_adapter(self.settings, project=project, resolver=self.resolver)
+        adapter = build_jira_adapter(project=project, resolver=self.resolver)
         label = cred.intake_label if cred is not None else ""
         return adapter.search_issues(_candidate_jql(project, label))

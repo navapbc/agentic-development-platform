@@ -1,4 +1,4 @@
-"""Gate selection from config/<env>/gates.yaml, resolved over shipped bundles."""
+"""Gate selection from config/local/gates.yaml, resolved over shipped bundles."""
 
 from __future__ import annotations
 
@@ -178,14 +178,12 @@ def parse_gates_config(
 def load_gates_config(
     settings: Settings | None = None,
     *,
-    environment: str | None = None,
     registry: GateRegistry | None = None,
 ) -> GatesConfig:
     resolved = settings or get_settings()
-    env = environment or resolved.environment
-    require_current_config("gates", environment=env)
-    raw = with_profile_gates(load_env_config("gates", environment=env), resolved)
-    resolved_registry = registry or _registry_with_engines(resolved, env)
+    require_current_config("gates")
+    raw = with_profile_gates(load_env_config("gates"), resolved)
+    resolved_registry = registry or _registry_with_engines(resolved)
     return parse_gates_config(raw, registry=resolved_registry)
 
 
@@ -203,7 +201,7 @@ def with_profile_gates(raw: Mapping[str, Any], settings: Settings) -> Mapping[st
     return {**raw, "gates": [*(raw.get("gates") or []), *profile.gates]}
 
 
-def _registry_with_engines(settings: Settings, environment: str) -> GateRegistry:
+def _registry_with_engines(settings: Settings) -> GateRegistry:
     from services.orchestration.gates.builtin import engine_gate
     from services.orchestration.gates.engine_source import (
         enabled_engines,
@@ -211,6 +209,6 @@ def _registry_with_engines(settings: Settings, environment: str) -> GateRegistry
     )
 
     registry = builtin_registry()
-    for engine in enabled_engines(load_gate_engine_configs(settings, environment=environment)):
+    for engine in enabled_engines(load_gate_engine_configs(settings)):
         registry.register(engine.name, lambda engine=engine: engine_gate(engine))
     return registry

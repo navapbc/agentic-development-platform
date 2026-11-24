@@ -92,6 +92,13 @@ spec:
         - protocol: TCP
           port: 4000
     - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: slack-poster
+      ports:
+        - protocol: TCP
+          port: 8160
+    - to:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: agent-sandbox

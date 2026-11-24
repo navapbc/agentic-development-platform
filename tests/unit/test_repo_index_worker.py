@@ -236,7 +236,7 @@ def test_build_worker_builds_targets_from_registry(monkeypatch, tmp_path) -> Non
     monkeypatch.setattr(worker_module, "get_settings", hermetic_settings)
     worker = build_worker()
     assert worker is not None
-    assert worker.repos() == {("", "svc"), ("", "green")}
+    assert worker.repos() == {("adp", "svc"), ("adp", "green")}
 
 
 def test_two_tenants_with_the_same_repository_are_indexed_and_recorded_separately() -> None:
@@ -310,6 +310,11 @@ def test_the_default_reindexer_passes_the_targets_index_roots(monkeypatch) -> No
 def test_build_worker_reads_each_tenants_bundle(monkeypatch, tmp_path) -> None:
     configure_repositories(
         monkeypatch, tmp_path / "env", "repositories:\n  svc:\n    index: true\n"
+    )
+    adp = tmp_path / "tenants" / "adp"
+    adp.mkdir(parents=True)
+    (adp / "repositories.yaml").write_text(
+        "config_version: 1\nrepositories:\n  svc:\n    index: true\n", encoding="utf-8"
     )
     beta = tmp_path / "tenants" / "beta"
     beta.mkdir(parents=True)

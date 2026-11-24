@@ -1,0 +1,9 @@
+# The tenant's registry identity, which the platform registries.yaml in external mode requires. The
+# platform file sets mode, and a tenant file that sets it is refused. A tenant may add mirrors and
+# packages entries only on the hosts the platform file names. No two tenants may hold one
+# credential.username. The token is always REGISTRY_TOKEN of the tenant's settings file, and a
+# tenant file that sets credential.token_env is refused.
+config_version: 1
+
+credential:
+  username: tenant-puller

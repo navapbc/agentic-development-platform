@@ -141,7 +141,9 @@ def _context(world: _World) -> IntakeContext:
 
 
 def _handler(world: _World, *, secret: str = _SECRET) -> JiraIntakeHandler:
-    return JiraIntakeHandler(secret=secret, jira_resolver=world.resolver, context=_context(world))
+    return JiraIntakeHandler(
+        tenant="adp", secret=secret, jira_resolver=world.resolver, context=_context(world)
+    )
 
 
 async def _post(world: _World, *, body: bytes, mode: str, headers=None, secret: str = _SECRET):
@@ -151,7 +153,7 @@ async def _post(world: _World, *, body: bytes, mode: str, headers=None, secret: 
         handler=_handler(world, secret=secret),
         allowed=_ALLOWED_PROJECTS,
         ledger=world.ledger,
-        mode=mode,
+        mode=lambda tenant: mode,
     )
 
 
@@ -176,7 +178,7 @@ async def _poll(world: _World, *, issue: dict):
 def _hermetic_config(monkeypatch):
     monkeypatch.setattr(
         "services.orchestration.intake_reconciler.jira_allowed_projects",
-        lambda settings=None: set(_ALLOWED_PROJECTS),
+        lambda: set(_ALLOWED_PROJECTS),
     )
     monkeypatch.setattr(
         "services.orchestration.intake_reconciler.source_control_repos",
@@ -184,15 +186,15 @@ def _hermetic_config(monkeypatch):
     )
     monkeypatch.setattr(
         "services.orchestration.intake_reconciler.acceptance_field",
-        lambda settings=None: "",
+        lambda: "",
     )
     monkeypatch.setattr(
         "services.integration.jira.snapshot.allowed_projects",
-        lambda settings=None: set(_ALLOWED_PROJECTS),
+        lambda: set(_ALLOWED_PROJECTS),
     )
     monkeypatch.setattr(
         "services.integration.jira.snapshot.acceptance_field",
-        lambda settings=None: "",
+        lambda: "",
     )
 
 

@@ -71,7 +71,7 @@ class TemporalStarter:
         await_pr_close = repository.backend == LOCAL
         caps = BudgetCaps.from_settings(self._settings)
         workflow_id = f"draft-pr-{start.issue_key}-{start.execution_id}"
-        from services.orchestration.task_queues import run_task_queue
+        from services.orchestration.task_queues import run_review_task_queue, run_task_queue
 
         await self._client.start_workflow(
             DraftPullRequestWorkflow.run,
@@ -101,7 +101,7 @@ class TemporalStarter:
                 run_approval=self._settings.intake_run_approval,
                 run_dependency_detection=self._settings.dependency_detection_enabled,
                 max_dependency_replans=self._settings.dependency_replan_attempts,
-                review_task_queue=self._settings.review_task_queue,
+                review_task_queue=run_review_task_queue(self._settings),
                 snapshot_version=start.snapshot_version,
                 run_test_triage=run_test_triage,
                 await_pr_close=await_pr_close,
@@ -307,7 +307,7 @@ def build_intake_context(settings: Settings, *, client: Any, gh_resolver: Any) -
         execution_seeder=execution_store,
         snapshot_store=None,
         github_allow=frozenset(source_control_repos(settings)),
-        field_id=acceptance_field(settings),
+        field_id=acceptance_field(),
         settings=settings,
         active_guard=execution_store,
         base_resolver=starter,

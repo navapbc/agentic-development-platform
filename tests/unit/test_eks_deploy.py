@@ -111,6 +111,21 @@ def test_restarting_the_gateway_rolls_every_tenant_gateway(monkeypatch) -> None:
     assert not [c for c in calls if "agentic-dev-platform" in c]
 
 
+def test_restarting_the_review_workers_rolls_each_tenants_review_worker(monkeypatch) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(eks_deploy_task, "run", lambda args, **_: calls.append(args) or "")
+
+    eks_deploy_task.restart(
+        ["tenant-review-workers"], {"tenants": [{"name": "adp"}, {"name": "beta"}]}
+    )
+
+    assert [c[1:6] for c in calls[:2]] == [
+        ["-n", "tenant-adp-review", "rollout", "restart", "deployment/review-worker"],
+        ["-n", "tenant-beta-review", "rollout", "restart", "deployment/review-worker"],
+    ]
+    assert not [c for c in calls if "agentic-dev-platform" in c]
+
+
 def test_the_platform_gateway_is_retired(monkeypatch) -> None:
     calls: list[list[str]] = []
     monkeypatch.setattr(eks_deploy_task, "run", lambda args, **_: calls.append(args) or "")
@@ -161,6 +176,8 @@ def test_each_tenant_gateway_is_rendered_once_and_its_load_balancer_awaited(
     )
 
     assert "tenant-adp/mcp-gateway" in rolled[0] and "tenant-beta/mcp-gateway" in rolled[0]
+    assert "tenant-adp-review/review-worker" in rolled[0]
+    assert "tenant-beta-review/review-worker" in rolled[0]
     assert "mcp-gateway" not in rolled[0]
     assert len(rolled) == 1
     out = capsys.readouterr().out
@@ -241,6 +258,23 @@ def test_tenant_secrets_without_a_current_value_are_named_by_tenant() -> None:
     secrets = _FakeSecrets({"arn:gh": True, "arn:pat": False})
 
     assert eks_deploy.unset_tenant_secrets(tenants, secrets) == ["adp:jira_pat"]
+
+
+def test_an_unset_review_signing_key_names_the_review_worker_that_cannot_start() -> None:
+    tenants = [
+        {"name": name, "secrets": {"review_signing_key": f"arn:{name}-review"}}
+        for name in ("adp", "beta")
+    ]
+    secrets = _FakeSecrets({"arn:adp-review": True, "arn:beta-review": False})
+    mounted = eks_deploy.mounted_secret_keys()
+
+    assert "review_signing_key" in mounted
+    assert "review_signing_key" not in eks_deploy.platform_mounted_keys(mounted, {}, tenants)
+    assert eks_deploy.unset_tenant_secrets(tenants, secrets) == ["beta:review_signing_key"]
+    message = eks_deploy.unset_message("beta:review_signing_key")
+    assert "review worker of beta refuses to start" in message
+    assert "trust root under tenant beta" in message
+    assert "start without it" in eks_deploy.unset_message("beta:jira_pat")
 
 
 def test_a_secret_without_an_arn_is_an_error() -> None:

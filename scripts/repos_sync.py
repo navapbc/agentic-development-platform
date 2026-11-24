@@ -3,9 +3,9 @@
 Nothing on the workstation is mounted into a pod. Each repository with backend local in the
 registry of the tenant whose activity worker receives the copies is sent as a git bundle over
 `kubectl exec` and fetched into its copy at $REPOSITORY_ROOT/<name> on the workspace volume. That
-tenant is TENANT, or the first tenant TENANTS names, and its registry is
-config/<env>/tenants/<tenant>/repositories.yaml, or config/<env>/repositories.yaml for the home
-tenant without one. The bundle leaves out the agent/* branches and every commit the copy already
+tenant is the TENANT that inv repos-sync sets from --tenant, or else the one local tenant, and
+its registry is config/local/tenants/<tenant>/repositories.yaml. The bundle leaves out the agent/*
+branches and every commit the copy already
 holds, and the fetch only fast-forwards, so a sync adds commits and never replaces a branch the
 agent wrote. Each local-mode engine in gate_engine.yaml is sent as its working tree, uncommitted
 edits included, to $GATE_ENGINE_ROOT/<name>.

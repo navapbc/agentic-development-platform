@@ -30,12 +30,13 @@ Generated secrets get a random value from Terraform on the first apply. Terrafor
 | `clickhouse_password` | generated | `CLICKHOUSE_PASSWORD` | Manual, by generation |
 | `coordination_shared_secret` | generated | `COORDINATION_SHARED_SECRET` | Manual, by generation |
 | `github_token` | external | `GITHUB_TOKEN` | At the issuer |
-| `github_webhook_secret` | external | `GITHUB_WEBHOOK_SECRET` | At the issuer |
 | `jira_api_token` | external | `JIRA_API_TOKEN` | At the issuer |
 | `jira_pat` | external | `JIRA_PAT` | At the issuer |
-| `jira_webhook_secret` | external | `JIRA_WEBHOOK_SECRET` | At the issuer |
 | `slack_webhook_url` | external | `SLACK_WEBHOOK_URL` | At the issuer |
-| `review_signing_key` | external | `REVIEW_SIGNING_KEY` | With a trust-root change |
+| `slack_shared_bot_token` | external | `SLACK_SHARED_BOT_TOKEN` | At the issuer |
+| `slack_shared_signing_secret` | external | `SLACK_SHARED_SIGNING_SECRET` | At the issuer |
+| `slack_shared_app_token` | external | `SLACK_SHARED_APP_TOKEN` | At the issuer |
+| `slack_poster_tls` | external | `SLACK_POSTER_TLS_CERTIFICATE` and `SLACK_POSTER_TLS_KEY`, the `certificate` and `private_key` of its JSON | `inv slack-poster-certs issue` and `put` before the 397-day expiry |
 | `authorship_signing_key` | external | `AUTHORSHIP_SIGNING_KEY` | With an identity key change |
 | `registry_token` | external | `REGISTRY_TOKEN` | At the issuer |
 | `database_platform_migrator` | database | `ALEMBIC_DATABASE_URL` user and password | Automatic |
@@ -48,7 +49,7 @@ Generated secrets get a random value from Terraform on the first apply. Terrafor
 
 External secrets are created empty. Set each one before the first deployment that reads it, for example `aws secretsmanager put-secret-value --secret-id agentic-platform/external/github-token --secret-string file://token.txt`. ECS cannot start a task that references a secret with no value.
 
-The trust-root bundle holds only public keys and stays in configuration. The MinIO and evidence-store access keys are not provisioned, because the deployed workloads use their IAM roles.
+The trust-root bundle holds only public keys and stays in configuration. The store holds no review signing key, because each tenant signs its review verdicts with its own key, which the [tenant](../tenant) module creates at `<name_prefix>/tenants/<tenant>/review-signing-key`. The MinIO and evidence-store access keys are not provisioned, because the deployed workloads use their IAM roles.
 
 ## Access
 

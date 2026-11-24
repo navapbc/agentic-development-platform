@@ -83,6 +83,7 @@ variables {
   access_log_bucket  = "agentic-platform-access-logs-111111111111"
   worker_role_arn    = "arn:aws:iam::111111111111:role/agentic-platform-eks-tenant-adp"
   worker_role_name   = "agentic-platform-eks-tenant-adp"
+  review_role_arn    = "arn:aws:iam::111111111111:role/agentic-platform-eks-tenant-adp-review"
   webhook_reader_arn = "arn:aws:iam::111111111111:role/agentic-platform-eks-inbound-webhook"
   secrets            = ["github_token", "jira_api_token"]
   config_store = {
@@ -157,7 +158,7 @@ run "only_the_inbound_webhook_reads_the_tenant_webhook_secrets" {
   assert {
     condition = (
       jsondecode(aws_secretsmanager_secret_policy.this["github_token"].policy).Statement[1].Effect == "Deny" &&
-      jsondecode(aws_secretsmanager_secret_policy.this["github_token"].policy).Statement[1].Condition.ArnNotEquals["aws:PrincipalArn"] == "arn:aws:iam::111111111111:role/agentic-platform-eks-tenant-adp"
+      jsondecode(aws_secretsmanager_secret_policy.this["github_token"].policy).Statement[1].Condition.ArnNotEquals["aws:PrincipalArn"] == ["arn:aws:iam::111111111111:role/agentic-platform-eks-tenant-adp"]
     )
     error_message = "The tenant's github_token admits the inbound webhook, which reads only the webhook secrets and the escalation action key."
   }

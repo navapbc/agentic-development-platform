@@ -236,7 +236,7 @@ async def reconcile_intake(
     checks_repos: frozenset[str] | None = None,
 ) -> IntakeReport:
     resolved = settings or get_settings()
-    jira_resolver = jira_resolver or build_jira_credential_resolver(resolved)
+    jira_resolver = jira_resolver or build_jira_credential_resolver()
     ctx = IntakeContext(
         starter=starter,
         alerter=alerter,
@@ -244,7 +244,7 @@ async def reconcile_intake(
         execution_seeder=execution_seeder,
         snapshot_store=snapshot_store,
         github_allow=frozenset(source_control_repos(resolved)),
-        field_id=acceptance_field(resolved),
+        field_id=acceptance_field(),
         settings=resolved,
         active_guard=active_guard,
         admission=await build_admission(resolved, run_counter),
@@ -253,7 +253,7 @@ async def reconcile_intake(
     )
     report = IntakeReport()
 
-    for project in sorted(jira_allowed_projects(resolved)):
+    for project in sorted(jira_allowed_projects()):
         cred = jira_resolver.resolve(project)
         if cred is None:
             continue

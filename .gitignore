@@ -1,11 +1,12 @@
 # Secrets and local env
 .env
 .env.*
-!.env.example
+config/local/platform.env
+!config/local/platform.env.example
 *.pem
 *.key
 
-# Per-environment config edited by the operator (ship the .example template only)
+# Platform config edited by the operator (ship the .example template only)
 config/*/checks.yaml
 !config/*/checks.yaml.example
 config/*/github.yaml
@@ -18,10 +19,14 @@ config/*/gates.yaml
 !config/*/gates.yaml.example
 config/*/escalation.yaml
 !config/*/escalation.yaml.example
+config/*/slack-shared-app.yaml
+!config/*/slack-shared-app.yaml.example
 config/*/gate_engine.yaml
 !config/*/gate_engine.yaml.example
 config/*/tickets.yaml
 !config/*/tickets.yaml.example
+config/*/tickets_isolation.yaml
+!config/*/tickets_isolation.yaml.example
 config/*/repositories.yaml
 !config/*/repositories.yaml.example
 config/*/registries.yaml

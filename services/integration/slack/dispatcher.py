@@ -2,7 +2,9 @@
 
 Both transports call the same dispatcher. The tenant comes from the transport, the request
 path on the inbound webhook or the worker's own tenant for Socket Mode, and the token's tenant
-must match it before any store or workflow is used. The decision reaches the workflow as an
+must match it before any store or workflow is used. A click of the shared Slack app is decided by
+the tenant whose escalation.yaml names the click's channel, and a click from a channel that routes
+to no tenant is refused without a dispatcher. The decision reaches the workflow as an
 Update whose ID derives from the park, so a double click, a retried click, and a click from
 either transport resolve to the first decision. The workflow's validator refuses a decision for
 a park it is not waiting on.
@@ -50,6 +52,7 @@ class Refusal(StrEnum):
     EARLIER_PARK = "earlier_park"
     NOT_WAITING = "not_waiting"
     ALREADY_DECIDED = "already_decided"
+    UNROUTED = "unrouted"
 
 
 _REPLIES = {
@@ -64,6 +67,10 @@ _REPLIES = {
     ),
     Refusal.NOT_WAITING: (
         "The run is not waiting for this decision. If it parked moments ago, try again shortly."
+    ),
+    Refusal.UNROUTED: (
+        "This channel is not the escalation channel of a tenant, as after a tenant moves its "
+        "alerts to another channel. Use the Next step command in this message instead."
     ),
 }
 _UNCONFIRMED = "The decision is not yet confirmed. Click again to see the outcome."
@@ -96,12 +103,13 @@ def click_from_payload(payload: dict[str, Any]) -> SlackClick:
     user = payload.get("user") or {}
     enterprise = payload.get("enterprise") or {}
     action = (payload.get("actions") or [{}])[0]
+    channel = (payload.get("channel") or {}).get("id")
     return SlackClick(
         value=str(action.get("value") or ""),
         action=str(action.get("action_id") or ""),
         organization=str(enterprise.get("id") or user.get("team_id") or ""),
         user=str(user.get("id") or ""),
-        channel=str((payload.get("channel") or {}).get("id") or ""),
+        channel=str(channel or (payload.get("container") or {}).get("channel_id") or ""),
     )
 
 
@@ -121,6 +129,15 @@ class RefusalRecord:
     workflow_id: str = ""
     stage: str = ""
     park_digest: str = ""
+    route: str = ""
+    channel: str = ""
+
+    @property
+    def correlation_ids(self) -> dict[str, str]:
+        ids = {"tenant": self.tenant, "park_digest": self.park_digest}
+        if self.route:
+            ids |= {"route": self.route, "channel": self.channel}
+        return ids
 
 
 @dataclass(frozen=True)
@@ -183,7 +200,11 @@ class SlackDispatcher:
         self._records = records
         self._bound = bound_seconds
 
-    async def dispatch(self, click: SlackClick) -> DispatchResult:
+    async def dispatch(
+        self, click: SlackClick, *, retained_channel: str | None = None
+    ) -> DispatchResult:
+        """Decide the click, which must come from the tenant's channel, or from retained_channel,
+        a channel the tenant left whose claim it still holds."""
         settings = self._slack_settings()
         if settings is None:
             return await self._refuse(click, Refusal.DISABLED)
@@ -194,7 +215,8 @@ class SlackDispatcher:
             return await self._refuse(click, reason)
         if token.tenant != self._tenant:
             return await self._refuse(click, Refusal.UNVERIFIED)
-        if click.organization != settings.organization_id or click.channel != settings.channel:
+        channels = {settings.channel, *([retained_channel] if retained_channel else [])}
+        if click.organization != settings.organization_id or click.channel not in channels:
             return await self._refuse(click, Refusal.WORKSPACE, token)
         approvers = settings.allowlist.get(token.kind, ())
         if not any(
@@ -265,6 +287,23 @@ class SlackDispatcher:
             park_digest=park_digest(token.park_key) if token else "",
         )
         await self._records.record_refusal(record)
+
+
+async def refuse_unrouted(
+    click: SlackClick, records: DecisionRecords, *, route: str
+) -> DispatchResult:
+    """Refuse a click whose channel routes to no tenant, and record the route and the channel."""
+    await records.record_refusal(
+        RefusalRecord(
+            tenant="",
+            reason=Refusal.UNROUTED,
+            organization=click.organization,
+            user=click.user,
+            route=route,
+            channel=click.channel,
+        )
+    )
+    return DispatchResult(reply=_REPLIES[Refusal.UNROUTED], refusal=Refusal.UNROUTED)
 
 
 def _outcome_reply(decision: str, actor: str, *, already: bool = False) -> str:
@@ -368,7 +407,7 @@ class PostgresDecisionRecords:
             actor_type=SLACK_ACTOR_TYPE,
             actor_id=slack_actor(refusal.organization, refusal.user)[:128],
             reason=refusal.reason.value,
-            correlation_ids={"tenant": refusal.tenant, "park_digest": refusal.park_digest},
+            correlation_ids=refusal.correlation_ids,
         )
         async with self._engine.begin() as conn:
             await conn.execute(stmt)

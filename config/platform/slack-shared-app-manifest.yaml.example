@@ -1,0 +1,43 @@
+# Slack app manifest for the shared escalation app, which the platform operates for every tenant
+# whose escalation.yaml sets slack.app to shared. Create the app from this manifest at
+# https://api.slack.com/apps for commercial Slack or https://api.slack-gov.com/apps for GovSlack,
+# once per deployment, then install it to the workspace or Enterprise Grid org that holds the
+# tenants' escalation channels. docs/slack-escalation.md lists the steps.
+#
+# The app delivers clicks over one transport. For the request URL, set request_url to the inbound
+# webhook's https://<webhook host>/webhook/slack/_shared and leave Socket Mode off. For Socket Mode,
+# which needs no public URL, set socket_mode_enabled to true, remove request_url, and generate an
+# app-level token with connections:write for SLACK_SHARED_APP_TOKEN.
+#
+# In AWS, uncomment allowed_ip_address_ranges and list the NAT gateway egress addresses, so Slack
+# refuses the bot token from outside the VPC. Every pod in the VPC shares those addresses.
+#
+# For GovSlack, uncomment the compliance section at the end. Commercial Slack refuses a manifest
+# that carries it.
+_metadata:
+  major_version: 1
+display_information:
+  name: ADP Escalations
+  description: Parked platform runs that need a human decision.
+features:
+  bot_user:
+    display_name: ADP Escalations
+    always_online: false
+oauth_config:
+  scopes:
+    bot:
+      - chat:write
+settings:
+  # allowed_ip_address_ranges:
+  #   - 203.0.113.10/32
+  interactivity:
+    is_enabled: true
+    request_url: https://webhook.example.gov/webhook/slack/_shared
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false
+# GovSlack lists these on the app. They describe the platform's deployment, not Slack's.
+# compliance:
+#   fedramp_authorization: Customer Responsibility
+#   dod_srg_ilx: None
+#   itar_compliant: "No"

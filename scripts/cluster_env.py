@@ -1,11 +1,11 @@
-"""Derive the local cluster's environment from .env and the compose stack's published ports.
+"""Derive the local cluster's environment from the platform settings and the compose ports.
 
-The in-cluster workers read the settings the compose services read from `.env`, with each
-compose service address replaced by the address the pods reach the compose stack on and the
-port compose publishes. LiteLLM runs in the cluster under the same Service name and keeps its
-keys and spend in the litellm database on the compose Postgres server, and OPA runs
-beside the activity worker on loopback. Settings that only name a workstation resource, such
-as the AWS profile or a kubeconfig, are dropped.
+The in-cluster workers read the settings the compose services read from
+config/local/platform.env, with each compose service address replaced by the address the pods
+reach the compose stack on and the port compose publishes. LiteLLM runs in the cluster under the
+same Service name and keeps its keys and spend in the litellm database on the compose Postgres
+server, and OPA runs beside the activity worker on loopback. Settings that only name a
+workstation resource, such as the AWS profile or a kubeconfig, are dropped.
 """
 
 from __future__ import annotations
@@ -149,18 +149,25 @@ def workload_secret_values(
     return {
         "database_url": database_url,
         "litellm_database_url": litellm_database_url(database_url),
-        "github_webhook_secret": env.get("GITHUB_WEBHOOK_SECRET") or "local-demo-secret",
-        "jira_webhook_secret": env.get("JIRA_WEBHOOK_SECRET") or "local-demo-secret",
-        "slack_signing_secret": env.get("SLACK_SIGNING_SECRET", ""),
-        "escalation_action_key": env.get("ESCALATION_ACTION_KEY", ""),
         "coordination_shared_secret": env.get("COORDINATION_SHARED_SECRET", ""),
     }
 
 
 def compose_config(files: list[str]) -> dict:
+    from scripts.env_file import platform_env_path
+
     arguments = [part for name in files for part in ("-f", name)]
     result = process.run(
-        ["docker", "compose", *arguments, "config", "--format", "json"],
+        [
+            "docker",
+            "compose",
+            "--env-file",
+            str(platform_env_path()),
+            *arguments,
+            "config",
+            "--format",
+            "json",
+        ],
         timeout=process.SHORT_COMMAND_TIMEOUT_SECONDS,
         capture_output=True,
         text=True,

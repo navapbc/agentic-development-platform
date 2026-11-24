@@ -13,7 +13,7 @@ from invoke.collection import Collection
 from invoke.context import Context
 from invoke.exceptions import Exit
 from invoke.runners import Result
-from tests.support import hermetic_settings
+from tests.support import hermetic_settings, local_tenants
 
 EXPECTED_TASKS = {
     "tunnel-start",
@@ -94,6 +94,7 @@ EXPECTED_TASKS = {
     "runtime-images",
     "tenant-config-validate",
     "tenant-config-publish",
+    "tenant-config-claims",
     "tenant-verify-aws",
     "webhook-setup",
     "webhook-teardown",
@@ -124,7 +125,8 @@ def project(tmp_path, monkeypatch):
     (tmp_path / "compose.yaml").write_text("services: {}\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("COMPOSE_FILE", raising=False)
-    monkeypatch.setenv("TENANT", "adp")
+    monkeypatch.delenv("TENANT", raising=False)
+    local_tenants(monkeypatch, tmp_path, "adp")
     from scripts.config import get_settings
 
     get_settings.cache_clear()
@@ -147,6 +149,37 @@ def test_repair_runs_in_the_activity_worker(project):
 
     assert container.commands == [_in_activity_worker("python -m scripts.repair T-1 --retry")]
     assert host.commands == [f"{tasks_module.HOST_PYTHON} -m scripts.repair T-1 --abandon"]
+
+
+def test_a_host_task_without_a_tenant_acts_on_the_one_local_tenant(project):
+    container, host = _EnvRecordingContext(), _EnvRecordingContext()
+
+    tasks_module.repair(container, "T-1", retry=True)
+    tasks_module.repair(host, "T-1", retry=True, local=True)
+
+    argv = shlex.split(container.runs[0][0])
+    assert argv[argv.index("--namespace") + 1] == "tenant-adp"
+    assert host.runs[0][1] == {"TENANT": "adp"}
+
+
+@pytest.mark.parametrize(
+    "invoke",
+    [
+        lambda c: tasks_module.repair(c, "T-1", retry=True),
+        lambda c: tasks_module.repair(c, "T-1", retry=True, local=True),
+        lambda c: tasks_module.logs(c, "activity-worker"),
+        lambda c: tasks_module.repos_sync(c),
+        lambda c: tasks_module.tenant_config_validate(c),
+    ],
+)
+def test_a_host_task_without_a_tenant_is_refused_with_two_tenants(project, monkeypatch, invoke):
+    local_tenants(monkeypatch, project, "adp", "beta")
+    context = _EnvRecordingContext()
+
+    with pytest.raises(Exit, match="2 local tenants exist, adp, beta. Name the tenant"):
+        invoke(context)
+
+    assert context.runs == []
 
 
 def test_gate_runs_in_the_activity_worker(project):
@@ -192,7 +225,10 @@ class _EnvRecordingContext(Context):
         (lambda c, **kw: tasks_module.gate(c, "T-1", "plan", approve=True, **kw), "scripts.gate"),
     ],
 )
-def test_a_run_decision_reaches_the_worker_of_the_tenant_it_names(project, invoke, script):
+def test_a_run_decision_reaches_the_worker_of_the_tenant_it_names(
+    project, monkeypatch, invoke, script
+):
+    local_tenants(monkeypatch, project, "adp", "acme")
     container, host = _EnvRecordingContext(), _EnvRecordingContext()
 
     invoke(container, tenant="acme")
@@ -258,6 +294,15 @@ def test_rebar_store_remote_runs_in_a_one_off_worker_pod(project):
         "-- python -m scripts.rebar_store_remote"
     ]
     assert host.commands == [f"{tasks_module.HOST_PYTHON} -m scripts.rebar_store_remote"]
+
+
+def test_rebar_store_remote_sets_the_tenant_of_its_one_off_pod(project, monkeypatch):
+    local_tenants(monkeypatch, project, "adp", "beta")
+    context = _EnvRecordingContext()
+
+    tasks_module.rebar_store_remote(context, tenant="beta")
+
+    assert context.runs[0][1] == {"TENANT": "beta"}
 
 
 def test_temporal_certs_passes_each_name_and_switch_to_the_script(project):
@@ -522,3 +567,19 @@ def test_inv_refuses_an_interpreter_older_than_the_python_version_file(tmp_path)
     with pytest.raises(SystemExit, match="requires 3.14"):
         tasks_module.require_pinned_python(str(pinned), running=(3, 12))
     tasks_module.require_pinned_python(str(pinned), running=(3, 14))
+
+
+def test_k8s_reload_regenerates_the_compose_override_before_compose_starts(project, monkeypatch):
+    context = _RecordingContext()
+    monkeypatch.setattr(tasks_module, "recorded_build_id", lambda: "b1")
+    monkeypatch.setattr(tasks_module, "resolve_build_id", lambda: "b1")
+    monkeypatch.setattr(tasks_module, "_compose_build", lambda c, files, build_id: None)
+    monkeypatch.setattr(tasks_module, "_ensure_litellm_database", lambda c: None)
+    monkeypatch.setattr(tasks_module, "_k8s", lambda c, action, build_id: None)
+
+    tasks_module.k8s_reload(context)
+
+    override = f"{tasks_module.HOST_PYTHON} -m scripts.repositories_compose"
+    assert context.commands.index(override) < next(
+        index for index, command in enumerate(context.commands) if " up -d " in command
+    )

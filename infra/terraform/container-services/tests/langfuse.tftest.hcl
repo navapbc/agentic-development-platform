@@ -98,11 +98,8 @@ variables {
   database_app_secret_arn      = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/database/platform_app-a"
   database_migrator_secret_arn = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/database/platform_migrator-b"
   secret_kms_key_arn           = "arn:aws:kms:us-east-1:111111111111:key/secrets"
-  bedrock_invoke_policy_arns   = ["arn:aws:iam::111111111111:policy/agentic-platform-bedrock-invoke"]
   secret_arns = {
     coordination_shared_secret = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/coordination-c"
-    review_signing_key         = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/external/review-signing-key-d"
-    review_attestation_secret  = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/review-attestation-e"
     database_langfuse          = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/database/langfuse-h"
     clickhouse_password        = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/clickhouse-password-i"
     langfuse_salt              = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/langfuse-salt-j"
@@ -254,18 +251,8 @@ run "the_secret_store_lists_the_langfuse_readers_and_restarts" {
   }
 }
 
-run "the_review_worker_exports_to_langfuse_without_the_collector" {
+run "platform_deploy_runs_the_langfuse_services" {
   command = apply
-
-  assert {
-    condition = (
-      contains([for variable in jsondecode(aws_ecs_task_definition.workload["review-worker"].container_definitions)[1].environment : "${variable.name}=${variable.value}"], "LANGFUSE_HOST=https://langfuse.platform.internal") &&
-      contains([for variable in jsondecode(aws_ecs_task_definition.workload["review-worker"].container_definitions)[1].environment : "${variable.name}=${variable.value}"], "OTEL_SDK_DISABLED=false") &&
-      contains([for variable in jsondecode(aws_ecs_task_definition.workload["review-worker"].container_definitions)[1].environment : "${variable.name}=${variable.value}"], "OTEL_TRACES_EXPORTER=none") &&
-      contains([for secret in jsondecode(aws_ecs_task_definition.workload["review-worker"].container_definitions)[1].secrets : secret.name], "LANGFUSE_SECRET_KEY")
-    )
-    error_message = "The review worker does not export its generations to Langfuse."
-  }
 
   assert {
     condition     = contains(keys(output.deploy.tasks), "clickhouse-migrate") && toset(keys(output.deploy.langfuse_services)) == toset(["clickhouse", "langfuse-web", "langfuse-worker"])

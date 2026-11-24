@@ -2,8 +2,8 @@
 
 Every file scanner reads the same staged copy of the tree, which holds the tracked files and the
 untracked files that git does not ignore. A local run and a CI run therefore scan the same file
-set, and ignored files such as a developer's `.env` never reach a report. The gitleaks history
-scan reads the commits reachable from HEAD, and pip-audit reads the dependency set that
+set, and ignored files such as a developer's settings files never reach a report. The gitleaks
+history scan reads the commits reachable from HEAD, and pip-audit reads the dependency set that
 `uv.lock` pins.
 
 The gate fails on any finding that `security/sast-accepted.yaml` does not accept, and on any

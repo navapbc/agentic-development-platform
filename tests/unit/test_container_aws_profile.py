@@ -75,6 +75,6 @@ def test_no_compose_file_passes_the_host_profile_straight_to_a_container(compose
 
 
 def test_the_env_example_declares_the_container_profile_override():
-    env_example = (REPO_ROOT / ".env.example").read_text(encoding="utf-8")
+    env_example = (REPO_ROOT / "config/local/platform.env.example").read_text(encoding="utf-8")
 
     assert "\nPLATFORM_AWS_PROFILE=" in env_example

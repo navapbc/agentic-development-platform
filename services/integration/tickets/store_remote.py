@@ -142,7 +142,7 @@ def seed_absent_store(repo_root: str, settings: Settings) -> None:
     from services.integration.tickets.store_config import load_tickets_store_config
 
     try:
-        config = load_tickets_store_config(settings)
+        config = load_tickets_store_config()
     except ConfigError:
         return
     if config.store.bucket:
@@ -196,10 +196,10 @@ def tickets_store_preflight(settings: Settings) -> None:
 
     if resolve_ticket_backend_name(settings) != REBAR:
         return
-    repo_root = load_rebar_backend_config(settings).repo_root
+    repo_root = load_rebar_backend_config().repo_root
     if not (Path(repo_root) / ".git").exists():
         seed_absent_store(repo_root, settings)
     remote = read_store_remote(repo_root)
     if remote is None or not remote.is_s3:
         return
-    check_store_remote(remote, load_tickets_store_config(settings))
+    check_store_remote(remote, load_tickets_store_config())

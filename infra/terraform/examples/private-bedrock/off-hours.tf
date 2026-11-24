@@ -14,7 +14,7 @@ locals {
     security_group_ids = [module.eks_deployer.security_group_id]
     pass_role_arns     = [module.eks_deployer.execution_role_arn, module.eks_deployer.task_role_arn]
     log_group_name     = module.eks_deployer.log_group_name
-    deployments        = ["tenant-workers", "mcp-gateway", "inbound-webhook", "litellm"]
+    deployments        = ["tenant-workers", "tenant-review-workers", "mcp-gateway", "inbound-webhook", "litellm"]
   } : null
 
   off_hours_database = local.secret_store_database ? {

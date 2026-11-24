@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable, Mapping
+from pathlib import Path
 from typing import Any
 
 from scripts.eks_render import PLATFORM_NAMESPACE, RenderError
@@ -22,9 +23,7 @@ TENANT_WEBHOOK_KEYS = {
         "escalation_action_key",
     )
 }
-# The tenant's worker signs its Slack actions with the tenant's own action key, so the webhook
-# mounts the tenant's Slack secrets even when it serves one tenant.
-SLACK_WEBHOOK_KEYS = frozenset({"slack_signing_secret", "escalation_action_key"})
+ACTION_KEY_FINGERPRINT_PREFIX = "ESCALATION_ACTION_KEY_SHA256_"
 
 
 def webhook_alias(prefix: str, tenant: str) -> str:
@@ -32,10 +31,10 @@ def webhook_alias(prefix: str, tenant: str) -> str:
 
 
 def webhook_deployment(documents: Iterable[dict[str, Any]]) -> dict[str, Any] | None:
-    return _platform_document(documents, "Deployment", WEBHOOK)
+    return platform_document(documents, "Deployment", WEBHOOK)
 
 
-def _platform_document(
+def platform_document(
     documents: Iterable[dict[str, Any]], kind: str, name: str
 ) -> dict[str, Any] | None:
     return next(
@@ -60,25 +59,19 @@ def route_webhook_tenants(
     GITHUB_WEBHOOK_SECRET_<TENANT>, JIRA_WEBHOOK_SECRET_<TENANT>, SLACK_SIGNING_SECRET_<TENANT>,
     and ESCALATION_ACTION_KEY_<TENANT>.
     A secret omitted as `<tenant>:<key>` has no current value and is left out, and its alias is
-    returned. With one tenant, the webhook keeps the platform's GitHub and Jira secrets and its
-    config, and mounts only the tenant's Slack signing secret and action key.
+    returned. One tenant is served the same way as several.
     """
     entries = list(inputs.get("tenants") or [])
     if not entries:
         return []
-    single = len(entries) < 2
-    provider = _platform_document(documents, "SecretProviderClass", WEBHOOK)
+    provider = platform_document(documents, "SecretProviderClass", WEBHOOK)
     webhook = webhook_deployment(documents)
     if provider is None or webhook is None:
         raise RenderError(f"the overlay has no {WEBHOOK} Deployment and SecretProviderClass")
     buckets = {entry["config_bucket"] for entry in entries if entry.get("config_bucket")}
-    if not single and len(buckets) != 1:
+    if len(buckets) != 1:
         raise RenderError(f"the {WEBHOOK} reads every tenant's bundle from one config bucket")
-    keys = {
-        key: prefix
-        for key, prefix in TENANT_WEBHOOK_KEYS.items()
-        if not single or key in SLACK_WEBHOOK_KEYS
-    }
+    keys = TENANT_WEBHOOK_KEYS
     omitted = set(omit)
     objects = json.loads(provider["spec"]["parameters"]["objects"])
     skipped: list[str] = []
@@ -95,10 +88,132 @@ def route_webhook_tenants(
                 {"objectName": own[key], "objectType": "secretsmanager", "objectAlias": alias}
             )
     provider["spec"]["parameters"]["objects"] = json.dumps(objects)
-    if single:
-        return skipped
     container = next(
         c for c in webhook["spec"]["template"]["spec"]["containers"] if c["name"] == WEBHOOK
     )
     container.setdefault("env", []).append({"name": "TENANT_CONFIG_BUCKET", "value": buckets.pop()})
     return skipped
+
+
+def route_action_key_fingerprints(
+    documents: list[dict[str, Any]], inputs: Mapping[str, Any]
+) -> None:
+    """Mount each tenant's action key fingerprint in the Slack posting service.
+
+    The service compares the fingerprints to refuse the tenants that share an action key, as the
+    webhook does with the keys, and holds no key itself.
+    """
+    if not runs_slack_poster(inputs):
+        return
+    provider = platform_document(documents, "SecretProviderClass", SLACK_POSTER)
+    if provider is None:
+        raise RenderError(f"the overlay has no {SLACK_POSTER} SecretProviderClass")
+    objects = json.loads(provider["spec"]["parameters"]["objects"])
+    objects.extend(
+        {
+            "objectName": entry["action_key_fingerprint"],
+            "objectType": "secretsmanager",
+            "objectAlias": webhook_alias(ACTION_KEY_FINGERPRINT_PREFIX, entry["name"]),
+        }
+        for entry in inputs.get("tenants") or []
+        if entry.get("action_key_fingerprint")
+    )
+    provider["spec"]["parameters"]["objects"] = json.dumps(objects)
+
+
+SLACK_POSTER = "slack-poster"
+SHARED_APP_FILE = "slack-shared-app.yaml"
+SLACK_POSTER_CA = "slack-poster-ca"
+SLACK_POSTER_CA_KEY = "ca.pem"
+SHARED_SIGNING_SECRET_ALIAS = "SLACK_SHARED_SIGNING_SECRET"
+SOCKET_MODE_ALIAS = "SLACK_SHARED_APP_TOKEN"
+SHARED_WEBHOOK_ALIASES = frozenset({SHARED_SIGNING_SECRET_ALIAS, SOCKET_MODE_ALIAS})
+SLACK_POSTER_OBJECTS = frozenset(
+    {
+        ("ServiceAccount", SLACK_POSTER),
+        ("Deployment", SLACK_POSTER),
+        ("Service", SLACK_POSTER),
+        ("SecretProviderClass", SLACK_POSTER),
+        ("NetworkPolicy", f"{SLACK_POSTER}-ingress"),
+        ("ClusterRole", f"agentic-dev-platform-{SLACK_POSTER}-tokenreview"),
+        ("ClusterRoleBinding", f"agentic-dev-platform-{SLACK_POSTER}-tokenreview"),
+    }
+)
+
+
+def without_slack_poster(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        document
+        for document in documents
+        if (document.get("kind"), document.get("metadata", {}).get("name"))
+        not in SLACK_POSTER_OBJECTS
+    ]
+
+
+def runs_slack_poster(inputs: Mapping[str, Any]) -> bool:
+    return SHARED_APP_FILE in (inputs.get("environment_config") or {})
+
+
+def environment_runs_slack_poster(environment_dir: Path) -> bool:
+    return (environment_dir / SHARED_APP_FILE).is_file()
+
+
+def slack_poster_ca(inputs: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Return the slack-poster-ca ConfigMap the workers verify the posting service with.
+
+    It carries every certificate of PLATFORM_CA_PEM, the CA that issues the posting service's
+    certificate, so a CA rotation can hold the old and the new CA at once.
+    """
+    from scripts.eks_render import config_map
+
+    if not runs_slack_poster(inputs):
+        return []
+    ca = ((inputs.get("platform_environment") or {}).get("PLATFORM_CA_PEM") or "").strip()
+    if not ca:
+        raise RenderError(
+            f"the {SLACK_POSTER} serves a certificate of the platform CA, and PLATFORM_CA_PEM is "
+            "empty. Set container_platform_ca_file to the CA that inv slack-poster-certs issues "
+            "from"
+        )
+    return [config_map(SLACK_POSTER_CA, {SLACK_POSTER_CA_KEY: ca + "\n"})]
+
+
+def route_slack_poster(
+    documents: list[dict[str, Any]], inputs: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    """Run the Slack posting service only for an environment that defines a shared Slack app.
+
+    Without the shared app, the posting service and the webhook's shared signing secret and app
+    token are left out. With it, the posting service reads the bundles of the tenants the inputs
+    name.
+    """
+    if not runs_slack_poster(inputs):
+        kept = without_slack_poster(documents)
+        provider = platform_document(kept, "SecretProviderClass", WEBHOOK)
+        if provider is not None:
+            objects = json.loads(provider["spec"]["parameters"]["objects"])
+            provider["spec"]["parameters"]["objects"] = json.dumps(
+                [
+                    entry
+                    for entry in objects
+                    if entry.get("objectAlias") not in SHARED_WEBHOOK_ALIASES
+                ]
+            )
+        return kept
+    poster = platform_document(documents, "Deployment", SLACK_POSTER)
+    if poster is None:
+        raise RenderError(f"the overlay has no {SLACK_POSTER} Deployment")
+    entries = list(inputs.get("tenants") or [])
+    buckets = {entry["config_bucket"] for entry in entries if entry.get("config_bucket")}
+    if len(buckets) != 1:
+        raise RenderError(f"the {SLACK_POSTER} reads every tenant's bundle from one config bucket")
+    container = next(
+        c for c in poster["spec"]["template"]["spec"]["containers"] if c["name"] == SLACK_POSTER
+    )
+    container.setdefault("env", []).extend(
+        [
+            {"name": "TENANTS", "value": ",".join(entry["name"] for entry in entries)},
+            {"name": "TENANT_CONFIG_BUCKET", "value": buckets.pop()},
+        ]
+    )
+    return documents

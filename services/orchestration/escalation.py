@@ -5,12 +5,18 @@ own settings are present. A file that lists its channels enables only those, and
 enables Slack names the Slack app, organization, and channel the tenant's alerts and decisions
 use. The file declares the tenant's gates.yaml profile again as slack.profile, because the inbound
 webhook reads escalation.yaml without gates.yaml, and the two must agree.
+
+slack.app is own by default, and the tenant names its own Slack app. A tenant that sets it to
+shared uses the platform's shared app, whose app, organization, and API base URL come from
+slack-shared-app.yaml in the environment directory and may not be set in escalation.yaml.
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from types import EllipsisType
 from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import urlsplit
 
@@ -22,6 +28,7 @@ from services.integration.credentials import (
     load_env_config,
     require_current_config,
 )
+from services.integration.slack.shared_app import SHARED_APP_FILE, SharedSlackApp, load_shared_app
 from services.orchestration.gates.config import SHIPPED_BUNDLES
 
 if TYPE_CHECKING:
@@ -38,6 +45,12 @@ CHANNEL_NAMES = (JIRA, EMAIL, SLACK)
 WEBHOOK_TRANSPORT = "webhook"
 SOCKET_TRANSPORT = "socket"
 TRANSPORTS = (WEBHOOK_TRANSPORT, SOCKET_TRANSPORT)
+
+OWN_APP = "own"
+SHARED_APP = "shared"
+APPS = (OWN_APP, SHARED_APP)
+SHARED_APP_KEYS = ("app_id", "organization_id", "api_base_url")
+SHARED_APP_CHANNEL = re.compile(r"^C[A-Z0-9]+$")
 
 FULL_CONTENT = "full"
 MINIMAL_CONTENT = "minimal"
@@ -78,6 +91,7 @@ class SlackSettings:
     token_ttl_hours: int = DEFAULT_TOKEN_TTL_HOURS
     approved_hosts: tuple[str, ...] = ()
     allowlist: Mapping[str, tuple[SlackUser, ...]] = field(default_factory=dict)
+    app: str = OWN_APP
 
     @property
     def api_host(self) -> str:
@@ -115,7 +129,8 @@ def _choice(raw: Mapping[str, Any], key: str, choices: tuple[str, ...]) -> str:
     return value
 
 
-def _token_ttl_hours(raw: Mapping[str, Any]) -> int:
+def slack_token_ttl_hours(raw: Mapping[str, Any]) -> int:
+    """Return the button lifetime of escalation.yaml's slack mapping, or refuse an invalid one."""
     value = raw.get("token_ttl_hours", DEFAULT_TOKEN_TTL_HOURS)
     if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
         raise ConfigError(f"slack.token_ttl_hours must be a positive integer, got {value!r}")
@@ -157,31 +172,81 @@ def _allowlist(raw: Mapping[str, Any], organization_id: str) -> dict[str, tuple[
     return allowlist
 
 
-def _parse_slack(raw: Any) -> SlackSettings:
+def _parse_slack(raw: Any, shared_app: SharedSlackApp | None) -> SlackSettings:
     if raw is None:
         raw = {}
     if not isinstance(raw, Mapping):
         raise ConfigError("slack must be a mapping")
+    app = _text(raw, "app", required=False, default=OWN_APP)
+    if app not in APPS:
+        raise ConfigError(f"slack.app must be one of {list(APPS)}, got {app!r}")
     profile = _choice(raw, "profile", tuple(SHIPPED_BUNDLES))
     default_content = MINIMAL_CONTENT if profile == GOVERNMENT_PROFILE else FULL_CONTENT
     content = _text(raw, "content", required=False, default=default_content)
     if content not in CONTENT_LEVELS:
         raise ConfigError(f"slack.content must be one of {list(CONTENT_LEVELS)}, got {content!r}")
-    organization_id = _text(raw, "organization_id")
+    if app == SHARED_APP:
+        transport = _choice(raw, "transport", TRANSPORTS)
+        channel = _text(raw, "channel")
+        shared = _require_shared_app(raw, shared_app, transport, channel)
+        app_id, organization_id, api_base_url = (
+            shared.app_id,
+            shared.organization_id,
+            shared.api_base_url,
+        )
+    else:
+        organization_id = _text(raw, "organization_id")
+        transport = _choice(raw, "transport", TRANSPORTS)
+        channel = _text(raw, "channel")
+        app_id = _text(raw, "app_id")
+        if shared_app is not None and app_id == shared_app.app_id:
+            raise ConfigError(
+                f"slack.app_id {app_id} is the ID of the shared app in {SHARED_APP_FILE}. "
+                "Set slack.app to shared and remove slack.app_id to use the shared app."
+            )
+        api_base_url = _text(raw, "api_base_url", required=False, default=DEFAULT_API_BASE_URL)
     slack = SlackSettings(
-        transport=_choice(raw, "transport", TRANSPORTS),
-        channel=_text(raw, "channel"),
+        transport=transport,
+        channel=channel,
         organization_id=organization_id,
-        app_id=_text(raw, "app_id"),
+        app_id=app_id,
         profile=profile,
         content=content,
-        api_base_url=_text(raw, "api_base_url", required=False, default=DEFAULT_API_BASE_URL),
-        token_ttl_hours=_token_ttl_hours(raw),
+        api_base_url=api_base_url,
+        token_ttl_hours=slack_token_ttl_hours(raw),
         approved_hosts=_approved_hosts(raw),
         allowlist=_allowlist(raw, organization_id),
+        app=app,
     )
     _require_profile_policy(slack)
     return slack
+
+
+def _require_shared_app(
+    raw: Mapping[str, Any], shared_app: SharedSlackApp | None, transport: str, channel: str
+) -> SharedSlackApp:
+    """Return the shared app, or refuse the first way the settings break its rules."""
+    for key in SHARED_APP_KEYS:
+        if key in raw:
+            raise ConfigError(
+                f"slack.{key} is set, and a tenant on the shared app takes it from "
+                f"{SHARED_APP_FILE}. Remove slack.{key}."
+            )
+    if transport != WEBHOOK_TRANSPORT:
+        raise ConfigError(
+            f"slack.transport is {transport}, and the shared app requires {WEBHOOK_TRANSPORT}."
+        )
+    if not SHARED_APP_CHANNEL.match(channel):
+        raise ConfigError(
+            f"slack.channel {channel} is not a channel ID. The shared app posts only to a "
+            "channel whose ID starts with C, and refuses group, direct message, and user IDs."
+        )
+    if shared_app is None:
+        raise ConfigError(
+            f"slack.app is shared, and the environment directory holds no {SHARED_APP_FILE}. "
+            f"The platform defines the shared app in {SHARED_APP_FILE}."
+        )
+    return shared_app
 
 
 def _require_profile_policy(slack: SlackSettings) -> None:
@@ -215,7 +280,9 @@ def require_gates_profile(config: EscalationConfig, gates_profile: object) -> Es
     return config
 
 
-def parse_escalation_config(raw: Mapping[str, Any]) -> EscalationConfig:
+def parse_escalation_config(
+    raw: Mapping[str, Any], shared_app: SharedSlackApp | None = None
+) -> EscalationConfig:
     channels_raw = raw.get("channels", list(CHANNEL_NAMES))
     if not isinstance(channels_raw, list):
         raise ConfigError(f"channels must be a list drawn from {list(CHANNEL_NAMES)}")
@@ -226,24 +293,46 @@ def parse_escalation_config(raw: Mapping[str, Any]) -> EscalationConfig:
             f"{list(CHANNEL_NAMES)}."
         )
     channels = tuple(name for name in CHANNEL_NAMES if name in channels_raw)
-    slack = _parse_slack(raw.get(SLACK)) if SLACK in channels else None
+    slack = _parse_slack(raw.get(SLACK), shared_app) if SLACK in channels else None
     return EscalationConfig(channels=channels, slack=slack)
 
 
+def shared_app_tenants(settings: Settings) -> list[str]:
+    """Return the served tenants, refusing none, since the shared Slack app posts only for one."""
+    from services.repository_intelligence.tenants import served_tenants
+
+    tenants = served_tenants(settings)
+    if not tenants:
+        raise ConfigError(
+            "slack.app is shared, and neither TENANT nor TENANTS names a tenant. The shared Slack "
+            "app posts only for a tenant's activity worker, so set TENANT or TENANTS, or give "
+            "the platform its own Slack app"
+        )
+    return tenants
+
+
 def load_escalation_config(
-    settings: Settings | None = None, *, environment: str | None = None
+    settings: Settings | None = None,
+    *,
+    shared_app: SharedSlackApp | None | EllipsisType = ...,
 ) -> EscalationConfig:
     """Load the tenant's escalation.yaml, refusing a slack.profile other than its gates.yaml's.
 
-    A file whose Slack settings break the policy of their profile is refused too.
+    A file whose Slack settings break the policy of their profile, or the rules of the shared app,
+    is refused too. The shared app is the one given, else the one the environment directory
+    defines.
     """
     resolved = settings or get_settings()
-    env = environment or resolved.environment
-    if not env_config_path(ESCALATION_CONFIG, environment=env).is_file():
+    if not env_config_path(ESCALATION_CONFIG).is_file():
         return EscalationConfig()
-    require_current_config(ESCALATION_CONFIG, environment=env)
-    config = parse_escalation_config(load_env_config(ESCALATION_CONFIG, environment=env))
-    if config.slack is None or not env_config_path(GATES_CONFIG, environment=env).is_file():
+    require_current_config(ESCALATION_CONFIG)
+    config = parse_escalation_config(
+        load_env_config(ESCALATION_CONFIG),
+        load_shared_app() if shared_app is ... else shared_app,
+    )
+    if config.slack is not None and config.slack.app == SHARED_APP:
+        shared_app_tenants(resolved)
+    if config.slack is None or not env_config_path(GATES_CONFIG).is_file():
         return config
-    gates_profile = load_env_config(GATES_CONFIG, environment=env).get("profile")
+    gates_profile = load_env_config(GATES_CONFIG).get("profile")
     return require_gates_profile(config, gates_profile)

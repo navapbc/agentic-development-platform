@@ -128,9 +128,9 @@ def _external_token(config: registry_mirrors.RegistryConfig | None) -> str | Non
     """Return the external registry's token, or None for a config that authenticates with ECR."""
     if config is None or config.mode != registry_mirrors.EXTERNAL:
         return None
-    token = os.environ.get(config.token_env)
+    token = os.environ.get(registry_mirrors.TOKEN_ENV)
     if not token:
-        raise RegistryAuthError(f"{config.token_env} holds no registry token")
+        raise RegistryAuthError(f"{registry_mirrors.TOKEN_ENV} holds no registry token")
     return token
 
 
@@ -145,8 +145,8 @@ async def install(
     """Place the mirror config and the credentials the pod's pulls and installs need.
 
     `registries` defaults to the environment's registries.yaml. The ECR token covers each ECR
-    registry among `images` and the mirrors, and an external mirror's token comes from the
-    variable its config names.
+    registry among `images` and the mirrors, and an external mirror's token comes from
+    `REGISTRY_TOKEN`.
     """
     images = [image for image in images if image]
     admission = await image_admission.admit_images(images)

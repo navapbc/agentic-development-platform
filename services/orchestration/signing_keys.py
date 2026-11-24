@@ -44,6 +44,23 @@ def resolve_signing_key_path(private_key: str, key_path: str) -> str:
     return materialize_signing_key(private_key)
 
 
+def public_key_of(key_path: str) -> str:
+    """Return the OpenSSH public key line that ssh-keygen derives from the private key file."""
+    try:
+        derived = process.run(
+            ["ssh-keygen", "-y", "-f", key_path],
+            timeout=process.SHORT_COMMAND_TIMEOUT_SECONDS,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, process.SubprocessError) as exc:
+        raise SigningKeyError(
+            f"{key_path} is not a readable OpenSSH private key, or ssh-keygen is not on PATH"
+        ) from exc
+    return derived.stdout.strip()
+
+
 def materialize_signing_key(private_key: str) -> str:
     content = private_key.strip() + "\n"
     digest = hashlib.sha256(content.encode("utf-8")).hexdigest()

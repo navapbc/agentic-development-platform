@@ -1,28 +1,23 @@
 """The repositories each tenant authorizes repository intelligence to serve and index.
 
 Every tenant that TENANTS names contributes the repositories.yaml of its config bundle, read from
-the tenant's bundle source, the directory config/<env>/tenants/<tenant>/ or the prefix
-tenants/<tenant>/ of TENANT_CONFIG_BUCKET. A bundle without repositories.yaml contributes the
-environment's config/<env>/repositories.yaml, as the bundle layering of a tenant worker does. Each
-entry locates its checkout under /tenants/<tenant>/repositories, the read-only mount of that
-tenant's checkouts, and its indexes under <index root>/<tenant>/.
+the tenant's bundle source, the directory config/local/tenants/<tenant>/ or the prefix
+tenants/<tenant>/ of TENANT_CONFIG_BUCKET. A bundle without repositories.yaml serves no
+repository. Each entry locates its checkout under /tenants/<tenant>/repositories, the read-only
+mount of that tenant's checkouts, and its indexes under <index root>/<tenant>/.
 
 A registry refreshes from its sources once TENANT_CONFIG_REFRESH_SECONDS have passed since the
 last refresh. A repositories.yaml that fails to read or parse is logged and refused, and the last
 valid registry of that tenant stays in force.
 
-With TENANTS empty, the one tenant TENANT names is served. With neither set, the process runs in
-platform mode. It serves the platform config/<env>/repositories.yaml under the tenant key "",
-locates checkouts at REPOSITORY_ROOT, and keeps the index layout without a tenant directory, so a
-single-tenant development setup keeps working. Platform mode accepts the REPO_INTELLIGENCE_TOKEN
-of its own settings as the token of that key.
+With TENANTS empty, the one tenant TENANT names is served. A process that serves no tenant
+refuses to start.
 """
 
 from __future__ import annotations
 
 import hashlib
 import logging
-import os
 import threading
 import time
 from collections.abc import Callable, Mapping
@@ -36,12 +31,10 @@ from services.integration.credentials import (
     ConfigError,
     config_version,
     current_config_version,
-    env_config_dir,
 )
 from services.integration.repositories import (
     CONFIG_NAME,
     RepositoryRegistry,
-    load_repository_registry,
     parse_repositories,
 )
 from services.integration.tenant_config import BundleSource, tenant_source
@@ -54,7 +47,6 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-PLATFORM_TENANT = ""
 TENANTS_MOUNT = Path("/tenants")
 
 SourceFactory = Callable[[str], BundleSource]
@@ -70,29 +62,19 @@ class IndexedRepository:
 
 
 def served_tenants(settings: Settings) -> list[str]:
-    """Return the tenants TENANTS names, else the one TENANT names, else none for platform mode."""
+    """Return the tenants TENANTS names, else the one TENANT names, else none."""
     names = tenant_names(settings)
     if names:
         return names
     return [settings.tenant] if settings.tenant else []
 
 
-def home_tenant(settings: Settings) -> str:
-    """Return the tenant that owns the indexes built before indexes were kept per tenant."""
-    tenants = served_tenants(settings)
-    if settings.tenant in tenants:
-        return settings.tenant
-    return tenants[0] if tenants else PLATFORM_TENANT
-
-
 def checkout_root(tenant: str) -> str:
     return str(TENANTS_MOUNT / tenant / "repositories")
 
 
-def tenant_index_roots(tenant: str, base: IndexRoots | None = None) -> IndexRoots | None:
-    """Return the index roots of a tenant, or None for the platform layout without a tenant."""
-    if tenant == PLATFORM_TENANT:
-        return None
+def tenant_index_roots(tenant: str, base: IndexRoots | None = None) -> IndexRoots:
+    """Return the index roots of a tenant, <index root>/<tenant>/."""
     return (base or IndexRoots.default()).for_tenant(tenant)
 
 
@@ -100,11 +82,7 @@ def configured_tokens(
     settings: Settings, environ: Mapping[str, str] | None = None
 ) -> dict[str, str]:
     """Return the bearer token of each served tenant, empty when no tenant has a token."""
-    tenants = served_tenants(settings)
-    if not tenants:
-        token = settings.repo_intelligence_token.strip()
-        return {PLATFORM_TENANT: token} if token else {}
-    return tenant_tokens(tenants, settings.repo_intelligence_token_key, environ)
+    return tenant_tokens(served_tenants(settings), settings.repo_intelligence_token_key, environ)
 
 
 def parse_tenant_repositories(text: str, tenant: str) -> RepositoryRegistry:
@@ -139,6 +117,8 @@ class TenantRegistries:
     ) -> None:
         self._settings = settings
         self._tenants = served_tenants(settings)
+        if not self._tenants:
+            raise ConfigError("no tenant is served. Set TENANTS to the tenants of the deployment.")
         self._source_factory = source_factory or (lambda tenant: tenant_source(settings, tenant))
         self._sources: dict[str, BundleSource] = {}
         self._registries: dict[str, RepositoryRegistry] = {}
@@ -148,12 +128,8 @@ class TenantRegistries:
         self._refreshed_at: float | None = None
         self._lock = threading.Lock()
 
-    @property
-    def platform_mode(self) -> bool:
-        return not self._tenants
-
     def tenants(self) -> list[str]:
-        return [PLATFORM_TENANT] if self.platform_mode else list(self._tenants)
+        return list(self._tenants)
 
     def refresh(self, *, force: bool = False) -> None:
         """Reload every tenant's registry when the refresh interval has passed or when forced."""
@@ -163,9 +139,6 @@ class TenantRegistries:
             if not (force or due):
                 return
             self._refreshed_at = now
-            if self.platform_mode:
-                self._refresh_platform()
-                return
             for tenant in self._tenants:
                 self._refresh_tenant(tenant)
 
@@ -193,12 +166,6 @@ class TenantRegistries:
                 )
         return entries
 
-    def _refresh_platform(self) -> None:
-        try:
-            self._registries[PLATFORM_TENANT] = load_repository_registry(self._settings)
-        except ConfigError as exc:
-            log.error("platform repositories.yaml is refused, keeping the last valid one: %s", exc)
-
     def _refresh_tenant(self, tenant: str) -> None:
         try:
             text = self._repositories_text(tenant)
@@ -223,48 +190,6 @@ class TenantRegistries:
             source = self._sources[tenant] = self._source_factory(tenant)
         bundle = source.fetch(source.latest())
         text = bundle.files.get(CONFIG_NAME)
-        if text is not None:
-            return text
-        path = env_config_dir(self._settings.environment) / f"{CONFIG_NAME}.yaml"
-        try:
-            return path.read_text(encoding="utf-8")
-        except FileNotFoundError as exc:
-            raise ConfigError(
-                f"tenant {tenant} has no repositories.yaml in its bundle or in {path.parent}"
-            ) from exc
-
-
-def migrate_home_indexes(
-    registries: TenantRegistries, settings: Settings, base: IndexRoots | None = None
-) -> list[Path]:
-    """Move each index <root>/<repo>@<commit> of a home tenant repository under the tenant.
-
-    The index directory becomes <root>/<tenant>/<repo>@<commit>, so the indexes built before
-    indexes were kept per tenant are reused. An index whose target exists stays where it is.
-    Repository intelligence and the index worker share the index volume and both migrate on
-    start, so a directory the other process already moved is skipped.
-    """
-    tenant = home_tenant(settings)
-    if registries.platform_mode or tenant == PLATFORM_TENANT:
-        return []
-    registry = registries.registry(tenant)
-    if registry is None:
-        return []
-    roots = base or IndexRoots.default()
-    moved: list[Path] = []
-    for root in (roots.scip, roots.zoekt):
-        if not root.is_dir():
-            continue
-        for name in sorted(registry.names()):
-            for entry in sorted(root.glob(f"{name}@*")):
-                target = root / tenant / entry.name
-                if not entry.is_dir() or target.exists():
-                    continue
-                target.parent.mkdir(parents=True, exist_ok=True)
-                try:
-                    os.rename(entry, target)
-                except FileNotFoundError:
-                    continue
-                log.info("moved index %s to %s", entry, target)
-                moved.append(target)
-    return moved
+        if text is None:
+            raise ConfigError(f"tenant {tenant} has no repositories.yaml in {source.location}")
+        return text

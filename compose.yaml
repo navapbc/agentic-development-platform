@@ -7,17 +7,14 @@ x-python-service: &python-service
     args:
       - AGENT_BUILD_ID=${AGENT_BUILD_ID:-0.3.0}
       - AL2023_IMAGE
-  env_file: [.env]
+  env_file: [config/local/platform.env]
   restart: unless-stopped
 
-# The repository intelligence services receive only these settings and the registry, tenant bundle,
-# and checkout mounts that inv repos-compose writes to compose.repositories.yaml. They never receive
-# .env or the whole config/local directory.
+# The repository intelligence services receive only these settings and the TENANTS list, tenant
+# bundle, and checkout mounts that inv repos-compose writes to compose.repositories.yaml. They never
+# receive config/local/platform.env or the whole config/local directory.
 x-repo-intelligence-env: &repo-intelligence-env
-  ENVIRONMENT: ${ENVIRONMENT:-local}
   LOG_LEVEL: ${LOG_LEVEL:-INFO}
-  TENANT: ${TENANT:-}
-  TENANTS: ${TENANTS:-}
   TENANT_CONFIG_REFRESH_SECONDS: ${TENANT_CONFIG_REFRESH_SECONDS:-60}
   REPOSITORY_ROOT: ${REPOSITORY_ROOT:-/repos}
 

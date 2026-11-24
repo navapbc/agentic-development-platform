@@ -1,0 +1,11 @@
+# The Slack app the platform operates for every tenant whose escalation.yaml sets slack.app to
+# shared. A deployment defines at most one, installed into one workspace or Enterprise Grid org.
+# organization_id is the Enterprise Grid enterprise ID or the workspace team ID, and api_base_url
+# is https://slack.com/api/, or https://slack-gov.com/api/ for GovSlack. Without this file, no
+# tenant may select the shared app.
+
+config_version: 1
+
+app_id: A0000000000
+organization_id: T0000000000
+api_base_url: https://slack.com/api/

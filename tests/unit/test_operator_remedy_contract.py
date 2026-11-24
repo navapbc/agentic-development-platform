@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from services.integration.credentials import config_template
 from services.operator_remedy import (
     DEPLOYED_OPERATOR_TOOLS,
     NEXT_STEP_PREFIX,
@@ -78,7 +79,7 @@ def test_an_unknown_terminal_reason_degrades_to_generic_guidance(author, kwargs,
 
 
 def test_a_missing_issue_key_still_renders_a_runnable_shaped_command():
-    text = render(remedies.generic_remedy("", "plan"), DeploymentPosture.HOST, environment="local")
+    text = render(remedies.generic_remedy("", "plan"), DeploymentPosture.HOST)
 
     assert "`inv restart --issue <issue_key>`" in text
 
@@ -180,17 +181,17 @@ def test_a_short_detail_is_left_intact():
 
 
 def _host(authored: Remedy) -> str:
-    return render(authored, DeploymentPosture.HOST, environment="local")
+    return render(authored, DeploymentPosture.HOST)
 
 
 def test_an_unlisted_repository_is_not_told_to_add_a_repos_marker():
     """Intake rejects a ticket for two structurally different reasons. Naming no repository is
-    fixed on the ticket. Naming one outside the allowlist is fixed in the environment config, and
+    fixed on the ticket. Naming one outside the allowlist is fixed in the tenant's config, and
     the marker advice tells the operator to redo the thing that already failed."""
     text = _host(remedies.unroutable_remedy("ADSER-24", "ADSER", ("navapbc/secret",)))
 
     assert "navapbc/secret" in text
-    assert "`repositories` in `config/local/repositories.yaml`" in text
+    assert "`repositories` in `config/local/tenants/<tenant>/repositories.yaml`" in text
     assert "repos marker" not in text
     assert "default_repo" not in text
 
@@ -199,7 +200,7 @@ def test_a_ticket_naming_no_repository_is_told_where_to_name_one():
     text = _host(remedies.unroutable_remedy("ADSER-24", "ADSER"))
 
     assert "repos marker" in text
-    assert "`default_repo` in `config/local/jira.yaml`" in text
+    assert "`default_repo` in `config/local/tenants/<tenant>/jira.yaml`" in text
 
 
 def test_the_unlisted_repositories_reach_the_remedy_from_target_resolution():
@@ -400,9 +401,7 @@ def _pod_remedies() -> dict[str, str]:
 
 def _rendered(posture: DeploymentPosture) -> dict[str, str]:
     texts = {
-        f"{name}@{tenant or 'unbound'}": render(
-            authored.for_tenant(tenant), posture, environment="local"
-        )
+        f"{name}@{tenant or 'unbound'}": render(authored.for_tenant(tenant), posture)
         for name, authored in _every_authored_remedy().items()
         for tenant in _TENANTS
     }
@@ -575,7 +574,7 @@ def test_every_deployed_command_uses_a_deployed_tool_and_a_module_the_image_carr
 
 
 def test_the_deployed_rendering_names_no_checkout_location():
-    """`.env`, `tasks.py`, and `config/<environment>/` exist only in a platform checkout, and a
+    """The settings files, `tasks.py`, and `config/local/` exist only in a platform checkout, and a
     path into ADP's own source asks the operator to edit the platform rather than the deployment."""
     checkout_only = re.compile(r"\.env\b|tasks\.py|\bconfig/|`inv |\b[a-z_]+(?:/[a-z_0-9]+)*\.py\b")
     offenders = {
@@ -588,8 +587,8 @@ def test_the_deployed_rendering_names_no_checkout_location():
 
 
 def test_no_host_remedy_tells_the_operator_to_edit_adp_source():
-    """Repository config under config/<environment> is exempt, because the worker reads exactly
-    that path."""
+    """Repository config under config/local is exempt, because the worker reads exactly that
+    path."""
     source_path = re.compile(r"\b[a-z_]+(?:/[a-z_0-9]+)*\.py\b")
     offenders = {
         name: source_path.findall(text)
@@ -601,7 +600,7 @@ def test_no_host_remedy_tells_the_operator_to_edit_adp_source():
 
 
 def _template_keys(config: str) -> set[str]:
-    template = ROOT / f"config/local/{config}.yaml.example"
+    template = config_template(config, root=ROOT)
     assert template.exists(), f"no committed template for {config}"
 
     def walk(node: object) -> set[str]:

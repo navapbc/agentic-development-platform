@@ -8,6 +8,11 @@ locals {
     "repo:${try(var.config_publisher.github_repository, "")}",
   )
   publisher_subjects = [for ref in try(var.config_publisher.allowed_refs, []) : "${local.publisher_subject_prefix}:ref:${ref}"]
+
+  claims_probe_enabled    = local.publisher_enabled && try(var.config_publisher.pull_request_subject, null) != null
+  claim_digest_list_scope = { StringLike = { "s3:prefix" = ["claims/*/*/"] } }
+  claim_index_arn         = "${try(var.config_store.bucket_arn, "")}/claims/_owners/${var.tenant}.json"
+  claims_protocol_arn     = "${try(var.config_store.bucket_arn, "")}/platform/claims-protocol.json"
 }
 
 resource "aws_iam_role" "publisher" {
@@ -51,8 +56,33 @@ resource "aws_iam_role_policy" "publisher" {
       {
         Sid      = "PublishTheTenantBundle"
         Effect   = "Allow"
-        Action   = ["s3:PutObject", "s3:DeleteObject"]
+        Action   = ["s3:PutObject", "s3:PutObjectTagging", "s3:DeleteObject"]
         Resource = "${var.config_store.bucket_arn}/${local.config_prefix}*"
+      },
+      {
+        Sid       = "ListOneClaimDigest"
+        Effect    = "Allow"
+        Action    = ["s3:ListBucket", "s3:ListBucketVersions"]
+        Resource  = var.config_store.bucket_arn
+        Condition = local.claim_digest_list_scope
+      },
+      {
+        Sid      = "ManageTheTenantClaims"
+        Effect   = "Allow"
+        Action   = ["s3:PutObject", "s3:DeleteObject"]
+        Resource = ["${var.config_store.bucket_arn}/claims/*/*/${var.tenant}", local.claim_index_arn]
+      },
+      {
+        Sid      = "ReadTheTenantClaimIndex"
+        Effect   = "Allow"
+        Action   = "s3:GetObject"
+        Resource = local.claim_index_arn
+      },
+      {
+        Sid      = "ReadTheClaimsProtocol"
+        Effect   = "Allow"
+        Action   = "s3:GetObject"
+        Resource = local.claims_protocol_arn
       },
       {
         Sid       = "EncryptTheTenantBundle"
@@ -89,6 +119,63 @@ resource "aws_iam_role_policy" "publisher" {
         Effect   = "Allow"
         Action   = ["signer:SignPayload", "signer:GetSigningProfile"]
         Resource = aws_signer_signing_profile.this[0].arn
+      },
+    ]
+  })
+}
+
+resource "aws_iam_role" "claims_probe" {
+  count = local.claims_probe_enabled ? 1 : 0
+
+  name        = "${local.name}-claims-probe"
+  description = "Assumed by the pull request workflows of ${var.config_publisher.github_repository} to check the ${var.tenant} tenant's claims against the other tenants."
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid       = "GitHubPullRequestsOfOneRepository"
+      Effect    = "Allow"
+      Action    = "sts:AssumeRoleWithWebIdentity"
+      Principal = { Federated = var.config_publisher.oidc_provider_arn }
+      Condition = {
+        StringEquals = {
+          "${local.publisher_issuer}:aud" = "sts.amazonaws.com"
+          "${local.publisher_issuer}:sub" = "${local.publisher_subject_prefix}:${var.config_publisher.pull_request_subject}"
+        }
+      }
+    }]
+  })
+  max_session_duration = 3600
+
+  tags = local.tags
+}
+
+resource "aws_iam_role_policy" "claims_probe" {
+  count = local.claims_probe_enabled ? 1 : 0
+
+  name = "list-one-claim-digest"
+  role = aws_iam_role.claims_probe[0].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "ListOneClaimDigest"
+        Effect    = "Allow"
+        Action    = ["s3:ListBucket", "s3:ListBucketVersions"]
+        Resource  = var.config_store.bucket_arn
+        Condition = local.claim_digest_list_scope
+      },
+      {
+        Sid      = "ReadTheClaimsProtocol"
+        Effect   = "Allow"
+        Action   = "s3:GetObject"
+        Resource = local.claims_protocol_arn
+      },
+      {
+        Sid       = "DecryptThroughS3"
+        Effect    = "Allow"
+        Action    = "kms:Decrypt"
+        Resource  = var.config_store.kms_key_arn
+        Condition = { StringEquals = { "kms:ViaService" = "s3.${local.region}.amazonaws.com" } }
       },
     ]
   })

@@ -1,6 +1,6 @@
 """The images a tenant pod may run, and the findings the platform accepts in them.
 
-`config/<environment>/image_policy.yaml` belongs to the platform and is never part of a tenant's
+`config/local/image_policy.yaml` belongs to the platform and is never part of a tenant's
 bundle. In AWS the composition root generates it. It names the repositories each kind of image
 may come from:
 
@@ -190,15 +190,16 @@ def parse_policy(raw: Mapping[str, Any]) -> ImagePolicy:
     )
 
 
-def load_policy(environment: str, root: Path | None = None) -> ImagePolicy:
-    """Load the environment's image policy. Every environment has one."""
-    if not env_config_path(POLICY, environment=environment, root=root).exists():
+def load_policy(root: Path | None = None) -> ImagePolicy:
+    """Load the platform's image policy, which every deployment has."""
+    path = env_config_path(POLICY, root=root)
+    if not path.exists():
         raise ConfigError(
-            f"config/{environment}/image_policy.yaml is required. It names the registries a "
-            "tenant pod may pull from. Copy image_policy.yaml.example to create it."
+            f"{path} is required. It names the registries a tenant pod may pull from. Copy "
+            "image_policy.yaml.example to create it."
         )
-    require_current_config(POLICY, environment=environment, root=root)
-    return parse_policy(load_env_config(POLICY, environment=environment, root=root))
+    require_current_config(POLICY, root=root)
+    return parse_policy(load_env_config(POLICY, root=root))
 
 
 @dataclass(frozen=True)
@@ -385,7 +386,7 @@ def require_scope(
         )
 
 
-def load_exceptions(environment: str) -> tuple[FindingException, ...]:
+def load_exceptions() -> tuple[FindingException, ...]:
     """Return the entries the pull gate honours, the platform's and the run tenant's.
 
     Each file's entries are limited to its scope. A missing or unusable file contributes no
@@ -393,7 +394,7 @@ def load_exceptions(environment: str) -> tuple[FindingException, ...]:
     """
     from services.integration.image_exceptions import gate_exceptions
 
-    return gate_exceptions(environment)
+    return gate_exceptions()
 
 
 def accepted(
@@ -478,10 +479,10 @@ def configured_images(settings: Any) -> dict[str, str]:
     for engine in load_gate_engine_configs(settings):
         if engine.enabled and engine.mode == IMAGE and engine.image:
             images[f"gate engine {engine.name}"] = engine.image
-    for repo, config in load_checks_configs(settings).items():
+    for repo, config in load_checks_configs().items():
         if config.image:
             images[f"checks of {repo}"] = resolve_image(config.image, settings)
-    profiles = load_profiles(settings)
+    profiles = load_profiles()
     for repository in load_repository_registry(settings).repositories.values():
         profile = profiles.get(repository.profile) if repository.profile else None
         if profile is None:
@@ -505,10 +506,10 @@ def image_problems(settings: Any) -> list[str]:
     from services.orchestration.gates import registry_mirrors
 
     try:
-        policy = load_policy(settings.environment)
+        policy = load_policy()
         registries = registry_mirrors.current()
         read_tenant(settings, policy)
-    except ConfigError as exc:
+    except (ConfigError, registry_mirrors.RegistryConfigError) as exc:
         return [str(exc)]
     mirrors = dict(registries.mirrors) if registries else {}
     problems = []

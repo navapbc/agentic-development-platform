@@ -1789,6 +1789,47 @@ async def test_ci_pass_flows_through_review_gates_with_attestations():
     assert review_requests[0].repo_root == "/tmp/ws/agent-T-1"
 
 
+async def test_review_gates_run_on_the_review_queue_the_intake_named():
+    from dataclasses import replace
+
+    review_queue = "agent-platform-review-beta"
+    reviewed: list[tuple[str, str]] = []
+
+    @activity.defn(name="evaluate_gate")
+    async def review_worker_evaluate_gate(req: EvaluateGateRequest) -> GateResult:
+        reviewed.append((req.gate, activity.info().task_queue))
+        return GateResult(
+            name=req.gate,
+            kind="review",
+            verdict="pass",
+            attestation_hash=f"sha256:{req.gate}",
+            summary="reviewed",
+            metadata={"model_id": "review-model", "prompt_version": f"{req.gate}/v1"},
+        )
+
+    activities = _make_activities(None, 1, [], [], [], ci_result=SUCCESS)
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        review_worker = Worker(
+            env.client, task_queue=review_queue, activities=[review_worker_evaluate_gate]
+        )
+        async with await _start_ci_worker(env, task_queue, activities), review_worker:
+            result = await env.client.execute_workflow(
+                DraftPullRequestWorkflow.run,
+                replace(_ci_input(run_reviews=True), review_task_queue=review_queue),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+
+    assert result.review_status == "passed"
+    assert sorted(reviewed) == [
+        ("acceptance", review_queue),
+        ("code-review", review_queue),
+        ("security-review", review_queue),
+    ]
+
+
 async def test_review_blocking_finding_stops_before_policy_gate():
     commits: list[CommitPushRequest] = []
     pr_opens: list[OpenPrRequest] = []

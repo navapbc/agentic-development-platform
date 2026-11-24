@@ -6,6 +6,7 @@ import hmac
 import json
 import threading
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any, cast
@@ -14,7 +15,9 @@ from urllib.parse import urlencode
 import pytest
 from services.coordination.idempotency import InMemorySideEffectLedger
 from services.integration.repositories import GITHUB, LOCAL
+from services.integration.slack.tenant_settings import TenantSlackSettings
 from services.integration.tenant_config import Bundle, BundleIdentity
+from services.integration.tenant_secrets import tenant_secrets
 from services.orchestration.webhook.jira_events import (
     TemporalIssueIntake,
     TenantIssueEvent,
@@ -28,17 +31,16 @@ from services.orchestration.webhook.pr_events import (
 )
 from services.orchestration.webhook.server import (
     Route,
-    TenantSlackSettings,
     build_routes_for,
-    require_intake_tenant,
     require_webhook_secrets,
     route_inbound,
+    shared_slack_routes,
     slack_routes,
+    webhook_tenants,
 )
 from services.orchestration.webhook.tenants import (
     RoutedRepositories,
     TenantRouting,
-    tenant_secrets,
 )
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -87,9 +89,19 @@ class _Source:
     def fetch(self, identity: BundleIdentity) -> Bundle:
         return Bundle(identity, dict(self.files))
 
+    def fetch_files(self, identity: BundleIdentity, names: Iterable[str]) -> dict[str, str]:
+        return {name: self.files[name] for name in names if name in self.files}
+
 
 def _jira_yaml(*projects: str) -> str:
     return json.dumps({"config_version": 99, "allowlist": list(projects)})
+
+
+def _modes(**modes: str) -> str:
+    return json.dumps({"config_version": 1, "modes": modes})
+
+
+WEBHOOK_MODES = _modes(pr_closed=WEBHOOK, jira_intake=WEBHOOK)
 
 
 def _routing(
@@ -99,7 +111,9 @@ def _routing(
     settings: Any = None,
     files: dict[str, dict[str, str]] | None = None,
 ) -> TenantRouting:
-    bundles = {tenant: dict(named) for tenant, named in (files or {}).items()}
+    bundles = {tenant: {"integrations": WEBHOOK_MODES} for tenant in by_tenant}
+    for tenant, named in (files or {}).items():
+        bundles.setdefault(tenant, {}).update(named)
     for tenant, text in (jira or {}).items():
         bundles.setdefault(tenant, {})["jira"] = text
     sources = {tenant: _Source(named) for tenant, named in bundles.items()}
@@ -175,9 +189,7 @@ def _two_tenant_routes(monkeypatch, resolver: _Resolver, starter: _Starter):
 
 
 async def _post(route, body: bytes, headers: dict[str, str]) -> tuple[int, dict[str, Any]]:
-    return await route_inbound(
-        route, body, headers, ledger=InMemorySideEffectLedger(), mode=WEBHOOK
-    )
+    return await route_inbound(route, body, headers, ledger=InMemorySideEffectLedger())
 
 
 def test_each_github_repository_routes_to_the_tenant_that_lists_it():
@@ -217,14 +229,15 @@ def test_two_tenants_that_share_a_secret_are_refused(caplog: pytest.LogCaptureFi
     assert "tenants adp, beta share a signing key for repository shared" in caplog.text
 
 
-def test_a_tenant_secret_is_its_own_and_the_platform_secret_serves_one_tenant_only():
-    assert tenant_secrets(["adp", "beta"], "GITHUB_WEBHOOK_SECRET_", "shared", ENVIRON) == {
+def test_a_tenant_secret_is_its_own_and_one_tenant_takes_no_unsuffixed_secret():
+    unsuffixed = {"GITHUB_WEBHOOK_SECRET": "platform-key"}
+
+    assert tenant_secrets(["adp", "beta"], "GITHUB_WEBHOOK_SECRET_", ENVIRON) == {
         "adp": ADP_GITHUB_KEY,
         "beta": BETA_GITHUB_KEY,
     }
-    assert tenant_secrets(["adp", "beta"], "GITHUB_WEBHOOK_SECRET_", "shared", {}) == {}
-    assert tenant_secrets(["adp"], "GITHUB_WEBHOOK_SECRET_", "shared", {}) == {"adp": "shared"}
-    assert tenant_secrets([""], "GITHUB_WEBHOOK_SECRET_", "shared", ENVIRON) == {"": "shared"}
+    assert tenant_secrets(["adp"], "GITHUB_WEBHOOK_SECRET_", unsuffixed) == {}
+    assert tenant_secrets([""], "GITHUB_WEBHOOK_SECRET_", ENVIRON) == {}
 
 
 def test_a_pr_delivery_verifies_with_the_secret_of_the_repository_owner():
@@ -274,7 +287,7 @@ async def test_a_pr_delivery_signed_by_another_tenant_is_refused(monkeypatch):
 
 
 async def test_a_single_tenant_refuses_an_unlisted_repository_as_before(monkeypatch):
-    monkeypatch.setenv("GITHUB_WEBHOOK_SECRET", "one-key")
+    monkeypatch.setenv("GITHUB_WEBHOOK_SECRET_ADP", "one-key")
     settings = hermetic_settings(tenant="adp")
     routing = _routing({"adp": {"adp-web": GITHUB}}, settings=settings)
     route = build_routes_for(settings, routing=routing, signaller=_Signaller(), starter=_Starter())[
@@ -399,7 +412,7 @@ def test_only_served_tenants_have_a_jira_route(monkeypatch):
 
 
 def test_a_single_tenant_keeps_the_shared_jira_route(monkeypatch):
-    monkeypatch.setenv("JIRA_WEBHOOK_SECRET", "one-key")
+    monkeypatch.setenv("JIRA_WEBHOOK_SECRET_ADP", "one-key")
     settings = hermetic_settings(tenant="adp")
     routing = _routing({"adp": {}}, {"adp": _jira_yaml("ADP")}, settings=settings)
 
@@ -477,32 +490,73 @@ class _Modes:
         return True
 
 
-def test_several_tenants_without_any_secret_refuse_to_start(monkeypatch):
-    monkeypatch.setattr(
-        "services.orchestration.webhook.server.load_integrations_config", lambda s: _Modes()
-    )
+def test_several_tenants_without_any_secret_refuse_to_start():
     with pytest.raises(SystemExit) as excinfo:
-        require_webhook_secrets(hermetic_settings(tenants="adp,beta"), environ={})
+        require_webhook_secrets(
+            hermetic_settings(tenants="adp,beta"), environ={}, modes=lambda tenant: _Modes()
+        )
 
     message = str(excinfo.value)
     assert "GITHUB_WEBHOOK_SECRET_BETA" in message
     assert "JIRA_WEBHOOK_SECRET_ADP" in message
 
 
-def test_one_tenant_with_a_secret_lets_the_webhook_start(monkeypatch):
-    monkeypatch.setattr(
-        "services.orchestration.webhook.server.load_integrations_config", lambda s: _Modes()
-    )
+def test_one_tenant_with_a_secret_lets_the_webhook_start():
     require_webhook_secrets(
         hermetic_settings(tenants="adp,beta"),
         environ={"GITHUB_WEBHOOK_SECRET_ADP": "a", "JIRA_WEBHOOK_SECRET_BETA": "b"},
+        modes=lambda tenant: _Modes(),
     )
+
+
+class _TenantModes:
+    def __init__(self, tenant: str) -> None:
+        self._tenant = tenant
+
+    def webhook_enabled(self, name: str) -> bool:
+        return self._tenant == "beta"
+
+
+def test_only_the_tenants_that_take_webhook_deliveries_need_a_secret():
+    require_webhook_secrets(
+        hermetic_settings(tenants="adp,beta"),
+        environ={"GITHUB_WEBHOOK_SECRET_BETA": "b", "JIRA_WEBHOOK_SECRET_BETA": "b"},
+        modes=_TenantModes,
+    )
+
+
+async def test_a_tenant_in_polling_mode_does_not_take_a_signed_delivery(monkeypatch):
+    for name, value in ENVIRON.items():
+        monkeypatch.setenv(name, value)
+    settings = hermetic_settings(tenants="adp,beta", tenant="adp")
+    routing = _routing(
+        {"adp": {}, "beta": {}},
+        {"adp": _jira_yaml("ADP"), "beta": _jira_yaml("BETA")},
+        settings=settings,
+        files={"beta": {"integrations": _modes(jira_intake="polling")}},
+    )
+    starter = _Starter()
+    routes = build_routes_for(settings, routing=routing, signaller=_Signaller(), starter=starter)
+    adp_body, beta_body = _jira_body("ADP-1"), _jira_body("BETA-1")
+
+    adp = await _post(
+        routes["/webhook/jira/adp"], adp_body, {"X-Hub-Signature": _sign(ADP_JIRA_KEY, adp_body)}
+    )
+    beta = await _post(
+        routes["/webhook/jira/beta"],
+        beta_body,
+        {"X-Hub-Signature": _sign(BETA_JIRA_KEY, beta_body)},
+    )
+
+    assert adp[0] == 200
+    assert beta == (202, {"status": "webhook disabled", "integration": "jira_intake"})
+    assert [event.tenant for event in starter.events] == ["adp"]
 
 
 async def test_a_single_tenant_webhook_starts_a_bare_route_delivery_on_the_tenant_queue(
     monkeypatch,
 ):
-    monkeypatch.setenv("JIRA_WEBHOOK_SECRET", "one-key")
+    monkeypatch.setenv("JIRA_WEBHOOK_SECRET_ADP", "one-key")
     client = _Client()
     settings = hermetic_settings(temporal_task_queue="q", tenant="adp")
     routes = build_routes_for(
@@ -518,7 +572,6 @@ async def test_a_single_tenant_webhook_starts_a_bare_route_delivery_on_the_tenan
         body,
         {"X-Hub-Signature": _sign("one-key", body)},
         ledger=InMemorySideEffectLedger(),
-        mode=WEBHOOK,
     )
 
     assert status == 200
@@ -531,47 +584,23 @@ async def test_a_delivery_no_tenant_owns_starts_nothing_and_is_not_recorded():
     route = Route(
         handler=TenantJiraIntakeHandler(tenant="", secret="one-key", starter=starter),
         allowed=lambda: frozenset({"ADP"}),
+        mode=lambda tenant: WEBHOOK,
     )
     ledger = InMemorySideEffectLedger()
     body = _jira_body("ADP-12")
     headers = {"X-Hub-Signature": _sign("one-key", body)}
 
-    first = await route_inbound(route, body, headers, ledger=ledger, mode=WEBHOOK)
-    again = await route_inbound(route, body, headers, ledger=ledger, mode=WEBHOOK)
+    first = await route_inbound(route, body, headers, ledger=ledger)
+    again = await route_inbound(route, body, headers, ledger=ledger)
 
     assert first[0] == again[0] == 404
     assert "no activity worker" in first[1]["error"]
     assert client.starts == []
 
 
-class _Mode:
-    def __init__(self, enabled: bool) -> None:
-        self._enabled = enabled
-
-    def webhook_enabled(self, name: str) -> bool:
-        return self._enabled and name == "jira_intake"
-
-
-def test_a_webhook_without_a_tenant_refuses_to_start_jira_intake(monkeypatch):
-    monkeypatch.setattr(
-        "services.orchestration.webhook.server.load_integrations_config", lambda s: _Mode(True)
-    )
-
-    with pytest.raises(SystemExit, match="TENANT or TENANTS"):
-        require_intake_tenant(hermetic_settings())
-
-
-@pytest.mark.parametrize(
-    ("enabled", "overrides"),
-    [(True, {"tenant": "adp"}), (True, {"tenants": "adp,beta"}), (False, {})],
-)
-def test_a_webhook_with_a_tenant_or_without_jira_intake_starts(monkeypatch, enabled, overrides):
-    monkeypatch.setattr(
-        "services.orchestration.webhook.server.load_integrations_config",
-        lambda s: _Mode(enabled),
-    )
-
-    require_intake_tenant(hermetic_settings(**overrides))
+def test_a_webhook_without_a_tenant_refuses_to_start():
+    with pytest.raises(SystemExit, match="serves no tenant"):
+        webhook_tenants(hermetic_settings(tenants="", tenant=""))
 
 
 async def test_the_webhook_resolves_no_workflow_for_an_execution_recorded_without_a_tenant(
@@ -668,6 +697,16 @@ async def test_two_tenants_that_share_a_slack_app_or_signing_secret_are_refused(
     assert any("adp, beta" in record.getMessage() for record in caplog.records)
 
 
+class _CountingSource(_Source):
+    def __init__(self, files: dict[str, str], reads: list[str]) -> None:
+        super().__init__(files)
+        self.reads = reads
+
+    def latest(self) -> BundleIdentity:
+        self.reads.append(threading.current_thread().name)
+        return super().latest()
+
+
 class _CountingRouting:
     def __init__(self, files: dict[str, dict[str, str]]) -> None:
         self.files = files
@@ -676,9 +715,8 @@ class _CountingRouting:
     def tenants(self) -> list[str]:
         return list(self.files)
 
-    def bundle_text(self, tenant: str, name: str) -> str | None:
-        self.reads.append(threading.current_thread().name)
-        return self.files[tenant].get(name)
+    def source(self, tenant: str) -> _CountingSource:
+        return _CountingSource(self.files[tenant], self.reads)
 
 
 async def test_a_click_reads_the_slack_snapshot_and_the_refresh_reads_bundles_on_a_thread():
@@ -701,3 +739,151 @@ async def test_a_click_reads_the_slack_snapshot_and_the_refresh_reads_bundles_on
     cast(Any, slack)._refreshing.cancel()
     assert routing.reads[reads:]
     assert threading.current_thread().name not in routing.reads[reads:]
+
+
+@pytest.mark.parametrize(
+    ("secret", "paths"),
+    [("shared-signing", ["/webhook/slack/_shared"]), ("", [])],
+    ids=["shared-secret", "no-shared-secret"],
+)
+def test_the_shared_slack_route_serves_when_the_shared_signing_secret_is_set(
+    monkeypatch, secret: str, paths: list[str]
+):
+    monkeypatch.setenv("ESCALATION_ACTION_KEY_ADP", "adp-action-key")
+    settings = hermetic_settings(tenants="adp", slack_shared_signing_secret=secret)
+    routing = _routing({"adp": {}}, settings=settings)
+
+    routes = shared_slack_routes(
+        settings,
+        routing,
+        slack=lambda tenant: None,
+        channel_tenant=lambda channel: None,
+        shared_app=lambda: None,
+        decisions=cast(Any, None),
+        records=cast(Any, None),
+        retained_holder=cast(Any, None),
+    )
+
+    assert sorted(routes) == paths
+
+
+@pytest.mark.parametrize(
+    ("secret", "token", "paths", "sockets"),
+    [
+        ("shared-signing", "", ["/webhook/slack/_shared"], 0),
+        ("", "xapp-shared", [], 1),
+        ("shared-signing", "xapp-shared", ["/webhook/slack/_shared"], 1),
+    ],
+    ids=["request-url", "socket-mode", "both"],
+)
+def test_the_shared_app_takes_clicks_over_each_transport_its_credentials_select(
+    monkeypatch, secret: str, token: str, paths: list[str], sockets: int
+):
+    from services.orchestration.webhook import server as webhook_server
+
+    started: list[str] = []
+    monkeypatch.setattr(
+        webhook_server.SharedSlackSocket, "start", lambda self: started.append(self._app_token)
+    )
+    settings = hermetic_settings(
+        tenants="adp", slack_shared_signing_secret=secret, slack_shared_app_token=token
+    )
+    route = cast(Any, object())
+
+    served = webhook_server.shared_slack_delivery(
+        settings, route, lambda: None, asyncio.new_event_loop()
+    )
+
+    assert sorted(served) == paths
+    assert started == [token] * sockets
+
+
+class _FlakySource(_Source):
+    def __init__(self, files: dict[str, str], failures: int) -> None:
+        super().__init__(files)
+        self.failures = failures
+
+    def fetch_files(self, identity: BundleIdentity, names: Iterable[str]) -> dict[str, str]:
+        names = list(names)
+        if self.failures and "integrations" in names:
+            self.failures -= 1
+            raise OSError("the config bucket did not answer")
+        return super().fetch_files(identity, names)
+
+
+def _mode_routing(source: _Source, clock: list[float]) -> TenantRouting:
+    return TenantRouting(
+        hermetic_settings(tenants="adp", tenant_config_refresh_seconds=60),
+        registries=cast(Any, _Registries({"adp": _Registry({})})),
+        source_factory=lambda tenant: cast(Any, source),
+        clock=lambda: clock[0],
+    )
+
+
+def test_a_tenant_without_integrations_takes_the_platform_modes(monkeypatch, tmp_path):
+    monkeypatch.setenv("PLATFORM_ENV_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "integrations.yaml").write_text(_modes(pr_closed=WEBHOOK))
+
+    routing = _mode_routing(_Source({}), [0.0])
+
+    assert routing.mode("adp", "pr_closed") == WEBHOOK
+    assert routing.mode("adp", "jira_intake") == "polling"
+
+
+def test_an_invalid_integrations_publish_keeps_the_last_valid_modes():
+    source = _Source({"integrations": _modes(pr_closed=WEBHOOK)})
+    clock = [0.0]
+    routing = _mode_routing(source, clock)
+    assert routing.mode("adp", "pr_closed") == WEBHOOK
+
+    source.files["integrations"] = _modes(pr_closed="sometimes")
+    clock[0] = 61.0
+
+    assert routing.mode("adp", "pr_closed") == WEBHOOK
+
+
+def test_modes_are_unknown_until_a_first_read_succeeds_and_the_read_is_retried_soon():
+    from services.orchestration.webhook.tenants import MODE_RETRY_SECONDS
+
+    source = _FlakySource({"integrations": _modes(pr_closed=WEBHOOK)}, failures=1)
+    clock = [0.0]
+    routing = _mode_routing(source, clock)
+
+    assert routing.mode("adp", "pr_closed") is None
+    clock[0] = MODE_RETRY_SECONDS
+    assert routing.mode("adp", "pr_closed") == WEBHOOK
+
+
+async def test_a_signed_delivery_of_a_tenant_whose_modes_are_unknown_is_answered_503(
+    monkeypatch,
+):
+    for name, value in ENVIRON.items():
+        monkeypatch.setenv(name, value)
+    settings = hermetic_settings(tenants="adp", tenant="adp")
+    source = _FlakySource({"integrations": WEBHOOK_MODES, "jira": _jira_yaml("ADP")}, failures=1)
+    routing = TenantRouting(
+        settings,
+        registries=cast(Any, _Registries({"adp": _Registry({})})),
+        source_factory=lambda tenant: cast(Any, source),
+        clock=lambda: 0.0,
+    )
+    routes = build_routes_for(settings, routing=routing, signaller=_Signaller(), starter=_Starter())
+    body = _jira_body("ADP-1")
+
+    code, payload = await _post(
+        routes["/webhook/jira/adp"], body, {"X-Hub-Signature": _sign(ADP_JIRA_KEY, body)}
+    )
+
+    assert code == 503
+    assert "redeliver" in payload["error"]
+
+
+def test_one_tenant_without_its_own_secret_is_not_served_by_the_unsuffixed_secret(monkeypatch):
+    monkeypatch.setenv("GITHUB_WEBHOOK_SECRET", "platform-key")
+    monkeypatch.delenv("GITHUB_WEBHOOK_SECRET_ADP", raising=False)
+
+    with pytest.raises(SystemExit, match="GITHUB_WEBHOOK_SECRET_ADP"):
+        require_webhook_secrets(
+            hermetic_settings(tenants="adp", tenant="adp"),
+            modes=lambda tenant: cast(Any, SimpleNamespace(webhook_enabled=lambda name: True)),
+        )

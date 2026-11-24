@@ -48,7 +48,8 @@ async def main() -> int:
     print(f"[demo] started {workflow_id}; counting to {args.target}, one activity per number")
     print(
         "[demo] restart the worker in another terminal at any point to simulate a crash:\n"
-        f"  docker compose -f compose.yaml -f compose.override.yaml restart {WORKER_SERVICE}"
+        "  docker compose --env-file config/local/platform.env -f compose.yaml "
+        f"-f compose.override.yaml restart {WORKER_SERVICE}"
     )
     print("[demo] the count freezes while the worker is down, then resumes where it stopped\n")
 

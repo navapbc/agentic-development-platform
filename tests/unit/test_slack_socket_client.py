@@ -22,7 +22,7 @@ from services.integration.slack.socket_client import SocketModeTransport, start_
 from services.orchestration.escalation import SlackSettings
 from slack_sdk.socket_mode.request import SocketModeRequest
 from slack_sdk.web import WebClient
-from tests.support import hermetic_settings
+from tests.support import SHARED_APP_YAML, configure_tenant, hermetic_settings, tenant_dir
 
 SOCKET_ESCALATION = """config_version: 1
 channels: [jira, slack]
@@ -249,7 +249,7 @@ def test_a_dropped_connection_is_logged(caplog) -> None:
 def environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     env = tmp_path / "env"
     env.mkdir()
-    monkeypatch.setenv("PLATFORM_ENV_CONFIG_DIR", str(env))
+    configure_tenant(monkeypatch, env)
     tenant_config.reset()
     yield env
     tenant_config.reset()
@@ -267,22 +267,32 @@ def _settings(**overrides: str):
 
 
 async def test_a_socket_tenant_without_an_app_token_refuses_to_start(environment) -> None:
-    (environment / "escalation.yaml").write_text(SOCKET_ESCALATION)
+    (tenant_dir(environment) / "escalation.yaml").write_text(SOCKET_ESCALATION)
 
     with pytest.raises(ConfigError, match="SLACK_APP_TOKEN"):
         await start_socket_mode(_settings(slack_app_token=""), object())
 
 
 async def test_a_webhook_tenant_starts_no_socket_mode_client(environment) -> None:
-    (environment / "escalation.yaml").write_text(WEBHOOK_ESCALATION)
+    (tenant_dir(environment) / "escalation.yaml").write_text(WEBHOOK_ESCALATION)
 
     assert await start_socket_mode(_settings(slack_app_token=""), object()) is None
+
+
+async def test_a_shared_app_tenant_starts_no_socket_mode_client(environment) -> None:
+    (environment / "slack-shared-app.yaml").write_text(SHARED_APP_YAML)
+    (tenant_dir(environment) / "escalation.yaml").write_text(
+        "config_version: 1\nchannels: [jira, slack]\nslack:\n  app: shared\n"
+        "  transport: webhook\n  channel: C0123456789\n  profile: private\n"
+    )
+
+    assert await start_socket_mode(_settings(), object()) is None
 
 
 async def test_a_govslack_tenant_opens_its_connection_on_slack_gov(
     environment, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    (environment / "escalation.yaml").write_text(GOVSLACK_ESCALATION)
+    (tenant_dir(environment) / "escalation.yaml").write_text(GOVSLACK_ESCALATION)
     requested: list[str] = []
 
     def perform(self: WebClient, *, url: str, args: dict[str, Any]) -> dict[str, Any]:
@@ -307,7 +317,7 @@ async def test_a_govslack_tenant_opens_its_connection_on_slack_gov(
 async def test_a_slack_outage_at_startup_does_not_stop_the_worker(
     environment, monkeypatch: pytest.MonkeyPatch, caplog
 ) -> None:
-    (environment / "escalation.yaml").write_text(GOVSLACK_ESCALATION)
+    (tenant_dir(environment) / "escalation.yaml").write_text(GOVSLACK_ESCALATION)
     monkeypatch.setattr("services.integration.slack.socket_client.CONNECT_RETRY_SECONDS", (0.01,))
     attempts: list[str] = []
 

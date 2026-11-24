@@ -4,11 +4,9 @@ locals {
     var.create_container_services && var.container_internal_acm_certificate_arn != "" && !endswith(var.container_internal_domain, ".internal")
     ? ["*.${var.container_internal_domain}"] : []
   )
-  container_environment_config = var.container_config_dir == "" ? {} : {
-    for name in fileset(var.container_config_dir, "*.yaml") : name => file("${var.container_config_dir}/${name}") if name != "image_exceptions.yaml"
-  }
+  container_environment_config = module.platform_config.files
 
-  reader_sets = [var.secret_readers, local.temporal_secret_readers, module.container_services.secret_readers, local.eks_secret_readers, local.tenant_secret_readers, local.tenant_platform_secret_readers, local.off_hours_secret_readers]
+  reader_sets = [var.secret_readers, local.temporal_secret_readers, module.container_services.secret_readers, local.eks_secret_readers, local.tenant_secret_readers, local.tenant_platform_secret_readers, local.tenant_review_langfuse_readers, local.off_hours_secret_readers]
   secret_readers = {
     for key in distinct(flatten([for readers in local.reader_sets : keys(readers)])) :
     key => distinct(flatten([for readers in local.reader_sets : try(readers[key], [])]))
@@ -29,15 +27,10 @@ locals {
   }
 }
 
-resource "terraform_data" "container_config_guard" {
-  count = var.container_config_dir != "" ? 1 : 0
+module "platform_config" {
+  source = "../../platform-config"
 
-  lifecycle {
-    precondition {
-      condition     = !contains(fileset(var.container_config_dir, "*"), "image_exceptions.yaml")
-      error_message = "container_config_dir holds image_exceptions.yaml. Platform finding exceptions belong in platform/image_exceptions.yaml in the tenant config bucket, added through the image-exception workflow, and tenant exceptions belong in each tenant's config bundle. Remove the file from container_config_dir."
-    }
-  }
+  directory = var.container_config_dir
 }
 
 module "container_services" {
@@ -69,7 +62,6 @@ module "container_services" {
   cluster_arn             = module.ecs_cluster.cluster_arn
   platform_image          = var.container_platform_image
   repo_intelligence_image = var.container_repo_intelligence_image
-  environment             = var.container_environment
   environment_config      = local.container_environment_config
   platform_ca_pem         = var.container_platform_ca_file == "" ? "" : file(var.container_platform_ca_file)
   service_counts          = var.container_service_counts
@@ -127,9 +119,8 @@ module "container_services" {
   workspace_client_security_group_ids  = local.eks_enabled ? [module.eks_cluster.cluster_security_group_id] : []
   secret_recovery_window_days          = var.secret_recovery_window_days
 
-  bedrock_invoke_policy_arns = [module.bedrock_iam.invoke_policy_arn]
-  enable_execute_command     = var.container_enable_execute_command
-  exec_task_policy_arn       = module.ecs_cluster.exec_task_policy_arn
+  enable_execute_command = var.container_enable_execute_command
+  exec_task_policy_arn   = module.ecs_cluster.exec_task_policy_arn
 
   tags = var.tags
 }

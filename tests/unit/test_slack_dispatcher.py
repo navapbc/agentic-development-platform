@@ -7,13 +7,16 @@ from dataclasses import dataclass, field
 
 import pytest
 from services.integration.slack.dispatcher import (
+    REFUSAL_EVENT,
     DecisionRejected,
+    PostgresDecisionRecords,
     RecordedDecision,
     Refusal,
     SlackClick,
     SlackDispatcher,
     TemporalWorkflowDecisions,
     click_from_payload,
+    refuse_unrouted,
 )
 from services.integration.slack.tokens import ActionToken, park_digest, sign_action_token
 from services.orchestration.escalation import SlackSettings, SlackUser
@@ -140,6 +143,17 @@ async def test_an_allowlisted_click_applies_the_decision_to_the_tokens_park():
     ]
 
 
+async def test_a_click_from_the_retained_channel_of_the_tenant_applies_its_decision():
+    decisions = _Decisions(outcome=ACCEPTED)
+    dispatcher = _dispatcher(decisions)
+
+    retained = await dispatcher.dispatch(_click(channel="C-LEFT"), retained_channel="C-LEFT")
+    elsewhere = await dispatcher.dispatch(_click(channel="C-OTHER"), retained_channel="C-LEFT")
+
+    assert retained.refusal is None and retained.actor == "slack:E-ORG/U-LEAD"
+    assert elsewhere.refusal is Refusal.WORKSPACE
+
+
 async def test_a_repair_click_maps_abandon_to_a_repair_decision():
     decisions = _Decisions(outcome=ParkDecisionOutcome("abandon", "x", "slack", applied=True))
     value = _value(park_key="intake-1a2b3c4d:repair:3:2", kind="repair", actions=("abandon",))
@@ -216,6 +230,49 @@ async def test_a_workspace_click_takes_the_organization_from_the_users_team():
     }
 
     assert click_from_payload(payload).organization == "E-ORG"
+
+
+class _Transaction:
+    def __init__(self) -> None:
+        self.statements: list = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc_info):
+        return False
+
+    async def execute(self, statement):
+        self.statements.append(statement)
+
+
+class _Engine:
+    def __init__(self) -> None:
+        self.transaction = _Transaction()
+
+    def begin(self):
+        return self.transaction
+
+
+async def test_a_click_on_a_channel_no_tenant_names_is_refused_with_its_route_and_channel():
+    engine = _Engine()
+
+    result = await refuse_unrouted(
+        _click(channel="C3"), PostgresDecisionRecords(engine), route="/webhook/slack/_shared"
+    )
+
+    assert result.refusal is Refusal.UNROUTED
+    assert not result.accepted
+    [statement] = engine.transaction.statements
+    values = statement.compile().params
+    assert values["event_type"] == REFUSAL_EVENT
+    assert values["reason"] == Refusal.UNROUTED.value
+    assert values["correlation_ids"] == {
+        "tenant": "",
+        "park_digest": "",
+        "route": "/webhook/slack/_shared",
+        "channel": "C3",
+    }
 
 
 async def test_a_click_on_an_earlier_park_is_refused_and_names_the_earlier_park():

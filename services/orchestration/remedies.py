@@ -373,8 +373,8 @@ def unroutable_remedy(
     if unlisted:
         names = ", ".join(unlisted)
         return remedy(
-            f"The ticket names {names}, which the repositories this environment works on do not "
-            f"include, so intake will not build against it. Add {names} under ",
+            f"The ticket names {names}, which the tenant's repositories do not include, so "
+            f"intake will not build against it. Add {names} under ",
             config_key("repositories", "repositories"),
             ", or point the ticket at a listed repository, then run ",
             restart_run(issue_key),

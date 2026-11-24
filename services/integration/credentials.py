@@ -1,4 +1,4 @@
-"""Per-environment config loading and secret resolution behind one interface."""
+"""Config loading and secret resolution behind one interface."""
 
 from __future__ import annotations
 
@@ -22,12 +22,14 @@ _CURRENT_CONFIG_VERSIONS: dict[str, int] = {
     "gate_engine": 1,
     "checks": 1,
     "tickets": 1,
+    "tickets_isolation": 1,
     "repositories": 1,
     "registries": 1,
     "profiles": 1,
     "image_policy": 1,
     "image_exceptions": 1,
     "escalation": 1,
+    "slack_shared_app": 1,
 }
 
 
@@ -41,23 +43,24 @@ def current_config_version(name: str, *, versions: Mapping[str, int] | None = No
 
 
 class ConfigError(RuntimeError):
-    """Raised when a per-environment config file is missing or malformed."""
+    """Raised when a config file is missing or malformed."""
 
 
 class SecretNotFoundError(KeyError):
     """Raised when a secret reference resolves to no value."""
 
-    def __init__(self, ref: str, *, env_file: Path | None = None) -> None:
+    def __init__(self, ref: str, *, env_files: Sequence[Path] = ()) -> None:
         super().__init__(ref)
         self.ref = ref
-        self.env_file = env_file
+        self.env_files = tuple(env_files)
 
     def __str__(self) -> str:
-        where = f" or in {self.env_file}" if self.env_file is not None else ""
+        where = "".join(f" or in {path}" for path in self.env_files)
         return (
             f"the secret {self.ref} is not set in the process environment{where}. "
-            f"Export {self.ref}, or add a {self.ref}= line to the .env file, then restart the "
-            "stack with inv local-up so the workers pick it up."
+            f"Export {self.ref}, or add a {self.ref}= line to config/local/platform.env for a "
+            "platform secret or to config/local/tenants/<tenant>.env for a tenant secret, then "
+            "restart the stack with inv local-up so the workers pick it up."
         )
 
 
@@ -67,7 +70,11 @@ class SecretResolver(Protocol):
 
 
 class EnvSecretResolver:
-    """Resolve a reference from the process environment merged over the local .env."""
+    """Resolve a reference from the process environment merged over the settings files.
+
+    The settings files default to config/local/platform.env and, when TENANT names a tenant,
+    config/local/tenants/<tenant>.env, which replaces the platform values.
+    """
 
     def __init__(
         self,
@@ -76,58 +83,87 @@ class EnvSecretResolver:
         env_file: Path | None = None,
     ) -> None:
         self._source = source
-        self._env_file = env_file if env_file is not None else _REPO_ROOT / ".env"
+        if env_file is not None:
+            self._env_files: tuple[Path, ...] = (env_file,)
+        else:
+            from scripts.config import settings_files
+
+            self._env_files = settings_files()
 
     def resolve(self, ref: str) -> str:
         source = self._source if self._source is not None else self._load()
         value = source.get(ref)
         if not value:
-            raise SecretNotFoundError(ref, env_file=self._env_file)
+            raise SecretNotFoundError(ref, env_files=self._env_files)
         return value
 
     def _load(self) -> Mapping[str, str]:
         merged: dict[str, str] = {}
-        if self._env_file.exists():
-            for key, value in dotenv_values(self._env_file).items():
-                if value is not None:
-                    merged[key] = value
+        for path in self._env_files:
+            if path.exists():
+                for key, value in dotenv_values(path).items():
+                    if value is not None:
+                        merged[key] = value
         merged.update(os.environ)
         return merged
 
 
-def env_config_dir(environment: str, *, root: Path | None = None) -> Path:
-    """Return config/<environment>, or the directory PLATFORM_ENV_CONFIG_DIR names.
+CONFIG_DIRECTORY = Path("config") / "local"
+TENANT_TEMPLATE_DIRECTORY = Path("tenants") / "tenant.example"
 
-    A deployed task has no repository checkout, so its entrypoint writes the environment's
-    config files to PLATFORM_ENV_CONFIG_DIR. An explicit root still selects the checkout layout.
+
+def env_config_dir(*, root: Path | None = None) -> Path:
+    """Return config/local, or the directory PLATFORM_ENV_CONFIG_DIR names.
+
+    A deployed task has no repository checkout, so its entrypoint writes the platform's config
+    files to PLATFORM_ENV_CONFIG_DIR. An explicit root still selects the checkout layout.
     """
     configured = os.environ.get("PLATFORM_ENV_CONFIG_DIR", "")
     if root is None and configured:
         return Path(configured)
     base = root if root is not None else _REPO_ROOT
-    return base / "config" / environment
+    return base / CONFIG_DIRECTORY
 
 
-def env_config_path(name: str, *, environment: str, root: Path | None = None) -> Path:
-    """Return the file config/<environment>/<name>.yaml resolves to.
+def env_config_path(name: str, *, root: Path | None = None, directory: Path | None = None) -> Path:
+    """Return the file the config name resolves to.
 
-    A tenant file comes from the tenant's bundle when the bundle holds it, and otherwise from
-    the environment directory. An explicit root selects the checkout layout and no bundle.
+    A tenant-only file comes only from the tenant's bundle, and a replaceable file from the bundle
+    when it holds one and otherwise from the platform directory. An explicit root selects the
+    checkout's config/local and no bundle, and an explicit directory reads that directory alone.
     """
+    if directory is not None:
+        return directory / f"{name}.yaml"
     if root is None:
-        from services.integration.tenant_config import tenant_file
+        from services.integration.tenant_config import (
+            TENANT_ONLY_FILES,
+            tenant_bundle_dir,
+            tenant_file,
+        )
 
         bundled = tenant_file(name)
         if bundled is not None:
             return bundled
-    return env_config_dir(environment, root=root) / f"{name}.yaml"
+        if name in TENANT_ONLY_FILES:
+            bundle = tenant_bundle_dir()
+            if bundle is None:
+                raise ConfigError(
+                    f"{name}.yaml is a tenant file, and this process reads no tenant's bundle"
+                )
+            return bundle / f"{name}.yaml"
+    return env_config_dir(root=root) / f"{name}.yaml"
 
 
-def load_env_config(name: str, *, environment: str, root: Path | None = None) -> dict[str, Any]:
-    """Load config/<environment>/<name>.yaml, or the tenant bundle's copy, as a mapping."""
-    path = env_config_path(name, environment=environment, root=root)
+def load_env_config(
+    name: str, *, root: Path | None = None, directory: Path | None = None
+) -> dict[str, Any]:
+    """Load config/local/<name>.yaml, or the tenant bundle's copy, as a mapping."""
+    path = env_config_path(name, root=root, directory=directory)
     if not path.exists():
-        raise ConfigError(f"config file missing: {path}; copy {path.name}.example to create it")
+        template = config_template(name).relative_to(env_config_dir())
+        raise ConfigError(
+            f"config file missing: {path}. Copy {CONFIG_DIRECTORY / template} to create it"
+        )
     parsed = yaml.safe_load(path.read_text(encoding="utf-8"))
     if parsed is None:
         return {}
@@ -137,7 +173,7 @@ def load_env_config(name: str, *, environment: str, root: Path | None = None) ->
 
 
 def load_platform_config(name: str, *, root: Path | None = None) -> dict[str, Any]:
-    """Load config/platform/<name>.yaml, the tracked configuration shared by every environment."""
+    """Load config/platform/<name>.yaml, the tracked configuration every deployment shares."""
     base = root if root is not None else _REPO_ROOT
     path = base / "config" / "platform" / f"{name}.yaml"
     if not path.exists():
@@ -151,12 +187,12 @@ def load_platform_config(name: str, *, root: Path | None = None) -> dict[str, An
 
 
 def _read_config_file(
-    name: str, *, environment: str, root: Path | None, suffix: str
+    name: str, *, root: Path | None, suffix: str, directory: Path | None = None
 ) -> dict[str, Any] | None:
     path = (
-        env_config_path(name, environment=environment, root=root)
+        env_config_path(name, root=root, directory=directory)
         if suffix == ""
-        else env_config_dir(environment, root=root) / f"{name}.yaml{suffix}"
+        else (directory or env_config_dir(root=root)) / f"{name}.yaml{suffix}"
     )
     if not path.exists():
         return None
@@ -202,16 +238,43 @@ class ConfigStatus:
     new_keys: tuple[str, ...]
 
 
+def config_template(name: str, *, root: Path | None = None) -> Path:
+    """Return the committed template of the config name.
+
+    A platform file's template sits beside it as <name>.yaml.example. A tenant-only file's sits in
+    tenants/tenant.example/, as <name>.yaml when every tenant copies it and as <name>.yaml.example
+    when a tenant copies it only to use it. Where the template folder is absent, as in a deployed
+    image, the folder itself is returned.
+    """
+    from services.integration.tenant_config import TENANT_ONLY_FILES
+
+    directory = env_config_dir(root=root)
+    if name not in TENANT_ONLY_FILES:
+        return directory / f"{name}.yaml.example"
+    folder = directory / TENANT_TEMPLATE_DIRECTORY
+    for candidate in (folder / f"{name}.yaml", folder / f"{name}.yaml.example"):
+        if candidate.is_file():
+            return candidate
+    return folder
+
+
 def config_status(
-    name: str, *, environment: str, root: Path | None = None, current: int | None = None
+    name: str, *, root: Path | None = None, current: int | None = None
 ) -> ConfigStatus:
     current_version = current if current is not None else current_config_version(name)
-    example = _read_config_file(name, environment=environment, root=root, suffix=".example")
+    template = config_template(name, root=root)
+    example = _read_config_file(
+        name,
+        root=root,
+        suffix=template.name.removeprefix(f"{name}.yaml"),
+        directory=template.parent,
+    )
     if example is None:
-        raise ConfigError(f"missing committed template config/{environment}/{name}.yaml.example")
+        template_name = CONFIG_DIRECTORY / template.relative_to(env_config_dir(root=root))
+        raise ConfigError(f"missing committed template {template_name}")
     example_version = config_version(example)
     example_matches_current = example_version == current_version
-    operator = _read_config_file(name, environment=environment, root=root, suffix="")
+    operator = _read_config_file(name, root=root, suffix="")
     if operator is None:
         return ConfigStatus(
             name=name,
@@ -238,16 +301,21 @@ def config_status(
 
 
 def require_current_config(
-    name: str, *, environment: str, root: Path | None = None, current: int | None = None
+    name: str,
+    *,
+    root: Path | None = None,
+    directory: Path | None = None,
+    current: int | None = None,
 ) -> None:
     current_version = current if current is not None else current_config_version(name)
-    operator = _read_config_file(name, environment=environment, root=root, suffix="")
+    operator = _read_config_file(name, root=root, suffix="", directory=directory)
     if operator is None:
         return
     operator_version = config_version(operator)
     if operator_version >= current_version:
         return
+    path = env_config_path(name, root=root, directory=directory)
     raise ConfigError(
-        f"config/{environment}/{name}.yaml is version {operator_version} but this release "
+        f"{path} is version {operator_version} but this release "
         f"expects version {current_version}. Run `inv config-check` and add the new keys."
     )

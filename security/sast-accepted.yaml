@@ -25,6 +25,31 @@
   justification: __token__ is the key under which the in-memory EnvSecretResolver stores the token passed to build_single_project_resolver. It is a lookup name, not a credential.
 - tool: bandit
   rule: B105
+  path: scripts/webhook_eks_render.py
+  match: SHARED_SIGNING_SECRET_ALIAS = "SLACK_SHARED_SIGNING_SECRET"
+  justification: SLACK_SHARED_SIGNING_SECRET is the environment variable name under which the inbound webhook's SecretProviderClass mounts the shared Slack app's signing secret. Bandit matches the word SECRET in the assignment, and the value is the variable name the render removes when no shared app is configured, not the secret itself.
+- tool: bandit
+  rule: B105
+  path: services/orchestration/gates/registry_mirrors.py
+  match: TOKEN_ENV = "REGISTRY_TOKEN"
+  justification: REGISTRY_TOKEN is the name of the setting the activity worker reads a tenant's external registry token from, which only the tenant's own settings file or registry-token secret supplies. Bandit matches the word TOKEN in the assignment, and the value is the setting name, not the token itself.
+- tool: bandit
+  rule: B105
+  path: scripts/webhook_render.py
+  match: SHARED_BOT_TOKEN = "SLACK_SHARED_BOT_TOKEN"
+  justification: SLACK_SHARED_BOT_TOKEN is the name of the setting the local render reads from .env and writes into the slack-poster Secret. Bandit matches the word TOKEN in the assignment, and the value is the setting name, not the token itself.
+- tool: bandit
+  rule: B105
+  path: scripts/webhook_render.py
+  match: SHARED_BOT_TOKEN_KEY = "slack_shared_bot_token"
+  justification: slack_shared_bot_token is the key of the slack-poster Secret that holds the shared Slack app's bot token, which the local render writes from .env. Bandit matches the word TOKEN in the name, and the value is the Secret key, not the token itself.
+- tool: bandit
+  rule: B105
+  path: services/slack_poster/__init__.py
+  match: TOKEN_AUDIENCE = "slack-posting-service"
+  justification: slack-posting-service is the audience of the projected service account token a tenant activity worker presents to the Slack posting service, which the service passes to TokenReview. Bandit matches the word TOKEN in the name, and the value is a public audience identifier, not a credential.
+- tool: bandit
+  rule: B105
   path: services/integration/jira/cloud_client.py
   match: token = ""
   justification: token holds the nextPageToken cursor that Jira Cloud returns with each JQL search page, and it starts empty to request the first page. Bandit matches the name token assigned a string literal, and the value is a pagination position, not a credential.
@@ -378,3 +403,8 @@
   path: docker/image-scan.Dockerfile
   match: ''
   justification: The image runs the SBOM generator once against an image archive and exits, so it serves nothing to check.
+- tool: semgrep
+  rule: terraform.lang.security.iam.no-iam-data-exfiltration.no-iam-data-exfiltration
+  path: infra/terraform/tenant/publisher.tf
+  match: Action = "s3:GetObject"
+  justification: The rule reports every S3 read action in a policy that holds any statement on the * resource, and the publisher policy holds one, for ecr:GetAuthorizationToken, which AWS authorizes only on *. This statement names one object, the tenant's own claim index claims/_owners/<tenant>.json in the config bucket, which the publisher reads to learn which claims to release.

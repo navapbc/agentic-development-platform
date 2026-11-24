@@ -16,10 +16,10 @@ from services import process
 REPOSITORY = Path(__file__).resolve().parents[2]
 OVERLAY = REPOSITORY / "deploy" / "kubernetes" / "aws"
 ROOT = REPOSITORY / "infra" / "terraform" / "examples" / "private-bedrock"
-EKS_ROOT = ROOT / "eks.tf"
+EKS_WORKLOAD_FILES = (ROOT / "eks.tf", ROOT / "slack_poster.tf")
 SERVICES = REPOSITORY / "infra" / "terraform" / "container-services" / "services.tf"
 PLATFORM_WORKLOADS = ("activity-worker", "inbound-webhook", "mcp-gateway")
-WORKLOADS = (*PLATFORM_WORKLOADS, "litellm")
+WORKLOADS = (*PLATFORM_WORKLOADS, "litellm", "slack-poster")
 TENANT_WORKLOADS = ("activity-worker", "mcp-gateway")
 TENANT_GENERATED_SECRETS = {"mcp_gateway_token"}
 REGISTRY = "123456789012.dkr.ecr.us-east-1.amazonaws.com/agentic-platform/"
@@ -52,8 +52,7 @@ def _container(documents: list[dict[str, Any]], name: str) -> dict[str, Any]:
 
 
 def _terraform_secret_keys() -> dict[str, set[str]]:
-    """Read the secret store keys each service account reads from the eks_workloads local."""
-    text = EKS_ROOT.read_text(encoding="utf-8")
+    text = "\n".join(path.read_text(encoding="utf-8") for path in EKS_WORKLOAD_FILES)
     pattern = re.compile(r'service_account = "([a-z-]+)"\n.*?secrets\s+= \[(.*?)\]', re.DOTALL)
     return {
         account: set(re.findall(r'"([a-z_]+)"', secrets))
@@ -80,8 +79,20 @@ def test_no_rendered_object_is_a_secret(documents) -> None:
     assert not [d["metadata"]["name"] for d in documents if d["kind"] == "Secret"]
 
 
-def test_the_review_worker_stays_on_ecs(documents) -> None:
-    assert not [d for d in documents if d["metadata"]["name"] == "review-worker"]
+def test_the_review_worker_mounts_only_the_secrets_its_tenant_review_role_reads(documents) -> None:
+    tenants = (ROOT / "tenants.tf").read_text()
+    granted = {
+        key
+        for name in ("review_platform_secrets", "review_shared_secrets", "review_langfuse_keys")
+        for key in re.findall(r'"([a-z_]+)"', re.search(rf"{name}\s+= \[(.*?)\]", tenants).group(1))
+    }
+    volume = next(v for v in _pod(documents, "review-worker")["volumes"] if v["name"] == "secrets")
+
+    assert _pod(documents, "review-worker")["serviceAccountName"] == "review-worker"
+    assert 'service_account = "review-worker"' in tenants
+    assert volume["csi"]["volumeAttributes"]["secretProviderClass"] == "review-worker"
+    assert _provider_keys(documents, "review-worker") == granted | {"review_signing_key"}
+    assert "review_signing_key" not in _provider_keys(documents, "activity-worker")
 
 
 def _tenant_worker_secret_keys() -> set[str]:
@@ -165,8 +176,8 @@ def test_the_activity_worker_renders_remedies_for_a_deployed_operator(documents)
     assert settings["DEPLOYMENT_POSTURE"] == "deployed"
 
 
-def test_the_tenant_workspace_sits_where_the_review_worker_reads_it(documents) -> None:
-    review_path = re.search(r'tenants_path\s+= "([^"]+)"', SERVICES.read_text()).group(1)
+def test_the_tenant_workspace_sits_where_repository_intelligence_reads_it(documents) -> None:
+    shared_path = re.search(r'tenants_path\s+= "([^"]+)"', SERVICES.read_text()).group(1)
     claim = _named(documents, "PersistentVolumeClaim", "workspaces")
     volume = _named(documents, "PersistentVolume", claim["spec"]["volumeName"])
     env = worker_env("adp")
@@ -174,9 +185,9 @@ def test_the_tenant_workspace_sits_where_the_review_worker_reads_it(documents) -
     assert claim["spec"]["storageClassName"] == ""
     assert volume["spec"]["csi"]["driver"] == "efs.csi.aws.com"
     assert "iam" in volume["spec"]["mountOptions"] and "tls" in volume["spec"]["mountOptions"]
-    assert tenant_root("adp") == f"{review_path}/adp"
-    assert env["REPOSITORY_ROOT"].startswith(f"{review_path}/adp/")
-    assert env["EXECUTION_WORKSPACE_ROOT"].startswith(f"{review_path}/adp/")
+    assert tenant_root("adp") == f"{shared_path}/adp"
+    assert env["REPOSITORY_ROOT"].startswith(f"{shared_path}/adp/")
+    assert env["EXECUTION_WORKSPACE_ROOT"].startswith(f"{shared_path}/adp/")
 
 
 def test_the_temporal_clients_carry_the_client_security_groups(documents) -> None:
@@ -185,6 +196,7 @@ def test_the_temporal_clients_carry_the_client_security_groups(documents) -> Non
 
     assert set(temporal["podSelector"]["matchExpressions"][0]["values"]) == {
         "activity-worker",
+        "review-worker",
         "inbound-webhook",
     }
     assert len(temporal["securityGroups"]["groupIds"]) == 3

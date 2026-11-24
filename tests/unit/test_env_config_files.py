@@ -31,12 +31,12 @@ def test_a_name_outside_the_directory_or_not_yaml_is_refused(tmp_path, name) -> 
 
 
 def test_the_loader_reads_the_directory_the_setting_names(tmp_path, monkeypatch) -> None:
-    (tmp_path / "tickets.yaml").write_text("backend: rebar\n", encoding="utf-8")
+    (tmp_path / "integrations.yaml").write_text("modes: {}\n", encoding="utf-8")
     monkeypatch.setenv("PLATFORM_ENV_CONFIG_DIR", str(tmp_path))
 
-    assert env_config_dir("aws") == tmp_path
-    assert load_env_config("tickets", environment="aws") == {"backend": "rebar"}
-    assert env_config_dir("aws", root=REPO_ROOT) == REPO_ROOT / "config" / "aws"
+    assert env_config_dir() == tmp_path
+    assert load_env_config("integrations") == {"modes": {}}
+    assert env_config_dir(root=REPO_ROOT) == REPO_ROOT / "config" / "local"
 
 
 def test_the_entrypoint_writes_the_files_and_points_the_loader_at_them(tmp_path) -> None:

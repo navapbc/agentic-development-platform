@@ -24,7 +24,7 @@ from services.repository_intelligence.context_builder.registry import (
 from services.repository_intelligence.normalization.models import ContextPackage, RepoRef
 from services.repository_intelligence.normalization.serialization import context_package_to_dict
 from services.repository_intelligence.tenant_tokens import tenant_for_token
-from services.repository_intelligence.tenants import TenantRegistries, migrate_home_indexes
+from services.repository_intelligence.tenants import TenantRegistries
 from services.repository_intelligence.token_secrets import ARN_MAP_ENV, TokenSource
 from services.repository_intelligence.token_secrets import token_source as build_token_source
 
@@ -213,10 +213,8 @@ def main() -> None:
         log.error(
             "no tenant token is configured, so every context and warm request is refused. "
             f"Set {ARN_MAP_ENV} in AWS, REPO_INTELLIGENCE_TOKEN_<TENANT> for each tenant or "
-            "REPO_INTELLIGENCE_TOKEN_KEY on a workstation, or REPO_INTELLIGENCE_TOKEN when "
-            "neither TENANTS nor TENANT is set."
+            "REPO_INTELLIGENCE_TOKEN_KEY on a workstation."
         )
-    migrate_home_indexes(tenant_registries(), settings)
     server = ThreadingHTTPServer((settings.bind_host, PORT), Handler)
     wrap(server, enabled=settings.server_tls, configured_dir=settings.server_tls_dir)
     scheme = "https" if settings.server_tls else "http"

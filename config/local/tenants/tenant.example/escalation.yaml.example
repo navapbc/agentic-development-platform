@@ -13,6 +13,11 @@
 # 72 by default. approved_hosts lists the Slack hosts a government tenant may reach. allowlist
 # names, for the gate and repair decision kinds, the Slack users who may decide. An entry
 # without organization_id belongs to the organization_id above.
+#
+# app is own, the default, or shared. With own, the tenant names its own Slack app as below. With
+# shared, the tenant uses the platform's shared Slack app, defined in slack-shared-app.yaml in the
+# platform directory, and omits app_id, organization_id, and api_base_url, which come from that
+# file. A shared app tenant sets transport to webhook and names a channel ID that starts with C.
 
 config_version: 1
 
@@ -22,6 +27,7 @@ channels:
   - slack
 
 slack:
+  app: own
   transport: socket
   api_base_url: https://slack.com/api/
   channel: C0000000000

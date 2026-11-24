@@ -4,6 +4,7 @@ kind: Kustomization
 resources:
   - ../mcp-gateway.yaml
   - ../inbound-webhook.yaml
+  - ../slack-poster.yaml
   - ../activity-worker.yaml
   - ../review-worker.yaml
   - ../litellm.yaml
@@ -35,10 +36,7 @@ configMapGenerator:
   - name: integration-config
     namespace: agentic-dev-platform
     files:
-      - github.yaml=../../../config/local/github.yaml
-      - jira.yaml=../../../config/local/jira.yaml
       - integrations.yaml=../../../config/local/integrations.yaml
-      - repositories.yaml=../../../config/local/repositories.yaml
   - name: aws-credential-process
     namespace: agentic-dev-platform
     files:
@@ -96,6 +94,20 @@ patches:
           spec:
             containers:
               - name: inbound-webhook
+                imagePullPolicy: IfNotPresent
+  - target:
+      kind: Deployment
+      name: slack-poster
+    patch: |
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: slack-poster
+      spec:
+        template:
+          spec:
+            containers:
+              - name: slack-poster
                 imagePullPolicy: IfNotPresent
   - target:
       kind: Service

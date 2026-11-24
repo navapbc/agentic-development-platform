@@ -23,7 +23,7 @@ from services.orchestration.escalation import (
 from services.orchestration.tenant_pinning import start_tenant_config
 from services.orchestration.webhook.server import TenantSlackSettings
 from services.orchestration.webhook.tenants import TenantRouting
-from tests.support import hermetic_settings, write_image_policy
+from tests.support import configure_tenant, hermetic_settings, tenant_dir, write_image_policy
 from tests.unit.test_tenant_config import GATES, REPOSITORIES, TICKETS
 
 REPOSITORY = Path(__file__).resolve().parents[2]
@@ -61,11 +61,11 @@ def _slack(text: str) -> SlackSettings:
 def environment(tmp_path, monkeypatch) -> Iterator[Path]:
     env = tmp_path / "env"
     env.mkdir()
-    (env / "repositories.yaml").write_text(REPOSITORIES)
+    (tenant_dir(env) / "repositories.yaml").write_text(REPOSITORIES)
     (env / "gates.yaml").write_text(GOVERNMENT_GATES)
-    (env / "tickets.yaml").write_text(TICKETS)
+    (tenant_dir(env) / "tickets.yaml").write_text(TICKETS)
     write_image_policy(env)
-    monkeypatch.setenv("PLATFORM_ENV_CONFIG_DIR", str(env))
+    configure_tenant(monkeypatch, env)
     monkeypatch.setenv("TMPDIR", str(tmp_path))
     tenant_config.reset()
     yield env
@@ -127,24 +127,27 @@ def test_a_private_tenant_with_any_api_host_accepts_only_slack_action_urls(url, 
 def test_config_check_reports_a_government_tenant_with_an_unapproved_host(
     environment, capsys
 ) -> None:
-    (environment / "escalation.yaml.example").write_text(
-        (REPOSITORY / "config/local/escalation.yaml.example").read_text()
+    template = environment / "tenants" / "tenant.example" / "escalation.yaml.example"
+    template.parent.mkdir(parents=True, exist_ok=True)
+    template.write_text(
+        (REPOSITORY / "config/local/tenants/tenant.example/escalation.yaml.example").read_text()
     )
-    (environment / "escalation.yaml").write_text(UNAPPROVED_HOST)
+    (tenant_dir(environment) / "escalation.yaml").write_text(UNAPPROVED_HOST)
 
     assert config_check.main() == 1
 
     output = capsys.readouterr().out
-    assert "[config-check] escalation: INVALID, slack.api_base_url names host slack.com" in output
+    assert (
+        "[config-check] tenants/adp/escalation: INVALID, slack.api_base_url names host slack.com"
+        in output
+    )
 
 
 def test_a_worker_refuses_to_start_for_a_government_tenant_with_an_unapproved_host(
     environment, monkeypatch
 ) -> None:
     monkeypatch.setattr(notifications, "deliver_alert", lambda message: None)
-    bundle = environment / "tenants" / "adp"
-    bundle.mkdir(parents=True)
-    (bundle / "escalation.yaml").write_text(UNAPPROVED_HOST)
+    (tenant_dir(environment) / "escalation.yaml").write_text(UNAPPROVED_HOST)
 
     with pytest.raises(ConfigError, match="slack.api_base_url names host slack.com"):
         start_tenant_config(_settings())
@@ -155,6 +158,8 @@ def test_a_refresh_to_an_unapproved_host_keeps_the_last_compliant_bundle(
 ) -> None:
     source_dir = tmp_path / "source"
     source_dir.mkdir()
+    (source_dir / "repositories.yaml").write_text(REPOSITORIES)
+    (source_dir / "tickets.yaml").write_text(TICKETS)
     (source_dir / "escalation.yaml").write_text(GOVSLACK)
     rejected: list[str] = []
     config = TenantConfig(
@@ -179,8 +184,7 @@ def test_the_webhook_keeps_a_tenants_last_compliant_slack_settings_and_serves_th
     beta = PRIVATE.replace("A0123456789", "A0BETA")
     tenants = {"adp": GOVSLACK, "beta": beta, "gamma": UNAPPROVED_HOST, "delta": PRIVATE}
     for tenant, text in tenants.items():
-        (environment / "tenants" / tenant).mkdir(parents=True)
-        (environment / "tenants" / tenant / "escalation.yaml").write_text(text)
+        (tenant_dir(environment, tenant) / "escalation.yaml").write_text(text)
     (environment / "tenants" / "beta" / "gates.yaml").write_text(GATES)
     settings = hermetic_settings(tenants=",".join(tenants))
     slack = TenantSlackSettings(settings, TenantRouting(settings))

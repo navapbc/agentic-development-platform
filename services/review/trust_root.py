@@ -1,10 +1,12 @@
 """Versioned trust-root bundle for review-verdict signature verification.
 
 The bundle lists the public signer keys the review gate trusts, each with a key
-identifier and an optional validity window, and a revocation flag. The loader
-resolves the keys active at a given time into an OpenSSH ``allowed_signers`` blob
-the SSHSIG scheme verifies against. Overlapping validity windows give a rotation
-rollout that admits a new key before the old key retires, and a revoked or
+identifier, the tenant whose review worker signs with it, an optional validity window,
+and a revocation flag. The loader resolves the keys of one tenant active at a given time
+into an OpenSSH ``allowed_signers`` blob that binds them to the tenant's principal
+``review-signer@<tenant>``, which the SSHSIG scheme verifies against. A verdict therefore
+verifies only under a key of the run's tenant. Overlapping validity windows give a
+rotation rollout that admits a new key before the old key retires, and a revoked or
 out-of-window key is never rendered into the trust root.
 """
 
@@ -25,10 +27,16 @@ class TrustRootError(Exception):
     """A trust-root bundle is missing or malformed; the gate must fail closed."""
 
 
+def review_principal(tenant: str) -> str:
+    """Return the SSHSIG principal that the review signing keys of ``tenant`` bind to."""
+    return f"review-signer@{tenant}"
+
+
 @dataclass(frozen=True)
 class TrustRootKey:
     key_id: str
     public_key: str
+    tenant: str
     not_before: datetime | None = None
     not_after: datetime | None = None
     revoked: bool = False
@@ -44,36 +52,41 @@ class TrustRootKey:
 @dataclass(frozen=True)
 class TrustRoot:
     version: int
-    principal: str
     keys: tuple[TrustRootKey, ...]
 
-    def active_keys(self, now: datetime | None = None) -> tuple[TrustRootKey, ...]:
+    def active_keys(self, tenant: str, now: datetime | None = None) -> tuple[TrustRootKey, ...]:
+        """Return the keys of ``tenant`` active at ``now``. An empty tenant has no keys."""
         moment = now or datetime.now(UTC)
-        return tuple(key for key in self.keys if key.active_at(moment))
+        return tuple(
+            key for key in self.keys if tenant and key.tenant == tenant and key.active_at(moment)
+        )
 
-    def active_key_ids(self, now: datetime | None = None) -> list[str]:
-        return [key.key_id for key in self.active_keys(now)]
+    def active_key_ids(self, tenant: str, now: datetime | None = None) -> list[str]:
+        return [key.key_id for key in self.active_keys(tenant, now)]
 
     def key_ids(self) -> list[str]:
         return [key.key_id for key in self.keys]
 
-    def allowed_signers(self, now: datetime | None = None) -> str:
-        """Render the ``allowed_signers`` blob for the keys active at ``now``.
+    def tenants(self) -> list[str]:
+        return sorted({key.tenant for key in self.keys})
 
-        An empty result (no active key) yields an empty trust root, which fails
-        every signature closed rather than admitting an untrusted one.
+    def allowed_signers(self, tenant: str, now: datetime | None = None) -> str:
+        """Render the ``allowed_signers`` blob for the keys of ``tenant`` active at ``now``.
+
+        An empty result (no active key of the tenant) yields an empty trust root, which
+        fails every signature closed rather than admitting an untrusted one.
         """
-        public_keys = [key.public_key for key in self.active_keys(now)]
-        return allowed_signers_from_keys(public_keys, principal=self.principal)
+        public_keys = [key.public_key for key in self.active_keys(tenant, now)]
+        return allowed_signers_from_keys(public_keys, principal=review_principal(tenant))
 
     def to_bundle(self) -> dict[str, Any]:
         """Serialize to the mapping shape that :func:`parse_trust_root` accepts."""
         return {
             "version": self.version,
-            "principal": self.principal,
             "keys": [
                 {
                     "id": key.key_id,
+                    "tenant": key.tenant,
                     "public_key": key.public_key,
                     "not_before": key.not_before.isoformat() if key.not_before else None,
                     "not_after": key.not_after.isoformat() if key.not_after else None,
@@ -107,13 +120,21 @@ def _parse_key(raw: Any) -> TrustRootKey:
         raise TrustRootError("each entry in 'keys' must be a mapping")
     key_id = raw.get("id")
     public_key = raw.get("public_key")
+    tenant = raw.get("tenant")
     if not key_id or not isinstance(key_id, str):
         raise TrustRootError("each key requires a non-empty string 'id'")
     if not public_key or not isinstance(public_key, str):
         raise TrustRootError(f"key {key_id!r} requires a non-empty string 'public_key'")
+    # The tenant forms the principal of an allowed_signers line, which whitespace would split.
+    if not tenant or not isinstance(tenant, str) or tenant.split() != [tenant]:
+        raise TrustRootError(
+            f"key {key_id!r} requires a 'tenant' naming the tenant whose review worker "
+            "signs with it"
+        )
     return TrustRootKey(
         key_id=key_id,
         public_key=public_key.strip(),
+        tenant=tenant,
         not_before=_parse_time(raw.get("not_before"), field="not_before", key_id=key_id),
         not_after=_parse_time(raw.get("not_after"), field="not_after", key_id=key_id),
         revoked=bool(raw.get("revoked", False)),
@@ -127,9 +148,6 @@ def parse_trust_root(data: Any) -> TrustRoot:
     version = data.get("version")
     if not isinstance(version, int):
         raise TrustRootError("trust-root bundle requires an integer 'version'")
-    principal = data.get("principal")
-    if not principal or not isinstance(principal, str):
-        raise TrustRootError("trust-root bundle requires a non-empty string 'principal'")
     raw_keys = data.get("keys")
     if not isinstance(raw_keys, list) or not raw_keys:
         raise TrustRootError("trust-root bundle requires a non-empty 'keys' list")
@@ -137,7 +155,7 @@ def parse_trust_root(data: Any) -> TrustRoot:
     ids = [key.key_id for key in keys]
     if len(set(ids)) != len(ids):
         raise TrustRootError("trust-root key identifiers must be unique")
-    return TrustRoot(version=version, principal=principal, keys=keys)
+    return TrustRoot(version=version, keys=keys)
 
 
 def load_trust_root(path: str | Path) -> TrustRoot:
@@ -201,7 +219,7 @@ def audit_trust_root_change(
             "actor": actor,
             "change": change,
             "version": new.version,
-            "principal": new.principal,
+            "tenants": new.tenants(),
             "key_ids": affected,
             "fingerprint": new.content_fingerprint(),
             "snapshot": new.to_bundle(),

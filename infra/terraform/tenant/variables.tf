@@ -1,5 +1,5 @@
 variable "create_tenant" {
-  description = "Create the tenant's key, secrets, worker policy, image prefix, config publisher, and ticket store."
+  description = "Create the tenant's key, secrets, worker and review worker policies, image prefix, config publisher, and ticket store."
   type        = bool
   default     = false
 }
@@ -25,7 +25,7 @@ variable "description" {
 }
 
 variable "worker_role_arn" {
-  description = "Pod Identity role of the tenant's activity worker, the only principal that reads the tenant's secrets apart from repo_intelligence_reader_arns on the repository intelligence token and webhook_reader_arn on the escalation action key."
+  description = "Pod Identity role of the tenant's activity worker, the only principal that reads the tenant's secrets apart from repo_intelligence_reader_arns on the repository intelligence token, webhook_reader_arn on the escalation action key, and review_role_arn on the registry token and the review signing key."
   type        = string
   default     = ""
 }
@@ -34,6 +34,21 @@ variable "worker_role_name" {
   description = "Name of the role worker_role_arn names. The ticket store roles trust the worker through an ARN built from this name, so the store depends on no resource outside the tenant and a teardown can keep it while it removes the worker role."
   type        = string
   default     = ""
+}
+
+variable "review_role_arn" {
+  description = "Pod Identity role of the tenant's review worker, the only principal that reads the tenant's review signing key, and which reads the tenant's registry_token beside the worker."
+  type        = string
+  default     = ""
+}
+
+variable "evidence_store" {
+  description = "Evidence store bucket the tenant's review worker writes, with its KMS key when the bucket uses SSE-KMS. Null grants no evidence write and keeps evidence in Postgres only."
+  type = object({
+    bucket_arn  = string
+    kms_key_arn = optional(string, "")
+  })
+  default = null
 }
 
 variable "secrets" {
@@ -59,6 +74,11 @@ variable "secrets" {
   validation {
     condition     = !contains(var.secrets, "escalation_action_key")
     error_message = "escalation_action_key is the generated secret the module creates for every tenant, so secrets may not name it."
+  }
+
+  validation {
+    condition     = !contains(var.secrets, "review_signing_key")
+    error_message = "review_signing_key is the secret the module creates for every tenant's review worker, so secrets may not name it."
   }
 }
 
@@ -94,6 +114,23 @@ variable "repo_intelligence_token_rotation_days" {
   }
 }
 
+variable "escalation_action_key_version" {
+  description = "Write-only version of the generated escalation action key and its SHA-256 fingerprint. Raising it writes a new key and its fingerprint in one apply. A tenant created before the fingerprint existed raises it once, because only then does the fingerprint match the key."
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = var.escalation_action_key_version >= 1 && floor(var.escalation_action_key_version) == var.escalation_action_key_version
+    error_message = "escalation_action_key_version is a whole number of at least 1."
+  }
+}
+
+variable "slack_poster_reader_arn" {
+  description = "Pod Identity role of the Slack posting service, which reads the fingerprint of the tenant's escalation action key, or empty without the shared Slack app."
+  type        = string
+  default     = ""
+}
+
 variable "secret_recovery_window_days" {
   description = "Days a deleted tenant secret stays recoverable. 0 deletes it at once."
   type        = number
@@ -111,7 +148,7 @@ variable "config_store" {
 }
 
 variable "config_publisher" {
-  description = "GitHub repository whose workflows publish the tenant's config bundle and push its images, through the account's GitHub OIDC provider. allowed_refs lists the full refs that may publish, where a trailing * matches a prefix. github_repository_ids selects GitHub's immutable subject form. Null creates no publisher role."
+  description = "GitHub repository whose workflows publish the tenant's config bundle and push its images, through the account's GitHub OIDC provider. allowed_refs lists the full refs that may publish, where a trailing * matches a prefix. github_repository_ids selects GitHub's immutable subject form. pull_request_subject is the OIDC subject suffix of the repository's pull request jobs, pull_request for a job that names no environment, and creates a claims probe role those jobs assume to list one claim digest at a time. Null creates no publisher role."
   type = object({
     oidc_provider_arn = string
     github_repository = string
@@ -120,6 +157,7 @@ variable "config_publisher" {
       owner_id      = number
       repository_id = number
     }))
+    pull_request_subject = optional(string)
   })
   default = null
 

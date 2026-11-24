@@ -1,6 +1,6 @@
 """Parse, authenticate, and route inbound Jira issue webhooks to the shared intake path.
 
-JiraIntakeHandler runs intake inside the webhook with the platform's Jira credentials.
+JiraIntakeHandler runs one tenant's intake in the process that holds the tenant's Jira credentials.
 TenantJiraIntakeHandler holds no Jira credentials. It verifies a delivery with its tenant's
 secret and starts a JiraIssueIntakeWorkflow for the issue key on the tenant's task queue, so the
 tenant's activity worker reads the issue with the tenant's credentials.
@@ -82,14 +82,23 @@ class JiraIntakeHandler:
     name = "jira_intake"
 
     def __init__(
-        self, *, secret: str, jira_resolver: JiraCredentialResolver, context: IntakeContext
+        self,
+        *,
+        tenant: str,
+        secret: str,
+        jira_resolver: JiraCredentialResolver,
+        context: IntakeContext,
     ) -> None:
+        self._tenant = tenant
         self._secret = secret
         self._resolver = jira_resolver
         self._context = context
 
     def verify(self, body: bytes, headers: Mapping[str, str]) -> bool:
         return verify_jira_signature(self._secret, body, headers.get(_SIGNATURE_HEADER, ""))
+
+    def tenant(self) -> str:
+        return self._tenant
 
     def delivery_id(self, headers: Mapping[str, str], payload: dict[str, Any]) -> str:
         return jira_delivery_id(payload)
@@ -137,6 +146,9 @@ class TenantJiraIntakeHandler:
 
     def verify(self, body: bytes, headers: Mapping[str, str]) -> bool:
         return verify_jira_signature(self._secret, body, headers.get(_SIGNATURE_HEADER, ""))
+
+    def tenant(self) -> str:
+        return self._tenant
 
     def delivery_id(self, headers: Mapping[str, str], payload: dict[str, Any]) -> str:
         base = jira_delivery_id(payload)

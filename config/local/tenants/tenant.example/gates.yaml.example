@@ -1,0 +1,16 @@
+# The tenant's gate selection, in the format of config/local/gates.yaml.example. A tenant
+# gates.yaml replaces the platform gates.yaml for this tenant, so it lists every gate override
+# the tenant runs.
+config_version: 1
+
+profile: private
+
+fail_fast:
+  review: false
+  scanner: false
+
+gates:
+  - name: semgrep
+    required: true
+    params:
+      threshold: high

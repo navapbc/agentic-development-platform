@@ -1,13 +1,10 @@
 locals {
-  tenant_webhooks = length(local.tenants) > 1
-
   # One policy covers every tenant, so the inbound webhook role holds one managed policy whatever
   # the tenant count. The secret patterns match only the secrets the tenant module's webhook output
   # names <name_prefix>/tenants/<tenant>/<key>, and the tenant keys decrypt only those secrets.
-  # With one tenant those are the Slack signing secret and the escalation action key, because the
-  # webhook keeps the platform's GitHub and Jira secrets. With four keys the policy holds about
-  # 2100 characters plus one key ARN of up to 90 characters per tenant, so it stays under the 6144
-  # character limit of a managed policy up to about 45 tenants.
+  # With four keys the policy holds about 2100 characters plus one key ARN of up to 90 characters
+  # per tenant, so it stays under the 6144 character limit of a managed policy up to about 45
+  # tenants.
   tenant_webhook_records = { for name, tenant in module.tenant : name => tenant.webhook }
   tenant_webhook_secret_patterns = [
     for key in sort(distinct(flatten([for webhook in values(local.tenant_webhook_records) : keys(webhook.secret_arns)]))) :
@@ -37,13 +34,19 @@ locals {
         Effect    = "Allow"
         Action    = ["s3:ListBucket", "s3:ListBucketVersions"]
         Resource  = module.tenant_config_store.bucket_arn
-        Condition = { StringLike = { "s3:prefix" = ["tenants/*/*"] } }
+        Condition = { StringLike = { "s3:prefix" = ["tenants/*/*", "claims/*/*/"] } }
       },
       {
         Sid      = "ReadTheTenantBundles"
         Effect   = "Allow"
         Action   = ["s3:GetObject", "s3:GetObjectVersion"]
         Resource = "${module.tenant_config_store.bucket_arn}/tenants/*"
+      },
+      {
+        Sid      = "ReadTheClaimsProtocol"
+        Effect   = "Allow"
+        Action   = "s3:GetObject"
+        Resource = "${module.tenant_config_store.bucket_arn}/${module.tenant_config_store.claims_protocol_key}"
       },
       {
         Sid       = "DecryptTheTenantBundles"

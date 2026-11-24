@@ -11,8 +11,9 @@ chart, and the AWS overlay, so the workstation needs none of them.
   tenant's MCP gateway Ingress. It ends by listing every pod that is not host-networked and that
   no NetworkPolicy selects, which strict network policy mode would deny.
 - `restart` rolls the named deployments, `namespace/name` or a platform deployment by name,
-  `tenant-workers` for every tenant's activity worker, and `mcp-gateway` for every tenant's MCP
-  gateway, so their pods read the current secret values.
+  `tenant-workers` for every tenant's activity worker, `tenant-review-workers` for every tenant's
+  review worker, and `mcp-gateway` for every tenant's MCP gateway, so their pods read the current
+  secret values.
 - `check-policies` prints the pods no NetworkPolicy selects and exits 1 when there are any.
 - `scale-down` records the replica count of each named deployment in an annotation, scales it to
   zero, and waits until none of its pods runs. The off-hours sleep runs it.
@@ -193,6 +194,15 @@ def tenant_workers(inputs: Mapping[str, Any]) -> list[str]:
     return [f"{worker_namespace(entry['name'])}/{WORKER}" for entry in inputs.get("tenants") or []]
 
 
+def tenant_review_workers(inputs: Mapping[str, Any]) -> list[str]:
+    from scripts.tenant_render import REVIEW_WORKER, review_namespace
+
+    return [
+        f"{review_namespace(entry['name'])}/{REVIEW_WORKER}"
+        for entry in inputs.get("tenants") or []
+    ]
+
+
 def tenant_gateways(inputs: Mapping[str, Any]) -> list[str]:
     from scripts.tenant_render import GATEWAY, worker_namespace
 
@@ -328,7 +338,17 @@ def deploy(inputs: Mapping[str, Any], omit_secrets: list[str]) -> None:
         print(f"{LOG} {alias} has no current value, so the workload starts without it")
     apply(documents)
     delete_retired()
-    rollout([*DEPLOYMENTS, *tenant_workers(inputs), *tenant_gateways(inputs)])
+    from scripts.webhook_eks_render import SLACK_POSTER, runs_slack_poster
+
+    platform = [*DEPLOYMENTS, *([SLACK_POSTER] if runs_slack_poster(inputs) else [])]
+    rollout(
+        [
+            *platform,
+            *tenant_workers(inputs),
+            *tenant_review_workers(inputs),
+            *tenant_gateways(inputs),
+        ]
+    )
     tenants = {
         worker_namespace(entry["name"]): entry["name"] for entry in inputs.get("tenants") or []
     }
@@ -354,8 +374,9 @@ def deploy(inputs: Mapping[str, Any], omit_secrets: list[str]) -> None:
 def restart(targets: list[str], inputs: Mapping[str, Any]) -> None:
     """Restart each deployment.
 
-    `tenant-workers` names every tenant's activity worker and `mcp-gateway` every tenant's MCP
-    gateway, since the platform namespace runs no gateway.
+    `tenant-workers` names every tenant's activity worker, `tenant-review-workers` every tenant's
+    review worker, and `mcp-gateway` every tenant's MCP gateway, since the platform namespace runs
+    no gateway and no review worker.
     """
     expanded = expand(targets, inputs)
     for target in expanded:
@@ -365,7 +386,11 @@ def restart(targets: list[str], inputs: Mapping[str, Any]) -> None:
 
 
 def expand(targets: Iterable[str], inputs: Mapping[str, Any]) -> list[str]:
-    groups = {"tenant-workers": tenant_workers(inputs), "mcp-gateway": tenant_gateways(inputs)}
+    groups = {
+        "tenant-workers": tenant_workers(inputs),
+        "tenant-review-workers": tenant_review_workers(inputs),
+        "mcp-gateway": tenant_gateways(inputs),
+    }
     return [deployment for target in targets for deployment in groups.get(target, [target])]
 
 

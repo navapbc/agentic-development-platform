@@ -42,7 +42,7 @@ def build_ticket_backend(
     resolved = settings or get_settings()
     name = resolve_ticket_backend_name(resolved)
     if name == JIRA:
-        return build_jira_adapter(resolved, project=project, resolver=resolver)
+        return build_jira_adapter(project=project, resolver=resolver)
     from services.integration.tickets.rebar_backend import build_rebar_ticket_backend
 
     return build_rebar_ticket_backend(resolved, project=project)
@@ -58,11 +58,11 @@ def resolve_status_flow(
     resolved = settings or get_settings()
     name = resolve_ticket_backend_name(resolved)
     if name == JIRA:
-        active = resolver or build_jira_credential_resolver(resolved)
+        active = resolver or build_jira_credential_resolver()
         return active.status_flow(project)
     from services.integration.tickets.rebar_config import load_rebar_backend_config
 
-    return load_rebar_backend_config(resolved).status_flow
+    return load_rebar_backend_config().status_flow
 
 
 def build_ticket_backend_for_issue(
@@ -84,7 +84,7 @@ def ticket_url(
     resolved = settings or get_settings()
     if resolve_ticket_backend_name(resolved) != JIRA:
         return ""
-    active = resolver or build_jira_credential_resolver(resolved)
+    active = resolver or build_jira_credential_resolver()
     site = active.site_url(project_of(issue_key))
     return f"{site.rstrip('/')}/browse/{issue_key}" if site else ""
 
@@ -96,8 +96,8 @@ def ticket_projects(settings: Settings | None = None) -> set[str]:
     if name == JIRA:
         from services.integration.jira.credentials import allowed_projects
 
-        return set(allowed_projects(resolved))
+        return set(allowed_projects())
     from services.integration.tickets.rebar_config import load_rebar_backend_config
 
-    project = load_rebar_backend_config(resolved).project.strip()
+    project = load_rebar_backend_config().project.strip()
     return {project} if project else set()

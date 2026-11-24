@@ -26,7 +26,7 @@ def _configure(
     monkeypatch.setattr(
         rebar_config,
         "load_rebar_backend_config",
-        lambda settings: RebarBackendConfig(repo_root=repo_root),
+        lambda: RebarBackendConfig(repo_root=repo_root),
     )
 
     def _ready(**kwargs):

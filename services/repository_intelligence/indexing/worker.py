@@ -26,7 +26,7 @@ from services.healthcheck import touch
 from services.repository_intelligence.indexing import scip_builder
 from services.repository_intelligence.indexing.reindex import IndexRoots, reindex_repo
 from services.repository_intelligence.normalization.models import RepoRef
-from services.repository_intelligence.tenants import TenantRegistries, migrate_home_indexes
+from services.repository_intelligence.tenants import TenantRegistries
 
 log = logging.getLogger("repo-index-worker")
 
@@ -214,7 +214,6 @@ def build_worker(registries: TenantRegistries | None = None) -> RepoIndexWorker 
 def main() -> None:
     settings = get_settings()
     registries = TenantRegistries(settings)
-    migrate_home_indexes(registries, settings)
     worker = build_worker(registries)
     if worker is None:
         log.warning("no repositories configured, so repo-index-worker idles until one is")

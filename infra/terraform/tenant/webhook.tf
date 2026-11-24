@@ -1,5 +1,5 @@
 variable "create_webhook_secrets" {
-  description = "Create the tenant's GitHub and Jira signing secrets, which only webhook_reader_arn reads. The platform's inbound webhook verifies the tenant's GitHub and Jira deliveries with them when it serves more than one tenant, and the deployment grants its role every tenant's secrets, keys, and bundles in one policy."
+  description = "Create the tenant's GitHub and Jira signing secrets, which only webhook_reader_arn reads. The platform's inbound webhook verifies the tenant's GitHub and Jira deliveries with them, however many tenants it serves, and the deployment grants its role every tenant's secrets, keys, and bundles in one policy."
   type        = bool
   default     = false
 }

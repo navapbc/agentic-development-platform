@@ -104,20 +104,14 @@ variable "repo_intelligence_image" {
   default     = ""
 }
 
-variable "environment" {
-  description = "ENVIRONMENT the platform settings report, which names the config/<environment> files the tasks read."
-  type        = string
-  default     = "aws"
-}
-
 variable "environment_config" {
-  description = "Config file name to YAML content, the operator's config/<environment> files, which the platform image writes under /tmp/platform-config at start. Holds no secret."
+  description = "Config file name to YAML content, the platform config files the operator writes into container_config_dir, which the platform image writes under /tmp/platform-config at start. Holds no secret and no tenant-only file."
   type        = map(string)
   default     = {}
 }
 
 variable "tenant_workspaces" {
-  description = "Tenants that receive their own workspace access point, rooted at /tenants/<tenant> on the workspace file system. The review worker, repository intelligence, and the index worker mount /tenants read-only, and the platform and repository intelligence environments carry the list as TENANTS."
+  description = "Tenants that receive their own workspace access point, rooted at /tenants/<tenant> on the workspace file system. Repository intelligence and the index worker mount /tenants read-only, and the platform and repository intelligence environments carry the list as TENANTS."
   type        = list(string)
   default     = []
 
@@ -128,13 +122,13 @@ variable "tenant_workspaces" {
 }
 
 variable "tenant_config_bucket_arn" {
-  description = "Tenant config bucket, whose tenants/<tenant>/ prefixes repository intelligence, the index worker, and the review worker read for each tenant's repositories.yaml. Its name reaches them as TENANT_CONFIG_BUCKET. Empty grants no read and leaves TENANT_CONFIG_BUCKET unset."
+  description = "Tenant config bucket, whose tenants/<tenant>/ prefixes repository intelligence and the index worker read for each tenant's repositories.yaml. Its name reaches them as TENANT_CONFIG_BUCKET. Empty grants no read and leaves TENANT_CONFIG_BUCKET unset."
   type        = string
   default     = ""
 }
 
 variable "tenant_config_kms_key_arn" {
-  description = "KMS key of the tenant config bucket, which repository intelligence, the index worker, and the review worker decrypt through S3. Empty grants no decrypt."
+  description = "KMS key of the tenant config bucket, which repository intelligence and the index worker decrypt through S3. Empty grants no decrypt."
   type        = string
   default     = ""
 }
@@ -231,7 +225,7 @@ variable "database_migrator_secret_arn" {
 }
 
 variable "secret_arns" {
-  description = "Secret store secrets by key. coordination_shared_secret, review_signing_key, and review_attestation_secret are required."
+  description = "Secret store secrets by key. coordination_shared_secret is required."
   type        = map(string)
   default     = {}
 }
@@ -255,30 +249,11 @@ variable "temporal" {
   default = null
 }
 
-variable "bedrock_invoke_policy_arns" {
-  description = "Policies granting bedrock:InvokeModel, attached to the review worker task role only. A list, so the count is known before the policies exist."
-  type        = list(string)
-  default     = []
-}
-
-variable "evidence_bucket_arn" {
-  description = "Evidence store bucket the review worker writes to. Empty keeps evidence in Postgres only."
-  type        = string
-  default     = ""
-}
-
-variable "evidence_kms_key_arn" {
-  description = "KMS key of the evidence store bucket, when it uses SSE-KMS."
-  type        = string
-  default     = ""
-}
-
 variable "service_counts" {
   description = "Tasks inv platform-deploy runs per service."
   type        = map(number)
   default = {
     workflow-worker   = 1
-    review-worker     = 1
     coordination      = 1
     repo-intelligence = 1
     repo-index-worker = 1

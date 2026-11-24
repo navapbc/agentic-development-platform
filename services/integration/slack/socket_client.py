@@ -32,6 +32,7 @@ from services.integration.slack.dispatcher import (
 )
 from services.integration.slack.messages import ephemeral_reply
 from services.integration.slack.policy import response_url_allowed
+from services.integration.slack.shared_app import process_shared_app
 from services.orchestration.escalation import (
     SOCKET_TRANSPORT,
     SlackSettings,
@@ -151,7 +152,8 @@ async def start_socket_mode(settings: Settings, temporal: Any) -> SocketModeTran
     Returns None for a tenant without Slack or with the webhook transport, and raises ConfigError
     when a Socket Mode tenant lacks a credential the transport needs.
     """
-    slack = load_escalation_config(settings).slack
+    shared_app = process_shared_app()
+    slack = load_escalation_config(settings, shared_app=shared_app).slack
     if slack is None or slack.transport != SOCKET_TRANSPORT:
         return None
     missing = [
@@ -171,7 +173,7 @@ async def start_socket_mode(settings: Settings, temporal: Any) -> SocketModeTran
     from database.engine import shared_platform_engine
 
     def active_slack() -> SlackSettings | None:
-        return load_escalation_config(settings).slack
+        return load_escalation_config(settings, shared_app=shared_app).slack
 
     dispatcher = SlackDispatcher(
         tenant=settings.tenant,

@@ -172,7 +172,7 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     directory.mkdir()
     (directory / "image_policy.yaml").write_text(POLICY, encoding="utf-8")
     monkeypatch.setenv("PLATFORM_ENV_CONFIG_DIR", str(directory))
-    settings = hermetic_settings(environment="test", tenant_config_bucket="")
+    settings = hermetic_settings(tenant_config_bucket="")
     monkeypatch.setattr(exception_review, "_settings", lambda: settings)
     return directory
 

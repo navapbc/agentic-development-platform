@@ -71,7 +71,34 @@ async def test_start_sets_run_flags_and_no_ci_job(monkeypatch: pytest.MonkeyPatc
     assert arg.run_approval is False
     assert arg.run_planning is True
     assert arg.await_pr_close is False
-    assert arg.review_task_queue == "agent-platform-review"
+
+
+@pytest.mark.asyncio
+async def test_start_dispatches_reviews_to_the_run_tenants_review_queue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(intake_runtime, "remote_head", lambda remote, branch, auth=None: "abc123")
+    monkeypatch.setattr(
+        "services.integration.github.factory.build_git_host", lambda settings: _Host()
+    )
+    client = _Client()
+    starter = TemporalStarter(client, hermetic_settings(tenant="beta"), _Gh())
+
+    await starter.start(
+        IntakeStart(
+            task_id="ADEV-1",
+            execution_id="exec-1",
+            repo="agentic-demo-service",
+            issue_key="ADEV-1",
+            summary="Add a widget",
+            jira_project="ADEV",
+            stored_issue={},
+        )
+    )
+
+    (_, arg, options) = client.started[0]
+    assert arg.review_task_queue == "agent-platform-review-beta"
+    assert options["task_queue"] == "agent-platform-beta"
 
 
 @pytest.mark.asyncio
@@ -439,6 +466,7 @@ def test_the_tenant_filter_excludes_executions_recorded_without_a_tenant(monkeyp
 
 
 def test_a_process_without_a_tenant_does_not_filter_executions(monkeypatch):
+    monkeypatch.delenv("TENANT")
     monkeypatch.setattr("scripts.config.get_settings", lambda: hermetic_settings())
 
     assert intake_runtime._this_tenant(executions) == []  # noqa: SLF001
