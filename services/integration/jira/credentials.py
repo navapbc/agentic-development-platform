@@ -19,6 +19,7 @@ CLOUD = "cloud"
 DATACENTER = "datacenter"
 _AUTH_MODES = {CLOUD, DATACENTER}
 _FLOW_STAGES = ("work_started", "ready_for_review", "terminal")
+_SINGLE_PROJECT_REF = "__token__"
 
 
 @dataclass(frozen=True)
@@ -466,7 +467,7 @@ def build_single_project_resolver(
         default=_Identity(
             site="default",
             email=email or None,
-            token_ref="__token__",
+            token_ref=_SINGLE_PROJECT_REF,
             board=board,
             statuses=tuple(statuses),
             flow=flow or StatusFlow(),
@@ -475,4 +476,6 @@ def build_single_project_resolver(
         ),
         projects={},
     )
-    return JiraCredentialResolver(config, {project}, EnvSecretResolver({"__token__": token}))
+    return JiraCredentialResolver(
+        config, {project}, EnvSecretResolver({_SINGLE_PROJECT_REF: token})
+    )

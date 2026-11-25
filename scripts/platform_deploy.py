@@ -22,11 +22,9 @@ import json
 import os
 from typing import Any
 
-from services import process
-
 from scripts.pinned_executions import PINNED_EXIT_CODE
 from scripts.publish_platform_images import build_id_of
-from scripts.temporal_certs import COMPOSITION_ROOT
+from scripts.temporal_certs import terraform_output
 
 TASK_WAIT = {"Delay": 10, "MaxAttempts": 120}
 SERVICE_WAIT = {"Delay": 15, "MaxAttempts": 80}
@@ -260,16 +258,7 @@ def deploy(ecs: Any, settings: dict[str, Any]) -> None:
 
 
 def _terraform_deploy(env: dict[str, str]) -> dict[str, Any]:
-    result = process.run(
-        ["terraform", f"-chdir={COMPOSITION_ROOT}", "output", "-json", "container_deploy"],
-        timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS,
-        capture_output=True,
-        text=True,
-        env=env,
-    )
-    if result.returncode != 0:
-        raise DeployError(f"terraform output failed: {result.stderr.strip()}")
-    return json.loads(result.stdout) or {}
+    return json.loads(terraform_output("container_deploy", env, DeployError)) or {}
 
 
 def main(argv: list[str] | None = None) -> int:

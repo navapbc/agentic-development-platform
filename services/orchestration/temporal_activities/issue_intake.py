@@ -32,6 +32,7 @@ class JiraIssueIntakeReport:
     duplicates: int = 0
     held: int = 0
     skipped: str = ""
+    deferred: int = 0
 
 
 def candidate_issue_jql(issue_key: str, project: str, intake_label: str) -> str:
@@ -80,4 +81,5 @@ async def intake_jira_issue(request: JiraIssueIntakeRequest) -> JiraIssueIntakeR
         started=sum(1 for record in report.started if not record.duplicate),
         duplicates=sum(1 for record in report.started if record.duplicate),
         held=len(report.held),
+        deferred=len(report.deferred),
     )

@@ -157,7 +157,7 @@ resource "aws_lb_listener" "internal" {
   port              = 443
   protocol          = "HTTPS"
   certificate_arn   = var.internal_acm_certificate_arn
-  ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-FIPS-2023-04"
+  ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-Res-FIPS-2023-04"
 
   default_action {
     type = "fixed-response"

@@ -112,7 +112,21 @@ def rewrite_env(env: Mapping[str, str | None], network: ComposeNetwork, address:
             raise ValueError(f"{key} holds a multi-line value, which a kustomize env file cannot")
         result.values[key] = value
         result.unreachable |= {f"{key} -> {target}" for target in unreachable}
+    _rewrite_smtp_host(result, network, address)
     return result
+
+
+def _rewrite_smtp_host(result: Rewrite, network: ComposeNetwork, address: str) -> None:
+    host = result.values.get("SMTP_HOST", "")
+    if host not in network.services or host in IN_CLUSTER_SERVICES:
+        return
+    port = int(result.values.get("SMTP_PORT") or Settings.model_fields["smtp_port"].default)
+    published = network.published(host, port)
+    if published is None:
+        result.unreachable.add(f"SMTP_HOST -> {host}:{port}")
+        return
+    result.values["SMTP_HOST"] = address
+    result.values["SMTP_PORT"] = str(published)
 
 
 def endpoint_values(settings: Settings, network: ComposeNetwork, address: str) -> dict[str, str]:

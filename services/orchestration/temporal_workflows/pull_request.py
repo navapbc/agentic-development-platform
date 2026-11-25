@@ -59,7 +59,9 @@ class PullRequestWorkflow:
         retry = RetryPolicy(maximum_attempts=3)
         short = timedelta(seconds=30)
         pr_timeout = timedelta(minutes=2)
-        workflow_id = workflow.info().workflow_id
+        info = workflow.info()
+        workflow_id = info.workflow_id
+        execution_owner = info.parent.workflow_id if info.parent else workflow_id
 
         async def persist(state: str) -> None:
             await workflow.execute_activity(
@@ -68,7 +70,7 @@ class PullRequestWorkflow:
                     execution_id=params.execution_id,
                     task_id=params.task_id,
                     state=state,
-                    workflow_id=workflow_id,
+                    workflow_id=execution_owner,
                     repository=params.repo or None,
                     repository_sha=params.base_sha or None,
                 ),

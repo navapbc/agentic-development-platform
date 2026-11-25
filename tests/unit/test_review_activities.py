@@ -52,7 +52,7 @@ def _provenance(tier: str) -> list[ModelProvenance]:
 
 
 def _clean(tier: str) -> RawReview:
-    return RawReview(verdict=Verdict.PASS, provenance=_provenance(tier), summary="clean")
+    return RawReview(verdict=Verdict.PASSED, provenance=_provenance(tier), summary="clean")
 
 
 def _blocking(tier: str) -> RawReview:

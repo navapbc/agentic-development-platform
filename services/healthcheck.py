@@ -38,17 +38,28 @@ async def heartbeat(path: Path, *, interval: float, alive: Callable[[], bool]) -
 def http_ok(
     port: int, path: str = "/health", *, timeout: float = 3.0, context: ssl.SSLContext | None = None
 ) -> bool:
-    if context is None:
-        connection = http.client.HTTPConnection(LOOPBACK, port, timeout=timeout)
-    else:
-        connection = http.client.HTTPSConnection(LOOPBACK, port, timeout=timeout, context=context)
+    if context is not None:
+        return _https_ok(port, path, timeout=timeout, context=context)
+    connection = http.client.HTTPConnection(LOOPBACK, port, timeout=timeout)
     try:
         connection.request("GET", path)
         return connection.getresponse().status < 400
-    except http.client.HTTPException, OSError, ssl.SSLError:
+    except http.client.HTTPException, OSError:
         return False
     finally:
         connection.close()
+
+
+def _https_ok(port: int, path: str, *, timeout: float, context: ssl.SSLContext) -> bool:
+    import httpx
+
+    try:
+        response = httpx.get(
+            f"https://{LOOPBACK}:{port}{path}", verify=context, timeout=timeout, trust_env=False
+        )
+    except httpx.HTTPError, OSError:
+        return False
+    return response.status_code < 400
 
 
 def heartbeat_fresh(path: Path, max_age: float, *, now: Callable[[], float] = time.time) -> bool:

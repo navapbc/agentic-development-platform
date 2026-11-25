@@ -5,8 +5,9 @@ from __future__ import annotations
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
+import structlog
 from scripts.config import Settings, get_settings
 
 from services.coordination.idempotency import (
@@ -37,12 +38,18 @@ from services.orchestration.intake_base import (
     declared_base,
     unresolvable_base_reason,
 )
+from services.orchestration.model_path import ModelPathGate, model_path_deferral_reason
 from services.orchestration.remedies import (
     base_conflict_remedy,
     checks_not_configured_remedy,
     unresolvable_base_remedy,
     unroutable_remedy,
 )
+
+if TYPE_CHECKING:
+    from services.orchestration.tenant_jobs import TenantHold
+
+_log = structlog.get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -198,6 +205,7 @@ class IntakeReport:
     started: list[IntakeStartRecord] = field(default_factory=list)
     held: list[IntakeHoldRecord] = field(default_factory=list)
     deferred: list[str] = field(default_factory=list)
+    deferral_reasons: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -214,6 +222,8 @@ class IntakeContext:
     admission: RunAdmission | None = None
     base_resolver: IntakeBaseResolver | None = None
     checks_repos: frozenset[str] | None = None
+    model_path: ModelPathGate | None = None
+    tenant_hold: TenantHold | None = None
 
 
 def checks_not_configured_reason(repos: Sequence[str]) -> str:
@@ -234,6 +244,8 @@ async def reconcile_intake(
     run_counter: IntakeRunCounter | None = None,
     base_resolver: IntakeBaseResolver | None = None,
     checks_repos: frozenset[str] | None = None,
+    model_path: ModelPathGate | None = None,
+    tenant_hold: TenantHold | None = None,
 ) -> IntakeReport:
     resolved = settings or get_settings()
     jira_resolver = jira_resolver or build_jira_credential_resolver()
@@ -250,8 +262,12 @@ async def reconcile_intake(
         admission=await build_admission(resolved, run_counter),
         base_resolver=base_resolver,
         checks_repos=checks_repos,
+        model_path=model_path,
+        tenant_hold=tenant_hold,
     )
     report = IntakeReport()
+    if tenant_hold is not None:
+        await tenant_hold.admit()
 
     for project in sorted(jira_allowed_projects()):
         cred = jira_resolver.resolve(project)
@@ -428,6 +444,21 @@ async def _start(
             report,
         )
         return
+    if ctx.tenant_hold is not None:
+        held = await ctx.tenant_hold.admit()
+        if held:
+            report.deferred.append(issue_key)
+            report.deferral_reasons[issue_key] = held
+            _log.info("intake_deferred", issue_key=issue_key, repo=repo, reason=held)
+            return
+    if ctx.model_path is not None:
+        health = await ctx.model_path.admit(issue_key=issue_key)
+        if not health.healthy:
+            reason = model_path_deferral_reason(health)
+            report.deferred.append(issue_key)
+            report.deferral_reasons[issue_key] = reason
+            _log.info("intake_deferred", issue_key=issue_key, repo=repo, reason=reason)
+            return
     if ctx.admission is not None and not ctx.admission.try_reserve():
         report.deferred.append(issue_key)
         return

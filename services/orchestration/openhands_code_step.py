@@ -67,7 +67,12 @@ def build_openhands_code_step(
         )
 
     async def driver_for_run(execution_id: str) -> ConversationDriver:
-        return driver_with_key(await ensure_run_model_key(execution_id, settings=resolved))
+        from services.orchestration.limit_grants import PostgresLimitGrants
+
+        key = await ensure_run_model_key(
+            execution_id, settings=resolved, grants=PostgresLimitGrants()
+        )
+        return driver_with_key(key)
 
     provisioner = PortForwardSandboxProvisioner(
         KubernetesSandboxProvisioner(

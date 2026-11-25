@@ -106,7 +106,8 @@ def test_the_platform_and_litellm_images_pin_the_rds_ca_bundle_the_temporal_imag
 
     for path in ("docker/Dockerfile", "docker/litellm.Dockerfile"):
         text = (REPO_ROOT / path).read_text(encoding="utf-8")
-        assert "ADD --checksum=sha256:${RDS_CA_BUNDLE_SHA256} --chmod=0444" in text
+        assert 'echo "${RDS_CA_BUNDLE_SHA256}  /out/rds-global-bundle.pem" | sha256sum -c -' in text
+        assert "COPY --from=rds-ca --chmod=0444 /out/rds-global-bundle.pem" in text
         assert checksum(path) == checksum("docker/temporal.Dockerfile")
 
 

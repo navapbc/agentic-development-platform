@@ -60,7 +60,7 @@ def _finder(model: str = "openai:review-model") -> list[ModelProvenance]:
 
 
 def _clean_raw() -> RawReview:
-    return RawReview(verdict=Verdict.PASS, provenance=_finder(), summary="clean")
+    return RawReview(verdict=Verdict.PASSED, provenance=_finder(), summary="clean")
 
 
 def _blocking_raw() -> RawReview:
@@ -154,7 +154,7 @@ def test_raw_from_decided_passes_when_nothing_blocks():
 
     raw = _raw_from_decided(decided, "review-model", "m")
 
-    assert raw.verdict is Verdict.PASS
+    assert raw.verdict is Verdict.PASSED
 
 
 @dataclass
@@ -188,7 +188,7 @@ def test_run_multipass_drops_a_fabricated_citation_and_passes(monkeypatch):
 
     for stage in (ReviewStage.PLAN_REVIEW, ReviewStage.CODE_REVIEW, ReviewStage.SECURITY_REVIEW):
         raw = kernel._run_multipass(_input(stage), _StubCfg(), "review-model")
-        assert raw.verdict is Verdict.PASS
+        assert raw.verdict is Verdict.PASSED
         assert raw.findings == []
 
 

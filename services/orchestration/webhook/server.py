@@ -8,7 +8,9 @@ transport is webhook and decides them through that tenant's dispatcher, and /web
 the one tenant of a single-tenant deployment. /webhook/slack/_shared takes the clicks of the shared
 Slack app, served when the environment defines the shared app and SLACK_SHARED_SIGNING_SECRET is
 set, and decides each through the dispatcher of the tenant on the shared app whose escalation.yaml
-names the click's channel. With SLACK_SHARED_APP_TOKEN set, the shared app's clicks arrive over a
+names the click's channel, or under the administrator allowlist of platform-escalation.yaml when
+the click comes from its administrator channel. An admitted alert click is taken on the tenant's
+worker. With SLACK_SHARED_APP_TOKEN set, the shared app's clicks arrive over a
 Socket Mode connection the webhook opens to Slack instead, and are decided the same way. Each
 tenant's Slack settings load from the escalation.yaml of its bundle and must pass the Slack policy
 of the profile it declares, so a tenant without compliant settings has no Slack settings while
@@ -37,7 +39,9 @@ from services.http_front_door import (
     read_bounded_body,
 )
 from services.integration.integrations import IntegrationsConfig
+from services.integration.slack.approver_groups import admin_group_refresh, keep_approver_groups
 from services.integration.slack.dispatcher import (
+    AlertActions,
     DecisionRecords,
     PostgresDecisionRecords,
     SlackDispatcher,
@@ -51,6 +55,8 @@ from services.integration.tenant_secrets import (
     secret_env_name,
     tenant_secrets,
 )
+from services.orchestration.alert_actions import ForwardedAlertActions
+from services.orchestration.platform_escalation import process_admin_destination
 from services.orchestration.webhook.inbound import IntegrationHandler, handle_inbound
 from services.orchestration.webhook.jira_events import (
     IssueIntakeStarter,
@@ -66,6 +72,7 @@ from services.orchestration.webhook.pr_events import (
     WorkflowSignaller,
 )
 from services.orchestration.webhook.slack_events import (
+    AdminDestinationSource,
     ChannelTenantSource,
     RetainedHolderSource,
     SharedAppSource,
@@ -186,6 +193,7 @@ def slack_routes(
     slack: SlackSettingsSource,
     decisions: WorkflowDecisions,
     records: DecisionRecords,
+    alert_actions: AlertActions | None = None,
 ) -> dict[str, SlackInteractivity]:
     """Return the Slack interactivity route of each tenant with a signing secret and action key.
 
@@ -215,6 +223,7 @@ def slack_routes(
                 slack_settings=lambda tenant=tenant: slack(tenant),
                 decisions=decisions,
                 records=records,
+                alert_actions=alert_actions,
             ),
         )
         if tenant:
@@ -261,6 +270,8 @@ def shared_slack_interactivity(
     decisions: WorkflowDecisions,
     records: DecisionRecords,
     retained_holder: RetainedHolderSource,
+    alert_actions: AlertActions | None = None,
+    admin: AdminDestinationSource = lambda: None,
 ) -> SharedSlackInteractivity:
     """Return the shared Slack app's click handling, with a dispatcher for each served tenant."""
     action_keys = tenant_secrets(routing.tenants(), ESCALATION_ACTION_KEY_ENV_PREFIX)
@@ -271,6 +282,7 @@ def shared_slack_interactivity(
             slack_settings=lambda tenant=tenant: shared_app_settings(slack, tenant),
             decisions=decisions,
             records=records,
+            alert_actions=alert_actions,
         )
         for tenant, key in action_keys.items()
     }
@@ -283,6 +295,7 @@ def shared_slack_interactivity(
         dispatchers=dispatchers,
         records=records,
         retained_holder=retained_holder,
+        admin=admin,
     )
 
 
@@ -330,6 +343,7 @@ async def build_routes(settings: Settings, routing: TenantRouting) -> dict[str, 
     await slack.refresh_then_start()
     decisions = TemporalWorkflowDecisions(client)
     records = PostgresDecisionRecords(shared_platform_engine())
+    alert_actions = ForwardedAlertActions(client, settings)
     shared: dict[str, SharedSlackInteractivity] = {}
     if settings.slack_shared_signing_secret or settings.slack_shared_app_token:
         route = shared_slack_interactivity(
@@ -341,6 +355,8 @@ async def build_routes(settings: Settings, routing: TenantRouting) -> dict[str, 
             decisions=decisions,
             records=records,
             retained_holder=slack.retained_holder,
+            alert_actions=alert_actions,
+            admin=process_admin_destination,
         )
         shared = shared_slack_delivery(
             settings, route, slack.shared_app, asyncio.get_running_loop()
@@ -352,7 +368,14 @@ async def build_routes(settings: Settings, routing: TenantRouting) -> dict[str, 
             signaller=TemporalSignaller(client),
             starter=TemporalIssueIntake(client, settings),
         ),
-        **slack_routes(settings, routing, slack=slack.slack, decisions=decisions, records=records),
+        **slack_routes(
+            settings,
+            routing,
+            slack=slack.slack,
+            decisions=decisions,
+            records=records,
+            alert_actions=alert_actions,
+        ),
         **shared,
     }
 
@@ -441,6 +464,22 @@ def build_handler(
     return Handler
 
 
+async def keep_admin_groups(settings: Settings) -> None:
+    """Refresh the administrator groups on the webhook's event loop.
+
+    The refresh is built here rather than on the main thread, because its database engine is
+    bound to the loop that is running when it is created.
+    """
+    refresh = admin_group_refresh(settings)
+    if refresh is not None:
+        await keep_approver_groups(refresh)
+
+
+def _log_admin_group_failure(future: Any) -> None:
+    if not future.cancelled() and future.exception() is not None:
+        log.error("the administrator group refresh stopped", exc_info=future.exception())
+
+
 def main() -> None:
     settings = get_settings()
     routing = TenantRouting(settings)
@@ -448,6 +487,9 @@ def main() -> None:
     loop = asyncio.new_event_loop()
     threading.Thread(target=loop.run_forever, name="inbound-webhook-loop", daemon=True).start()
     routes = asyncio.run_coroutine_threadsafe(build_routes(settings, routing), loop).result()
+    asyncio.run_coroutine_threadsafe(keep_admin_groups(settings), loop).add_done_callback(
+        _log_admin_group_failure
+    )
     ledger = PostgresSideEffectLedger()
     handler = build_handler(routes, ledger, settings, loop)
     log.info(

@@ -3,7 +3,8 @@
 A run occupies a concurrency slot while its execution row is non-terminal. When a
 workflow never starts, is terminated, or times out, the row can remain non-terminal
 with no live workflow behind it and hold a slot forever. This reconciler detects
-those orphans and marks them terminal so admission reclaims the slot.
+those orphans and marks them terminal so admission reclaims the slot, then alerts the operators
+that the run stopped.
 """
 
 from __future__ import annotations
@@ -11,6 +12,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Protocol
+
+import structlog
+
+_log = structlog.get_logger(__name__)
+
+ORPHAN_RECLAIMED = "orphan_reclaimed"
 
 
 @dataclass(frozen=True)
@@ -20,6 +27,7 @@ class ActiveExecution:
     workflow_id: str
     updated_at: datetime
     state: str = ""
+    repository: str = ""
 
 
 class ActiveExecutionStore(Protocol):
@@ -30,6 +38,12 @@ class ActiveExecutionStore(Protocol):
 
 class WorkflowLiveness(Protocol):
     async def is_live(self, workflow_id: str) -> bool: ...
+
+
+class ReclaimNotifier(Protocol):
+    async def reclaimed(
+        self, execution: ActiveExecution, *, workflow_id: str, reason: str
+    ) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -54,6 +68,7 @@ async def reconcile_orphaned_executions(
     *,
     store: ActiveExecutionStore,
     liveness: WorkflowLiveness,
+    notifier: ReclaimNotifier,
     now: datetime,
     grace: timedelta,
 ) -> ReconcileReport:
@@ -65,8 +80,17 @@ async def reconcile_orphaned_executions(
         wf_id = workflow_id_for(execution)
         if await liveness.is_live(wf_id):
             continue
-        if await store.mark_orphaned(
-            execution.execution_id, reason=orphan_reason(execution, wf_id)
-        ):
-            orphaned += 1
+        reason = orphan_reason(execution, wf_id)
+        if not await store.mark_orphaned(execution.execution_id, reason=reason):
+            continue
+        orphaned += 1
+        try:
+            await notifier.reclaimed(execution, workflow_id=wf_id, reason=reason)
+        except Exception:
+            _log.warning(
+                "execution_orphan_alert_failed",
+                execution_id=execution.execution_id,
+                workflow_id=wf_id,
+                exc_info=True,
+            )
     return ReconcileReport(scanned=len(active), orphaned=orphaned)

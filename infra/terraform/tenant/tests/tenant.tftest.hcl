@@ -323,6 +323,14 @@ run "the_publisher_trusts_one_repository_and_writes_one_prefix" {
   }
 
   assert {
+    condition = (
+      length([for s in jsondecode(aws_iam_role_policy.publisher[0].policy).Statement : s if s.Resource == "*"]) == 0 &&
+      jsonencode(jsondecode(aws_iam_role_policy.publisher_ecr_sign_in[0].policy).Statement) == jsonencode([{ Sid = "EcrAuthorization", Effect = "Allow", Action = "ecr:GetAuthorizationToken", Resource = "*" }])
+    )
+    error_message = "The publisher holds a * statement beside the tenant's objects, or its ECR sign-in policy grants more than the registry token."
+  }
+
+  assert {
     condition     = aws_iam_role.publisher[0].tags["tenant-config-publisher"] == "adp" && aws_iam_role.publisher[0].tags.tenant == "adp"
     error_message = "The publisher role does not carry the principal tag that admits it to the tenant's config prefix."
   }

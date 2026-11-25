@@ -48,10 +48,15 @@ RUN go get $(printf '%s' "${TEMPORAL_GO_GET}" | tr , ' ') \
  && [ "$(grep -c TEMPORAL_TLS_FRONTEND_REQUIRE_CLIENT_AUTH /out/platform-config.yaml)" = 1 ] \
  && cp docker/scripts/sh/entrypoint.sh /out/entrypoint.sh
 
-FROM ${AL2023_IMAGE}
-ARG AL2023_RELEASE=2023.12.20261112
+FROM ${AL2023_IMAGE} AS rds-ca
 ARG RDS_CA_BUNDLE_URL
 ARG RDS_CA_BUNDLE_SHA256
+RUN mkdir /out \
+ && curl -fsSLo /out/rds-global-bundle.pem "${RDS_CA_BUNDLE_URL}" \
+ && echo "${RDS_CA_BUNDLE_SHA256}  /out/rds-global-bundle.pem" | sha256sum -c -
+
+FROM ${AL2023_IMAGE}
+ARG AL2023_RELEASE=2023.12.20261112
 LABEL org.opencontainers.image.licenses="MIT"
 RUN dnf -y --releasever="${AL2023_RELEASE}" upgrade \
  && dnf -y --releasever="${AL2023_RELEASE}" install gawk hostname tzdata shadow-utils \
@@ -64,7 +69,7 @@ COPY --from=server --chmod=0555 /out/temporal-server /usr/local/bin/temporal-ser
 COPY --from=server --chmod=0555 /out/entrypoint.sh /etc/temporal/entrypoint.sh
 COPY --from=server --chmod=0444 /out/platform-config.yaml /etc/temporal/platform-config.yaml
 COPY --from=healthprobe /out/healthprobe /usr/local/bin/healthprobe
-ADD --checksum=sha256:${RDS_CA_BUNDLE_SHA256} --chmod=0444 ${RDS_CA_BUNDLE_URL} /etc/ssl/rds-global-bundle.pem
+COPY --from=rds-ca --chmod=0444 /out/rds-global-bundle.pem /etc/ssl/rds-global-bundle.pem
 COPY --chmod=0555 docker/temporal-server-start.sh /etc/temporal/platform-start.sh
 WORKDIR /etc/temporal
 RUN cis-harden

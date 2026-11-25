@@ -42,7 +42,7 @@ import hashlib
 import itertools
 import json
 import sys
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -51,6 +51,7 @@ import yaml
 from services import process
 from services.integration.credentials import env_config_dir
 from services.integration.tenant_config import refuse_platform_tenant_files
+from services.orchestration.platform_escalation import PLATFORM_ESCALATION_FILE
 
 from scripts.cluster_env import (
     WORKSTATION_SETTINGS,
@@ -62,24 +63,28 @@ from scripts.cluster_env import (
     workload_secret_values,
 )
 from scripts.config import TENANT_OWNED_SETTINGS, Settings, refuse_tenant_settings
+from scripts.eks_render import (
+    CONFIG_HASH,
+    LITELLM_FILES,
+    PLATFORM_NAMESPACE,
+    _pod_spec,
+    config_map,
+)
 from scripts.env_file import PLATFORM_ENV_FILE
 
 OVERLAY = Path("deploy/kubernetes/local")
-PLATFORM_NAMESPACE = "agentic-dev-platform"
 SANDBOX_NAMESPACE = "agent-sandbox"
 PLATFORM_IMAGE = "agentic-dev-platform-local"
 OPA_IMAGE = "agentic-dev-platform-opa"
 LITELLM_IMAGE = "agentic-dev-platform-litellm"
 LOCAL_TAG = "local"
 BEDROCK_CLIENT = "agentic-dev-platform/bedrock-client"
-CONFIG_HASH = "agentic-dev-platform/config-hash"
 RELAY_PROVIDERS = frozenset({"jumphost", "ssh-bastion"})
 RELAY_IMAGE = (
     "docker.io/alpine/socat:1.8.1.3"
     "@sha256:3ed1cd38741bd445ebffa3aecb9d80c46a83db45f5b5ef03332976c7ca9814af"
 )
 BUILD_WORKERS = frozenset({"activity-worker", "review-worker"})
-LITELLM_FILES = ("litellm-config.yaml", "litellm_redaction.py")
 REBAR_STORE_AWS_CONFIG = "rebar-store-aws-config"
 TENANTS_HOST_ROOT = "/var/lib/agentic-dev-platform/tenants"
 RETIRED_PLATFORM_REVIEW_OBJECTS = (
@@ -138,15 +143,6 @@ def _metadata(name: str, namespace: str) -> dict[str, Any]:
     }
 
 
-def config_map(name: str, data: Mapping[str, str]) -> dict[str, Any]:
-    return {
-        "apiVersion": "v1",
-        "kind": "ConfigMap",
-        "metadata": _metadata(name, PLATFORM_NAMESPACE),
-        "data": dict(data),
-    }
-
-
 def secret(name: str, data: Mapping[str, str]) -> dict[str, Any]:
     encoded = {key: base64.b64encode(value.encode()).decode() for key, value in data.items()}
     return {
@@ -156,6 +152,10 @@ def secret(name: str, data: Mapping[str, str]) -> dict[str, Any]:
         "metadata": _metadata(name, PLATFORM_NAMESPACE),
         "data": encoded,
     }
+
+
+def settings_digest(value: object) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()[:16]
 
 
 def _files(directory: Path, names: Iterable[str]) -> dict[str, str]:
@@ -186,6 +186,15 @@ def operator_config(directory: Path) -> tuple[dict[str, str], dict[str, str]]:
     return yaml_files, other
 
 
+def platform_escalation_file(root: Path) -> dict[str, str]:
+    """Return the platform-escalation.yaml of config/local, or else of config/platform."""
+    for directory in (env_config_dir(root=root), root / "config" / "platform"):
+        path = directory / PLATFORM_ESCALATION_FILE
+        if path.is_file():
+            return {PLATFORM_ESCALATION_FILE: path.read_text(encoding="utf-8")}
+    return {}
+
+
 def _refuse_platform_review_signing_key(directory: Path) -> None:
     if (directory / PLATFORM_REVIEW_SIGNING_KEY_FILE).exists():
         raise ValueError(
@@ -206,6 +215,7 @@ def generated_objects(inputs: RenderInputs, names: Sequence[str]) -> list[dict[s
     refuse_platform_tenant_files(env_config_dir(root=root))
     _refuse_platform_review_signing_key(env_config_dir(root=root))
     config_yaml, config_secret = operator_config(env_config_dir(root=root))
+    config_yaml.update(platform_escalation_file(root))
     if REBAR_STORE_AWS_CONFIG in config_secret:
         config_secret[REBAR_STORE_AWS_CONFIG], _ = rewrite_address(
             config_secret[REBAR_STORE_AWS_CONFIG], network, address
@@ -229,12 +239,6 @@ def generated_objects(inputs: RenderInputs, names: Sequence[str]) -> list[dict[s
         ),
         config_map("litellm-config", _files(root / "config" / "platform", LITELLM_FILES)),
     ]
-
-
-def _pod_spec(document: Mapping[str, Any]) -> dict[str, Any] | None:
-    if document.get("kind") != "Deployment":
-        return None
-    return document["spec"]["template"]["spec"]
 
 
 def set_images(documents: list[dict[str, Any]], tag: str, registry: str = "") -> None:
@@ -504,14 +508,20 @@ def _pod_settings(
     }
 
 
-def _document(documents: Iterable[dict[str, Any]], kind: str, namespace: str, name: str) -> dict:
-    return next(
+def _matching(
+    documents: Iterable[dict[str, Any]], kind: str, namespace: str, name: str
+) -> Iterator[dict[str, Any]]:
+    return (
         d
         for d in documents
         if d["kind"] == kind
         and d["metadata"].get("namespace") == namespace
         and d["metadata"]["name"] == name
     )
+
+
+def _document(documents: Iterable[dict[str, Any]], kind: str, namespace: str, name: str) -> dict:
+    return next(_matching(documents, kind, namespace, name))
 
 
 def _project_bundle(worker: dict[str, Any], tenant: str, files: Iterable[str]) -> None:
@@ -666,7 +676,7 @@ def _refuse_missing_registry_token(
     from services.integration.credentials import ConfigError
     from services.orchestration.gates.registry_mirrors import (
         EXTERNAL,
-        TOKEN_ENV,
+        REGISTRY_CREDENTIAL_ENV,
         RegistryConfigError,
         parse_texts,
     )
@@ -678,10 +688,10 @@ def _refuse_missing_registry_token(
         config = parse_texts(platform.read_text(encoding="utf-8"), bundle.get("registries.yaml"))
     except (ConfigError, RegistryConfigError) as exc:
         raise ValueError(f"tenant {tenant}: {exc}") from exc
-    if config.mode == EXTERNAL and not (values.get(TOKEN_ENV) or "").strip():
+    if config.mode == EXTERNAL and not (values.get(REGISTRY_CREDENTIAL_ENV) or "").strip():
         raise ValueError(
-            f"tenant {tenant} has no {TOKEN_ENV}, the token of its registry identity. Set it in "
-            f"config/local/tenants/{tenant}.env"
+            f"tenant {tenant} has no {REGISTRY_CREDENTIAL_ENV}, the token of its registry "
+            f"identity. Set it in config/local/tenants/{tenant}.env"
         )
 
 
@@ -706,16 +716,7 @@ def _refuse_tenant_tokens(own: Mapping[str, Mapping[str, str] | None]) -> None:
 def _find_document(
     documents: list[dict[str, Any]], kind: str, namespace: str, name: str
 ) -> dict[str, Any] | None:
-    return next(
-        (
-            d
-            for d in documents
-            if d["kind"] == kind
-            and d["metadata"].get("namespace") == namespace
-            and d["metadata"]["name"] == name
-        ),
-        None,
-    )
+    return next(_matching(documents, kind, namespace, name), None)
 
 
 def _refuse_gateway_tokens(pod_env: Mapping[str, Mapping[str, str]]) -> None:
@@ -768,7 +769,7 @@ def _localize_review_worker(
     files["data"] = {
         key: value for key, value in files["data"].items() if key not in TENANT_OWNED_FILES
     }
-    digest = hashlib.sha256(json.dumps(values, sort_keys=True).encode()).hexdigest()[:16]
+    digest = settings_digest(values)
     template = review["spec"]["template"].setdefault("metadata", {})
     template.setdefault("annotations", {})[TENANT_SETTINGS_HASH] = digest
 
@@ -905,7 +906,7 @@ def localize_tenants(
             hashed[REPO_INTELLIGENCE_CALLER_ENV] = tokens[name]
         env = _document(result, "Secret", namespace, PLATFORM_ENV)
         env["data"] = secret(PLATFORM_ENV, pod_env[name])["data"]
-        digest = hashlib.sha256(json.dumps(hashed, sort_keys=True).encode()).hexdigest()[:16]
+        digest = settings_digest(hashed)
         for pod in pods:
             template = pod["spec"]["template"].setdefault("metadata", {})
             template.setdefault("annotations", {})[TENANT_SETTINGS_HASH] = digest
@@ -938,6 +939,7 @@ def render(inputs: RenderInputs, overlay: Path = OVERLAY) -> list[dict[str, Any]
     """Return the namespaces, then the overlay, then the generated config, ready to apply."""
     from scripts.local_tenants import local_tenant_names
     from scripts.tenant_render import tenantize
+    from scripts.validation_job import set_validation_image
     from scripts.webhook_render import localize_webhook, slack_poster_tls_objects
 
     directory = inputs.root / overlay
@@ -945,6 +947,8 @@ def render(inputs: RenderInputs, overlay: Path = OVERLAY) -> list[dict[str, Any]
     generated = generated_objects(inputs, names) + slack_poster_tls_objects(inputs)
     documents = namespaces(directory) + kustomize(directory) + generated
     set_images(documents, inputs.build_id, inputs.image_registry)
+    registry = f"{inputs.image_registry.rstrip('/')}/" if inputs.image_registry else ""
+    set_validation_image(documents, f"{registry}{PLATFORM_IMAGE}:{inputs.build_id}")
     set_build_id(documents, inputs.build_id)
     add_bedrock_relay(documents, inputs.settings)
     tenants = local_tenants(names, documents, inputs.root)

@@ -51,4 +51,5 @@ ENV TEMPORAL_CLOUD_UI=false
 RUN cis-harden
 USER temporal
 EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 CMD curl -fsS -o /dev/null --cacert "${TEMPORAL_UI_RUNTIME_DIR}/ui.pem" https://127.0.0.1:${TEMPORAL_UI_PORT:-8080}/api/v1/settings
 ENTRYPOINT ["/usr/local/libexec/temporal-ui-start.sh"]

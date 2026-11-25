@@ -3,19 +3,25 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
+import contextlib
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from temporalio import workflow
 from temporalio.common import RetryPolicy
-from temporalio.exceptions import ActivityError
+from temporalio.exceptions import ActivityError, ApplicationError, FailureError
 
 with workflow.unsafe.imports_passed_through():
     from adapters.interfaces.git_host import PublishResult
 
-    from services.integration.litellm_admin import MODEL_BUDGET_REASONS
+    from services.integration.litellm_admin import (
+        MODEL_BUDGET_REASONS,
+        RUN_MODEL_BUDGET_EXCEEDED,
+        TENANT_MODEL_BUDGET_EXCEEDED,
+    )
+    from services.integration.slack.messages import PostState
     from services.operator_remedy import Remedy
     from services.orchestration.change_narrative import (
         PullRequestNarrative,
@@ -25,6 +31,7 @@ with workflow.unsafe.imports_passed_through():
     from services.orchestration.gates.contract import PAUSE_FOR_HUMAN, GateContext
     from services.orchestration.gates.runner import run_gate_stage
     from services.orchestration.intake_base import declared_issue_key
+    from services.orchestration.model_path import model_unavailable_hop
     from services.orchestration.remedies import (
         approval_rejected_remedy,
         branch_sync_remedy,
@@ -35,10 +42,12 @@ with workflow.unsafe.imports_passed_through():
         gate_rejected_remedy,
         implementation_remedy,
         issue_recheck_remedy,
+        model_unavailable_park_remedy,
         plan_rejected_remedy,
         policy_denied_remedy,
         repair_remedy,
         review_blocked_remedy,
+        run_failed_remedy,
     )
     from services.orchestration.temporal_activities.authorship import (
         SignAuthorshipRequest,
@@ -86,6 +95,15 @@ with workflow.unsafe.imports_passed_through():
         finalize_work_claim,
         reset_task_coordination,
     )
+    from services.orchestration.temporal_activities.limits import (
+        PeriodAlertThread,
+        RunLimits,
+        RunLimitsRequest,
+        TenantBudgetRequest,
+        period_alert_thread,
+        read_run_limits,
+        read_tenant_budget,
+    )
     from services.orchestration.temporal_activities.manifest import (
         RecordManifestRequest,
         record_manifest,
@@ -97,7 +115,13 @@ with workflow.unsafe.imports_passed_through():
     from services.orchestration.temporal_activities.notify import (
         AlertHumanInterventionRequest,
         AlertHumanInterventionResult,
+        ParkPost,
+        RefreshParkButtonsRequest,
+        RefreshParkButtonsResult,
+        SettleParkPostsRequest,
         alert_human_intervention,
+        refresh_park_buttons,
+        settle_park_posts,
     )
     from services.orchestration.temporal_activities.persistence import (
         PARK_KEY,
@@ -174,7 +198,7 @@ with workflow.unsafe.imports_passed_through():
         COST_BUDGET_EXCEEDED,
         EXISTING_PR_REUSED,
         LLM_CALLS_EXCEEDED,
-        TOKEN_BUDGET_EXCEEDED,
+        MAX_TOKENS_EXCEEDED,
         ImplementationInput,
         ImplementationOutput,
         ImplementationWorkflow,
@@ -197,6 +221,9 @@ with workflow.unsafe.imports_passed_through():
 from adapters.interfaces.policy_engine import PolicyGate
 
 from services.orchestration.suspension import (
+    REFRESH_PARK_BUTTONS_UPDATE,
+    RESUME_LIMIT_PARK_UPDATE,
+    RESUME_MODEL_PATH_UPDATE,
     ResumeOn,
     SuspendReason,
     Suspension,
@@ -204,6 +231,7 @@ from services.orchestration.suspension import (
 )
 from services.orchestration.temporal_workflows.suspendable import (
     REPAIR_STAGE,
+    STALE_DECISION,
     SuspendableWorkflow,
     is_code_defect,
 )
@@ -235,6 +263,8 @@ AWAITING_HUMAN = "AWAITING_HUMAN"
 HUMAN_ABANDONED = "human_abandoned"
 CANCELLED = "CANCELLED"
 COMPLETED = "COMPLETED"
+FAILED = "FAILED"
+RUN_FAILED = "run_failed"
 PR_MERGED = "pr_merged"
 PR_CLOSED_UNMERGED = "pr_closed_unmerged"
 
@@ -262,11 +292,42 @@ _RUN_MODEL_BUDGET_STOP_PATCH = "run-model-budget-stop"
 _FINALIZE_ON_CANCEL_PATCH = "finalize-on-cancel"
 _CODE_DEFECT_ALERT_PATCH = "code-defect-alert"
 _IMPLEMENTATION_TASK_DESCRIPTION_PATCH = "implementation-task-description"
+_RUN_FAILED_ALERT_PATCH = "run-failed-alert"
+_MODEL_PATH_PARK_PATCH = "model-path-park"
+_MODEL_PATH_RESUME_WAIT_PATCH = "model-path-resume-wait"
+_MODEL_PATH_RESUME_WAIT = timedelta(seconds=5)
+_PARK_BUTTON_REFRESH_PATCH = "park-button-refresh"
+_LIMIT_GRANTS_PATCH = "limit-grants"
+_LIMIT_PARK_PATCH = "limit-park"
+_PERIOD_BUDGET_PARK_PATCH = "period-budget-park"
+_PERIOD_BUDGET_THREAD_PATCH = "period-budget-thread"
+_LIMIT_PARK_RESUME_WAIT = timedelta(minutes=5)
+_RUN_LIMIT_NAMES = {
+    COST_BUDGET_EXCEEDED: "IMPLEMENTATION_MAX_COST_USD",
+    MAX_TOKENS_EXCEEDED: "IMPLEMENTATION_MAX_TOKENS",
+    LLM_CALLS_EXCEEDED: "IMPLEMENTATION_MAX_LLM_CALLS",
+    RUN_MODEL_BUDGET_EXCEEDED: "RUN_MODEL_BUDGET_USD",
+    TENANT_MODEL_BUDGET_EXCEEDED: "TENANT_MODEL_BUDGET_USD",
+}
+_PARK_REMINDER_LEAD = timedelta(hours=4)
+_PARK_REFRESH_DEBOUNCE = timedelta(minutes=1)
+
+_FAILURE_SUMMARY_LIMIT = 1000
 
 _OPERATOR_ACTOR = "operator"
 _SLACK_ACTOR = "slack"
+_RESUME_DECISION = "resume"
+APPROVAL_BASIS = "approval_basis"
 
 _GATE_FAILED_PREFIX = "gate_failed:"
+
+
+def _thread_ids(thread: PeriodAlertThread | None) -> dict[str, str]:
+    if thread is None:
+        return {}
+    if thread.ts:
+        return {"period_alert_ts": thread.ts}
+    return {"period_alert_fallback": thread.reason}
 
 
 def _gate_names(human_review: Sequence[str]) -> str:
@@ -372,6 +433,7 @@ class _RepairDecision:
     retry: bool
     actor: str = ""
     actor_type: str = _OPERATOR_ACTOR
+    basis: str = ""
 
     @property
     def label(self) -> str:
@@ -384,10 +446,17 @@ class _GateDecision:
     approved: bool
     actor: str = ""
     actor_type: str = _OPERATOR_ACTOR
+    basis: str = ""
 
     @property
     def label(self) -> str:
         return "approved" if self.approved else "rejected"
+
+
+def _decision_correlation_ids(park_key: str, basis: str) -> dict[str, str]:
+    if not park_key:
+        return {}
+    return {PARK_KEY: park_key, **({APPROVAL_BASIS: basis} if basis else {})}
 
 
 @dataclass
@@ -402,6 +471,22 @@ class ParkDecisionOutcome:
     actor: str
     actor_type: str
     applied: bool
+
+
+def _resume_outcome(
+    recorded: ParkDecisionOutcome | None,
+    resumed_keys: set[str],
+    park_key: str,
+    actor: str,
+    actor_type: str,
+) -> tuple[ParkDecisionOutcome, ParkDecisionOutcome | None]:
+    if recorded is None and park_key not in resumed_keys:
+        resume = ParkDecisionOutcome(_RESUME_DECISION, actor, actor_type, applied=True)
+        return replace(resume), resume
+    if recorded is None:
+        return ParkDecisionOutcome(_RESUME_DECISION, actor, actor_type, applied=False), None
+    outcome = ParkDecisionOutcome(recorded.decision, recorded.actor, recorded.actor_type, False)
+    return outcome, None
 
 
 @dataclass
@@ -473,6 +558,20 @@ def _change_subject(impl: ImplementationOutput, commit_sha: str) -> str:
     return subject
 
 
+def _failure_summary(error: BaseException) -> str:
+    root = error
+    seen = {id(root)}
+    while root.__cause__ is not None and id(root.__cause__) not in seen:
+        root = root.__cause__
+        seen.add(id(root))
+    kind = root.type if isinstance(root, ApplicationError) and root.type else type(root).__name__
+    message = root.message if isinstance(root, FailureError) else str(root)
+    summary = f"{kind}: {message}" if message else kind
+    if len(summary) > _FAILURE_SUMMARY_LIMIT:
+        return f"{summary[: _FAILURE_SUMMARY_LIMIT - 3]}..."
+    return summary
+
+
 def _intervention_event_id(
     params: DraftPullRequestInput, event_type: str, park_key: str, unkeyed_subject: str
 ) -> str:
@@ -515,6 +614,19 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         self._claim_owner_workflow_id: str = ""
         self._claim_completed: bool = False
         self._run_model_key_deleted: bool = False
+        self._stage: str = "manifest"
+        self._plan_children: int = 0
+        self._model_path_resume: ParkDecisionOutcome | None = None
+        self._model_path_resumed_keys: set[str] = set()
+        self._limit_resume: ParkDecisionOutcome | None = None
+        self._limit_resumed_keys: set[str] = set()
+        self._park_alert: AlertHumanInterventionRequest | None = None
+        self._park_posts: list[ParkPost] = []
+        self._park_ttl_hours: int = 0
+        self._park_remind_at: datetime | None = None
+        self._park_refresher_key: str = ""
+        self._park_refresh_requested: bool = False
+        self._park_buttons_at: datetime | None = None
 
     async def _sign_authorship(
         self,
@@ -584,44 +696,161 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
 
     @workflow.update(name="apply_gate_decision")
     def apply_gate_decision(
-        self, park_key: str, approved: bool, actor: str, actor_type: str = _SLACK_ACTOR
+        self,
+        park_key: str,
+        approved: bool,
+        actor: str,
+        actor_type: str = _SLACK_ACTOR,
+        basis: str = "",
     ) -> ParkDecisionOutcome:
         recorded = self._gate_decision
         applied = recorded is None
         if recorded is None:
-            recorded = _GateDecision(gate="", approved=approved, actor=actor, actor_type=actor_type)
+            recorded = _GateDecision(
+                gate="", approved=approved, actor=actor, actor_type=actor_type, basis=basis
+            )
             self._gate_decision = recorded
         return ParkDecisionOutcome(recorded.label, recorded.actor, recorded.actor_type, applied)
 
     @apply_gate_decision.validator
     def _validate_gate_decision(
-        self, park_key: str, approved: bool, actor: str, actor_type: str = _SLACK_ACTOR
+        self,
+        park_key: str,
+        approved: bool,
+        actor: str,
+        actor_type: str = _SLACK_ACTOR,
+        basis: str = "",
     ) -> None:
         self._require_waiting_park(park_key, repair=False)
 
     @workflow.update(name="apply_repair_decision")
     def apply_repair_decision(
-        self, park_key: str, retry: bool, actor: str, actor_type: str = _SLACK_ACTOR
+        self,
+        park_key: str,
+        retry: bool,
+        actor: str,
+        actor_type: str = _SLACK_ACTOR,
+        basis: str = "",
     ) -> ParkDecisionOutcome:
         recorded = self._repair_decision
         applied = recorded is None
         if recorded is None:
-            recorded = _RepairDecision(retry=retry, actor=actor, actor_type=actor_type)
+            recorded = _RepairDecision(retry=retry, actor=actor, actor_type=actor_type, basis=basis)
             self._repair_decision = recorded
         return ParkDecisionOutcome(recorded.label, recorded.actor, recorded.actor_type, applied)
 
     @apply_repair_decision.validator
     def _validate_repair_decision(
-        self, park_key: str, retry: bool, actor: str, actor_type: str = _SLACK_ACTOR
+        self,
+        park_key: str,
+        retry: bool,
+        actor: str,
+        actor_type: str = _SLACK_ACTOR,
+        basis: str = "",
     ) -> None:
         self._require_waiting_park(park_key, repair=True)
+
+    @workflow.update(name=REFRESH_PARK_BUTTONS_UPDATE)
+    def refresh_park_buttons(self, park_key: str) -> bool:
+        """Ask the park's refresher to post fresh buttons, and return whether this call asked.
+
+        A call within _PARK_REFRESH_DEBOUNCE of the last fresh buttons asks nothing.
+        """
+        now = workflow.now()
+        recent = self._park_buttons_at and now - self._park_buttons_at < _PARK_REFRESH_DEBOUNCE
+        if self._park_refresh_requested or recent:
+            return False
+        self._park_refresh_requested = True
+        self._park_buttons_at = now
+        return True
+
+    @refresh_park_buttons.validator
+    def _validate_refresh_park_buttons(self, park_key: str) -> None:
+        suspension = self._suspension
+        if not park_key or park_key != self._park_refresher_key:
+            raise ValueError(STALE_DECISION)
+        if suspension is None or suspension.park_key != park_key:
+            raise ValueError(STALE_DECISION)
+
+    @workflow.update(name=RESUME_MODEL_PATH_UPDATE)
+    async def resume_model_path(
+        self, park_key: str, actor: str, actor_type: str = _OPERATOR_ACTOR
+    ) -> ParkDecisionOutcome:
+        if workflow.patched(_MODEL_PATH_RESUME_WAIT_PATCH):
+            try:
+                await workflow.wait_condition(
+                    lambda: (
+                        self._parked_on(SuspendReason.MODEL_UNAVAILABLE, park_key)
+                        or park_key in self._model_path_resumed_keys
+                    ),
+                    timeout=_MODEL_PATH_RESUME_WAIT,
+                )
+            except TimeoutError as exc:
+                raise ApplicationError(STALE_DECISION, non_retryable=True) from exc
+        elif not self._parked_on(SuspendReason.MODEL_UNAVAILABLE, park_key):
+            raise ApplicationError(STALE_DECISION, non_retryable=True)
+        outcome, resume = _resume_outcome(
+            self._model_path_resume, self._model_path_resumed_keys, park_key, actor, actor_type
+        )
+        if resume is not None:
+            self._model_path_resume = resume
+            self._model_path_resumed_keys.add(park_key)
+        return outcome
+
+    @resume_model_path.validator
+    def _validate_model_path_resume(
+        self, park_key: str, actor: str, actor_type: str = _OPERATOR_ACTOR
+    ) -> None:
+        # A worker without a cached run applies an update before the activity results that
+        # bring the run to its park, so the park itself is checked in the handler. Only checks
+        # that hold whatever the run's progress belong here.
+        if not park_key or park_key in self._model_path_resumed_keys:
+            raise ValueError(STALE_DECISION)
+
+    @workflow.update(name=RESUME_LIMIT_PARK_UPDATE)
+    async def resume_limit_park(
+        self, park_key: str, actor: str, actor_type: str = _OPERATOR_ACTOR
+    ) -> ParkDecisionOutcome:
+        try:
+            await workflow.wait_condition(
+                lambda: (
+                    self._parked_on(SuspendReason.LIMIT_REACHED, park_key)
+                    or park_key in self._limit_resumed_keys
+                ),
+                timeout=_LIMIT_PARK_RESUME_WAIT,
+            )
+        except TimeoutError as exc:
+            raise ApplicationError(STALE_DECISION, non_retryable=True) from exc
+        outcome, resume = _resume_outcome(
+            self._limit_resume, self._limit_resumed_keys, park_key, actor, actor_type
+        )
+        if resume is not None:
+            self._limit_resume = resume
+            self._limit_resumed_keys.add(park_key)
+        return outcome
+
+    @resume_limit_park.validator
+    def _validate_limit_park_resume(
+        self, park_key: str, actor: str, actor_type: str = _OPERATOR_ACTOR
+    ) -> None:
+        if not park_key or park_key in self._limit_resumed_keys:
+            raise ValueError(STALE_DECISION)
+
+    def _parked_on(self, reason: SuspendReason, park_key: str) -> bool:
+        suspension = self._suspension
+        return (
+            suspension is not None
+            and suspension.reason == reason
+            and suspension.park_key == park_key
+        )
 
     @workflow.run
     async def run(self, params: DraftPullRequestInput) -> DraftPullRequestOutput:
         """Drive the orchestration and settle the work claim however the run ends.
 
         Every exit has to settle the claim, otherwise the work unit stays claimed and no
-        later run can take it. `inv restart` drops a row this leaves behind.
+        later run can take it. `inv restart` drops a row this leaves behind. A run that fails on
+        an error no outcome handles is recorded as FAILED and alerted before the claim settles.
         """
         try:
             outcome = await self._orchestrate(params)
@@ -631,11 +860,57 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             if workflow.patched(_FINALIZE_ON_CANCEL_PATCH):
                 await self._finalize_claim(params)
             raise
-        except Exception:
+        except Exception as exc:
+            if isinstance(exc, FailureError) and workflow.patched(_RUN_FAILED_ALERT_PATCH):
+                await self._report_run_failure(params, exc)
             await self._finalize_claim(params)
             raise
         await self._finalize_claim(params)
         return outcome
+
+    async def _report_run_failure(self, params: DraftPullRequestInput, error: FailureError) -> None:
+        retry = RetryPolicy(maximum_attempts=3)
+        short = timedelta(seconds=30)
+        workflow_id = workflow.info().workflow_id
+        stage = self._stage
+        summary = _failure_summary(error)
+        commit_sha = self._commit.commit_sha if self._commit else params.base_sha
+        with contextlib.suppress(Exception):
+            await workflow.execute_activity(
+                persist_execution_state,
+                ExecutionState(
+                    execution_id=params.execution_id,
+                    task_id=params.task_id,
+                    state=FAILED,
+                    workflow_id=workflow_id,
+                    repository=params.repo or None,
+                    repository_sha=commit_sha or None,
+                ),
+                start_to_close_timeout=short,
+                retry_policy=retry,
+            )
+        with contextlib.suppress(Exception):
+            await self._audit(
+                AuditEvent(
+                    event_id=f"{params.execution_id}:RUN_FAILED",
+                    task_id=params.task_id,
+                    execution_id=params.execution_id,
+                    event_type="RUN_FAILED",
+                    stage=stage,
+                    new_state=FAILED,
+                    workflow_id=workflow_id,
+                    reason=summary,
+                )
+            )
+        with contextlib.suppress(Exception):
+            await self._terminal_alert(
+                params,
+                workflow_id,
+                reason=RUN_FAILED,
+                stage=stage,
+                detail=summary,
+                remedy=run_failed_remedy(params.issue_key, stage),
+            )
 
     async def _finalize_claim(self, params: DraftPullRequestInput) -> None:
         await self._delete_run_model_key(params)
@@ -754,6 +1029,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         plan_text = ""
         context_package: dict[str, Any] = {}
         if params.run_planning:
+            self._stage = "plan"
             plan_result = await self._produce_plan(params, workflow_id)
             if plan_result.rejected and plan_result.output is not None:
                 return plan_result.output
@@ -761,6 +1037,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             context_package = plan_result.context_package
 
         if params.run_dependency_detection and context_package:
+            self._stage = "dependency"
             outcome = await self._resolve_dependencies(
                 params, workflow_id, plan_text, context_package
             )
@@ -780,6 +1057,14 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         if params.task_description and workflow.patched(_IMPLEMENTATION_TASK_DESCRIPTION_PATCH):
             coding_task = f"{coding_task}\n\n{params.task_description}"
 
+        self._stage = "implementation"
+        if await self._hold_at_period_budget(params, workflow_id, "implementation"):
+            return DraftPullRequestOutput(
+                execution_id=params.execution_id,
+                status=HUMAN_ABANDONED,
+                terminal_reason=HUMAN_ABANDONED,
+            )
+        limits = await self._run_limits(params)
         impl: ImplementationOutput = await workflow.execute_child_workflow(
             ImplementationWorkflow.run,
             ImplementationInput(
@@ -793,9 +1078,9 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 work_unit=params.work_unit,
                 agent_id=params.agent_id,
                 file_impact=list(params.file_impact),
-                max_cost_usd=params.max_cost_usd,
-                max_llm_calls=params.max_llm_calls,
-                max_tokens=params.max_tokens,
+                max_cost_usd=limits.max_cost_usd,
+                max_llm_calls=limits.max_llm_calls,
+                max_tokens=limits.max_tokens,
                 activity_timeout_seconds=params.activity_timeout_seconds,
                 plan=plan_text,
                 context_package=context_package,
@@ -878,6 +1163,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 retry_policy=retry,
             )
 
+        self._stage = "push_branch"
         while True:
             try:
                 outcome = await self._push_branch(params, impl, workflow_id)
@@ -945,8 +1231,23 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 )
 
         if outcome.status == BRANCH_READY:
+            self._stage = "checks"
+            if await self._hold_at_period_budget(params, workflow_id, "checks"):
+                return replace(outcome, terminal_reason=HUMAN_ABANDONED)
             outcome = await self._ci_and_repair(params, impl, outcome, workflow_id)
             while outcome.status == CI_FAILED:
+                if outcome.terminal_reason in _RUN_LIMIT_NAMES and workflow.patched(
+                    _LIMIT_PARK_PATCH
+                ):
+                    abandon = await self._park_for_limit(params, impl, outcome, workflow_id)
+                    if abandon is None:
+                        outcome = await self._ci_and_repair(
+                            params, impl, outcome, workflow_id, base=self._max_attempt_used + 1
+                        )
+                        continue
+                    await self._persist_abandoned(params, workflow_id)
+                    outcome = replace(outcome, terminal_reason=HUMAN_ABANDONED)
+                    break
                 park_key = self._next_park_key(
                     params.execution_id, REPAIR_STAGE, str(outcome.repair_attempts)
                 )
@@ -979,12 +1280,17 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             if outcome.status == CI_PASSED:
                 passed = True
                 if params.run_reviews:
+                    self._stage = "review"
+                    if await self._hold_at_period_budget(params, workflow_id, "review"):
+                        return replace(outcome, terminal_reason=HUMAN_ABANDONED)
                     outcome = await self._review(params, impl, outcome, workflow_id)
                     passed = outcome.status == REVIEW_PASSED
                 if passed and params.run_policy:
+                    self._stage = "policy"
                     outcome = await self._policy(params, impl, outcome, workflow_id)
                     passed = outcome.status == POLICY_ALLOWED
                 if passed:
+                    self._stage = "promotion"
                     outcome = await self._open_pull_request(
                         params, impl, outcome, workflow_id, title
                     )
@@ -1161,7 +1467,8 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             repair = await self._repair(params, impl, result, workflow_id, attempt)
             if repair is None:
                 break
-            budget_reason = self._budget_breach(params, impl) or _model_budget_reason(
+            limits = await self._run_limits(params)
+            budget_reason = self._budget_breach(limits, impl) or _model_budget_reason(
                 repair.terminal_reason
             )
             if not repair.applied:
@@ -1204,17 +1511,35 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             )
         return replace(result, repair_attempts=repairs)
 
-    def _budget_breach(self, params: DraftPullRequestInput, impl: ImplementationOutput) -> str:
+    async def _run_limits(self, params: DraftPullRequestInput) -> RunLimits:
+        configured = RunLimits(
+            max_cost_usd=params.max_cost_usd,
+            max_llm_calls=params.max_llm_calls,
+            max_tokens=params.max_tokens,
+        )
+        if not workflow.patched(_LIMIT_GRANTS_PATCH):
+            return configured
+        try:
+            return await workflow.execute_activity(
+                read_run_limits,
+                RunLimitsRequest(execution_id=params.execution_id, configured=configured),
+                start_to_close_timeout=timedelta(seconds=30),
+                retry_policy=RetryPolicy(maximum_attempts=3),
+            )
+        except ActivityError:
+            return configured
+
+    def _budget_breach(self, limits: RunLimits, impl: ImplementationOutput) -> str:
         total_cost = impl.cost + self._repair_cost
         total_tokens = impl.tokens + self._repair_tokens
         cached_tokens = impl.cache_read_tokens + self._repair_cache_read_tokens
         billable_tokens = max(0, total_tokens - cached_tokens)
         total_llm_calls = impl.llm_calls + self._repair_llm_calls
-        if total_llm_calls > params.max_llm_calls:
+        if total_llm_calls > limits.max_llm_calls:
             return LLM_CALLS_EXCEEDED
-        if billable_tokens > params.max_tokens:
-            return TOKEN_BUDGET_EXCEEDED
-        if total_cost > params.max_cost_usd:
+        if billable_tokens > limits.max_tokens:
+            return MAX_TOKENS_EXCEEDED
+        if total_cost > limits.max_cost_usd:
             return COST_BUDGET_EXCEEDED
         return ""
 
@@ -1228,27 +1553,34 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         detail: str = "",
         remedy: Remedy,
         park_key: str = "",
+        limit_usage: float | None = None,
+        thread_ts: str = "",
     ) -> str:
         """Alert the operators and audit the alert. Returns the remedy as the alert rendered it."""
         retry = RetryPolicy(maximum_attempts=3)
         short = timedelta(seconds=30)
+        request = AlertHumanInterventionRequest(
+            task_id=params.task_id,
+            execution_id=params.execution_id,
+            workflow_id=workflow_id,
+            repo=params.repo,
+            issue_key=params.issue_key,
+            reason=reason,
+            stage=stage,
+            detail=detail,
+            remedy=remedy,
+            park_key=park_key,
+            limit_usage=limit_usage,
+            thread_ts=thread_ts,
+        )
         alert: AlertHumanInterventionResult = await workflow.execute_activity(
             alert_human_intervention,
-            AlertHumanInterventionRequest(
-                task_id=params.task_id,
-                execution_id=params.execution_id,
-                workflow_id=workflow_id,
-                repo=params.repo,
-                issue_key=params.issue_key,
-                reason=reason,
-                stage=stage,
-                detail=detail,
-                remedy=remedy,
-                park_key=park_key,
-            ),
+            request,
             start_to_close_timeout=short,
             retry_policy=retry,
         )
+        if park_key:
+            self._track_park_posts(request, alert)
         self._alert_seq += 1
         await self._audit(
             AuditEvent(
@@ -1288,7 +1620,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         reason = "repair_exhausted"
         if outcome.terminal_reason in (
             COST_BUDGET_EXCEEDED,
-            TOKEN_BUDGET_EXCEEDED,
+            MAX_TOKENS_EXCEEDED,
             LLM_CALLS_EXCEEDED,
             *MODEL_BUDGET_REASONS,
         ):
@@ -1346,7 +1678,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             )
         )
         self._repair_decision = None
-        await self.await_resume(
+        tracked = await self._await_park_decision(
             Suspension(
                 reason=SuspendReason.AWAITING_HUMAN,
                 resume_on=ResumeOn.HUMAN_APPROVAL,
@@ -1358,6 +1690,8 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         )
         decision = self._repair_decision or _RepairDecision(retry=False)
         self._repair_decision = None
+        if tracked:
+            await self._settle_park_posts(decision.label, decision.actor)
         decided_id = _intervention_event_id(
             params, "HUMAN_INTERVENTION_DECISION", park_key, str(attempts)
         )
@@ -1374,7 +1708,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 reason=decision.actor,
                 actor_type=decision.actor_type if park_key else None,
                 actor_id=(decision.actor or None) if park_key else None,
-                correlation_ids={PARK_KEY: park_key} if park_key else {},
+                correlation_ids=_decision_correlation_ids(park_key, decision.basis),
             )
         )
         return decision
@@ -1432,7 +1766,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             )
         )
         self._gate_decision = None
-        await self.await_resume(
+        tracked = await self._await_park_decision(
             Suspension(
                 reason=SuspendReason.AWAITING_HUMAN,
                 resume_on=ResumeOn.HUMAN_APPROVAL,
@@ -1444,6 +1778,8 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         )
         decision = self._gate_decision or _GateDecision(gate=gate, approved=False)
         self._gate_decision = None
+        if tracked:
+            await self._settle_park_posts(decision.label, decision.actor)
         await self._audit(
             AuditEvent(
                 event_id=_intervention_event_id(
@@ -1459,10 +1795,439 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 reason=decision.actor,
                 actor_type=decision.actor_type if park_key else None,
                 actor_id=(decision.actor or None) if park_key else None,
-                correlation_ids={PARK_KEY: park_key} if park_key else {},
+                correlation_ids=_decision_correlation_ids(park_key, decision.basis),
             )
         )
         return decision.approved
+
+    def _track_park_posts(
+        self, request: AlertHumanInterventionRequest, alert: AlertHumanInterventionResult
+    ) -> None:
+        self._park_alert = request
+        self._park_posts = [alert.park_post] if alert.park_post else []
+        self._park_ttl_hours = alert.ttl_hours
+        self._park_remind_at = self._reminder_time(alert.issued_at)
+        self._park_refresh_requested = False
+        self._park_buttons_at = None
+
+    def _park_reminder_lead(self) -> timedelta:
+        return min(_PARK_REMINDER_LEAD, timedelta(hours=self._park_ttl_hours) / 4)
+
+    def _reminder_time(self, issued_at: int) -> datetime:
+        expires_at = datetime.fromtimestamp(issued_at, UTC) + timedelta(hours=self._park_ttl_hours)
+        return expires_at - self._park_reminder_lead()
+
+    async def _await_park_decision(
+        self, suspension: Suspension, *, until: Callable[[], bool] | None
+    ) -> bool:
+        """Return whether the run tracks the park's posts, which the decision then settles."""
+        tracked = bool(
+            until is not None
+            and suspension.park_key
+            and self._park_posts
+            and self._park_ttl_hours > 0
+            and workflow.patched(_PARK_BUTTON_REFRESH_PATCH)
+        )
+        if not tracked or until is None:
+            await self.await_resume(suspension, until=until)
+            return False
+        self._park_refresher_key = suspension.park_key
+        refresher = asyncio.create_task(self._refresh_park_buttons_until(until))
+        try:
+            await self.await_resume(suspension, until=until)
+        except BaseException:
+            refresher.cancel()
+            raise
+        finally:
+            self._park_refresher_key = ""
+        await refresher
+        return True
+
+    async def _refresh_park_buttons_until(self, decided: Callable[[], bool]) -> None:
+        while not decided():
+            remind_at = self._park_remind_at or workflow.now()
+            wait = remind_at - workflow.now()
+            if wait > timedelta(0) and not self._park_refresh_requested:
+                with contextlib.suppress(TimeoutError):
+                    await workflow.wait_condition(
+                        lambda: decided() or self._park_refresh_requested, timeout=wait
+                    )
+            if decided():
+                return
+            reminder = not self._park_refresh_requested
+            self._park_refresh_requested = False
+            await self._post_fresh_park_buttons(reminder=reminder)
+
+    async def _post_fresh_park_buttons(self, *, reminder: bool) -> None:
+        if self._park_alert is None:
+            return
+        self._park_buttons_at = workflow.now()
+        result: RefreshParkButtonsResult | None = None
+        try:
+            result = await workflow.execute_activity(
+                refresh_park_buttons,
+                RefreshParkButtonsRequest(
+                    alert=self._park_alert, posts=list(self._park_posts), reminder=reminder
+                ),
+                start_to_close_timeout=timedelta(seconds=30),
+                retry_policy=RetryPolicy(maximum_attempts=3),
+            )
+        except ActivityError:
+            workflow.logger.warning("the park's fresh buttons were not posted")
+        if result is None or not result.issued_at:
+            self._park_remind_at = workflow.now() + self._park_reminder_lead()
+            return
+        self._park_posts = list(result.posts)
+        self._park_ttl_hours = result.ttl_hours or self._park_ttl_hours
+        self._park_remind_at = self._reminder_time(result.issued_at)
+
+    async def _settle_park_posts(self, decision: str, actor: str) -> None:
+        posts, self._park_posts, self._park_alert = self._park_posts, [], None
+        try:
+            await workflow.execute_activity(
+                settle_park_posts,
+                SettleParkPostsRequest(posts=posts, decision=decision, actor=actor),
+                start_to_close_timeout=timedelta(seconds=60),
+                retry_policy=RetryPolicy(maximum_attempts=3),
+            )
+        except ActivityError:
+            workflow.logger.warning("the park's posts were not edited to the decision")
+
+    def _model_path_parks_enabled(self) -> bool:
+        return workflow.patched(_MODEL_PATH_PARK_PATCH)
+
+    async def _park_for_model_path(
+        self,
+        params: DraftPullRequestInput,
+        workflow_id: str,
+        *,
+        stage: str,
+        hop: str,
+        error: FailureError,
+    ) -> None:
+        retry = RetryPolicy(maximum_attempts=3)
+        short = timedelta(seconds=30)
+        reason = SuspendReason.MODEL_UNAVAILABLE.value
+        park_key = self._next_park_key(
+            params.execution_id, stage, reason
+        ) or self._numbered_park_key(params.execution_id, stage, reason)
+        summary = _failure_summary(error)
+        commit_sha = self._commit.commit_sha if self._commit else params.base_sha
+        await workflow.execute_activity(
+            persist_execution_state,
+            ExecutionState(
+                execution_id=params.execution_id,
+                task_id=params.task_id,
+                state=AWAITING_HUMAN,
+                workflow_id=workflow_id,
+                repository=params.repo or None,
+                repository_sha=commit_sha or None,
+            ),
+            start_to_close_timeout=short,
+            retry_policy=retry,
+        )
+        suspension = Suspension(
+            reason=SuspendReason.MODEL_UNAVAILABLE,
+            resume_on=ResumeOn.MODEL_RESTORED,
+            stage=stage,
+            parked_build_id=params.build_id,
+            detail=hop,
+            park_key=park_key,
+        )
+        await workflow.execute_activity(
+            record_suspension,
+            RecordSuspensionRequest(
+                workflow_id=workflow_id,
+                reason=suspension.reason.value,
+                resume_on=suspension.resume_on.value,
+                parked_build_id=suspension.parked_build_id,
+                stage=suspension.stage,
+                detail=suspension.detail,
+            ),
+            start_to_close_timeout=short,
+            retry_policy=retry,
+        )
+        rendered_remedy = await self._terminal_alert(
+            params,
+            workflow_id,
+            reason=reason,
+            stage=stage,
+            detail=summary,
+            remedy=model_unavailable_park_remedy(params.issue_key, hop),
+        )
+        await self._audit(
+            AuditEvent(
+                event_id=park_event_id(park_key, "MODEL_PATH_PARKED"),
+                task_id=params.task_id,
+                execution_id=params.execution_id,
+                event_type="MODEL_PATH_PARKED",
+                stage=stage,
+                new_state=AWAITING_HUMAN,
+                workflow_id=workflow_id,
+                reason=summary,
+                remedy=rendered_remedy or None,
+            )
+        )
+        self._model_path_resume = None
+        await self.await_resume(suspension, until=lambda: self._model_path_resume is not None)
+        resumed = self._model_path_resume
+        self._model_path_resume = None
+        await workflow.execute_activity(
+            clear_suspension,
+            ClearSuspensionRequest(workflow_id=workflow_id),
+            start_to_close_timeout=short,
+            retry_policy=retry,
+        )
+        await self._audit(
+            AuditEvent(
+                event_id=park_event_id(park_key, "MODEL_PATH_RESUMED"),
+                task_id=params.task_id,
+                execution_id=params.execution_id,
+                event_type="MODEL_PATH_RESUMED",
+                stage=stage,
+                workflow_id=workflow_id,
+                decision=_RESUME_DECISION,
+                reason=hop,
+                actor_type=resumed.actor_type if resumed else None,
+                actor_id=(resumed.actor or None) if resumed else None,
+                correlation_ids={PARK_KEY: park_key},
+            )
+        )
+
+    async def _persist_abandoned(self, params: DraftPullRequestInput, workflow_id: str) -> None:
+        commit_sha = self._commit.commit_sha if self._commit else params.base_sha
+        await workflow.execute_activity(
+            persist_execution_state,
+            ExecutionState(
+                execution_id=params.execution_id,
+                task_id=params.task_id,
+                state=CANCELLED,
+                workflow_id=workflow_id,
+                repository=params.repo or None,
+                repository_sha=commit_sha or None,
+            ),
+            start_to_close_timeout=timedelta(seconds=30),
+            retry_policy=RetryPolicy(maximum_attempts=3),
+        )
+
+    def _limit_used(self, impl: ImplementationOutput, reason: str) -> float | None:
+        if reason in (COST_BUDGET_EXCEEDED, RUN_MODEL_BUDGET_EXCEEDED):
+            return impl.cost + self._repair_cost
+        if reason == MAX_TOKENS_EXCEEDED:
+            cached = impl.cache_read_tokens + self._repair_cache_read_tokens
+            return float(max(0, impl.tokens + self._repair_tokens - cached))
+        if reason == LLM_CALLS_EXCEEDED:
+            return float(impl.llm_calls + self._repair_llm_calls)
+        return None
+
+    def _limit_usage(self, limits: RunLimits, impl: ImplementationOutput, reason: str) -> str:
+        if reason == COST_BUDGET_EXCEEDED:
+            return f"{impl.cost + self._repair_cost:g} of {limits.max_cost_usd:g} USD"
+        if reason == MAX_TOKENS_EXCEEDED:
+            cached = impl.cache_read_tokens + self._repair_cache_read_tokens
+            billable = max(0, impl.tokens + self._repair_tokens - cached)
+            return f"{billable} of {limits.max_tokens} billable tokens"
+        if reason == LLM_CALLS_EXCEEDED:
+            return f"{impl.llm_calls + self._repair_llm_calls} of {limits.max_llm_calls} LLM calls"
+        return "the LiteLLM budget refused the model call"
+
+    async def _park_for_limit(
+        self,
+        params: DraftPullRequestInput,
+        impl: ImplementationOutput,
+        outcome: DraftPullRequestOutput,
+        workflow_id: str,
+    ) -> _RepairDecision | None:
+        """Park the run at a reached limit until a grant resumes it or the tenant abandons it.
+
+        Returns the Abandon decision, or None when the ``resume_limit_park`` update naming this
+        park's key resumed it. A denied request leaves the run parked.
+        """
+        reason = outcome.terminal_reason
+        park_key = self._limit_park_key(params, REPAIR_STAGE, _RUN_LIMIT_NAMES[reason])
+        usage = self._limit_usage(await self._run_limits(params), impl, reason)
+        return await self._park_at_limit(
+            params,
+            workflow_id,
+            reason=reason,
+            stage=REPAIR_STAGE,
+            park_key=park_key,
+            usage=usage,
+            used=self._limit_used(impl, reason),
+        )
+
+    def _limit_park_key(self, params: DraftPullRequestInput, stage: str, limit_name: str) -> str:
+        return self._next_park_key(
+            params.execution_id, stage, limit_name
+        ) or self._numbered_park_key(params.execution_id, stage, limit_name)
+
+    async def _hold_at_period_budget(
+        self, params: DraftPullRequestInput, workflow_id: str, stage: str
+    ) -> bool:
+        """Return whether the tenant abandoned the run while it was parked at the period budget."""
+        if not workflow.patched(_PERIOD_BUDGET_PARK_PATCH):
+            return False
+        reason = TENANT_MODEL_BUDGET_EXCEEDED
+        while True:
+            try:
+                budget = await workflow.execute_activity(
+                    read_tenant_budget,
+                    TenantBudgetRequest(execution_id=params.execution_id),
+                    start_to_close_timeout=timedelta(seconds=30),
+                    retry_policy=RetryPolicy(maximum_attempts=3),
+                )
+            except ActivityError:
+                # The stage starts, and the LiteLLM team budget still refuses a model call over it.
+                return False
+            if not budget.spent:
+                return False
+            park_key = self._limit_park_key(params, stage, _RUN_LIMIT_NAMES[reason])
+            decision = await self._park_at_limit(
+                params,
+                workflow_id,
+                reason=reason,
+                stage=stage,
+                park_key=park_key,
+                usage=f"{budget.usage} this period",
+                used=None,
+                thread=await self._period_alert_thread(params),
+            )
+            if decision is not None:
+                await self._persist_abandoned(params, workflow_id)
+                return True
+
+    async def _period_alert_thread(self, params: DraftPullRequestInput) -> PeriodAlertThread | None:
+        if not workflow.patched(_PERIOD_BUDGET_THREAD_PATCH):
+            return None
+        try:
+            return await workflow.execute_activity(
+                period_alert_thread,
+                TenantBudgetRequest(execution_id=params.execution_id),
+                start_to_close_timeout=timedelta(seconds=60),
+                retry_policy=RetryPolicy(maximum_attempts=3),
+            )
+        except ActivityError:
+            return PeriodAlertThread(reason="the period alert post was not read")
+
+    async def _park_at_limit(
+        self,
+        params: DraftPullRequestInput,
+        workflow_id: str,
+        *,
+        reason: str,
+        stage: str,
+        park_key: str,
+        usage: str,
+        used: float | None,
+        thread: PeriodAlertThread | None = None,
+    ) -> _RepairDecision | None:
+        retry = RetryPolicy(maximum_attempts=3)
+        short = timedelta(seconds=30)
+        limit_name = _RUN_LIMIT_NAMES[reason]
+        commit_sha = self._commit.commit_sha if self._commit else params.base_sha
+        await workflow.execute_activity(
+            persist_execution_state,
+            ExecutionState(
+                execution_id=params.execution_id,
+                task_id=params.task_id,
+                state=AWAITING_HUMAN,
+                workflow_id=workflow_id,
+                repository=params.repo or None,
+                repository_sha=commit_sha or None,
+            ),
+            start_to_close_timeout=short,
+            retry_policy=retry,
+        )
+        suspension = Suspension(
+            reason=SuspendReason.LIMIT_REACHED,
+            resume_on=ResumeOn.LIMIT_GRANTED,
+            stage=stage,
+            parked_build_id=params.build_id,
+            detail=limit_name,
+            park_key=park_key,
+        )
+        await workflow.execute_activity(
+            record_suspension,
+            RecordSuspensionRequest(
+                workflow_id=workflow_id,
+                reason=suspension.reason.value,
+                resume_on=suspension.resume_on.value,
+                parked_build_id=suspension.parked_build_id,
+                stage=suspension.stage,
+                detail=suspension.detail,
+            ),
+            start_to_close_timeout=short,
+            retry_policy=retry,
+        )
+        rendered_remedy = await self._terminal_alert(
+            params,
+            workflow_id,
+            reason=reason,
+            stage=stage,
+            detail=f"Limit: {limit_name}\nUsage: {usage}",
+            remedy=repair_remedy(
+                reason, issue_key=params.issue_key, execution_id=params.execution_id
+            ),
+            park_key=park_key,
+            limit_usage=used,
+            thread_ts=thread.ts if thread else "",
+        )
+        await self._audit(
+            AuditEvent(
+                event_id=park_event_id(park_key, "LIMIT_PARKED"),
+                task_id=params.task_id,
+                execution_id=params.execution_id,
+                event_type="LIMIT_PARKED",
+                stage=stage,
+                new_state=AWAITING_HUMAN,
+                workflow_id=workflow_id,
+                reason=limit_name,
+                remedy=rendered_remedy or None,
+                correlation_ids={PARK_KEY: park_key, **_thread_ids(thread)},
+            )
+        )
+        self._limit_resume = None
+        self._repair_decision = None
+        tracked = await self._await_park_decision(
+            suspension,
+            until=lambda: self._limit_resume is not None or self._repair_decision is not None,
+        )
+        resumed, decision = self._limit_resume, self._repair_decision
+        self._limit_resume = None
+        self._repair_decision = None
+        if tracked:
+            if resumed:
+                settled = (
+                    PostState.PERIOD_RESET
+                    if resumed.actor_type == PostState.PERIOD_RESET
+                    else PostState.GRANTED
+                )
+                await self._settle_park_posts(settled, resumed.actor)
+            elif decision is not None:
+                await self._settle_park_posts(decision.label, decision.actor)
+        await workflow.execute_activity(
+            clear_suspension,
+            ClearSuspensionRequest(workflow_id=workflow_id),
+            start_to_close_timeout=short,
+            retry_policy=retry,
+        )
+        actor = resumed or decision
+        await self._audit(
+            AuditEvent(
+                event_id=park_event_id(park_key, "LIMIT_PARK_DECISION"),
+                task_id=params.task_id,
+                execution_id=params.execution_id,
+                event_type="LIMIT_PARK_DECISION",
+                stage=stage,
+                workflow_id=workflow_id,
+                decision=_RESUME_DECISION if resumed else HUMAN_ABANDONED,
+                reason=limit_name,
+                actor_type=actor.actor_type if actor else None,
+                actor_id=(actor.actor or None) if actor else None,
+                correlation_ids={PARK_KEY: park_key},
+            )
+        )
+        return None if resumed else decision
 
     async def _triage_ci_failure(
         self,
@@ -1917,21 +2682,35 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         )
         context_summary = gathered.summary
         context_package = gathered.package
-        plan_out: PlanReviewOutput = await workflow.execute_child_workflow(
-            PlanReviewWorkflow.run,
-            PlanReviewInput(
-                task_id=params.task_id,
-                execution_id=params.execution_id,
-                repo=params.repo,
-                commit=self._base_sha,
-                focus=params.focus,
-                context_summary=context_summary,
-                task=params.task,
-                description=params.task_description,
-                review_task_queue=params.review_task_queue,
-            ),
-            id=f"{workflow_id}-plan-{self._replan_attempts}",
+        plan_input = PlanReviewInput(
+            task_id=params.task_id,
+            execution_id=params.execution_id,
+            repo=params.repo,
+            commit=self._base_sha,
+            focus=params.focus,
+            context_summary=context_summary,
+            task=params.task,
+            description=params.task_description,
+            review_task_queue=params.review_task_queue,
         )
+        while True:
+            # The ordinal equals the replan count until a model path park repeats a plan child,
+            # which only a run carrying the model-path-park patch does, so earlier histories keep
+            # their child IDs.
+            child_id = f"{workflow_id}-plan-{self._plan_children}"
+            self._plan_children += 1
+            try:
+                plan_out: PlanReviewOutput = await workflow.execute_child_workflow(
+                    PlanReviewWorkflow.run, plan_input, id=child_id
+                )
+                break
+            except FailureError as exc:
+                hop = model_unavailable_hop(exc)
+                if hop is None or not self._model_path_parks_enabled():
+                    raise
+                await self._park_for_model_path(
+                    params, workflow_id, stage="plan", hop=hop, error=exc
+                )
         if not plan_out.approved:
             await self._terminal_alert(
                 params,

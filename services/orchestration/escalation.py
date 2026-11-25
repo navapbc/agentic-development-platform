@@ -60,6 +60,14 @@ GATE_KIND = "gate"
 REPAIR_KIND = "repair"
 DECISION_KINDS = (GATE_KIND, REPAIR_KIND)
 
+ANYONE_IN_CHANNEL = "channel"
+USER_ID = "user_id"
+GROUP_ID = "group_id"
+GROUP_ID_PREFIX = "S"
+TEAM_ID = "team_id"
+TEAM_ID_PREFIX = "T"
+MAX_APPROVER_GROUPS = 10
+
 GOVERNMENT_PROFILE = "government"
 DEFAULT_API_BASE_URL = "https://slack.com/api/"
 DEFAULT_TOKEN_TTL_HOURS = 72
@@ -80,6 +88,41 @@ class SlackUser:
 
 
 @dataclass(frozen=True)
+class SlackGroup:
+    """A Slack user group of approvers.
+
+    ``team_id`` names the workspace that owns the group, which usergroups.users.list requires
+    when the app's token is an org-level token, and is empty when the entry does not set it.
+    """
+
+    organization_id: str
+    group_id: str
+    team_id: str = ""
+
+
+@dataclass(frozen=True)
+class Approvers:
+    """Who may decide one decision kind, anyone in the tenant's channel or the named users and
+    the members of the named Slack user groups.
+
+    A kind that slack.allowlist omits admits nobody. Every mode still requires the click to come
+    from the tenant's organization and channel.
+    """
+
+    anyone_in_channel: bool = False
+    users: tuple[SlackUser, ...] = ()
+    groups: tuple[SlackGroup, ...] = ()
+
+    def names_user(self, organization_id: str, user_id: str) -> bool:
+        return SlackUser(organization_id, user_id) in self.users
+
+    def group_ids(self, organization_id: str) -> tuple[str, ...]:
+        return tuple(
+            group.group_id for group in self.groups if group.organization_id == organization_id
+        )
+
+
+@dataclass(frozen=True)
 class SlackSettings:
     transport: str
     channel: str
@@ -90,12 +133,15 @@ class SlackSettings:
     api_base_url: str = DEFAULT_API_BASE_URL
     token_ttl_hours: int = DEFAULT_TOKEN_TTL_HOURS
     approved_hosts: tuple[str, ...] = ()
-    allowlist: Mapping[str, tuple[SlackUser, ...]] = field(default_factory=dict)
+    allowlist: Mapping[str, Approvers] = field(default_factory=dict)
     app: str = OWN_APP
 
     @property
     def api_host(self) -> str:
         return host_of(self.api_base_url)
+
+    def approvers(self, kind: str) -> Approvers:
+        return self.allowlist.get(kind, Approvers())
 
     def approves(self, host: str) -> bool:
         return host.lower() in {approved.lower() for approved in self.approved_hosts}
@@ -144,32 +190,85 @@ def _approved_hosts(raw: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(host.strip() for host in value if host.strip())
 
 
-def _allowlist(raw: Mapping[str, Any], organization_id: str) -> dict[str, tuple[SlackUser, ...]]:
+def _allowlist(raw: Mapping[str, Any], organization_id: str) -> dict[str, Approvers]:
+    """Parse slack.allowlist, whose kinds each hold channel or a list of users and groups.
+
+    Each list entry names exactly one of user_id and group_id, and optionally the
+    organization_id of that user or group, which defaults to the tenant's organization. A group
+    entry may set team_id, the workspace that owns the group. The kinds together may name at
+    most MAX_APPROVER_GROUPS distinct groups.
+    """
     value = raw.get("allowlist") or {}
     if not isinstance(value, Mapping):
-        raise ConfigError("slack.allowlist must be a mapping of decision kind to a list of users")
-    allowlist: dict[str, tuple[SlackUser, ...]] = {}
+        raise ConfigError(
+            "slack.allowlist must be a mapping of decision kind to channel or a list of users "
+            "and groups"
+        )
+    allowlist: dict[str, Approvers] = {}
     for kind, entries in value.items():
         if kind not in DECISION_KINDS:
             raise ConfigError(
                 f"slack.allowlist.{kind} is not a decision kind. Use {', '.join(DECISION_KINDS)}."
             )
+        if entries == ANYONE_IN_CHANNEL:
+            allowlist[kind] = Approvers(anyone_in_channel=True)
+            continue
         if not isinstance(entries, list):
-            raise ConfigError(f"slack.allowlist.{kind} must be a list of users")
-        users = []
+            raise ConfigError(
+                f"slack.allowlist.{kind} must be {ANYONE_IN_CHANNEL} or a list of users and "
+                f"groups, got {entries!r}"
+            )
+        users: list[SlackUser] = []
+        groups: list[SlackGroup] = []
         for index, entry in enumerate(entries):
-            where = f"slack.allowlist.{kind}[{index}]"
-            if not isinstance(entry, Mapping):
-                raise ConfigError(f"{where} must be a mapping with a user_id")
-            user_id = entry.get("user_id")
-            if not isinstance(user_id, str) or not user_id.strip():
-                raise ConfigError(f"{where}.user_id is required")
-            organization = entry.get("organization_id", organization_id)
-            if not isinstance(organization, str) or not organization.strip():
-                raise ConfigError(f"{where}.organization_id must be a Slack organization ID")
-            users.append(SlackUser(organization.strip(), user_id.strip()))
-        allowlist[kind] = tuple(users)
+            approver = _approver(entry, f"slack.allowlist.{kind}[{index}]", organization_id)
+            (users if isinstance(approver, SlackUser) else groups).append(approver)
+        allowlist[kind] = Approvers(users=tuple(users), groups=tuple(groups))
+    group_ids = {group.group_id for approvers in allowlist.values() for group in approvers.groups}
+    if len(group_ids) > MAX_APPROVER_GROUPS:
+        raise ConfigError(
+            f"slack.allowlist names {len(group_ids)} distinct groups, above the limit of "
+            f"{MAX_APPROVER_GROUPS}"
+        )
     return allowlist
+
+
+def _approver(entry: Any, where: str, organization_id: str) -> SlackUser | SlackGroup:
+    if not isinstance(entry, Mapping):
+        raise ConfigError(f"{where} must be a mapping with a user_id or a group_id")
+    named = [key for key in (USER_ID, GROUP_ID) if key in entry]
+    if len(named) != 1:
+        raise ConfigError(f"{where} must name exactly one of {USER_ID} and {GROUP_ID}")
+    [key] = named
+    identifier = entry[key]
+    if not isinstance(identifier, str) or not identifier.strip():
+        raise ConfigError(f"{where}.{key} is required")
+    identifier = identifier.strip()
+    organization = entry.get("organization_id", organization_id)
+    if not isinstance(organization, str) or not organization.strip():
+        raise ConfigError(f"{where}.organization_id must be a Slack organization ID")
+    if key == USER_ID:
+        if TEAM_ID in entry:
+            raise ConfigError(f"{where}.{TEAM_ID} is allowed only on a {GROUP_ID} entry")
+        return SlackUser(organization.strip(), identifier)
+    if not identifier.startswith(GROUP_ID_PREFIX):
+        raise ConfigError(
+            f"{where}.group_id {identifier} is not a Slack user group ID, which starts with "
+            f"{GROUP_ID_PREFIX}"
+        )
+    return SlackGroup(organization.strip(), identifier, _team_id(entry, where))
+
+
+def _team_id(entry: Mapping[str, Any], where: str) -> str:
+    if TEAM_ID not in entry:
+        return ""
+    team_id = entry[TEAM_ID]
+    if not isinstance(team_id, str) or not team_id.strip().startswith(TEAM_ID_PREFIX):
+        raise ConfigError(
+            f"{where}.{TEAM_ID} {team_id!r} is not a Slack workspace ID, which starts with "
+            f"{TEAM_ID_PREFIX}"
+        )
+    return team_id.strip()
 
 
 def _parse_slack(raw: Any, shared_app: SharedSlackApp | None) -> SlackSettings:

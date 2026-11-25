@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 
 COST_BUDGET_EXCEEDED = "cost_budget_exceeded"
 LLM_CALLS_EXCEEDED = "llm_calls_exceeded"
-TOKEN_BUDGET_EXCEEDED = "token_budget_exceeded"
+MAX_TOKENS_EXCEEDED = "token_budget_exceeded"
 
 _UNKNOWN_MODEL = "unknown"
 
@@ -166,7 +166,7 @@ def _budget_status(counted: Spend, caps: BudgetCaps) -> BudgetStatus:
     if counted.llm_calls > caps.max_llm_calls:
         breach = LLM_CALLS_EXCEEDED
     elif billable_tokens > caps.max_tokens:
-        breach = TOKEN_BUDGET_EXCEEDED
+        breach = MAX_TOKENS_EXCEEDED
     elif counted.cost_usd > caps.max_cost_usd:
         breach = COST_BUDGET_EXCEEDED
     return BudgetStatus(

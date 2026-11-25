@@ -16,7 +16,8 @@ fi
 unset TEMPORAL_TLS_CA_PEM
 
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 397 \
-    -subj "/CN=temporal-ui" -keyout "$runtime/ui-key.pem" -out "$runtime/ui.pem" 2>/dev/null
+    -subj "/CN=temporal-ui" -addext "subjectAltName=DNS:temporal-ui,IP:127.0.0.1" \
+    -keyout "$runtime/ui-key.pem" -out "$runtime/ui.pem" 2>/dev/null
 export TEMPORAL_UI_SERVER_TLS_CERT="$runtime/ui.pem"
 export TEMPORAL_UI_SERVER_TLS_KEY="$runtime/ui-key.pem"
 

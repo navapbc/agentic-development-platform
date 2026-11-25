@@ -1647,7 +1647,11 @@ def registry_auth_report(tenant: str) -> dict[str, Any]:
     import httpx
     from services.integration.credentials import env_config_dir
     from services.integration.tenant_config import tenant_source
-    from services.orchestration.gates.registry_mirrors import EXTERNAL, TOKEN_ENV, parse_texts
+    from services.orchestration.gates.registry_mirrors import (
+        EXTERNAL,
+        REGISTRY_CREDENTIAL_ENV,
+        parse_texts,
+    )
 
     from scripts.config import get_settings
 
@@ -1662,9 +1666,9 @@ def registry_auth_report(tenant: str) -> dict[str, Any]:
         return {"error": str(exc)}
     if config.mode != EXTERNAL:
         return {"skipped": f"{config.mode} mode authenticates with the worker's ECR token"}
-    token = os.environ.get(TOKEN_ENV, "")
+    token = os.environ.get(REGISTRY_CREDENTIAL_ENV, "")
     if not token:
-        return {"error": f"{TOKEN_ENV} is not set"}
+        return {"error": f"{REGISTRY_CREDENTIAL_ENV} is not set"}
     targets = {host: host for host in config.mirror_hosts}
     targets.update({f"{kind} {url}": url for kind, url in sorted(config.packages.items())})
     if not targets:

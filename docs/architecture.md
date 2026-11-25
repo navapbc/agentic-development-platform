@@ -181,7 +181,7 @@ flowchart LR
 
 ## Local environment
 
-The local stack runs in Docker Compose ([compose.yaml](../compose.yaml), [compose.override.yaml](../compose.override.yaml)) and on the Docker Desktop Kubernetes cluster ([deploy/kubernetes/local](../deploy/kubernetes/local)). The cluster runs the workloads that run on EKS in AWS, and no pod mounts a host directory. Each block names the function it performs. Blocks built in this repository list the technologies that implement them. Off-the-shelf products are named without a technology list. Edge labels are the destination port. A cluster workload reaches a Compose service on the port Compose publishes on the host. Dashed edges are optional paths that the default `config/local/platform.env.example` values leave disabled.
+The local stack runs in Docker Compose ([compose.yaml](../compose.yaml), [compose.override.yaml](../compose.override.yaml), and the opt-in [compose.dev-mounts.yaml](../compose.dev-mounts.yaml)) and on the Docker Desktop Kubernetes cluster ([deploy/kubernetes/local](../deploy/kubernetes/local)). The cluster runs the workloads that run on EKS in AWS, and no pod mounts a host directory. Each block names the function it performs. Blocks built in this repository list the technologies that implement them. Off-the-shelf products are named without a technology list. Edge labels are the destination port. A cluster workload reaches a Compose service on the port Compose publishes on the host. Dashed edges are optional paths that the default `config/local/platform.env.example` values leave disabled.
 
 ```mermaid
 flowchart LR

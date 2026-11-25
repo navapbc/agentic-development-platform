@@ -3,7 +3,8 @@
 The platform, OPA, and LiteLLM images are built through the build command the publisher uses,
 loaded into the cluster the way K8S_IMAGE_LOAD names, and rolled out from the rendered
 manifests. Every kubectl call names K8S_CONTEXT, so a workstation with several clusters
-configured deploys to the one the settings select.
+configured deploys to the one the settings select. After the rollout, the deployment validation
+of every tenant runs as a Job, and its failures are printed without failing the deploy.
 """
 
 from __future__ import annotations
@@ -251,17 +252,14 @@ def warm_shared_images(
 
 
 def rendered(settings: Settings, build_id: str, compose_files: Sequence[str]) -> list[dict]:
-    from dotenv import dotenv_values
-
     from scripts.cluster_env import compose_config, compose_network
-    from scripts.env_file import platform_env_path
+    from scripts.env_file import platform_env_values
     from scripts.k8s_render import RenderInputs, render
 
-    platform_env = platform_env_path()
     return render(
         RenderInputs(
             settings=settings,
-            env=dotenv_values(platform_env) if platform_env.is_file() else {},
+            env=platform_env_values(),
             network=compose_network(compose_config(list(compose_files))),
             build_id=build_id,
             image_registry=image_registry(settings),
@@ -399,6 +397,9 @@ def main(argv: list[str] | None = None) -> int:
     delete_retired(settings)
     roll(settings)
     print(f"{LOG} {settings.k8s_context}/{settings.k8s_namespace} runs build {args.build_id}")
+    from scripts.validation_job import report_after_rollout
+
+    report_after_rollout(kubectl(settings), settings.k8s_namespace)
     return 0
 
 

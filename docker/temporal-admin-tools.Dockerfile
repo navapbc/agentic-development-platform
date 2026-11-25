@@ -52,10 +52,15 @@ RUN go get $(printf '%s' "${TEMPORAL_CLI_GO_GET}" | tr , ' ') \
       -ldflags="-s -w -X github.com/temporalio/cli/internal/temporalcli.Version=${TEMPORAL_CLI_VERSION#v}" \
       -o /out/temporal ./cmd/temporal
 
-FROM ${AL2023_IMAGE}
-ARG AL2023_RELEASE=2023.12.20261112
+FROM ${AL2023_IMAGE} AS rds-ca
 ARG RDS_CA_BUNDLE_URL
 ARG RDS_CA_BUNDLE_SHA256
+RUN mkdir /out \
+ && curl -fsSLo /out/rds-global-bundle.pem "${RDS_CA_BUNDLE_URL}" \
+ && echo "${RDS_CA_BUNDLE_SHA256}  /out/rds-global-bundle.pem" | sha256sum -c -
+
+FROM ${AL2023_IMAGE}
+ARG AL2023_RELEASE=2023.12.20261112
 LABEL org.opencontainers.image.licenses="MIT"
 RUN dnf -y --releasever="${AL2023_RELEASE}" upgrade \
  && dnf -y --releasever="${AL2023_RELEASE}" install tzdata shadow-utils \
@@ -67,9 +72,10 @@ RUN dnf -y --releasever="${AL2023_RELEASE}" upgrade \
 COPY --from=tools --chmod=0555 /out/temporal-sql-tool /out/tdbg /usr/local/bin/
 COPY --from=cli --chmod=0555 /out/temporal /usr/local/bin/temporal
 COPY --from=tools /out/schema /etc/temporal/schema
-ADD --checksum=sha256:${RDS_CA_BUNDLE_SHA256} --chmod=0444 ${RDS_CA_BUNDLE_URL} /etc/ssl/rds-global-bundle.pem
+COPY --from=rds-ca --chmod=0444 /out/rds-global-bundle.pem /etc/ssl/rds-global-bundle.pem
 COPY --chmod=0555 docker/temporal-admin-tools.sh /usr/local/libexec/temporal-admin-tools.sh
 RUN cis-harden
 USER temporal
+HEALTHCHECK NONE
 ENTRYPOINT ["/bin/sh", "/usr/local/libexec/temporal-admin-tools.sh"]
 CMD ["schema"]

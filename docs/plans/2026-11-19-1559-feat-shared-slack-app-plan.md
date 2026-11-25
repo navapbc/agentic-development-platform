@@ -109,6 +109,22 @@ Sharing an app removes the isolation the per-tenant design gets for free. Slack 
 - R30. In AWS, a tenant worker whose `tenants/<tenant>/` prefix holds no published bundle refuses to start and names the prefix.
 - R31. Every review-stage activity of a run executes in the run tenant's own review worker, under the tenant's identity and the bundle the run recorded, so the tenant's `gates.yaml` and `gate_engine.yaml` govern its review-stage gates.
 - R32. Each tenant signs its review verdicts with its own key, and a verdict signed with another tenant's key does not verify for the run.
+- R33. Each decision kind of a tenant's Slack approvers is either anyone in the tenant's channel, or a list of named users and Slack user groups. A user passes when the user is named or is a member of a named group. Every mode still requires the click to come from the tenant's organization and channel.
+- R34. A group's members come from Slack and are refreshed every five minutes. When the last successful read of a group is older than ten minutes, a click that only that group would admit is refused.
+- R35. A run that fails outside a handled outcome records FAILED, an audit event, and an operator alert. The orphan reaper alerts and audits every run it reclaims. A child workflow never replaces the parent's ID in the execution record.
+- R36. Intake starts no run while the local model path is unhealthy. Each candidate is deferred, so the ticket store's watermark stays behind it and the next pass reads it again. The deferred tickets start on the first pass after the model path recovers.
+- R37. A model call that fails because the credentials expired, the Bedrock path is unreachable, or LiteLLM is unreachable fails at once as ModelUnavailable, naming the failing hop. A run whose model call fails this way parks with its work kept and resumes when the model path recovers.
+- R38. Each tenant's escalation channels receive one alert when the model path becomes unhealthy and one when it recovers. Each alert names the remedy for the failing hop, `inv aws-login`, `inv tunnel-start --detach`, or `inv k8s-reload`.
+- R39. A workstation can install a scheduled job that renews a static-key AWS session before it expires and restarts the Bedrock tunnel when it stops.
+- R40. An actionable alert states what happened, its effect, how to fix it for the deployment's posture, and how to validate the fix, and carries Acknowledge, Run validation, and Fix done buttons. A run alert carries Acknowledge and Restart run. Every button is admitted by the tenant's existing `repair` allowlist kind.
+- R41. Fix done checks the failing condition again. On success it resolves the alert in place, posts the recovery in the alert's thread, closes the episode, starts the deferred tickets, and resumes the parked runs. On failure it replies privately with the condition that still fails.
+- R42. Locally, the host agent renews the AWS session and restarts the Bedrock tunnel without a click, reports what it did in the alert's thread, and the automatic check resolves the alert. When it cannot, the alert gives the manual fix, the validation, and the Fix done step.
+- R43. A deployment validation runs inside the deployment, the same locally and in AWS. A tenant validates only its own configuration and sees no other tenant's data. A platform administrator validates the platform, all tenants, or one tenant.
+- R44. The local Compose workflow worker runs workflow code from the image the last `inv k8s-reload` built. Running it from the working tree is opt-in.
+- R45. A tenant-facing alert holds no shell command in any posture. Every tenant action is a button, and with Slack enabled the Jira comment and the email point to the Slack post. A tenant configuration fault names the file and key to change in the tenant's config repository.
+- R46. A platform fault reaches the tenant as its effect and the statement that work resumes on its own, with no fix steps and no platform internals. Its fix steps go to the platform administrator destination, which is a Slack channel, an email list, or both, from platform config. Config validation refuses a platform config that sets neither.
+- R47. A limit can be raised without a config change or a restart. A tenant that reaches a limit is alerted with Request increase, Park all jobs, and Acknowledge. A request within the platform band, by default 25 percent of the configured limit per step and 100 percent per period, reaches the administrators with Approve and Deny, and an approval takes effect at once. A request above the band states that the configured limit must change.
+- R48. A run that reaches a per-run limit parks and resumes on a grant. Park all jobs stops intake and lets running runs finish. A tenant whose period budget is spent has its running runs park at their next stage boundary, resuming on a grant or the period reset.
 
 **Documentation**
 
@@ -128,6 +144,14 @@ Sharing an app removes the isolation the per-tenant design gets for free. Slack 
 - AE10. **Covers R23, R24.** Given `config/local/escalation.yaml`, `inv k8s-reload` fails and names the file and `config/local/tenants/<tenant>/escalation.yaml` as its location.
 - AE11. **Covers R26.** Given a platform `registries.yaml` in `external` mode with mirrors on `artifactory.example.gov`, a tenant mirror on `artifactory.example.gov/agency-remote` validates, and a tenant mirror on `other.example.com` is refused with the host named. Two tenants with one `credential.username` fail the local render, and in AWS the second publish fails.
 - AE12. **Covers R29.** Given the folders `adp/` and `beta/` with `adp.env` and `beta.env`, the render deploys both workers with no `TENANTS` setting. Removing `beta/` and `beta.env` removes the beta worker at the next `inv k8s-reload`.
+- AE13. **Covers R33.** Given `allowlist.gate: channel`, any user of the tenant's organization who clicks Approve in the tenant's channel decides the gate, and a Slack Connect user from another organization is refused.
+- AE14. **Covers R33, R34.** Given `allowlist.repair` naming the group `S0123456789`, a member of that group decides a repair park, a non-member is refused, and after the group's last read is more than ten minutes old a member is refused as stale until the next read succeeds.
+- AE15. **Covers R35.** Given a plan child that exhausts its model retries, the run's execution is FAILED, a RUN_FAILED audit event exists, and the tenant's channels receive an alert whose remedy names `inv restart`.
+- AE16. **Covers R36, R38.** Given an expired `aws-credentials` session and a new ready ticket, the intake pass starts nothing, defers the ticket, and alerts once naming `inv aws-login`. After the session is renewed, the next pass starts the ticket and the channels receive one recovery alert.
+- AE17. **Covers R37.** Given a run in planning when the Bedrock tunnel stops, the run parks as model_unavailable with its plan state kept, and after `inv tunnel-start --detach` it resumes without a new intake.
+- AE18. **Covers R40, R41.** Given a model path alert, a `repair` approver presses Acknowledge and the post shows who and when. Run validation posts a report in the thread naming the failing check. After the fix, Fix done resolves the post, posts the recovery in the thread, and the deferred ticket starts within the same minute. A user outside the `repair` kind is refused privately.
+- AE19. **Covers R42.** Given the tunnel stopped on a workstation with the host agent installed, the agent restarts it, reports in the alert's thread, and the alert resolves with no click.
+- AE20. **Covers R43.** Given tenants adp and beta, Run validation in adp's channel reports adp's checks and platform dependencies as pass or fail with no platform internals and nothing of beta. `inv deployment-validate --all-tenants` reports the platform and both tenants.
 
 ### Scope Boundaries
 
@@ -278,6 +302,16 @@ Sharing an app removes the isolation the per-tenant design gets for free. Slack 
   - Each key in `review-trust-root.yaml` names its tenant. A verdict verifies only under a key of the run's tenant, and a review worker refuses to start when its key is not an active key of its tenant. The trust root stays platform config, because a tenant must not control the anchor its own verdicts are checked against. Adding a tenant's key is the onboarding step this security boundary requires.
   - In AWS the ECS review worker is removed, and each tenant's review worker runs on EKS under its own Pod Identity role, which writes the evidence bucket and reads only its tenant's bundle prefix and review signing key secret.
 - KTD29. **No process runs without a tenant.** (session-settled: user-directed, chosen over keeping the platform tenant of the webhook and repository intelligence, because a deployment always serves at least one tenant.) Governs R23, R29.
+- KTD30. **Approver modes extend the allowlist in place.** (session-settled: user-directed, chosen over a new `approvers` key, because the existing lists of `user_id` keep parsing.) Each kind under `slack.allowlist` is the string `channel` or a list whose entries name a `user_id` or a `group_id`. The tenant template defaults both kinds to `channel`. The channel mode is allowed under every profile. Governs R33.
+- KTD31. **Group members are resolved by the tenant's activity worker and read from Postgres by every dispatcher.** (session-settled: user-approved, chosen over giving the inbound webhook a bot token, because the webhook holds no Slack token for any tenant.) The worker reads each group the tenant names with `usergroups.users.list`, through its own bot token, or through the Slack posting service for a tenant on the shared app, which admits only groups the tenant's `escalation.yaml` names. It records the members with the read time per tenant and group. The bot needs the `usergroups:read` scope. Governs R33, R34.
+- KTD32. **Model path health is a one-token LiteLLM probe made when a ticket is picked up, and the hop is named from LiteLLM's error.** (session-settled: user-approved for the local build, chosen over a probe per dependency, because AWS assets reach Bedrock over internal connections with Pod Identity credentials.) An expired-credential error names the AWS session, a failed connection to the Bedrock host names the tunnel, and a failed connection to LiteLLM names LiteLLM. The probe runs when a ticket is picked up, before its run starts, and its result is cached for about a minute, so a pass with many candidates probes once. Governs R36, R37, R38.
+- KTD33. **Intake defers rather than holds while the model path is unhealthy.** (session-settled: user-approved.) A held rebar ticket advances the watermark past it, and a deferred one does not. The gate reuses the admission deferral the concurrency cap uses. Governs R36.
+- KTD34. **Model path alerts go to every tenant's escalation channels, once per transition.** (session-settled: user-approved, chosen over a platform operator channel.) A side-effect ledger key per tenant and unhealthy episode keeps the per-minute pass from repeating an alert. Governs R38.
+- KTD35. **Alert buttons reuse the `gate` and `repair` allowlist kinds.** (session-settled: user-approved, chosen over a kind per alert type.) `gate` admits clearing a named gate, and `repair` admits every other alert action. Governs R40.
+- KTD36. **A button records an approval or asks the deployment to check, and never runs a command a click names.** (session-settled: user-approved.) Configuration faults, including Pod Identity or Bedrock path drift in AWS, are fixed outside Slack by re-applying the declared configuration, then confirmed with Run validation and Fix done. Restart LiteLLM is not offered. Governs R40, R41.
+- KTD37. **Tenant validation runs in the tenant's activity worker, and platform validation runs as a Kubernetes Job in the platform namespace.** (session-settled: user-approved scope, mechanism proposed.) The tenant worker holds only its tenant's credentials, so its report cannot name another tenant. A tenant sees each platform dependency as pass or fail only. The platform Job holds the platform's access, runs the platform checks, and starts each requested tenant's validation on its queue. Governs R43.
+- KTD38. **Alerts are routed by who can act on them.** (session-settled: user-approved, replacing the posture-rendered commands in tenant alerts, because tenant engineers in AWS hold no platform access.) Administrator issues need platform access: the model path, Temporal, the database, ADP code defect parks, sandbox and gate infrastructure, platform configuration, limit changes, and platform-scope validation failures. Every other issue is the tenant's, including restarting a run. A tenant run that fails on a platform error type also sends its cause to the administrators. Governs R45, R46.
+- KTD39. **Limit increases are grants stored in Postgres and added to the configured limit when it is checked.** (session-settled: user-approved.) Administrators approve every in-band request with one click. A period grant expires at the period reset and a run grant ends with its run. Governs R47, R48.
 
 ### High-Level Technical Design
 
@@ -376,7 +410,7 @@ Settings and parsing come first, because every later unit reads them (U1). The c
 
 The hardening units follow U10 and fix every finding of the review of U1 to U10. Shared constants and the claims tooling come first, because later units build on their helpers (U12, U11). The snapshot rework precedes everything that reads its decisions (U13, then U14, U15, U16, and U17). Verified TLS is independent of the snapshot (U18). Hygiene and test completion run after the behavior they touch has settled (U19, then U20), and deployed verification closes the work (U21).
 
-The config layout units follow U28. The `ENVIRONMENT` removal comes first, because every later unit rewrites the same config paths (U29). The classification follows (U30), and the isolation and registries splits build on it (U31, U32). The settings split and the derived tenant list follow (U33). The per-tenant review worker follows the classification (U36), its tenant-bound keys follow it (U37), and its local and AWS deployment follow both (U38, U39). The templates and docs follow the code (U34), and the move of this checkout's config closes the work (U35).
+The config layout units follow U28. The `ENVIRONMENT` removal comes first, because every later unit rewrites the same config paths (U29). The classification follows (U30), and the isolation and registries splits build on it (U31, U32). The settings split and the derived tenant list follow (U33). The per-tenant review worker follows the classification (U36), its tenant-bound keys follow it (U37), and its local and AWS deployment follow both (U38, U39). The templates and docs follow the code (U34), and the move of this checkout's config closes the work (U35). The approver modes follow the config work. The modes and the dispatcher check come first (U40), the group resolver follows them (U41), and the templates, manifests, and docs close them (U42).
 
 ### Risks
 
@@ -439,6 +473,9 @@ The config layout units follow U28. The `ENVIRONMENT` removal comes first, becau
 | U37 | Tenant-bound review signing keys | `services/review/trust_root.py`, `services/review/gate.py`, `services/orchestration/review_signing.py` | U36 |
 | U38 | Per-tenant review worker local render | `scripts/tenant_render.py`, `scripts/k8s_render.py`, `deploy/kubernetes/review-worker.yaml` | U36, U37, U33 |
 | U39 | Per-tenant review worker in AWS | `infra/terraform/container-services/`, `infra/terraform/tenant/`, `infra/terraform/examples/private-bedrock/`, `deploy/kubernetes/aws/`, `scripts/eks_render.py` | U36, U37 |
+| U40 | Approver modes and the dispatcher check | `services/orchestration/escalation.py`, `services/integration/slack/dispatcher.py`, `database/migrations/` | U39 |
+| U41 | Group membership resolver | `services/integration/slack/approver_groups.py`, `services/slack_poster/server.py`, `services/orchestration/worker.py` | U40 |
+| U42 | Approver templates, manifests, and docs | `config/local/tenants/tenant.example/escalation.yaml.example`, `config/platform/slack-*manifest.yaml.example`, `docs/slack-escalation.md` | U41 |
 
 ### U1. Shared app settings and `app: shared` parsing
 
@@ -1090,7 +1127,7 @@ The config layout units follow U28. The `ENVIRONMENT` removal comes first, becau
   - `tests/unit/test_webhook_eks_render.py`
 - **Approach:**
   1. Add the missing tests below.
-  2. The projected token assertions read `TOKEN_AUDIENCE` and `PORT` from `services/slack_poster`.
+  2. The projected token assertions read `SERVICE_ACCOUNT_AUDIENCE` and `PORT` from `services/slack_poster`.
   3. Run the test-value review over every test this work added or changed, and apply each finding it confirms.
   4. For each render test in `test_webhook_render.py` and `test_webhook_eks_render.py` that this work added, break the render behavior it names in a scratch copy, observe the test fail, and restore. Record each observed failure in the run's verification summary.
 - **Execution note:** The render tests were written after the code, so step 4 is the evidence that they catch a regression.
@@ -1424,6 +1461,181 @@ The config layout units follow U28. The `ENVIRONMENT` removal comes first, becau
   - The `tenant` plan grants the review role its own secret and prefix only, and no other tenant's.
   - The EKS render places one review worker per tenant with its own SecretProviderClass.
 - **Verification:** `inv ci` and `inv terraform-test` pass, and the private-bedrock root validates.
+
+### U40. Approver modes and the dispatcher check
+
+- **Goal:** Each decision kind admits anyone in the channel, or named users and groups.
+- **Requirements:** R33, R34.
+- **Dependencies:** U39.
+- **Files:** `services/orchestration/escalation.py`, `services/integration/slack/dispatcher.py`, `services/integration/slack/decisions.py` or the module that holds `DecisionRecords`, `database/migrations/versions/` (new revision), `database/models/schema.py`, and their tests.
+- **Approach:**
+  1. `slack.allowlist.<kind>` parses as the string `channel`, or as a list whose entries hold exactly one of `user_id` and `group_id`, each with an optional `organization_id`. A `group_id` starts with `S`. Any other value is refused with the field named.
+  2. Add the table `slack_approver_groups` with `tenant`, `group_id`, `members` (the user IDs), and `refreshed_at`, keyed by tenant and group, in a new migration.
+  3. The dispatcher admits a click for a kind in `channel` mode after the organization and channel checks. For a list, it admits a named user, or a member of a named group whose record for the dispatcher's tenant was refreshed within ten minutes. It reads the record through `DecisionRecords` for its own tenant only. A click that only a stale group would admit is refused with the new reason `group_stale`, and a click no entry admits keeps `not_allowed`.
+  4. The decision audit event records the basis of the approval, `channel`, `user`, or `group:<id>`.
+- **Test scenarios:**
+  - The AE13 and AE14 cases.
+  - A mixed list admits a named user whose group record is stale.
+  - A record of another tenant's group with the same ID is not read.
+  - An entry with both `user_id` and `group_id`, a `group_id` that does not start with `S`, and a kind value other than `channel` or a list are refused.
+- **Verification:** `inv ci` passes, and the migration applies through `inv db-migrate`.
+
+### U41. Group membership resolver
+
+- **Goal:** Each tenant's named groups have a record no older than five minutes while Slack answers.
+- **Requirements:** R34.
+- **Dependencies:** U40.
+- **Files:** `services/integration/slack/approver_groups.py` (new), `services/integration/slack/poster_client.py`, `services/slack_poster/server.py`, `services/orchestration/worker.py`, and their tests.
+- **Approach:**
+  1. The tenant's activity worker runs a refresh every five minutes, and at start, for each group its `escalation.yaml` names. It calls `usergroups.users.list` with its own bot token on the tenant's `api_base_url`, or, for a tenant on the shared app, asks the Slack posting service.
+  2. The posting service answers a group read only for a worker it authenticates, and only for a group the requesting tenant's `escalation.yaml` names. It holds the only shared bot token, as for posts.
+  3. A successful read upserts the record with its read time. A failed read leaves the record unchanged and logs the group, the tenant, and the Slack error, naming `usergroups:read` when Slack answers `missing_scope`.
+  4. A group the tenant no longer names has its record deleted at the next refresh.
+- **Test scenarios:**
+  - A read through the tenant's token and a read through the posting service each write the members.
+  - The posting service refuses a group the tenant does not name, and a caller it does not authenticate.
+  - A failed read keeps the last record, and a removed group's record is deleted.
+- **Verification:** `inv ci` passes.
+
+### U42. Approver templates, manifests, and docs
+
+- **Goal:** A new tenant starts in channel mode, and the docs show how to move to groups.
+- **Requirements:** R33, R34.
+- **Dependencies:** U41.
+- **Files:** `config/local/tenants/tenant.example/escalation.yaml.example`, `config/platform/slack-app-manifest.yaml.example`, `config/platform/slack-shared-app-manifest.yaml.example`, `docs/slack-escalation.md`, `docs/release-verification.md`, `CHANGELOG.md`, and the hygiene tests.
+- **Approach:**
+  1. The tenant template sets `gate: channel` and `repair: channel`, and shows the user and group forms in comments.
+  2. Both manifests add the `usergroups:read` bot scope, and the docs state that an existing app needs the scope added and a reinstall before groups work.
+  3. `docs/slack-escalation.md` documents the three modes, the five-minute refresh, the ten-minute refusal, and the `group_stale` refusal. The release verification Slack flows run in channel mode and add a group flow.
+- **Test scenarios:**
+  - The template parses and passes bundle validation.
+- **Verification:** `inv ci` passes, and the prose scan over added lines reports nothing.
+
+### U43. Run failure and reaper alerts
+
+- **Goal:** No run ends without its execution record, an audit event, and an operator alert.
+- **Requirements:** R35.
+- **Dependencies:** None.
+- **Files:** `services/orchestration/temporal_workflows/draft_pull_request.py`, `services/orchestration/temporal_workflows/implementation.py`, `services/orchestration/temporal_workflows/review.py`, `services/orchestration/execution_reconciler.py`, `services/orchestration/intake_runtime.py`, `services/orchestration/temporal_activities/intake.py`, and their tests.
+- **Approach:**
+  1. The workflow's unhandled failure path, behind a patch, persists FAILED, audits RUN_FAILED, and sends a terminal alert whose remedy names `inv restart`, before it settles the claim and raises the original failure.
+  2. The reaper alerts and audits each execution it reclaims, and an alert failure never blocks the reclaim.
+  3. Child workflows persist the parent's workflow ID.
+- **Test scenarios:**
+  - The AE15 case.
+  - A reclaimed execution produces one alert and one audit event, and a FAILED run is not reclaimed.
+  - A child's state write keeps the parent's ID.
+- **Verification:** `uv run pytest tests/unit` passes.
+
+### U44. Model path health gate and alerts
+
+- **Goal:** An unhealthy local model path defers intake, alerts the tenants once, and clears on recovery.
+- **Requirements:** R36, R37, R38.
+- **Dependencies:** U43.
+- **Files:** `services/orchestration/temporal_activities/bedrock.py`, `services/orchestration/temporal_activities/intake.py`, `services/orchestration/intake_reconciler.py`, a new model path health module, `services/orchestration/notifications.py`, docs, CHANGELOG, and their tests.
+- **Approach:**
+  1. `invoke_model` raises a non-retryable ModelUnavailable for the three hop errors of KTD32, naming the hop.
+  2. Every path that picks up a ticket probes the model path before it starts a run. The paths are the rebar and Jira poll passes, the Jira webhook, the single-issue intake, and `inv restart`. The gate sits in the shared candidate routing, so an idle tenant probes only when a ticket is picked up and sends no model call otherwise. While the model path is unhealthy, every candidate is deferred and no run starts.
+  3. A transition to unhealthy and back sends one alert each to the tenant's escalation channels with the hop's remedy, deduplicated per KTD34.
+- **Test scenarios:**
+  - The AE16 case, for each hop.
+  - A deferred rebar ticket is read again on the next pass.
+  - A minute of repeated unhealthy passes sends one alert.
+  - A pass with no candidate sends no probe, and a webhook pickup on an unhealthy path defers its ticket.
+- **Verification:** `uv run pytest tests/unit` passes, and a local run with the tunnel stopped shows the deferral, the alert, and the recovery.
+
+### U45. Runs park on an unavailable model path
+
+- **Goal:** A run in progress keeps its work when the model path fails, and resumes on recovery.
+- **Requirements:** R37.
+- **Dependencies:** U44.
+- **Files:** `services/orchestration/temporal_workflows/draft_pull_request.py`, the child workflows that call the model, the intake pass, `tasks.py` if a resume command changes, docs, and their tests.
+- **Approach:**
+  1. A ModelUnavailable failure in a stage that calls the model parks the run as model_unavailable through the existing suspension records, behind a patch, and alerts through the park path.
+  2. The intake pass that sees the model path recover resumes the tenant's model_unavailable parks, and the operator can resume one by hand.
+  3. A resumed run repeats the failed stage only.
+- **Test scenarios:**
+  - The AE17 case.
+  - A park outlives a worker restart and resumes once.
+- **Verification:** `uv run pytest tests/unit` passes, including workflow replay tests.
+
+### U46. Workstation renewal job
+
+- **Goal:** A workstation with a static-key profile keeps its AWS session and Bedrock tunnel up without a person.
+- **Requirements:** R39.
+- **Dependencies:** None.
+- **Files:** `tasks.py`, a new renewal script, `README.md`, CHANGELOG, and their tests.
+- **Approach:**
+  1. One command renews the session when it is within `AWS_CREDENTIALS_WARN_SECONDS` of expiry or expired, and starts the tunnel when its status reports it stopped. A profile that needs an interactive sign-in is reported and skipped.
+  2. An install command writes a launchd job that runs it on an interval, and an uninstall command removes it. The README shows the cron line for other hosts.
+- **Test scenarios:**
+  - The renewal decision for a fresh, near-expiry, and expired session, and for a stopped tunnel.
+  - An interactive profile is skipped with a report.
+- **Verification:** `uv run pytest tests/unit` passes.
+
+### U47. Actionable alerts with acknowledge, validate, and fix done
+
+- **Goal:** An engineer can take, validate, and close an alert from Slack, and the deployment resumes on its own once the fix holds.
+- **Requirements:** R40, R41, R42, R45, R46.
+- **Dependencies:** U45, U48 for Run validation.
+- **Files:** `services/orchestration/notifications.py`, `services/integration/slack/messages.py`, `services/integration/slack/dispatcher.py`, `services/orchestration/model_path.py`, `services/orchestration/remedies.py`, `scripts/local_renew.py`, `tasks.py`, migration 0020, docs, CHANGELOG, and their tests.
+- **Approach:**
+  1. Alert layout with labeled lines for what happened, effect, how to fix, and how to validate, then the instruction to press Fix done once validation passes.
+  2. Signed Acknowledge, Run validation, and Fix done buttons on model path alerts, and Acknowledge and Restart run on `run_failed` and `orphan_reclaimed` alerts, all admitted by the `repair` kind through the existing dispatcher, each audited with the actor.
+  3. The episode records the Slack channel and message `ts`, the acknowledger, and the resolver. Resolution edits the post and replies in its thread, whether a click or intake detected it. Fix done on a healthy path triggers the tenant's intake schedule at once.
+  4. The U46 job becomes a long-running launchd agent that renews and restarts on its own and posts its actions to the open episode's thread through the tenant worker.
+  5. Tenant alerts render no commands. A remedy's actions become the post's buttons, and its text names them. Tenant configuration faults name the file and key. Platform faults send the tenant the effect only, and send the fix steps with Acknowledge, Run validation, and Fix done to the administrator destination in a platform escalation config, which config validation requires to name a Slack channel, an email list, or both.
+- **Test scenarios:**
+  - The AE18 and AE19 cases.
+  - A click on a resolved episode, a stale post, or a restarted run is refused privately.
+  - Restart run restarts the run once under double clicks.
+- **Verification:** `uv run pytest tests/unit` passes, and the AE18 flow runs on the local stack.
+
+### U48. Deployment validation
+
+- **Goal:** A tenant and a platform administrator can each prove their part of the deployment works, the same locally and in AWS.
+- **Requirements:** R43.
+- **Dependencies:** None.
+- **Files:** a new validation module with a check registry, a tenant validation activity, a platform validation entry point and Kubernetes Job and CronJob templates in both renders, `tasks.py`, `scripts/k8s_render.py`, the EKS render, docs, CHANGELOG, and their tests.
+- **Approach:**
+  1. Each check has a scope, platform or tenant, and returns pass, fail, or skip with a cause, the posture's fix, and how to confirm it. The checks are the tenant bundle, each model alias with a one-token call, the AWS identity LiteLLM signs with and the local session expiry, Slack auth and a post to the channel, ticket store access, source control token access and expiry, the schema head, and Temporal with the tenant queue polled.
+  2. Tenant validation runs in the tenant's activity worker with the tenant's own credentials. Its report names platform dependencies as pass or fail only.
+  3. Platform validation runs as a Job in the platform namespace. `inv deployment-validate` with `--platform`, `--all-tenants`, or `--tenant <t>` creates the Job in the current cluster context and prints its report. A daily CronJob runs all tenants and posts only failures, each to its own tenant.
+  4. `inv k8s-reload` and `inv eks-deploy` run the validation after rollout and report failures.
+- **Test scenarios:**
+  - The AE20 case.
+  - Each check's pass and fail, with the fix rendered for both postures.
+  - A tenant report holds no other tenant's identifiers or platform internals.
+- **Verification:** `uv run pytest tests/unit` passes, and `inv deployment-validate --all-tenants` passes on the local stack.
+
+### U49. Opt-in working tree mounts for the workflow worker
+
+- **Goal:** An edit in the working tree cannot change the workflow code a running local stack executes.
+- **Requirements:** R44.
+- **Dependencies:** None.
+- **Files:** `compose.override.yaml`, `compose.dev-mounts.yaml` (new), `tasks.py`, `tests/unit/test_tasks_compose.py`, `README.md`, `docs/architecture.md`, CHANGELOG.
+- **Approach:** The workflow worker's source mounts move to `compose.dev-mounts.yaml`, which `inv` applies only when `COMPOSE_DEV_MOUNTS` is true. The `db-migrate` mounts stay, because `inv db-migrate` applies the migrations in the tree before an image holds them.
+- **Test scenarios:**
+  - The compose file list omits the overlay by default and adds it when the flag is set in `config/local/platform.env`.
+- **Verification:** `uv run pytest tests/unit/test_tasks_compose.py` passes, and `docker compose config` shows the worker with only its config mounts.
+
+### U50. Limit increase grants and tenant pause
+
+- **Goal:** A tenant at a limit can ask for more, an administrator can grant it with one click, and work resumes without a config change or a restart.
+- **Requirements:** R47, R48.
+- **Dependencies:** U47.
+- **Files:** a new limit grants module, migration 0021, the budget checks in the draft pull request workflow and its activities, the intake admission, `services/orchestration/notifications.py`, the Slack messages and dispatcher, the platform escalation config, docs, CHANGELOG, and their tests.
+- **Approach:**
+  1. A grant records the tenant, the limit, its scope of one run or the current period, the amount, the approver, and its expiry. The effective limit is the configured limit plus active grants, read by an activity when a limit is checked.
+  2. A run that reaches a per-run limit parks behind a patch and resumes on a run grant. A spent period budget parks running runs at their next stage boundary and defers intake until a period grant or the reset.
+  3. The tenant alert carries Request increase with steps inside the band, Park all jobs, and Acknowledge. Park all jobs defers intake and lets running runs finish, until Resume jobs, a grant, or the reset.
+  4. The administrator alert carries Approve and Deny. A request above the band is refused with the statement that the configured limit must change. Every request, grant, denial, pause, and resume is audited.
+- **Test scenarios:**
+  - A run at its cost limit parks, an approved grant resumes it, and a denied grant leaves it parked with the tenant told.
+  - A request above the step or period band is refused.
+  - Park all jobs defers intake and lets a running run finish.
+  - A spent period budget parks a running run at its next stage boundary, and the reset resumes it.
+- **Verification:** `uv run pytest tests/unit` passes, including the workflow replay tests.
 
 ---
 

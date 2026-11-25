@@ -7,6 +7,10 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 
 RESUME_SIGNAL = "resume"
+RESUME_MODEL_PATH_UPDATE = "resume_model_path"
+RESUME_LIMIT_PARK_UPDATE = "resume_limit_park"
+REFRESH_PARK_BUTTONS_UPDATE = "refresh_park_buttons"
+SUSPENSION_STATE_QUERY = "suspension_state"
 
 SUSPEND_STATE_ATTR = "SuspendState"
 SUSPEND_REASON_ATTR = "SuspendReason"
@@ -22,6 +26,8 @@ class SuspendReason(StrEnum):
     AWAITING_DEPENDENCY = "awaiting_dependency"
     AWAITING_PR_CLOSE = "awaiting_pr_close"
     AWAITING_HUMAN = "awaiting_human"
+    MODEL_UNAVAILABLE = "model_unavailable"
+    LIMIT_REACHED = "limit_reached"
 
 
 class ResumeOn(StrEnum):
@@ -31,6 +37,8 @@ class ResumeOn(StrEnum):
     BUDGET_RAISED = "budget_raised"
     DEPENDENCY_READY = "dependency_ready"
     PR_CLOSED = "pr_closed"
+    MODEL_RESTORED = "model_restored"
+    LIMIT_GRANTED = "limit_granted"
 
 
 _DEFAULT_RESUME_ON = {
@@ -41,6 +49,8 @@ _DEFAULT_RESUME_ON = {
     SuspendReason.AWAITING_DEPENDENCY: ResumeOn.DEPENDENCY_READY,
     SuspendReason.AWAITING_PR_CLOSE: ResumeOn.PR_CLOSED,
     SuspendReason.AWAITING_HUMAN: ResumeOn.HUMAN_APPROVAL,
+    SuspendReason.MODEL_UNAVAILABLE: ResumeOn.MODEL_RESTORED,
+    SuspendReason.LIMIT_REACHED: ResumeOn.LIMIT_GRANTED,
 }
 
 

@@ -3,11 +3,19 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import replace
+from datetime import UTC, datetime
 
 import pytest
 from scripts.config import Settings
 from services.integration.jira.credentials import build_single_project_resolver
-from services.integration.slack.messages import ParkContext, SlackAlert, alert_payload
+from services.integration.slack.messages import (
+    ACTIONS_BLOCK,
+    ParkContext,
+    PostState,
+    SlackAlert,
+    alert_payload,
+    status_blocks,
+)
 from services.integration.slack.tokens import verify_action_token
 from services.integration.tickets.factory import ticket_url
 from services.operator_remedy import Remedy
@@ -207,3 +215,49 @@ def test_a_rebar_ticket_and_an_unsafe_link_leave_the_issue_key_unlinked():
 
     assert ticket_url("ADSER-24", Settings(ticket_backend="rebar")) == ""
     assert blocks[0]["text"]["text"].startswith("*ADSER-24* parked")
+
+
+CONTENT = [
+    {"type": "section", "text": {"type": "mrkdwn", "text": "*Model path unavailable*"}},
+    {"type": "section", "text": {"type": "mrkdwn", "text": "*Failing hop:* Bedrock connection"}},
+]
+BUTTONS = {"type": "actions", "block_id": ACTIONS_BLOCK, "elements": [{"type": "button"}]}
+EARLY = datetime(2026, 11, 25, 2, 29, tzinfo=UTC)
+LATE = datetime(2026, 11, 25, 3, 5, tzinfo=UTC)
+
+
+def _line(blocks, state: PostState) -> str:
+    [block] = [block for block in blocks if block.get("block_id") == state.block_id]
+    return block["elements"][0]["text"]
+
+
+def test_an_acknowledgement_keeps_the_buttons_under_its_line():
+    blocks = status_blocks(
+        [*CONTENT, BUTTONS], PostState.ACKNOWLEDGED, actor="slack:E1/U1", at=EARLY
+    )
+
+    assert blocks[:2] == CONTENT and blocks[-1] == BUTTONS
+    assert blocks[2]["elements"][0]["text"] == "Acknowledged by <@U1> at 2026-11-25 02:29 UTC."
+
+
+def test_a_later_state_replaces_its_own_line_and_keeps_the_acknowledgement():
+    first = status_blocks(
+        [*CONTENT, BUTTONS], PostState.ACKNOWLEDGED, actor="slack:E1/U1", at=EARLY
+    )
+    again = status_blocks(first, PostState.ACKNOWLEDGED, actor="slack:E1/U2", at=LATE)
+    resolved = status_blocks(again, PostState.RESOLVED, actor="slack:E1/U1", at=EARLY)
+    final = status_blocks(resolved, PostState.RESOLVED, actor="slack:E1/U2", at=LATE)
+
+    assert final[:2] == CONTENT
+    assert not any(block["type"] == "actions" for block in final)
+    assert _line(final, PostState.ACKNOWLEDGED) == "Acknowledged by <@U2> at 2026-11-25 03:05 UTC."
+    assert _line(final, PostState.RESOLVED) == "Resolved by <@U2> at 2026-11-25 03:05 UTC."
+    assert len(final) == 4
+
+
+def test_a_status_line_escapes_its_prose_and_names_a_non_slack_actor_in_plain_words():
+    blocks = status_blocks(CONTENT, PostState.RESTARTED, actor="ops@example.com", note="<@U9> & co")
+
+    assert (
+        _line(blocks, PostState.RESTARTED) == "Restarted by ops@example.com. &lt;@U9&gt; &amp; co"
+    )

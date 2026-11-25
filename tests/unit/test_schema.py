@@ -17,6 +17,10 @@ EXPECTED_TABLES = {
     "suspended_flows",
     "usage_metrics",
     "run_file_impact",
+    "slack_approver_groups",
+    "model_path_health",
+    "limit_grants",
+    "tenant_pauses",
 }
 
 
@@ -68,3 +72,8 @@ def test_evidence_is_content_addressed_per_execution():
     }
     assert unique_cols == {("execution_id", "content_hash")}
     assert not evidence.c.content_hash.unique
+
+
+def test_slack_approver_groups_keyed_by_tenant_and_group():
+    groups = metadata.tables["agent_platform.slack_approver_groups"]
+    assert tuple(c.name for c in groups.primary_key.columns) == ("tenant", "group_id")

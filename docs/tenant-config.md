@@ -28,6 +28,8 @@ The platform's config sits in `config/local/` in a checkout, and in the director
 
 `tickets_isolation.yaml` names the evidence and audit buckets and writer roles that no tenant's rebar ticket store may reuse. Validation compares each tenant's `tickets.yaml` with it and refuses a `tickets.yaml` that sets `isolation`. In AWS the operator writes `tickets_isolation.yaml` into `container_config_dir` beside the other platform files.
 
+`platform-escalation.yaml` names the platform administrators. On a host it sits in `config/platform/`, and a copy in `config/local/` takes precedence. `inv k8s-reload` projects it into `/app/config/local` of the activity and review workers, the inbound webhook, the Slack posting service, and the `deployment-validate` CronJob. In AWS the operator writes it into `container_config_dir`, Terraform carries it in `environment_config` to the `platform-config` ConfigMap, and each pod reads it from `PLATFORM_ENV_CONFIG_DIR`. A change to it changes the `agentic-dev-platform/config-hash` annotation, so the next apply rolls the pods that read it.
+
 The files a bundle may hold are listed below.
 
 | File | What it holds |

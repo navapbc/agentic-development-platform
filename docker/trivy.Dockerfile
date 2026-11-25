@@ -57,4 +57,5 @@ RUN dnf -y --releasever="${AL2023_RELEASE}" upgrade \
 COPY --from=trivy /out/trivy /usr/local/bin/trivy
 RUN cis-harden
 USER 10001:10001
+HEALTHCHECK NONE
 ENTRYPOINT ["/usr/local/bin/trivy"]

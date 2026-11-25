@@ -10,9 +10,14 @@
 # content is full or minimal, and defaults to minimal under the government profile and full
 # otherwise. api_base_url defaults to https://slack.com/api/, and https://slack-gov.com/api/
 # serves GovSlack. token_ttl_hours is how long an action button stays valid after a park,
-# 72 by default. approved_hosts lists the Slack hosts a government tenant may reach. allowlist
-# names, for the gate and repair decision kinds, the Slack users who may decide. An entry
-# without organization_id belongs to the organization_id above.
+# 72 by default. approved_hosts lists the Slack hosts a government tenant may reach.
+#
+# allowlist names who may decide each decision kind, gate and repair. A kind is channel, which
+# admits anyone in the channel and organization above, or a list of entries. Each entry is a
+# user_id, a Slack member ID, or a group_id, a Slack user group ID that starts with S. A group_id
+# entry takes team_id, the ID of the workspace that owns the group, when the app is installed at
+# the Enterprise Grid org level. An entry without organization_id belongs to the organization_id
+# above. A kind the file omits admits nobody, and the kinds name at most 10 distinct groups.
 #
 # app is own, the default, or shared. With own, the tenant names its own Slack app as below. With
 # shared, the tenant uses the platform's shared Slack app, defined in slack-shared-app.yaml in the
@@ -38,7 +43,9 @@ slack:
   token_ttl_hours: 72
   approved_hosts: []
   allowlist:
-    gate:
-      - user_id: U0000000000
-    repair:
-      - user_id: U0000000000
+    gate: channel
+    repair: channel
+    # repair:
+    #   - user_id: U0000000000
+    #   - group_id: S0000000000
+    #     team_id: T0000000000

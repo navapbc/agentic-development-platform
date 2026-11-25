@@ -18,6 +18,12 @@ def platform_env_path(root: Path | None = None) -> Path:
     return (root or CHECKOUT_ROOT) / PLATFORM_ENV_FILE
 
 
+def platform_env_values() -> dict[str, str | None]:
+    from dotenv import dotenv_values
+
+    return dotenv_values(platform_env_path())
+
+
 def tenant_env_path(tenant: str, root: Path | None = None) -> Path:
     return (root or CHECKOUT_ROOT) / TENANTS_DIRECTORY / f"{tenant}.env"
 

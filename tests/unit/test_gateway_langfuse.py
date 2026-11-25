@@ -183,16 +183,12 @@ async def test_invoke_model_resolves_a_system_prompt(monkeypatch) -> None:
     reset_for_testing()
 
 
-@pytest.mark.asyncio
-async def test_invoke_model_names_the_gateway_when_it_cannot_be_reached(monkeypatch) -> None:
-    """A bare ConnectError names a port, not the service the operator has to start."""
-    import httpx
+def _refusing_gateway(monkeypatch, error: Exception):
     from services.orchestration.temporal_activities import bedrock
-    from temporalio.exceptions import ApplicationError
 
     class _RefusingClient(_FakeClient):
         async def post(self, url: str, json: dict, headers: dict) -> _FakeResponse:
-            raise httpx.ConnectError("[Errno 61] Connection refused")
+            raise error
 
     monkeypatch.setattr(bedrock.httpx, "AsyncClient", lambda **_: _RefusingClient({}, {}))
     monkeypatch.setattr(
@@ -200,6 +196,15 @@ async def test_invoke_model_names_the_gateway_when_it_cannot_be_reached(monkeypa
         "get_settings",
         lambda: SimpleNamespace(litellm_base_url="http://localhost:4000", litellm_master_key=""),
     )
+    return bedrock
+
+
+@pytest.mark.asyncio
+async def test_invoke_model_names_the_gateway_when_its_answer_breaks_off(monkeypatch) -> None:
+    import httpx
+    from temporalio.exceptions import ApplicationError
+
+    bedrock = _refusing_gateway(monkeypatch, httpx.ReadError("connection reset by peer"))
 
     with pytest.raises(ApplicationError) as caught:
         await bedrock.invoke_model(
@@ -210,8 +215,37 @@ async def test_invoke_model_names_the_gateway_when_it_cannot_be_reached(monkeypa
     assert "LiteLLM model gateway" in message
     assert "http://localhost:4000" in message
     assert "inv local-up" in message
-    assert "Connection refused" in message
+    assert "connection reset by peer" in message
     assert caught.value.type == "LiteLLMUnreachable"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [
+        "[Errno 61] Connection refused",
+        "[Errno 8] nodename nor servname provided, or not known",
+    ],
+)
+async def test_invoke_model_fails_at_once_when_it_cannot_connect_to_the_gateway(
+    monkeypatch, error: str
+) -> None:
+    import httpx
+    from services.orchestration.model_path import model_unavailable_hop
+    from temporalio.exceptions import ApplicationError
+
+    bedrock = _refusing_gateway(monkeypatch, httpx.ConnectError(error))
+
+    with pytest.raises(ApplicationError) as caught:
+        await bedrock.invoke_model(
+            bedrock.ModelRequest(logical_model="planning-model", prompt="hello")
+        )
+
+    assert caught.value.type == "ModelUnavailable"
+    assert caught.value.non_retryable is True
+    assert model_unavailable_hop(caught.value) == "litellm"
+    assert "http://localhost:4000" in str(caught.value)
+    assert error in str(caught.value)
 
 
 def test_token_cost_discounts_cached_tokens():

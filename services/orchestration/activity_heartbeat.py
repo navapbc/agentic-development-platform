@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from temporalio import activity, workflow
@@ -73,3 +73,11 @@ class _DefaultHeartbeatTimeoutOutbound(WorkflowOutboundInterceptor):
         if input.heartbeat_timeout is None:
             input = dataclasses.replace(input, heartbeat_timeout=ACTIVITY_HEARTBEAT_TIMEOUT)
         return super().start_activity(input)
+
+
+def activity_seconds_left(info: activity.Info) -> float | None:
+    """Return the seconds left of the attempt's start-to-close timeout, or None without one."""
+    if info.start_to_close_timeout is None:
+        return None
+    elapsed = (datetime.now(UTC) - info.started_time).total_seconds()
+    return info.start_to_close_timeout.total_seconds() - elapsed

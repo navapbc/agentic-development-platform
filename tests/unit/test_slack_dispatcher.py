@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from services.integration.slack.dispatcher import (
+    GROUP_STALE_SECONDS,
     REFUSAL_EVENT,
+    ApproverGroup,
     DecisionRejected,
     PostgresDecisionRecords,
     RecordedDecision,
@@ -19,11 +23,12 @@ from services.integration.slack.dispatcher import (
     refuse_unrouted,
 )
 from services.integration.slack.tokens import ActionToken, park_digest, sign_action_token
-from services.orchestration.escalation import SlackSettings, SlackUser
+from services.orchestration.escalation import Approvers, SlackGroup, SlackSettings, SlackUser
 from services.orchestration.temporal_workflows.draft_pull_request import (
     DraftPullRequestWorkflow,
     ParkDecisionOutcome,
 )
+from services.orchestration.webhook.slack_events import follow_up_message
 from temporalio.client import WorkflowUpdateRPCTimeoutOrCancelledError
 
 KEY = b"alpha-action-key"
@@ -40,8 +45,8 @@ def _settings(**overrides) -> SlackSettings:
         "profile": "private",
         "content": "full",
         "allowlist": {
-            "gate": (SlackUser("E-ORG", "U-LEAD"), SlackUser("E-ORG", "U-OTHER")),
-            "repair": (SlackUser("E-ORG", "U-OPS"),),
+            "gate": Approvers(users=(SlackUser("E-ORG", "U-LEAD"), SlackUser("E-ORG", "U-OTHER"))),
+            "repair": Approvers(users=(SlackUser("E-ORG", "U-OPS"),)),
         },
     }
     return SlackSettings(**{**fields, **overrides})
@@ -78,6 +83,7 @@ class _Decisions:
     delay: float = 0.0
     waiting: str = ""
     applied: list[tuple] = field(default_factory=list)
+    refreshed: list[tuple] = field(default_factory=list)
 
     async def apply(self, workflow_id, update, args, update_id):
         self.applied.append((workflow_id, update, tuple(args), update_id))
@@ -91,12 +97,20 @@ class _Decisions:
     async def waiting_park(self, workflow_id):
         return self.waiting
 
+    async def refresh(self, workflow_id, park_key, update_id):
+        self.refreshed.append((workflow_id, park_key, update_id))
+        if self.reject:
+            raise DecisionRejected("stale")
+        return True
+
 
 @dataclass
 class _Records:
     tenants: dict[str, str] = field(default_factory=lambda: {"intake-1a2b3c4d": "alpha"})
     decided: dict[str, RecordedDecision] = field(default_factory=dict)
     refusals: list = field(default_factory=list)
+    groups: dict[tuple[str, str], ApproverGroup] = field(default_factory=dict)
+    group_reads: list[tuple[str, tuple[str, ...]]] = field(default_factory=list)
 
     async def workflow_tenant(self, execution_id, workflow_id):
         return self.tenants.get(execution_id)
@@ -106,6 +120,14 @@ class _Records:
 
     async def record_refusal(self, refusal):
         self.refusals.append(refusal)
+
+    async def approver_groups(self, tenant, group_ids):
+        self.group_reads.append((tenant, tuple(group_ids)))
+        return {
+            group_id: self.groups[(tenant, group_id)]
+            for group_id in group_ids
+            if (tenant, group_id) in self.groups
+        }
 
 
 def _dispatcher(decisions=None, records=None, settings=None, tenant="alpha", bound=2.0):
@@ -137,7 +159,7 @@ async def test_an_allowlisted_click_applies_the_decision_to_the_tokens_park():
         (
             WORKFLOW,
             "apply_gate_decision",
-            (PARK, True, "slack:E-ORG/U-LEAD", "slack"),
+            (PARK, True, "slack:E-ORG/U-LEAD", "slack", "user"),
             f"slack-decision:alpha:{park_digest(PARK)}",
         )
     ]
@@ -190,10 +212,102 @@ async def test_a_click_that_fails_a_check_changes_nothing_and_is_audited(click, 
     assert [entry.reason for entry in records.refusals] == [refusal]
     stored = repr(records.refusals[0])
     assert "v1." not in stored and "beta" not in stored and "beta" not in result.reply
+    assert _names_no_command(result.reply)
+
+
+def _names_no_command(reply: str) -> bool:
+    return "command" not in reply.lower() and "Next step" not in reply
 
 
 def _token_for(tenant: str) -> ActionToken:
     return ActionToken(tenant, "intake-1a2b3c4d", WORKFLOW, PARK, "gate", ("approve",), 2**40)
+
+
+GROUP = "S0123456789"
+REPAIR_PARK = "intake-1a2b3c4d:repair:3:2"
+
+
+def _group(*members: str, age_seconds: float = 0) -> ApproverGroup:
+    return ApproverGroup(
+        members=frozenset(members),
+        refreshed_at=datetime.now(UTC) - timedelta(seconds=age_seconds),
+    )
+
+
+def _repair_click(user: str) -> SlackClick:
+    value = _value(park_key=REPAIR_PARK, kind="repair", actions=("retry",))
+    return _click(value, action="retry", user=user)
+
+
+def _repair_settings(*approvers: SlackUser | SlackGroup) -> SlackSettings:
+    users = tuple(entry for entry in approvers if isinstance(entry, SlackUser))
+    groups = tuple(entry for entry in approvers if isinstance(entry, SlackGroup))
+    return _settings(allowlist={"repair": Approvers(users=users, groups=groups)})
+
+
+async def test_a_kind_in_channel_mode_admits_anyone_of_the_organization_in_the_channel():
+    decisions = _Decisions(outcome=ACCEPTED)
+    records = _Records()
+    settings = _settings(allowlist={"gate": Approvers(anyone_in_channel=True)})
+    dispatcher = _dispatcher(decisions, records, settings)
+
+    admitted = await dispatcher.dispatch(_click(user="U-ANYONE"))
+    connect = await dispatcher.dispatch(_click(user="U-ANYONE", organization="E-PARTNER"))
+
+    assert admitted.refusal is None
+    assert decisions.applied[0][2] == (PARK, True, "slack:E-ORG/U-ANYONE", "slack", "channel")
+    assert connect.refusal is Refusal.WORKSPACE
+    assert len(decisions.applied) == 1
+    assert records.group_reads == []
+
+
+async def test_a_named_group_admits_a_fresh_member_and_refuses_a_stale_one_as_stale():
+    decisions = _Decisions(outcome=ParkDecisionOutcome("retry", "x", "slack", applied=True))
+    records = _Records(groups={("alpha", GROUP): _group("U-MEMBER")})
+    dispatcher = _dispatcher(decisions, records, _repair_settings(SlackGroup("E-ORG", GROUP)))
+
+    member = await dispatcher.dispatch(_repair_click("U-MEMBER"))
+    outsider = await dispatcher.dispatch(_repair_click("U-OUTSIDER"))
+    records.groups[("alpha", GROUP)] = _group("U-MEMBER", age_seconds=GROUP_STALE_SECONDS + 1)
+    stale = await dispatcher.dispatch(_repair_click("U-MEMBER"))
+    records.groups[("alpha", GROUP)] = _group("U-MEMBER")
+    refreshed = await dispatcher.dispatch(_repair_click("U-MEMBER"))
+
+    assert member.refusal is None and refreshed.refusal is None
+    assert [args[4] for _, update, args, _ in decisions.applied] == [f"group:{GROUP}"] * 2
+    assert {update for _, update, _, _ in decisions.applied} == {"apply_repair_decision"}
+    assert outsider.refusal is Refusal.NOT_ALLOWED
+    assert stale.refusal is Refusal.GROUP_STALE
+    assert "ten minutes" in stale.reply
+    assert _names_no_command(stale.reply)
+    assert [entry.reason for entry in records.refusals] == [
+        Refusal.NOT_ALLOWED,
+        Refusal.GROUP_STALE,
+    ]
+
+
+async def test_a_mixed_list_admits_a_named_user_whose_group_record_is_stale():
+    decisions = _Decisions(outcome=ParkDecisionOutcome("retry", "x", "slack", applied=True))
+    records = _Records(groups={("alpha", GROUP): _group("U-OPS", age_seconds=3600)})
+    settings = _repair_settings(SlackUser("E-ORG", "U-OPS"), SlackGroup("E-ORG", GROUP))
+
+    result = await _dispatcher(decisions, records, settings).dispatch(_repair_click("U-OPS"))
+
+    assert result.refusal is None
+    assert decisions.applied[0][2][4] == "user"
+    assert records.group_reads == []
+
+
+async def test_another_tenants_record_of_a_group_with_the_same_id_is_not_read():
+    decisions = _Decisions(outcome=ACCEPTED)
+    records = _Records(groups={("beta", GROUP): _group("U-MEMBER")})
+    dispatcher = _dispatcher(decisions, records, _repair_settings(SlackGroup("E-ORG", GROUP)))
+
+    result = await dispatcher.dispatch(_repair_click("U-MEMBER"))
+
+    assert result.refusal is Refusal.NOT_ALLOWED
+    assert records.group_reads == [("alpha", (GROUP,))]
+    assert decisions.applied == []
 
 
 async def test_a_token_naming_another_tenants_workflow_reaches_no_workflow():
@@ -263,6 +377,7 @@ async def test_a_click_on_a_channel_no_tenant_names_is_refused_with_its_route_an
 
     assert result.refusal is Refusal.UNROUTED
     assert not result.accepted
+    assert _names_no_command(result.reply)
     [statement] = engine.transaction.statements
     values = statement.compile().params
     assert values["event_type"] == REFUSAL_EVENT
@@ -273,6 +388,28 @@ async def test_a_click_on_a_channel_no_tenant_names_is_refused_with_its_route_an
         "route": "/webhook/slack/_shared",
         "channel": "C3",
     }
+
+
+class _Rows:
+    def all(self):
+        return []
+
+
+class _Connection(_Transaction):
+    async def execute(self, statement):
+        self.statements.append(statement)
+        return _Rows()
+
+
+async def test_the_postgres_group_read_selects_only_the_named_groups_of_the_given_tenant():
+    connection = _Connection()
+    engine = _Engine()
+    engine.connect = lambda: connection
+
+    assert await PostgresDecisionRecords(engine).approver_groups("alpha", [GROUP]) == {}
+
+    [statement] = connection.statements
+    assert sorted(statement.compile().params.values(), key=str) == [[GROUP], "alpha"]
 
 
 async def test_a_click_on_an_earlier_park_is_refused_and_names_the_earlier_park():
@@ -434,3 +571,108 @@ async def test_a_click_after_the_run_closed_is_refused_as_not_waiting():
 
     assert result.refusal is Refusal.NOT_WAITING
     assert [refusal.reason for refusal in records.refusals] == [Refusal.NOT_WAITING]
+
+
+PARK_POST = (
+    {"type": "section", "text": {"type": "mrkdwn", "text": "*ADSER-24* parked at security-review"}},
+    {"type": "section", "text": {"type": "mrkdwn", "text": "*Reason:* review_blocked"}},
+    {"type": "actions", "block_id": "adp-actions", "elements": [{"type": "button"}]},
+)
+
+
+@pytest.mark.parametrize(
+    ("kind", "park", "action", "decision", "user", "label"),
+    [
+        ("gate", PARK, "approve", "approved", "U-LEAD", "Approved"),
+        ("gate", PARK, "reject", "rejected", "U-LEAD", "Rejected"),
+        ("repair", REPAIR_PARK, "retry", "retry", "U-OPS", "Retry requested"),
+        ("repair", REPAIR_PARK, "abandon", "abandon", "U-OPS", "Abandoned"),
+    ],
+)
+async def test_a_decided_post_keeps_its_body_and_replaces_its_buttons_with_a_mention_line(
+    kind, park, action, decision, user, label
+):
+    actor = f"slack:E-ORG/{user}"
+    decisions = _Decisions(outcome=ParkDecisionOutcome(decision, actor, "slack", applied=True))
+    value = _value(park_key=park, kind=kind, actions=(action,))
+    click = _click(value, action=action, user=user, message_blocks=PARK_POST)
+
+    message = follow_up_message(await _dispatcher(decisions).dispatch(click))
+
+    blocks = message["blocks"]
+    assert message["replace_original"] is True
+    assert blocks[:2] == list(PARK_POST[:2])
+    assert not any(block["type"] == "actions" for block in blocks)
+    assert blocks[-1]["elements"][0]["text"].startswith(f"{label} by <@{user}> at ")
+    assert "slack:" not in json.dumps(blocks) and "&lt;@" not in json.dumps(blocks)
+
+
+async def test_a_decided_post_without_message_blocks_renders_its_title_and_the_status_line():
+    click = _click(message_text="ADSER-24 parked <now>")
+
+    message = follow_up_message(await _dispatcher(_Decisions(outcome=ACCEPTED)).dispatch(click))
+
+    title, line = message["blocks"]
+    assert title["text"]["text"] == "*ADSER-24 parked &lt;now&gt;*"
+    assert line["elements"][0]["text"].startswith("Approved by <@U-LEAD> at ")
+
+
+def _expired_value(**overrides) -> str:
+    return _value(expires_at=int(time.time()) - 5, **overrides)
+
+
+async def test_an_approvers_expired_clicks_ask_the_run_once_a_minute_for_fresh_buttons(
+    monkeypatch,
+):
+    from services.integration.slack import dispatcher as dispatcher_module
+
+    monkeypatch.setattr(dispatcher_module.time, "time", lambda: 1_700_000_030.0)
+    decisions = _Decisions(outcome=ACCEPTED)
+    records = _Records()
+    value = sign_action_token(
+        ActionToken("alpha", "intake-1a2b3c4d", WORKFLOW, PARK, "gate", ("approve",), 1_000), KEY
+    )
+
+    results = [await _dispatcher(decisions, records).dispatch(_click(value)) for _ in range(3)]
+
+    assert [result.reply for result in results] == [
+        "These buttons expired. Fresh buttons are posted in this message's thread."
+    ] * 3
+    assert {result.refusal for result in results} == {Refusal.EXPIRED}
+    assert decisions.applied == []
+    assert len({update_id for _, _, update_id in decisions.refreshed}) == 1
+    assert {(workflow, park) for workflow, park, _ in decisions.refreshed} == {(WORKFLOW, PARK)}
+    assert {entry.park_digest for entry in records.refusals} == {park_digest(PARK)}
+
+
+@pytest.mark.parametrize(
+    "click",
+    [
+        lambda: _click(_expired_value(), user="U-OPS"),
+        lambda: _click(_expired_value(), channel="C-ELSEWHERE"),
+        lambda: _click(_expired_value(tenant="beta")),
+    ],
+)
+async def test_an_expired_click_the_park_would_not_admit_is_refused_and_refreshes_nothing(click):
+    decisions = _Decisions(outcome=ACCEPTED)
+    records = _Records()
+
+    result = await _dispatcher(decisions, records).dispatch(click())
+
+    assert result.refusal is Refusal.EXPIRED
+    assert result.reply == "This action has expired, so it was not applied."
+    assert decisions.refreshed == []
+    assert [entry.reason for entry in records.refusals] == [Refusal.EXPIRED]
+
+
+async def test_an_expired_click_on_a_decided_park_gets_the_decided_refusal():
+    token = ActionToken("alpha", "intake-1a2b3c4d", WORKFLOW, PARK, "gate", ("approve",), 0)
+    decisions = _Decisions(reject=True)
+    records = _Records(
+        decided={token.decision_event_id: RecordedDecision("approved", "slack:E-ORG/U-OTHER")}
+    )
+
+    result = await _dispatcher(decisions, records).dispatch(_click(_expired_value()))
+
+    assert result.refusal is Refusal.ALREADY_DECIDED
+    assert len(decisions.refreshed) == 1

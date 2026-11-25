@@ -31,4 +31,5 @@ RUN --mount=from=uv,source=/uv,target=/usr/local/bin/uv \
 WORKDIR /src
 RUN cis-harden
 USER 10001:10001
+HEALTHCHECK NONE
 CMD ["semgrep", "--help"]

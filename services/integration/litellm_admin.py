@@ -13,8 +13,8 @@ import hmac
 import logging
 import time
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, replace
+from typing import Any, cast
 
 import httpx
 from observability.gateway import tenant_tag
@@ -204,10 +204,11 @@ class LiteLLMAdminClient:
             secrets=(key,),
         )
 
-    async def update_key(self, *, key: str, duration: str) -> None:
-        await self._request(
-            "POST", "/key/update", json={"key": key, "duration": duration}, secrets=(key,)
-        )
+    async def update_key(self, *, key: str, duration: str, max_budget: float | None = None) -> None:
+        body: dict[str, Any] = {"key": key, "duration": duration}
+        if max_budget is not None:
+            body["max_budget"] = max_budget
+        await self._request("POST", "/key/update", json=body, secrets=(key,))
 
     async def delete_key(self, key: str) -> bool:
         """Delete the key and return whether it existed."""
@@ -326,8 +327,12 @@ async def ensure_run_model_key(
     *,
     settings: Any = None,
     client: LiteLLMAdminClient | None = None,
+    grants: Any = None,
 ) -> str:
     """Issue or renew the run's virtual key and return it for a pod to present.
+
+    ``grants`` is the limit grant store whose active grants raise the run key budget and the
+    tenant team budget.
 
     A key that exists has its expiry pushed out again, so a run parked for longer than the
     access TTL regains model access when it resumes.
@@ -345,17 +350,21 @@ async def ensure_run_model_key(
         )
     key = derive_run_model_key(_require_master_key(resolved), execution_id)
     admin = client or LiteLLMAdminClient.from_settings(resolved)
-    await ensure_tenant_team(admin, tenant, tenant_team_limits(resolved))
+    run_budget, team_budget = await _granted_budgets(resolved, tenant, execution_id, grants)
+    await ensure_tenant_team(
+        admin, tenant, replace(tenant_team_limits(resolved), max_budget=team_budget)
+    )
     duration = f"{resolved.run_model_access_ttl_seconds}s"
+    renewed_budget = run_budget if grants is not None else None
     if await admin.key_info(key) is not None:
-        await admin.update_key(key=key, duration=duration)
+        await admin.update_key(key=key, duration=duration, max_budget=renewed_budget)
         return key
     try:
         await admin.generate_key(
             key=key,
             alias=run_key_alias(execution_id),
             team_id=tenant,
-            max_budget=resolved.run_model_budget_usd,
+            max_budget=run_budget,
             duration=duration,
             metadata=run_key_metadata(tenant, execution_id),
         )
@@ -363,8 +372,33 @@ async def ensure_run_model_key(
         # A concurrent activity of the same run issued the key first.
         if exc.status != httpx.codes.BAD_REQUEST or await admin.key_info(key) is None:
             raise
-        await admin.update_key(key=key, duration=duration)
+        await admin.update_key(key=key, duration=duration, max_budget=renewed_budget)
     return key
+
+
+async def _granted_budgets(
+    settings: Any, tenant: str, execution_id: str, grants: Any
+) -> tuple[float, float]:
+    run_budget = float(settings.run_model_budget_usd)
+    team_budget = float(settings.tenant_model_budget_usd)
+    if grants is None:
+        return run_budget, team_budget
+    from services.orchestration.limit_grants import effective_value
+
+    run_read, team_read = await asyncio.gather(
+        effective_value(
+            grants, tenant, "RUN_MODEL_BUDGET_USD", run_budget, execution_id=execution_id
+        ),
+        effective_value(grants, tenant, "TENANT_MODEL_BUDGET_USD", team_budget),
+        return_exceptions=True,
+    )
+    for read in (run_read, team_read):
+        if isinstance(read, Exception):
+            log.warning("could not read the limit grants of run %s (%s)", execution_id, read)
+            return run_budget, team_budget
+        if isinstance(read, BaseException):
+            raise read
+    return cast(float, run_read), cast(float, team_read)
 
 
 async def revoke_run_model_key(
@@ -453,9 +487,10 @@ class RunModelAccess:
     """The per-run key resolution a gate engine pod uses, bound to the worker's settings."""
 
     settings: Any = None
+    grants: Any = None
 
     async def key_for(self, execution_id: str) -> str:
-        return await ensure_run_model_key(execution_id, settings=self.settings)
+        return await ensure_run_model_key(execution_id, settings=self.settings, grants=self.grants)
 
     async def budget_stop(self, execution_id: str, failure_text: str = "") -> str:
         return await run_model_budget_stop(

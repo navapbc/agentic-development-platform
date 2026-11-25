@@ -7,7 +7,7 @@ from typing import Any
 
 from services.orchestration.gates.contract import (
     BLOCK,
-    PASS,
+    PASSED,
     REVIEW,
     SCANNER,
     Gate,
@@ -43,7 +43,7 @@ def review_gate(name: str, review_fn: ReviewFn) -> Gate:
         return GateResult(
             name=name,
             kind=REVIEW,
-            verdict=BLOCK if outcome.verdict == BLOCK else PASS,
+            verdict=BLOCK if outcome.verdict == BLOCK else PASSED,
             findings=findings,
             summary=outcome.summary,
             attestation_hash=outcome.attestation_hash,
@@ -95,7 +95,7 @@ def scanner_gate(name: str, scanner_factory: ScannerFactory) -> Gate:
         return GateResult(
             name=name,
             kind=SCANNER,
-            verdict=BLOCK if blocking else PASS,
+            verdict=BLOCK if blocking else PASSED,
             findings=findings,
             summary=f"{len(findings)} findings over {len(raw)} scanned",
         )
@@ -192,7 +192,9 @@ def engine_review_backend(config: Any, profile: str = "") -> Any:
         )
         litellm_base_url = settings.sandbox_litellm_base_url
         litellm_api_key = ""
-        run_model_access = RunModelAccess(settings)
+        from services.orchestration.limit_grants import PostgresLimitGrants
+
+        run_model_access = RunModelAccess(settings, grants=PostgresLimitGrants())
     return AiReviewScanner(
         name=config.name,
         config=config,

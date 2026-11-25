@@ -128,9 +128,11 @@ def _external_token(config: registry_mirrors.RegistryConfig | None) -> str | Non
     """Return the external registry's token, or None for a config that authenticates with ECR."""
     if config is None or config.mode != registry_mirrors.EXTERNAL:
         return None
-    token = os.environ.get(registry_mirrors.TOKEN_ENV)
+    token = os.environ.get(registry_mirrors.REGISTRY_CREDENTIAL_ENV)
     if not token:
-        raise RegistryAuthError(f"{registry_mirrors.TOKEN_ENV} holds no registry token")
+        raise RegistryAuthError(
+            f"{registry_mirrors.REGISTRY_CREDENTIAL_ENV} holds no registry token"
+        )
     return token
 
 

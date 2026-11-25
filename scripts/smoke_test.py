@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import json
 from datetime import UTC, datetime
 
@@ -12,9 +11,9 @@ from services import process
 from services.aws_credentials import expiry_of, expiry_report
 from sqlalchemy import create_engine, literal, select
 
-from scripts.config import Settings, get_settings, to_host_url
-from scripts.db_reset import _sync_url
-from scripts.k8s_cluster import deployments, exec_argv, kubectl, namespaced, tenants
+from scripts.aws_login import CREDENTIALS_OBJECT, stored_record
+from scripts.config import Settings, alembic_database_url, get_settings, to_host_url
+from scripts.k8s_cluster import deployments, exec_argv, kubectl, tenants
 from scripts.tenant_render import sandbox_namespace, worker_namespace
 
 
@@ -80,17 +79,9 @@ def _opa_on_loopback(settings: Settings) -> None:
 
 
 def _credentials(settings: Settings) -> str:
-    encoded = _kubectl_output(
-        namespaced(
-            settings,
-            "get",
-            "secret",
-            "aws-credentials",
-            "-o",
-            "jsonpath={.data.credentials\\.json}",
-        )
-    )
-    record = json.loads(base64.b64decode(encoded))
+    record = stored_record(settings)
+    if record is None:
+        raise RuntimeError(f"the {CREDENTIALS_OBJECT} Secret is missing. Run inv aws-login")
     now = datetime.now(UTC)
     _, report = expiry_report(record, settings.aws_credentials_warn_seconds, now)
     expiry = expiry_of(record)
@@ -166,7 +157,7 @@ def main() -> int:
     results: list[bool] = []
 
     def db_check() -> None:
-        engine = create_engine(_sync_url(), future=True)
+        engine = create_engine(alembic_database_url(), future=True)
         with engine.connect() as conn:
             conn.execute(select(literal(1)))
             conn.execute(select(executions.c.execution_id).limit(1))

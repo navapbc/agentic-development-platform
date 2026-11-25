@@ -9,6 +9,7 @@ resources:
   - ../review-worker.yaml
   - ../litellm.yaml
   - ../sandbox.yaml
+  - ../deployment-validate.yaml
   - ../../../openhands/policies/networkpolicy-default-deny-egress.yaml
   - ../../../openhands/policies/networkpolicy-allow-egress.yaml
 
@@ -235,3 +236,31 @@ patches:
                 secret:
                   secretName: aws-credentials
                   optional: true
+  - target:
+      kind: CronJob
+      name: deployment-validate
+    patch: |
+      apiVersion: batch/v1
+      kind: CronJob
+      metadata:
+        name: deployment-validate
+      spec:
+        jobTemplate:
+          spec:
+            template:
+              spec:
+                containers:
+                  - name: deployment-validate
+                    imagePullPolicy: IfNotPresent
+                    env:
+                      - name: AWS_CREDENTIALS_FILE
+                        value: /var/run/aws-credentials/credentials.json
+                    volumeMounts:
+                      - name: aws-credentials
+                        mountPath: /var/run/aws-credentials
+                        readOnly: true
+                volumes:
+                  - name: aws-credentials
+                    secret:
+                      secretName: aws-credentials
+                      optional: true

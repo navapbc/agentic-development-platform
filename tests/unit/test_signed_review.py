@@ -55,7 +55,7 @@ def _input() -> ReviewInput:
 
 def _raw() -> RawReview:
     return RawReview(
-        verdict=Verdict.PASS,
+        verdict=Verdict.PASSED,
         provenance=[ModelProvenance(leg="finder", tier="review-model", model_id="m")],
         summary="clean",
     )

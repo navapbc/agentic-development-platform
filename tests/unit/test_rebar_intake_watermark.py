@@ -6,9 +6,11 @@ from typing import Any
 
 import pytest
 from scripts.rebar_poll import AccessDecision, PollCursor
+from services.coordination.idempotency import InMemorySideEffectLedger
+from services.integration.jira.snapshot import TaskSnapshot, snapshot_id_for
 from services.orchestration.intake_reconciler import IntakeContext
 from services.orchestration.rebar_intake import reconcile_rebar_intake
-from tests.support import hermetic_settings
+from tests.support import ModelPathStub, capture_alerts, hermetic_settings, model_path_gate
 
 _ALLOWED = ("ticket_id", "status", "title")
 
@@ -148,3 +150,78 @@ async def test_a_ticket_that_becomes_admissible_later_is_still_seen() -> None:
 
     assert report.blocked == 1
     assert "rebar_poll_status_change" in audit.events()
+
+
+class _Starter:
+    def __init__(self) -> None:
+        self.started: list[str] = []
+
+    async def start(self, start) -> str:
+        self.started.append(start.issue_key)
+        return f"wf-{start.issue_key}"
+
+
+class _Seeder:
+    async def seed(self, *, execution_id: str, task_id: str, repo: str) -> None:
+        return None
+
+    async def abandon(self, *, execution_id: str, reason: str) -> None:
+        return None
+
+
+class _SnapshotStore:
+    async def persist(self, candidate) -> TaskSnapshot:
+        return TaskSnapshot(
+            snapshot_id=snapshot_id_for(candidate.execution_id, 1),
+            execution_id=candidate.execution_id,
+            task_id=candidate.task_id,
+            jira_project=candidate.jira_project,
+            jira_source=candidate.jira_source,
+            version=1,
+            content_hash=candidate.content_hash,
+            payload=candidate.payload,
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_ticket_deferred_on_an_unhealthy_model_path_is_read_again(monkeypatch) -> None:
+    capture_alerts(monkeypatch)
+    reader = _Reader([_ticket("A", status="open")])
+    watermark = _Watermark()
+    starter = _Starter()
+    path = ModelPathStub("credentials")
+    ledger = InMemorySideEffectLedger()
+    ctx = IntakeContext(
+        starter=starter,
+        alerter=_UNUSED,
+        ledger=ledger,
+        execution_seeder=_Seeder(),
+        snapshot_store=_SnapshotStore(),
+        github_allow=frozenset({"agentic-demo-service"}),
+        field_id="",
+        settings=hermetic_settings(),
+        model_path=model_path_gate(path, ledger=ledger),
+    )
+
+    async def _pass():
+        return await reconcile_rebar_intake(
+            reader=reader,
+            watermark=watermark,
+            audit=_Audit(),
+            access=_Access(),
+            allowed_fields=_ALLOWED,
+            ctx=ctx,
+            show_ticket=lambda ticket_id: _ticket(ticket_id, status="open"),
+            is_ready=lambda ticket_id: True,
+            project="ADEV",
+            default_repo="agentic-demo-service",
+        )
+
+    deferred = await _pass()
+    path.hop = ""
+    path.next_pass()
+    started = await _pass()
+
+    assert (deferred.deferred, deferred.started) == (1, 0)
+    assert (started.deferred, started.started) == (0, 1)
+    assert starter.started == ["A"]

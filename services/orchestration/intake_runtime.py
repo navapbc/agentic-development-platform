@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import structlog
@@ -13,9 +15,16 @@ from services.integration.github.git_auth import NO_AUTH, GitAuth
 from services.integration.jira.credentials import acceptance_field
 from services.operator_remedy import Remedy
 from services.orchestration.change_narrative import compose_commit_message
-from services.orchestration.execution_reconciler import ActiveExecution
+from services.orchestration.execution_reconciler import ORPHAN_RECLAIMED, ActiveExecution
 from services.orchestration.intake_base import UnresolvableBaseBranch, declared_issue_key
 from services.orchestration.intake_reconciler import IntakeContext, IntakeStart
+from services.orchestration.model_path import (
+    ModelPathEpisode,
+    ModelPathGate,
+    OutagePost,
+    PostgresModelPathEpisodes,
+    shared_probe,
+)
 
 _log = structlog.get_logger(__name__)
 
@@ -137,6 +146,170 @@ class NotificationsAlerter:
         )
 
 
+class ModelPathNotifier:
+    def __init__(self, settings: Any) -> None:
+        self._settings = settings
+
+    async def unavailable(
+        self, *, hop: str, detail: str, issue_key: str, episode: str = ""
+    ) -> list[OutagePost]:
+        from services.orchestration.model_path_alerts import send_model_path_unavailable_alert
+        from services.orchestration.notifications import render_admin_remedy
+        from services.orchestration.remedies import model_path_unavailable_remedy
+
+        posts = await asyncio.to_thread(
+            send_model_path_unavailable_alert,
+            hop=hop,
+            detail=detail,
+            issue_key=issue_key,
+            remedy=render_admin_remedy(model_path_unavailable_remedy(hop), self._settings),
+            settings=self._settings,
+            episode=episode,
+        )
+        return [
+            OutagePost(post.channel, post.ts, post.admin, post.owner_token, post.blocks)
+            for post in posts or ()
+        ]
+
+    async def recovered(
+        self,
+        *,
+        hop: str,
+        issue_key: str,
+        episode: ModelPathEpisode | None = None,
+        resolver: str = "",
+    ) -> None:
+        from services.orchestration.model_path_alerts import send_model_path_recovered_alert
+        from services.orchestration.notifications import render_remedy
+        from services.orchestration.remedies import model_path_recovered_remedy
+
+        tenant_post, admin_post = _episode_posts(episode)
+        await asyncio.to_thread(
+            send_model_path_recovered_alert,
+            hop=hop,
+            issue_key=issue_key,
+            remedy=render_remedy(model_path_recovered_remedy(hop), self._settings),
+            settings=self._settings,
+            outage_post=tenant_post,
+            admin_post=admin_post,
+            resolver=resolver,
+        )
+
+    async def host_action(self, *, episode: ModelPathEpisode) -> None:
+        from services.orchestration.notifications import post_thread_reply
+
+        for post in _episode_posts(episode):
+            if post is not None:
+                await asyncio.to_thread(
+                    post_thread_reply, post, text=episode.host_action, settings=self._settings
+                )
+
+
+def _episode_posts(episode: ModelPathEpisode | None) -> tuple[Any, Any]:
+    from services.orchestration.notifications import SlackPostRef
+
+    if episode is None:
+        return None, None
+    tenant = (
+        SlackPostRef(episode.slack_channel, episode.slack_ts, blocks=episode.slack_blocks)
+        if episode.slack_ts
+        else None
+    )
+    admin = (
+        SlackPostRef(
+            episode.admin_slack_channel,
+            episode.admin_slack_ts,
+            admin=True,
+            owner_token=episode.admin_slack_token,
+            blocks=episode.admin_slack_blocks,
+        )
+        if episode.admin_slack_ts
+        else None
+    )
+    return tenant, admin
+
+
+def build_model_path_gate(
+    settings: Settings, ledger: Any, *, client: Any = None
+) -> ModelPathGate | None:
+    """Return the intake gate on the model path, or None when ``MODEL_PATH_PROBE`` is off.
+
+    With a Temporal ``client`` the gate resumes the tenant's model path parks on recovery.
+    """
+    if not settings.model_path_probe:
+        return None
+    from services.orchestration.model_path_parks import ModelPathParkRegistry
+
+    return ModelPathGate(
+        probe=shared_probe(settings),
+        episodes=PostgresModelPathEpisodes(),
+        alerter=ModelPathNotifier(settings),
+        ledger=ledger,
+        tenant=settings.tenant.strip(),
+        parks=ModelPathParkRegistry(client) if client is not None else None,
+    )
+
+
+class OrphanReclaimAlerter:
+    """Alerts the operators that the reaper reclaimed a run and audits the channels it reached.
+
+    An execution row carries no separate issue key. Intake records the ticket key as the task id,
+    so the task id addresses the ticket the alert comments on and the restart it names.
+    """
+
+    def __init__(self, settings: Any, audit: Callable[[Any], Awaitable[Any]] | None = None) -> None:
+        self._settings = settings
+        self._audit = audit
+
+    async def reclaimed(self, execution: ActiveExecution, *, workflow_id: str, reason: str) -> None:
+        from services.orchestration.notifications import (
+            HumanInterventionAlert,
+            render_remedy,
+            send_human_intervention_alert,
+        )
+        from services.orchestration.remedies import orphan_reclaimed_remedy
+        from services.orchestration.temporal_activities.persistence import (
+            AuditEvent,
+            record_audit_event,
+        )
+
+        stage = execution.state or "unknown"
+        structured = orphan_reclaimed_remedy(execution.task_id, workflow_id)
+        remedy = render_remedy(structured, self._settings)
+        channels = await asyncio.to_thread(
+            send_human_intervention_alert,
+            HumanInterventionAlert(
+                task_id=execution.task_id,
+                execution_id=execution.execution_id,
+                workflow_id=workflow_id,
+                repo=execution.repository,
+                issue_key=execution.task_id,
+                reason=ORPHAN_RECLAIMED,
+                stage=stage,
+                detail=reason,
+                remedy=remedy,
+                structured_remedy=structured,
+            ),
+            self._settings,
+        )
+        audit = self._audit or record_audit_event
+        await audit(
+            AuditEvent(
+                event_id=f"{execution.execution_id}:EXECUTION_ORPHAN_RECLAIMED",
+                task_id=execution.task_id,
+                execution_id=execution.execution_id,
+                event_type="EXECUTION_ORPHAN_RECLAIMED",
+                stage=stage,
+                prev_state=execution.state or None,
+                new_state="CANCELLED",
+                workflow_id=workflow_id,
+                reason=reason,
+                remedy=remedy or None,
+                alert_channels=list(channels),
+            )
+        )
+
+
 def _this_tenant(executions: Any) -> list[Any]:
     """Limit a query to this process's tenant, whose worker owns the runs it admits and reaps."""
     from scripts.config import get_settings
@@ -236,6 +409,7 @@ class PostgresExecutionSeeder:
             executions.c.workflow_id,
             executions.c.updated_at,
             executions.c.state,
+            executions.c.repository,
         ).where(
             executions.c.state.not_in(("COMPLETED", "FAILED", "CANCELLED")),
             *_this_tenant(executions),
@@ -249,6 +423,7 @@ class PostgresExecutionSeeder:
                 workflow_id=row.workflow_id or "",
                 updated_at=row.updated_at,
                 state=row.state or "",
+                repository=row.repository or "",
             )
             for row in rows
         ]
@@ -297,13 +472,15 @@ def build_intake_context(settings: Settings, *, client: Any, gh_resolver: Any) -
     from services.coordination.idempotency import PostgresSideEffectLedger
     from services.integration.source_control import source_control_repos
     from services.orchestration.checks.config import required_checks_repos
+    from services.orchestration.tenant_jobs import build_tenant_hold
 
     execution_store = PostgresExecutionSeeder()
     starter = TemporalStarter(client, settings)
+    ledger = PostgresSideEffectLedger()
     return IntakeContext(
         starter=starter,
         alerter=NotificationsAlerter(settings),
-        ledger=PostgresSideEffectLedger(),
+        ledger=ledger,
         execution_seeder=execution_store,
         snapshot_store=None,
         github_allow=frozenset(source_control_repos(settings)),
@@ -312,4 +489,6 @@ def build_intake_context(settings: Settings, *, client: Any, gh_resolver: Any) -
         active_guard=execution_store,
         base_resolver=starter,
         checks_repos=required_checks_repos(settings),
+        model_path=build_model_path_gate(settings, ledger, client=client),
+        tenant_hold=build_tenant_hold(settings, ledger, client=client),
     )

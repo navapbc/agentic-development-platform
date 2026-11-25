@@ -1,0 +1,36 @@
+# The platform administrators, who receive the fix of every platform fault. A tenant sees a
+# platform fault as its effect and the statement that work resumes on its own, and the fix steps
+# go to the destination named here. Copy this file to config/platform/platform-escalation.yaml in
+# a checkout, or ship it in the platform config that PLATFORM_ENV_CONFIG_DIR holds in a
+# deployment.
+#
+# administrators names an admin Slack channel, an admin email list, or both. With only email set
+# the administrators receive email only, with only slack set they receive Slack only, and with
+# both set they receive both. inv config-check, every activity worker at start, and the Slack
+# posting service at start refuse a file that sets neither, and a missing file.
+#
+# slack.channel is the ID of the admin channel, which starts with C. The shared Slack app of
+# slack-shared-app.yaml posts to it through the Slack posting service, so the channel requires
+# that file and the shared bot's membership in the channel. slack.allowlist names who may press the
+# buttons of an administrator alert under the repair kind, in the forms of a tenant's
+# escalation.yaml. The kind is channel, which admits anyone in the admin channel and the shared
+# app's organization, or a list of user_id and group_id entries. It defaults to channel. The
+# inbound webhook reads the members of each group_id every 5 minutes, and a group whose members
+# were not read in the last 10 minutes admits nobody.
+#
+# email lists the addresses of the administrators, each with a domain that holds a dot, such as
+# admins@platform.test. The activity workers and the deployment-validate Job send to them over
+# their SMTP_HOST, SMTP_PORT, and ALERT_EMAIL_FROM settings.
+
+config_version: 1
+
+administrators:
+  slack:
+    channel: C0000000000
+    allowlist:
+      repair: channel
+      # repair:
+      #   - user_id: U0000000000
+      #   - group_id: S0000000000
+  email:
+    - platform-admins@example.com

@@ -74,7 +74,7 @@ def test_native_review_records_in_process_usage_and_the_answering_leg():
 
     raw = RebarReviewKernel()._run_multipass(_review_input(), cfg, "review-model")
 
-    assert raw.verdict in (Verdict.PASS, Verdict.BLOCK)
+    assert raw.verdict in (Verdict.PASSED, Verdict.BLOCK)
     assert raw.usage.llm_calls > 0
     assert raw.usage.prompt_tokens > 0
     assert raw.usage.completion_tokens > 0

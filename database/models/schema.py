@@ -10,6 +10,7 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    Index,
     Integer,
     MetaData,
     Numeric,
@@ -19,6 +20,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 
 SCHEMA = "agent_platform"
@@ -254,6 +256,87 @@ run_file_impact = Table(
 )
 
 
+slack_approver_groups = Table(
+    "slack_approver_groups",
+    metadata,
+    Column("tenant", String(32), nullable=False),
+    Column("group_id", String(32), nullable=False),
+    Column("members", JSON, nullable=False),
+    Column("refreshed_at", DateTime(timezone=True), nullable=False),
+    PrimaryKeyConstraint("tenant", "group_id"),
+)
+
+
+model_path_health = Table(
+    "model_path_health",
+    metadata,
+    Column("tenant", String(32), primary_key=True),
+    Column("state", String(16), nullable=False),
+    Column("hop", String(32), nullable=False, server_default=""),
+    Column("episode", String(64), nullable=False),
+    Column("since", DateTime(timezone=True), server_default=func.now(), nullable=False),
+    Column("updated_at", DateTime(timezone=True), server_default=func.now(), onupdate=func.now()),
+    Column("slack_channel", String(32), nullable=False, server_default=""),
+    Column("slack_ts", String(32), nullable=False, server_default=""),
+    Column("admin_slack_channel", String(32), nullable=False, server_default=""),
+    Column("admin_slack_ts", String(32), nullable=False, server_default=""),
+    Column("admin_slack_token", String(64), nullable=False, server_default=""),
+    Column("slack_blocks", Text, nullable=False, server_default=""),
+    Column("admin_slack_blocks", Text, nullable=False, server_default=""),
+    Column("acknowledged_by", String(128), nullable=False, server_default=""),
+    Column("acknowledged_at", DateTime(timezone=True)),
+    Column("resolved_by", String(128), nullable=False, server_default=""),
+    Column("resolved_at", DateTime(timezone=True)),
+    Column("host_action", String(500), nullable=False, server_default=""),
+    Column("host_action_at", DateTime(timezone=True)),
+    Column("host_action_posted_at", DateTime(timezone=True)),
+)
+
+
+limit_grants = Table(
+    "limit_grants",
+    metadata,
+    Column("request_id", String(64), primary_key=True),
+    Column("tenant", String(32), nullable=False),
+    Column("limit_name", String(64), nullable=False),
+    Column("scope", String(16), nullable=False),
+    Column("execution_id", String(64), nullable=False, server_default=""),
+    Column("period_start", DateTime(timezone=True)),
+    Column("amount", Numeric(20, 4), nullable=False),
+    Column("state", String(16), nullable=False),
+    Column("requester", String(128), nullable=False),
+    Column("approver", String(128), nullable=False, server_default=""),
+    _created_at(),
+    Column("decided_at", DateTime(timezone=True)),
+    Column("expires_at", DateTime(timezone=True)),
+    Column("admin_slack_ts", String(32), nullable=False, server_default=""),
+    Column("admin_slack_token", String(64), nullable=False, server_default=""),
+    Column("admin_slack_blocks", Text, nullable=False, server_default=""),
+    Column("tenant_slack_channel", String(32), nullable=False, server_default=""),
+    Column("tenant_slack_ts", String(32), nullable=False, server_default=""),
+    Column("tenant_slack_blocks", Text, nullable=False, server_default=""),
+    Index("ix_limit_grants_tenant_limit_name", "tenant", "limit_name"),
+)
+
+
+tenant_pauses = Table(
+    "tenant_pauses",
+    metadata,
+    Column("pause_id", String(64), primary_key=True),
+    Column("tenant", String(32), nullable=False),
+    Column("paused_by", String(128), nullable=False),
+    Column("paused_at", DateTime(timezone=True), nullable=False),
+    Column("cleared_by", String(128), nullable=False, server_default=""),
+    Column("cleared_at", DateTime(timezone=True)),
+    Index(
+        "uq_tenant_pauses_active_tenant",
+        "tenant",
+        unique=True,
+        postgresql_where=text("cleared_at IS NULL"),
+    ),
+)
+
+
 __all__ = [
     "SCHEMA",
     "metadata",
@@ -268,4 +351,8 @@ __all__ = [
     "suspended_flows",
     "usage_metrics",
     "run_file_impact",
+    "slack_approver_groups",
+    "model_path_health",
+    "limit_grants",
+    "tenant_pauses",
 ]

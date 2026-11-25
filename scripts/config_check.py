@@ -24,6 +24,10 @@ from services.integration.tenant_config import (
     refuse_platform_tenant_files,
 )
 from services.orchestration.escalation import load_escalation_config
+from services.orchestration.platform_escalation import (
+    PLATFORM_ESCALATION_FILE,
+    load_platform_escalation,
+)
 
 from scripts.config import Settings, get_settings
 from scripts.env_file import tenant_env_path
@@ -112,9 +116,24 @@ def _report(name: str, label: str, settings: Settings) -> int:
     return failed
 
 
+def report_platform_escalation() -> int:
+    """Print the administrator destination, and return 1 when the file is refused."""
+    try:
+        destination = load_platform_escalation()
+    except ConfigError as exc:
+        print(f"[config-check] {exc}")
+        return 1
+    targets = [
+        *([f"Slack channel {destination.slack_channel}"] if destination.slack else []),
+        *([f"email to {', '.join(destination.emails)}"] if destination.emails else []),
+    ]
+    print(f"[config-check] {PLATFORM_ESCALATION_FILE}: administrators by {' and '.join(targets)}")
+    return 0
+
+
 def main() -> int:
     settings = get_settings()
-    outdated = 0
+    outdated = report_platform_escalation()
     platform_dir = env_config_dir()
     try:
         refuse_platform_tenant_files(platform_dir)
@@ -131,10 +150,11 @@ def main() -> int:
         tenants = []
         outdated += 1
     for tenant in tenants:
+        tenant_settings = settings.model_copy(update={"tenant": tenant})
         with pinned(platform_dir / "tenants" / tenant):
             for name in _CONFIGS:
                 if name in TENANT_ONLY_FILES:
-                    outdated += _report(name, f"tenants/{tenant}/{name}", settings)
+                    outdated += _report(name, f"tenants/{tenant}/{name}", tenant_settings)
         outdated += report_required_secrets(
             EnvSecretResolver(env_file=tenant_env_path(tenant)),
             _TENANT_SECRETS,

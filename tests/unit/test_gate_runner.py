@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 from services.orchestration.gates.contract import (
-    PASS,
+    PASSED,
     SCANNER,
     GateContext,
     GateNode,
@@ -59,7 +59,7 @@ async def test_a_level_runs_concurrently():
         peak = max(peak, active)
         await asyncio.sleep(0.01)
         active -= 1
-        return GateResult(name=spec.name, kind=SCANNER, verdict=PASS)
+        return GateResult(name=spec.name, kind=SCANNER, verdict=PASSED)
 
     results = await run_gate_stage(
         [GateNode("semgrep"), GateNode("trivy")], _context(), execute=execute
@@ -76,7 +76,7 @@ async def test_an_after_gate_starts_only_once_its_predecessor_finishes():
         events.append(("start", spec.name))
         await asyncio.sleep(0.01)
         events.append(("end", spec.name))
-        return GateResult(name=spec.name, kind=SCANNER, verdict=PASS)
+        return GateResult(name=spec.name, kind=SCANNER, verdict=PASSED)
 
     await run_gate_stage(
         [GateNode("code-review"), GateNode("acceptance", after=("code-review",))],
@@ -92,7 +92,7 @@ async def test_a_blocking_gate_does_not_cancel_its_siblings():
 
     async def execute(spec, context):
         await asyncio.sleep(0.01)
-        verdict = BLOCK if spec.name == "semgrep" else PASS
+        verdict = BLOCK if spec.name == "semgrep" else PASSED
         return GateResult(name=spec.name, kind=SCANNER, verdict=verdict)
 
     results = await run_gate_stage(
@@ -110,7 +110,7 @@ async def test_fail_fast_aborts_and_cancels_siblings():
         if spec.name == "semgrep":
             return GateResult(name="semgrep", kind=SCANNER, verdict=BLOCK)
         await asyncio.sleep(10)
-        return GateResult(name=spec.name, kind=SCANNER, verdict=PASS)
+        return GateResult(name=spec.name, kind=SCANNER, verdict=PASSED)
 
     results = await run_gate_stage(
         [GateNode("semgrep", required=True), GateNode("trivy", required=True)],
@@ -131,7 +131,7 @@ async def test_fail_fast_ignores_an_advisory_block():
         if spec.name == "semgrep":
             return GateResult(name="semgrep", kind=SCANNER, verdict=BLOCK)
         await asyncio.sleep(0.01)
-        return GateResult(name="trivy", kind=SCANNER, verdict=PASS)
+        return GateResult(name="trivy", kind=SCANNER, verdict=PASSED)
 
     results = await run_gate_stage(
         [GateNode("semgrep", required=False), GateNode("trivy", required=True)],
@@ -142,14 +142,14 @@ async def test_fail_fast_ignores_an_advisory_block():
 
     verdicts = {result.name: result.verdict for result in results}
     assert verdicts["semgrep"] == BLOCK
-    assert verdicts["trivy"] == PASS
+    assert verdicts["trivy"] == PASSED
 
 
 async def test_fail_fast_cancels_a_later_level():
     from services.orchestration.gates.contract import BLOCK, CANCELLED
 
     async def execute(spec, context):
-        verdict = BLOCK if spec.name == "code-review" else PASS
+        verdict = BLOCK if spec.name == "code-review" else PASSED
         return GateResult(name=spec.name, kind="review", verdict=verdict)
 
     results = await run_gate_stage(

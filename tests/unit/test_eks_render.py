@@ -58,7 +58,10 @@ def _inputs() -> dict[str, Any]:
             "LITELLM_DATABASE_PORT": "5432",
         },
         "platform_environment": {"DATABASE_URL": "postgresql+asyncpg://db:5432/agent_platform"},
-        "environment_config": {"repositories.yaml": "version: 1\n"},
+        "environment_config": {
+            "repositories.yaml": "version: 1\n",
+            "platform-escalation.yaml": "config_version: 1\n",
+        },
         "security_groups": {
             "cluster": "sg-c",
             "temporal_client": "sg-t",
@@ -383,7 +386,8 @@ def test_the_generated_config_maps_carry_the_environment(overlay) -> None:
     environment = _named(documents, "ConfigMap", "agentic-platform-env", "tenant-adp")["data"]
     assert environment["DATABASE_URL"].startswith("postgresql+asyncpg://")
     assert _named(documents, "ConfigMap", "platform-config", "tenant-adp")["data"] == {
-        "repositories.yaml": "version: 1\n"
+        "repositories.yaml": "version: 1\n",
+        "platform-escalation.yaml": "config_version: 1\n",
     }
     assert (
         "model_list"
@@ -795,3 +799,144 @@ def test_a_tenant_worker_receives_its_escalation_action_key(overlay) -> None:
             "objectAlias": "ESCALATION_ACTION_KEY",
         }
     ]
+
+
+def test_the_validation_cronjob_runs_the_published_image_with_its_own_identity(overlay) -> None:
+    inputs = {**_inputs(), "tenants": [_tenant("adp"), _tenant("beta")]}
+    documents, _ = eks_render.render(overlay, inputs, REPOSITORY)
+
+    cronjob = _named(documents, "CronJob", "deployment-validate", "agentic-dev-platform")
+    pod = cronjob["spec"]["jobTemplate"]["spec"]["template"]["spec"]
+    container = pod["containers"][0]
+    assert container["image"] == inputs["images"]["platform"]
+    assert {"name": "TENANTS", "value": "adp,beta"} in container["env"]
+    assert all("secretRef" not in source for source in container["envFrom"])
+    assert pod["serviceAccountName"] == "deployment-validate"
+    secrets = next(v for v in pod["volumes"] if v["name"] == "secrets")
+    assert secrets["csi"]["volumeAttributes"]["secretProviderClass"] == "deployment-validate"
+    provider = _named(
+        documents, "SecretProviderClass", "deployment-validate", "agentic-dev-platform"
+    )
+    names = sorted(e["objectName"] for e in json.loads(provider["spec"]["parameters"]["objects"]))
+    assert names == [
+        "arn:aws:secretsmanager:us-west-2:9:secret:database_platform_app",
+        "arn:aws:secretsmanager:us-west-2:9:secret:litellm_master_key",
+        "arn:aws:secretsmanager:us-west-2:9:secret:temporal_ca",
+    ]
+    groups = _named(documents, "SecurityGroupPolicy", "temporal-clients", "agentic-dev-platform")
+    assert "deployment-validate" in groups["spec"]["podSelector"]["matchExpressions"][0]["values"]
+
+
+def test_the_validation_cronjob_reads_the_administrator_email_settings(overlay) -> None:
+    email = {
+        "SMTP_HOST": "smtp.example.test",
+        "SMTP_PORT": "587",
+        "ALERT_EMAIL_FROM": "adp@example.test",
+        "ALERT_EMAIL_TO": "oncall@example.test",
+    }
+    inputs = _inputs()
+    inputs["platform_environment"] = {**(inputs.get("platform_environment") or {}), **email}
+    documents, _ = eks_render.render(overlay, inputs, REPOSITORY)
+
+    cronjob = _named(documents, "CronJob", "deployment-validate", "agentic-dev-platform")
+    container = cronjob["spec"]["jobTemplate"]["spec"]["template"]["spec"]["containers"][0]
+    assert {"configMapRef": {"name": "agentic-platform-env"}} in container["envFrom"]
+    settings = _named(documents, "ConfigMap", "agentic-platform-env", "agentic-dev-platform")
+    assert {key: settings["data"][key] for key in email} == email
+
+
+def _smtp_ports(policy: dict[str, Any]) -> list[int]:
+    return [
+        port["port"]
+        for rule in policy["spec"]["egress"]
+        if any(peer.get("ipBlock", {}).get("cidr") == "0.0.0.0/0" for peer in rule["to"])
+        for port in rule["ports"]
+        if port["port"] != 443
+    ]
+
+
+@pytest.mark.parametrize(("setting", "port"), [({}, 587), ({"SMTP_PORT": "2525"}, 2525)])
+def test_the_platform_and_tenant_baselines_admit_smtp_egress_on_the_smtp_port(
+    overlay, setting, port
+) -> None:
+    inputs = _inputs()
+    inputs["platform_environment"] = {**(inputs.get("platform_environment") or {}), **setting}
+    documents, _ = eks_render.render(overlay, inputs, REPOSITORY)
+
+    platform = _named(documents, "NetworkPolicy", "platform-baseline", "agentic-dev-platform")
+    tenant = _named(documents, "NetworkPolicy", "platform-baseline", "tenant-adp")
+    assert _smtp_ports(platform) == [port]
+    assert _smtp_ports(tenant) == [port]
+
+
+def test_a_render_refuses_an_smtp_port_that_is_not_a_tcp_port(overlay) -> None:
+    inputs = _inputs()
+    inputs["platform_environment"] = {
+        **(inputs.get("platform_environment") or {}),
+        "SMTP_PORT": "x",
+    }
+
+    with pytest.raises(eks_render.RenderError, match="SMTP_PORT"):
+        eks_render.render(overlay, inputs, REPOSITORY)
+
+
+def _posting_pod(documents, kind: str, name: str) -> dict[str, Any]:
+    document = _named(documents, kind, name, "agentic-dev-platform")
+    if kind == "CronJob":
+        return document["spec"]["jobTemplate"]["spec"]["template"]["spec"]
+    return document["spec"]["template"]["spec"]
+
+
+@pytest.mark.parametrize(
+    ("kind", "name"), [("Deployment", "inbound-webhook"), ("CronJob", "deployment-validate")]
+)
+def test_the_platform_callers_present_a_posting_service_token(overlay, kind, name) -> None:
+    documents, _ = eks_render.render(overlay, _inputs(), REPOSITORY)
+
+    pod = _posting_pod(documents, kind, name)
+    env = {entry["name"]: entry.get("value") for entry in pod["containers"][0]["env"]}
+    assert env["SLACK_POSTING_URL"] == "https://slack-poster:8160"
+    assert env["SLACK_POSTING_TOKEN_FILE"] == "/var/run/secrets/slack-posting/token"
+    volumes = {volume["name"]: volume for volume in pod["volumes"]}
+    [source] = volumes["slack-posting-token"]["projected"]["sources"]
+    assert source["serviceAccountToken"]["audience"] == "slack-posting-service"
+
+
+def test_an_environment_config_without_platform_escalation_is_refused(overlay) -> None:
+    inputs = _inputs()
+    del inputs["environment_config"]["platform-escalation.yaml"]
+
+    with pytest.raises(eks_render.RenderError) as refused:
+        eks_render.render(overlay, inputs, REPOSITORY)
+
+    assert "platform-escalation.yaml" in str(refused.value)
+    assert "config/platform/platform-escalation.yaml.example" in str(refused.value)
+
+
+def test_every_pod_that_reads_platform_escalation_reads_it_from_the_environment_config(
+    overlay,
+) -> None:
+    inputs = _inputs()
+    inputs["environment_config"]["platform-escalation.yaml"] = "config_version: 1\n"
+    documents, _ = eks_render.render(overlay, inputs, REPOSITORY)
+
+    config = _named(documents, "ConfigMap", "platform-config", "agentic-dev-platform")
+    assert config["data"]["platform-escalation.yaml"] == "config_version: 1\n"
+    cronjob = _named(documents, "CronJob", "deployment-validate", "agentic-dev-platform")
+    pods = [
+        _named(documents, "Deployment", "activity-worker", "tenant-adp")["spec"]["template"],
+        _named(documents, "Deployment", "inbound-webhook", "agentic-dev-platform")["spec"][
+            "template"
+        ],
+        cronjob["spec"]["jobTemplate"]["spec"]["template"],
+    ]
+    for pod in pods:
+        container = pod["spec"]["containers"][0]
+        assert {"name": "PLATFORM_ENV_CONFIG_DIR", "value": "/app/config/env"} in container["env"]
+        mount = next(m for m in container["volumeMounts"] if m["mountPath"] == "/app/config/env")
+        volume = next(v for v in pod["spec"]["volumes"] if v["name"] == mount["name"])
+        names = [volume.get("configMap", {}).get("name")] + [
+            source.get("configMap", {}).get("name")
+            for source in volume.get("projected", {}).get("sources", [])
+        ]
+        assert "platform-config" in names

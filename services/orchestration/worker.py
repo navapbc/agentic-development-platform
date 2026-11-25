@@ -48,8 +48,11 @@ from services.orchestration.temporal_activities import (
     link_pr_to_issue,
     load_gate_plan,
     mark_task_parked,
+    period_alert_thread,
     persist_execution_state,
     promote_pr,
+    read_run_limits,
+    read_tenant_budget,
     read_ticket_status,
     reap_orphans,
     recheck_issue,
@@ -61,6 +64,7 @@ from services.orchestration.temporal_activities import (
     record_pr_approval,
     record_suspension,
     record_usage_metrics,
+    refresh_park_buttons,
     reset_task_coordination,
     resolve_conflicts,
     review_code,
@@ -69,13 +73,16 @@ from services.orchestration.temporal_activities import (
     run_checks,
     run_implementation_stage,
     scan_change,
+    settle_park_posts,
     sign_authorship,
     signal_dependency_ready,
     synchronize_branch,
     unmark_task_parked,
+    validate_tenant,
     verify_acceptance,
     verify_authorship_merge,
 )
+from services.orchestration.temporal_activities.alert_action import apply_alert_action
 from services.orchestration.temporal_workflows import (
     BranchSyncWorkflow,
     CountingWorkflow,
@@ -87,7 +94,9 @@ from services.orchestration.temporal_workflows import (
     PlanReviewWorkflow,
     PullRequestWorkflow,
     ReapWorkflow,
+    TenantValidationWorkflow,
 )
+from services.orchestration.temporal_workflows.alert_action import AlertActionWorkflow
 from services.orchestration.worker_versioning import deployment_config, set_current_version
 
 logging.basicConfig(level=configured_log_level())
@@ -112,6 +121,8 @@ _WORKFLOWS = [
     ReapWorkflow,
     IntakeWorkflow,
     JiraIssueIntakeWorkflow,
+    TenantValidationWorkflow,
+    AlertActionWorkflow,
 ]
 
 _REVIEW_ACTIVITIES = [
@@ -160,6 +171,8 @@ _ACTIVITIES = [
     analyze_ci_failure,
     apply_ci_repair,
     alert_human_intervention,
+    refresh_park_buttons,
+    settle_park_posts,
     scan_change,
     evaluate_promotion,
     load_gate_plan,
@@ -170,6 +183,11 @@ _ACTIVITIES = [
     sign_authorship,
     verify_authorship_merge,
     delete_run_model_key,
+    read_run_limits,
+    read_tenant_budget,
+    period_alert_thread,
+    validate_tenant,
+    apply_alert_action,
 ]
 
 
@@ -289,14 +307,14 @@ async def _scrub_workspace_credentials(workspace_root: str) -> None:
     receipt = await asyncio.to_thread(scrub_workspace_credentials, Path(workspace_root))
     if receipt.rewritten:
         log.warning(
-            "cleared a persisted git credential from %d of %d workspace checkouts under %s",
+            "removed userinfo from the remote URLs of %d of %d workspace checkouts under %s",
             len(receipt.rewritten),
             receipt.scanned,
             workspace_root,
         )
     if receipt.failed:
         log.error(
-            "could not clear a persisted git credential from %d workspace checkouts: %s",
+            "could not remove userinfo from the remote URLs of %d workspace checkouts: %s",
             len(receipt.failed),
             ", ".join(receipt.failed),
         )
@@ -362,8 +380,10 @@ async def main() -> None:
         from services.integration.tickets.store_remote import tickets_store_preflight
         from services.orchestration.authorship import authorship_signing_preflight
         from services.orchestration.index_checkouts import keep_index_checkouts
+        from services.orchestration.platform_escalation import platform_escalation_preflight
         from services.orchestration.tenant_pinning import install_tenant_schedules
 
+        platform_escalation_preflight()
         index_checkout_task = asyncio.create_task(keep_index_checkouts(settings))
         await install_tenant_schedules(client, settings)
         tickets_store_preflight(settings)
@@ -411,17 +431,26 @@ async def main() -> None:
             )
         )
     socket_mode = None
+    approver_group_task = None
     if role in (WORKER_ROLE_ACTIVITY, WORKER_ROLE_ALL):
+        from services.integration.slack.approver_groups import start_approver_group_refresh
         from services.integration.slack.socket_client import start_socket_mode
 
         socket_mode = await start_socket_mode(settings, client)
+        approver_group_task = start_approver_group_refresh(settings)
     runners = [worker.run() for worker in workers]
     if settings.worker_versioning_enabled:
         runners.append(set_current_version(client, settings, queues))
     try:
         await asyncio.gather(*runners)
     finally:
-        for task in (heartbeat_task, watch_task, tenant_refresh_task, index_checkout_task):
+        for task in (
+            heartbeat_task,
+            watch_task,
+            tenant_refresh_task,
+            index_checkout_task,
+            approver_group_task,
+        ):
             if task is not None:
                 task.cancel()
         if socket_mode is not None:

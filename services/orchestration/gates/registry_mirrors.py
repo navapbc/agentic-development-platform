@@ -44,7 +44,7 @@ EXTERNAL = "external"
 MODES = (AWS, EXTERNAL)
 CONFIG = "registries"
 PACKAGE_ENV = {"pypi": "PIP_INDEX_URL", "npm": "NPM_CONFIG_REGISTRY", "go": "GOPROXY"}
-TOKEN_ENV = "REGISTRY_TOKEN"
+REGISTRY_CREDENTIAL_ENV = "REGISTRY_TOKEN"
 
 _REGISTRY_PATH = re.compile(r"^[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._/-]*)?$")
 _PACKAGE_URL_REFUSED = re.compile(r"[\s,|\"'\\]")
@@ -142,7 +142,7 @@ def parse(platform: dict[str, Any], tenant: dict[str, Any] | None = None) -> Reg
     if "token_env" in credential:
         raise RegistryConfigError(
             f"the tenant registries.yaml sets credential.token_env. The registry token is always "
-            f"{TOKEN_ENV} in the tenant's own settings, so remove token_env"
+            f"{REGISTRY_CREDENTIAL_ENV} in the tenant's own settings, so remove token_env"
         )
     username = _username(credential.get("username"))
     if mode == EXTERNAL and not username:

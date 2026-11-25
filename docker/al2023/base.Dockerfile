@@ -48,6 +48,7 @@ RUN dnf -y --releasever="${AL2023_RELEASE}" install gcc gcc-c++ make cmake tar g
 COPY --from=content /content /usr/local/share/cis
 COPY --chmod=0555 docker/al2023/cis-scan.sh /usr/local/bin/cis-scan
 COPY docker/al2023/cis-accepted.txt /usr/local/share/cis/cis-accepted.txt
+HEALTHCHECK NONE
 
 FROM ${AL2023_IMAGE} AS base
 ARG AL2023_RELEASE=2023.12.20261112
@@ -56,6 +57,7 @@ COPY --chmod=0555 docker/al2023/cis-harden.sh /usr/local/sbin/cis-harden
 RUN echo "${AL2023_RELEASE}" > /usr/local/share/cis/releasever \
  && dnf -y --releasever="${AL2023_RELEASE}" upgrade \
  && cis-harden
+HEALTHCHECK NONE
 
 FROM openscap AS verify
 RUN --mount=from=base,target=/target,readwrite \

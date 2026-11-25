@@ -27,7 +27,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from services import process
-from services.aws_credentials import expiry_report
+from services.aws_credentials import expiration_stamp, expiry_report
 
 from scripts.config import Settings, get_settings
 
@@ -90,7 +90,7 @@ def from_profile(profile: str, session_factory: Callable[[str], Any] | None = No
             record["SessionToken"] = frozen.token
         expiry = getattr(credentials, "_expiry_time", None)
         if expiry is not None:
-            record["Expiration"] = _iso(expiry)
+            record["Expiration"] = expiration_stamp(expiry)
         return record
 
     try:
@@ -122,7 +122,7 @@ def session_token(
         "AccessKeyId": issued["AccessKeyId"],
         "SecretAccessKey": issued["SecretAccessKey"],
         "SessionToken": issued["SessionToken"],
-        "Expiration": _iso(issued["Expiration"]),
+        "Expiration": expiration_stamp(issued["Expiration"]),
     }
 
 
@@ -156,10 +156,6 @@ def obtain(
     return {"Version": 1, **record}
 
 
-def _iso(moment: datetime) -> str:
-    return moment.astimezone(UTC).isoformat().replace("+00:00", "Z")
-
-
 def secret_manifest(
     settings: Settings, record: Mapping[str, Any], namespace: str = ""
 ) -> dict[str, Any]:
@@ -185,21 +181,48 @@ def credential_namespaces(settings: Settings) -> list[str]:
     return [settings.k8s_namespace, *(review_namespace(name) for name in tenants())]
 
 
+def login_environ() -> dict[str, str]:
+    """Return the process environment over the non-empty values of config/local/platform.env."""
+    from scripts.env_file import platform_env_values
+
+    dotenv = {key: value for key, value in platform_env_values().items() if value}
+    return {**dotenv, **os.environ}
+
+
+def stored_record(settings: Settings) -> dict[str, Any] | None:
+    """Return the credentials in the platform namespace's Secret, or None when it is absent."""
+    from scripts.k8s_cluster import namespaced
+
+    result = process.run(
+        namespaced(
+            settings,
+            "get",
+            "secret",
+            CREDENTIALS_OBJECT,
+            "--ignore-not-found",
+            "-o",
+            "jsonpath={.data.credentials\\.json}",
+        ),
+        timeout=process.SHORT_COMMAND_TIMEOUT_SECONDS,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise LoginError(result.stderr.strip() or f"kubectl exited {result.returncode}")
+    encoded = result.stdout.strip()
+    return json.loads(base64.b64decode(encoded)) if encoded else None
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
-    from dotenv import dotenv_values
-
-    from scripts.env_file import platform_env_path
     from scripts.k8s_cluster import kubectl
 
     argparse.ArgumentParser(description=__doc__).parse_args(argv)
     settings = get_settings()
-    platform_env = platform_env_path()
-    values = dotenv_values(platform_env) if platform_env.is_file() else {}
-    dotenv = {key: value for key, value in values.items() if value}
     try:
-        record = obtain(settings, environ={**dotenv, **os.environ})
+        record = obtain(settings, environ=login_environ())
     except LoginError as exc:
         print(f"{LOG} {exc}", file=sys.stderr)
         return 1

@@ -27,10 +27,9 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from services import process
 
-from scripts.eks_render import secret_key
-from scripts.temporal_certs import COMPOSITION_ROOT
+from scripts.eks_render import RenderError, require_platform_escalation, secret_key
+from scripts.temporal_certs import terraform_output
 from scripts.tenant_render import GATEWAY, worker_namespace
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -159,16 +158,7 @@ def print_log(logs: Any, group: str, stream: str) -> None:
 
 
 def _terraform_eks(env: dict[str, str]) -> dict[str, Any] | None:
-    result = process.run(
-        ["terraform", f"-chdir={COMPOSITION_ROOT}", "output", "-json", "eks"],
-        timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS,
-        capture_output=True,
-        text=True,
-        env=env,
-    )
-    if result.returncode != 0:
-        raise DeployError(f"terraform output failed: {result.stderr.strip()}")
-    return json.loads(result.stdout or "null")
+    return json.loads(terraform_output("eks", env, DeployError) or "null")
 
 
 def certificate_covers(names: Iterable[str], host: str) -> bool:
@@ -257,6 +247,10 @@ def deploy(session: Any, eks: dict[str, Any] | None, command: list[str]) -> int:
     if hosts:
         check_gateway_certificate(session.client("acm"), eks["mcp_gateway_certificate_arn"], hosts)
     if command[0] == "deploy":
+        try:
+            require_platform_escalation(eks.get("environment_config") or {})
+        except RenderError as exc:
+            raise DeployError(str(exc)) from None
         secretsmanager = session.client("secretsmanager")
         tenants = eks.get("tenants") or []
         keys = platform_mounted_keys(mounted_secret_keys(), eks["secret_arns"], tenants)

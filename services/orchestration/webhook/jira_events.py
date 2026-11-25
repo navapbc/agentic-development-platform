@@ -119,7 +119,12 @@ class JiraIntakeHandler:
         )
         started = sum(1 for record in report.started if not record.duplicate)
         duplicates = sum(1 for record in report.started if record.duplicate)
-        return {"started": started, "duplicates": duplicates, "held": len(report.held)}
+        return {
+            "started": started,
+            "duplicates": duplicates,
+            "held": len(report.held),
+            "deferred": len(report.deferred),
+        }
 
 
 @dataclass(frozen=True)

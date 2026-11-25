@@ -21,6 +21,8 @@ from services.operator_remedy import (
     reject_gate,
     remedy,
     restart_run,
+    restore_model_path,
+    resume_parked_run,
     retry_repair,
     roll_up_cost,
     worker_setting,
@@ -71,7 +73,7 @@ def _claim_remedy(issue_key: str) -> Remedy:
 class ImplementationReason(StrEnum):
     WORK_UNIT_CLAIMED = "work_unit_claimed"
     COST_BUDGET_EXCEEDED = "cost_budget_exceeded"
-    TOKEN_BUDGET_EXCEEDED = "token_budget_exceeded"
+    MAX_TOKENS_EXCEEDED = "token_budget_exceeded"
     LLM_CALLS_EXCEEDED = "llm_calls_exceeded"
     RUN_MODEL_BUDGET_EXCEEDED = "run_model_budget_exceeded"
     TENANT_MODEL_BUDGET_EXCEEDED = "tenant_model_budget_exceeded"
@@ -93,7 +95,7 @@ def implementation_remedy(token: str, *, issue_key: str, execution_id: str) -> R
             return _budget_remedy(
                 issue_key, execution_id, "cost budget", "IMPLEMENTATION_MAX_COST_USD"
             )
-        case ImplementationReason.TOKEN_BUDGET_EXCEEDED:
+        case ImplementationReason.MAX_TOKENS_EXCEEDED:
             return _budget_remedy(
                 issue_key, execution_id, "token budget", "IMPLEMENTATION_MAX_TOKENS"
             )
@@ -200,7 +202,7 @@ def branch_sync_remedy(token: str, *, issue_key: str, branch: str) -> Remedy:
 class RepairReason(StrEnum):
     REPAIR_EXHAUSTED = "repair_exhausted"
     COST_BUDGET_EXCEEDED = "cost_budget_exceeded"
-    TOKEN_BUDGET_EXCEEDED = "token_budget_exceeded"
+    MAX_TOKENS_EXCEEDED = "token_budget_exceeded"
     LLM_CALLS_EXCEEDED = "llm_calls_exceeded"
     RUN_MODEL_BUDGET_EXCEEDED = "run_model_budget_exceeded"
     TENANT_MODEL_BUDGET_EXCEEDED = "tenant_model_budget_exceeded"
@@ -219,32 +221,36 @@ def repair_remedy(token: str, *, issue_key: str, execution_id: str) -> Remedy:
                 retry_repair(issue_key),
                 " to resume, or run ",
                 abandon_repair(issue_key),
-                " to end the run. To end this run and have intake admit the ticket again, run ",
-                restart_run(issue_key),
-                ".",
+                " to end the run.",
             )
         case RepairReason.COST_BUDGET_EXCEEDED:
-            budget = _budget_remedy(
-                issue_key, execution_id, "cost budget", "IMPLEMENTATION_MAX_COST_USD"
-            )
-        case RepairReason.TOKEN_BUDGET_EXCEEDED:
-            budget = _budget_remedy(
-                issue_key, execution_id, "token budget", "IMPLEMENTATION_MAX_TOKENS"
-            )
+            limit, setting = "cost budget", "IMPLEMENTATION_MAX_COST_USD"
+        case RepairReason.MAX_TOKENS_EXCEEDED:
+            limit, setting = "token budget", "IMPLEMENTATION_MAX_TOKENS"
         case RepairReason.LLM_CALLS_EXCEEDED:
-            budget = _budget_remedy(
-                issue_key, execution_id, "LLM call budget", "IMPLEMENTATION_MAX_LLM_CALLS"
-            )
+            limit, setting = "LLM call budget", "IMPLEMENTATION_MAX_LLM_CALLS"
         case RepairReason.RUN_MODEL_BUDGET_EXCEEDED:
-            budget = _budget_remedy(
-                issue_key, execution_id, "model spend budget", "RUN_MODEL_BUDGET_USD"
-            )
+            limit, setting = "model spend budget", "RUN_MODEL_BUDGET_USD"
         case RepairReason.TENANT_MODEL_BUDGET_EXCEEDED:
-            budget = _tenant_budget_remedy(issue_key)
+            return remedy(
+                "The tenant's model budget for the current period is spent. Wait for the period "
+                "to reset, or raise ",
+                worker_setting("TENANT_MODEL_BUDGET_USD"),
+                ". A retry would stop again at the same budget, so run ",
+                abandon_repair(issue_key),
+                " to end the run.",
+            )
         case _:
             assert_never(reason)
-    abandon = remedy(" To end the run without restarting it, run ", abandon_repair(issue_key), ".")
-    return Remedy(budget.steps + abandon.steps)
+    return remedy(
+        f"The repair stopped after exhausting its {limit}. Run ",
+        roll_up_cost(execution_id),
+        " to see which stage consumed the budget. Narrow the task scope, or raise ",
+        worker_setting(setting),
+        ". A retry would stop again at the same budget, so run ",
+        abandon_repair(issue_key),
+        " to end the run.",
+    )
 
 
 class IssueRecheckReason(StrEnum):
@@ -347,6 +353,65 @@ def base_conflict_remedy(issue_key: str) -> Remedy:
         f"to build from. Leave a single base label on {issue_key or '<issue_key>'}, then run ",
         restart_run(issue_key),
         " to re-admit it.",
+    )
+
+
+def run_failed_remedy(issue_key: str, stage: str) -> Remedy:
+    return remedy(
+        f"The run failed at the {stage or '<stage>'} stage on an error the workflow does not "
+        "handle, such as a model call that exhausted its retries, so it stopped without a pull "
+        "request. Inspect that stage in the Temporal workflow history for this execution, "
+        "resolve the cause, then run ",
+        restart_run(issue_key),
+        " to start a fresh execution.",
+    )
+
+
+def orphan_reclaimed_remedy(issue_key: str, workflow_id: str) -> Remedy:
+    return remedy(
+        f"The workflow {workflow_id or '<workflow_id>'} stopped running without settling its "
+        "execution, so the reaper marked the execution CANCELLED and released its concurrency "
+        "slot. Inspect the workflow history in Temporal to find why it stopped, resolve the "
+        "cause, then run ",
+        restart_run(issue_key),
+        " to start a fresh execution.",
+    )
+
+
+MODEL_PATH_FAILURES = {
+    "credentials": "the AWS session LiteLLM signs Bedrock requests with is expired or invalid",
+    "bedrock_path": "LiteLLM cannot connect to the Bedrock runtime endpoint",
+    "litellm": "the worker cannot reach the LiteLLM gateway",
+}
+
+
+MODEL_PATH_HOP_LABELS = {
+    "credentials": "AWS credentials",
+    "bedrock_path": "Bedrock connection",
+    "litellm": "LiteLLM gateway",
+}
+
+
+def model_path_unavailable_remedy(hop: str) -> Remedy:
+    return remedy(
+        "Run ",
+        restore_model_path(hop),
+        ". The next intake pass then starts the deferred tickets with no further action.",
+    )
+
+
+def model_path_recovered_remedy(hop: str) -> Remedy:
+    return remedy("None. If the path fails again, run ", restore_model_path(hop), ".")
+
+
+def model_unavailable_park_remedy(issue_key: str, hop: str) -> Remedy:
+    return remedy(
+        "Run ",
+        restore_model_path(hop),
+        ". The next intake pass that finds the model path healthy resumes the run at the stage "
+        "that failed, with the work it had done kept. To resume it before that pass, run ",
+        resume_parked_run(issue_key),
+        ".",
     )
 
 

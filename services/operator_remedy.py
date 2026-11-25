@@ -9,6 +9,7 @@ renders as the command that reaches the tenant's activity worker directly.
 
 from __future__ import annotations
 
+import re
 import shlex
 from dataclasses import dataclass, replace
 from enum import StrEnum
@@ -17,6 +18,8 @@ from typing import assert_never
 NEXT_STEP_PREFIX = "Next step:"
 
 WORKER_DEPLOYMENT = "activity-worker"
+LITELLM_NAMESPACE = "agentic-dev-platform"
+LITELLM_DEPLOYMENT = "litellm"
 DEPLOYED_OPERATOR_TOOLS = frozenset({"aws", "kubectl"})
 
 
@@ -35,6 +38,8 @@ class StepKind(StrEnum):
     ROLL_UP_COST = "roll_up_cost"
     CONFIG_KEY = "config_key"
     WORKER_SETTING = "worker_setting"
+    RESTORE_MODEL_PATH = "restore_model_path"
+    RESUME_PARKED = "resume_parked"
 
 
 COMMAND_KINDS = frozenset(
@@ -45,8 +50,17 @@ COMMAND_KINDS = frozenset(
         StepKind.APPROVE_GATE,
         StepKind.REJECT_GATE,
         StepKind.ROLL_UP_COST,
+        StepKind.RESTORE_MODEL_PATH,
+        StepKind.RESUME_PARKED,
     }
 )
+
+# Keyed by the model path hop tokens of services.orchestration.model_path.
+_MODEL_PATH_HOST_COMMANDS = {
+    "credentials": "inv aws-login",
+    "bedrock_path": "inv tunnel-start --detach",
+    "litellm": "inv k8s-reload",
+}
 
 
 @dataclass(frozen=True)
@@ -131,6 +145,14 @@ def worker_setting(name: str) -> RemedyStep:
     return RemedyStep(StepKind.WORKER_SETTING, key=name)
 
 
+def restore_model_path(hop: str) -> RemedyStep:
+    return RemedyStep(StepKind.RESTORE_MODEL_PATH, key=hop)
+
+
+def resume_parked_run(issue_key: str) -> RemedyStep:
+    return RemedyStep(StepKind.RESUME_PARKED, issue_key=issue_key)
+
+
 def _value(value: str, placeholder: str) -> str:
     return shlex.quote(value) if value else placeholder
 
@@ -151,6 +173,10 @@ def _host_command(kind: StepKind, step: RemedyStep) -> str:
             return f"inv gate --issue {issue} --gate {gate} {decision}{tenant}"
         case StepKind.ROLL_UP_COST:
             return f"inv cost-rollup --execution-id {_value(step.execution_id, '<execution_id>')}"
+        case StepKind.RESTORE_MODEL_PATH:
+            return _MODEL_PATH_HOST_COMMANDS.get(step.key, "inv connectivity-check")
+        case StepKind.RESUME_PARKED:
+            return f"inv resume-parked --issue {issue}{tenant}"
         case StepKind.TEXT | StepKind.CONFIG_KEY | StepKind.WORKER_SETTING:
             return ""
         case _:
@@ -172,13 +198,22 @@ def _worker_module(kind: StepKind, step: RemedyStep) -> str:
         case StepKind.ROLL_UP_COST:
             execution = _value(step.execution_id, "<execution_id>")
             return f"scripts.cost_rollup --execution-id {execution}"
-        case StepKind.TEXT | StepKind.CONFIG_KEY | StepKind.WORKER_SETTING:
+        case StepKind.RESUME_PARKED:
+            return f"scripts.resume_parked --issue {issue}"
+        case (
+            StepKind.TEXT
+            | StepKind.CONFIG_KEY
+            | StepKind.WORKER_SETTING
+            | StepKind.RESTORE_MODEL_PATH
+        ):
             return ""
         case _:
             assert_never(kind)
 
 
 def _deployed_command(kind: StepKind, step: RemedyStep) -> str:
+    if kind is StepKind.RESTORE_MODEL_PATH:
+        return f"kubectl -n {LITELLM_NAMESPACE} rollout restart deploy/{LITELLM_DEPLOYMENT}"
     module = _worker_module(kind, step)
     if not module:
         return ""
@@ -292,6 +327,8 @@ def render_step(step: RemedyStep, posture: DeploymentPosture) -> str:
             | StepKind.APPROVE_GATE
             | StepKind.REJECT_GATE
             | StepKind.ROLL_UP_COST
+            | StepKind.RESTORE_MODEL_PATH
+            | StepKind.RESUME_PARKED
         ):
             return f"`{command(step, posture)}`"
         case _:
@@ -300,6 +337,95 @@ def render_step(step: RemedyStep, posture: DeploymentPosture) -> str:
 
 def render(remedy: Remedy, posture: DeploymentPosture) -> str:
     return "".join(render_step(step, posture) for step in remedy.steps)
+
+
+BUTTON_LABELS = {
+    StepKind.RESTART_RUN: "Restart run",
+    StepKind.RETRY_REPAIR: "Retry repair",
+    StepKind.ABANDON_REPAIR: "Abandon",
+    StepKind.APPROVE_GATE: "Approve",
+    StepKind.REJECT_GATE: "Reject",
+}
+"""The label of the Slack button each tenant action becomes."""
+
+ACKNOWLEDGE_LABEL = "Acknowledge"
+VALIDATE_LABEL = "Run validation"
+FIX_DONE_LABEL = "Fix done"
+ADMINISTRATORS = "the platform administrators"
+_RUN_VERB = re.compile(r"(?i)\b(run|running)\s+$")
+_TENANT_VERBS = {
+    (True, "run"): "press",
+    (True, "running"): "pressing",
+    (False, "run"): "ask for",
+    (False, "running"): "asking for",
+}
+
+
+def _administrator_action(kind: StepKind, step: RemedyStep) -> str:
+    match kind:
+        case StepKind.ROLL_UP_COST:
+            execution = f"`{step.execution_id}`" if step.execution_id else "of this run"
+            return f"the cost rollup of execution {execution}"
+        case StepKind.RESTORE_MODEL_PATH:
+            return "the restore of the model path"
+        case StepKind.RESUME_PARKED:
+            return "the resume of the parked run"
+        case _:
+            return ""
+
+
+def _tenant_config_location(step: RemedyStep) -> str:
+    file = f"{step.config}.yaml"
+    if _is_tenant_file(step.config):
+        tenant = f" of tenant `{step.tenant}`" if step.tenant else ""
+        return f"`{step.key}` in `{file}` of the tenant config repository{tenant}"
+    return f"`{step.key}` in the platform's `{file}`, which {ADMINISTRATORS} change"
+
+
+def render_tenant_step(step: RemedyStep) -> str:
+    """Render one step for a tenant who acts through Slack buttons and holds no platform access.
+
+    The rendering names no shell command, path, or platform location in any posture.
+    """
+    kind = _kind(step)
+    if kind is None or kind is StepKind.TEXT:
+        return step.text
+    label = BUTTON_LABELS.get(kind)
+    if label:
+        return f"the {label} button"
+    if kind is StepKind.CONFIG_KEY:
+        return _tenant_config_location(step)
+    if kind is StepKind.WORKER_SETTING:
+        return f"the `{step.key}` setting, which {ADMINISTRATORS} set"
+    return f"{_administrator_action(kind, step)} from {ADMINISTRATORS}"
+
+
+def render_for_tenant(remedy: Remedy) -> str:
+    """Render a remedy whose actions are buttons on the tenant's Slack alert.
+
+    Remedy prose is written for a command, as in ``then run`` before an action, so the verb that
+    precedes a button becomes ``press`` and the verb that precedes an administrator action becomes
+    ``ask for``.
+    """
+    parts: list[str] = []
+    for step in remedy.steps:
+        kind = _kind(step)
+        if kind in COMMAND_KINDS and parts:
+            button = kind in BUTTON_LABELS
+
+            def _verb(match: re.Match[str], button: bool = button) -> str:
+                word = match.group(1)
+                verb = _TENANT_VERBS[(button, word.lower())]
+                return (verb[:1].upper() + verb[1:] if word[0].isupper() else verb) + " "
+
+            parts[-1] = _RUN_VERB.sub(_verb, parts[-1])
+        parts.append(render_tenant_step(step))
+    return "".join(parts)
+
+
+def button_actions(remedy: Remedy) -> tuple[RemedyStep, ...]:
+    """The remedy's actions that a tenant takes with a button, in the order the prose names them."""
+    return tuple(step for step in remedy.actions if _kind(step) in BUTTON_LABELS)
 
 
 def with_remedy(body: str, remedy_text: str) -> str:

@@ -19,7 +19,14 @@ from services.orchestration.intake_reconciler import (
     checks_not_configured_reason,
     reconcile_intake,
 )
-from tests.support import configure_repositories, hermetic_settings
+from tests.support import (
+    InMemoryModelPathEpisodes,
+    ModelPathStub,
+    capture_alerts,
+    configure_repositories,
+    hermetic_settings,
+    model_path_gate,
+)
 
 _ALLOW = frozenset({"repo-a", "repo-b", "repo-c"})
 _PROJECTS = {"ADEV", "ADSER"}
@@ -943,3 +950,144 @@ async def test_a_ticket_naming_an_unlisted_repository_is_told_to_list_it():
     await _run(read, starter, alerter, ledger, store, resolver)
 
     assert alerter.remedies == [remedies.unroutable_remedy("ADEV-1", "ADEV", ("navapbc/unlisted",))]
+
+
+_HOP_REMEDIES = {
+    "credentials": "`inv aws-login`",
+    "bedrock_path": "`inv tunnel-start --detach`",
+    "litellm": "`inv k8s-reload`",
+}
+
+
+async def _pass_through_model_path(read, gate, *, defaults):
+    starter, alerter, ledger, store, resolver = defaults
+    return await reconcile_intake(
+        read_source=read,
+        starter=starter,
+        alerter=alerter,
+        ledger=ledger,
+        execution_seeder=_Seeder(),
+        settings=hermetic_settings(),
+        jira_resolver=resolver,
+        snapshot_store=store,
+        model_path=gate,
+    )
+
+
+@pytest.mark.parametrize("hop", sorted(_HOP_REMEDIES))
+async def test_an_unhealthy_model_path_defers_alerts_once_and_starts_on_recovery(monkeypatch, hop):
+    alerts = capture_alerts(monkeypatch)
+    read = _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV"), _issue("ADEV-2", "ADEV")]})
+    defaults = _defaults()
+    starter, _, ledger, _, _ = defaults
+    path = ModelPathStub(hop)
+    gate = model_path_gate(path, ledger=ledger)
+
+    report = await _pass_through_model_path(read, gate, defaults=defaults)
+
+    assert starter.starts == []
+    assert report.deferred == ["ADEV-1", "ADEV-2"]
+    assert f"the {hop} hop" in report.deferral_reasons["ADEV-1"]
+    assert path.probes == 1
+    assert len(alerts) == 1
+    assert alerts[0].subject.startswith("Model path unavailable for this deployment")
+    assert f"Failing hop: {remedies.MODEL_PATH_HOP_LABELS[hop]} ({hop} hop)" in alerts[0].body
+    assert alerts[0].issue_key == "ADEV-1"
+    assert _HOP_REMEDIES[hop] not in alerts[0].body
+
+    path.hop = ""
+    path.next_pass()
+    report = await _pass_through_model_path(read, gate, defaults=defaults)
+
+    assert [start.issue_key for start in starter.starts] == ["ADEV-1", "ADEV-2"]
+    assert report.deferred == []
+    assert len(alerts) == 2
+    assert alerts[1].subject == "Model path recovered for this deployment"
+    assert f"Recovered hop: {remedies.MODEL_PATH_HOP_LABELS[hop]} ({hop} hop)" in alerts[1].body
+    assert _HOP_REMEDIES[hop] in alerts[1].body
+
+
+async def test_repeated_unhealthy_passes_across_a_worker_restart_alert_once(monkeypatch):
+    alerts = capture_alerts(monkeypatch)
+    read = _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV")]})
+    defaults = _defaults()
+    ledger = defaults[2]
+    episodes = InMemoryModelPathEpisodes()
+    path = ModelPathStub("bedrock_path")
+
+    for _ in range(3):
+        await _pass_through_model_path(
+            read, model_path_gate(path, ledger=ledger, episodes=episodes), defaults=defaults
+        )
+        path.next_pass()
+
+    assert path.probes == 3
+    assert len(alerts) == 1
+    assert defaults[0].starts == []
+
+
+async def test_a_pass_with_no_candidate_sends_no_probe(monkeypatch):
+    alerts = capture_alerts(monkeypatch)
+    defaults = _defaults()
+    path = ModelPathStub("credentials")
+
+    report = await _pass_through_model_path(
+        _ReadSource({}), model_path_gate(path, ledger=defaults[2]), defaults=defaults
+    )
+
+    assert path.probes == 0
+    assert alerts == []
+    assert report.deferred == []
+
+
+class _TenantHoldStub:
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        self.checks = 0
+
+    async def admit(self) -> str:
+        self.checks += 1
+        return self.reason
+
+
+async def _pass_with_hold(read, hold, *, defaults):
+    starter, alerter, ledger, store, resolver = defaults
+    return await reconcile_intake(
+        read_source=read,
+        starter=starter,
+        alerter=alerter,
+        ledger=ledger,
+        execution_seeder=_Seeder(),
+        settings=hermetic_settings(),
+        jira_resolver=resolver,
+        snapshot_store=store,
+        tenant_hold=hold,
+    )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "tenant_budget_spent: TENANT_MODEL_BUDGET_USD is spent at 100 of 100 USD",
+        "tenant_paused: Park all jobs by <@UTENANT> holds intake",
+    ],
+)
+async def test_a_tenant_hold_defers_every_ticket_with_its_reason(reason):
+    read = _ReadSource({"ADEV": [_issue("ADEV-1", "ADEV"), _issue("ADEV-2", "ADEV")]})
+    defaults = _defaults()
+    starter = defaults[0]
+
+    report = await _pass_with_hold(read, _TenantHoldStub(reason), defaults=defaults)
+
+    assert starter.starts == []
+    assert report.deferred == ["ADEV-1", "ADEV-2"]
+    assert report.deferral_reasons == {"ADEV-1": reason, "ADEV-2": reason}
+
+
+async def test_a_pass_without_candidates_still_checks_the_tenant_hold():
+    hold = _TenantHoldStub("")
+
+    report = await _pass_with_hold(_ReadSource({"ADEV": []}), hold, defaults=_defaults())
+
+    assert hold.checks == 1
+    assert report.deferred == []

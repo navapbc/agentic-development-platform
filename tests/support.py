@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
 from scripts.config import Settings
@@ -174,3 +175,126 @@ registries: [docker.io/, quay.io/, ghcr.io/, host.docker.internal:5001/, registr
 
 def write_image_policy(directory: Path, policy: str = PERMISSIVE_IMAGE_POLICY) -> None:
     (directory / "image_policy.yaml").write_text(policy, encoding="utf-8")
+
+
+class InMemoryModelPathEpisodes:
+    def __init__(self) -> None:
+        self.open_episodes: dict[str, Any] = {}
+        self.closed: list[Any] = []
+        self.resolvers: list[str] = []
+
+    async def open(self, tenant: str, hop: str) -> Any:
+        from services.orchestration.model_path import ModelPathEpisode
+
+        episode = self.open_episodes.get(tenant)
+        if episode is None:
+            episode = ModelPathEpisode(episode=f"episode-{len(self.closed) + 1}", hop=hop)
+            self.open_episodes[tenant] = episode
+        return episode
+
+    async def current(self, tenant: str) -> Any:
+        return self.open_episodes.get(tenant)
+
+    async def close(self, tenant: str, episode: str, *, resolved_by: str = "") -> None:
+        current = self.open_episodes.get(tenant)
+        if current is not None and current.episode == episode:
+            self.closed.append(self.open_episodes.pop(tenant))
+            self.resolvers.append(resolved_by)
+
+    async def record_post(self, tenant: str, episode: str, post: Any) -> None:
+        if getattr(post, "admin", False):
+            self._replace(
+                tenant,
+                episode,
+                admin_slack_channel=post.channel,
+                admin_slack_ts=post.ts,
+                admin_slack_token=post.owner_token,
+                admin_slack_blocks=post.blocks,
+            )
+        else:
+            self._replace(
+                tenant,
+                episode,
+                slack_channel=post.channel,
+                slack_ts=post.ts,
+                slack_blocks=post.blocks,
+            )
+
+    async def resolved(self, tenant: str, episode: str) -> Any:
+        return next((closed for closed in self.closed if closed.episode == episode), None)
+
+    async def mark_host_action_posted(self, tenant: str, episode: str, at: Any) -> None:
+        current = self.open_episodes.get(tenant)
+        if current is not None and current.host_action_at == at:
+            self._replace(tenant, episode, host_action_posted_at=at)
+
+    def record_host_action(self, text: str, at: Any) -> int:
+        written = 0
+        for tenant, current in list(self.open_episodes.items()):
+            if current.host_action != text:
+                self._replace(tenant, current.episode, host_action=text, host_action_at=at)
+                written += 1
+        return written
+
+    async def acknowledge(self, tenant: str, episode: str, actor: str, at: Any) -> Any:
+        return self._replace(tenant, episode, acknowledged_by=actor, acknowledged_at=at)
+
+    def _replace(self, tenant: str, episode: str, **values: Any) -> Any:
+        from dataclasses import replace
+
+        current = self.open_episodes.get(tenant)
+        if current is None or current.episode != episode:
+            return None
+        self.open_episodes[tenant] = replace(current, **values)
+        return self.open_episodes[tenant]
+
+
+class ModelPathStub:
+    def __init__(self, hop: str = "") -> None:
+        self.hop = hop
+        self.probes = 0
+        self.now = 0.0
+
+    async def probe(self) -> Any:
+        from services.orchestration.model_path import ModelPathHealth
+
+        self.probes += 1
+        return ModelPathHealth(hop=self.hop, error=f"{self.hop} failed" if self.hop else "")
+
+    def next_pass(self) -> None:
+        from services.orchestration.model_path import PROBE_CACHE_SECONDS
+
+        self.now += PROBE_CACHE_SECONDS
+
+
+def model_path_gate(
+    path: ModelPathStub,
+    *,
+    ledger: Any,
+    settings: Settings | None = None,
+    episodes: InMemoryModelPathEpisodes | None = None,
+    parks: Any = None,
+) -> Any:
+    from services.orchestration.intake_runtime import ModelPathNotifier
+    from services.orchestration.model_path import ModelPathGate, ModelPathProbe
+
+    resolved = settings or hermetic_settings()
+    return ModelPathGate(
+        probe=ModelPathProbe(path.probe, clock=lambda: path.now),
+        episodes=episodes if episodes is not None else InMemoryModelPathEpisodes(),
+        alerter=ModelPathNotifier(resolved),
+        ledger=ledger,
+        tenant=resolved.tenant,
+        parks=parks,
+    )
+
+
+def capture_alerts(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
+    messages: list[Any] = []
+
+    def _deliver(message: Any, settings: Any = None) -> list[str]:
+        messages.append(message)
+        return ["slack"]
+
+    monkeypatch.setattr("services.orchestration.notifications.deliver_alert", _deliver)
+    return messages

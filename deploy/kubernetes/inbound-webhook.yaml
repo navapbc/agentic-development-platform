@@ -58,12 +58,24 @@ spec:
                 secretKeyRef:
                   name: agentic-platform
                   key: database_url
+            - name: SLACK_POSTING_URL
+              value: https://slack-poster:8160
+            - name: SLACK_POSTING_TOKEN_FILE
+              value: /var/run/secrets/slack-posting/token
+            - name: SLACK_POSTING_CA_FILE
+              value: /etc/slack-poster-ca/ca.pem
           volumeMounts:
             - name: integration-config
               mountPath: /app/config/local
               readOnly: true
             - name: tmp
               mountPath: /tmp
+            - name: slack-posting-token
+              mountPath: /var/run/secrets/slack-posting
+              readOnly: true
+            - name: slack-poster-ca
+              mountPath: /etc/slack-poster-ca
+              readOnly: true
           resources:
             requests:
               cpu: 100m
@@ -100,6 +112,17 @@ spec:
             name: integration-config
         - name: tmp
           emptyDir: {}
+        - name: slack-posting-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: slack-posting-service
+                  expirationSeconds: 600
+                  path: token
+        - name: slack-poster-ca
+          configMap:
+            name: slack-poster-ca
+            optional: true
 ---
 apiVersion: v1
 kind: Service

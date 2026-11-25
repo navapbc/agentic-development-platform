@@ -112,6 +112,8 @@ services:
     command: ["alembic", "upgrade", "head"]
     restart: "no"
     profiles: ["tasks"]
+    healthcheck:
+      disable: true
     environment:
       ALEMBIC_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-platform}:${POSTGRES_PASSWORD:-change-me-locally}@postgres:5432/agent_platform
       DB_MIGRATE_IN_CONTAINER: "1"
@@ -149,6 +151,8 @@ services:
     command: ["python", "-m", "scripts.schedules"]
     restart: "no"
     profiles: ["tasks"]
+    healthcheck:
+      disable: true
     depends_on:
       temporal:
         condition: service_healthy

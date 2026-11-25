@@ -8,8 +8,9 @@ chart, and the AWS overlay, so the workstation needs none of them.
 
 - `deploy` installs or upgrades the Load Balancer Controller, renders the overlay for the
   environment, applies it, waits for each deployment, and waits for the load balancer of each
-  tenant's MCP gateway Ingress. It ends by listing every pod that is not host-networked and that
-  no NetworkPolicy selects, which strict network policy mode would deny.
+  tenant's MCP gateway Ingress. It lists every pod that is not host-networked and that no
+  NetworkPolicy selects, which strict network policy mode would deny, and ends by running the
+  deployment validation of every tenant, whose failures it prints without failing the deploy.
 - `restart` rolls the named deployments, `namespace/name` or a platform deployment by name,
   `tenant-workers` for every tenant's activity worker, `tenant-review-workers` for every tenant's
   review worker, and `mcp-gateway` for every tenant's MCP gateway, so their pods read the current
@@ -369,6 +370,13 @@ def deploy(inputs: Mapping[str, Any], omit_secrets: list[str]) -> None:
         host = document["spec"]["rules"][0]["host"]
         print(f"{LOG} the {tenant} MCP gateway serves https://{host}/mcp from {balancer}")
     report_unselected()
+    validate()
+
+
+def validate() -> None:
+    from scripts.validation_job import report_after_rollout
+
+    report_after_rollout([KUBECTL], PLATFORM_NAMESPACE)
 
 
 def restart(targets: list[str], inputs: Mapping[str, Any]) -> None:

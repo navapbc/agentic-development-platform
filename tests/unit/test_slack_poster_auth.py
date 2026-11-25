@@ -8,8 +8,10 @@ from pathlib import Path
 
 import httpx
 import pytest
-from services.slack_poster import TOKEN_AUDIENCE
+from services.orchestration.task_queues import TENANT_NAME
+from services.slack_poster import SERVICE_ACCOUNT_AUDIENCE
 from services.slack_poster.auth import (
+    PLATFORM_CALLER,
     IdentityRefused,
     KubernetesTokenReview,
     ReviewUnavailable,
@@ -25,7 +27,7 @@ class _Issued:
     username: str = WORKER
     pod_name: str | None = "activity-worker-abc"
     pod_uid: str | None = "0b6c3f1e-pod"
-    audiences: tuple[str, ...] = (TOKEN_AUDIENCE,)
+    audiences: tuple[str, ...] = (SERVICE_ACCOUNT_AUDIENCE,)
     reported_audiences: tuple[str, ...] | None = None
 
 
@@ -92,7 +94,11 @@ def test_activity_worker_pod_of_a_served_tenant_is_that_tenant(api):
     api.issued["worker"] = _Issued()
 
     assert _identity(api).tenant("worker") == "adp"
-    assert api.reviews[0]["spec"] == {"token": "worker", "audiences": [TOKEN_AUDIENCE]}
+    assert api.reviews[0]["spec"] == {"token": "worker", "audiences": [SERVICE_ACCOUNT_AUDIENCE]}
+
+
+def test_the_platform_caller_is_no_tenant_name():
+    assert not TENANT_NAME.fullmatch(PLATFORM_CALLER)
 
 
 def test_each_post_is_reviewed_with_the_current_own_token(api, own_token):

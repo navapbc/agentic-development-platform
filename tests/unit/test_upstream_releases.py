@@ -256,17 +256,20 @@ def test_every_component_names_a_repository_and_a_pin_the_versions_file_holds() 
     pins = base_versions.load()
     held = [c.name for c in upstream_releases.COMPONENTS if c.pin in pins]
     assert len({c.name for c in upstream_releases.COMPONENTS}) == len(upstream_releases.COMPONENTS)
-    assert {"kubectl", "trivy", "semgrep", "litellm", "langfuse-web", "clickhouse"} <= set(held)
+    assert {"kubectl", "trivy", "semgrep", "litellm", "langfuse-web", "clickhouse", "zoekt"} <= set(
+        held
+    )
     for component in upstream_releases.COMPONENTS:
         assert (
             component.repository in (upstream_releases.GO_FEED, upstream_releases.AL2023_FEED)
+            or upstream_releases.go_module(component)
             or component.repository.count("/") == 1
         )
 
 
 def test_amazon_linux_reads_its_newest_release_from_the_ecr_public_tags() -> None:
     documents = {
-        upstream_releases.AL2023_TOKEN: {"token": "anonymous"},
+        upstream_releases.AL2023_PULL_AUTH: {"token": "anonymous"},
         f"{upstream_releases.AL2023_TAGS}#anonymous": {
             "tags": ["latest", "2023", "2023.12.20261109.0", "2023.12.20261112.0", "2.0.20260101.0"]
         },
@@ -303,6 +306,40 @@ def test_a_repository_without_releases_is_read_from_its_version_tags() -> None:
 
     assert (release.newest, release.newer) == ("v0.6.10", True)
     assert release.url == "https://github.com/sourcegraph/scip-python/tree/v0.6.10"
+
+
+ZOEKT = Component(
+    "zoekt", f"{upstream_releases.GO_MODULE_PROXY}/github.com/sourcegraph/zoekt", "ZOEKT_VERSION"
+)
+ZOEKT_LATEST = f"https://{upstream_releases.GO_MODULE_PROXY}/github.com/sourcegraph/zoekt/@latest"
+
+
+@pytest.mark.parametrize(
+    ("latest", "newer"),
+    [
+        ("v0.0.0-20261120203655-b55ce727df8c", True),
+        ("v0.0.0-20260729135938-2cb19912a407", False),
+        ("v0.0.0-20260601000000-0123456789ab", False),
+    ],
+)
+def test_a_pseudo_version_pin_is_compared_by_commit_time_from_the_module_proxy(
+    latest: str, newer: bool
+) -> None:
+    documents = {ZOEKT_LATEST: {"Version": latest, "Time": "2026-11-20T20:36:55Z"}}
+
+    (release,) = upstream_releases.check(
+        {"ZOEKT_VERSION": "v0.0.0-20260729135938-2cb19912a407"}, fetcher(documents), (ZOEKT,)
+    )
+
+    assert (release.newest, release.newer, release.target) == (latest, newer, latest)
+    assert release.url == f"https://pkg.go.dev/github.com/sourcegraph/zoekt@{latest}"
+
+
+def test_module_versions_order_a_pseudo_version_below_the_release_it_precedes() -> None:
+    assert upstream_releases.is_newer_module("v1.2.4", "v1.2.4-0.20261120203655-b55ce727df8c")
+    assert upstream_releases.is_newer_module("v1.2.4-0.20261120203655-b55ce727df8c", "v1.2.3")
+    assert upstream_releases.is_newer_module("v0.1.0", "v0.0.0-20261120203655-b55ce727df8c")
+    assert not upstream_releases.is_newer_module("main", "v0.0.0-20261120203655-b55ce727df8c")
 
 
 class _Response:

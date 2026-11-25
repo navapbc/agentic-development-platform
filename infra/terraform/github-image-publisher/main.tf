@@ -99,18 +99,6 @@ resource "aws_iam_role_policy" "push" {
     Version = "2012-10-17"
     Statement = concat([
       {
-        Sid      = "EcrAuthorization"
-        Effect   = "Allow"
-        Action   = "ecr:GetAuthorizationToken"
-        Resource = "*"
-      },
-      {
-        Sid      = "ScanImagesBeforeThePush"
-        Effect   = "Allow"
-        Action   = "inspector-scan:ScanSbom"
-        Resource = "*"
-      },
-      {
         Sid    = "PushThePlatformImages"
         Effect = "Allow"
         Action = [
@@ -135,6 +123,32 @@ resource "aws_iam_role_policy" "push" {
       }],
       local.review_statements,
     )
+  })
+}
+
+# AWS authorizes these actions only on the * resource, so they stay out of the policy that names
+# the config objects.
+resource "aws_iam_role_policy" "push_account_actions" {
+  count = local.enabled ? 1 : 0
+
+  name = "sign-in-to-ecr-and-scan"
+  role = aws_iam_role.publisher[0].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "EcrAuthorization"
+        Effect   = "Allow"
+        Action   = "ecr:GetAuthorizationToken"
+        Resource = "*"
+      },
+      {
+        Sid      = "ScanImagesBeforeThePush"
+        Effect   = "Allow"
+        Action   = "inspector-scan:ScanSbom"
+        Resource = "*"
+      },
+    ]
   })
 }
 
@@ -172,6 +186,45 @@ resource "aws_iam_role_policy" "exception" {
     Version = "2012-10-17"
     Statement = [
       {
+        Sid      = "PullThePlatformImages"
+        Effect   = "Allow"
+        Action   = local.exception_pull_actions
+        Resource = concat(var.repository_arns, var.pull_repository_arns)
+      },
+      {
+        Sid      = "WriteThePlatformExceptions"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject", "s3:GetObjectVersion", "s3:PutObject"]
+        Resource = local.platform_exceptions
+      },
+      {
+        Sid      = "ReadTheImagePolicy"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject", "s3:GetObjectVersion"]
+        Resource = local.platform_policy
+      },
+      {
+        Sid       = "UseTheConfigKeyThroughS3"
+        Effect    = "Allow"
+        Action    = ["kms:Decrypt", "kms:GenerateDataKey"]
+        Resource  = local.config_kms_key_arn
+        Condition = local.config_key_through_s3
+      },
+    ]
+  })
+}
+
+# AWS authorizes these actions only on the * resource, so they stay out of the policy that names
+# the config objects.
+resource "aws_iam_role_policy" "exception_account_actions" {
+  count = local.exceptions_enabled ? 1 : 0
+
+  name = "sign-in-to-ecr-and-scan"
+  role = aws_iam_role.exception[0].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
         Sid      = "EcrAuthorization"
         Effect   = "Allow"
         Action   = "ecr:GetAuthorizationToken" # sast-accepted: image-exception role
@@ -182,31 +235,6 @@ resource "aws_iam_role_policy" "exception" {
         Effect   = "Allow"
         Action   = "inspector-scan:ScanSbom"
         Resource = "*"
-      },
-      {
-        Sid      = "PullThePlatformImages"
-        Effect   = "Allow"
-        Action   = local.exception_pull_actions
-        Resource = concat(var.repository_arns, var.pull_repository_arns)
-      },
-      {
-        Sid      = "WriteThePlatformExceptions"
-        Effect   = "Allow"
-        Action   = ["s3:GetObject", "s3:GetObjectVersion", "s3:PutObject"] # sast-accepted: image-exception role
-        Resource = local.platform_exceptions
-      },
-      {
-        Sid      = "ReadTheImagePolicy"
-        Effect   = "Allow"
-        Action   = ["s3:GetObject", "s3:GetObjectVersion"] # sast-accepted: image-exception role
-        Resource = local.platform_policy
-      },
-      {
-        Sid       = "UseTheConfigKeyThroughS3"
-        Effect    = "Allow"
-        Action    = ["kms:Decrypt", "kms:GenerateDataKey"]
-        Resource  = local.config_kms_key_arn
-        Condition = local.config_key_through_s3
       },
     ]
   })

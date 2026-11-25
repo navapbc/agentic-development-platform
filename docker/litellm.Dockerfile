@@ -24,6 +24,13 @@ RUN schema="$(python -c 'import litellm, os; print(os.path.join(os.path.dirname(
       prisma generate --schema=/app/schema.prisma \
  && find /app/.venv -type d -path "*/tornado/test" -prune -exec rm -rf {} +
 
+FROM ${AL2023_IMAGE} AS rds-ca
+ARG RDS_CA_BUNDLE_URL=https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
+ARG RDS_CA_BUNDLE_SHA256=90a6f1a7978a1b1b096dca6c57511ca48d3b8cf052f8e704baf358f34ea2f21b
+RUN mkdir /out \
+ && curl -fsSLo /out/rds-global-bundle.pem "${RDS_CA_BUNDLE_URL}" \
+ && echo "${RDS_CA_BUNDLE_SHA256}  /out/rds-global-bundle.pem" | sha256sum -c -
+
 FROM ${AL2023_IMAGE}
 ARG AL2023_RELEASE=2023.12.20261112
 LABEL org.opencontainers.image.licenses="MIT"
@@ -46,11 +53,10 @@ COPY --from=build /app /app
 COPY --from=build /opt/prisma /opt/prisma
 COPY --chmod=0555 docker/litellm/prod_entrypoint.sh /app/docker/prod_entrypoint.sh
 RUN chmod -R a+rX /opt/prisma
-ARG RDS_CA_BUNDLE_URL=https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
-ARG RDS_CA_BUNDLE_SHA256=90a6f1a7978a1b1b096dca6c57511ca48d3b8cf052f8e704baf358f34ea2f21b
-ADD --checksum=sha256:${RDS_CA_BUNDLE_SHA256} --chmod=0444 ${RDS_CA_BUNDLE_URL} /etc/ssl/rds-global-bundle.pem
+COPY --from=rds-ca --chmod=0444 /out/rds-global-bundle.pem /etc/ssl/rds-global-bundle.pem
 EXPOSE 4000/tcp
 RUN cis-harden
 USER 10001:10001
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 CMD ["curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:4000/health/liveliness"]
 ENTRYPOINT ["docker/prod_entrypoint.sh"]
 CMD ["--port", "4000"]

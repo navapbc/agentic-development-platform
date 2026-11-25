@@ -50,13 +50,20 @@ class SuspendableWorkflow:
         """
         if not self._park_keys_enabled():
             return ""
+        return self._numbered_park_key(execution_id, stage, subject)
+
+    def _numbered_park_key(self, execution_id: str, stage: str, subject: str) -> str:
         self._park_seq += 1
         return f"{execution_id}:{stage}:{subject}:{self._park_seq}"
 
     def _waiting_park_key(self, *, repair: bool) -> str:
-        """Return the key of the park the run waits on, when it is a repair park or a gate park."""
         suspension = self._suspension
         if suspension is None or not suspension.park_key:
+            return ""
+        # The Abandon button of a limit park sends the repair decision.
+        if suspension.reason == SuspendReason.LIMIT_REACHED:
+            return suspension.park_key if repair else ""
+        if suspension.reason != SuspendReason.AWAITING_HUMAN:
             return ""
         if (suspension.stage == REPAIR_STAGE) != repair:
             return ""

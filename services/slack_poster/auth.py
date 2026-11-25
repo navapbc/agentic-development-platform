@@ -1,6 +1,9 @@
 """The tenant of a caller of the posting service, from a TokenReview of its projected token.
 
-Only an activity worker pod of a served tenant may post. A caller presents the service account
+An activity worker pod of a served tenant posts for its tenant. A pod of a platform service
+account in the platform namespace, the inbound webhook or the deployment-validate Job, is named
+PLATFORM_CALLER, which the service admits only for administrator posts and reads of the groups
+platform-escalation.yaml names. A caller presents the service account
 token that its pod mounts for the posting service audience, and the service asks the Kubernetes
 API server to review it with the service's own service account credentials. Every post is
 reviewed, and no review result is reused.
@@ -21,7 +24,7 @@ import httpx
 
 from services.http_front_door import bearer_header
 from services.orchestration.task_queues import TENANT_NAME
-from services.slack_poster import TOKEN_AUDIENCE
+from services.slack_poster import SERVICE_ACCOUNT_AUDIENCE
 
 SERVICE_ACCOUNT_DIR = Path("/var/run/secrets/kubernetes.io/serviceaccount")
 REVIEW_PATH = "/apis/authentication.k8s.io/v1/tokenreviews"
@@ -33,6 +36,9 @@ WORKER_POD_PREFIX = "activity-worker-"
 SERVICE_ACCOUNT_USER_PREFIX = "system:serviceaccount:"
 POD_NAME_EXTRA = "authentication.kubernetes.io/pod-name"
 POD_UID_EXTRA = "authentication.kubernetes.io/pod-uid"
+PLATFORM_NAMESPACE = "agentic-dev-platform"
+PLATFORM_SERVICE_ACCOUNTS = frozenset({"inbound-webhook", "deployment-validate"})
+PLATFORM_CALLER = "@platform"
 
 TokenReview = Callable[[str], Mapping[str, Any]]
 
@@ -77,7 +83,7 @@ class KubernetesTokenReview:
         review = {
             "apiVersion": "authentication.k8s.io/v1",
             "kind": "TokenReview",
-            "spec": {"token": token, "audiences": [TOKEN_AUDIENCE]},
+            "spec": {"token": token, "audiences": [SERVICE_ACCOUNT_AUDIENCE]},
         }
         try:
             own_token = self._own_token.read_text(encoding="utf-8").strip()
@@ -98,7 +104,8 @@ class KubernetesTokenReview:
 
 
 class WorkerIdentity:
-    """Name the tenant whose activity worker pod presented a token, or refuse the token."""
+    """Name the tenant whose activity worker pod presented a token, or PLATFORM_CALLER for a pod
+    of a platform service account, or refuse the token."""
 
     def __init__(self, review: TokenReview, tenants: Collection[str]) -> None:
         self._review = review
@@ -108,14 +115,20 @@ class WorkerIdentity:
         status = self._review(token)
         if status.get("authenticated") is not True:
             raise IdentityRefused("the token is not authenticated")
-        if TOKEN_AUDIENCE not in (status.get("audiences") or ()):
+        if SERVICE_ACCOUNT_AUDIENCE not in (status.get("audiences") or ()):
             raise IdentityRefused("the review does not carry the posting service audience")
         user = status.get("user") or {}
-        tenant = self._worker_tenant(str(user.get("username") or ""))
+        username = str(user.get("username") or "")
+        platform_account = _platform_account(username)
+        tenant = PLATFORM_CALLER if platform_account else self._worker_tenant(username)
         extra = user.get("extra") or {}
         if not _single(extra.get(POD_UID_EXTRA)):
             raise IdentityRefused("the token is not bound to a pod")
-        if not _single(extra.get(POD_NAME_EXTRA)).startswith(WORKER_POD_PREFIX):
+        pod = _single(extra.get(POD_NAME_EXTRA))
+        if platform_account:
+            if not pod.startswith(f"{platform_account}-"):
+                raise IdentityRefused("the token is not bound to a pod of its service account")
+        elif not pod.startswith(WORKER_POD_PREFIX):
             raise IdentityRefused("the token is not bound to an activity worker pod")
         return tenant
 
@@ -133,6 +146,17 @@ class WorkerIdentity:
         ):
             raise IdentityRefused("the caller's namespace is not a served tenant's namespace")
         return tenant
+
+
+def _platform_account(username: str) -> str:
+    namespace, _, account = username.removeprefix(SERVICE_ACCOUNT_USER_PREFIX).partition(":")
+    if (
+        username.startswith(SERVICE_ACCOUNT_USER_PREFIX)
+        and namespace == PLATFORM_NAMESPACE
+        and account in PLATFORM_SERVICE_ACCOUNTS
+    ):
+        return account
+    return ""
 
 
 def _single(values: object) -> str:

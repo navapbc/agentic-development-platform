@@ -182,6 +182,11 @@ spec:
           podSelector:
             matchLabels:
               app.kubernetes.io/name: activity-worker
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values: [inbound-webhook, deployment-validate]
       ports:
         - protocol: TCP
           port: 8160

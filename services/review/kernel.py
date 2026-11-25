@@ -141,7 +141,7 @@ def _raw_from_decided(decided: list[dict[str, Any]], tier: str, model_id: str | 
                 location=None,
             )
         )
-    verdict = Verdict.BLOCK if any(f.blocking for f in findings) else Verdict.PASS
+    verdict = Verdict.BLOCK if any(f.blocking for f in findings) else Verdict.PASSED
     provenance = [ModelProvenance(leg="finder", tier=tier, model_id=model_id)]
     return RawReview(verdict=verdict, findings=findings, provenance=provenance)
 

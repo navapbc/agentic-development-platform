@@ -13,5 +13,6 @@ RUN chmod 0755 /bin/entrypoint.sh
 
 RUN cis-harden
 USER 65534:65534
+HEALTHCHECK NONE
 
 ENTRYPOINT ["/bin/entrypoint.sh"]

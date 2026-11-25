@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import json
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -30,6 +29,7 @@ from services.integration.tenant_secrets import (
     action_key_fingerprint,
     secret_env_name,
 )
+from services.orchestration.platform_escalation import PLATFORM_ESCALATION_FILE
 from services.orchestration.webhook.tenants import (
     GITHUB_SIGNING_ENV_PREFIX,
     JIRA_SIGNING_ENV_PREFIX,
@@ -38,12 +38,16 @@ from services.orchestration.webhook.tenants import (
 from scripts.k8s_render import (
     RenderInputs,
     config_map,
+    platform_escalation_file,
     secret,
+    settings_digest,
     tenant_bundle,
 )
+from scripts.validation_job import CONTAINER as VALIDATION_CONTAINER
+from scripts.validation_job import validation_cronjob
 from scripts.webhook_eks_render import (
     SHARED_APP_FILE,
-    SHARED_SIGNING_SECRET_ALIAS,
+    SHARED_SIGNING_ALIAS,
     SLACK_POSTER,
     SLACK_POSTER_CA,
     SLACK_POSTER_CA_KEY,
@@ -69,8 +73,9 @@ ROUTING_FILES = (
 # The integration-config ConfigMap lists fixed platform files, and kustomize fails on a listed file
 # that is absent, so an optional platform routing file is projected here.
 ENVIRONMENT_ROUTING_FILES = ("gates.yaml", SHARED_APP_FILE)
-SHARED_BOT_TOKEN = "SLACK_SHARED_BOT_TOKEN"
-SHARED_BOT_TOKEN_KEY = "slack_shared_bot_token"
+PLATFORM_FILES = (*ENVIRONMENT_ROUTING_FILES, PLATFORM_ESCALATION_FILE)
+SHARED_BOT_CREDENTIAL_SETTING = "SLACK_SHARED_BOT_TOKEN"
+SHARED_BOT_CREDENTIAL_KEY = "slack_shared_bot_token"
 SLACK_POSTER_BOT_HASH = "agentic-dev-platform/slack-poster-token-hash"
 SLACK_POSTER_TLS = "slack-poster-tls"
 SLACK_POSTER_TLS_FINGERPRINT = "agentic-dev-platform/slack-poster-tls-fingerprint"
@@ -126,7 +131,7 @@ def environment_routing_files(environment_dir: Path) -> dict[str, str]:
 def _project_routing_files(pod: dict[str, Any], files: Iterable[str]) -> None:
     items = []
     for key in sorted(files):
-        if key in ENVIRONMENT_ROUTING_FILES:
+        if key in PLATFORM_FILES:
             items.append({"key": key, "path": key})
             continue
         tenant, name = key.split(".", 1)
@@ -168,8 +173,8 @@ def slack_poster_tls_objects(inputs: RenderInputs) -> list[dict[str, Any]]:
 def localize_webhook(
     documents: list[dict[str, Any]], inputs: RenderInputs, names: Sequence[str]
 ) -> list[dict[str, Any]]:
-    """Name the webhook's tenants, and add the platform's optional routing files and each
-    tenant's secrets and routing files.
+    """Name the webhook's tenants, and add the platform's optional routing files, its
+    platform-escalation.yaml, and each tenant's secrets and routing files.
 
     The webhook always receives TENANTS, so a single-tenant webhook serves the tenant whose
     worker polls its task queue.
@@ -184,13 +189,13 @@ def localize_webhook(
     container = next(c for c in pod["containers"] if c["name"] == WEBHOOK)
     container.setdefault("env", []).append({"name": "TENANTS", "value": ",".join(names)})
     environment_dir = env_config_dir(root=inputs.root)
-    files = environment_routing_files(environment_dir)
+    files = environment_routing_files(environment_dir) | platform_escalation_file(inputs.root)
     runs_poster = environment_runs_slack_poster(environment_dir)
     tenants_dir = environment_dir / "tenants"
     files.update(webhook_routing_files(tenants_dir, names))
     own = {tenant: read_tenant_settings(tenants_dir, tenant) for tenant in names}
     secrets = webhook_secret_values(names, own)
-    for alias in (SHARED_SIGNING_SECRET_ALIAS, SOCKET_MODE_ALIAS):
+    for alias in (SHARED_SIGNING_ALIAS, SOCKET_MODE_ALIAS):
         value = (inputs.env.get(alias) or "").strip()
         if runs_poster and value:
             secrets[alias] = value
@@ -207,14 +212,36 @@ def localize_webhook(
     added = []
     if secrets:
         container.setdefault("envFrom", []).append({"secretRef": {"name": WEBHOOK_TENANT_ENV}})
-        digest = hashlib.sha256(json.dumps(secrets, sort_keys=True).encode()).hexdigest()[:16]
+        digest = settings_digest(secrets)
         annotations = template.setdefault("metadata", {}).setdefault("annotations", {})
         annotations[WEBHOOK_TENANT_ENV_HASH] = digest
         added.append(secret(WEBHOOK_TENANT_ENV, secrets))
     if files:
         _project_routing_files(pod, files)
+        _mount_platform_files(documents, files)
         added.append(config_map(WEBHOOK_CONFIG, files))
     return [*documents, *added]
+
+
+def _mount_platform_files(documents: list[dict[str, Any]], files: Iterable[str]) -> None:
+    cronjob = validation_cronjob(documents)
+    keys = sorted(key for key in files if key in (SHARED_APP_FILE, PLATFORM_ESCALATION_FILE))
+    if cronjob is None or not keys:
+        return
+    pod = cronjob["spec"]["jobTemplate"]["spec"]["template"]["spec"]
+    pod.setdefault("volumes", []).append(
+        {
+            "name": INTEGRATION_CONFIG,
+            "configMap": {
+                "name": WEBHOOK_CONFIG,
+                "items": [{"key": key, "path": key} for key in keys],
+            },
+        }
+    )
+    container = next(c for c in pod["containers"] if c["name"] == VALIDATION_CONTAINER)
+    container.setdefault("volumeMounts", []).append(
+        {"name": INTEGRATION_CONFIG, "mountPath": "/app/config/local", "readOnly": True}
+    )
 
 
 def localize_slack_poster(
@@ -244,11 +271,11 @@ def localize_slack_poster(
         for tenant, key in sorted(action_keys.items())
     )
     _project_routing_files(pod, files)
-    token = (inputs.env.get(SHARED_BOT_TOKEN) or "").strip()
+    token = (inputs.env.get(SHARED_BOT_CREDENTIAL_SETTING) or "").strip()
     annotations = template.setdefault("metadata", {}).setdefault("annotations", {})
     annotations[SLACK_POSTER_BOT_HASH] = hashlib.sha256(token.encode()).hexdigest()[:16]
     tls = platform_document(documents, "Secret", SLACK_POSTER_TLS)
     if tls is not None:
         leaf = base64.b64decode(tls["data"]["tls.crt"])
         annotations[SLACK_POSTER_TLS_FINGERPRINT] = hashlib.sha256(leaf).hexdigest()[:16]
-    return [*documents, secret(SLACK_POSTER, {SHARED_BOT_TOKEN_KEY: token})]
+    return [*documents, secret(SLACK_POSTER, {SHARED_BOT_CREDENTIAL_KEY: token})]

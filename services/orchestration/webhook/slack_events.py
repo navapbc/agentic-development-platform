@@ -13,7 +13,9 @@ A tenant route serves its tenant only while the tenant's Slack settings name web
 the tenant's own app. The shared route decides each click under the tenant on the shared app whose
 escalation.yaml names the click's channel, read from the refreshed channel index, and refuses a
 click from a channel that routes to no tenant with an ephemeral reply through a response_url on the
-shared app's hooks host.
+shared app's hooks host. A click from the platform administrator channel of
+platform-escalation.yaml is decided by the dispatcher of the tenant its signed value names, under
+the administrator allowlist.
 """
 
 from __future__ import annotations
@@ -35,6 +37,7 @@ import httpx
 from services.integration.slack.dispatcher import (
     DecisionRecords,
     DispatchResult,
+    SlackClick,
     SlackDispatcher,
     click_from_payload,
     refuse_unrouted,
@@ -42,12 +45,15 @@ from services.integration.slack.dispatcher import (
 from services.integration.slack.messages import ephemeral_reply
 from services.integration.slack.policy import hooks_url_allowed, response_url_allowed
 from services.integration.slack.shared_app import SharedSlackApp
+from services.integration.slack.tokens import peek_tenant
 from services.orchestration.escalation import (
+    REPAIR_KIND,
     SHARED_APP,
     WEBHOOK_TRANSPORT,
     SlackSettings,
     host_of,
 )
+from services.orchestration.platform_escalation import AdminDestination
 
 log = logging.getLogger(__name__)
 
@@ -62,6 +68,7 @@ SlackSettingsSource = Callable[[str], SlackSettings | None]
 ChannelTenantSource = Callable[[str], str | None]
 SharedAppSource = Callable[[], SharedSlackApp | None]
 RetainedHolderSource = Callable[[str], Awaitable[str | None]]
+AdminDestinationSource = Callable[[], AdminDestination | None]
 
 
 @dataclass(frozen=True)
@@ -103,13 +110,13 @@ def decode_payload(body: bytes) -> dict[str, Any] | None:
 
 
 def follow_up_message(result: DispatchResult) -> dict[str, Any]:
-    """Replace the message with the outcome after an accepted decision, else reply ephemerally."""
-    if result.accepted:
-        return {
-            "replace_original": True,
-            "text": result.reply,
-            "blocks": [{"type": "section", "text": {"type": "plain_text", "text": result.reply}}],
-        }
+    """Replace the post with its decided blocks after an accepted decision, else reply
+    ephemerally.
+
+    An alert action edits its post itself, so its outcome is always an ephemeral reply.
+    """
+    if result.accepted and not result.alert and result.post:
+        return {"replace_original": True, "text": result.reply, "blocks": list(result.post)}
     return ephemeral_reply(result.reply)
 
 
@@ -233,6 +240,7 @@ class SharedSlackInteractivity(SlackRoute):
         dispatchers: Mapping[str, SlackDispatcher],
         records: DecisionRecords,
         retained_holder: RetainedHolderSource,
+        admin: AdminDestinationSource = lambda: None,
     ) -> None:
         super().__init__("the shared Slack app")
         self._route = route
@@ -243,6 +251,7 @@ class SharedSlackInteractivity(SlackRoute):
         self._dispatchers = dispatchers
         self._records = records
         self._retained_holder = retained_holder
+        self._admin = admin
 
     async def handle(self, body: bytes, headers: Mapping[str, str]) -> SlackReply:
         if self._shared_app() is None:
@@ -262,6 +271,9 @@ class SharedSlackInteractivity(SlackRoute):
         if payload.get("type") != BLOCK_ACTIONS:
             return SlackReply(200)
         click = click_from_payload(payload)
+        destination = self._admin()
+        if destination is not None and destination.slack_channel == click.channel != "":
+            return await self._decide_admin(payload, click, destination, shared_app)
         tenant = self._channel_tenant(click.channel)
         retained = None
         if tenant is None and click.channel:
@@ -281,5 +293,30 @@ class SharedSlackInteractivity(SlackRoute):
             else hooks_url_allowed(response_url, host_of(shared_app.api_base_url))
         )
         if not allowed:
+            return SlackReply(200)
+        return SlackReply(200, follow_up=FollowUp(response_url, follow_up_message(result)))
+
+    async def _decide_admin(
+        self,
+        payload: dict[str, Any],
+        click: SlackClick,
+        destination: AdminDestination,
+        shared_app: SharedSlackApp,
+    ) -> SlackReply:
+        """The tenant claim is read before verification only to choose the dispatcher, which
+        verifies the value under that tenant's action key.
+        """
+        dispatcher = self._dispatchers.get(peek_tenant(click.value))
+        if dispatcher is None:
+            result = await refuse_unrouted(click, self._records, route=self._route)
+        else:
+            result = await dispatcher.dispatch_admin(
+                click,
+                channel=destination.slack_channel,
+                organization=destination.organization_id,
+                approvers=destination.approvers(REPAIR_KIND),
+            )
+        response_url = str(payload.get("response_url") or "")
+        if not hooks_url_allowed(response_url, host_of(shared_app.api_base_url)):
             return SlackReply(200)
         return SlackReply(200, follow_up=FollowUp(response_url, follow_up_message(result)))

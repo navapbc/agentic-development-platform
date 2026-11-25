@@ -276,6 +276,12 @@ class PostgresSideEffectLedger:
                 return scoped.side_effect_key, scoped.result
         return None
 
+    async def lookup(self, ref: SideEffectRef) -> Any | None:
+        """Return the result recorded under ``ref``, or None when no effect completed under it."""
+        async with self._get_engine().connect() as conn:
+            completed = await self._completed(conn, ref, side_effect_key(ref))
+        return completed[1] if completed else None
+
     async def release(self, ref: SideEffectRef) -> None:
         """Leave a pending reservation for the next caller to take over at once."""
         async with self._get_engine().begin() as conn:
@@ -317,6 +323,10 @@ class InMemorySideEffectLedger:
         reentrant = pending_key is not None
         self._pending[key] = ref
         return SideEffectOutcome(key, replayed=False, result=None, reentrant=reentrant)
+
+    async def lookup(self, ref: SideEffectRef) -> Any | None:
+        key = _matching_ref_key({k: record[0] for k, record in self._records.items()}, ref)
+        return self._records[key][1] if key is not None else None
 
     async def record(self, ref: SideEffectRef, result: Any) -> SideEffectOutcome:
         key = side_effect_key(ref)

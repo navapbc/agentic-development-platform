@@ -52,6 +52,7 @@ EXPECTED_TASKS = {
     "sast",
     "terraform-test",
     "workflow-status",
+    "resume-parked",
     "durability-proof",
     "prune-worker-versions",
     "cbm-build",
@@ -67,6 +68,7 @@ EXPECTED_TASKS = {
     "webhook-certs",
     "mcp-gateway-certs",
     "eks-deploy",
+    "deployment-validate",
     "langfuse-ui",
     "temporal-deploy",
     "platform-deploy",
@@ -88,6 +90,9 @@ EXPECTED_TASKS = {
     "k8s-delete",
     "k8s-reload",
     "aws-login",
+    "local-renew",
+    "local-renew-install",
+    "local-renew-uninstall",
     "repos-sync",
     "fetch-results",
     "gate-engine-images",
@@ -204,6 +209,22 @@ def test_restart_runs_in_the_activity_worker(project):
 
     assert container.commands == [_in_activity_worker("python -m scripts.restart T-1 --repo demo")]
     assert host.commands == [f"{tasks_module.HOST_PYTHON} -m scripts.restart T-1"]
+
+
+def test_resume_parked_resumes_one_model_path_park_in_the_activity_worker(project):
+    container, host, builds = _RecordingContext(), _RecordingContext(), _RecordingContext()
+
+    tasks_module.resume_parked(container, issue="T-1")
+    tasks_module.resume_parked(host, workflow_id="draft-pr-T-1-exec-1", local=True)
+    tasks_module.resume_parked(builds)
+
+    assert container.commands == [
+        _in_activity_worker("python -m scripts.resume_parked --issue T-1")
+    ]
+    assert host.commands == [
+        f"{tasks_module.HOST_PYTHON} -m scripts.resume_parked --workflow-id draft-pr-T-1-exec-1"
+    ]
+    assert builds.commands == [f"{tasks_module.HOST_PYTHON} -m scripts.resume_parked"]
 
 
 class _EnvRecordingContext(Context):
@@ -583,3 +604,29 @@ def test_k8s_reload_regenerates_the_compose_override_before_compose_starts(proje
     assert context.commands.index(override) < next(
         index for index, command in enumerate(context.commands) if " up -d " in command
     )
+
+
+@pytest.mark.parametrize(
+    ("options", "flags"),
+    [
+        ({"platform": True}, "--platform"),
+        ({"all_tenants": True, "context": "eks"}, "--all-tenants --context eks"),
+        ({"tenant": "adp", "post": True}, "--tenant adp --post"),
+    ],
+)
+def test_deployment_validate_runs_the_job_for_one_scope(options, flags):
+    context = _RecordingContext()
+
+    tasks_module.deployment_validate(context, **options)
+
+    assert context.commands == [f"{tasks_module.HOST_PYTHON} -m scripts.validation_job {flags}"]
+
+
+@pytest.mark.parametrize("options", [{}, {"platform": True, "tenant": "adp"}])
+def test_deployment_validate_refuses_no_scope_or_two(options):
+    context = _RecordingContext()
+
+    with pytest.raises(Exit, match="exactly one of --platform, --all-tenants, or --tenant"):
+        tasks_module.deployment_validate(context, **options)
+
+    assert context.commands == []

@@ -145,7 +145,9 @@ def _gateway_ingress(tenant: str) -> dict:
     }
 
 
-def _deploy_without_a_cluster(monkeypatch, balancers: dict[str, str]) -> list[list[str]]:
+def _deploy_without_a_cluster(
+    monkeypatch, balancers: dict[str, str], validate=lambda: None
+) -> list[list[str]]:
     rendered: list[dict] = []
     rolled: list[list[str]] = []
 
@@ -160,6 +162,7 @@ def _deploy_without_a_cluster(monkeypatch, balancers: dict[str, str]) -> list[li
     monkeypatch.setattr(eks_deploy_task, "delete_retired", lambda: None)
     monkeypatch.setattr(eks_deploy_task, "rollout", lambda targets: rolled.append(list(targets)))
     monkeypatch.setattr(eks_deploy_task, "report_unselected", lambda: [])
+    monkeypatch.setattr(eks_deploy_task, "validate", validate)
     monkeypatch.setattr(
         eks_deploy_task, "wait_for_hostname", lambda name, namespace: balancers[namespace]
     )
@@ -183,6 +186,22 @@ def test_each_tenant_gateway_is_rendered_once_and_its_load_balancer_awaited(
     out = capsys.readouterr().out
     assert "https://mcp-adp.mcp.example.internal/mcp from adp.elb.example" in out
     assert "https://mcp-beta.mcp.example.internal/mcp from beta.elb.example" in out
+
+
+def test_the_deploy_ends_with_the_validation_of_every_tenant(monkeypatch) -> None:
+    steps: list[str] = []
+    monkeypatch.setattr(
+        "scripts.validation_job.report_after_rollout",
+        lambda kubectl, namespace: steps.append(f"{kubectl[0]} {namespace}") or False,
+    )
+
+    rolled = _deploy_without_a_cluster(
+        monkeypatch,
+        {"tenant-adp": "adp.elb.example", "tenant-beta": "beta.elb.example"},
+        validate=eks_deploy_task.validate,
+    )
+
+    assert rolled and steps == [f"{eks_deploy_task.KUBECTL} agentic-dev-platform"]
 
 
 def test_a_gateway_load_balancer_that_never_appears_fails_the_deploy(monkeypatch) -> None:
@@ -576,6 +595,7 @@ def _eks() -> dict:
         "mcp_gateway_certificate_arn": "arn:cert",
         "mcp_gateway_zone_id": "Z0MCP",
         "mcp_gateway_hosts": HOSTS,
+        "environment_config": {"platform-escalation.yaml": "config_version: 1\n"},
     }
 
 
@@ -610,6 +630,16 @@ def test_an_uncovered_gateway_host_stops_the_deploy_before_the_task(monkeypatch)
 
     with pytest.raises(eks_deploy.DeployError, match="MCP gateway certificate"):
         eks_deploy.deploy(session, _eks(), ["deploy"])
+    assert ecs.started == {}
+
+
+def test_an_environment_config_without_platform_escalation_stops_the_deploy_before_the_task():
+    ecs = _FakeEcs(0)
+    session = _FakeSession({"acm": _FakeAcm("*.mcp.example.internal", []), "ecs": ecs})
+    eks = {**_eks(), "environment_config": {}}
+
+    with pytest.raises(eks_deploy.DeployError, match="platform-escalation.yaml.example"):
+        eks_deploy.deploy(session, eks, ["deploy"])
     assert ecs.started == {}
 
 

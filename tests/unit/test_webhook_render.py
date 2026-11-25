@@ -6,11 +6,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from scripts import webhook_eks_render, webhook_render
+from scripts import k8s_render, webhook_eks_render, webhook_render
+from scripts.tenant_render import review_namespace
 from scripts.webhook_render import webhook_secret_values
-from services.slack_poster import PORT, TOKEN_AUDIENCE
+from services.slack_poster import PORT, SERVICE_ACCOUNT_AUDIENCE
 from tests.support import SHARED_APP_YAML
-from tests.unit.test_k8s_cluster import ADP_ENV, _beta_files, _in, _rendered
+from tests.unit.test_k8s_cluster import ADP_ENV, _beta_files, _in, _rendered, _worker
 
 BETA_SETTINGS = (
     "GITHUB_TOKEN=beta-token\nREBAR_PROJECT=BETA\nMCP_GATEWAY_TOKEN=beta-gateway-token\n"
@@ -249,7 +250,7 @@ SHARED_ENV = {
 }
 
 
-def _shared_tenants(tmp_path: Path) -> list[dict]:
+def _shared_tenants(tmp_path: Path, **render: Any) -> list[dict]:
     files = _beta_files(
         **{
             "tenants/beta.env": BETA_SETTINGS,
@@ -258,7 +259,7 @@ def _shared_tenants(tmp_path: Path) -> list[dict]:
             "slack-shared-app.yaml": SHARED_APP,
         }
     )
-    return _rendered(tmp_path, files, SHARED_ENV, adp=ADP_SETTINGS)
+    return _rendered(tmp_path, files, SHARED_ENV, adp=ADP_SETTINGS, **render)
 
 
 def test_without_a_shared_app_the_cluster_runs_no_slack_poster(
@@ -378,7 +379,7 @@ def test_every_tenant_worker_can_reach_the_slack_poster_with_a_projected_token(
         assert volume["projected"]["sources"] == [
             {
                 "serviceAccountToken": {
-                    "audience": TOKEN_AUDIENCE,
+                    "audience": SERVICE_ACCOUNT_AUDIENCE,
                     "expirationSeconds": 600,
                     "path": "token",
                 }
@@ -419,10 +420,10 @@ def test_the_slack_poster_receives_each_action_key_fingerprint_and_no_key(
         for tenant in ("ADP", "BETA")
     }
     poster_secret = _in(documents, "Secret", "agentic-dev-platform", webhook_render.SLACK_POSTER)
-    assert set(_decoded(poster_secret)) == {webhook_render.SHARED_BOT_TOKEN_KEY}
+    assert set(_decoded(poster_secret)) == {webhook_render.SHARED_BOT_CREDENTIAL_KEY}
 
 
-def test_only_tenant_activity_workers_are_admitted_to_the_local_slack_poster(
+def test_only_tenant_activity_workers_and_platform_callers_reach_the_local_slack_poster(
     tmp_path: Path,
 ) -> None:
     documents = _shared_tenants(tmp_path)
@@ -433,8 +434,19 @@ def test_only_tenant_activity_workers_are_admitted_to_the_local_slack_poster(
         "matchLabels": {"app.kubernetes.io/name": webhook_render.SLACK_POSTER}
     }
     [rule] = policy["spec"]["ingress"]
-    [peer] = rule["from"]
+    peer, platform_peer = rule["from"]
     assert peer["podSelector"] == {"matchLabels": {"app.kubernetes.io/name": "activity-worker"}}
+    assert platform_peer == {
+        "podSelector": {
+            "matchExpressions": [
+                {
+                    "key": "app.kubernetes.io/name",
+                    "operator": "In",
+                    "values": ["inbound-webhook", "deployment-validate"],
+                }
+            ]
+        }
+    }
     admitted = {
         document["metadata"]["name"]
         for document in documents
@@ -498,3 +510,63 @@ def test_every_tenant_worker_verifies_the_slack_poster_against_the_local_ca(
     ]
     annotations = poster["spec"]["template"]["metadata"]["annotations"]
     assert webhook_render.SLACK_POSTER_TLS_FINGERPRINT in annotations
+
+
+PLATFORM_ESCALATION = "config_version: 1\nadministrators:\n  email:\n    - admins@platform.test\n"
+
+
+def _config_volume(document: dict, name: str) -> dict:
+    return next(v for v in document["spec"]["template"]["spec"]["volumes"] if v["name"] == name)
+
+
+def test_every_pod_that_reads_platform_escalation_receives_it(tmp_path: Path) -> None:
+    documents = _shared_tenants(tmp_path, platform_escalation=PLATFORM_ESCALATION)
+    entry = {"key": "platform-escalation.yaml", "path": "platform-escalation.yaml"}
+
+    for namespace in ("tenant-adp", "tenant-beta", review_namespace("adp")):
+        config = _in(documents, "ConfigMap", namespace, k8s_render.CONFIG_VOLUME)
+        assert config is not None
+        assert config["data"]["platform-escalation.yaml"] == PLATFORM_ESCALATION
+    for namespace, name in (
+        ("tenant-adp", "activity-worker"),
+        ("tenant-beta", "activity-worker"),
+        (review_namespace("adp"), "review-worker"),
+    ):
+        workload = _in(documents, "Deployment", namespace, name)
+        assert workload is not None
+        sources = _config_volume(workload, k8s_render.CONFIG_VOLUME)["projected"]["sources"]
+        assert {"configMap": {"name": k8s_render.CONFIG_VOLUME}} in sources
+    routed = _in(documents, "ConfigMap", "agentic-dev-platform", webhook_render.WEBHOOK_CONFIG)
+    assert routed is not None
+    assert routed["data"]["platform-escalation.yaml"] == PLATFORM_ESCALATION
+    for name in (webhook_render.WEBHOOK, webhook_render.SLACK_POSTER):
+        deployment = _in(documents, "Deployment", "agentic-dev-platform", name)
+        assert deployment is not None
+        volume = _config_volume(deployment, webhook_render.INTEGRATION_CONFIG)
+        assert entry in volume["projected"]["sources"][1]["configMap"]["items"]
+    cronjob = _in(documents, "CronJob", "agentic-dev-platform", "deployment-validate")
+    assert cronjob is not None
+    pod = cronjob["spec"]["jobTemplate"]["spec"]["template"]["spec"]
+    volume = next(v for v in pod["volumes"] if v["name"] == webhook_render.INTEGRATION_CONFIG)
+    assert volume["configMap"]["name"] == webhook_render.WEBHOOK_CONFIG
+    assert entry in volume["configMap"]["items"]
+    assert {
+        "name": webhook_render.INTEGRATION_CONFIG,
+        "mountPath": "/app/config/local",
+        "readOnly": True,
+    } in pod["containers"][0]["volumeMounts"]
+
+
+def test_a_changed_platform_escalation_file_rolls_the_pods_that_read_it(tmp_path: Path) -> None:
+    def hashes(directory: str, text: str) -> list[str]:
+        documents = _rendered(tmp_path / directory, adp=ADP_SETTINGS, platform_escalation=text)
+        return [
+            deployment["spec"]["template"]["metadata"]["annotations"][k8s_render.CONFIG_HASH]
+            for deployment in (_worker(documents, "adp"), _webhook(documents))
+        ]
+
+    first = hashes("first", PLATFORM_ESCALATION)
+
+    assert hashes("same", PLATFORM_ESCALATION) == first
+    changed = hashes("changed", PLATFORM_ESCALATION.replace("admins@", "oncall@"))
+    assert all(new != old for new, old in zip(changed, first, strict=True))

@@ -9,7 +9,7 @@ import os
 import shlex
 import sys
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -61,12 +61,29 @@ def _env_file_value(name: str, path: str = PLATFORM_ENV_FILE.as_posix()) -> str:
     return ""
 
 
+_DEV_MOUNTS_COMPOSE = "compose.dev-mounts.yaml"
+_DEV_MOUNTS_FLAG = "COMPOSE_DEV_MOUNTS"
+
+
+def _compose_overlays() -> list[str]:
+    """Return the overlays applied on top of compose.yaml, in Compose's merge order.
+
+    The workflow worker runs workflow code from the image the last build produced, unless
+    COMPOSE_DEV_MOUNTS opts in to running it from the working tree.
+    """
+    dev_mounts = (os.environ.get(_DEV_MOUNTS_FLAG) or _env_file_value(_DEV_MOUNTS_FLAG)).lower()
+    overlays = ["compose.override.yaml"]
+    if dev_mounts in ("1", "true", "yes"):
+        overlays.append(_DEV_MOUNTS_COMPOSE)
+    overlays.append(_REPOSITORIES_COMPOSE)
+    return [overlay for overlay in overlays if os.path.exists(overlay)]
+
+
 def _compose_file_list() -> list[str]:
     configured = os.environ.get("COMPOSE_FILE") or _env_file_value("COMPOSE_FILE")
     if configured:
         return configured.split(os.environ.get("COMPOSE_PATH_SEPARATOR", os.pathsep))
-    overlays = ("compose.override.yaml", _REPOSITORIES_COMPOSE)
-    return ["compose.yaml", *(overlay for overlay in overlays if os.path.exists(overlay))]
+    return ["compose.yaml", *_compose_overlays()]
 
 
 def _compose_files() -> str:
@@ -80,9 +97,8 @@ def _compose_files() -> str:
     if os.environ.get("COMPOSE_FILE") or _env_file_value("COMPOSE_FILE"):
         return ""
     files = ["-f", "compose.yaml"]
-    for overlay in ("compose.override.yaml", _REPOSITORIES_COMPOSE):
-        if os.path.exists(overlay):
-            files += ["-f", overlay]
+    for overlay in _compose_overlays():
+        files += ["-f", overlay]
     return " ".join(files)
 
 
@@ -265,6 +281,32 @@ def aws_login(c):
     c.run(f"{HOST_PYTHON} -m scripts.aws_login", pty=True)
 
 
+@task(
+    help={
+        "watch": "Check every interval until stopped, as the launchd agent does.",
+        "interval": "Seconds between checks under --watch, 60 by default.",
+    }
+)
+def local_renew(c, watch=False, interval=60):
+    """Renew a static-key AWS session near expiry and start the Bedrock tunnel when it stopped."""
+    if watch:
+        c.run(f"{HOST_PYTHON} -m scripts.local_renew watch --interval {int(interval)}")
+    else:
+        c.run(f"{HOST_PYTHON} -m scripts.local_renew run")
+
+
+@task(help={"interval": "Seconds between checks of the agent, 60 by default."})
+def local_renew_install(c, interval=60):
+    """Install a macOS launchd agent that keeps inv local-renew --watch running."""
+    c.run(f"{HOST_PYTHON} -m scripts.local_renew install --interval {int(interval)}")
+
+
+@task
+def local_renew_uninstall(c):
+    """Unload and remove the launchd agent that runs inv local-renew --watch."""
+    c.run(f"{HOST_PYTHON} -m scripts.local_renew uninstall")
+
+
 def _local_tenants() -> list[str]:
     from scripts.local_tenants import TenantLayoutError, local_tenant_names
 
@@ -309,9 +351,11 @@ def runtime_images(c):
 def _tenant_config_flags(tenant: str, bundle_dir: str, extra: dict[str, str]) -> str:
     flags = f" --tenant {shlex.quote(tenant)}" if tenant else ""
     flags += f" --dir {shlex.quote(bundle_dir)}" if bundle_dir else ""
-    for name, value in extra.items():
-        flags += f" --{name} {shlex.quote(value)}" if value else ""
-    return flags
+    return flags + _optional_flags(extra)
+
+
+def _optional_flags(pairs: Mapping[str, str]) -> str:
+    return "".join(f" --{name} {shlex.quote(value)}" for name, value in pairs.items() if value)
 
 
 @task(
@@ -916,7 +960,7 @@ def db_bootstrap_roles(c, function_name="", region=""):
     settings = get_settings()
     flags = f" --function-name {shlex.quote(function_name)}"
     flags += f" --region {shlex.quote(region)}" if region else ""
-    env = {"AWS_PROFILE": settings.aws_profile, "AWS_REGION": settings.aws_region}
+    env = _profile_env(settings)
     c.run(f"{HOST_PYTHON} -m scripts.db_bootstrap_roles{flags}", pty=True, env=env)
 
 
@@ -1057,10 +1101,25 @@ def workflow_status(c):
     c.run(f"{HOST_PYTHON} -m scripts.workflow_status", pty=True)
 
 
-@task
-def resume_parked(c):
-    """Resume parked workflows a newer agent build can retry."""
-    c.run(f"{HOST_PYTHON} -m scripts.resume_parked", pty=True)
+@task(
+    help={
+        "issue": "Resume the run of this issue parked on the model path, for example ADSER-24.",
+        "workflow_id": "Resume the run of this workflow ID parked on the model path.",
+        "local": "With --issue or --workflow-id, run on the host instead of the activity worker.",
+        "tenant": _TENANT_HELP,
+    }
+)
+def resume_parked(c, issue="", workflow_id="", local=False, tenant=""):
+    """Resume the parked workflows a newer build can retry, or one run parked on the model path."""
+    if issue and workflow_id:
+        raise Exit("pass at most one of --issue or --workflow-id")
+    if not (issue or workflow_id):
+        c.run(f"{HOST_PYTHON} -m scripts.resume_parked", pty=True)
+        return
+    target = (
+        f"--issue {shlex.quote(issue)}" if issue else f"--workflow-id {shlex.quote(workflow_id)}"
+    )
+    _run_scripted(c, f"python -m scripts.resume_parked {target}", local=local, tenant=tenant)
 
 
 @task
@@ -1113,7 +1172,7 @@ def publish_jumphost_image(
     flags += f" --exceptions {shlex.quote(exceptions)}" if exceptions else ""
     flags += f" --builder {shlex.quote(builder)}" if builder else ""
     flags += " --unsigned" if unsigned else ""
-    env = {"AWS_PROFILE": settings.aws_profile, "AWS_REGION": settings.aws_region}
+    env = _profile_env(settings)
     c.run(f"{HOST_PYTHON} -m scripts.publish_jumphost_image{flags}", pty=True, env=env)
 
 
@@ -1134,7 +1193,7 @@ def publish_temporal_images(c, name_prefix="", arch="arm64", region="", exceptio
     flags += f" --name-prefix {shlex.quote(name_prefix)}" if name_prefix else ""
     flags += f" --region {shlex.quote(region)}" if region else ""
     flags += f" --exceptions {shlex.quote(exceptions)}" if exceptions else ""
-    env = {"AWS_PROFILE": settings.aws_profile, "AWS_REGION": settings.aws_region}
+    env = _profile_env(settings)
     c.run(f"{HOST_PYTHON} -m scripts.publish_temporal_images{flags}", pty=True, env=env)
 
 
@@ -1176,13 +1235,9 @@ def publish_platform_images(
     flags += f" --manifest {shlex.quote(manifest)}" if manifest else ""
     flags += f" --exceptions {shlex.quote(exceptions)}" if exceptions else ""
     flags += " --unsigned" if unsigned else ""
-    for name, value in (
-        ("stage", stage),
-        ("group", group),
-        ("partial", partial),
-        ("partials", partials),
-    ):
-        flags += f" --{name} {shlex.quote(value)}" if value else ""
+    flags += _optional_flags(
+        {"stage": stage, "group": group, "partial": partial, "partials": partials}
+    )
     c.run(
         f"{HOST_PYTHON} -m scripts.publish_platform_images{flags}", pty=True, env=_aws_env(settings)
     )
@@ -1219,6 +1274,10 @@ def _aws_env(settings) -> dict[str, str]:
 
 
 _AWS_CREDENTIAL_VARIABLES = ("AWS_ACCESS_KEY_ID", "AWS_WEB_IDENTITY_TOKEN_FILE")
+
+
+def _profile_env(settings) -> dict[str, str]:
+    return {"AWS_PROFILE": settings.aws_profile, "AWS_REGION": settings.aws_region}
 
 
 @task(
@@ -1272,7 +1331,7 @@ def temporal_deploy(c, region=""):
 
     settings = get_settings()
     flags = f" --region {shlex.quote(region)}" if region else ""
-    env = {"AWS_PROFILE": settings.aws_profile, "AWS_REGION": settings.aws_region}
+    env = _profile_env(settings)
     c.run(f"{HOST_PYTHON} -m scripts.temporal_deploy{flags}", pty=True, env=env)
 
 
@@ -1283,7 +1342,7 @@ def platform_deploy(c, region=""):
 
     settings = get_settings()
     flags = f" --region {shlex.quote(region)}" if region else ""
-    env = {"AWS_PROFILE": settings.aws_profile, "AWS_REGION": settings.aws_region}
+    env = _profile_env(settings)
     c.run(f"{HOST_PYTHON} -m scripts.platform_deploy{flags}", pty=True, env=env)
 
 
@@ -1301,8 +1360,32 @@ def eks_deploy(c, command="deploy", region=""):
     settings = get_settings()
     flags = f" --region {shlex.quote(region)}" if region else ""
     words = " ".join(shlex.quote(word) for word in command.split())
-    env = {"AWS_PROFILE": settings.aws_profile, "AWS_REGION": settings.aws_region}
+    env = _profile_env(settings)
     c.run(f"{HOST_PYTHON} -m scripts.eks_deploy{flags} {words}", pty=True, env=env)
+
+
+@task(
+    help={
+        "platform": "Run the platform checks only.",
+        "all_tenants": "Run the platform checks and the validation of every tenant.",
+        "tenant": "Run the platform checks and the validation of this tenant.",
+        "post": "Post each validated tenant's report to its Slack channel.",
+        "context": "kubectl context of the cluster (empty uses the current context).",
+    }
+)
+def deployment_validate(c, platform=False, all_tenants=False, tenant="", post=False, context=""):
+    """Run the deployment validation as a Job in the cluster and print its report."""
+    if [bool(platform), bool(all_tenants), bool(tenant)].count(True) != 1:
+        raise Exit("Name exactly one of --platform, --all-tenants, or --tenant <tenant>.")
+    if platform:
+        flags = " --platform"
+    elif all_tenants:
+        flags = " --all-tenants"
+    else:
+        flags = f" --tenant {shlex.quote(tenant)}"
+    flags += " --post" if post else ""
+    flags += f" --context {shlex.quote(context)}" if context else ""
+    c.run(f"{HOST_PYTHON} -m scripts.validation_job{flags}", pty=True)
 
 
 @task(
@@ -1321,14 +1404,15 @@ def tenant_verify_aws(c, context="", outputs="", region="", admin_role_arn="", r
     """Check the AWS tenant boundary with read-only calls and print a pass or fail table."""
     from scripts.config import get_settings
 
-    options = {
-        "--context": context,
-        "--outputs": outputs,
-        "--region": region,
-        "--admin-role-arn": admin_role_arn,
-        "--only": only,
-    }
-    flags = "".join(f" {flag} {shlex.quote(value)}" for flag, value in options.items() if value)
+    flags = _optional_flags(
+        {
+            "context": context,
+            "outputs": outputs,
+            "region": region,
+            "admin-role-arn": admin_role_arn,
+            "only": only,
+        }
+    )
     flags += "".join(f" --repo {shlex.quote(pair)}" for pair in repo or [])
     c.run(
         f"{HOST_PYTHON} -m scripts.tenant_verify_aws{flags}", pty=True, env=_aws_env(get_settings())
@@ -1396,7 +1480,7 @@ def temporal_certs(
     settings = get_settings()
     flags = f" --dir {shlex.quote(dir)}"
     flags += " --import-to-acm" if import_to_acm else ""
-    env = {"AWS_PROFILE": settings.aws_profile, "AWS_REGION": settings.aws_region}
+    env = _profile_env(settings)
     c.run(f"{HOST_PYTHON} -m scripts.temporal_certs put{flags}", pty=True, env=env)
 
 
@@ -1420,7 +1504,7 @@ def slack_poster_certs(c, action, dir, days=397, force=False):  # noqa: A002
     if action != "put":
         raise Exit("action must be issue or put")
     settings = get_settings()
-    env = {"AWS_PROFILE": settings.aws_profile, "AWS_REGION": settings.aws_region}
+    env = _profile_env(settings)
     c.run(
         f"{HOST_PYTHON} -m scripts.slack_poster_certs put --dir {shlex.quote(dir)}",
         pty=True,
@@ -1450,7 +1534,7 @@ def clickhouse_certs(c, action, dir, name="", days=397, force=False):  # noqa: A
     if action != "put":
         raise Exit("action must be issue or put")
     settings = get_settings()
-    env = {"AWS_PROFILE": settings.aws_profile, "AWS_REGION": settings.aws_region}
+    env = _profile_env(settings)
     c.run(
         f"{HOST_PYTHON} -m scripts.clickhouse_certs put --dir {shlex.quote(dir)}", pty=True, env=env
     )
@@ -1476,7 +1560,7 @@ def webhook_certs(c, action, dir, name="", days=397, force=False):  # noqa: A002
         flags += f" --days {int(days)}" + (f" --name {shlex.quote(name)}" if name else "")
         flags += " --force" if force else ""
     settings = get_settings()
-    env = {"AWS_PROFILE": settings.aws_profile, "AWS_REGION": settings.aws_region}
+    env = _profile_env(settings)
     c.run(f"{HOST_PYTHON} -m scripts.webhook_certs {action}{flags}", pty=True, env=env)
 
 
@@ -1500,7 +1584,7 @@ def mcp_gateway_certs(c, action, dir, domain="", days=397, force=False):  # noqa
         flags += f" --days {int(days)}" + (f" --domain {shlex.quote(domain)}" if domain else "")
         flags += " --force" if force else ""
     settings = get_settings()
-    env = {"AWS_PROFILE": settings.aws_profile, "AWS_REGION": settings.aws_region}
+    env = _profile_env(settings)
     c.run(f"{HOST_PYTHON} -m scripts.mcp_gateway_certs {action}{flags}", pty=True, env=env)
 
 
@@ -1793,8 +1877,7 @@ def image_exceptions_add(
     flags += f" --expires {shlex.quote(expires)}"
     if scope == "tenant":
         tenant = _tenant(tenant)
-    for name, value in (("tenant", tenant), ("requester", requester), ("approver", approver)):
-        flags += f" --{name} {shlex.quote(value)}" if value else ""
+    flags += _optional_flags({"tenant": tenant, "requester": requester, "approver": approver})
     c.run(f"{HOST_PYTHON} -m scripts.image_exceptions add --local{flags}", pty=True)
 
 
@@ -1873,6 +1956,7 @@ for _t in (
     test,
     ci,
     workflow_status,
+    resume_parked,
     durability_proof,
     prune_worker_versions,
     sast,
@@ -1890,6 +1974,7 @@ for _t in (
     webhook_certs,
     mcp_gateway_certs,
     eks_deploy,
+    deployment_validate,
     tenant_verify_aws,
     langfuse_ui,
     temporal_deploy,
@@ -1912,6 +1997,9 @@ for _t in (
     k8s_delete,
     k8s_reload,
     aws_login,
+    local_renew,
+    local_renew_install,
+    local_renew_uninstall,
     repos_sync,
     gate_engine_images,
     runtime_images,

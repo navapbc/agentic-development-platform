@@ -68,7 +68,7 @@ ADEQUACY_BAR = AdequacyBar(
 
 def predicted_outcome(verdict: Verdict) -> str:
     """Map a verdict to a predicted outcome. Only a pass accepts the completion."""
-    return OUTCOME_MET if verdict == Verdict.PASS else OUTCOME_UNMET
+    return OUTCOME_MET if verdict == Verdict.PASSED else OUTCOME_UNMET
 
 
 def build_review_input(case: AcceptanceCase, *, repo_root: str, ref: str) -> ReviewInput:

@@ -198,6 +198,7 @@ def test_the_temporal_clients_carry_the_client_security_groups(documents) -> Non
         "activity-worker",
         "review-worker",
         "inbound-webhook",
+        "deployment-validate",
     }
     assert len(temporal["securityGroups"]["groupIds"]) == 3
     assert set(internal["podSelector"]["matchExpressions"][0]["values"]) == {

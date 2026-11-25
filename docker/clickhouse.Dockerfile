@@ -34,4 +34,5 @@ ENV LANG=en_US.UTF-8 \
     CLICKHOUSE_CONFIG=/etc/clickhouse-server/config.xml
 EXPOSE 8123 9000 9009
 VOLUME /var/lib/clickhouse
+HEALTHCHECK --interval=5s --timeout=5s --start-period=1s --retries=10 CMD ["wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8123/ping"]
 ENTRYPOINT ["/entrypoint.sh"]

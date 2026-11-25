@@ -16,8 +16,12 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from scripts.slack_poster_tls import issue_leaf, new_ca
 from services import server_tls
-from services.integration.slack.poster_client import PostingFailed, post_message
-from services.slack_poster import DEADLINE_HEADER, MESSAGES_PATH
+from services.integration.slack.poster_client import (
+    PostingFailed,
+    post_message,
+    read_group_members,
+)
+from services.slack_poster import DEADLINE_HEADER, GROUPS_PATH, MESSAGES_PATH
 from tests.support import hermetic_settings
 
 BLOCKS = [{"type": "section", "text": {"type": "mrkdwn", "text": "Gate paused"}}]
@@ -52,12 +56,18 @@ def _serve(tmp_path: Path, names: list[str], ca=None) -> Iterator[_Service]:
         protocol_version = "HTTP/1.1"
 
         def do_POST(self) -> None:
-            body = self.rfile.read(int(self.headers["Content-Length"]))
+            self._answer(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+
+        def do_GET(self) -> None:
+            self._answer(None)
+
+        def _answer(self, body: Any) -> None:
             state.requests.append(
                 {
+                    "method": self.command,
                     "path": self.path,
                     "headers": dict(self.headers),
-                    "body": json.loads(body),
+                    "body": body,
                     "peer": self.client_address,
                 }
             )
@@ -117,6 +127,30 @@ def test_a_post_carries_the_text_blocks_token_and_a_deadline_a_second_short_over
     assert request["body"] == {"text": "Gate paused", "blocks": BLOCKS}
     assert request["headers"]["Authorization"] == "Bearer projected-token"
     assert request["headers"][DEADLINE_HEADER] == "2"
+
+
+def test_a_group_read_carries_the_token_and_returns_the_members_over_tls(service, tmp_path) -> None:
+    token_file = tmp_path / "token"
+    token_file.write_text("projected-token\n")
+    service.reply = {"members": ["U0ONE", "U0TWO"]}
+
+    members = read_group_members(_settings(service, token_file), "S0123456789", timeout=10.0)
+
+    assert members == ["U0ONE", "U0TWO"]
+    [request] = service.requests
+    assert (request["method"], request["path"]) == ("GET", f"{GROUPS_PATH}S0123456789")
+    assert request["headers"]["Authorization"] == "Bearer projected-token"
+
+
+def test_a_refused_group_read_carries_the_error_code(service, tmp_path) -> None:
+    token_file = tmp_path / "token"
+    token_file.write_text("projected-token")
+    service.status, service.reply = 403, {"error": "group_not_named"}
+
+    with pytest.raises(PostingFailed, match="group_not_named") as refused:
+        read_group_members(_settings(service, token_file), "S0123456789", timeout=10.0)
+
+    assert refused.value.error == "group_not_named"
 
 
 def test_the_token_is_read_from_the_file_for_every_post(service, tmp_path) -> None:

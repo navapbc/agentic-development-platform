@@ -190,7 +190,7 @@ variable "dns_firewall_default_action" {
 }
 
 variable "dns_firewall_additional_domains" {
-  description = "Domains added to the DNS Firewall allowlist, such as the SMTP relay host."
+  description = "Domains added to the DNS Firewall allowlist. The SMTP_HOST of container_platform_settings is added without being listed here, and the NAT instance forwards its SMTP_PORT, 587 unless set."
   type        = list(string)
   default     = []
 }

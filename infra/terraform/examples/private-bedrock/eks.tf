@@ -15,6 +15,11 @@ locals {
       policy_arns     = aws_iam_policy.eks_temporal_ca[*].arn
       secrets         = ["database_platform_app", "slack_shared_signing_secret", "slack_shared_app_token"]
     }
+    deployment_validate = {
+      service_account = "deployment-validate"
+      policy_arns     = aws_iam_policy.eks_temporal_ca[*].arn
+      secrets         = ["database_platform_app", "litellm_master_key"]
+    }
   }, local.slack_poster_workload)
 
   eks_secret_keys = distinct(flatten([
@@ -37,8 +42,9 @@ locals {
     local.eks_mcp_gateway_exposed && var.eks_mcp_gateway_domain != "" && !endswith(var.eks_mcp_gateway_domain, ".internal") ? ["*.${var.eks_mcp_gateway_domain}"] : [],
   ) : []
 
-  # The tenant activity and review workers and the inbound webhook connect to Temporal.
-  eks_temporal_client_role_arns = local.eks_enabled ? [for name in concat(flatten([for tenant in keys(local.tenants) : ["tenant_${tenant}", "tenant_${tenant}_review"]]), ["inbound_webhook"]) : module.eks_cluster.pod_identity_role_arns[name]] : []
+  # The tenant activity and review workers, the inbound webhook, and the deployment validation
+  # connect to Temporal.
+  eks_temporal_client_role_arns = local.eks_enabled ? [for name in concat(flatten([for tenant in keys(local.tenants) : ["tenant_${tenant}", "tenant_${tenant}_review"]]), ["inbound_webhook", "deployment_validate"]) : module.eks_cluster.pod_identity_role_arns[name]] : []
   eks_workspace                 = local.eks_enabled && module.container_services.workspace != null
   eks_deployer_enabled          = local.eks_enabled && var.create_ecs_cluster && var.create_container_services
 

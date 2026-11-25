@@ -64,16 +64,15 @@ RUN NAME=terraform-ls \
     go-component
 
 FROM go AS zoekt
-ARG ZOEKT_COMMIT=2cb19912a4073e5a9895658b7cb135ee4b35733b
+ARG ZOEKT_VERSION=v0.0.0-20260729135938-2cb19912a407
 ARG ZOEKT_GO_GET=golang.org/x/net@v0.62.0,google.golang.org/grpc@v1.83.2
-# zoekt publishes no releases, so the pin is a commit.
+# zoekt tags no releases, so the pin is the Go pseudo-version of a commit. The default GOSUMDB
+# verifies every module download, and a checksum mismatch fails the build.
 WORKDIR /src
-RUN git init --quiet \
- && git fetch --quiet --depth 1 https://github.com/sourcegraph/zoekt "${ZOEKT_COMMIT}" \
- && git checkout --quiet FETCH_HEAD \
- && GOFLAGS=-mod=mod go get $(printf '%s' "${ZOEKT_GO_GET}" | tr , ' ') \
- && GOFLAGS=-mod=mod go build -trimpath -ldflags="-s -w" -o /out/zoekt ./cmd/zoekt \
- && GOFLAGS=-mod=mod go build -trimpath -ldflags="-s -w" -o /out/zoekt-index ./cmd/zoekt-index
+RUN go mod init zoekt-build \
+ && GOFLAGS=-mod=mod go get "github.com/sourcegraph/zoekt@${ZOEKT_VERSION}" $(printf '%s' "${ZOEKT_GO_GET}" | tr , ' ') \
+ && GOFLAGS=-mod=mod go build -trimpath -ldflags="-s -w" -o /out/zoekt github.com/sourcegraph/zoekt/cmd/zoekt \
+ && GOFLAGS=-mod=mod go build -trimpath -ldflags="-s -w" -o /out/zoekt-index github.com/sourcegraph/zoekt/cmd/zoekt-index
 
 FROM go AS downloads
 ARG SCIP_JAVA_VERSION=v0.14.2
@@ -150,5 +149,6 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 COPY --chmod=0555 docker/platform-entrypoint.sh /usr/local/bin/platform-entrypoint
 RUN cis-harden
 USER appuser
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 CMD ["python", "-m", "services.healthcheck", "http", "8120"]
 ENTRYPOINT ["/usr/local/bin/platform-entrypoint"]
 CMD ["python", "-m", "services.repository_intelligence.server"]

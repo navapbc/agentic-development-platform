@@ -97,7 +97,7 @@ RUN mkdir -p /opt/eks-deployer/charts
 ADD --chmod=0444 --checksum=sha256:9255bf39873b6cb31106dbe61dc87c3617bff4197783b5b94381811a13f99c3c https://aws.github.io/eks-charts/aws-load-balancer-controller-3.6.2.tgz /opt/eks-deployer/charts/aws-load-balancer-controller.tgz
 
 COPY LICENSE NOTICE /usr/share/doc/agentic-dev-platform/
-COPY scripts/__init__.py scripts/eks_render.py scripts/tenant_render.py scripts/webhook_eks_render.py scripts/eks_deploy_task.py /opt/eks-deployer/scripts/
+COPY scripts/__init__.py scripts/eks_render.py scripts/tenant_render.py scripts/webhook_eks_render.py scripts/validation_job.py scripts/eks_deploy_task.py /opt/eks-deployer/scripts/
 COPY services/__init__.py services/process.py /opt/eks-deployer/services/
 COPY deploy/kubernetes /opt/eks-deployer/deploy/kubernetes
 COPY openhands/policies /opt/eks-deployer/openhands/policies
@@ -108,5 +108,6 @@ WORKDIR /opt/eks-deployer
 ENV HOME=/tmp PYTHONDONTWRITEBYTECODE=1 EKS_DEPLOYER_ROOT=/opt/eks-deployer
 RUN cis-harden
 USER 65534:65534
+HEALTHCHECK NONE
 ENTRYPOINT ["python", "-m", "scripts.eks_deploy_task"]
 CMD ["deploy"]

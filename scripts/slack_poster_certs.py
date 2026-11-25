@@ -17,18 +17,17 @@ import os
 from pathlib import Path
 from typing import Any
 
-from services import process
 from services.server_tls import LOOPBACK
 
 from scripts.eks_render import PLATFORM_NAMESPACE
 from scripts.slack_poster_tls import CERTIFICATE, KEY
 from scripts.temporal_certs import (
     CA,
-    COMPOSITION_ROOT,
     SERVER_AUTH,
     CertificateError,
     _check_leaf,
     issue_server_certificate,
+    terraform_output,
 )
 from scripts.webhook_eks_render import SLACK_POSTER
 
@@ -61,16 +60,7 @@ def put(directory: Path, secret_arns: dict[str, str] | None, secretsmanager: Any
 
 
 def _terraform_secret_arns(env: dict[str, str]) -> dict[str, str]:
-    result = process.run(
-        ["terraform", f"-chdir={COMPOSITION_ROOT}", "output", "-json", "secret_arns"],
-        timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS,
-        capture_output=True,
-        text=True,
-        env=env,
-    )
-    if result.returncode != 0:
-        raise CertificateError(f"terraform output failed: {result.stderr.strip()}")
-    return json.loads(result.stdout) or {}
+    return json.loads(terraform_output("secret_arns", env, CertificateError)) or {}
 
 
 def main(argv: list[str] | None = None) -> int:

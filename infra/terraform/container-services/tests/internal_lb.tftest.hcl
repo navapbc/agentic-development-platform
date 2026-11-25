@@ -64,7 +64,7 @@ run "the_listener_terminates_tls_under_the_fips_policy" {
     condition = (
       aws_lb.internal[0].internal && aws_lb.internal[0].drop_invalid_header_fields &&
       aws_lb_listener.internal[0].protocol == "HTTPS" &&
-      aws_lb_listener.internal[0].ssl_policy == "ELBSecurityPolicy-TLS13-1-2-FIPS-2023-04" &&
+      aws_lb_listener.internal[0].ssl_policy == "ELBSecurityPolicy-TLS13-1-2-Res-FIPS-2023-04" &&
       aws_lb_listener.internal[0].default_action[0].type == "fixed-response"
     )
     error_message = "The internal listener is public, plain, outside the FIPS policy, or forwards unknown names."

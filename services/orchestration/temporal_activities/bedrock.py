@@ -21,6 +21,11 @@ from temporalio import activity
 from temporalio.common import RetryPolicy
 from temporalio.exceptions import ApplicationError
 
+from services.orchestration.model_path import (
+    classify_gateway_answer,
+    classify_transport_error,
+    model_unavailable_error,
+)
 from services.prompts import load_prompt
 
 log = structlog.get_logger("model_gateway")
@@ -64,6 +69,9 @@ def _raise_for_status(resp: httpx.Response) -> None:
     if resp.status_code < 400:
         return
     detail = f"litellm returned {resp.status_code}: {resp.text[:500]}"
+    hop = classify_gateway_answer(resp.text)
+    if hop is not None:
+        raise model_unavailable_error(hop, detail)
     if resp.status_code in _RETRYABLE_STATUS:
         raise ApplicationError(detail, type="LiteLLMTransient")
     raise ApplicationError(detail, type="LiteLLMRejected", non_retryable=True)
@@ -148,6 +156,11 @@ async def invoke_model(req: ModelRequest) -> ModelResponse:
             try:
                 resp = await client.post("/v1/chat/completions", json=payload, headers=headers)
             except httpx.TransportError as exc:
+                hop = classify_transport_error(exc)
+                if hop is not None:
+                    raise model_unavailable_error(
+                        hop, f"{settings.litellm_base_url} {exc.__class__.__name__} {exc}"
+                    ) from exc
                 raise _unreachable_gateway_error(settings.litellm_base_url, exc) from exc
             _raise_for_status(resp)
             data = resp.json()

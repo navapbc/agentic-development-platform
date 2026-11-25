@@ -92,12 +92,6 @@ resource "aws_iam_role_policy" "publisher" {
         Condition = { StringEquals = { "kms:ViaService" = "s3.${local.region}.amazonaws.com" } }
       },
       {
-        Sid      = "EcrAuthorization"
-        Effect   = "Allow"
-        Action   = "ecr:GetAuthorizationToken"
-        Resource = "*"
-      },
-      {
         Sid    = "PushTheTenantImages"
         Effect = "Allow"
         Action = [
@@ -121,6 +115,24 @@ resource "aws_iam_role_policy" "publisher" {
         Resource = aws_signer_signing_profile.this[0].arn
       },
     ]
+  })
+}
+
+# ECR authorizes GetAuthorizationToken only on the * resource, so it stays out of the policy that
+# names the tenant's objects.
+resource "aws_iam_role_policy" "publisher_ecr_sign_in" {
+  count = local.publisher_enabled ? 1 : 0
+
+  name = "sign-in-to-ecr"
+  role = aws_iam_role.publisher[0].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid      = "EcrAuthorization"
+      Effect   = "Allow"
+      Action   = "ecr:GetAuthorizationToken"
+      Resource = "*"
+    }]
   })
 }
 

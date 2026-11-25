@@ -32,7 +32,7 @@ Basic scanning scans the per-architecture images of a copied index, not the inde
 
 ## Internal load balancer
 
-The platform services that other workloads call sit behind one internal ALB in the application tier, which needs `application_subnet_ids` in two Availability Zones. Its HTTPS listener presents `internal_acm_certificate_arn` under `ELBSecurityPolicy-TLS13-1-2-FIPS-2023-04`, which negotiates TLS 1.2 and 1.3 only, and routes each name in the private hosted zone `internal_domain` to its service. A name it does not know answers 404.
+The platform services that other workloads call sit behind one internal ALB in the application tier, which needs `application_subnet_ids` in two Availability Zones. Its HTTPS listener presents `internal_acm_certificate_arn` under `ELBSecurityPolicy-TLS13-1-2-Res-FIPS-2023-04`, which negotiates TLS 1.3 and TLS 1.2 with AES-GCM suites only, and routes each name in the private hosted zone `internal_domain` to its service. A name it does not know answers 404.
 
 | Name | Target port | Target protocol |
 |---|---|---|

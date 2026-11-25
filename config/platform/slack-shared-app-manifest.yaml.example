@@ -27,6 +27,7 @@ oauth_config:
   scopes:
     bot:
       - chat:write
+      - usergroups:read
 settings:
   # allowed_ip_address_ranges:
   #   - 203.0.113.10/32

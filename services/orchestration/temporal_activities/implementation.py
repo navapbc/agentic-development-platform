@@ -113,8 +113,9 @@ def _build_materializer():
 
 async def _run_model_key(execution_id: str) -> str:
     from services.integration.litellm_admin import ensure_run_model_key
+    from services.orchestration.limit_grants import PostgresLimitGrants
 
-    return await ensure_run_model_key(execution_id)
+    return await ensure_run_model_key(execution_id, grants=PostgresLimitGrants())
 
 
 async def _model_budget_stop(execution_id: str, failure_text: str) -> str:

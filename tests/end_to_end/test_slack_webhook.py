@@ -153,6 +153,9 @@ class _Records:
     async def record_refusal(self, refusal: Any) -> None:
         self.refusals.append(refusal)
 
+    async def approver_groups(self, tenant: str, group_ids: Any) -> Mapping[str, Any]:
+        return {}
+
 
 @dataclass
 class _Hooks:
@@ -297,7 +300,7 @@ def test_a_signed_click_returns_promptly_and_applies_the_decision_once(webhook: 
 
     assert (status, content) == (200, b"")
     assert time.monotonic() - started < 3.0
-    assert webhook.client.applied == [[PARK_KEY, True, "slack:T0ADP/U0ADP", "slack"]]
+    assert webhook.client.applied == [[PARK_KEY, True, "slack:T0ADP/U0ADP", "slack", "user"]]
     webhook.hooks.wait(1)
     url, message = webhook.hooks.posts[0]
     assert url == RESPONSE_URL
@@ -639,8 +642,8 @@ def test_each_shared_app_click_resolves_the_park_of_the_tenant_that_names_its_ch
 
     assert (adp_status, beta_status) == (200, 200)
     assert webhook.client.applied == [
-        [PARK_KEY, True, "slack:E0SHARED001/U0ADP", "slack"],
-        [PARK_KEY, True, "slack:E0SHARED001/U0BETA", "slack"],
+        [PARK_KEY, True, "slack:E0SHARED001/U0ADP", "slack", "user"],
+        [PARK_KEY, True, "slack:E0SHARED001/U0BETA", "slack", "user"],
     ]
     webhook.hooks.wait(2)
     assert all(message["replace_original"] for _, message in webhook.hooks.posts)
@@ -661,7 +664,7 @@ def test_a_shared_app_click_over_socket_mode_resolves_the_park_as_a_request_url_
     asyncio.run(socket.handle(_socket_payload(_shared_click("C2", "beta", "beta-action-key"))))
     asyncio.run(socket.handle(_socket_payload(_shared_click("C1", "beta", "beta-action-key"))))
 
-    assert webhook.client.applied == [[PARK_KEY, True, "slack:E0SHARED001/U0BETA", "slack"]]
+    assert webhook.client.applied == [[PARK_KEY, True, "slack:E0SHARED001/U0BETA", "slack", "user"]]
     webhook.hooks.wait(2)
     assert webhook.hooks.posts[0][1]["replace_original"]
 

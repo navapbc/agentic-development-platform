@@ -15,6 +15,7 @@ RUN dnf -y --releasever="${AL2023_RELEASE}" upgrade \
 ENV LANG=C.UTF-8 \
     LC_ALL=C.UTF-8
 WORKDIR /workspace
+HEALTHCHECK NONE
 
 FROM checks-base AS checks-python
 ARG AL2023_RELEASE=2023.12.20261112

@@ -44,6 +44,7 @@ NETWORK = compose_network(
             "repo-intelligence": {"ports": [{"target": 8120, "published": "8120"}]},
             "temporal": {"ports": [{"target": 7233, "published": "7233"}]},
             "redis": {"ports": [{"target": 6379}]},
+            "mailpit": {"ports": [{"target": 1025, "published": "1025"}]},
         }
     }
 )
@@ -153,6 +154,7 @@ def _rendered(
     *,
     adp: dict[str, str] | None = None,
     platform_files: dict[str, str] | None = None,
+    platform_escalation: str = "",
     review_keys: bool = True,
     **settings: object,
 ) -> list[dict]:
@@ -160,13 +162,18 @@ def _rendered(
 
     The tenant adp always exists, with adp as its settings file. Each tenant-only name of files
     goes into tenants/adp/, and a tenants/<tenant>/ or tenants/<tenant>.env name adds or replaces
-    that file of another tenant. platform_files go into config/local as given. With review_keys,
-    each tenant settings file without a REVIEW_SIGNING_KEY receives one of its own.
+    that file of another tenant. platform_files go into config/local as given, and
+    platform_escalation is the checkout's config/platform/platform-escalation.yaml. With
+    review_keys, each tenant settings file without a REVIEW_SIGNING_KEY receives one of its own.
     """
     root = tmp_path / "checkout"
     root.mkdir(parents=True)
     for directory in ("deploy", "openhands/policies", "config/policies", "config/platform"):
         shutil.copytree(REPOSITORY / directory, root / directory)
+    escalation = root / "config" / "platform" / "platform-escalation.yaml"
+    escalation.unlink(missing_ok=True)
+    if platform_escalation:
+        escalation.write_text(platform_escalation)
     config = root / "config" / "local"
     adp_dir = config / "tenants" / "adp"
     adp_dir.mkdir(parents=True)
@@ -1344,3 +1351,79 @@ def test_two_tenants_with_one_registry_username_fail_the_render(tmp_path: Path) 
 
     with pytest.raises(ValueError, match="both claim registry-username adp-reader"):
         _rendered(tmp_path, files, adp=adp)
+
+
+def _validation_pod(documents: list[dict], namespace: str = "agentic-dev-platform") -> dict:
+    cronjob = next(
+        d
+        for d in documents
+        if d["kind"] == "CronJob"
+        and d["metadata"]["name"] == "deployment-validate"
+        and d["metadata"]["namespace"] == namespace
+    )
+    return cronjob["spec"]["jobTemplate"]["spec"]["template"]["spec"]
+
+
+def test_the_validation_cronjob_runs_every_tenant_daily_on_the_build_image(tmp_path: Path) -> None:
+    documents = _rendered(tmp_path)
+
+    cronjob = _named(documents, "CronJob", "deployment-validate")
+    pod = _validation_pod(documents)
+    container = pod["containers"][0]
+    assert cronjob["spec"]["schedule"] == "0 14 * * *"
+    assert container["image"] == "agentic-dev-platform-local:0.3.0.1"
+    assert container["args"][-2:] == ["--all-tenants", "--alert-failures"]
+    assert pod["serviceAccountName"] == "deployment-validate"
+    assert _named(documents, "ServiceAccount", "deployment-validate")["metadata"]["namespace"] == (
+        "agentic-dev-platform"
+    )
+    assert {
+        "name": "AWS_CREDENTIALS_FILE",
+        "value": "/var/run/aws-credentials/credentials.json",
+    } in (container["env"])
+    session = next(v for v in pod["volumes"] if v["name"] == "aws-credentials")
+    assert session["secret"] == {"secretName": "aws-credentials", "optional": True}
+    platform_env = _named(documents, "Secret", "agentic-platform-env")
+    assert platform_env["metadata"]["namespace"] == "agentic-dev-platform"
+    assert base64.b64decode(platform_env["data"]["TENANTS"]).decode() == "adp"
+
+
+@pytest.mark.parametrize("smtp_host", ["mailpit", "host.docker.internal"])
+def test_the_validation_cronjob_reaches_the_administrator_email_on_mailpit(
+    tmp_path: Path, smtp_host: str
+) -> None:
+    env = {
+        "SMTP_HOST": smtp_host,
+        "SMTP_PORT": "1025",
+        "ALERT_EMAIL_FROM": "adp@example.test",
+        "ALERT_EMAIL_TO": "oncall@example.test",
+    }
+    documents = _rendered(tmp_path, env=env)
+
+    container = _validation_pod(documents)["containers"][0]
+    assert {"secretRef": {"name": "agentic-platform-env"}} in container["envFrom"]
+    platform_env = _named(documents, "Secret", "agentic-platform-env")
+    delivered = {
+        key: base64.b64decode(platform_env["data"][key]).decode()
+        for key in ("SMTP_HOST", "SMTP_PORT", "ALERT_EMAIL_FROM", "ALERT_EMAIL_TO")
+    }
+    assert delivered == {**env, "SMTP_HOST": "host.docker.internal"}
+
+
+def test_the_validation_cronjob_follows_the_platform_namespace(tmp_path: Path) -> None:
+    documents = _rendered(tmp_path, k8s_namespace="adp-platform")
+
+    assert _validation_pod(documents, "adp-platform")["containers"][0]["image"].endswith(":0.3.0.1")
+
+
+def test_the_webhook_and_the_validation_job_present_a_posting_service_token(
+    tmp_path: Path,
+) -> None:
+    documents = _rendered(tmp_path)
+
+    webhook = _named(documents, "Deployment", "inbound-webhook")["spec"]["template"]["spec"]
+    for pod in (webhook, _validation_pod(documents)):
+        env = {entry["name"]: entry.get("value") for entry in pod["containers"][0]["env"]}
+        assert env["SLACK_POSTING_URL"] == "https://slack-poster:8160"
+        mounts = {mount["name"] for mount in pod["containers"][0]["volumeMounts"]}
+        assert {"slack-posting-token", "slack-poster-ca"} <= mounts

@@ -6,7 +6,7 @@ from observability.gateway import langfuse_session_url
 from services.orchestration.usage_rollup import (
     COST_BUDGET_EXCEEDED,
     LLM_CALLS_EXCEEDED,
-    TOKEN_BUDGET_EXCEEDED,
+    MAX_TOKENS_EXCEEDED,
     BudgetCaps,
     UsageRow,
     build_rollup,
@@ -128,7 +128,7 @@ def test_llm_calls_breach_takes_precedence_over_cost():
 
 def test_token_breach_takes_precedence_over_cost():
     rollup = build_rollup(_rows(), caps=BudgetCaps(max_cost_usd=1.0, max_tokens=1))
-    assert rollup.budget.breach_reason == TOKEN_BUDGET_EXCEEDED
+    assert rollup.budget.breach_reason == MAX_TOKENS_EXCEEDED
 
 
 def test_gate_spend_excluded_from_budget_count():

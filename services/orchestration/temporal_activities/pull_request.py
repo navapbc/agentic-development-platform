@@ -499,7 +499,9 @@ async def record_pr_approval(req: RecordApprovalRequest) -> RecordApprovalResult
         verdict = "approved" if approved else "rejected"
         backend = _build_ticket_backend(req.issue_key)
         actor = approver or PLATFORM_ACTOR
-        note = f"Promotion {verdict} by {actor} (execution {req.execution_id})."
+        from services.integration.slack.messages import actor_words
+
+        note = f"Promotion {verdict} by {actor_words(actor)} (execution {req.execution_id})."
         existing = backend.list_comment_bodies(req.issue_key)
         if not any(note in body for body in existing):
             backend.add_comment(req.issue_key, note)

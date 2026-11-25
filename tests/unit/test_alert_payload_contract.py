@@ -149,13 +149,14 @@ async def test_the_alert_activity_hands_the_park_and_its_deadline_to_the_sender(
 
     sent: list[tuple] = []
 
-    def fake_send(alert, settings, *, issued_at, deadline):
+    def fake_send(alert, settings, *, issued_at, deadline, posts=None):
         sent.append((alert, issued_at, deadline))
         return ["slack"]
 
     monkeypatch.setattr(
         "services.orchestration.notifications.send_human_intervention_alert", fake_send
     )
+    _in_memory_alert_ledger(monkeypatch)
     request = _request(park_key="exec-1:repair:1:1")
 
     environment = ActivityEnvironment()
@@ -174,3 +175,68 @@ async def test_the_alert_activity_hands_the_park_and_its_deadline_to_the_sender(
     assert issued_at == int(scheduled.timestamp())
     assert 25 < deadline - time.monotonic() <= 30
     assert result.channels == ["slack"]
+
+
+def _in_memory_alert_ledger(monkeypatch):
+    from services.coordination.idempotency import InMemorySideEffectLedger
+
+    ledger = InMemorySideEffectLedger()
+    monkeypatch.setattr(
+        "services.orchestration.temporal_activities.notify._alert_ledger", lambda: ledger
+    )
+    return ledger
+
+
+@pytest.mark.asyncio
+async def test_a_retried_alert_attempt_replays_the_delivery_instead_of_posting_again(monkeypatch):
+    from services.orchestration.temporal_activities.notify import alert_human_intervention
+    from temporalio.testing import ActivityEnvironment
+
+    sent: list[str] = []
+
+    def fake_send(alert, settings, *, issued_at, deadline, posts=None):
+        sent.append(alert.park_key)
+        return ["jira", "slack"]
+
+    monkeypatch.setattr(
+        "services.orchestration.notifications.send_human_intervention_alert", fake_send
+    )
+    _in_memory_alert_ledger(monkeypatch)
+    request = _request(park_key="exec-1:repair:1:1")
+    first, retry = ActivityEnvironment(), ActivityEnvironment()
+    retry.info = replace(first.info, attempt=2)
+
+    delivered = await first.run(alert_human_intervention, request)
+    replayed = await retry.run(alert_human_intervention, request)
+
+    assert sent == ["exec-1:repair:1:1"]
+    assert delivered.channels == replayed.channels == ["jira", "slack"]
+
+
+@pytest.mark.asyncio
+async def test_an_alert_attempt_backs_off_while_an_earlier_attempt_is_delivering(monkeypatch):
+    from services.coordination.idempotency import CLAIM_LEASE_SECONDS, SideEffectOutcome
+    from services.orchestration.temporal_activities.notify import alert_human_intervention
+    from temporalio.exceptions import ApplicationError
+    from temporalio.testing import ActivityEnvironment
+
+    class _DeliveringLedger:
+        async def run_once(self, ref, effect):
+            return SideEffectOutcome("key", replayed=False, result=None, in_flight=True)
+
+    sent: list[str] = []
+    monkeypatch.setattr(
+        "services.orchestration.notifications.send_human_intervention_alert",
+        lambda alert, settings, **_: sent.append(alert.park_key) or ["slack"],
+    )
+    monkeypatch.setattr(
+        "services.orchestration.temporal_activities.notify._alert_ledger", _DeliveringLedger
+    )
+
+    with pytest.raises(ApplicationError) as excinfo:
+        await ActivityEnvironment().run(
+            alert_human_intervention, _request(park_key="exec-1:repair:1:1")
+        )
+
+    assert sent == []
+    assert excinfo.value.next_retry_delay == timedelta(seconds=CLAIM_LEASE_SECONDS + 5)

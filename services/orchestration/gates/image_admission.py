@@ -22,12 +22,12 @@ import asyncio
 import json
 import platform
 import re
-import urllib.request
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+import httpx
 from adapters.interfaces.security_scanner import ScannerUnavailableError
 from temporalio.exceptions import ApplicationError
 
@@ -147,12 +147,12 @@ def scan_wait_budget() -> float:
     from scripts.config import get_settings
     from temporalio import activity
 
+    from services.orchestration.activity_heartbeat import activity_seconds_left
+
     budget = float(get_settings().image_scan_wait_seconds)
     if activity.in_activity():
-        info = activity.info()
-        if info.start_to_close_timeout:
-            elapsed = (datetime.now(UTC) - info.started_time).total_seconds()
-            remaining = info.start_to_close_timeout.total_seconds() - elapsed
+        remaining = activity_seconds_left(activity.info())
+        if remaining is not None:
             budget = min(budget, max(0.0, remaining / 2))
     return budget
 
@@ -205,12 +205,13 @@ def _platform_digest(manifest: Mapping[str, Any], arch: str) -> str:
 
 def _fill_cache(host: str, repository: str, digest: str, token: str) -> None:
     """Pull the manifest through the registry API, which makes ECR import it into the cache."""
-    request = urllib.request.Request(
+    response = httpx.get(
         f"https://{host}/v2/{repository}/manifests/{digest}",
         headers={"Authorization": f"Basic {token}", "Accept": ", ".join(_MANIFEST_TYPES)},
+        timeout=60,
+        follow_redirects=True,
     )
-    with urllib.request.urlopen(request, timeout=60) as response:  # noqa: S310 - https only
-        response.read()
+    response.raise_for_status()
 
 
 def require_clean_scan(

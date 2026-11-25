@@ -77,3 +77,4 @@ RUN notation version \
  && notation plugin list | grep -q com.amazonaws.signer.notation.plugin \
  && buildah --version
 RUN cis-harden
+HEALTHCHECK NONE

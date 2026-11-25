@@ -49,7 +49,7 @@ with workflow.unsafe.imports_passed_through():
 _CAP_BREACH_REASONS = frozenset({TOOL_CALLS_EXCEEDED, WALL_CLOCK_EXCEEDED, *MODEL_BUDGET_REASONS})
 COST_BUDGET_EXCEEDED = "cost_budget_exceeded"
 LLM_CALLS_EXCEEDED = "llm_calls_exceeded"
-TOKEN_BUDGET_EXCEEDED = "token_budget_exceeded"
+MAX_TOKENS_EXCEEDED = "token_budget_exceeded"
 EXISTING_PR_REUSED = "existing_pr_reused"
 
 
@@ -107,7 +107,9 @@ class ImplementationWorkflow:
         short = timedelta(seconds=30)
         context_timeout = timedelta(minutes=5)
         stage_timeout = timedelta(seconds=params.activity_timeout_seconds)
-        workflow_id = workflow.info().workflow_id
+        info = workflow.info()
+        workflow_id = info.workflow_id
+        execution_owner = info.parent.workflow_id if info.parent else workflow_id
 
         async def persist(state: str) -> None:
             await workflow.execute_activity(
@@ -116,7 +118,7 @@ class ImplementationWorkflow:
                     execution_id=params.execution_id,
                     task_id=params.task_id,
                     state=state,
-                    workflow_id=workflow_id,
+                    workflow_id=execution_owner,
                     repository=params.repo or None,
                     repository_sha=params.commit or None,
                 ),
@@ -286,7 +288,7 @@ class ImplementationWorkflow:
             if llm_calls_exceeded:
                 reason = LLM_CALLS_EXCEEDED
             elif tokens_exceeded:
-                reason = TOKEN_BUDGET_EXCEEDED
+                reason = MAX_TOKENS_EXCEEDED
             elif cost_exceeded:
                 reason = COST_BUDGET_EXCEEDED
             else:

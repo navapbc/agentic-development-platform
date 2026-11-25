@@ -76,7 +76,7 @@ def _read_tunnel_pid() -> int | None:
         return None
 
 
-def _tunnel_running() -> bool:
+def tunnel_running() -> bool:
     pid = _read_tunnel_pid()
     if pid is None:
         return False
@@ -132,7 +132,7 @@ def _spawn_detached(
     ready: Callable[[], tuple[bool, str]] | None = None,
     ready_timeout: float = 45.0,
 ) -> int:
-    if _tunnel_running():
+    if tunnel_running():
         print(
             f"[tunnel] a background tunnel is already running (pid {_read_tunnel_pid()}); "
             "run `inv tunnel-stop` first.",
@@ -214,7 +214,7 @@ def stop_tunnel() -> int:
         print(f"[tunnel] FAIL: could not stop pid {pid}: {exc}", file=sys.stderr)
         return 1
     for _ in range(50):
-        if not _tunnel_running():
+        if not tunnel_running():
             break
         time.sleep(0.1)
     _TUNNEL_PIDFILE.unlink(missing_ok=True)
@@ -227,7 +227,7 @@ def status_tunnel() -> int:
     if pid is None:
         print("[tunnel] no background tunnel recorded (pidfile absent).")
         return 1
-    if _tunnel_running():
+    if tunnel_running():
         print(f"[tunnel] running (pid {pid}).")
         print(f"[tunnel]   logs: {_TUNNEL_LOGFILE}")
         print("[tunnel]   verify path: inv connectivity-check")

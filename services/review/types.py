@@ -14,7 +14,7 @@ class ReviewStage(StrEnum):
 
 
 class Verdict(StrEnum):
-    PASS = "pass"
+    PASSED = "pass"
     BLOCK = "block"
     INDETERMINATE = "indeterminate"
 

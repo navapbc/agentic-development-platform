@@ -11,7 +11,13 @@ from scripts.config import get_settings
 from services.integration import tenant_config
 from services.integration.credentials import ConfigError
 from services.integration.tenant_config import validate_bundle
-from services.orchestration.escalation import load_escalation_config
+from services.orchestration.escalation import (
+    MAX_APPROVER_GROUPS,
+    Approvers,
+    SlackGroup,
+    SlackUser,
+    load_escalation_config,
+)
 from tests.support import (
     SHARED_APP_ID,
     SHARED_APP_YAML,
@@ -97,7 +103,27 @@ def test_a_misspelled_escalation_file_is_refused(environment, tmp_path) -> None:
         (SLACK.replace("  organization_id: T0123456789\n", ""), "slack.organization_id"),
         (
             SLACK.replace("- user_id: U0123456789", "- organization_id: T0123456789"),
-            r"slack\.allowlist\.gate\[0\]\.user_id",
+            r"slack\.allowlist\.gate\[0\] must name exactly one of user_id and group_id",
+        ),
+        (
+            SLACK.replace("- user_id: U0123456789", "- {user_id: U01, group_id: S01}"),
+            r"slack\.allowlist\.gate\[0\] must name exactly one of user_id and group_id",
+        ),
+        (
+            SLACK.replace("- user_id: U0123456789", "- group_id: G0123456789"),
+            r"slack\.allowlist\.gate\[0\]\.group_id G0123456789 is not a Slack user group ID",
+        ),
+        (
+            SLACK.replace("    gate:\n      - user_id: U0123456789", "    gate: everyone"),
+            r"slack\.allowlist\.gate must be channel or a list of users and groups",
+        ),
+        (
+            SLACK.replace("- user_id: U0123456789", "- {user_id: U01, team_id: T01}"),
+            r"slack\.allowlist\.gate\[0\]\.team_id is allowed only on a group_id entry",
+        ),
+        (
+            SLACK.replace("- user_id: U0123456789", "- {group_id: S01, team_id: E0PARTNER01}"),
+            r"slack\.allowlist\.gate\[0\]\.team_id 'E0PARTNER01' is not a Slack workspace ID",
         ),
     ],
 )
@@ -142,6 +168,23 @@ def test_config_check_refuses_a_tenant_only_file_in_the_platform_directory(
 def test_config_check_reports_a_current_escalation_file(environment, capsys) -> None:
     _copy_escalation_template(environment)
     (tenant_dir(environment) / "escalation.yaml").write_text(SLACK)
+
+    config_check.main()
+
+    output = capsys.readouterr().out
+    assert "[config-check] tenants/adp/escalation: up to date (version 1)" in output
+
+
+def test_config_check_accepts_a_shared_app_tenant_from_the_host(
+    environment, monkeypatch, capsys
+) -> None:
+    _copy_escalation_template(environment)
+    (environment / "tenants" / "adp.env").write_text("")
+    (environment / "slack-shared-app.yaml").write_text(SHARED_APP)
+    (tenant_dir(environment) / "escalation.yaml").write_text(SHARED_SLACK)
+    monkeypatch.delenv("TENANT", raising=False)
+    monkeypatch.delenv("TENANTS", raising=False)
+    get_settings.cache_clear()
 
     config_check.main()
 
@@ -204,7 +247,7 @@ def test_a_shared_app_tenant_takes_its_app_from_the_shared_app_file(environment)
         "slack.com",
     )
     assert slack.channel == "C0123456789"
-    assert slack.allowlist["gate"][0].organization_id == "E0SHARED001"
+    assert slack.approvers("gate").users[0].organization_id == "E0SHARED001"
 
 
 def test_an_unknown_slack_app_is_refused_naming_own_and_shared(environment) -> None:
@@ -321,3 +364,67 @@ def test_a_tenant_owned_app_may_not_declare_the_shared_app_id(environment, tmp_p
 
     with pytest.raises(ConfigError, match="escalation.yaml: slack.app_id A0SHARED001 is the ID"):
         validate_bundle(_bundle(tmp_path, {"escalation.yaml": text}), _settings())
+
+
+def test_each_kind_parses_as_channel_or_a_list_of_users_and_groups(environment) -> None:
+    text = SLACK.replace(
+        "    gate:\n      - user_id: U0123456789",
+        "    gate: channel\n    repair:\n      - user_id: U0123456789\n"
+        "      - {group_id: S0123456789, organization_id: E0PARTNER01}",
+    )
+    (tenant_dir(environment) / "escalation.yaml").write_text(text)
+
+    slack = load_escalation_config(_settings()).slack
+
+    assert slack is not None
+    assert slack.approvers("gate") == Approvers(anyone_in_channel=True)
+    assert slack.approvers("repair") == Approvers(
+        users=(SlackUser("T0123456789", "U0123456789"),),
+        groups=(SlackGroup("E0PARTNER01", "S0123456789"),),
+    )
+
+
+def test_a_group_entry_keeps_its_team_id_and_an_entry_without_one_keeps_none(environment) -> None:
+    text = SLACK.replace(
+        "- user_id: U0123456789",
+        "- {group_id: S0123456789, team_id: T0WORKSPACE}\n      - group_id: S0999999999",
+    )
+    (tenant_dir(environment) / "escalation.yaml").write_text(text)
+
+    slack = load_escalation_config(_settings()).slack
+
+    assert slack is not None
+    assert slack.approvers("gate").groups == (
+        SlackGroup("T0123456789", "S0123456789", "T0WORKSPACE"),
+        SlackGroup("T0123456789", "S0999999999"),
+    )
+
+
+def _groups(count: int, start: int = 0) -> str:
+    return "".join(f"      - group_id: S{index:010d}\n" for index in range(start, start + count))
+
+
+@pytest.mark.parametrize("app", ["own", "shared"])
+def test_more_distinct_groups_than_the_limit_across_kinds_are_refused(environment, app) -> None:
+    (environment / "slack-shared-app.yaml").write_text(SHARED_APP)
+    base = SLACK if app == "own" else SHARED_SLACK
+    allowlist = f"    gate:\n{_groups(6)}    repair:\n{_groups(6, start=5)}"
+    text = base.replace("    gate:\n      - user_id: U0123456789\n", allowlist)
+    (tenant_dir(environment) / "escalation.yaml").write_text(text)
+
+    with pytest.raises(
+        ConfigError,
+        match=f"slack.allowlist names 11 distinct groups, above the limit of {MAX_APPROVER_GROUPS}",
+    ):
+        load_escalation_config(_settings())
+
+
+def test_the_limit_counts_a_group_named_under_two_kinds_once(environment) -> None:
+    allowlist = f"    gate:\n{_groups(MAX_APPROVER_GROUPS)}    repair:\n{_groups(1)}"
+    text = SLACK.replace("    gate:\n      - user_id: U0123456789\n", allowlist)
+    (tenant_dir(environment) / "escalation.yaml").write_text(text)
+
+    slack = load_escalation_config(_settings()).slack
+
+    assert slack is not None
+    assert len(slack.approvers("gate").groups) == MAX_APPROVER_GROUPS

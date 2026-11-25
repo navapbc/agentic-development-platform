@@ -297,15 +297,26 @@ def test_the_slack_poster_mounts_each_action_key_fingerprint_and_no_key(overlay)
     }
 
 
-def test_the_slack_poster_admits_only_activity_workers_in_worker_namespaces(overlay) -> None:
+def test_the_slack_poster_admits_worker_namespaces_and_the_platform_callers(overlay) -> None:
     inputs = _with_shared_app(_inputs())
 
     documents, _ = eks_render.render(overlay, inputs, REPOSITORY)
 
     policy = _named(documents, "NetworkPolicy", "slack-poster-ingress", "agentic-dev-platform")
     (rule,) = policy["spec"]["ingress"]
-    (peer,) = rule["from"]
+    peer, platform_peer = rule["from"]
     assert peer["podSelector"] == {"matchLabels": {"app.kubernetes.io/name": "activity-worker"}}
+    assert platform_peer == {
+        "podSelector": {
+            "matchExpressions": [
+                {
+                    "key": "app.kubernetes.io/name",
+                    "operator": "In",
+                    "values": ["inbound-webhook", "deployment-validate"],
+                }
+            ]
+        }
+    }
     assert {
         "key": "agentic-dev-platform/namespace-role",
         "operator": "In",

@@ -103,6 +103,7 @@ async def test_active_query_selects_state():
         workflow_id="wf-1",
         updated_at=datetime(2026, 1, 1, tzinfo=UTC),
         state="PR_CREATED",
+        repository="agentic-demo-service",
     )
     seeder, connection = _seeder_with_rows([row])
 
@@ -110,6 +111,7 @@ async def test_active_query_selects_state():
 
     assert "state" in str(connection.statements[0]).lower()
     assert [execution.state for execution in active] == ["PR_CREATED"]
+    assert [execution.repository for execution in active] == ["agentic-demo-service"]
 
 
 @pytest.mark.asyncio
@@ -120,6 +122,7 @@ async def test_active_query_tolerates_null_state():
         workflow_id=None,
         updated_at=datetime(2026, 1, 1, tzinfo=UTC),
         state=None,
+        repository=None,
     )
     seeder, _ = _seeder_with_rows([row])
 

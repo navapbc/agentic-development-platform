@@ -7,7 +7,7 @@ from adapters.interfaces.security_scanner import ScanFinding
 from services.orchestration.gates.builtin import review_gate, scanner_gate
 from services.orchestration.gates.contract import (
     BLOCK,
-    PASS,
+    PASSED,
     REVIEW,
     SCANNER,
     GateContext,
@@ -40,7 +40,7 @@ async def test_registry_resolves_registered_gate():
     registry = GateRegistry()
 
     async def evaluate(context: GateContext) -> GateResult:
-        return GateResult(name="fake", kind=REVIEW, verdict=PASS)
+        return GateResult(name="fake", kind=REVIEW, verdict=PASSED)
 
     registry.register("fake", lambda: gate_from_callable("fake", REVIEW, evaluate))
 
@@ -48,7 +48,7 @@ async def test_registry_resolves_registered_gate():
     assert registry.names() == frozenset({"fake"})
     gate = registry.resolve("fake")
     result = await gate.evaluate(_context())
-    assert result.verdict == PASS
+    assert result.verdict == PASSED
 
 
 def test_registry_rejects_duplicate_and_unknown():
@@ -130,7 +130,7 @@ async def test_scanner_gate_passes_below_threshold():
     gate = scanner_gate("trivy", lambda: _Scanner())
     result = await gate.evaluate(_context())
 
-    assert result.verdict == PASS
+    assert result.verdict == PASSED
 
 
 def test_builtin_registry_exposes_the_built_in_gates():
@@ -156,7 +156,7 @@ async def test_review_gate_propagates_acceptance_criteria_to_the_request():
     async def fake_review(req) -> ReviewOutcome:
         seen["criteria"] = req.acceptance_criteria
         return ReviewOutcome(
-            verdict=PASS, attestation_hash="sha256:acc", prompt_version="acceptance/v1"
+            verdict=PASSED, attestation_hash="sha256:acc", prompt_version="acceptance/v1"
         )
 
     gate = review_gate("acceptance", fake_review)

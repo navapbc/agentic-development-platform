@@ -31,6 +31,23 @@ def test_compose_files_adds_the_override_file_when_present(project):
     assert _compose_files() == "-f compose.yaml -f compose.override.yaml"
 
 
+def test_compose_files_omits_the_dev_mounts_unless_opted_in(project, monkeypatch):
+    for name in ("compose.override.yaml", "compose.dev-mounts.yaml", "compose.repositories.yaml"):
+        (project / name).write_text("services: {}\n", encoding="utf-8")
+    monkeypatch.delenv("COMPOSE_DEV_MOUNTS", raising=False)
+
+    assert _compose_files() == (
+        "-f compose.yaml -f compose.override.yaml -f compose.repositories.yaml"
+    )
+
+    _platform_env(project).write_text("COMPOSE_DEV_MOUNTS=true\n", encoding="utf-8")
+
+    assert _compose_files() == (
+        "-f compose.yaml -f compose.override.yaml -f compose.dev-mounts.yaml "
+        "-f compose.repositories.yaml"
+    )
+
+
 def test_compose_files_defers_to_the_compose_file_environment_variable(project, monkeypatch):
     (project / "compose.override.yaml").write_text("services: {}\n", encoding="utf-8")
     monkeypatch.setenv("COMPOSE_FILE", "compose.yaml:compose.override.yaml:compose.pilot.yaml")

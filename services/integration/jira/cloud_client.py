@@ -224,11 +224,11 @@ class JiraCloudClient:
         return issues[start_at:end]
 
     def _search_pages(self, jql: str) -> Iterator[dict[str, Any]]:
-        token = ""
+        cursor = ""
         while True:
             body: dict[str, Any] = {"jql": jql, "maxResults": 100, "fields": list(SEARCH_FIELDS)}
-            if token:
-                body["nextPageToken"] = token
+            if cursor:
+                body["nextPageToken"] = cursor
             page = self._request("POST", "/rest/api/3/search/jql", json=body)
             issues = page.get("issues")
             if not isinstance(issues, list) or any(
@@ -236,6 +236,6 @@ class JiraCloudClient:
             ):
                 raise JiraCloudError("Jira Cloud returned a malformed search page")
             yield from issues
-            token = str(page.get("nextPageToken") or "")
-            if page.get("isLast", not token) or not token:
+            cursor = str(page.get("nextPageToken") or "")
+            if page.get("isLast", not cursor) or not cursor:
                 return

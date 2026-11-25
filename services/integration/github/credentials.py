@@ -111,6 +111,7 @@ def _parse_default(raw: Mapping[str, object], hosts: dict[str, _Host]) -> _Ident
 
 
 _MOVED_SECTIONS = ("allowlist", "repositories")
+_SINGLE_IDENTITY_REF = "__token__"
 
 
 def parse_github_config(
@@ -232,10 +233,14 @@ def build_single_identity_resolver(
     named `__token__` that no operator can set, and the resolver would raise where it means
     that this caller configured no credential.
     """
-    identity = _Identity(host="default", owner=owner, token_ref="__token__") if token else None
+    identity = (
+        _Identity(host="default", owner=owner, token_ref=_SINGLE_IDENTITY_REF) if token else None
+    )
     config = GitHubSourceConfig(
         hosts={"default": _Host(api_url=api_url, git_base_url=git_base_url)},
         default=identity,
         repositories={},
     )
-    return GitHubCredentialResolver(config, set(repos), EnvSecretResolver({"__token__": token}))
+    return GitHubCredentialResolver(
+        config, set(repos), EnvSecretResolver({_SINGLE_IDENTITY_REF: token})
+    )

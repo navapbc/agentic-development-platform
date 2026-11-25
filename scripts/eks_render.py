@@ -64,6 +64,19 @@ MODEL_LIMIT_ENV = {
 
 
 WORKLOAD_KINDS = frozenset({"Deployment", "StatefulSet", "DaemonSet", "Job", "CronJob", "Pod"})
+PLATFORM_ESCALATION_FILE = "platform-escalation.yaml"
+
+
+def require_platform_escalation(environment_config: Mapping[str, str]) -> None:
+    """Refuse an environment config without platform-escalation.yaml, which the workers and the
+    Slack posting service refuse to start without."""
+    if PLATFORM_ESCALATION_FILE not in environment_config:
+        raise RenderError(
+            f"the environment config holds no {PLATFORM_ESCALATION_FILE}, and the workers and the "
+            f"Slack posting service refuse to start without it. Copy "
+            f"config/platform/{PLATFORM_ESCALATION_FILE}.example to {PLATFORM_ESCALATION_FILE} "
+            "in container_config_dir, name the administrator destination, and apply"
+        )
 
 
 def workloads_last(documents: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -373,6 +386,31 @@ def set_network_cidrs(
                     block["cidr"] = service_cidr
 
 
+PLATFORM_BASELINE_POLICY = "platform-baseline"
+DEFAULT_SMTP_PORT = 587
+
+
+def set_smtp_egress(
+    documents: list[dict[str, Any]], platform_environment: Mapping[str, Any]
+) -> None:
+    """Point the platform baseline's SMTP egress at SMTP_PORT, 587 unless the environment sets it.
+
+    The workers, the inbound webhook, and the deployment-validate Job send alert email, and the
+    tenant namespaces copy the platform baseline.
+    """
+    raw = str(platform_environment.get("SMTP_PORT") or DEFAULT_SMTP_PORT).strip()
+    if not raw.isdigit() or not 0 < int(raw) < 65536:
+        raise RenderError(f"SMTP_PORT {raw!r} of the platform environment is not a TCP port")
+    for document in documents:
+        if (
+            document.get("kind") != "NetworkPolicy"
+            or document["metadata"]["name"] != PLATFORM_BASELINE_POLICY
+        ):
+            continue
+        smtp = next(r for r in document["spec"]["egress"] if _ports(r) == [DEFAULT_SMTP_PORT])
+        smtp["ports"] = [{"protocol": "TCP", "port": int(raw)}]
+
+
 def _ports(rule: Mapping[str, Any]) -> list[int]:
     return [port["port"] for port in rule.get("ports", [])]
 
@@ -498,6 +536,7 @@ def render(
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Return the environment's manifests and the secret aliases left out of them."""
     from scripts.tenant_render import tenantize
+    from scripts.validation_job import set_validation_image, set_validation_tenants
     from scripts.webhook_eks_render import (
         route_action_key_fingerprints,
         route_slack_poster,
@@ -506,7 +545,10 @@ def render(
     )
 
     documents = copy.deepcopy(overlay_documents)
+    require_platform_escalation(inputs.get("environment_config") or {})
     set_images(documents, inputs["images"])
+    set_validation_image(documents, inputs["images"]["platform"])
+    set_validation_tenants(documents, [entry["name"] for entry in inputs.get("tenants") or []])
     set_settings(documents, inputs)
     set_security_groups(documents, inputs["security_groups"])
     set_network_cidrs(
@@ -516,6 +558,7 @@ def render(
         inputs["gate_egress_cidrs"],
         bool(inputs.get("gate_egress_internet")),
     )
+    set_smtp_egress(documents, inputs.get("platform_environment") or {})
     documents = set_ingress(documents, inputs.get("ingress") or {})
     generated = generated_objects(inputs, root)
     tenants = tenant_specs(documents, inputs)

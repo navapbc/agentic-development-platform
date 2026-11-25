@@ -176,6 +176,7 @@ RUN chmod +x ./web/entrypoint.sh
 RUN cis-harden
 USER 1001
 ENV PORT=3000
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 CMD ["wget", "-q", "--spider", "http://127.0.0.1:3000/api/public/health"]
 ENTRYPOINT ["dumb-init", "--", "./web/entrypoint.sh"]
 CMD ["node", "./web/server.js", "--keepAliveTimeout", "110000"]
 
@@ -188,5 +189,6 @@ RUN cis-harden
 USER 1001
 EXPOSE 3030
 ENV PORT=3030
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 CMD ["wget", "-q", "--spider", "http://127.0.0.1:3030/api/health"]
 ENTRYPOINT ["dumb-init", "--", "./worker/entrypoint.sh"]
 CMD ["node", "worker/dist/index.js"]

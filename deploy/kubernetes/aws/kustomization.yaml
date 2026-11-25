@@ -10,6 +10,7 @@ resources:
   - ../review-worker.yaml
   - ../litellm.yaml
   - ../sandbox.yaml
+  - ../deployment-validate.yaml
   - ../../../openhands/policies/networkpolicy-default-deny-egress.yaml
   - ../../../openhands/policies/networkpolicy-allow-egress.yaml
   - secret-provider-classes.yaml
@@ -42,6 +43,7 @@ configMapGenerator:
       - AWS_USE_FIPS_ENDPOINT=true
       - BEDROCK_CONNECTIVITY_PROVIDER=direct
       - DEPLOYMENT_POSTURE=deployed
+      - MODEL_PATH_PROBE=false
       - SANDBOX_NODE_POOL=sandbox
       - LANGFUSE_HOST=https://langfuse.platform.internal
       - OPENHANDS_AGENT_SERVER_IMAGE=123456789012.dkr.ecr.us-east-1.amazonaws.com/agentic-platform/openhands-agent-server:1.56.0-python@sha256:718bf6d719f34184810ecaebe607f1aafaf526e109654815e61ddd6238728023
@@ -334,6 +336,12 @@ patches:
                     value: /mnt/secrets
                   - name: PLATFORM_ENV_CONFIG_DIR
                     value: /app/config/env
+                  - name: SLACK_POSTING_URL
+                    value: https://slack-poster:8160
+                  - name: SLACK_POSTING_TOKEN_FILE
+                    value: /var/run/secrets/slack-posting/token
+                  - name: SLACK_POSTING_CA_FILE
+                    value: /etc/slack-poster-ca/ca.pem
                 volumeMounts:
                   - $patch: replace
                   - name: platform-config
@@ -344,6 +352,12 @@ patches:
                     readOnly: true
                   - name: tmp
                     mountPath: /tmp
+                  - name: slack-posting-token
+                    mountPath: /var/run/secrets/slack-posting
+                    readOnly: true
+                  - name: slack-poster-ca
+                    mountPath: /etc/slack-poster-ca
+                    readOnly: true
             volumes:
               - $patch: replace
               - name: platform-config
@@ -357,6 +371,91 @@ patches:
                     secretProviderClass: inbound-webhook
               - name: tmp
                 emptyDir: {}
+              - name: slack-posting-token
+                projected:
+                  sources:
+                    - serviceAccountToken:
+                        audience: slack-posting-service
+                        expirationSeconds: 600
+                        path: token
+              - name: slack-poster-ca
+                configMap:
+                  name: slack-poster-ca
+                  optional: true
+  - target:
+      kind: CronJob
+      name: deployment-validate
+    patch: |
+      apiVersion: batch/v1
+      kind: CronJob
+      metadata:
+        name: deployment-validate
+      spec:
+        jobTemplate:
+          spec:
+            template:
+              spec:
+                containers:
+                  - name: deployment-validate
+                    envFrom:
+                      - configMapRef:
+                          name: agentic-platform-env
+                      - configMapRef:
+                          name: agentic-platform-eks
+                    env:
+                      - $patch: replace
+                      - name: LITELLM_BASE_URL
+                        value: http://litellm:4000
+                      - name: PLATFORM_SECRETS_DIR
+                        value: /mnt/secrets
+                      - name: SLACK_POSTING_URL
+                        value: https://slack-poster:8160
+                      - name: SLACK_POSTING_TOKEN_FILE
+                        value: /var/run/secrets/slack-posting/token
+                      - name: SLACK_POSTING_CA_FILE
+                        value: /etc/slack-poster-ca/ca.pem
+                      - name: PLATFORM_ENV_CONFIG_DIR
+                        value: /app/config/env
+                    volumeMounts:
+                      - $patch: replace
+                      - name: secrets
+                        mountPath: /mnt/secrets
+                        readOnly: true
+                      - name: platform-config
+                        mountPath: /app/config/env
+                        readOnly: true
+                      - name: tmp
+                        mountPath: /tmp
+                      - name: slack-posting-token
+                        mountPath: /var/run/secrets/slack-posting
+                        readOnly: true
+                      - name: slack-poster-ca
+                        mountPath: /etc/slack-poster-ca
+                        readOnly: true
+                volumes:
+                  - $patch: replace
+                  - name: secrets
+                    csi:
+                      driver: secrets-store.csi.k8s.io
+                      readOnly: true
+                      volumeAttributes:
+                        secretProviderClass: deployment-validate
+                  - name: platform-config
+                    configMap:
+                      name: platform-config
+                  - name: tmp
+                    emptyDir: {}
+                  - name: slack-posting-token
+                    projected:
+                      sources:
+                        - serviceAccountToken:
+                            audience: slack-posting-service
+                            expirationSeconds: 600
+                            path: token
+                  - name: slack-poster-ca
+                    configMap:
+                      name: slack-poster-ca
+                      optional: true
   - target:
       kind: Deployment
       name: mcp-gateway

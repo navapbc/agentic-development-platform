@@ -74,6 +74,13 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --extra worker
 
 
+FROM ${AL2023_IMAGE} AS rds-ca
+ARG RDS_CA_BUNDLE_URL=https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
+ARG RDS_CA_BUNDLE_SHA256=90a6f1a7978a1b1b096dca6c57511ca48d3b8cf052f8e704baf358f34ea2f21b
+RUN mkdir /out \
+ && curl -fsSLo /out/rds-global-bundle.pem "${RDS_CA_BUNDLE_URL}" \
+ && echo "${RDS_CA_BUNDLE_SHA256}  /out/rds-global-bundle.pem" | sha256sum -c -
+
 FROM ${AL2023_IMAGE}
 ARG AL2023_RELEASE=2023.12.20261112
 LABEL org.opencontainers.image.licenses="Apache-2.0"
@@ -88,9 +95,7 @@ ENV PYTHONUNBUFFERED=1 \
     PLATFORM_IN_CONTAINER=1 \
     BIND_HOST=0.0.0.0 \
     PATH=/opt/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-ARG RDS_CA_BUNDLE_URL=https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
-ARG RDS_CA_BUNDLE_SHA256=90a6f1a7978a1b1b096dca6c57511ca48d3b8cf052f8e704baf358f34ea2f21b
-ADD --checksum=sha256:${RDS_CA_BUNDLE_SHA256} --chmod=0444 ${RDS_CA_BUNDLE_URL} /etc/ssl/rds-global-bundle.pem
+COPY --from=rds-ca --chmod=0444 /out/rds-global-bundle.pem /etc/ssl/rds-global-bundle.pem
 COPY --from=kubectl /out/kubectl /usr/local/bin/kubectl
 COPY --from=build /opt/venv /opt/venv
 COPY --from=build /app /app
@@ -100,5 +105,8 @@ ENV AGENT_BUILD_ID=${AGENT_BUILD_ID}
 COPY --chmod=0555 docker/platform-entrypoint.sh /usr/local/bin/platform-entrypoint
 RUN cis-harden
 USER appuser
+# The HEALTHCHECK probes the default CMD. Every other role declares its own probe where it runs.
+ENV HEALTH_HEARTBEAT_FILE=/tmp/worker.heartbeat
+HEALTHCHECK --interval=30s --timeout=10s --start-period=180s --retries=3 CMD ["python", "-m", "services.healthcheck", "heartbeat", "/tmp/worker.heartbeat", "--max-age", "60"]
 ENTRYPOINT ["/usr/local/bin/platform-entrypoint"]
 CMD ["python", "-m", "services.orchestration.worker"]

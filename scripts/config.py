@@ -53,6 +53,8 @@ class Settings(BaseSettings):
     tenant_model_budget_duration: str = "30d"
     tenant_model_rpm_limit: int = 0
     tenant_model_tpm_limit: int = 0
+    limit_grant_step_percent: float = 25.0
+    limit_grant_period_percent: float = 100.0
 
     rebar_llm_base_url: str = "http://localhost:4000"
     rebar_llm_api_key: str = "change-me-locally"
@@ -285,6 +287,7 @@ class Settings(BaseSettings):
     intake_run_reviews: bool = False
     intake_run_policy: bool = False
     intake_run_approval: bool = False
+    model_path_probe: bool = True
 
     max_concurrent_runs: int = 4
     execution_orphan_grace_seconds: int = 120
