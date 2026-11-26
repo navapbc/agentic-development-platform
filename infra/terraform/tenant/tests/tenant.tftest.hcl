@@ -429,7 +429,7 @@ run "the_tenant_owns_a_ticket_store" {
     condition = contains(jsondecode(aws_iam_policy.worker[0].policy).Statement, {
       Sid      = "AssumeTheTicketStoreRoles"
       Effect   = "Allow"
-      Action   = "sts:AssumeRole"
+      Action   = ["sts:AssumeRole", "sts:TagSession"]
       Resource = ["arn:aws:iam::111111111111:role/agentic-platform-tenant-adp-rebar-tickets-reader", "arn:aws:iam::111111111111:role/agentic-platform-tenant-adp-rebar-tickets-writer"]
     })
     error_message = "The worker policy does not let the worker assume the ticket store roles, which trust it only by condition."

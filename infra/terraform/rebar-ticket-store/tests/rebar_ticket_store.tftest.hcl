@@ -592,6 +592,11 @@ run "a_principal_trusted_by_condition_is_matched_on_its_arn_through_the_account"
     condition     = jsondecode(local.assume_policy).Statement[0].Condition.ArnEquals["aws:PrincipalArn"] == ["arn:aws:iam::111111111111:role/agentic-platform-eks-tenant-adp"]
     error_message = "The trust by condition is not limited to the named principal."
   }
+
+  assert {
+    condition     = jsondecode(local.assume_policy).Statement[0].Action == ["sts:AssumeRole", "sts:TagSession"]
+    error_message = "The trust by condition refuses the session tags an EKS Pod Identity session carries into the role."
+  }
 }
 
 run "a_wildcard_principal_trusted_by_condition_is_rejected" {

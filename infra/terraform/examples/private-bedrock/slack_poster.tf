@@ -1,5 +1,8 @@
 locals {
   slack_shared_app_enabled = local.eks_enabled && var.slack_shared_app != null
+  slack_api_host           = local.slack_shared_app_enabled ? regex("^https://([^/:]+)", var.slack_shared_app.api_base_url)[0] : ""
+  # The Web API answers at the api_base_url host, and Socket Mode connects to wss-primary under it.
+  slack_domains = local.slack_shared_app_enabled ? [local.slack_api_host, "*.${local.slack_api_host}"] : []
   slack_shared_app_environment_config = local.slack_shared_app_enabled ? {
     "slack-shared-app.yaml" = yamlencode({
       config_version  = 1

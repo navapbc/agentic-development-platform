@@ -119,7 +119,8 @@ locals {
       Sid       = "TrustedPrincipalsByCondition"
       Effect    = "Allow"
       Principal = { AWS = "arn:${local.partition}:iam::${local.account_id}:root" }
-      Action    = "sts:AssumeRole"
+      # An EKS Pod Identity session carries transitive session tags, so chaining from it needs TagSession.
+      Action    = ["sts:AssumeRole", "sts:TagSession"]
       Condition = { ArnEquals = { "aws:PrincipalArn" = var.trusted_principals_by_condition } }
     }],
   )

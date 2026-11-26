@@ -4,10 +4,10 @@
 # upstream web and worker Dockerfiles. LANGFUSE_OVERRIDES adds pnpm overrides, as name@range, to
 # the workspace before the install, and the Prisma CLI the web entrypoint runs gets the same ones.
 
-ARG AL2023_IMAGE=public.ecr.aws/amazonlinux/amazonlinux:2023-minimal@sha256:158a9044f9dc0777f098b76c8b54346f6ed4560b9a6a416dec7a5ba3bc483af4
+ARG AL2023_IMAGE=public.ecr.aws/amazonlinux/amazonlinux:2023-minimal@sha256:75a2d4226d9b98c914d7eed878a03bef4f365ad548be5d28d464ccba504cec79
 
 FROM ${AL2023_IMAGE} AS go
-ARG AL2023_RELEASE=2023.12.20261112
+ARG AL2023_RELEASE=2023.12.20261120
 ARG GO_VERSION=1.27.4
 ARG GO_SHA256_AMD64=7226736c2339719cda28fbf3a54d71aa63bcefe376e98cef00034268dab24840
 ARG GO_SHA256_ARM64=3392582988a273a87ab5043ee1b2c9c17a2c3c00580bf9326c47a2e0aaaeac92
@@ -47,11 +47,11 @@ RUN case "${TARGETARCH}" in \
  && chmod 0555 /out/dumb-init
 
 FROM ${AL2023_IMAGE} AS source
-ARG AL2023_RELEASE=2023.12.20261112
+ARG AL2023_RELEASE=2023.12.20261120
 ARG LANGFUSE_VERSION=v4.79.0
 ARG LANGFUSE_PNPM_VERSION=12.16.1
 ARG LANGFUSE_TURBO_VERSION=2.11.9
-ARG LANGFUSE_OVERRIDES=deepmerge-ts@^8.0.2
+ARG LANGFUSE_OVERRIDES=deepmerge-ts@^8.0.2,effect@3.22.4
 RUN dnf -y --releasever="${AL2023_RELEASE}" install nodejs24 nodejs24-npm git tar gzip gcc gcc-c++ make \
       python3 findutils \
  && dnf clean all \
@@ -141,7 +141,7 @@ RUN pnpm install --frozen-lockfile \
  && ! ls /prod/worker/node_modules/.pnpm | grep -E '^(next|prisma|@prisma\+engines)@'
 
 FROM ${AL2023_IMAGE} AS runtime
-ARG AL2023_RELEASE=2023.12.20261112
+ARG AL2023_RELEASE=2023.12.20261120
 RUN dnf -y --releasever="${AL2023_RELEASE}" upgrade \
  && dnf -y --releasever="${AL2023_RELEASE}" install nodejs24 nodejs24-full-i18n bash sed tzdata crypto-policies wget shadow-utils \
  && groupadd --gid 1001 nodejs \

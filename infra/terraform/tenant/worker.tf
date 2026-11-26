@@ -44,7 +44,7 @@ resource "aws_iam_policy" "worker" {
         {
           Sid      = "AssumeTheTicketStoreRoles"
           Effect   = "Allow"
-          Action   = "sts:AssumeRole"
+          Action   = ["sts:AssumeRole", "sts:TagSession"]
           Resource = [module.ticket_store.reader_role_arn, module.ticket_store.writer_role_arn]
         },
         {

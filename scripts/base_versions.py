@@ -16,8 +16,10 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 VERSIONS_FILE = REPO_ROOT / "docker" / "al2023" / "versions.env"
 DOCKERFILE_GLOBS = (
+    "docker/Dockerfile",
     "docker/*.Dockerfile",
     "docker/*/Dockerfile",
+    "docker/*/*.Dockerfile",
     "examples/gate-engines/*/Dockerfile",
 )
 _ARG = re.compile(r"^(?P<lead>[ \t]*ARG[ \t]+)(?P<name>[A-Z0-9_]+)=(?P<value>\S*)[ \t]*$", re.M)

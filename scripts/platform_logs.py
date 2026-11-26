@@ -17,7 +17,7 @@ from services import process
 LOG_DIR = "/var/lib/otelcol/logs"
 READER_IMAGE = (
     "public.ecr.aws/amazonlinux/amazonlinux:2023-minimal"
-    "@sha256:158a9044f9dc0777f098b76c8b54346f6ed4560b9a6a416dec7a5ba3bc483af4"
+    "@sha256:75a2d4226d9b98c914d7eed878a03bef4f365ad548be5d28d464ccba504cec79"
 )
 
 

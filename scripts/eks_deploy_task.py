@@ -47,6 +47,7 @@ OVERLAY = ROOT / "deploy" / "kubernetes" / "aws"
 CHART = ROOT / "charts" / "aws-load-balancer-controller.tgz"
 DEPLOYMENTS = ("litellm", "inbound-webhook")
 COMMAND_TIMEOUT = 300
+CLAIM_DELETE_SECONDS = 300
 ROLLOUT_TIMEOUT = "10m"
 SCALE_UP_TIMEOUT = "5m"
 LOG = "[eks-deployer]"
@@ -232,6 +233,41 @@ def rollout(targets: Iterable[str], timeout: str = ROLLOUT_TIMEOUT) -> None:
         print(f"{LOG} {namespace}/deployment/{name} is rolled out")
 
 
+def replace_changed_claims(documents: list[dict[str, Any]]) -> None:
+    """Delete each live claim whose access modes differ from its rendered claim, and its volume.
+
+    A bound claim's spec is immutable, so an apply refuses the change. The claim's namespace
+    scales its deployments to zero first, because the protection finalizer keeps a claim a pod
+    mounts. The apply that follows recreates the claim and the volume and restores the replicas.
+    """
+    for claim in (d for d in documents if d.get("kind") == "PersistentVolumeClaim"):
+        namespace, name = claim["metadata"]["namespace"], claim["metadata"]["name"]
+        live = run(
+            [KUBECTL, "-n", namespace, "get", "pvc", name, "-o", "json", "--ignore-not-found"]
+        )
+        if not live.strip():
+            continue
+        current = json.loads(live)["spec"]
+        wanted = claim["spec"].get("accessModes")
+        if current.get("accessModes") == wanted:
+            continue
+        print(
+            f"{LOG} recreating {namespace}/{name}, whose access modes change from "
+            f"{current.get('accessModes')} to {wanted}"
+        )
+        run([KUBECTL, "-n", namespace, "scale", "deployment", "--all", "--replicas=0"])
+        wait = ["--wait=true", f"--timeout={CLAIM_DELETE_SECONDS}s"]
+        run(
+            [KUBECTL, "-n", namespace, "delete", "pvc", name, *wait],
+            timeout=CLAIM_DELETE_SECONDS + 60,
+        )
+        if current.get("volumeName"):
+            run(
+                [KUBECTL, "delete", "pv", current["volumeName"], "--ignore-not-found", *wait],
+                timeout=CLAIM_DELETE_SECONDS + 60,
+            )
+
+
 def delete_retired() -> None:
     """Delete the objects a deployment rendered before tenants, which an apply does not prune."""
     from scripts.tenant_render import RETIRED
@@ -244,21 +280,43 @@ def delete_retired() -> None:
 
 
 def diagnose(name: str, namespace: str = PLATFORM_NAMESPACE) -> None:
-    """Print the pods, warnings, and recent log of a deployment that did not roll out.
+    """Print the pods, warnings, and recent logs of a deployment that did not roll out.
 
-    The operator has no kubectl, so the task log is where a failed rollout is explained.
+    The operator has no kubectl, so the task log is where a failed rollout is explained. A
+    deployment's log names one pod, which is often the old pod still serving, so the log of each
+    pod that is not ready is printed, with its previous container's log after a restart.
     """
     selector = f"app.kubernetes.io/name={name}"
     print(f"{LOG} deployment/{name} did not roll out")
     for args in (
         ["get", "pods", "-l", selector, "-o", "wide"],
         ["get", "events", "--field-selector", "type=Warning", "--sort-by=.lastTimestamp"],
-        ["logs", f"deployment/{name}", "--all-containers", "--tail=40"],
+        *_unready_pod_logs(selector, namespace),
     ):
         try:
             print(run([KUBECTL, "-n", namespace, *args]), end="")
         except DeployError as exc:
             print(f"{LOG} {exc}")
+
+
+def _unready_pod_logs(selector: str, namespace: str) -> list[list[str]]:
+    try:
+        pods = json.loads(
+            run([KUBECTL, "-n", namespace, "get", "pods", "-l", selector, "-o", "json"])
+        )
+    except DeployError as exc:
+        print(f"{LOG} {exc}")
+        return []
+    commands = []
+    for pod in pods.get("items", []):
+        statuses = (pod.get("status") or {}).get("containerStatuses") or []
+        if statuses and all(status.get("ready") for status in statuses):
+            continue
+        logs = ["logs", f"pod/{pod['metadata']['name']}", "--all-containers", "--tail=60"]
+        commands.append(logs)
+        if any(status.get("restartCount") for status in statuses):
+            commands.append([*logs, "--previous"])
+    return commands
 
 
 def ingress_hostname(name: str, namespace: str = PLATFORM_NAMESPACE) -> str:
@@ -337,6 +395,7 @@ def deploy(inputs: Mapping[str, Any], omit_secrets: list[str]) -> None:
     documents, skipped = render(overlay_documents(), inputs, ROOT, omit_secrets=omit_secrets)
     for alias in skipped:
         print(f"{LOG} {alias} has no current value, so the workload starts without it")
+    replace_changed_claims(documents)
     apply(documents)
     delete_retired()
     from scripts.webhook_eks_render import SLACK_POSTER, runs_slack_poster

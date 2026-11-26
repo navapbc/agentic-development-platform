@@ -615,7 +615,10 @@ def test_each_tenant_runs_one_review_worker_with_its_own_secret_provider(overlay
         )
         assert not [name for name in secrets.values() if f"/{other}/" in name]
         assert "review_signing_key" not in activity["spec"]["parameters"]["objects"]
-        assert claim["spec"]["accessModes"] == ["ReadOnlyMany"]
+        review_volume = _named(documents, "PersistentVolume", f"tenant-{tenant}-review-workspace")
+        assert claim["spec"]["accessModes"] == ["ReadWriteMany"]
+        assert review_volume["spec"]["accessModes"] == ["ReadWriteMany"]
+        assert review_volume["spec"]["csi"]["readOnly"] is True
         assert claim["spec"]["volumeName"] == f"tenant-{tenant}-review-workspace"
         assert binding["subjects"] == [
             {"kind": "ServiceAccount", "name": "review-worker", "namespace": namespace}

@@ -13,6 +13,7 @@ from invoke.collection import Collection
 from invoke.context import Context
 from invoke.exceptions import Exit
 from invoke.runners import Result
+from invoke.tasks import Task
 from tests.support import hermetic_settings, local_tenants
 
 EXPECTED_TASKS = {
@@ -66,6 +67,7 @@ EXPECTED_TASKS = {
     "temporal-certs",
     "clickhouse-certs",
     "webhook-certs",
+    "slack-poster-certs",
     "mcp-gateway-certs",
     "eks-deploy",
     "deployment-validate",
@@ -114,6 +116,17 @@ def test_invoke_namespace_exposes_documented_tasks():
     ns = tasks_module.ns
     assert isinstance(ns, Collection)
     assert set(ns.task_names) == EXPECTED_TASKS
+
+
+def test_every_defined_task_is_registered_in_the_namespace():
+    registered = set(tasks_module.ns.tasks.values())
+    defined = {
+        value
+        for name, value in vars(tasks_module).items()
+        if isinstance(value, Task) and not name.startswith("_")
+    }
+
+    assert defined <= registered
 
 
 class _RecordingContext(Context):

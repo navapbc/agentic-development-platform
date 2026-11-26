@@ -7,10 +7,10 @@
 # verify stage scans the base and writes the results, and fails on a rule that neither passes nor
 # appears in cis-accepted.txt.
 
-ARG AL2023_IMAGE=public.ecr.aws/amazonlinux/amazonlinux:2023-minimal@sha256:158a9044f9dc0777f098b76c8b54346f6ed4560b9a6a416dec7a5ba3bc483af4
+ARG AL2023_IMAGE=public.ecr.aws/amazonlinux/amazonlinux:2023-minimal@sha256:75a2d4226d9b98c914d7eed878a03bef4f365ad548be5d28d464ccba504cec79
 
 FROM ${AL2023_IMAGE} AS content
-ARG AL2023_RELEASE=2023.12.20261112
+ARG AL2023_RELEASE=2023.12.20261120
 ARG SSG_VERSION=0.1.82
 ARG SSG_SHA512=1caea418f0a5aaef7025e1655ca45a80942ea87ee832b943644ba6f9991b14a6ac5b35dddcd04b754e1fc8fbdee7b7f394507d24b123e821cca0354dc4e03cfd
 RUN dnf -y --releasever="${AL2023_RELEASE}" install unzip \
@@ -23,7 +23,7 @@ RUN dnf -y --releasever="${AL2023_RELEASE}" install unzip \
  && rm /tmp/ssg.zip
 
 FROM ${AL2023_IMAGE} AS openscap
-ARG AL2023_RELEASE=2023.12.20261112
+ARG AL2023_RELEASE=2023.12.20261120
 ARG OPENSCAP_VERSION=1.4.6
 ARG OPENSCAP_SHA512=4f4008ab6505bc4f4a68d2c15611062f3c41762f5dd37a02fcf1f37a5415776c0d52b4f32b3289adb4b22d8f82a8921fc59362a3cd130905fb70cd68dea96325
 RUN dnf -y --releasever="${AL2023_RELEASE}" install gcc gcc-c++ make cmake tar gzip \
@@ -51,7 +51,7 @@ COPY docker/al2023/cis-accepted.txt /usr/local/share/cis/cis-accepted.txt
 HEALTHCHECK NONE
 
 FROM ${AL2023_IMAGE} AS base
-ARG AL2023_RELEASE=2023.12.20261112
+ARG AL2023_RELEASE=2023.12.20261120
 COPY --from=content /content/al2023-script-cis.sh /usr/local/share/cis/al2023-script-cis.sh
 COPY --chmod=0555 docker/al2023/cis-harden.sh /usr/local/sbin/cis-harden
 RUN echo "${AL2023_RELEASE}" > /usr/local/share/cis/releasever \

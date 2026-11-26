@@ -98,6 +98,82 @@ def test_restart_rolls_each_named_deployment(monkeypatch) -> None:
     ]
 
 
+def _review_claim(access_modes: list[str]) -> dict:
+    return {
+        "kind": "PersistentVolumeClaim",
+        "metadata": {"name": "workspaces", "namespace": "tenant-adp-review"},
+        "spec": {"accessModes": access_modes, "volumeName": "tenant-adp-review-workspace"},
+    }
+
+
+def _live_claims(monkeypatch, live: dict) -> list[list[str]]:
+    calls: list[list[str]] = []
+
+    def run(args, **_):
+        calls.append(args)
+        return json.dumps(live) if args[3:5] == ["get", "pvc"] else ""
+
+    monkeypatch.setattr(eks_deploy_task, "run", run)
+    return calls
+
+
+def test_a_claim_whose_access_modes_changed_is_deleted_with_its_volume(monkeypatch) -> None:
+    calls = _live_claims(monkeypatch, _review_claim(["ReadOnlyMany"]))
+
+    eks_deploy_task.replace_changed_claims([_review_claim(["ReadWriteMany"])])
+
+    assert [c[1:] for c in calls[1:]] == [
+        ["-n", "tenant-adp-review", "scale", "deployment", "--all", "--replicas=0"],
+        ["-n", "tenant-adp-review", "delete", "pvc", "workspaces", "--wait=true", "--timeout=300s"],
+        [
+            "delete",
+            "pv",
+            "tenant-adp-review-workspace",
+            "--ignore-not-found",
+            "--wait=true",
+            "--timeout=300s",
+        ],
+    ]
+
+
+def test_a_claim_with_unchanged_access_modes_is_kept(monkeypatch) -> None:
+    calls = _live_claims(monkeypatch, _review_claim(["ReadWriteMany"]))
+
+    eks_deploy_task.replace_changed_claims([_review_claim(["ReadWriteMany"])])
+
+    assert len(calls) == 1
+
+
+def test_diagnose_prints_the_logs_of_each_pod_that_is_not_ready(monkeypatch, capsys) -> None:
+    pods = {
+        "items": [
+            {
+                "metadata": {"name": "worker-old"},
+                "status": {"containerStatuses": [{"ready": True, "restartCount": 0}]},
+            },
+            {
+                "metadata": {"name": "worker-new"},
+                "status": {"containerStatuses": [{"ready": False, "restartCount": 6}]},
+            },
+        ]
+    }
+    calls: list[list[str]] = []
+
+    def run(args, **_):
+        calls.append(args)
+        return json.dumps(pods) if args[-2:] == ["-o", "json"] else ""
+
+    monkeypatch.setattr(eks_deploy_task, "run", run)
+
+    eks_deploy_task.diagnose("activity-worker", "tenant-beta")
+
+    logs = [c[3:] for c in calls if c[3] == "logs"]
+    assert logs == [
+        ["logs", "pod/worker-new", "--all-containers", "--tail=60"],
+        ["logs", "pod/worker-new", "--all-containers", "--tail=60", "--previous"],
+    ]
+
+
 def test_restarting_the_gateway_rolls_every_tenant_gateway(monkeypatch) -> None:
     calls: list[list[str]] = []
     monkeypatch.setattr(eks_deploy_task, "run", lambda args, **_: calls.append(args) or "")

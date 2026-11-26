@@ -54,6 +54,7 @@ def _parse(raw: dict[str, Any]) -> Any:
 @pytest.fixture
 def store(tmp_path: Path) -> str:
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / store_remote.TICKETS_WORKTREE).mkdir()
     return str(tmp_path)
 
 
@@ -203,10 +204,49 @@ def test_seed_creates_the_store_with_the_split_remote_and_runs_rebar_init(monkey
     assert rebar_calls == [("init", "--silent"), ("identity", "use", "2940-c3f4")]
 
 
-def test_seed_leaves_an_existing_store_alone(monkeypatch, store):
+def test_seed_leaves_an_initialized_store_alone(monkeypatch, store):
     monkeypatch.setattr(store_remote, "configure_store_remote", pytest.fail)
 
     assert store_remote.seed_store(store, _parse(_raw())) is False
+
+
+def test_seed_completes_a_store_whose_rebar_init_did_not_finish(monkeypatch, tmp_path):
+    partial = str(tmp_path / "store")
+    subprocess.run(["git", "init", "-q", partial], check=True)
+    rebar_calls: list[tuple[str, ...]] = []
+    run = store_remote.process.run
+
+    def fake_run(command, **kwargs):
+        if command[0] == "rebar":
+            rebar_calls.append(tuple(command[1:]))
+            return subprocess.CompletedProcess(command, 0, "", "")
+        return run(command, **kwargs)
+
+    monkeypatch.setattr(store_remote.process, "run", fake_run)
+
+    assert store_remote.seed_store(partial, _parse(_raw())) is True
+    assert read_store_remote(partial) == StoreRemote("origin", READER_URL, WRITER_URL)
+    assert rebar_calls == [("init", "--silent")]
+
+
+def test_a_failed_seed_names_the_remote_probe_error(monkeypatch, tmp_path):
+    run = store_remote.process.run
+
+    def fake_run(command, **kwargs):
+        if command[0] == "rebar":
+            return subprocess.CompletedProcess(
+                command, 1, "", "could not determine whether origin/tickets exists"
+            )
+        if "ls-remote" in command:
+            return subprocess.CompletedProcess(
+                command, 128, "", "fatal: Unable to locate credentials"
+            )
+        return run(command, **kwargs)
+
+    monkeypatch.setattr(store_remote.process, "run", fake_run)
+
+    with pytest.raises(ConfigError, match="exited 128: fatal: Unable to locate credentials"):
+        store_remote.seed_store(str(tmp_path / "store"), _parse(_raw()))
 
 
 def test_preflight_seeds_an_absent_s3_store_before_checking_it(monkeypatch, tmp_path, profiles):

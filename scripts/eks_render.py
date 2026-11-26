@@ -186,16 +186,15 @@ def tenant_review_workspace(
     """Return a read-only volume and claim of the tenant's workspace for its review namespace.
 
     A claim binds one volume, so the review namespace's claim binds a second volume of the same
-    access point.
+    access point. The EFS CSI driver refuses the ReadOnlyMany access mode, so the volume keeps the
+    workspace's ReadWriteMany mode and csi.readOnly makes the driver mount it read-only.
     """
     from scripts.tenant_render import review_namespace
 
     volume, claim = tenant_workspace(documents, tenant, volume_handle)
     volume["metadata"]["name"] = f"tenant-{tenant}-review-workspace"
-    volume["spec"]["accessModes"] = ["ReadOnlyMany"]
     volume["spec"]["csi"]["readOnly"] = True
     claim["metadata"]["namespace"] = review_namespace(tenant)
-    claim["spec"]["accessModes"] = ["ReadOnlyMany"]
     claim["spec"]["volumeName"] = volume["metadata"]["name"]
     return volume, claim
 

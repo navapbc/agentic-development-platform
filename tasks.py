@@ -1972,6 +1972,7 @@ for _t in (
     temporal_certs,
     clickhouse_certs,
     webhook_certs,
+    slack_poster_certs,
     mcp_gateway_certs,
     eks_deploy,
     deployment_validate,

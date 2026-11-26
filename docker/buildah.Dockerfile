@@ -5,13 +5,13 @@
 # The plugin is published only under a "latest" path, so its checksum pins the release, and a new
 # release fails the build until the checksum is updated.
 
-ARG AL2023_IMAGE=public.ecr.aws/amazonlinux/amazonlinux:2023-minimal@sha256:158a9044f9dc0777f098b76c8b54346f6ed4560b9a6a416dec7a5ba3bc483af4
+ARG AL2023_IMAGE=public.ecr.aws/amazonlinux/amazonlinux:2023-minimal@sha256:75a2d4226d9b98c914d7eed878a03bef4f365ad548be5d28d464ccba504cec79
 ARG SIGNER_PLUGIN_SHA256_ARM64=b416954ac98a20d71f968c4f7cd7b13905328352f43298a405a8261016a8be51
 ARG SIGNER_PLUGIN_SHA256_AMD64=f8efa548932edc4851f4ba464496994bad753cdf21cd32baa575f7291a26c7b9
 ARG SIGNER_ROOT_SHA256=0ccf529561f610b9eb7f9b0ee02fffe2f74f7ffdf0ac56348ca224e879461c9b
 
 FROM ${AL2023_IMAGE} AS go
-ARG AL2023_RELEASE=2023.12.20261112
+ARG AL2023_RELEASE=2023.12.20261120
 ARG GO_VERSION=1.27.4
 ARG GO_SHA256_AMD64=7226736c2339719cda28fbf3a54d71aa63bcefe376e98cef00034268dab24840
 ARG GO_SHA256_ARM64=3392582988a273a87ab5043ee1b2c9c17a2c3c00580bf9326c47a2e0aaaeac92
@@ -64,7 +64,7 @@ RUN case "${TARGETARCH}" in amd64) sum="${SIGNER_PLUGIN_SHA256_AMD64}" ;; arm64)
  && cp /tmp/aws-signer-notation-root.crt /out/notation/truststore/x509/signingAuthority/aws-signer-ts/
 
 FROM ${AL2023_IMAGE}
-ARG AL2023_RELEASE=2023.12.20261112
+ARG AL2023_RELEASE=2023.12.20261120
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 RUN dnf -y --releasever="${AL2023_RELEASE}" upgrade \
  && dnf -y --releasever="${AL2023_RELEASE}" install buildah git tar gzip findutils diffutils gawk \

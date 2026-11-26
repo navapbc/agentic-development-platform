@@ -305,7 +305,7 @@ def test_a_signed_click_returns_promptly_and_applies_the_decision_once(webhook: 
     url, message = webhook.hooks.posts[0]
     assert url == RESPONSE_URL
     assert message["replace_original"] is True
-    assert "Approved by slack:T0ADP/U0ADP." in json.dumps(message["blocks"])
+    assert "Approved by <@U0ADP> at " in json.dumps(message["blocks"])
     assert all(block["type"] != "actions" for block in message["blocks"])
 
 

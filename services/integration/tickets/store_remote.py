@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 
 _S3_SCHEMES = ("s3://", "s3+zip://")
 _NO_SUCH_REMOTE = 2
+TICKETS_WORKTREE = ".tickets-tracker"
 
 
 @dataclass(frozen=True)
@@ -98,28 +99,55 @@ def configure_store_remote(repo_root: str, config: TicketsStoreConfig) -> StoreR
     return expected
 
 
+def store_initialized(repo_root: str) -> bool:
+    """Return whether rebar init completed, which leaves the tickets worktree in the store."""
+    return (Path(repo_root) / TICKETS_WORKTREE).is_dir()
+
+
 def seed_store(repo_root: str, config: TicketsStoreConfig, identity_id: str = "") -> bool:
-    """Create the store from its S3 remote when repo_root holds no git repository.
+    """Create the store from its S3 remote when rebar init has not completed in repo_root.
 
     rebar init attaches to the remote's tickets branch when the remote is reachable, so a new
-    volume starts with every ticket the bucket holds. The selected identity is store-local
-    state the bucket does not carry, so the given identity is selected again. Returns whether
-    it created the store.
+    volume starts with every ticket the bucket holds. A seed that stopped after git init is
+    completed on the next start rather than left as a repository without the ticket system. The
+    selected identity is store-local state the bucket does not carry, so the given identity is
+    selected again. Returns whether it seeded the store.
     """
-    root = Path(repo_root)
-    if (root / ".git").exists():
+    if store_initialized(repo_root):
         return False
+    root = Path(repo_root)
     root.mkdir(parents=True, exist_ok=True)
-    initialized = _git(repo_root, "init", "--quiet")
-    if initialized.returncode != 0:
-        raise ConfigError(
-            f"git init of the rebar store at {repo_root} failed: {initialized.stderr}"
-        )
-    configure_store_remote(repo_root, config)
-    _rebar(repo_root, "init", "--silent")
+    if not (root / ".git").exists():
+        initialized = _git(repo_root, "init", "--quiet")
+        if initialized.returncode != 0:
+            raise ConfigError(
+                f"git init of the rebar store at {repo_root} failed: {initialized.stderr}"
+            )
+    remote = configure_store_remote(repo_root, config)
+    try:
+        _rebar(repo_root, "init", "--silent")
+    except ConfigError as exc:
+        raise ConfigError(f"{exc} {_remote_probe_detail(repo_root, remote.name)}") from exc
     if identity_id:
         _rebar(repo_root, "identity", "use", identity_id)
     return True
+
+
+def _remote_probe_detail(repo_root: str, remote: str) -> str:
+    """Return git's own answer to the branch probe rebar init runs, which rebar reports only as
+    unreachable."""
+    try:
+        probe = process.run(
+            ["git", "-C", repo_root, "ls-remote", "--exit-code", remote, "refs/heads/tickets"],
+            timeout=process.SHORT_COMMAND_TIMEOUT_SECONDS,
+            capture_output=True,
+            text=True,
+        )
+    except process.TimeoutExpired:
+        limit = process.SHORT_COMMAND_TIMEOUT_SECONDS
+        return f"git ls-remote {remote} did not answer within {limit}s."
+    stderr = probe.stderr.strip()[-600:]
+    return f"git ls-remote {remote} exited {probe.returncode}: {stderr or 'no output'}"
 
 
 def _rebar(repo_root: str, *args: str) -> None:
@@ -197,7 +225,7 @@ def tickets_store_preflight(settings: Settings) -> None:
     if resolve_ticket_backend_name(settings) != REBAR:
         return
     repo_root = load_rebar_backend_config().repo_root
-    if not (Path(repo_root) / ".git").exists():
+    if not store_initialized(repo_root):
         seed_absent_store(repo_root, settings)
     remote = read_store_remote(repo_root)
     if remote is None or not remote.is_s3:
