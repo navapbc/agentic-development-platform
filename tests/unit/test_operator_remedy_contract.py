@@ -51,7 +51,7 @@ def test_every_alert_site_supplies_a_remedy():
 
 
 def test_the_workflow_still_has_the_alert_sites_this_contract_covers():
-    assert len(_alert_calls()) == 22
+    assert len(_alert_calls()) == 23
 
 
 def test_with_remedy_appends_one_next_step_line():
@@ -366,6 +366,7 @@ def _every_authored_remedy() -> dict[str, Remedy]:
         "claim_denied": remedies.claim_denied_remedy("ADSER-24"),
         "generic": remedies.generic_remedy("ADSER-24", "implementation"),
         "run_failed": remedies.run_failed_remedy("ADSER-24", "plan"),
+        "abandoned": remedies.abandoned_remedy("ADSER-24"),
         "orphan_reclaimed": remedies.orphan_reclaimed_remedy(
             "ADSER-24", "draft-pr-ADSER-24-intake-1"
         ),

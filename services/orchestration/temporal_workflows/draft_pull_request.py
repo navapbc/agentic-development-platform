@@ -33,6 +33,7 @@ with workflow.unsafe.imports_passed_through():
     from services.orchestration.intake_base import declared_issue_key
     from services.orchestration.model_path import model_unavailable_hop
     from services.orchestration.remedies import (
+        abandoned_remedy,
         approval_rejected_remedy,
         branch_sync_remedy,
         claim_denied_remedy,
@@ -302,6 +303,7 @@ _LIMIT_PARK_PATCH = "limit-park"
 _PERIOD_BUDGET_PARK_PATCH = "period-budget-park"
 _PERIOD_BUDGET_THREAD_PATCH = "period-budget-thread"
 _PLAN_REJECTED_PERSIST_PATCH = "plan-rejected-persist"
+_ABANDONED_RESTART_ALERT_PATCH = "abandoned-restart-alert"
 _LIMIT_PARK_RESUME_WAIT = timedelta(minutes=5)
 _RUN_LIMIT_NAMES = {
     COST_BUDGET_EXCEEDED: "IMPLEMENTATION_MAX_COST_USD",
@@ -1247,6 +1249,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                         )
                         continue
                     await self._persist_abandoned(params, workflow_id)
+                    await self._alert_abandoned(params, workflow_id, stage=REPAIR_STAGE)
                     outcome = replace(outcome, terminal_reason=HUMAN_ABANDONED)
                     break
                 park_key = self._next_park_key(
@@ -1273,6 +1276,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                         start_to_close_timeout=short,
                         retry_policy=retry,
                     )
+                    await self._alert_abandoned(params, workflow_id, stage=REPAIR_STAGE)
                     outcome = replace(outcome, terminal_reason=HUMAN_ABANDONED)
                     break
                 outcome = await self._ci_and_repair(
@@ -2000,6 +2004,19 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         if workflow.patched(_PLAN_REJECTED_PERSIST_PATCH):
             await self._persist_abandoned(params, workflow_id)
 
+    async def _alert_abandoned(
+        self, params: DraftPullRequestInput, workflow_id: str, *, stage: str
+    ) -> None:
+        """Post a Restart run alert, because abandoning settles the park post without buttons."""
+        if workflow.patched(_ABANDONED_RESTART_ALERT_PATCH):
+            await self._terminal_alert(
+                params,
+                workflow_id,
+                reason=HUMAN_ABANDONED,
+                stage=stage,
+                remedy=abandoned_remedy(params.issue_key),
+            )
+
     async def _persist_abandoned(self, params: DraftPullRequestInput, workflow_id: str) -> None:
         commit_sha = self._commit.commit_sha if self._commit else params.base_sha
         await workflow.execute_activity(
@@ -2100,6 +2117,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             )
             if decision is not None:
                 await self._persist_abandoned(params, workflow_id)
+                await self._alert_abandoned(params, workflow_id, stage=stage)
                 return True
 
     async def _period_alert_thread(self, params: DraftPullRequestInput) -> PeriodAlertThread | None:

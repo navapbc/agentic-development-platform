@@ -18,6 +18,7 @@ from services.coordination.sequencing import (
     SequencedAction,
 )
 from services.integration.slack.tokens import ActionToken
+from services.operator_remedy import StepKind
 from services.orchestration.branch_sync import FAST_FORWARD
 from services.orchestration.gates.contract import (
     GateContext,
@@ -1532,7 +1533,7 @@ async def test_triage_environment_verdict_escalates_to_human():
     assert result.status == CI_FAILED
     assert result.terminal_reason == "human_abandoned"
     assert len(repairs) == 0
-    assert len(alerts) == 1
+    assert len(alerts) == 2
 
 
 async def _await_human_park(handle) -> dict[str, str]:
@@ -1625,9 +1626,15 @@ async def test_ci_repair_exhausted_parks_for_human_and_abandons():
     assert result.repair_attempts == 2
     assert len(repairs) == 2
     assert len(ci_triggers) == 3
-    assert len(alerts) == 1
+    assert len(alerts) == 2
     assert alerts[0].reason == "repair_exhausted"
     assert alerts[0].stage == "repair"
+    assert (alerts[1].reason, alerts[1].stage, alerts[1].park_key) == (
+        "human_abandoned",
+        "repair",
+        "",
+    )
+    assert [step.kind for step in alerts[1].remedy.actions] == [StepKind.RESTART_RUN]
 
 
 async def test_ci_repair_stops_on_cumulative_budget():
@@ -1671,7 +1678,7 @@ async def test_ci_repair_stops_on_cumulative_budget():
     repair_usage = [record for record in usage if record.stage == "REPAIRING"]
     assert len(repair_usage) == 3
     assert [round(record.cost_usd, 2) for record in repair_usage] == [0.1, 0.2, 0.3]
-    assert len(alerts) == 1
+    assert len(alerts) == 2
     assert alerts[0].reason == "cost_budget_exceeded"
     assert alerts[0].stage == "repair"
 
@@ -1804,7 +1811,7 @@ async def test_ci_failure_unactionable_parks_for_human():
     assert result.repair_attempts == 0
     assert len(repairs) == 0
     assert len(ci_triggers) == 1
-    assert len(alerts) == 1
+    assert len(alerts) == 2
 
 
 async def test_ci_pass_flows_through_review_gates_with_attestations():
@@ -3351,7 +3358,8 @@ async def test_a_repair_refused_for_the_run_budget_alerts_with_the_budget_reason
 
     assert len(repairs) == 1
     assert [(alert.reason, alert.stage) for alert in alerts] == [
-        (RUN_MODEL_BUDGET_EXCEEDED, "repair")
+        (RUN_MODEL_BUDGET_EXCEEDED, "repair"),
+        ("human_abandoned", "repair"),
     ]
     assert result.terminal_reason == "human_abandoned"
 
@@ -3823,7 +3831,7 @@ async def test_a_repair_update_for_an_earlier_park_is_rejected_after_the_run_rep
             result = await handle.result()
 
     assert second_key != first_key
-    assert [alert.park_key for alert in alerts] == [first_key, second_key]
+    assert [alert.park_key for alert in alerts] == [first_key, second_key, ""]
     assert first == repeated
     assert first.decision == "abandon"
     assert result.terminal_reason == "human_abandoned"
@@ -4792,7 +4800,7 @@ async def test_a_run_at_its_cost_limit_parks_and_a_grant_reruns_the_repair_under
     assert len(repairs) == 6
     assert result.terminal_reason == "human_abandoned"
     assert persisted[-1].state == "CANCELLED"
-    assert [alert.park_key for alert in alerts] == [first["park_key"], second["park_key"]]
+    assert [alert.park_key for alert in alerts] == [first["park_key"], second["park_key"], ""]
     assert "Usage: 0.4 of 0.35 USD" in alerts[0].detail
     decisions = [event for event in audits if event.event_type == "LIMIT_PARK_DECISION"]
     assert [(event.decision, event.actor_id) for event in decisions] == [
@@ -4888,7 +4896,7 @@ async def test_a_run_without_the_limit_park_patch_stops_at_its_limit_and_replays
 
     assert state["reason"] == SuspendReason.AWAITING_HUMAN.value
     assert result.terminal_reason == "human_abandoned"
-    assert [alert.reason for alert in alerts] == ["cost_budget_exceeded"]
+    assert [alert.reason for alert in alerts] == ["cost_budget_exceeded", "human_abandoned"]
     assert not any("limit-park" in marker for marker in _patch_markers(history))
     replayed = await Replayer(
         workflows=[DraftPullRequestWorkflow, *_CHILD_WORKFLOWS],

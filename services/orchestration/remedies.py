@@ -356,6 +356,15 @@ def base_conflict_remedy(issue_key: str) -> Remedy:
     )
 
 
+def abandoned_remedy(issue_key: str) -> Remedy:
+    return remedy(
+        "The run was abandoned, so it stopped without a pull request. Address the reason it was "
+        "abandoned in the ticket or the repository, then run ",
+        restart_run(issue_key),
+        " to start a fresh execution.",
+    )
+
+
 def run_failed_remedy(issue_key: str, stage: str) -> Remedy:
     return remedy(
         f"The run failed at the {stage or '<stage>'} stage on an error the workflow does not "
