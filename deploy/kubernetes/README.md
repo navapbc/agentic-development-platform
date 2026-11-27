@@ -83,6 +83,8 @@ The deploy deletes a drain slot whose build has no pinned runs. A selector is im
 
 A worker in the drain slot serves only the runs pinned to its build. It installs no tenant schedules, opens no Slack Socket Mode connection, and runs no approver group refresh, so the current slot alone owns them.
 
+Both slots write the tenant's rebar ticket store on the EFS workspaces volume, and rebar's write lock serializes them across nodes. After each commit, rebar's git maintenance can pack objects and remove paths that the other node's NFS client still caches, and git on that node then fails inside the lock. rebar leaves the store as it was, and the ticket backend retries such a write up to three times, 1, 2, and 4 seconds apart. `scripts/rebar_lock_check.py` checks this on a scratch store that two pods on separate nodes write at once.
+
 The activity and review workers stop gracefully. On SIGTERM a worker stops polling and lets each running activity finish for up to 2400 seconds, the limit of the single-attempt agent run and CI repair, and the pods set `terminationGracePeriodSeconds: 2460` above it. Under the `Recreate` strategy the new pod starts once the old one exits, so a deploy, a restart, or a claim replacement that lands during a long activity waits for it. Each rollout wait of the eks-deployer and of `inv k8s-reload` adds the termination grace of the Deployment it rolls.
 
 `inv eks-deploy --command preflight` runs the same decision, prints it, changes nothing, and fails when a worker has no slot. `inv aws-release` runs it after the Terraform apply and before `inv platform-deploy`, so a release that would need a third build with pinned runs stops before the ECS workflow worker makes the new build current.

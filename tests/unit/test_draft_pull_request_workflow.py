@@ -1838,9 +1838,18 @@ async def _retry_once(**overrides) -> tuple[Any, dict[str, list]]:
                 id=f"wf-{uuid.uuid4().hex[:8]}",
                 task_queue=task_queue,
             )
-            for parks, retry in enumerate(decisions, start=1):
-                while len([a for a in recorded["alerts"] if a.stage == "repair"]) < parks:
+            answered: set[str] = set()
+            for retry in decisions:
+                park_key = ""
+                while not park_key or park_key in answered:
+                    state = await handle.query(DraftPullRequestWorkflow.suspension_state)
+                    if (
+                        state.get("reason") == SuspendReason.AWAITING_HUMAN.value
+                        and state.get("stage") == "repair"
+                    ):
+                        park_key = state.get("park_key", "")
                     await asyncio.sleep(0.05)
+                answered.add(park_key)
                 await handle.signal("submit_repair_decision", args=[retry, "lead"])
             result = await handle.result()
     return result, recorded

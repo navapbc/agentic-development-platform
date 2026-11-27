@@ -8,7 +8,9 @@ statuses through the configured status flow.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import logging
+import time
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -32,6 +34,36 @@ if TYPE_CHECKING:
 
 
 _REPAIRED_STORES: set[str] = set()
+
+log = logging.getLogger(__name__)
+
+STORE_WRITE_ATTEMPTS = 4
+_STORE_WRITE_RETRY_SECONDS = 1.0
+_IN_LOCK_FAILURE = "failed while holding lock"
+
+
+def retry_store_write[T](
+    write: Callable[[], T], *, sleep: Callable[[float], None] | None = None
+) -> T:
+    """Run a rebar write, retrying one that git failed inside the store's write lock.
+
+    Pods on separate nodes share a tenant's store over EFS. When one pod's post-commit git
+    maintenance packs objects, the other pod's NFS client can still cache the paths it removed,
+    and git there fails inside the lock until the cache expires. rebar restores the store's paths
+    before it raises, so a retry repeats no write that landed.
+    """
+    import rebar
+
+    for attempt in range(1, STORE_WRITE_ATTEMPTS + 1):
+        try:
+            return write()
+        except rebar.RebarError as exc:
+            if attempt == STORE_WRITE_ATTEMPTS or _IN_LOCK_FAILURE not in str(exc):
+                raise
+            delay = _STORE_WRITE_RETRY_SECONDS * 2 ** (attempt - 1)
+            log.warning("rebar write failed inside the lock, retrying in %ss: %s", delay, exc)
+            (sleep or time.sleep)(delay)
+    raise AssertionError("unreachable")
 
 
 def _repair_store_worktrees(repo_root: str) -> None:
@@ -130,12 +162,14 @@ class RebarTicketBackend:
             return
         _repair_store_worktrees(self.repo_root)
         try:
-            rebar.transition(
-                issue_key,
-                current,
-                target_status,
-                force="agent-platform lifecycle",
-                repo_root=self.repo_root,
+            retry_store_write(
+                lambda: rebar.transition(
+                    issue_key,
+                    current,
+                    target_status,
+                    force="agent-platform lifecycle",
+                    repo_root=self.repo_root,
+                )
             )
         except rebar.ConcurrencyError:
             if self.get_status(issue_key).strip().lower() == target_status.strip().lower():
@@ -146,7 +180,7 @@ class RebarTicketBackend:
         import rebar
 
         _repair_store_worktrees(self.repo_root)
-        rebar.comment(issue_key, body, repo_root=self.repo_root)
+        retry_store_write(lambda: rebar.comment(issue_key, body, repo_root=self.repo_root))
         return {"issue_key": issue_key}
 
     def list_comment_bodies(self, issue_key: str) -> tuple[str, ...]:
@@ -166,12 +200,14 @@ class RebarTicketBackend:
         title = str(ticket_data.get("summary") or ticket_data.get("title") or "")
         description = ticket_data.get("description")
         priority = ticket_data.get("priority")
-        ticket_id = rebar.create_ticket(
-            ticket_type,
-            title,
-            description=str(description) if description is not None else None,
-            priority=int(priority) if isinstance(priority, int) else None,
-            repo_root=self.repo_root,
+        ticket_id = retry_store_write(
+            lambda: rebar.create_ticket(
+                ticket_type,
+                title,
+                description=str(description) if description is not None else None,
+                priority=int(priority) if isinstance(priority, int) else None,
+                repo_root=self.repo_root,
+            )
         )
         return self.get_issue(str(ticket_id))
 
@@ -185,7 +221,9 @@ class RebarTicketBackend:
         existing = {dep.get("target_id") for dep in self._deps(from_issue).get("deps", [])}
         if to_issue in existing:
             return
-        rebar.link(from_issue, to_issue, relationship, repo_root=self.repo_root)
+        retry_store_write(
+            lambda: rebar.link(from_issue, to_issue, relationship, repo_root=self.repo_root)
+        )
 
     def dependency_graph_active(self) -> bool:
         return True

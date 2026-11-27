@@ -48,6 +48,7 @@ def init_store(root: Path) -> None:
 def write(root: Path, writer: str, count: int) -> int:
     """Create up to `count` tickets as `writer`, stopping after the current write on SIGTERM."""
     import rebar
+    from services.integration.tickets.rebar_backend import retry_store_write
 
     stopping = False
 
@@ -58,7 +59,10 @@ def write(root: Path, writer: str, count: int) -> int:
     signal.signal(signal.SIGTERM, stop)
     written = 0
     while written < count and not stopping:
-        rebar.create_ticket("task", f"lock-check {writer} {written}", repo_root=str(root))
+        title = f"lock-check {writer} {written}"
+        retry_store_write(
+            lambda title=title: rebar.create_ticket("task", title, repo_root=str(root))
+        )
         written += 1
     return written
 
