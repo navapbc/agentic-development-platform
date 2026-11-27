@@ -58,6 +58,12 @@ variable "eks_deployer" {
   default = null
 }
 
+variable "node_group_arns" {
+  description = "EKS managed node groups the sleep scales to zero nodes after the check before the foundation, and the wake restores before the foundation services start."
+  type        = list(string)
+  default     = []
+}
+
 variable "database" {
   description = "Aurora cluster whose pg_stat_activity the checks read through the Data API, and the secret of the pg_monitor role they read it as. Null leaves the connection check out."
   type = object({

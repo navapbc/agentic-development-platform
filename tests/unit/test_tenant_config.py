@@ -487,3 +487,64 @@ def test_the_tenant_template_validates_as_a_bundle_with_every_optional_file(
     )
 
     validate_bundle(directory, settings)
+
+
+def test_an_operator_command_on_a_bucket_reads_tenant_files_from_the_latest_bundle(
+    environment, tmp_path, monkeypatch
+) -> None:
+    from scripts.tenant_bundle import activate_tenant_bundle
+
+    settings = _settings(tenant_config_bucket="tenant-config")
+    monkeypatch.setattr("scripts.config.get_settings", lambda: settings)
+    source_dir = _bundle(tmp_path, {"repositories.yaml": REPOSITORIES.replace("svc", "web")})
+    monkeypatch.setattr(
+        tenant_config, "build_source", lambda _settings: DirectorySource(source_dir, "adp")
+    )
+    monkeypatch.setattr(tenant_config, "_default_store_root", lambda: tmp_path / "store")
+    with pytest.raises(ConfigError, match="reads no tenant's bundle"):
+        load_env_config("repositories")
+
+    activate_tenant_bundle(settings)
+
+    assert "web" in load_env_config("repositories")["repositories"]
+
+
+def test_an_operator_command_without_a_bucket_keeps_reading_its_tenant_directory(
+    environment,
+) -> None:
+    from scripts.tenant_bundle import activate_tenant_bundle
+
+    (tenant_dir(environment) / "repositories.yaml").write_text(REPOSITORIES.replace("svc", "api"))
+
+    activate_tenant_bundle(_settings())
+
+    assert tenant_config.active_tenant_config() is None
+    assert "api" in load_env_config("repositories")["repositories"]
+
+
+def test_a_restart_in_the_worker_container_reads_the_rebar_tickets_config(
+    environment, tmp_path, monkeypatch
+) -> None:
+    from types import SimpleNamespace
+
+    from scripts import restart
+    from services.integration.tickets.rebar_config import load_rebar_backend_config
+
+    settings = _settings(tenant_config_bucket="tenant-config")
+    monkeypatch.setattr("scripts.config.get_settings", lambda: settings)
+    source_dir = _bundle(tmp_path, {})
+    monkeypatch.setattr(
+        tenant_config, "build_source", lambda _settings: DirectorySource(source_dir, "adp")
+    )
+    monkeypatch.setattr(tenant_config, "_default_store_root", lambda: tmp_path / "store")
+    roots = []
+
+    async def run_restart_task(issue_key, *, actor, repo):
+        roots.append(load_rebar_backend_config().repo_root)
+        return SimpleNamespace(restarted=True, message=f"{issue_key} restarted")
+
+    monkeypatch.setattr("services.orchestration.task_restart.run_restart_task", run_restart_task)
+    monkeypatch.setattr("sys.argv", ["restart", "T-1"])
+
+    assert restart.main() == 0
+    assert roots == ["/srv/rebar-tickets"]

@@ -38,6 +38,11 @@ output "node_role_arn" {
   value       = local.enabled ? aws_iam_role.node[0].arn : ""
 }
 
+output "node_group_arns" {
+  description = "ARN of each managed node group, keyed by platform and sandbox. Empty when disabled."
+  value       = { for key, group in aws_eks_node_group.this : key => group.arn }
+}
+
 output "pod_identity_role_arns" {
   description = "Pod Identity role of each workload, keyed by each workload name and by load_balancer_controller, vpc_cni, efs_csi_controller, and efs_csi_node. A secret store lists a role as a reader to let the pod read the secret."
   value       = { for name, role in aws_iam_role.pod_identity : name => role.arn }

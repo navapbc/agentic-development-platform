@@ -68,6 +68,21 @@ Nothing derived is written to disk. The renderer pipes the manifests to `kubectl
 
 Render it with `kubectl kustomize --load-restrictor LoadRestrictionsNone deploy/kubernetes/aws`. The rendered manifests carry the synthetic values below. `inv eks-deploy` runs the [eks-deployer](../../infra/terraform/eks-deployer) task, which replaces them with the environment's values in `scripts/eks_render.py`, adds the generated ConfigMaps, and applies the result from inside the VPC.
 
+### Worker slots
+
+Each tenant's `activity-worker` and `review-worker` carry `agentic-dev-platform/slot: current` in their selector and pod template, so `deploy/activity-worker`, `kubectl exec`, and the pod checks of the eks-deployer resolve only the pods of the current slot. While executions are pinned to the previous build, `inv eks-deploy` keeps that build running in a second Deployment in the same namespace, `activity-worker-drain` or `review-worker-drain`, labeled `agentic-dev-platform/slot: drain` and with `WORKER_SLOT=drain` on the worker container. The drain slot keeps the `app.kubernetes.io/name` label and the ServiceAccount, so every NetworkPolicy, SecurityGroupPolicy, and RoleBinding that selects the worker also selects the drain slot. The render holds only the current slot, so the apply never changes the image of a drain slot.
+
+The deploy reads the build of each slot from the image tag of its worker container, and the runs pinned to a build from a `scripts.pinned_executions` Job made from the `deployment-validate` CronJob template. A slot that the off-hours sleep scaled to zero keeps its build. For each tenant worker the deploy takes one of these steps:
+
+- When the current slot runs the new build, the deploy rolls it in place.
+- When no run is pinned to the build of the current slot, the deploy applies the new build to the current slot.
+- When runs are pinned to the build of the current slot and the drain slot holds no build with pinned runs, the deploy copies the live spec of the current slot into the drain slot, waits until the drain slot is ready, and then applies the new build to the current slot.
+- When runs are pinned to the builds of both slots, the deploy stops before it changes anything and names each pinned build with its execution IDs.
+
+The deploy deletes a drain slot whose build has no pinned runs. A selector is immutable, so the first deploy that finds a current slot without the slot label deletes that Deployment after any drain slot is ready, and the apply recreates it. `restart`, `scale-down`, `scale-up`, and `check-stopped` act on the drain slot of a tenant worker whenever they act on the worker, by name or through `tenant-workers` and `tenant-review-workers`, so the secret restart rules and the off-hours sleep and wake cover it. A claim replacement restores the replicas of the drain slot after the apply.
+
+`inv eks-deploy --command preflight` runs the same decision, prints it, changes nothing, and fails when a worker has no slot. `inv aws-release` runs it after the Terraform apply and before `inv platform-deploy`, so a release that would need a third build with pinned runs stops before the ECS workflow worker makes the new build current.
+
 ## Per-environment values
 
 Four values in the base manifests are synthetic and must be replaced for every environment.

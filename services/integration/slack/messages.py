@@ -36,6 +36,7 @@ from services.operator_remedy import (
     StepKind,
 )
 from services.orchestration.escalation import GATE_KIND, MINIMAL_CONTENT, REPAIR_KIND
+from services.orchestration.notifications import bounded_detail
 
 SECTION_TEXT_LIMIT = 3000
 """Slack refuses a message whose section text is longer than this."""
@@ -139,11 +140,14 @@ def actor_words(actor: str) -> str:
 
 
 def _detail_text(detail: str) -> str:
-    """Fence the tail of the detail that fits one section once escaped."""
-    kept = len(detail)
-    while kept > 0 and len(escape(detail[-kept:])) + 6 > SECTION_TEXT_LIMIT:
-        kept -= 100
-    return f"```{escape(detail[-kept:] if kept > 0 else '')}```"
+    """Fence the detail, bounded so that it fits one section once escaped."""
+    fence = "```"
+    bounded = bounded_detail(
+        detail,
+        char_limit=SECTION_TEXT_LIMIT - 2 * len(fence),
+        measure=lambda text: len(escape(text)),
+    )
+    return f"{fence}{escape(bounded)}{fence}"
 
 
 def _issue_ref(alert: SlackAlert) -> str:

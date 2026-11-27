@@ -56,6 +56,10 @@ variables {
     cluster_arn        = "arn:aws:rds:us-east-1:111111111111:cluster:agentic-platform-aurora"
     monitor_secret_arn = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/database/monitor-AbCdEf"
   }
+  node_group_arns = [
+    "arn:aws:eks:us-east-1:111111111111:nodegroup/agentic-platform-eks/agentic-platform-eks-platform/00000000-0000-0000-0000-000000000001",
+    "arn:aws:eks:us-east-1:111111111111:nodegroup/agentic-platform-eks/agentic-platform-eks-sandbox/00000000-0000-0000-0000-000000000002",
+  ]
   services = [
     "arn:aws:ecs:us-east-1:111111111111:service/agentic-platform-ecs/agentic-platform-coordination",
     "arn:aws:ecs:us-east-1:111111111111:service/agentic-platform-ecs/agentic-platform-workflow-worker-blue",
@@ -117,46 +121,48 @@ run "the_foundation_stops_last_and_starts_first" {
     condition = (
       jsonencode([for step in one([for file in data.archive_file.scale[0].source : jsondecode(file.content) if file.filename == "plan.json"]).sleep.Steps : step.payload.Services if step.handler == "sleep"]) == jsonencode([var.services, var.foundation_services]) &&
       jsonencode([for step in one([for file in data.archive_file.scale[0].source : jsondecode(file.content) if file.filename == "plan.json"]).wake.Steps : step.payload.Services if step.handler == "wake"]) == jsonencode([var.foundation_services, var.services]) &&
-      one([for file in data.archive_file.scale[0].source : jsondecode(file.content) if file.filename == "plan.json"]).wake.Steps[0].payload.WaitSeconds == 540
+      one([for step in one([for file in data.archive_file.scale[0].source : jsondecode(file.content) if file.filename == "plan.json"]).wake.Steps : step.payload.WaitSeconds if step.name == "StartFoundationServices"]) == 540
     )
     error_message = "The foundation services do not stop after the others and start, and settle, before them."
   }
 }
 
-run "the_sleep_stops_eks_and_checks_before_and_after_the_foundation" {
+run "the_sleep_stops_eks_checks_before_the_nodes_and_the_foundation_and_checks_again" {
   command = apply
 
   assert {
     condition = (
-      [for step in one([for file in data.archive_file.scale[0].source : jsondecode(file.content) if file.filename == "plan.json"]).sleep.Steps : step.name] == ["StopServices", "ScaleDownDeployments", "CheckBeforeFoundation", "StopFoundationServices", "CheckBeforePause"] &&
+      [for step in one([for file in data.archive_file.scale[0].source : jsondecode(file.content) if file.filename == "plan.json"]).sleep.Steps : step.name] == ["StopServices", "ScaleDownDeployments", "CheckBeforeFoundation", "ScaleDownNodeGroups", "StopFoundationServices", "CheckBeforePause"] &&
       one([for file in data.archive_file.scale[0].source : jsondecode(file.content) if file.filename == "plan.json"]).sleep.Steps[1].payload.Command == "scale-down" &&
-      jsonencode(one([for file in data.archive_file.scale[0].source : jsondecode(file.content) if file.filename == "plan.json"]).sleep.Steps[1].payload.Deployments) == jsonencode(var.eks_deployer.deployments)
+      jsonencode(one([for file in data.archive_file.scale[0].source : jsondecode(file.content) if file.filename == "plan.json"]).sleep.Steps[1].payload.Deployments) == jsonencode(var.eks_deployer.deployments) &&
+      jsonencode(one([for file in data.archive_file.scale[0].source : jsondecode(file.content) if file.filename == "plan.json"]).sleep.Steps[3].payload.NodeGroups) == jsonencode(var.node_group_arns)
     )
-    error_message = "The sleep does not scale the EKS deployments down and check before the foundation services stop and again after."
+    error_message = "The sleep does not scale the EKS deployments down, check, and scale the node groups down before the foundation services stop and check again after."
   }
 
   assert {
     condition = (
       jsonencode(one([for file in data.archive_file.scale[0].source : jsondecode(file.content) if file.filename == "plan.json"]).sleep.Steps[2].payload.Services) == jsonencode(var.services) &&
       one([for file in data.archive_file.scale[0].source : jsondecode(file.content) if file.filename == "plan.json"]).sleep.Steps[2].payload.Database.AllowedUsers == ["temporal"] &&
-      toset(one([for file in data.archive_file.scale[0].source : jsondecode(file.content) if file.filename == "plan.json"]).sleep.Steps[4].payload.Services) == toset(concat(var.services, var.foundation_services)) &&
-      one([for file in data.archive_file.scale[0].source : jsondecode(file.content) if file.filename == "plan.json"]).sleep.Steps[4].payload.Database.AllowedUsers == [] &&
-      alltrue([for index in [2, 4] : jsonencode(one([for file in data.archive_file.scale[0].source : jsondecode(file.content) if file.filename == "plan.json"]).sleep.Steps[index].payload.Deployments) == jsonencode(var.eks_deployer.deployments)])
+      toset(one([for file in data.archive_file.scale[0].source : jsondecode(file.content) if file.filename == "plan.json"]).sleep.Steps[5].payload.Services) == toset(concat(var.services, var.foundation_services)) &&
+      one([for file in data.archive_file.scale[0].source : jsondecode(file.content) if file.filename == "plan.json"]).sleep.Steps[5].payload.Database.AllowedUsers == [] &&
+      alltrue([for index in [2, 5] : jsonencode(one([for file in data.archive_file.scale[0].source : jsondecode(file.content) if file.filename == "plan.json"]).sleep.Steps[index].payload.Deployments) == jsonencode(var.eks_deployer.deployments)])
     )
     error_message = "The check before the foundation does not allow only the foundation users, or the check before the pause allows a user or skips a service or deployment."
   }
 }
 
-run "the_wake_starts_workers_only_after_temporal_reports_healthy" {
+run "the_wake_starts_the_nodes_first_and_the_workers_only_after_temporal_reports_healthy" {
   command = apply
 
   assert {
     condition = (
-      [for step in one([for file in data.archive_file.scale[0].source : jsondecode(file.content) if file.filename == "plan.json"]).wake.Steps : step.name] == ["StartFoundationServices", "AwaitFoundationHealth", "StartServices", "ScaleUpDeployments"] &&
-      jsonencode(one([for file in data.archive_file.scale[0].source : jsondecode(file.content) if file.filename == "plan.json"]).wake.Steps[1].payload.Services) == jsonencode(var.health_checked_services) &&
-      one([for file in data.archive_file.scale[0].source : jsondecode(file.content) if file.filename == "plan.json"]).wake.Steps[3].payload.Command == "scale-up"
+      [for step in one([for file in data.archive_file.scale[0].source : jsondecode(file.content) if file.filename == "plan.json"]).wake.Steps : step.name] == ["ScaleUpNodeGroups", "StartFoundationServices", "AwaitFoundationHealth", "StartServices", "ScaleUpDeployments"] &&
+      jsonencode(one([for file in data.archive_file.scale[0].source : jsondecode(file.content) if file.filename == "plan.json"]).wake.Steps[0].payload.NodeGroups) == jsonencode(var.node_group_arns) &&
+      jsonencode(one([for file in data.archive_file.scale[0].source : jsondecode(file.content) if file.filename == "plan.json"]).wake.Steps[2].payload.Services) == jsonencode(var.health_checked_services) &&
+      one([for file in data.archive_file.scale[0].source : jsondecode(file.content) if file.filename == "plan.json"]).wake.Steps[4].payload.Command == "scale-up"
     )
-    error_message = "The wake does not await the Temporal server's health before it starts the services and the EKS deployments."
+    error_message = "The wake does not start the node groups first and await the Temporal server's health before it starts the services and the EKS deployments."
   }
 }
 
@@ -176,7 +182,7 @@ run "each_run_records_its_result_to_the_namespace_the_topic_and_the_log_group" {
   }
 }
 
-run "the_function_role_is_scoped_to_the_deployer_the_cluster_and_the_monitor_secret" {
+run "the_function_role_is_scoped_to_the_deployer_the_node_groups_the_cluster_and_the_monitor_secret" {
   command = apply
 
   assert {
@@ -184,12 +190,14 @@ run "the_function_role_is_scoped_to_the_deployer_the_cluster_and_the_monitor_sec
       one([for statement in data.aws_iam_policy_document.function[0].statement : statement.resources if statement.sid == "RunTheDeployer"]) == toset(["arn:aws:ecs:us-east-1:111111111111:task-definition/agentic-platform-eks-deployer:*"]) &&
       one([for statement in data.aws_iam_policy_document.function[0].statement : statement.resources if statement.sid == "PassTheDeployerRoles"]) == toset(var.eks_deployer.pass_role_arns) &&
       one([for statement in data.aws_iam_policy_document.function[0].statement : statement.resources if statement.sid == "ReadTheDeployerLog"]) == toset(["arn:aws:logs:us-east-1:111111111111:log-group:/aws/ecs/agentic-platform-eks-deployer:log-stream:*"]) &&
+      one([for statement in data.aws_iam_policy_document.function[0].statement : statement.resources if statement.sid == "ScaleTheNodeGroups"]) == toset(var.node_group_arns) &&
+      one([for statement in data.aws_iam_policy_document.function[0].statement : statement.resources if statement.sid == "ReadTheNodeGroupUpdates"]) == toset(["arn:aws:eks:us-east-1:111111111111:cluster/agentic-platform-eks"]) &&
       one([for statement in data.aws_iam_policy_document.function[0].statement : statement.resources if statement.sid == "ReadTheConnections"]) == toset([var.database.cluster_arn]) &&
       one([for statement in data.aws_iam_policy_document.function[0].statement : statement.resources if statement.sid == "ReadTheMonitorCredential"]) == toset([var.database.monitor_secret_arn]) &&
       one([for statement in data.aws_iam_policy_document.function[0].statement : statement.resources if statement.sid == "RaiseTheAlert"]) == toset([aws_sns_topic.alerts[0].arn]) &&
       one([for statement in data.aws_iam_policy_document.function[0].statement : statement.resources if statement.sid == "InvokeTheNextStep"]) == toset([aws_lambda_function.scale[0].arn, "${aws_lambda_function.scale[0].arn}:*"])
     )
-    error_message = "The function role reaches beyond the deployer task, its log group, the cluster, the monitor secret, the alert topic, or the function itself."
+    error_message = "The function role reaches beyond the deployer task, its log group, the node groups, the cluster, the monitor secret, the alert topic, or the function itself."
   }
 
   assert {
@@ -201,22 +209,24 @@ run "the_function_role_is_scoped_to_the_deployer_the_cluster_and_the_monitor_sec
   }
 }
 
-run "without_eks_or_a_database_the_function_neither_runs_the_deployer_nor_reads_the_cluster" {
+run "without_eks_or_a_database_the_function_neither_runs_the_deployer_nor_scales_nodes_nor_reads_the_cluster" {
   command = apply
 
   variables {
-    eks_deployer = null
-    database     = null
+    eks_deployer    = null
+    node_group_arns = []
+    database        = null
   }
 
   assert {
     condition = (
-      length([for statement in data.aws_iam_policy_document.function[0].statement : statement if contains(["RunTheDeployer", "PassTheDeployerRoles", "ReadTheDeployerLog", "ReadTheConnections", "ReadTheMonitorCredential"], statement.sid)]) == 0 &&
+      length([for statement in data.aws_iam_policy_document.function[0].statement : statement if contains(["RunTheDeployer", "PassTheDeployerRoles", "ReadTheDeployerLog", "ScaleTheNodeGroups", "ReadTheNodeGroupUpdates", "ReadTheConnections", "ReadTheMonitorCredential"], statement.sid)]) == 0 &&
       [for step in one([for file in data.archive_file.scale[0].source : jsondecode(file.content) if file.filename == "plan.json"]).sleep.Steps : step.name] == ["StopServices", "CheckBeforeFoundation", "StopFoundationServices", "CheckBeforePause"] &&
+      [for step in one([for file in data.archive_file.scale[0].source : jsondecode(file.content) if file.filename == "plan.json"]).wake.Steps : step.name] == ["StartFoundationServices", "AwaitFoundationHealth", "StartServices"] &&
       one([for file in data.archive_file.scale[0].source : jsondecode(file.content) if file.filename == "plan.json"]).sleep.Steps[1].payload.Deployments == [] &&
       one([for file in data.archive_file.scale[0].source : jsondecode(file.content) if file.filename == "plan.json"]).sleep.Steps[1].payload.Database.ClusterArn == ""
     )
-    error_message = "Without EKS or a database, the function still runs the deployer or reads the cluster."
+    error_message = "Without EKS or a database, the function still runs the deployer, scales a node group, or reads the cluster."
   }
 }
 

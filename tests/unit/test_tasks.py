@@ -225,6 +225,16 @@ def test_restart_runs_in_the_activity_worker(project):
     assert host.commands == [f"{tasks_module.HOST_PYTHON} -m scripts.restart T-1"]
 
 
+def test_a_scripted_task_reaches_the_cluster_its_context_names(project):
+    container = _RecordingContext()
+
+    tasks_module.restart(container, "T-1", context="agentic-platform-eks")
+
+    [command] = container.commands
+    assert command.startswith("kubectl --context agentic-platform-eks --namespace tenant-adp exec")
+    assert command.endswith("-- python -m scripts.restart T-1")
+
+
 def test_resume_parked_resumes_one_model_path_park_in_the_activity_worker(project):
     container, host, builds = _RecordingContext(), _RecordingContext(), _RecordingContext()
 

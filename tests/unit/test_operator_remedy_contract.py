@@ -51,7 +51,7 @@ def test_every_alert_site_supplies_a_remedy():
 
 
 def test_the_workflow_still_has_the_alert_sites_this_contract_covers():
-    assert len(_alert_calls()) == 23
+    assert len(_alert_calls()) == 24
 
 
 def test_with_remedy_appends_one_next_step_line():
@@ -161,23 +161,23 @@ def test_a_long_check_log_cannot_push_the_next_step_out_of_reach():
     assert lines[-1].startswith(NEXT_STEP_PREFIX)
     assert len(lines) < DETAIL_LINE_LIMIT + 10
     assert "log line 399" in message.body, "the tail of the log is what diagnoses the failure"
-    assert "[360 earlier lines omitted]" in message.body
+    assert re.search(r"\[360 lines and \d+ characters omitted\]", message.body)
 
 
 def test_one_enormous_line_cannot_push_the_next_step_out_of_reach():
     """A line cap alone passes a six-line detail holding a single minified payload."""
-    from services.orchestration.notifications import DETAIL_CHAR_LIMIT, _bounded_detail
+    from services.orchestration.notifications import DETAIL_CHAR_LIMIT, bounded_detail
 
-    bounded = _bounded_detail("head\n" + "x" * 200_000 + "\ntail")
+    bounded = bounded_detail("head\n" + "x" * 200_000 + "\ntail")
 
     assert len(bounded) < DETAIL_CHAR_LIMIT + 200
     assert bounded.endswith("tail")
 
 
 def test_a_short_detail_is_left_intact():
-    from services.orchestration.notifications import _bounded_detail
+    from services.orchestration.notifications import bounded_detail
 
-    assert _bounded_detail("one\ntwo") == "one\ntwo"
+    assert bounded_detail("one\ntwo") == "one\ntwo"
 
 
 def _host(authored: Remedy) -> str:
@@ -359,6 +359,13 @@ def _every_authored_remedy() -> dict[str, Remedy]:
         "checks_not_configured": remedies.checks_not_configured_remedy("ADSER-24", ["repo-a"]),
         "gate_rejected": remedies.gate_rejected_remedy("ADSER-24", "security-review"),
         "gate_decision": remedies.gate_decision_remedy("ADSER-24", "security-review"),
+        "file_held": remedies.file_held_remedy(
+            "ADSER-24",
+            "file_claim",
+            path="tsconfig.build.json",
+            holder_task_id="ADSER-25",
+            holder_work_unit="unit-1",
+        ),
         "review_blocked": remedies.review_blocked_remedy("ADSER-24", "fail_closed"),
         "plan_rejected": remedies.plan_rejected_remedy("ADSER-24"),
         "policy_denied": remedies.policy_denied_remedy("ADSER-24", "bundle"),

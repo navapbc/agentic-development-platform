@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from dataclasses import replace
 
@@ -1276,3 +1277,30 @@ async def test_a_period_budget_spent_again_after_a_grant_sends_a_new_alert_the_p
     assert [option["value"] for option in second[0]["options"]] == ["10", "25"]
     [reply] = _WebClient.posts
     assert reply["thread_ts"] == thread.ts == "100.2"
+
+
+_NPM_CI_CAUSE = (
+    "npm error The `npm ci` command can only install with an existing package-lock.json or"
+)
+_NPM_CI_OUTPUT = "\n".join(
+    [
+        "npm error code EUSAGE",
+        _NPM_CI_CAUSE,
+        *(f"npm error   --usage-option-{n}  usage text for option {n}" for n in range(3, 120)),
+        "npm error A complete log of this run can be found in: /root/.npm/_logs/debug-0.log",
+    ]
+)
+
+
+def test_a_long_npm_ci_detail_keeps_its_cause_and_its_tail_with_one_omission_note():
+    alert = replace(_alert(), stage="checks", reason="checks_failed", detail=_NPM_CI_OUTPUT)
+
+    body = notifications._intervention_message(alert).body
+
+    assert _NPM_CI_CAUSE in body
+    assert "A complete log of this run can be found in" in body
+    [note] = re.findall(r"\[(\d+) lines and (\d+) characters omitted\]", body)
+    body_lines = set(body.splitlines())
+    omitted = [line for line in _NPM_CI_OUTPUT.splitlines() if line not in body_lines]
+    assert note == (str(len(omitted)), str(sum(len(line) + 1 for line in omitted)))
+    assert len(omitted) == 120 - notifications.DETAIL_LINE_LIMIT

@@ -3,10 +3,12 @@
 The eks-deployer image runs this module with the Python standard library and the scripts it
 copies, so it imports nothing beyond `services.process`.
 
-`run_job` creates a Job from the `deployment-validate` CronJob's template with the scope's
-arguments, waits for it, and returns whether it passed with its report. `inv deployment-validate`
-runs it in the current kube context, and `inv k8s-reload`, `inv k8s-deploy`, and the eks-deployer
-`deploy` command run `report_after_rollout`, which prints the failures and never fails the deploy.
+`run_job` creates a Job from the `deployment-validate` CronJob's template, which runs the
+validation with the scope's arguments or another platform module given as its entry point, waits
+for it, and returns whether it passed with its container's exit code and its log.
+`inv deployment-validate` runs it in the current kube context, and `inv k8s-reload`,
+`inv k8s-deploy`, and the eks-deployer `deploy` command run `report_after_rollout`, which prints
+the failures and never fails the deploy.
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ import json
 import sys
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from services import process
@@ -24,13 +27,20 @@ from services import process
 CRONJOB = "deployment-validate"
 CONTAINER = "deployment-validate"
 PLATFORM_NAMESPACE = "agentic-dev-platform"
-ENTRY = ("python", "-m", "scripts.deployment_validate")
+VALIDATE_ENTRY = "scripts.deployment_validate"
 POLL_SECONDS = 5.0
 WAIT_SECONDS = 960.0
 LOG = "[deployment-validate]"
 ALERT_PLATFORM = "--alert-platform"
 
 Runner = Callable[..., process.CompletedProcess[Any]]
+
+
+@dataclass(frozen=True)
+class JobResult:
+    passed: bool
+    exit_code: int | None
+    report: str
 
 
 def _containers(document: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -69,8 +79,10 @@ def scope_args(*, platform: bool = False, all_tenants: bool = False, tenant: str
     return chosen
 
 
-def job_from_cronjob(cronjob: Mapping[str, Any], args: Sequence[str], name: str) -> dict[str, Any]:
-    """Return a Job of the CronJob's template that runs the validation with ``args``.
+def job_from_cronjob(
+    cronjob: Mapping[str, Any], args: Sequence[str], name: str, *, entry: str = VALIDATE_ENTRY
+) -> dict[str, Any]:
+    """Return a Job of the CronJob's template that runs the module ``entry`` with ``args``.
 
     The Job is owned by the CronJob, as `kubectl create job --from` makes it, so deleting the
     CronJob deletes it.
@@ -78,7 +90,7 @@ def job_from_cronjob(cronjob: Mapping[str, Any], args: Sequence[str], name: str)
     template = copy.deepcopy(cronjob["spec"]["jobTemplate"])
     for container in template["spec"]["template"]["spec"]["containers"]:
         if container["name"] == CONTAINER:
-            container["args"] = [*ENTRY, *args]
+            container["args"] = ["python", "-m", entry, *args]
     metadata = cronjob["metadata"]
     return {
         "apiVersion": "batch/v1",
@@ -129,19 +141,36 @@ def _outcome(job: Mapping[str, Any]) -> str:
     return ""
 
 
+def _exit_code(run: Runner, kubectl: Sequence[str], namespace: str, job: str) -> int | None:
+    try:
+        pods = json.loads(
+            _kubectl(run, kubectl, namespace, "get", "pods", "-l", f"job-name={job}", "-o", "json")
+        )
+    except RuntimeError:
+        return None
+    for pod in pods.get("items", []):
+        for status in (pod.get("status") or {}).get("containerStatuses") or []:
+            terminated = (status.get("state") or {}).get("terminated") or {}
+            if status.get("name") == CONTAINER and "exitCode" in terminated:
+                return terminated["exitCode"]
+    return None
+
+
 def run_job(
     kubectl: Sequence[str],
     namespace: str,
     args: Sequence[str],
     *,
+    entry: str = VALIDATE_ENTRY,
     run: Runner = process.run,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
     wait_seconds: float = WAIT_SECONDS,
-) -> tuple[bool, str]:
+) -> JobResult:
+    """Run the Job, whose exit code is None when its container left no terminated state."""
     cronjob = json.loads(_kubectl(run, kubectl, namespace, "get", "cronjob", CRONJOB, "-o", "json"))
-    name = f"{CRONJOB}-{int(time.time())}"
-    manifest = json.dumps(job_from_cronjob(cronjob, args, name))
+    name = f"{entry.rpartition('.')[2].replace('_', '-')}-{int(time.time())}"
+    manifest = json.dumps(job_from_cronjob(cronjob, args, name, entry=entry))
     _kubectl(run, kubectl, namespace, "create", "-f", "-", stdin=manifest)
     deadline = clock() + wait_seconds
     outcome = ""
@@ -151,15 +180,18 @@ def run_job(
         if outcome:
             break
         if clock() >= deadline:
-            return False, f"the Job {name} did not finish within {int(wait_seconds)} seconds"
+            return JobResult(
+                False, None, f"the Job {name} did not finish within {int(wait_seconds)} seconds"
+            )
         sleep(POLL_SECONDS)
     try:
         report = _kubectl(run, kubectl, namespace, "logs", f"job/{name}", "-c", CONTAINER).strip()
     except RuntimeError:
         report = ""
-    if outcome != "passed" and not report:
+    passed = outcome == "passed"
+    if not passed and not report:
         report = f"the Job {name} printed no report and stopped with {outcome}"
-    return outcome == "passed", report
+    return JobResult(passed, 0 if passed else _exit_code(run, kubectl, namespace, name), report)
 
 
 def failure_lines(report: str) -> list[str]:
@@ -189,14 +221,14 @@ def report_after_rollout(
     print(f"{LOG} validating the platform and every tenant", flush=True)
     try:
         args = [*scope_args(all_tenants=True), ALERT_PLATFORM]
-        ok, report = run_job(kubectl, namespace, args, run=run)
+        result = run_job(kubectl, namespace, args, run=run)
     except (RuntimeError, ValueError, OSError, process.SubprocessError) as exc:
         print(f"{LOG} the validation did not run, because {exc}", flush=True)
         return False
-    if ok:
+    if result.passed:
         print(f"{LOG} every check passed", flush=True)
         return True
-    for line in failure_lines(report) or report.splitlines():
+    for line in failure_lines(result.report) or result.report.splitlines():
         print(f"{LOG} {line}", flush=True)
     print(f"{LOG} the deploy continues. Run inv deployment-validate --all-tenants after the fix.")
     return False
@@ -219,12 +251,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.post:
         validation.append("--post")
     try:
-        ok, report = run_job(kubectl, args.namespace, validation)
+        result = run_job(kubectl, args.namespace, validation)
     except RuntimeError as exc:
         print(f"{LOG} {exc}", file=sys.stderr)
         return 1
-    print(report)
-    return 0 if ok else 1
+    print(result.report)
+    return 0 if result.passed else 1
 
 
 if __name__ == "__main__":

@@ -31,8 +31,12 @@ locals {
   dead_letter_alarm_arn  = "arn:${local.partition}:cloudwatch:${var.region}:${local.account_id}:alarm:${local.dead_letter_alarm_name}"
   alert_topic_arn        = "arn:${local.partition}:sns:${var.region}:${local.account_id}:${var.name_prefix}-off-hours-alerts"
   eks_enabled            = local.enabled && var.eks_deployer != null
-  database_enabled       = local.enabled && var.database != null
-  watched_clusters       = distinct(concat(var.cluster_arns, local.eks_enabled ? [var.eks_deployer.cluster_arn] : []))
+  node_groups_enabled    = local.enabled && length(var.node_group_arns) > 0
+  # EKS authorizes DescribeUpdate of a node group update against the cluster ARN, not the node
+  # group ARN that the service authorization reference lists.
+  node_group_cluster_arns = distinct([for arn in var.node_group_arns : replace(arn, "/:nodegroup\\/([^/]+)\\/.*$/", ":cluster/$1")])
+  database_enabled        = local.enabled && var.database != null
+  watched_clusters        = distinct(concat(var.cluster_arns, local.eks_enabled ? [var.eks_deployer.cluster_arn] : []))
 
   deployer = {
     Cluster        = try(var.eks_deployer.cluster_arn, "")
@@ -60,13 +64,16 @@ locals {
   sleep_steps = concat(
     [{ name = "StopServices", handler = "sleep", payload = { Services = var.services, Parameter = local.parameter, WaitSeconds = 540 } }],
     local.eks_enabled ? [{ name = "ScaleDownDeployments", handler = "scale_deployments", payload = { Command = "scale-down", Deployments = local.deployments, Deployer = local.deployer, WaitSeconds = 540 } }] : [],
+    [{ name = "CheckBeforeFoundation", handler = "check", payload = merge(local.check, { Check = "BeforeFoundation", Services = var.services, Database = merge(local.database, { AllowedUsers = var.foundation_database_users }) }) }],
+    local.node_groups_enabled ? [{ name = "ScaleDownNodeGroups", handler = "sleep_node_groups", payload = { NodeGroups = var.node_group_arns, Parameter = local.parameter, WaitSeconds = 540 } }] : [],
     [
-      { name = "CheckBeforeFoundation", handler = "check", payload = merge(local.check, { Check = "BeforeFoundation", Services = var.services, Database = merge(local.database, { AllowedUsers = var.foundation_database_users }) }) },
       { name = "StopFoundationServices", handler = "sleep", payload = { Services = var.foundation_services, Parameter = local.parameter, WaitSeconds = 540 } },
       { name = "CheckBeforePause", handler = "check", payload = merge(local.check, { Check = "BeforePause", Services = local.service_arns, Database = merge(local.database, { AllowedUsers = [] }) }) },
     ],
   )
+  # The nodes boot while the foundation services start, so the deployments find them ready.
   wake_steps = concat(
+    local.node_groups_enabled ? [{ name = "ScaleUpNodeGroups", handler = "wake_node_groups", payload = { NodeGroups = var.node_group_arns, Parameter = local.parameter, WaitSeconds = 540 } }] : [],
     [{ name = "StartFoundationServices", handler = "wake", payload = { Services = var.foundation_services, Parameter = local.parameter, WaitSeconds = var.foundation_wait_seconds } }],
     length(var.health_checked_services) > 0 ? [{ name = "AwaitFoundationHealth", handler = "await_healthy", payload = { Services = var.health_checked_services, WaitSeconds = 540 } }] : [],
     [{ name = "StartServices", handler = "wake", payload = { Services = var.services, Parameter = local.parameter, WaitSeconds = 0 } }],
@@ -100,7 +107,7 @@ resource "aws_ssm_parameter" "wake_counts" {
   count = local.enabled ? 1 : 0
 
   name        = local.parameter
-  description = "Desired count of each ECS service the off-hours schedule scaled to zero, which the wake restores."
+  description = "Desired count of each ECS service, and minimum and desired size of each EKS node group, that the off-hours schedule scaled to zero, which the wake restores."
   type        = "String"
   value       = "{}"
 
@@ -301,6 +308,24 @@ data "aws_iam_policy_document" "function" {
       sid       = "ReadTheDeployerLog"
       actions   = ["logs:GetLogEvents"]
       resources = ["arn:${local.partition}:logs:${var.region}:${local.account_id}:log-group:${statement.value.log_group_name}:log-stream:*"]
+    }
+  }
+
+  dynamic "statement" {
+    for_each = local.node_groups_enabled ? [var.node_group_arns] : []
+    content {
+      sid       = "ScaleTheNodeGroups"
+      actions   = ["eks:DescribeNodegroup", "eks:UpdateNodegroupConfig"]
+      resources = statement.value
+    }
+  }
+
+  dynamic "statement" {
+    for_each = local.node_groups_enabled ? [local.node_group_cluster_arns] : []
+    content {
+      sid       = "ReadTheNodeGroupUpdates"
+      actions   = ["eks:DescribeUpdate"]
+      resources = statement.value
     }
   }
 

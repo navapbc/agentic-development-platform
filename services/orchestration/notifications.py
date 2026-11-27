@@ -18,8 +18,10 @@ import logging
 import re
 import smtplib
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from email.message import EmailMessage
+from itertools import accumulate
 from types import EllipsisType
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
@@ -275,7 +277,7 @@ def _slack_message(
                 issue_key=alert.issue_key,
                 stage=alert.stage,
                 reason=alert.reason,
-                detail=_bounded_detail(alert.detail),
+                detail=bounded_detail(alert.detail),
                 remedy_text=alert.remedy,
                 remedy=alert.structured_remedy.for_tenant(settings.tenant.strip()),
                 remedy_commands=render_remedy_commands(alert.structured_remedy, settings),
@@ -463,25 +465,80 @@ DETAIL_LINE_LIMIT = 40
 DETAIL_CHAR_LIMIT = 4000
 
 
-def _bounded_detail(detail: str) -> str:
-    """Keep the tail of a long detail block so the ``Next step:`` line stays reachable.
+_OMISSION_NOTE = re.compile(r"\[(\d+) lines and (\d+) characters omitted\]")
+
+
+def _omission_note(lines: int, characters: int) -> str:
+    return f"[{lines} lines and {characters} characters omitted]"
+
+
+def _split_at_note(lines: list[str], line_limit: int) -> tuple[list[str], list[str], int, int]:
+    """Split ``lines`` into a head and a tail with the counts an earlier omission note carries.
+
+    Detail bounded once and bounded again, as a Slack section does, keeps its one note and adds
+    the second cut to its counts.
+    """
+    for index, line in enumerate(lines):
+        if note := _OMISSION_NOTE.fullmatch(line.rstrip("\r\n")):
+            return lines[:index], lines[index + 1 :], int(note[1]), int(note[2])
+    head = min(line_limit // 4, len(lines) // 2)
+    return lines[:head], lines[head:], 0, 0
+
+
+def _longest_fit(text: str, budget: int, measure: Callable[[str], int], *, from_end: bool) -> int:
+    """Return the most characters of ``text``, from its start or end, that measure within budget."""
+    low, high = 0, len(text)
+    while low < high:
+        mid = (low + high + 1) // 2
+        if measure(text[len(text) - mid :] if from_end else text[:mid]) <= budget:
+            low = mid
+        else:
+            high = mid - 1
+    return low
+
+
+def bounded_detail(
+    detail: str,
+    *,
+    line_limit: int = DETAIL_LINE_LIMIT,
+    char_limit: int = DETAIL_CHAR_LIMIT,
+    measure: Callable[[str], int] = len,
+) -> str:
+    """Keep the head and the tail of a long detail block, with one note counting what is left out.
 
     A check stage can carry a whole CI log here. Rendered in full it pushes the remedy hundreds
     of lines down a Jira comment, which defeats the point of attaching one. Both bounds are
     needed because a log can be long in lines and a single line can hold a whole minified payload.
+    The head holds the cause a command such as ``npm ci`` prints first, and the tail holds the
+    end of a test run. ``measure`` gives the rendered length the character limit applies to.
     """
-    lines = detail.splitlines()
-    dropped_lines = max(len(lines) - DETAIL_LINE_LIMIT, 0)
-    kept = "\n".join(lines[-DETAIL_LINE_LIMIT:]) if dropped_lines else detail
-    notes: list[str] = []
-    if dropped_lines:
-        notes.append(f"{dropped_lines} earlier lines omitted")
-    if len(kept) > DETAIL_CHAR_LIMIT:
-        notes.append(f"{len(kept) - DETAIL_CHAR_LIMIT} earlier characters omitted")
-        kept = kept[-DETAIL_CHAR_LIMIT:]
-    if not notes:
+    lines = detail.splitlines(keepends=True)
+    head, tail, prior_lines, prior_chars = _split_at_note(lines, line_limit)
+    tail_keep = min(len(tail), line_limit - min(len(head), line_limit // 4))
+    head_keep = min(len(head), line_limit - tail_keep)
+    dropped = head[head_keep:] + tail[: len(tail) - tail_keep]
+    if not dropped and measure(detail) <= char_limit:
         return detail
-    return f"[{', '.join(notes)}]\n{kept}"
+    head, tail = head[:head_keep], tail[len(tail) - tail_keep :]
+    head_text, tail_text = "".join(head), "".join(tail)
+
+    note_bound = _omission_note(prior_lines + len(lines), prior_chars + len(detail))
+    budget = char_limit - measure(note_bound) - 2
+    head_budget = min(measure(head_text), max(budget // 4, budget - measure(tail_text)))
+    head_size = _longest_fit(head_text, head_budget, measure, from_end=False)
+    tail_cut = len(tail_text) - _longest_fit(
+        tail_text, budget - head_budget, measure, from_end=True
+    )
+
+    head_starts = list(accumulate(map(len, head), initial=0))[:-1]
+    cut_lines = sum(start >= head_size for start in head_starts)
+    cut_lines += sum(end <= tail_cut for end in accumulate(map(len, tail)))
+    note = _omission_note(
+        prior_lines + len(dropped) + cut_lines,
+        prior_chars + sum(map(len, dropped)) + len(head_text) - head_size + tail_cut,
+    )
+    kept = (head_text[:head_size].rstrip("\r\n"), note, tail_text[tail_cut:].rstrip("\r\n"))
+    return "\n".join(part for part in kept if part)
 
 
 def _intervention_message(
@@ -491,7 +548,7 @@ def _intervention_message(
         f"Human intervention required for {alert.task_id} on {alert.repo}.\n"
         f"The run stopped at the {alert.stage} stage with reason {alert.reason}.\n"
         f"Task {alert.task_id}, execution {alert.execution_id}, workflow {alert.workflow_id}.\n"
-        f"{_bounded_detail(alert.detail)}"
+        f"{bounded_detail(alert.detail)}"
     )
     return AlertMessage(
         subject=f"Human intervention needed on {alert.repo} for {alert.task_id}",
@@ -537,7 +594,7 @@ def _admin_intervention_message(
         f"The run of {alert.task_id} on {alert.repo} stopped at the {alert.stage} stage with "
         f"reason {alert.reason}.\n"
         f"Task {alert.task_id}, execution {alert.execution_id}, workflow {alert.workflow_id}.\n"
-        f"{_bounded_detail(alert.detail)}"
+        f"{bounded_detail(alert.detail)}"
     )
     if with_fix:
         body = with_remedy(body, render_admin_remedy(alert.structured_remedy, settings))

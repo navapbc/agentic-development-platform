@@ -269,6 +269,8 @@ def _default_repo_root() -> Path:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from scripts.tenant_bundle import activate_tenant_bundle
+
     parser = argparse.ArgumentParser(
         description="Import a Jira xlsx export into the local rebar ticket store."
     )
@@ -291,6 +293,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Wipe the store and re-init empty with the reader identity before importing.",
     )
     args = parser.parse_args(argv if argv is not None else sys.argv[1:])
+    activate_tenant_bundle()
     repo_root = Path(args.root).expanduser() if args.root else _default_repo_root()
 
     if args.reset:

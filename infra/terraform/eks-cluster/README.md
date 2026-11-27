@@ -60,6 +60,7 @@ The map keys of `admin_principal_arns` and `workloads` and the lengths of the po
 | `vpc_id` | VPC of the cluster, for the Load Balancer Controller |
 | `service_cidr` | Service CIDR of the cluster, for the NetworkPolicies that reach the Kubernetes API Service |
 | `node_role_arn` | Role of the managed nodes |
+| `node_group_arns` | ARN of each managed node group, keyed by `platform` and `sandbox`, which the off-hours schedule scales to zero overnight |
 | `pod_identity_role_arns` | Pod Identity role of each workload, keyed by each workload name and by `load_balancer_controller`, `vpc_cni`, `efs_csi_controller`, and `efs_csi_node` |
 | `secrets_kms_key_arn`, `ebs_kms_key_arn` | Keys of the Kubernetes secrets and the node volumes |
 | `log_group_name` | Control plane log group |

@@ -35,6 +35,7 @@ module "off_hours" {
   services                  = [for name, arn in local.container_service_arns : arn if !contains(["clickhouse", "otel-collector"], name)]
   health_checked_services   = [for arn in module.temporal_control_plane.service_arns : arn if endswith(arn, "/${var.name_prefix}-temporal-server")]
   eks_deployer              = local.off_hours_eks_deployer
+  node_group_arns           = values(module.eks_cluster.node_group_arns)
   database                  = local.off_hours_database
   foundation_database_users = local.secret_store_database ? ["temporal"] : []
   timezone                  = var.off_hours_timezone

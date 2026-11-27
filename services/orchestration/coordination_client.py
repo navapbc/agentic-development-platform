@@ -104,6 +104,15 @@ class CoordinationClient:
         data = await self._post("/claims/try", _work_unit_body(unit))
         return ClaimOutcome(**data)
 
+    async def active_claims_covering(
+        self, path: str, *, task_id: str, work_unit: str, tenant: str
+    ) -> list[WorkUnit]:
+        data = await self._post(
+            "/claims/covering",
+            {"path": path, "task_id": task_id, "work_unit": work_unit, "tenant": tenant},
+        )
+        return [_work_unit(claim) for claim in data["claims"]]
+
     async def next_batch(self, units: Iterable[WorkUnit]) -> Schedule:
         data = await self._post(
             "/claims/next_batch",

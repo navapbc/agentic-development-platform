@@ -12,6 +12,9 @@ writes a structured audit record when it starts and when it ends.
   slot, stays at zero.
 - `scale_deployments` runs the eks-deployer task with `scale-down` or `scale-up`, which records
   each EKS deployment's replica count in an annotation and restores it.
+- `sleep_node_groups` records the minimum and desired size of every listed EKS node group that
+  runs nodes in the same SSM parameter and sets both to zero. `wake_node_groups` restores the
+  recorded sizes and removes them from the record.
 - `await_healthy` waits until every task of the listed ECS services passes its container health
   check, such as the Temporal server's probe of its frontend.
 - `check` fails, and publishes an alert naming each finding, while a listed ECS service runs a
@@ -88,31 +91,59 @@ def _save(ssm, parameter, counts):
     ssm.put_parameter(Name=parameter, Value=json.dumps(counts, sort_keys=True), Overwrite=True)
 
 
-def _wait(ecs, targets, settled, seconds):
-    """Poll until every target service satisfies `settled`, returning those that never did."""
+def _record(ssm, parameter, sizes):
+    recorded = _load(ssm, parameter)
+    recorded.update(sizes)
+    _save(ssm, parameter, recorded)
+
+
+def _restore(ssm, parameter, keys, apply):
+    """Apply each recorded size among `keys`, then remove those sizes from the record.
+
+    Returns what `apply` returned for each restored key.
+    """
+    recorded = _load(ssm, parameter)
+    targets = {key: size for key, size in recorded.items() if key in keys}
+    applied = {key: apply(key, size) for key, size in targets.items()}
+    _save(ssm, parameter, {key: size for key, size in recorded.items() if key not in targets})
+    return applied
+
+
+def _poll(targets, unsettled, seconds):
+    """Call `unsettled` on the pending targets until it returns none or `seconds` pass.
+
+    Returns the targets the last call still reported.
+    """
     deadline = time.monotonic() + seconds
     pending = list(targets)
     while pending:
-        described = _describe(ecs, pending)
-        pending = [arn for arn in pending if not settled(ecs, described[arn])]
+        pending = unsettled(pending)
         if not pending or time.monotonic() >= deadline:
             break
         time.sleep(POLL_SECONDS)
     return pending
 
 
+def _wait(ecs, targets, settled, seconds):
+    """Poll until every target service satisfies `settled`, returning those that never did."""
+
+    def unsettled(pending):
+        described = _describe(ecs, pending)
+        return [arn for arn in pending if not settled(ecs, described[arn])]
+
+    return _poll(targets, unsettled, seconds)
+
+
 def sleep(events, context, ecs=None, ssm=None):
     ecs = ecs or boto3.client("ecs")
     ssm = ssm or boto3.client("ssm")
     services = events["Services"]
-    recorded = _load(ssm, events["Parameter"])
     running = {
         arn: service["desiredCount"]
         for arn, service in _describe(ecs, services).items()
         if service["desiredCount"] > 0
     }
-    recorded.update(running)
-    _save(ssm, events["Parameter"], recorded)
+    _record(ssm, events["Parameter"], running)
     for arn in running:
         ecs.update_service(cluster=_cluster(arn), service=arn, desiredCount=0)
     pending = _wait(
@@ -127,12 +158,14 @@ def sleep(events, context, ecs=None, ssm=None):
 def wake(events, context, ecs=None, ssm=None):
     ecs = ecs or boto3.client("ecs")
     ssm = ssm or boto3.client("ssm")
-    services = set(events["Services"])
-    recorded = _load(ssm, events["Parameter"])
-    targets = {arn: count for arn, count in recorded.items() if arn in services}
-    for arn, count in targets.items():
-        ecs.update_service(cluster=_cluster(arn), service=arn, desiredCount=count)
-    _save(ssm, events["Parameter"], {k: v for k, v in recorded.items() if k not in targets})
+    targets = _restore(
+        ssm,
+        events["Parameter"],
+        set(events["Services"]),
+        lambda arn, count: ecs.update_service(
+            cluster=_cluster(arn), service=arn, desiredCount=count
+        ),
+    )
     pending = _wait(
         ecs,
         targets,
@@ -166,6 +199,91 @@ def await_healthy(events, context, ecs=None):
         names = ", ".join(sorted(arn.rsplit("/", 1)[-1] for arn in pending))
         raise RuntimeError(f"{names} did not report healthy, so the other services stay at zero")
     return {"healthy": sorted(services)}
+
+
+NO_NODES = {"minSize": 0, "desiredSize": 0}
+UPDATE_ENDED = ("Failed", "Cancelled")
+
+
+def _node_group(arn):
+    """Return the cluster and node group names of an ARN ending nodegroup/<cluster>/<name>/<id>."""
+    _, cluster, name, _ = arn.split(":", 5)[5].split("/")
+    return cluster, name
+
+
+def _scaling(eks, arn):
+    cluster, name = _node_group(arn)
+    return eks.describe_nodegroup(clusterName=cluster, nodegroupName=name)["nodegroup"][
+        "scalingConfig"
+    ]
+
+
+def _resize(eks, arn, size):
+    """Start the update of a node group to `size`, returning its ID, or None when it has that size.
+
+    A repeated step therefore finds the size applied and starts no second update.
+    """
+    if all(_scaling(eks, arn)[key] == value for key, value in size.items()):
+        return None
+    cluster, name = _node_group(arn)
+    update = eks.update_nodegroup_config(
+        clusterName=cluster, nodegroupName=name, scalingConfig=size
+    )
+    return update["update"]["id"]
+
+
+def _await_updates(eks, updates, seconds):
+    """Wait for each node group update to succeed, returning those still in progress.
+
+    A failed or cancelled update raises, naming its errors.
+    """
+    started = {arn: update for arn, update in updates.items() if update}
+
+    def unsettled(pending):
+        remaining = []
+        for arn in pending:
+            cluster, name = _node_group(arn)
+            update = eks.describe_update(name=cluster, nodegroupName=name, updateId=started[arn])
+            status = update["update"]["status"]
+            if status in UPDATE_ENDED:
+                errors = ". ".join(
+                    error.get("errorMessage", "") for error in update["update"].get("errors", [])
+                )
+                raise RuntimeError(
+                    f"the scaling update of node group {name} ended {status}. {errors}"
+                )
+            if status != "Successful":
+                remaining.append(arn)
+        return remaining
+
+    return _poll(started, unsettled, seconds)
+
+
+def sleep_node_groups(events, context, eks=None, ssm=None):
+    eks = eks or boto3.client("eks")
+    ssm = ssm or boto3.client("ssm")
+    running = {}
+    for arn in events["NodeGroups"]:
+        scaling = _scaling(eks, arn)
+        if scaling["desiredSize"] > 0:
+            running[arn] = {"minSize": scaling["minSize"], "desiredSize": scaling["desiredSize"]}
+    _record(ssm, events["Parameter"], running)
+    updates = {arn: _resize(eks, arn, NO_NODES) for arn in running}
+    pending = _await_updates(eks, updates, events.get("WaitSeconds", 0))
+    return {"scaled_down": sorted(running), "still_updating": pending}
+
+
+def wake_node_groups(events, context, eks=None, ssm=None):
+    eks = eks or boto3.client("eks")
+    ssm = ssm or boto3.client("ssm")
+    updates = _restore(
+        ssm,
+        events["Parameter"],
+        set(events["NodeGroups"]),
+        lambda arn, size: _resize(eks, arn, size),
+    )
+    pending = _await_updates(eks, updates, events.get("WaitSeconds", 0))
+    return {"scaled_up": sorted(updates), "still_updating": pending}
 
 
 def _log_lines(logs, group, stream):
@@ -363,6 +481,8 @@ HANDLERS = {
     "wake": wake,
     "await_healthy": await_healthy,
     "scale_deployments": scale_deployments,
+    "sleep_node_groups": sleep_node_groups,
+    "wake_node_groups": wake_node_groups,
     "check": check,
 }
 # EventBridge Scheduler fills these from its context attributes, so an audit record names the

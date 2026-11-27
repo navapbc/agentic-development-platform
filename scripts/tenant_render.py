@@ -19,6 +19,11 @@ The review worker moves into tenant-<tenant>-review the same way, one copy per t
 ServiceAccount, the config it reads, and the platform policies that select it by name. It reads only
 its own tenant's workspace, and the sandbox namespace binds its ServiceAccount to the sandbox Role,
 so it starts the tenant's gate and scanner pods in the tenant's sandbox namespace only.
+
+The activity worker and the review worker carry SLOT_LABEL with CURRENT_SLOT in their selector and
+pod template. The eks-deployer runs the previous build beside each as a drain slot, labeled
+DRAIN_SLOT, while runs are pinned to that build. The copied policies select a worker by its name
+label alone, so they select both slots.
 """
 
 from __future__ import annotations
@@ -39,6 +44,10 @@ NAME_LABEL = "app.kubernetes.io/name"
 PART_OF_LABEL = "app.kubernetes.io/part-of"
 TENANT_LABEL = "agentic-dev-platform/tenant"
 ROLE_LABEL = "agentic-dev-platform/namespace-role"
+SLOT_LABEL = "agentic-dev-platform/slot"
+CURRENT_SLOT = "current"
+DRAIN_SLOT = "drain"
+SLOT_ENV = "WORKER_SLOT"
 WORKER_ROLE = "worker"
 SANDBOX_ROLE = "sandbox"
 REVIEW_ROLE = "review"

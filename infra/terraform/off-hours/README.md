@@ -1,6 +1,6 @@
 # off-hours
 
-Module that scales the ECS services and the EKS deployments that connect to Aurora to zero overnight, checks that nothing still holds a database connection, and restores them in the morning, so the Aurora cluster auto-pauses and the Fargate tasks stop billing. Nothing is created unless `create_off_hours_schedule = true`. The function role is created whenever the toggle is on, and every other resource needs at least one listed service as well.
+Module that scales the ECS services, the EKS deployments that connect to Aurora, and the EKS node groups to zero overnight, checks that nothing still holds a database connection, and restores them in the morning, so the Aurora cluster auto-pauses and the Fargate tasks and the node instances stop billing. Nothing is created unless `create_off_hours_schedule = true`. The function role is created whenever the toggle is on, and every other resource needs at least one listed service as well.
 
 ## What it provisions
 
@@ -8,7 +8,7 @@ Module that scales the ECS services and the EKS deployments that connect to Auro
 - The `<name_prefix>-off-hours` Lambda function on python3.14, which runs the handlers of `functions/scale.py` and the step plan in `plan.json` that the module generates from the step lists below and packages with it. It traces through X-Ray, writes JSON logs at INFO to a log group encrypted under the alert key and kept for `log_retention_days`, and runs outside the VPC because it calls only AWS APIs and the RDS Data API.
 - An asynchronous invocation configuration for the function with no retries, a 15-minute maximum event age, and the alert topic as its on-failure destination.
 - The `<name_prefix>-off-hours-dead-letters` SQS queue, encrypted under the alert key, and the `<name_prefix>-off-hours-dead-letters` CloudWatch alarm, which publishes to the topic while the queue holds a message.
-- The `/<name_prefix>/off-hours/wake-counts` SSM parameter, which holds the desired count of each ECS service the sleep scaled to zero. Terraform creates it as `{}` and ignores its value afterwards.
+- The `/<name_prefix>/off-hours/wake-counts` SSM parameter, which holds the desired count of each ECS service, and the minimum and desired size of each node group, that the sleep scaled to zero. Terraform creates it as `{}` and ignores its value afterwards.
 - The `<name_prefix>-off-hours-alerts` SNS topic, encrypted under its own customer-managed KMS key with rotation enabled, which receives an alert for each failed check, each failed run, and each step or delivery that never ran to completion. Its policy admits only the dead-letter alarm, and its key admits CloudWatch to encrypt that alarm's message.
 - A function role and a scheduler role, described under [Access](#access).
 
@@ -18,7 +18,7 @@ The function role does not depend on the service list, so a caller can name it i
 
 Each schedule invokes the function asynchronously with `{"Run": "sleep"}` or `{"Run": "wake"}` and the scheduler's context attributes. The function runs the first step of that run's plan and, when the step succeeds, invokes itself asynchronously with the same event, the next step number, and the run ID, which is the scheduler's execution ID. Each step therefore runs in its own invocation. The longest wait of a step is 540 seconds and the function times out at 600, so a step finishes within one invocation, and the run as a whole has no time limit. The last step counts the run as `Completed`. The function sets no reserved concurrency, because reserving any leaves an account whose concurrency quota is below 101 unable to create it, so two runs started together, such as a manual run during a scheduled one, run their steps side by side.
 
-Lambda delivers an asynchronous invocation at least once, so a step can run twice, and each handler is safe to repeat. The sleep records only the services that run, the wake removes each count it restores, `scale-down` keeps an annotation it finds, `scale-up` removes the annotation it restores, and the checks and the health wait only read.
+Lambda delivers an asynchronous invocation at least once, so a step can run twice, and each handler is safe to repeat. The sleep records only the services and node groups that run, the wake removes each count and size it restores, a node group update starts only when the node group lacks the target size, `scale-down` keeps an annotation it finds, `scale-up` removes the annotation it restores, and the checks and the health wait only read.
 
 ## Orchestration decision
 
@@ -27,7 +27,7 @@ The steps run as a chain of asynchronous invocations of one function rather than
 - Runtime. SSM `aws:executeScript` offers no Python runtime as new as the version `.python-version` pins for the whole platform. The function runs the pinned runtime.
 - Step length. An `aws:invokeLambdaFunction` step runs for at most 300 seconds, shorter than the 540-second waits, and does not fail the step when the function raises. Each invocation of the chain gets the full function timeout.
 - Size. SSM caps a document at 64 KB, which the handlers inlined in each step exceed. The plan travels in the function package, which has no such limit.
-- Moving parts. A state machine adds a definition, a role, and a log configuration for a linear run of at most five steps. The chain adds only the function's permission to invoke itself.
+- Moving parts. A state machine adds a definition, a role, and a log configuration for a linear run of at most six steps. The chain adds only the function's permission to invoke itself.
 
 ## Schedule
 
@@ -40,6 +40,7 @@ The steps run as a chain of asynchronous invocations of one function rather than
 | `StopServices` | `sleep` | Records the desired count of each running service in `services` and scales it to zero, then waits up to 540 seconds until every task has reached `DEPROVISIONING` or `STOPPED`. |
 | `ScaleDownDeployments` | `scale_deployments` | Runs the eks-deployer task with `scale-down` and the deployments in `eks_deployer`. The task records each deployment's replica count in the `off-hours.agentic-dev-platform/replicas` annotation, scales it to zero, and waits up to 300 seconds until none of its pods runs. Only with `eks_deployer`. |
 | `CheckBeforeFoundation` | `check` | Fails while a service in `services` runs a task, an `eks_deployer` deployment runs a pod, or `pg_stat_activity` lists a client connection of a user outside `foundation_database_users`. |
+| `ScaleDownNodeGroups` | `sleep_node_groups` | Records the minimum and desired size of each node group in `node_group_arns` that runs nodes, sets both to zero, and waits up to 540 seconds for each scaling update to succeed. EKS then drains and terminates the nodes. Only with `node_group_arns`. |
 | `StopFoundationServices` | `sleep` | Records and scales `foundation_services` to zero, and waits up to 540 seconds for their tasks to exit. |
 | `CheckBeforePause` | `check` | Fails while any listed service runs a task, an `eks_deployer` deployment runs a pod, or `pg_stat_activity` lists any client connection. |
 
@@ -51,12 +52,13 @@ The connection check reads `pg_stat_activity` in the `postgres` database through
 
 | Step | Handler | Effect |
 |---|---|---|
+| `ScaleUpNodeGroups` | `wake_node_groups` | Restores the recorded minimum and desired size of each node group in `node_group_arns` and waits up to 540 seconds for each scaling update to succeed. It runs first, so the nodes boot while the foundation services start and are ready before the deployments scale up. Only with `node_group_arns`. |
 | `StartFoundationServices` | `wake` | Restores the recorded count of each service in `foundation_services` and waits up to `foundation_wait_seconds` for their tasks to run. |
 | `AwaitFoundationHealth` | `await_healthy` | Waits up to 540 seconds until each service in `health_checked_services` runs its desired count and every task reports `HEALTHY`. The Temporal server's container health check probes the frontend's HTTP API, so no worker starts before the frontend answers. Only with `health_checked_services`. |
 | `StartServices` | `wake` | Restores the recorded count of each service in `services`. |
 | `ScaleUpDeployments` | `scale_deployments` | Runs the eks-deployer task with `scale-up`, which restores the replica count each annotation recorded, removes the annotation, and waits up to 5 minutes for each rollout. Only with `eks_deployer`. |
 
-The sleep records only the services and deployments that run, and the wake restores only those it finds recorded and removes the record. A service or deployment at zero when the sleep runs, such as a drained Temporal worker slot, therefore stays at zero after the wake, and a second sleep keeps the counts the first recorded. A deployment during the night starts its services and pods as usual, and the next sleep records and stops them again.
+The sleep records only the services and deployments that run, and the wake restores only those it finds recorded and removes the record. A service or deployment at zero when the sleep runs, such as a drained Temporal worker slot, therefore stays at zero after the wake, and a second sleep keeps the counts the first recorded. A deployment during the night starts its services and pods as usual, and the next sleep records and stops them again. A `terraform apply` during the night sets each node group back to the sizes its configuration names, so the nodes run until the next sleep, which records those sizes and scales them down again. Run the sleep from the node group step after such an apply, as [Running it outside the schedule](#running-it-outside-the-schedule) shows.
 
 ## Failure and alerts
 
@@ -97,6 +99,7 @@ The check reads `pg_stat_activity` through the RDS Data API with the credential 
 The function role may only:
 
 - describe and update the listed ECS services, and list and describe the tasks of `cluster_arns` and of the deployer's cluster
+- describe the node groups in `node_group_arns` and update their scaling configuration, and read the updates of their clusters, because EKS authorizes `DescribeUpdate` of a node group update against the cluster ARN
 - read and write the wake-counts parameter
 - run the `eks_deployer.task_family` task definition on its cluster, pass its execution and task roles to ECS, and read its log streams
 - call the Data API `ExecuteStatement` on `database.cluster_arn` and read `database.monitor_secret_arn`
@@ -113,7 +116,7 @@ The secret store rotates a single database or cache user, so a rotation refuses 
 
 ## Running it outside the schedule
 
-Invoke the function asynchronously with the run name, for example `aws lambda invoke --function-name agentic-platform-off-hours --invocation-type Event --cli-binary-format raw-in-base64-out --payload '{"Run":"wake"}' response.json`, to wake the services early or put them to sleep before a manual rotation. The run ID of a manual run is the request ID of its first invocation, and `aws logs filter-log-events --log-group-name /aws/lambda/agentic-platform-off-hours --filter-pattern '{ $.trigger = "direct" }'` lists the records of manual runs.
+Invoke the function asynchronously with the run name, for example `aws lambda invoke --function-name agentic-platform-off-hours --invocation-type Event --cli-binary-format raw-in-base64-out --payload '{"Run":"wake"}' response.json`, to wake the services early or put them to sleep before a manual rotation. Add `"Step"` with a zero-based step number to start a run at that step, for example `{"Run":"sleep","Step":3}` for `ScaleDownNodeGroups` when the root also runs EKS deployments, after a failed step has been fixed. The run ID of a manual run is the request ID of its first invocation, and `aws logs filter-log-events --log-group-name /aws/lambda/agentic-platform-off-hours --filter-pattern '{ $.trigger = "direct" }'` lists the records of manual runs.
 
 ## Outputs
 
@@ -129,4 +132,4 @@ Invoke the function asynchronously with the run name, for example `aws lambda in
 
 ## Tests
 
-`tests/off_hours.tftest.hcl` runs the module against a mocked provider and asserts that the disabled module creates nothing, that the schedules invoke the function in the time zone with the context attributes the audit records name, that the foundation services stop last and start first, that the sleep scales the EKS deployments down and checks before and after the foundation services, that the wake awaits the Temporal server's health before it starts the services and the deployments, that each run records its result to the namespace, the topic, and the log group, that the function role reaches only the deployer, its log group, the cluster's Data API, the monitor secret, the topic, the namespace, and the function itself, that each step finishes its longest wait within the function timeout, that the function writes encrypted JSON logs, that a step the function cannot finish alerts without a retry, that an undeliverable schedule alarms from the dead-letter queue, that the scheduler role may only invoke the function and write its dead letters, that the function ARN is known at plan, and that a weekend wake is refused only while the rotation runs on a Sunday. `tests/unit/test_off_hours_scale.py` runs `functions/scale.py` against fake ECS, CloudWatch Logs, Data API, SNS, CloudWatch, SSM, and Lambda clients, and `tests/unit/test_eks_deploy.py` runs the `scale-down`, `scale-up`, and `check-stopped` commands against a fake kubectl. Run them with `inv terraform-test` and `inv ci`.
+`tests/off_hours.tftest.hcl` runs the module against a mocked provider and asserts that the disabled module creates nothing, that the schedules invoke the function in the time zone with the context attributes the audit records name, that the foundation services stop last and start first, that the sleep scales the EKS deployments down, checks, and scales the node groups down before the foundation services stop and checks again after, that the wake starts the node groups first and awaits the Temporal server's health before it starts the services and the deployments, that each run records its result to the namespace, the topic, and the log group, that the function role reaches only the deployer, its log group, the node groups and their clusters' updates, the cluster's Data API, the monitor secret, the topic, the namespace, and the function itself, that each step finishes its longest wait within the function timeout, that the function writes encrypted JSON logs, that a step the function cannot finish alerts without a retry, that an undeliverable schedule alarms from the dead-letter queue, that the scheduler role may only invoke the function and write its dead letters, that the function ARN is known at plan, and that a weekend wake is refused only while the rotation runs on a Sunday. `tests/unit/test_off_hours_scale.py` runs `functions/scale.py` against fake ECS, EKS, CloudWatch Logs, Data API, SNS, CloudWatch, SSM, and Lambda clients, and `tests/unit/test_eks_deploy.py` runs the `scale-down`, `scale-up`, and `check-stopped` commands against a fake kubectl. Run them with `inv terraform-test` and `inv ci`.

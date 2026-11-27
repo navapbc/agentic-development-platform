@@ -39,6 +39,7 @@ with workflow.unsafe.imports_passed_through():
         claim_denied_remedy,
         code_defect_remedy,
         existing_pr_remedy,
+        file_held_remedy,
         gate_decision_remedy,
         gate_rejected_remedy,
         implementation_remedy,
@@ -304,6 +305,9 @@ _PERIOD_BUDGET_PARK_PATCH = "period-budget-park"
 _PERIOD_BUDGET_THREAD_PATCH = "period-budget-thread"
 _PLAN_REJECTED_PERSIST_PATCH = "plan-rejected-persist"
 _ABANDONED_RESTART_ALERT_PATCH = "abandoned-restart-alert"
+_FILE_IMPACT_REPORT_PATCH = "file-impact-report"
+_COMMIT_STAGE = "commit"
+_FILE_CLAIM_GATE = "file_claim"
 _LIMIT_PARK_RESUME_WAIT = timedelta(minutes=5)
 _RUN_LIMIT_NAMES = {
     COST_BUDGET_EXCEEDED: "IMPLEMENTATION_MAX_COST_USD",
@@ -595,6 +599,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         super().__init__()
         self._sync: BranchSyncOutput | None = None
         self._commit: CommitPushResult | None = None
+        self._outside_file_impact: list[str] = []
         self._pr: PullRequestOutput | None = None
         self._pr_body: str = ""
         self._pr_approval: _PrApproval | None = None
@@ -1238,7 +1243,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             if await self._hold_at_period_budget(params, workflow_id, "checks"):
                 return replace(outcome, terminal_reason=HUMAN_ABANDONED)
             outcome = await self._ci_and_repair(params, impl, outcome, workflow_id)
-            while outcome.status == CI_FAILED:
+            while outcome.status == CI_FAILED and outcome.terminal_reason != HUMAN_ABANDONED:
                 if outcome.terminal_reason in _RUN_LIMIT_NAMES and workflow.patched(
                     _LIMIT_PARK_PATCH
                 ):
@@ -1308,8 +1313,6 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         impl: ImplementationOutput,
         workflow_id: str,
     ) -> DraftPullRequestOutput:
-        retry = RetryPolicy(maximum_attempts=3)
-        commit_timeout = _COMMIT_TIMEOUT
         sequence_base = impl.claim_version * _SEQUENCE_STRIDE
 
         if self._sync is None:
@@ -1350,8 +1353,9 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             )
 
         if self._commit is None:
-            self._commit = await workflow.execute_activity(
-                commit_and_push,
+            commit = await self._commit_unless_held(
+                params,
+                workflow_id,
                 CommitPushRequest(
                     repo=params.repo,
                     task_id=params.task_id,
@@ -1361,10 +1365,17 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                     message=params.commit_message,
                     sequence=sequence_base + _COMMIT_OFFSET,
                     file_impact=list(params.file_impact),
+                    work_unit=params.work_unit,
                 ),
-                start_to_close_timeout=commit_timeout,
-                retry_policy=retry,
             )
+            if commit is None:
+                return DraftPullRequestOutput(
+                    execution_id=params.execution_id,
+                    status=HUMAN_ABANDONED,
+                    terminal_reason=HUMAN_ABANDONED,
+                    branch=impl.branch,
+                )
+            self._commit = commit
         commit = self._commit
 
         return DraftPullRequestOutput(
@@ -1373,6 +1384,68 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             terminal_reason=impl.terminal_reason,
             branch=commit.branch,
         )
+
+    async def _commit_unless_held(
+        self,
+        params: DraftPullRequestInput,
+        workflow_id: str,
+        request: CommitPushRequest,
+    ) -> CommitPushResult | None:
+        """Commit and push, parking while another active work unit holds a changed file.
+
+        Returns None when the park is rejected, after the run is recorded as abandoned.
+        """
+        reporting = workflow.patched(_FILE_IMPACT_REPORT_PATCH)
+        request = replace(request, check_claims=reporting)
+        while True:
+            result: CommitPushResult = await workflow.execute_activity(
+                commit_and_push,
+                request,
+                start_to_close_timeout=_COMMIT_TIMEOUT,
+                retry_policy=RetryPolicy(maximum_attempts=3),
+            )
+            if not result.held_path:
+                break
+            approved = await self._park_for_gate_decision(
+                params,
+                workflow_id,
+                gate=_FILE_CLAIM_GATE,
+                stage=_COMMIT_STAGE,
+                detail=(
+                    f"{result.held_path} is held by work unit {result.held_by_work_unit} "
+                    f"of {result.held_by_task_id}"
+                ),
+                parked_build_id=params.build_id,
+                remedy=file_held_remedy(
+                    params.issue_key,
+                    _FILE_CLAIM_GATE,
+                    path=result.held_path,
+                    holder_task_id=result.held_by_task_id,
+                    holder_work_unit=result.held_by_work_unit,
+                ),
+            )
+            if not approved:
+                await self._persist_abandoned(params, workflow_id)
+                await self._alert_abandoned(params, workflow_id, stage=_COMMIT_STAGE)
+                return None
+        if reporting and result.excluded_paths:
+            self._outside_file_impact = sorted(
+                set(self._outside_file_impact) | set(result.excluded_paths)
+            )
+            await self._audit(
+                AuditEvent(
+                    event_id=(
+                        f"{params.execution_id}:FILES_OUTSIDE_FILE_IMPACT:{request.sequence}"
+                    ),
+                    task_id=params.task_id,
+                    execution_id=params.execution_id,
+                    event_type="FILES_OUTSIDE_FILE_IMPACT",
+                    stage=_COMMIT_STAGE,
+                    workflow_id=workflow_id,
+                    artifact_hashes={"files": ",".join(result.excluded_paths)},
+                )
+            )
+        return result
 
     @staticmethod
     def _testing_evidence(params: DraftPullRequestInput) -> str:
@@ -1415,6 +1488,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 summary=impl.summary or params.task,
                 description=params.task_description,
                 testing=self._testing_evidence(params),
+                outside_file_impact=tuple(self._outside_file_impact),
             ),
         )
         self._pr_body = body
@@ -1472,6 +1546,9 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             repair = await self._repair(params, impl, result, workflow_id, attempt)
             if repair is None:
                 break
+            if repair.terminal_reason == HUMAN_ABANDONED:
+                self._max_attempt_used = max(self._max_attempt_used, repairs)
+                return replace(result, repair_attempts=repairs, terminal_reason=HUMAN_ABANDONED)
             limits = await self._run_limits(params)
             budget_reason = self._budget_breach(limits, impl) or _model_budget_reason(
                 repair.terminal_reason
@@ -2303,7 +2380,6 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
     ) -> ApplyCIRepairResult | None:
         retry = RetryPolicy(maximum_attempts=3)
         short = timedelta(seconds=30)
-        commit_timeout = _COMMIT_TIMEOUT
         commit_sha = self._commit.commit_sha if self._commit else params.base_sha
 
         await workflow.execute_activity(
@@ -2384,8 +2460,9 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         sequence = (
             impl.claim_version * _SEQUENCE_STRIDE + _REPAIR_BASE_OFFSET + _REPAIR_STRIDE * attempt
         )
-        self._commit = await workflow.execute_activity(
-            commit_and_push,
+        commit = await self._commit_unless_held(
+            params,
+            workflow_id,
             CommitPushRequest(
                 repo=params.repo,
                 task_id=params.task_id,
@@ -2395,10 +2472,12 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 message=params.commit_message,
                 sequence=sequence,
                 file_impact=list(params.file_impact),
+                work_unit=params.work_unit,
             ),
-            start_to_close_timeout=commit_timeout,
-            retry_policy=retry,
         )
+        if commit is None:
+            return replace(repair, applied=False, terminal_reason=HUMAN_ABANDONED)
+        self._commit = commit
         await self._audit(
             AuditEvent(
                 event_id=f"{params.execution_id}:REPAIR_APPLIED:{attempt}",
@@ -2412,6 +2491,8 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 artifact_hashes={"files": ",".join(repair.changed_files)},
             )
         )
+        if workflow.patched(_FILE_IMPACT_REPORT_PATCH):
+            return repair
         dropped = self._repair_dropped_by_scope(repair)
         if dropped:
             await self._audit(
@@ -2435,10 +2516,12 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
     def _repair_dropped_by_scope(self, repair: ApplyCIRepairResult) -> list[str]:
         """Repair-authored paths the commit discarded, when the commit kept nothing at all.
 
-        A repair that only writes files outside the ticket's declared `file_impact` never reaches
-        the branch, so re-running the checks would fail the same way until the budget runs out.
-        Paths are reported only when the commit staged nothing, because a commit that did land
-        something made progress even though it also dropped an unrelated file such as a lockfile.
+        Only a run replaying a history recorded before the file impact report reaches this,
+        because its commits staged only the declared `file_impact`. A repair that only wrote
+        files outside it never reached the branch, so re-running the checks would fail the same
+        way until the budget ran out. Paths are reported only when the commit staged nothing,
+        because a commit that did land something made progress even though it also dropped an
+        unrelated file such as a lockfile.
         """
         commit = self._commit
         if commit is None or commit.changed:

@@ -423,7 +423,9 @@ async def test_bounded_task_no_changes_terminates_cleanly(tmp_path, bare_remote)
     assert linkback_client.comments == []
 
 
-async def test_bounded_task_publishes_only_the_declared_paths(tmp_path, bare_remote) -> None:
+async def test_bounded_task_publishes_a_file_outside_the_declared_paths(
+    tmp_path, bare_remote
+) -> None:
     settings = _settings()
     base_sha = _remote_head(bare_remote)
     transport, _ = _fake_ghes()
@@ -484,8 +486,7 @@ async def test_bounded_task_publishes_only_the_declared_paths(tmp_path, bare_rem
         capture_output=True,
         text=True,
     ).stdout.split()
-    assert "NOTES.md" in code_step.files
-    assert published == ["README.md"]
+    assert published == ["NOTES.md", "README.md"]
 
     readme = subprocess.run(
         ["git", f"--git-dir={bare_remote}", "show", f"{branch_head}:README.md"],

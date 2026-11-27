@@ -127,6 +127,16 @@ def build_handler(
             if path == "/claims/try":
                 unit = _work_unit(payload)
                 return asdict(_run(claim_store.try_claim(unit)))
+            if path == "/claims/covering":
+                claims = _run(
+                    claim_store.active_claims_covering(
+                        payload["path"],
+                        task_id=payload["task_id"],
+                        work_unit=payload["work_unit"],
+                        tenant=payload["tenant"],
+                    )
+                )
+                return {"claims": [asdict(claim) for claim in claims]}
             if path == "/claims/next_batch":
                 units = [_work_unit(u) for u in payload["units"]]
                 schedule = partition_by_file_impact(units)

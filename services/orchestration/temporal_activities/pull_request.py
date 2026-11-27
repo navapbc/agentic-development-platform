@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import structlog
 from temporalio import activity
+
+if TYPE_CHECKING:
+    from services.coordination.claims import WorkUnit
 
 log = structlog.get_logger("ticket_write_back")
 
@@ -154,6 +158,8 @@ class CommitPushRequest:
     message: str
     sequence: int = 2
     file_impact: list[str] = field(default_factory=list)
+    work_unit: str = ""
+    check_claims: bool = False
 
 
 @dataclass
@@ -163,8 +169,13 @@ class CommitPushResult:
     pushed: bool
     replayed: bool
     pr_template: str = ""
+    # The paths outside the file impact keep this field name because recorded workflow
+    # histories carry it, and the replayed legacy repair branch reads it.
     excluded_paths: list[str] = field(default_factory=list)
     changed: bool = True
+    held_path: str = ""
+    held_by_task_id: str = ""
+    held_by_work_unit: str = ""
 
 
 @dataclass
@@ -297,7 +308,23 @@ async def commit_and_push(req: CommitPushRequest) -> CommitPushResult:
         base=req.base,
         commit_sha=req.commit,
     )
-    staged = await materializer.stage(workspace, allowed_paths=req.file_impact)
+    staged = await materializer.stage(workspace, file_impact=req.file_impact)
+    outside = list(staged.outside_file_impact)
+    if req.check_claims:
+        held = await _claim_holding(req, outside)
+        if held is not None:
+            path, holder = held
+            return CommitPushResult(
+                branch=workspace.branch,
+                commit_sha=req.commit,
+                pushed=False,
+                replayed=False,
+                excluded_paths=outside,
+                changed=False,
+                held_path=path,
+                held_by_task_id=holder.task_id,
+                held_by_work_unit=holder.work_unit,
+            )
     commit_request = await materializer.build_commit_request(
         workspace, message=req.message, staged=staged
     )
@@ -309,9 +336,30 @@ async def commit_and_push(req: CommitPushRequest) -> CommitPushResult:
         pushed=result.pushed,
         replayed=result.replayed,
         pr_template=read_pull_request_template(workspace.path),
-        excluded_paths=list(staged.excluded),
+        excluded_paths=outside,
         changed=staged.changed,
     )
+
+
+async def _claim_holding(req: CommitPushRequest, paths: list[str]) -> tuple[str, WorkUnit] | None:
+    """The first path another active work unit's claim covers, with that claim."""
+    if not paths:
+        return None
+    from scripts.config import get_settings
+
+    from services.orchestration.temporal_activities.implementation import (
+        _build_coordination_client,
+    )
+
+    client = _build_coordination_client()
+    tenant = get_settings().tenant
+    for path in paths:
+        holders = await client.active_claims_covering(
+            path, task_id=req.task_id, work_unit=req.work_unit, tenant=tenant
+        )
+        if holders:
+            return path, holders[0]
+    return None
 
 
 @activity.defn

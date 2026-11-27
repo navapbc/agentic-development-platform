@@ -88,6 +88,7 @@ def test_restart_rolls_each_named_deployment(monkeypatch) -> None:
 
     eks_deploy_task.restart(["tenant-workers", "inbound-webhook"], {"tenants": [{"name": "adp"}]})
 
+    calls = [c for c in calls if c[3] == "rollout"]
     assert [c[1:6] for c in calls[:2]] == [
         ["-n", "tenant-adp", "rollout", "restart", "deployment/activity-worker"],
         ["-n", "agentic-dev-platform", "rollout", "restart", "deployment/inbound-webhook"],
@@ -122,7 +123,7 @@ def test_a_claim_whose_access_modes_changed_is_deleted_with_its_volume(monkeypat
 
     eks_deploy_task.replace_changed_claims([_review_claim(["ReadWriteMany"])])
 
-    assert [c[1:] for c in calls[1:]] == [
+    assert [c[1:] for c in calls[1:] if c[3:5] != ["get", "deployment"]] == [
         ["-n", "tenant-adp-review", "scale", "deployment", "--all", "--replicas=0"],
         ["-n", "tenant-adp-review", "delete", "pvc", "workspaces", "--wait=true", "--timeout=300s"],
         [
@@ -195,6 +196,7 @@ def test_restarting_the_review_workers_rolls_each_tenants_review_worker(monkeypa
         ["tenant-review-workers"], {"tenants": [{"name": "adp"}, {"name": "beta"}]}
     )
 
+    calls = [c for c in calls if c[3] == "rollout"]
     assert [c[1:6] for c in calls[:2]] == [
         ["-n", "tenant-adp-review", "rollout", "restart", "deployment/review-worker"],
         ["-n", "tenant-beta-review", "rollout", "restart", "deployment/review-worker"],
@@ -231,6 +233,7 @@ def _deploy_without_a_cluster(
         rendered.append(inputs)
         return [_gateway_ingress(entry["name"]) for entry in inputs["tenants"]], []
 
+    monkeypatch.setattr(eks_deploy_task, "run", lambda args, **_: "")
     monkeypatch.setattr(eks_deploy_task, "install_controller", lambda inputs: None)
     monkeypatch.setattr(eks_deploy_task, "overlay_documents", list)
     monkeypatch.setattr(eks_deploy_task, "render", render)
@@ -242,7 +245,9 @@ def _deploy_without_a_cluster(
     monkeypatch.setattr(
         eks_deploy_task, "wait_for_hostname", lambda name, namespace: balancers[namespace]
     )
-    eks_deploy_task.deploy({"tenants": [{"name": "adp"}, {"name": "beta"}]}, [])
+    eks_deploy_task.deploy(
+        {"tenants": [{"name": "adp"}, {"name": "beta"}], "images": {"platform": _image("b1")}}, []
+    )
     assert len(rendered) == 1
     return rolled
 
@@ -839,4 +844,383 @@ def test_check_stopped_names_each_running_pod_and_fails(monkeypatch, capsys) -> 
     assert exit_code == 1
     assert capsys.readouterr().out.splitlines() == [
         f"{eks_deploy_task.RUNNING_POD}agentic-dev-platform/inbound-webhook-7d9-abc"
+    ]
+
+
+def _pinned_check(monkeypatch, capsys, pinned: list[str]) -> tuple[int, str]:
+    """Return the exit code and log of the pinned execution check finding ``pinned``."""
+    from scripts import pinned_executions
+
+    async def found(build_id: str) -> list[str]:
+        return pinned
+
+    monkeypatch.setattr(pinned_executions, "_pinned", found)
+    exit_code = pinned_executions.main(["build-7"])
+    return exit_code, capsys.readouterr().out
+
+
+def _job_outcome(monkeypatch, exit_code: int, log: str) -> list[tuple[str, list[str]]]:
+    from scripts import validation_job
+
+    jobs: list[tuple[str, list[str]]] = []
+
+    def run_job(kubectl, namespace, args, *, entry):
+        jobs.append((entry, list(args)))
+        return validation_job.JobResult(exit_code == 0, exit_code, log)
+
+    monkeypatch.setattr(validation_job, "run_job", run_job)
+    return jobs
+
+
+def test_a_build_without_pinned_runs_returns_no_workflow_ids(monkeypatch, capsys) -> None:
+    jobs = _job_outcome(monkeypatch, *_pinned_check(monkeypatch, capsys, []))
+
+    assert eks_deploy_task.pinned_workflow_ids("build-7") == []
+    assert jobs == [("scripts.pinned_executions", ["build-7"])]
+
+
+def test_a_build_with_pinned_runs_returns_the_listed_workflow_ids(monkeypatch, capsys) -> None:
+    _job_outcome(monkeypatch, *_pinned_check(monkeypatch, capsys, ["run-adp-1", "run-beta-2"]))
+
+    assert eks_deploy_task.pinned_workflow_ids("build-7") == ["run-adp-1", "run-beta-2"]
+
+
+def test_a_pinned_exit_whose_log_lists_no_workflow_id_fails_the_deploy(monkeypatch, capsys) -> None:
+    exit_code, _ = _pinned_check(monkeypatch, capsys, ["run-adp-1"])
+    _job_outcome(monkeypatch, exit_code, "")
+
+    with pytest.raises(eks_deploy_task.DeployError, match="listed no workflow id"):
+        eks_deploy_task.pinned_workflow_ids("build-7")
+
+
+def test_a_pinned_check_that_crashes_fails_the_deploy_with_its_log_tail(monkeypatch) -> None:
+    log = "\n".join([*(f"line {n}" for n in range(40)), "RuntimeError: Temporal refused"])
+    _job_outcome(monkeypatch, 1, log)
+
+    with pytest.raises(eks_deploy_task.DeployError) as raised:
+        eks_deploy_task.pinned_workflow_ids("build-7")
+
+    assert "exited 1" in str(raised.value) and "RuntimeError: Temporal refused" in str(raised.value)
+    assert "line 0\n" not in str(raised.value)
+
+
+SLOT_LABEL = "agentic-dev-platform/slot"
+NAME_LABEL = "app.kubernetes.io/name"
+
+
+def _image(build: str) -> str:
+    registry = "999999999999.dkr.ecr.us-west-2.amazonaws.com/x"
+    return f"{registry}/platform:{build}-abc1234-arm64@sha256:{'a' * 64}"
+
+
+def _worker(namespace: str, name: str, build: str, slot: str | None = "current") -> dict:
+    """A live worker Deployment, without the slot label when ``slot`` is None."""
+    labels = {NAME_LABEL: name, **({SLOT_LABEL: slot} if slot else {})}
+    return {
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "metadata": {
+            "name": f"{name}-drain" if slot == "drain" else name,
+            "namespace": namespace,
+            "uid": "4f1c",
+            "resourceVersion": "812",
+            "annotations": {"kubectl.kubernetes.io/last-applied-configuration": "{}"},
+        },
+        "spec": {
+            "replicas": 1,
+            "selector": {"matchLabels": dict(labels)},
+            "template": {
+                "metadata": {"labels": dict(labels)},
+                "spec": {
+                    "serviceAccountName": name,
+                    "containers": [
+                        {
+                            "name": name,
+                            "image": _image(build),
+                            "env": [{"name": "TENANT", "value": "adp"}],
+                        }
+                    ],
+                },
+            },
+        },
+        "status": {"readyReplicas": 1},
+    }
+
+
+def _build(deployment: dict) -> str:
+    image = deployment["spec"]["template"]["spec"]["containers"][0]["image"]
+    return image.split("@")[0].rsplit(":", 1)[1].rsplit("-", 2)[0]
+
+
+class _Cluster:
+    """Live Deployments and pods keyed by `namespace/name`, which records each change in order."""
+
+    def __init__(self, *deployments: dict, pods: list[dict] | None = None) -> None:
+        self.deployments = {
+            f"{d['metadata']['namespace']}/{d['metadata']['name']}": d for d in deployments
+        }
+        self.pods = pods or []
+        self.events: list[tuple[str, ...]] = []
+
+    def __call__(self, args: list[str], *, stdin: str | None = None, **_: object) -> str:
+        if args[1] == "apply":
+            for item in json.loads(stdin or "")["items"]:
+                if item["kind"] != "Deployment":
+                    continue
+                target = f"{item['metadata']['namespace']}/{item['metadata']['name']}"
+                self.deployments[target] = item
+                self.events.append(("apply", target, _build(item)))
+            return ""
+        namespace, verb = args[2], args[3]
+        if verb == "get" and args[4] == "deployment":
+            deployment = self.deployments.get(f"{namespace}/{args[5]}")
+            return json.dumps(deployment) if deployment else ""
+        if verb == "get" and args[4] == "pods":
+            wanted = dict(pair.split("=", 1) for pair in args[6].split(","))
+            items = [
+                pod
+                for pod in self.pods
+                if pod["metadata"]["namespace"] == namespace
+                and wanted.items() <= pod["metadata"]["labels"].items()
+            ]
+            return json.dumps({"items": items})
+        if verb == "rollout":
+            self.events.append((f"rollout {args[4]}", f"{namespace}/{args[5].split('/')[1]}"))
+            return ""
+        if verb == "delete" and args[4] == "deployment":
+            self.deployments.pop(f"{namespace}/{args[5]}", None)
+            self.events.append(("delete", f"{namespace}/{args[5]}"))
+            return ""
+        if verb == "scale":
+            for target, deployment in self.deployments.items():
+                if target.startswith(f"{namespace}/"):
+                    deployment["spec"]["replicas"] = 0
+            self.events.append(("scale to zero", namespace))
+            return ""
+        if verb == "patch":
+            target = f"{namespace}/{args[4].removeprefix('deployment/')}"
+            self.deployments[target]["spec"]["replicas"] = json.loads(args[-1])["spec"]["replicas"]
+            return ""
+        if verb == "get" and args[4] == "pvc":
+            return json.dumps({"spec": {"accessModes": ["ReadOnlyMany"]}})
+        if verb == "delete":
+            return ""
+        raise AssertionError(args)
+
+
+def _pinned(monkeypatch, pinned: dict[str, list[str]]) -> list[str]:
+    checked: list[str] = []
+
+    def check(build: str) -> list[str]:
+        checked.append(build)
+        return pinned.get(build, [])
+
+    monkeypatch.setattr(eks_deploy_task, "pinned_workflow_ids", check)
+    return checked
+
+
+def _slot_inputs(build: str) -> dict:
+    return {"tenants": [{"name": "adp"}], "images": {"platform": _image(build)}}
+
+
+def _deploy_slots(monkeypatch, cluster: _Cluster, build: str, rendered: list[dict]) -> None:
+    monkeypatch.setattr(eks_deploy_task, "run", cluster)
+    monkeypatch.setattr(eks_deploy_task, "install_controller", lambda inputs: None)
+    monkeypatch.setattr(eks_deploy_task, "overlay_documents", list)
+    monkeypatch.setattr(eks_deploy_task, "render", lambda *_, **__: (rendered, []))
+    monkeypatch.setattr(eks_deploy_task, "delete_retired", lambda: None)
+    monkeypatch.setattr(eks_deploy_task, "report_unselected", lambda: [])
+    monkeypatch.setattr(eks_deploy_task, "validate", lambda: None)
+    eks_deploy_task.deploy(_slot_inputs(build), [])
+
+
+def _changes(cluster: _Cluster) -> list[tuple[str, ...]]:
+    return [event for event in cluster.events if event[0] != "rollout status"]
+
+
+def test_a_deploy_keeps_the_pinned_build_in_a_drain_slot_before_the_current_slot_moves(
+    monkeypatch,
+) -> None:
+    cluster = _Cluster(_worker("tenant-adp", "activity-worker", "b1"))
+    _pinned(monkeypatch, {"b1": ["run-adp-1"]})
+
+    _deploy_slots(monkeypatch, cluster, "b2", [_worker("tenant-adp", "activity-worker", "b2")])
+
+    assert cluster.events[:3] == [
+        ("apply", "tenant-adp/activity-worker-drain", "b1"),
+        ("rollout status", "tenant-adp/activity-worker-drain"),
+        ("apply", "tenant-adp/activity-worker", "b2"),
+    ]
+    drain = cluster.deployments["tenant-adp/activity-worker-drain"]
+    template = drain["spec"]["template"]
+    assert drain["spec"]["selector"]["matchLabels"] == {
+        NAME_LABEL: "activity-worker",
+        SLOT_LABEL: "drain",
+    }
+    assert template["metadata"]["labels"][SLOT_LABEL] == "drain"
+    assert template["spec"]["serviceAccountName"] == "activity-worker"
+    env = template["spec"]["containers"][0]["env"]
+    assert {"name": "WORKER_SLOT", "value": "drain"} in env
+    assert {"name": "TENANT", "value": "adp"} in env
+    assert "uid" not in drain["metadata"] and "status" not in drain
+    assert "kubectl.kubernetes.io/last-applied-configuration" not in drain["metadata"].get(
+        "annotations", {}
+    )
+    assert ("rollout status", "tenant-adp/activity-worker-drain") in cluster.events[3:]
+
+
+def test_the_first_drain_of_a_worker_without_the_slot_label_recreates_the_current_slot(
+    monkeypatch,
+) -> None:
+    cluster = _Cluster(_worker("tenant-adp", "activity-worker", "b1", slot=None))
+    _pinned(monkeypatch, {"b1": ["run-adp-1"]})
+
+    _deploy_slots(monkeypatch, cluster, "b2", [_worker("tenant-adp", "activity-worker", "b2")])
+
+    assert _changes(cluster)[:3] == [
+        ("apply", "tenant-adp/activity-worker-drain", "b1"),
+        ("delete", "tenant-adp/activity-worker"),
+        ("apply", "tenant-adp/activity-worker", "b2"),
+    ]
+    drain = cluster.deployments["tenant-adp/activity-worker-drain"]
+    assert drain["spec"]["template"]["metadata"]["labels"][SLOT_LABEL] == "drain"
+    assert {"name": "WORKER_SLOT", "value": "drain"} in drain["spec"]["template"]["spec"][
+        "containers"
+    ][0]["env"]
+
+
+def test_a_deploy_with_no_runs_pinned_to_the_old_build_starts_no_drain(monkeypatch) -> None:
+    cluster = _Cluster(_worker("tenant-adp", "activity-worker", "b1"))
+    _pinned(monkeypatch, {})
+
+    _deploy_slots(monkeypatch, cluster, "b2", [_worker("tenant-adp", "activity-worker", "b2")])
+
+    assert _changes(cluster) == [("apply", "tenant-adp/activity-worker", "b2")]
+    assert "tenant-adp/activity-worker-drain" not in cluster.deployments
+
+
+def test_a_later_deploy_removes_the_drain_once_its_build_has_no_pinned_runs(monkeypatch) -> None:
+    cluster = _Cluster(
+        _worker("tenant-adp", "activity-worker", "b2"),
+        _worker("tenant-adp", "activity-worker", "b1", slot="drain"),
+    )
+    _pinned(monkeypatch, {})
+
+    _deploy_slots(monkeypatch, cluster, "b3", [_worker("tenant-adp", "activity-worker", "b3")])
+
+    assert _changes(cluster) == [
+        ("apply", "tenant-adp/activity-worker", "b3"),
+        ("delete", "tenant-adp/activity-worker-drain"),
+    ]
+
+
+def _preflight(monkeypatch, cluster: _Cluster, build: str, capsys) -> tuple[int, str]:
+    monkeypatch.setattr(eks_deploy_task, "run", cluster)
+    monkeypatch.setattr(eks_deploy_task, "write_kubeconfig", lambda cluster, path: None)
+    monkeypatch.setenv("DEPLOY_INPUTS", json.dumps({"cluster": {}, **_slot_inputs(build)}))
+    monkeypatch.setenv("KUBECONFIG", "")
+    exit_code = eks_deploy_task.main(["preflight"])
+    captured = capsys.readouterr()
+    return exit_code, captured.out + captured.err
+
+
+def test_a_preflight_refuses_a_third_pinned_build_and_names_both_builds_and_their_runs(
+    monkeypatch, capsys
+) -> None:
+    cluster = _Cluster(
+        _worker("tenant-adp", "activity-worker", "b2"),
+        _worker("tenant-adp", "activity-worker", "b1", slot="drain"),
+    )
+    _pinned(monkeypatch, {"b1": ["run-adp-1"], "b2": ["run-adp-2", "run-adp-3"]})
+
+    exit_code, log = _preflight(monkeypatch, cluster, "b3", capsys)
+
+    assert exit_code == 1
+    assert "tenant-adp/activity-worker" in log
+    assert "build b2 pinned by run-adp-2, run-adp-3" in log
+    assert "build b1 pinned by run-adp-1" in log
+    assert cluster.events == []
+
+
+def test_a_preflight_reads_a_drain_scaled_to_zero_as_holding_its_build(monkeypatch, capsys) -> None:
+    asleep = _worker("tenant-adp", "activity-worker", "b1", slot="drain")
+    asleep["spec"]["replicas"] = 0
+    cluster = _Cluster(_worker("tenant-adp", "activity-worker", "b2"), asleep)
+    _pinned(monkeypatch, {"b1": ["run-adp-1"], "b2": ["run-adp-2"]})
+
+    exit_code, log = _preflight(monkeypatch, cluster, "b3", capsys)
+
+    assert exit_code == 1
+    assert "build b1 pinned by run-adp-1" in log
+
+
+def test_a_preflight_that_finds_a_slot_changes_nothing(monkeypatch, capsys) -> None:
+    cluster = _Cluster(_worker("tenant-adp", "activity-worker", "b1"))
+    _pinned(monkeypatch, {"b1": ["run-adp-1"]})
+
+    exit_code, log = _preflight(monkeypatch, cluster, "b2", capsys)
+
+    assert exit_code == 0
+    assert "activity-worker-drain keeps build b1" in log
+    assert cluster.events == []
+    assert "tenant-adp/activity-worker-drain" not in cluster.deployments
+
+
+def test_a_claim_replacement_restores_the_drain_replicas(monkeypatch) -> None:
+    claim = _review_claim(["ReadWriteMany"])
+    cluster = _Cluster(
+        _worker("tenant-adp-review", "review-worker", "b2"),
+        _worker("tenant-adp-review", "review-worker", "b1", slot="drain"),
+    )
+    cluster.deployments["tenant-adp-review/review-worker-drain"]["spec"]["replicas"] = 2
+    _pinned(monkeypatch, {"b1": ["run-adp-1"]})
+
+    _deploy_slots(
+        monkeypatch, cluster, "b2", [claim, _worker("tenant-adp-review", "review-worker", "b2")]
+    )
+
+    assert ("scale to zero", "tenant-adp-review") in cluster.events
+    assert cluster.deployments["tenant-adp-review/review-worker-drain"]["spec"]["replicas"] == 2
+
+
+def test_restarting_the_tenant_workers_rolls_both_slots_when_a_drain_exists(monkeypatch) -> None:
+    cluster = _Cluster(
+        _worker("tenant-adp", "activity-worker", "b2"),
+        _worker("tenant-adp", "activity-worker", "b1", slot="drain"),
+    )
+    monkeypatch.setattr(eks_deploy_task, "run", cluster)
+
+    eks_deploy_task.restart(["tenant-workers"], TENANT)
+
+    assert [event for event in cluster.events if event[0] == "rollout restart"] == [
+        ("rollout restart", "tenant-adp/activity-worker"),
+        ("rollout restart", "tenant-adp/activity-worker-drain"),
+    ]
+
+
+def test_the_current_slot_resolves_only_its_own_pods_while_a_drain_runs(monkeypatch) -> None:
+    pods = [
+        {
+            "metadata": {
+                "namespace": "tenant-adp",
+                "name": f"activity-worker-{slot}-7d9",
+                "labels": {NAME_LABEL: "activity-worker", SLOT_LABEL: slot},
+            },
+            "status": {"phase": "Running"},
+        }
+        for slot in ("current", "drain")
+    ]
+    cluster = _Cluster(
+        _worker("tenant-adp", "activity-worker", "b2"),
+        _worker("tenant-adp", "activity-worker", "b1", slot="drain"),
+        pods=pods,
+    )
+    monkeypatch.setattr(eks_deploy_task, "run", cluster)
+
+    assert eks_deploy_task.running_pods(["tenant-adp/activity-worker"]) == [
+        "tenant-adp/activity-worker-current-7d9"
+    ]
+    assert eks_deploy_task.running_pods(eks_deploy_task.expand(["tenant-workers"], TENANT)) == [
+        "tenant-adp/activity-worker-current-7d9",
+        "tenant-adp/activity-worker-drain-7d9",
     ]

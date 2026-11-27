@@ -295,6 +295,21 @@ def gate_decision_remedy(issue_key: str, gate: str) -> Remedy:
     )
 
 
+def file_held_remedy(
+    issue_key: str, gate: str, *, path: str, holder_task_id: str, holder_work_unit: str
+) -> Remedy:
+    return remedy(
+        f"The change writes {path or '<path>'}, which lies outside the file impact of the ticket "
+        f"and is held by work unit {holder_work_unit or '<work_unit>'} of "
+        f"{holder_task_id or '<task_id>'}, so the run committed nothing. Wait for that run to "
+        "finish, then run ",
+        approve_gate(issue_key, gate),
+        " to check the claims again and commit, or ",
+        reject_gate(issue_key, gate),
+        " to cancel the run.",
+    )
+
+
 def gate_rejected_remedy(issue_key: str, gate: str) -> Remedy:
     return remedy(
         f"The {gate or '<gate>'} gate was rejected, so the run stopped and no pull request will "

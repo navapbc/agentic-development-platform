@@ -23,14 +23,22 @@ import os
 from typing import Any
 
 from scripts.pinned_executions import PINNED_EXIT_CODE
-from scripts.publish_platform_images import build_id_of
 from scripts.temporal_certs import terraform_output
+from scripts.worker_slots import (
+    PinnedRuns,
+    SlotRefusal,
+    SlotState,
+    choose_slots,
+    image_build,
+    may_stop,
+)
 
 TASK_WAIT = {"Delay": 10, "MaxAttempts": 120}
 SERVICE_WAIT = {"Delay": 15, "MaxAttempts": 80}
 PRUNE_COMMAND = ["python", "-m", "scripts.prune_worker_versions"]
 DATA_SERVICES = ("clickhouse",)
 LOG = "[platform-deploy]"
+UNLISTED_PINNED = "executions listed in the schedule-bootstrap log group"
 
 
 class DeployError(Exception):
@@ -101,7 +109,7 @@ def _build_of(ecs: Any, task_definition: str) -> str:
     images = [
         c["image"] for c in described["containerDefinitions"] if c["name"] != "volume-permissions"
     ]
-    return build_id_of(images[0].split("@")[0].rsplit(":", 1)[1])
+    return image_build(images[0])
 
 
 def _slot_states(ecs: Any, cluster: str, slots: dict[str, str]) -> dict[str, dict[str, Any]]:
@@ -117,61 +125,55 @@ def _slot_states(ecs: Any, cluster: str, slots: dict[str, str]) -> dict[str, dic
     }
 
 
-def _pinned(ecs: Any, deploy: dict[str, Any], build: str, checked: dict[str, int]) -> bool:
-    """Report whether running executions are pinned to `build`, once per build per deploy."""
-    if build not in checked:
-        checked[build] = run_task(
+def _slot_builds(ecs: Any, states: dict[str, dict[str, Any]]) -> dict[str, SlotState]:
+    return {
+        slot: SlotState(state["count"], _build_of(ecs, state["task_definition"]))
+        for slot, state in states.items()
+    }
+
+
+def pinned_runs(ecs: Any, deploy: dict[str, Any]) -> PinnedRuns:
+    """Check the pinned executions of a build with the schedule-bootstrap task.
+
+    The task reports pinned executions only through its exit code and prints their ids to its log
+    group, so a pinned build names that log group in place of the ids.
+    """
+
+    def check(build: str) -> tuple[str, ...]:
+        exit_code = run_task(
             ecs,
             deploy,
             "schedule-bootstrap",
             ["python", "-m", "scripts.pinned_executions", build],
             accept=(0, PINNED_EXIT_CODE),
         )
-    return checked[build] == PINNED_EXIT_CODE
+        return (UNLISTED_PINNED,) if exit_code == PINNED_EXIT_CODE else ()
+
+    return PinnedRuns(check)
 
 
 def plan_versioned(
-    ecs: Any, deploy: dict[str, Any], name: str, checked: dict[str, int]
+    ecs: Any, deploy: dict[str, Any], name: str, pinned: PinnedRuns
 ) -> tuple[str, str | None]:
-    """Choose the slot of `name` that takes the new task definition and the slot left to drain.
-
-    A slot running the target build takes the new revision in place. Otherwise the idle slot
-    takes the new build and the running slot, if any, is left to drain. With both slots running
-    older builds, a slot whose build no running execution is pinned to takes the new build.
-    """
+    """Choose the slot of `name` that takes the new task definition and the slot left to drain."""
     worker = deploy["versioned_services"][name]
-    states = _slot_states(ecs, deploy["cluster"], worker["slots"])
-    target_build = _build_of(ecs, worker["task_definition"])
-    running = [slot for slot, state in states.items() if state["count"] > 0]
-    for slot in running:
-        if _build_of(ecs, states[slot]["task_definition"]) == target_build:
-            return slot, next((other for other in running if other != slot), None)
-    if len(running) == len(states):
-        free = [
-            slot
-            for slot in running
-            if not _pinned(ecs, deploy, _build_of(ecs, states[slot]["task_definition"]), checked)
-        ]
-        if not free:
-            raise DeployError(
-                f"both {name} slots still run older builds with pinned executions, so the new "
-                "build has no slot. Let those executions finish, or resume the parked ones, and "
-                "deploy again."
-            )
-        return free[0], next(slot for slot in running if slot != free[0])
-    idle = next(slot for slot in states if slot not in running)
-    return idle, running[0] if running else None
+    slots = _slot_builds(ecs, _slot_states(ecs, deploy["cluster"], worker["slots"]))
+    plan = choose_slots(slots, _build_of(ecs, worker["task_definition"]), pinned)
+    if isinstance(plan, SlotRefusal):
+        raise DeployError(
+            f"both {name} slots still run older builds with pinned executions "
+            f"({plan.describe()}), so the new build has no slot. Let those executions finish, "
+            "or resume the parked ones, and deploy again."
+        )
+    return plan.start, plan.drain
 
 
-def drain(ecs: Any, deploy: dict[str, Any], name: str, slot: str, checked: dict[str, int]) -> None:
-    """Scale the old slot of `name` to zero when no running execution is pinned to its build.
-
-    `checked` holds the pinned-execution report of each build already checked in this deploy.
-    """
+def drain(ecs: Any, deploy: dict[str, Any], name: str, slot: str, pinned: PinnedRuns) -> None:
+    """Scale the old slot of `name` to zero when no running execution is pinned to its build."""
     cluster = deploy["cluster"]
     state = _slot_states(ecs, cluster, deploy["versioned_services"][name]["slots"])[slot]
     build = _build_of(ecs, state["task_definition"])
-    if _pinned(ecs, deploy, build, checked):
+    if not may_stop(SlotState(state["count"], build), pinned):
         print(
             f"{LOG} {state['service']} keeps build {build}, which running executions are pinned "
             "to. A later deploy scales it to zero once they finish."
@@ -210,10 +212,10 @@ def roll_data_services(ecs: Any, deploy: dict[str, Any]) -> None:
 
 
 def plan_slots(
-    ecs: Any, deploy: dict[str, Any], checked: dict[str, int]
+    ecs: Any, deploy: dict[str, Any], pinned: PinnedRuns
 ) -> dict[str, tuple[str, str | None]]:
     return {
-        name: plan_versioned(ecs, deploy, name, checked)
+        name: plan_versioned(ecs, deploy, name, pinned)
         for name in deploy.get("versioned_services", {})
     }
 
@@ -248,11 +250,11 @@ def deploy(ecs: Any, settings: dict[str, Any]) -> None:
             "load balancer certificate, and apply private-bedrock."
         )
     run_task(ecs, settings, "db-migrate")
-    checked: dict[str, int] = {}
-    plans = plan_slots(ecs, settings, checked)
+    pinned = pinned_runs(ecs, settings)
+    plans = plan_slots(ecs, settings, pinned)
     roll_data_services(ecs, settings)
     for name, slot in roll_services(ecs, settings, plans).items():
-        drain(ecs, settings, name, slot, checked)
+        drain(ecs, settings, name, slot, pinned)
     run_task(ecs, settings, "schedule-bootstrap")
     run_task(ecs, settings, "schedule-bootstrap", PRUNE_COMMAND)
 

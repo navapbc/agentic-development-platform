@@ -155,6 +155,96 @@ def test_a_task_still_running_its_containers_keeps_the_service_pending(scale) ->
     assert result["still_running"] == [ARN.format("coordination")]
 
 
+NODE_GROUP = "arn:aws:eks:us-east-1:111111111111:nodegroup/platform-eks/platform-eks-{}/0000"
+
+
+class _Eks:
+    def __init__(self, sizes: dict[str, tuple[int, int]], status: str = "Successful") -> None:
+        self.sizes = {
+            NODE_GROUP.format(name): {"minSize": minimum, "maxSize": 3, "desiredSize": desired}
+            for name, (minimum, desired) in sizes.items()
+        }
+        self.status = status
+        self.updates: list[tuple[str, dict]] = []
+
+    def _arn(self, cluster: str, name: str) -> str:
+        assert cluster == "platform-eks"
+        return NODE_GROUP.format(name.removeprefix("platform-eks-"))
+
+    def describe_nodegroup(self, clusterName: str, nodegroupName: str):
+        return {
+            "nodegroup": {"scalingConfig": dict(self.sizes[self._arn(clusterName, nodegroupName)])}
+        }
+
+    def update_nodegroup_config(self, clusterName: str, nodegroupName: str, scalingConfig: dict):
+        self.updates.append((nodegroupName, scalingConfig))
+        self.sizes[self._arn(clusterName, nodegroupName)].update(scalingConfig)
+        return {"update": {"id": f"update-{len(self.updates)}"}}
+
+    def describe_update(self, name: str, nodegroupName: str, updateId: str):
+        errors = [{"errorMessage": "insufficient capacity"}] if self.status == "Failed" else []
+        return {"update": {"id": updateId, "status": self.status, "errors": errors}}
+
+    def scaling(self) -> dict[str, tuple[int, int]]:
+        return {
+            arn.split("platform-eks-")[1].split("/")[0]: (size["minSize"], size["desiredSize"])
+            for arn, size in self.sizes.items()
+        }
+
+
+def _node_group_events(*names: str) -> dict:
+    return {
+        "NodeGroups": [NODE_GROUP.format(name) for name in names],
+        "Parameter": PARAMETER,
+        "WaitSeconds": 0,
+    }
+
+
+def test_the_sleep_records_each_node_group_size_and_the_wake_restores_it(scale) -> None:
+    eks, ssm = _Eks({"platform": (1, 3), "sandbox": (1, 1), "spare": (0, 0)}), _Ssm()
+    events = _node_group_events("platform", "sandbox", "spare")
+
+    asleep = scale.sleep_node_groups(events, None, eks, ssm)
+    recorded = json.loads(ssm.value)
+    scale.sleep_node_groups(events, None, eks, ssm)
+
+    assert eks.scaling() == {"platform": (0, 0), "sandbox": (0, 0), "spare": (0, 0)}
+    assert (
+        json.loads(ssm.value)
+        == recorded
+        == {
+            NODE_GROUP.format("platform"): {"minSize": 1, "desiredSize": 3},
+            NODE_GROUP.format("sandbox"): {"minSize": 1, "desiredSize": 1},
+        }
+    )
+    assert asleep["still_updating"] == []
+
+    scale.wake_node_groups(events, None, eks, ssm)
+    scale.wake_node_groups(events, None, eks, ssm)
+
+    assert eks.scaling() == {"platform": (1, 3), "sandbox": (1, 1), "spare": (0, 0)}
+    assert len(eks.updates) == 4
+    assert ssm.recorded() == {}
+
+
+def test_the_node_group_wake_skips_a_size_already_restored(scale) -> None:
+    eks, ssm = _Eks({"platform": (1, 3)}), _Ssm()
+    ssm.value = json.dumps({NODE_GROUP.format("platform"): {"minSize": 1, "desiredSize": 3}})
+
+    result = scale.wake_node_groups(_node_group_events("platform"), None, eks, ssm)
+
+    assert eks.updates == []
+    assert result == {"scaled_up": [NODE_GROUP.format("platform")], "still_updating": []}
+    assert ssm.recorded() == {}
+
+
+def test_a_failed_node_group_update_fails_the_step_with_its_errors(scale) -> None:
+    eks = _Eks({"platform": (1, 3)}, status="Failed")
+
+    with pytest.raises(RuntimeError, match="platform-eks-platform ended Failed. insufficient"):
+        scale.sleep_node_groups(_node_group_events("platform"), None, eks, _Ssm())
+
+
 DEPLOYER = {
     "Cluster": "arn:aws:ecs:us-east-1:111111111111:cluster/platform",
     "TaskFamily": "platform-eks-deployer",

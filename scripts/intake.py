@@ -152,6 +152,8 @@ def _export_logs() -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from scripts.tenant_bundle import activate_tenant_bundle
+
     parser = argparse.ArgumentParser(
         description="Reconcile ticket intake from Jira or rebar into draft PR executions."
     )
@@ -177,6 +179,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Scope a --retry to one repository when the ticket fanned out to several.",
     )
     args = parser.parse_args(argv)
+    activate_tenant_bundle()
     _export_logs()
     source = resolve_intake_source(args.source, get_settings())
     if args.retry:

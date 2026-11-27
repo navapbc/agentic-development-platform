@@ -442,6 +442,8 @@ def main(argv: list[str] | None = None) -> int:
         load_rebar_backend_config,
     )
 
+    from scripts.tenant_bundle import activate_tenant_bundle
+
     parser = argparse.ArgumentParser(
         description=(
             "Report rebar ticket changes since the last intake pass. The report never starts "
@@ -452,6 +454,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--field-changes", action="store_true", help="Report field changes.")
     parser.add_argument("--status-changes", action="store_true", help="Report status changes.")
     args = parser.parse_args(argv if argv is not None else sys.argv[1:])
+    activate_tenant_bundle()
 
     backend = load_rebar_backend_config()
     poll_config = load_poll_config()

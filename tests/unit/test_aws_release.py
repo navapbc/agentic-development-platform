@@ -112,3 +112,37 @@ def test_a_ci_job_signs_with_its_role_credentials_rather_than_a_profile(monkeypa
         "AWS_REGION": "us-east-1",
         "AWS_PROFILE": "agentic-platform",
     }
+
+
+def _deploy_steps(monkeypatch, preflight_code: int) -> tuple[int, list[list[str]]]:
+    from scripts import eks_deploy, platform_deploy
+
+    steps: list[list[str]] = []
+
+    def eks(argv):
+        steps.append(["eks-deploy", *argv])
+        return preflight_code if argv[-1:] == ["preflight"] else 0
+
+    monkeypatch.setattr(eks_deploy, "main", eks)
+    monkeypatch.setattr(
+        platform_deploy, "main", lambda argv: steps.append(["platform-deploy", *argv]) or 0
+    )
+    return aws_release.deploy(["--region", "us-east-1"]), steps
+
+
+def test_the_worker_slot_preflight_runs_before_any_worker_moves(monkeypatch) -> None:
+    code, steps = _deploy_steps(monkeypatch, 0)
+
+    assert code == 0
+    assert steps == [
+        ["eks-deploy", "--region", "us-east-1", "preflight"],
+        ["platform-deploy", "--region", "us-east-1"],
+        ["eks-deploy", "--region", "us-east-1"],
+    ]
+
+
+def test_a_refused_preflight_stops_the_release_before_the_platform_deploy(monkeypatch) -> None:
+    code, steps = _deploy_steps(monkeypatch, 1)
+
+    assert code == 1
+    assert steps == [["eks-deploy", "--region", "us-east-1", "preflight"]]

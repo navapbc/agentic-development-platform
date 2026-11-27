@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -10,17 +11,24 @@ from scripts.config import Settings
 from services.integration.jira.credentials import build_single_project_resolver
 from services.integration.slack.messages import (
     ACTIONS_BLOCK,
+    SECTION_TEXT_LIMIT,
     ParkContext,
     PostState,
     SlackAlert,
     alert_payload,
+    escape,
     status_blocks,
 )
 from services.integration.slack.tokens import verify_action_token
 from services.integration.tickets.factory import ticket_url
 from services.operator_remedy import Remedy
 from services.orchestration import remedies
-from services.orchestration.notifications import render_remedy, render_remedy_commands
+from services.orchestration.notifications import (
+    DETAIL_CHAR_LIMIT,
+    bounded_detail,
+    render_remedy,
+    render_remedy_commands,
+)
 
 KEY = b"alpha-action-key"
 
@@ -181,6 +189,30 @@ def test_a_detail_longer_than_a_section_keeps_its_tail_within_the_section_limit(
     sections = [block["text"]["text"] for block in blocks if block["type"] == "section"]
     assert all(len(text) <= 3000 for text in sections)
     assert any("final failure" in text for text in sections)
+
+
+def test_a_bounded_detail_that_escapes_past_a_section_keeps_its_cause_tail_and_one_note():
+    gate = remedies.gate_decision_remedy("ADSER-24", "security-review")
+    detail = bounded_detail(
+        "\n".join(
+            ["npm error cause <package-lock.json>"]
+            + [f"line {index} <&> {'x' * 60}" for index in range(400)]
+            + ["final failure"]
+        )
+    )
+    assert len(detail) <= DETAIL_CHAR_LIMIT
+    assert len(escape(detail)) > SECTION_TEXT_LIMIT
+
+    _, blocks = alert_payload(_alert(gate, detail=detail), content="full", park=_park())
+
+    [text] = [
+        block["text"]["text"]
+        for block in blocks
+        if block["type"] == "section" and "final failure" in block["text"]["text"]
+    ]
+    assert len(text) <= SECTION_TEXT_LIMIT
+    assert "npm error cause &lt;package-lock.json&gt;" in text
+    assert len(re.findall(r"\[\d+ lines and \d+ characters omitted\]", text)) == 1
 
 
 def _resolver():

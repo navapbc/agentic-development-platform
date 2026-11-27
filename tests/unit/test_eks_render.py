@@ -496,6 +496,38 @@ def test_each_tenant_worker_stops_its_old_pod_before_the_new_one_starts(overlay)
         assert worker["spec"]["strategy"] == {"type": "Recreate"}
 
 
+@pytest.mark.parametrize(
+    ("namespace", "name"),
+    [("tenant-adp", "activity-worker"), ("tenant-adp-review", "review-worker")],
+)
+def test_a_drain_slot_pod_keeps_its_workers_policies_and_leaves_the_current_selector(
+    overlay, namespace, name
+) -> None:
+    from scripts.eks_deploy_task import _matches, drain_copy
+
+    documents, _ = eks_render.render(overlay, _inputs(), REPOSITORY)
+    current = _named(documents, "Deployment", name, namespace)
+    drain = drain_copy(current)
+    current_pod = current["spec"]["template"]["metadata"]["labels"]
+    drain_pod = drain["spec"]["template"]["metadata"]["labels"]
+    policies = [
+        d
+        for d in documents
+        if d["kind"] in ("NetworkPolicy", "SecurityGroupPolicy")
+        and d["metadata"].get("namespace") == namespace
+        and _matches(d["spec"]["podSelector"], current_pod)
+    ]
+
+    assert current_pod["agentic-dev-platform/slot"] == "current"
+    assert _matches(current["spec"]["selector"], current_pod)
+    assert not _matches(current["spec"]["selector"], drain_pod)
+    assert _matches(drain["spec"]["selector"], drain_pod)
+    assert not _matches(drain["spec"]["selector"], current_pod)
+    assert policies
+    assert all(_matches(policy["spec"]["podSelector"], drain_pod) for policy in policies)
+    assert drain["spec"]["template"]["spec"]["serviceAccountName"] == name
+
+
 def test_a_tenant_worker_runs_on_its_namespaces_paths_and_settings(overlay) -> None:
     documents, _ = eks_render.render(overlay, _inputs(), REPOSITORY)
     worker = _named(documents, "Deployment", "activity-worker", "tenant-adp")["spec"]["template"]

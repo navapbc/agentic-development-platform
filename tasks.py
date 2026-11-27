@@ -140,12 +140,14 @@ def _tenant_env(requested: str = "") -> dict[str, str]:
 
 
 _TENANT_HELP = "Tenant to act for. It may be omitted only when one local tenant exists."
+_CONTEXT_HELP = "kubectl context of the worker's cluster (empty uses K8S_CONTEXT)."
 
 
-def _run_scripted(c, command: str, *, local: bool, tenant: str = "") -> None:
+def _run_scripted(c, command: str, *, local: bool, tenant: str = "", context: str = "") -> None:
     """Run a python -m command in the tenant's activity worker, or on the host with local=True.
 
     The host command runs with TENANT set to the tenant, so it reads the tenant's settings file.
+    A context selects the kubectl context of the worker's cluster in place of K8S_CONTEXT.
     """
     env = _tenant_env(tenant)
     if local:
@@ -154,7 +156,10 @@ def _run_scripted(c, command: str, *, local: bool, tenant: str = "") -> None:
     from scripts.config import get_settings
     from scripts.k8s_cluster import exec_argv
 
-    settings = get_settings().model_copy(update={"tenant": env["TENANT"]})
+    update = {"tenant": env["TENANT"]}
+    if context:
+        update["k8s_context"] = context
+    settings = get_settings().model_copy(update=update)
     c.run(shlex.join(exec_argv(settings, shlex.split(command), tty=False)), pty=True)
 
 
@@ -782,10 +787,11 @@ def seed(c):
         "reset": "Wipe the store and re-init empty before importing.",
         "local": "Run on the host instead of the activity worker pod.",
         "tenant": _TENANT_HELP,
+        "context": _CONTEXT_HELP,
     }
 )
 def import_rebar_tickets(
-    c, xlsx="", root="", status="", limit=0, reset=False, local=False, tenant=""
+    c, xlsx="", root="", status="", limit=0, reset=False, local=False, tenant="", context=""
 ):
     """Import a Jira xlsx export into the local rebar ticket store."""
     flags = xlsx
@@ -798,7 +804,11 @@ def import_rebar_tickets(
     if reset:
         flags += " --reset"
     _run_scripted(
-        c, f"python -m scripts.import_rebar_tickets {flags}".strip(), local=local, tenant=tenant
+        c,
+        f"python -m scripts.import_rebar_tickets {flags}".strip(),
+        local=local,
+        tenant=tenant,
+        context=context,
     )
 
 
@@ -809,9 +819,12 @@ def import_rebar_tickets(
         "status-changes": "Report status changes.",
         "local": "Run on the host instead of in the activity worker pod.",
         "tenant": _TENANT_HELP,
+        "context": _CONTEXT_HELP,
     }
 )
-def rebar_changes(c, new=False, field_changes=False, status_changes=False, local=False, tenant=""):
+def rebar_changes(
+    c, new=False, field_changes=False, status_changes=False, local=False, tenant="", context=""
+):
     """Report rebar ticket changes since the last intake pass without starting work."""
     flags = []
     if new:
@@ -821,7 +834,11 @@ def rebar_changes(c, new=False, field_changes=False, status_changes=False, local
     if status_changes:
         flags.append("--status-changes")
     _run_scripted(
-        c, f"python -m scripts.rebar_poll {' '.join(flags)}".strip(), local=local, tenant=tenant
+        c,
+        f"python -m scripts.rebar_poll {' '.join(flags)}".strip(),
+        local=local,
+        tenant=tenant,
+        context=context,
     )
 
 
@@ -1107,9 +1124,10 @@ def workflow_status(c):
         "workflow_id": "Resume the run of this workflow ID parked on the model path.",
         "local": "With --issue or --workflow-id, run on the host instead of the activity worker.",
         "tenant": _TENANT_HELP,
+        "context": _CONTEXT_HELP,
     }
 )
-def resume_parked(c, issue="", workflow_id="", local=False, tenant=""):
+def resume_parked(c, issue="", workflow_id="", local=False, tenant="", context=""):
     """Resume the parked workflows a newer build can retry, or one run parked on the model path."""
     if issue and workflow_id:
         raise Exit("pass at most one of --issue or --workflow-id")
@@ -1119,7 +1137,9 @@ def resume_parked(c, issue="", workflow_id="", local=False, tenant=""):
     target = (
         f"--issue {shlex.quote(issue)}" if issue else f"--workflow-id {shlex.quote(workflow_id)}"
     )
-    _run_scripted(c, f"python -m scripts.resume_parked {target}", local=local, tenant=tenant)
+    _run_scripted(
+        c, f"python -m scripts.resume_parked {target}", local=local, tenant=tenant, context=context
+    )
 
 
 @task
@@ -1612,12 +1632,19 @@ def reap(c, apply=False):
         "root": "Workspace root to scrub (empty uses EXECUTION_WORKSPACE_ROOT).",
         "local": "Run on the host instead of the activity worker pod.",
         "tenant": _TENANT_HELP,
+        "context": _CONTEXT_HELP,
     }
 )
-def scrub_workspaces(c, root="", local=False, tenant=""):
+def scrub_workspaces(c, root="", local=False, tenant="", context=""):
     """Clear the git credential earlier releases persisted into execution workspaces."""
     root_flag = f" --root {root}" if root else ""
-    _run_scripted(c, f"python -m scripts.scrub_workspaces{root_flag}", local=local, tenant=tenant)
+    _run_scripted(
+        c,
+        f"python -m scripts.scrub_workspaces{root_flag}",
+        local=local,
+        tenant=tenant,
+        context=context,
+    )
 
 
 @task(
@@ -1628,9 +1655,10 @@ def scrub_workspaces(c, root="", local=False, tenant=""):
         "repo": "Scope a --retry to one repository.",
         "local": "Run on the host instead of the activity worker pod.",
         "tenant": _TENANT_HELP,
+        "context": _CONTEXT_HELP,
     }
 )
-def intake(c, source="", schedule=False, retry="", repo="", local=False, tenant=""):
+def intake(c, source="", schedule=False, retry="", repo="", local=False, tenant="", context=""):
     """Reconcile ticket intake from Jira or rebar into draft PR executions (one pass by default)."""
     flags = [f"--source {source}"] if source else []
     if retry:
@@ -1640,7 +1668,11 @@ def intake(c, source="", schedule=False, retry="", repo="", local=False, tenant=
     elif schedule:
         flags.append("--schedule")
     _run_scripted(
-        c, f"python -m scripts.intake {' '.join(flags)}".strip(), local=local, tenant=tenant
+        c,
+        f"python -m scripts.intake {' '.join(flags)}".strip(),
+        local=local,
+        tenant=tenant,
+        context=context,
     )
 
 
@@ -1650,12 +1682,15 @@ def intake(c, source="", schedule=False, retry="", repo="", local=False, tenant=
         "commit": "Commit to index (empty uses the head).",
         "local": "Run on the host instead of the activity worker pod.",
         "tenant": _TENANT_HELP,
+        "context": _CONTEXT_HELP,
     }
 )
-def index_repo(c, repo, commit="", local=False, tenant=""):
+def index_repo(c, repo, commit="", local=False, tenant="", context=""):
     """Pre-index a repository in repository intelligence before intake."""
     flags = f"--repo {repo}" + (f" --commit {commit}" if commit else "")
-    _run_scripted(c, f"python -m scripts.index_repo {flags}", local=local, tenant=tenant)
+    _run_scripted(
+        c, f"python -m scripts.index_repo {flags}", local=local, tenant=tenant, context=context
+    )
 
 
 @task(
@@ -1667,14 +1702,21 @@ def index_repo(c, repo, commit="", local=False, tenant=""):
         ),
         "local": "Run on the host instead of the activity worker pod.",
         "tenant": _TENANT_HELP,
+        "context": _CONTEXT_HELP,
     }
 )
-def repair(c, issue, retry=False, abandon=False, local=False, tenant=""):
+def repair(c, issue, retry=False, abandon=False, local=False, tenant="", context=""):
     """Release the AWAITING_HUMAN pause on a workflow parked after CI repair exhaustion."""
     if retry == abandon:
         raise Exit("pass exactly one of --retry or --abandon")
     decision = "--retry" if retry else "--abandon"
-    _run_scripted(c, f"python -m scripts.repair {issue} {decision}", local=local, tenant=tenant)
+    _run_scripted(
+        c,
+        f"python -m scripts.repair {issue} {decision}",
+        local=local,
+        tenant=tenant,
+        context=context,
+    )
 
 
 @task(
@@ -1685,9 +1727,10 @@ def repair(c, issue, retry=False, abandon=False, local=False, tenant=""):
         "reject": "Reject the gate and cancel the run.",
         "local": "Run on the host instead of the activity worker pod.",
         "tenant": _TENANT_HELP,
+        "context": _CONTEXT_HELP,
     }
 )
-def gate(c, issue, gate, approve=False, reject=False, local=False, tenant=""):
+def gate(c, issue, gate, approve=False, reject=False, local=False, tenant="", context=""):
     """Release the AWAITING_HUMAN pause on a workflow parked at a configured human gate."""
     if approve == reject:
         raise Exit("pass exactly one of --approve or --reject")
@@ -1697,6 +1740,7 @@ def gate(c, issue, gate, approve=False, reject=False, local=False, tenant=""):
         f"python -m scripts.gate_decision {issue} --gate {gate} {decision}",
         local=local,
         tenant=tenant,
+        context=context,
     )
 
 
@@ -1706,12 +1750,19 @@ def gate(c, issue, gate, approve=False, reject=False, local=False, tenant=""):
         "repo": "Scope the intake retry to one repository when the issue fanned out to several.",
         "local": "Run on the host instead of the activity worker pod.",
         "tenant": _TENANT_HELP,
+        "context": _CONTEXT_HELP,
     }
 )
-def restart(c, issue, repo="", local=False, tenant=""):
+def restart(c, issue, repo="", local=False, tenant="", context=""):
     """Abandon a parked workflow and re-trigger intake for a fresh execution."""
     repo_flag = f" --repo {repo}" if repo else ""
-    _run_scripted(c, f"python -m scripts.restart {issue}{repo_flag}", local=local, tenant=tenant)
+    _run_scripted(
+        c,
+        f"python -m scripts.restart {issue}{repo_flag}",
+        local=local,
+        tenant=tenant,
+        context=context,
+    )
 
 
 @task(

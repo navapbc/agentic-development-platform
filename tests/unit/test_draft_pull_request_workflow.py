@@ -161,6 +161,7 @@ from services.orchestration.temporal_workflows.draft_pull_request import (
     DEPENDENCY_CYCLE,
     DEPENDENCY_UNRESOLVED,
     EXISTING_PR_REUSED,
+    HUMAN_ABANDONED,
     PLAN_REJECTED,
     POLICY_DENIED,
     PR_PROMOTED,
@@ -250,6 +251,7 @@ def _make_activities(
     persisted_states: list[ExecutionState] | None = None,
     audit_events: list[AuditEvent] | None = None,
     claim_finalizations: list[FinalizeClaimRequest] | None = None,
+    commit_results: list[CommitPushResult] | None = None,
 ):
     @activity.defn(name="persist_execution_state")
     async def fake_persist(payload: ExecutionState) -> str:
@@ -343,6 +345,8 @@ def _make_activities(
     @activity.defn(name="commit_and_push")
     async def fake_commit(req: CommitPushRequest) -> CommitPushResult:
         commits.append(req)
+        if commit_results:
+            return commit_results[min(len(commits) - 1, len(commit_results) - 1)]
         sha = "c" * 40
         if commit_shas:
             sha = commit_shas[min(len(commits) - 1, len(commit_shas) - 1)]
@@ -5036,3 +5040,165 @@ async def test_a_run_without_the_period_budget_patch_reads_no_budget_and_replays
         workflow_runner=UnsandboxedWorkflowRunner(),
     ).replay_workflow(history, raise_on_replay_failure=False)
     assert replayed.replay_failure is None
+
+
+def _pushed(sha: str, *outside: str) -> CommitPushResult:
+    return CommitPushResult(
+        branch="agent/T-1",
+        commit_sha=sha,
+        pushed=True,
+        replayed=False,
+        excluded_paths=list(outside),
+    )
+
+
+_HELD = CommitPushResult(
+    branch="agent/T-1",
+    commit_sha="a" * 40,
+    pushed=False,
+    replayed=False,
+    excluded_paths=["tsconfig.build.json"],
+    changed=False,
+    held_path="tsconfig.build.json",
+    held_by_task_id="T-2",
+    held_by_work_unit="unit-1",
+)
+
+
+def _remedy_text(alert: AlertHumanInterventionRequest) -> str:
+    return "".join(step.text for step in alert.remedy.steps)
+
+
+async def test_a_file_another_unit_holds_parks_the_commit_and_approve_commits_again():
+    commits: list[CommitPushRequest] = []
+    pr_opens: list[OpenPrRequest] = []
+    alerts: list[AlertHumanInterventionRequest] = []
+    audits: list[AuditEvent] = []
+    activities = _make_activities(
+        None,
+        1,
+        commits,
+        pr_opens,
+        [],
+        ci_result=SUCCESS,
+        alerts=alerts,
+        audit_events=audits,
+        commit_results=[_HELD, _pushed("c" * 40, "tsconfig.build.json")],
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+            state = await _await_human_park_stage(handle, "commit")
+            assert state["reason"] == SuspendReason.AWAITING_HUMAN.value
+            assert len(commits) == 1
+            await handle.signal("submit_gate_decision", args=["file_claim", True, "lead"])
+            result = await handle.result()
+
+    assert result.status == PR_PROMOTED
+    assert [(c.check_claims, c.work_unit) for c in commits] == [(True, "unit-1")] * 2
+    parked = [alert for alert in alerts if alert.stage == "commit"]
+    assert len(parked) == 1
+    assert "tsconfig.build.json" in _remedy_text(parked[0])
+    assert "unit-1 of T-2" in _remedy_text(parked[0])
+    assert {step.kind for step in parked[0].remedy.actions} == {
+        StepKind.APPROVE_GATE,
+        StepKind.REJECT_GATE,
+    }
+    outside = [event for event in audits if event.event_type == "FILES_OUTSIDE_FILE_IMPACT"]
+    assert [(event.event_id, event.artifact_hashes) for event in outside] == [
+        ("exec-1:FILES_OUTSIDE_FILE_IMPACT:102", {"files": "tsconfig.build.json"})
+    ]
+    assert "- `tsconfig.build.json`" in pr_opens[0].body
+
+
+async def test_rejecting_a_held_file_park_abandons_the_run_without_a_commit():
+    commits: list[CommitPushRequest] = []
+    pr_opens: list[OpenPrRequest] = []
+    ci_triggers: list = []
+    activities = _make_activities(
+        None,
+        1,
+        commits,
+        pr_opens,
+        [],
+        ci_triggers=ci_triggers,
+        commit_results=[_HELD],
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+            await _await_human_park_stage(handle, "commit")
+            await handle.signal("submit_gate_decision", args=["file_claim", False, "lead"])
+            result = await handle.result()
+
+    assert result.terminal_reason == HUMAN_ABANDONED
+    assert len(commits) == 1
+    assert ci_triggers == []
+    assert pr_opens == []
+
+
+async def test_a_repair_commit_on_a_held_file_parks_and_reject_abandons_the_run():
+    commits: list[CommitPushRequest] = []
+    ci_triggers: list = []
+    activities = _make_activities(
+        None,
+        1,
+        commits,
+        [],
+        [],
+        ci_triggers=ci_triggers,
+        ci_results=[FAILURE, SUCCESS],
+        commit_results=[_pushed("c" * 40), _HELD],
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+            state = await _await_human_park_stage(handle, "commit")
+            assert state["reason"] == SuspendReason.AWAITING_HUMAN.value, state
+            await handle.signal("submit_gate_decision", args=["file_claim", False, "lead"])
+            result = await handle.result()
+
+    assert result.terminal_reason == HUMAN_ABANDONED
+    assert len(commits) == 2
+    assert len(ci_triggers) == 1
+
+
+async def test_a_commit_inside_the_file_impact_records_no_outside_files_event():
+    audits: list[AuditEvent] = []
+    pr_opens: list[OpenPrRequest] = []
+    activities = _make_activities(None, 1, [], pr_opens, [], ci_result=SUCCESS, audit_events=audits)
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            result = await env.client.execute_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+
+    assert result.status == PR_PROMOTED
+    assert not any(event.event_type == "FILES_OUTSIDE_FILE_IMPACT" for event in audits)
+    assert "file impact" not in pr_opens[0].body

@@ -251,7 +251,7 @@ async def run_bounded_task(
             terminal_reason=pause.classification.category,
         )
 
-    staged = await deps.materializer.stage(workspace, allowed_paths=request.file_impact)
+    staged = await deps.materializer.stage(workspace, file_impact=request.file_impact)
     commit_request = await deps.materializer.build_commit_request(
         workspace, message=request.commit_message, staged=staged
     )

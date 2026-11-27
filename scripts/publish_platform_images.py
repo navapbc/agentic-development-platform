@@ -68,6 +68,7 @@ from scripts.publish_temporal_images import (
     build_command,
     content_hash,
 )
+from scripts.worker_slots import build_id_of
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LOG = "[publish-platform-images]"
@@ -293,10 +294,6 @@ def published_platform_tag(ecr, repository: str, source_hash: str, arch: str) ->
         if tag.endswith(suffix):
             return tag, digest
     return "", ""
-
-
-def build_id_of(tag: str) -> str:
-    return tag.rsplit("-", 2)[0]
 
 
 @contextmanager

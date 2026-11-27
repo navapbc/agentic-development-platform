@@ -49,11 +49,14 @@ REPORT = "\n".join(
 
 
 class _Kubectl:
-    def __init__(self, job_states: list[dict[str, Any]], *, logs: str = REPORT) -> None:
+    def __init__(
+        self, job_states: list[dict[str, Any]], *, logs: str = REPORT, exit_code: int = 1
+    ) -> None:
         self.calls: list[list[str]] = []
         self.created: list[dict[str, Any]] = []
         self._states = job_states
         self._logs = logs
+        self._exit_code = exit_code
 
     def __call__(self, argv, *, input=None, **_) -> process.CompletedProcess:
         self.calls.append(list(argv))
@@ -65,17 +68,57 @@ class _Kubectl:
             out = ""
         elif verb[:2] == ["get", "job"]:
             out = json.dumps(self._states.pop(0))
+        elif verb[:2] == ["get", "pods"]:
+            out = json.dumps({"items": [_finished_pod(self._exit_code)]})
         else:
             out = self._logs
         return process.CompletedProcess(argv, 0, out, "")
+
+
+def _finished_pod(exit_code: int) -> dict[str, Any]:
+    return {
+        "status": {
+            "containerStatuses": [
+                {"name": "deployment-validate", "state": {"terminated": {"exitCode": exit_code}}}
+            ]
+        }
+    }
 
 
 def test_the_job_runs_the_cronjob_template_with_the_scope() -> None:
     job = validation_job.job_from_cronjob(CRONJOB, ["--tenant=adp", "--post"], "dv-1")
 
     container = job["spec"]["template"]["spec"]["containers"][0]
-    assert container["args"] == [*validation_job.ENTRY, "--tenant=adp", "--post"]
+    assert container["args"] == [
+        "python",
+        "-m",
+        "scripts.deployment_validate",
+        "--tenant=adp",
+        "--post",
+    ]
     assert job["metadata"]["ownerReferences"][0]["uid"] == "u-1"
+
+
+def test_a_job_with_another_entry_point_runs_that_module_from_the_template() -> None:
+    job = validation_job.job_from_cronjob(
+        CRONJOB, ["build-7"], "pe-1", entry="scripts.pinned_executions"
+    )
+
+    container = job["spec"]["template"]["spec"]["containers"][0]
+    assert container["args"] == ["python", "-m", "scripts.pinned_executions", "build-7"]
+    assert job["metadata"]["labels"] == {"app.kubernetes.io/name": "deployment-validate"}
+    assert job["spec"]["backoffLimit"] == 0
+
+
+def test_a_failed_job_returns_the_exit_code_of_its_container() -> None:
+    kubectl = _Kubectl([{"status": {"failed": 1}}], logs="pinned", exit_code=3)
+
+    result = validation_job.run_job(
+        ["kubectl"], "ns", ["build-7"], entry="scripts.pinned_executions", run=kubectl
+    )
+
+    assert (result.passed, result.exit_code, result.report) == (False, 3, "pinned")
+    assert kubectl.created[0]["metadata"]["name"].startswith("pinned-executions-")
 
 
 @pytest.mark.parametrize(
@@ -100,11 +143,12 @@ def test_a_failed_job_returns_its_report_after_waiting() -> None:
     kubectl = _Kubectl([{"status": {}}, {"status": {"failed": 1}}])
     sleeps: list[float] = []
 
-    ok, report = validation_job.run_job(
+    result = validation_job.run_job(
         ["kubectl", "--context", "c"], "ns", ["--all-tenants"], run=kubectl, sleep=sleeps.append
     )
 
-    assert not ok and report == REPORT
+    assert not result.passed and result.report == REPORT
+    assert kubectl.created[0]["metadata"]["name"].startswith("deployment-validate-")
     assert kubectl.created[0]["spec"]["template"]["spec"]["containers"][0]["args"][-1] == (
         "--all-tenants"
     )
@@ -129,7 +173,7 @@ def test_a_job_that_never_finishes_fails_at_the_deadline() -> None:
     kubectl = _Kubectl([{"status": {}}] * 3)
     ticks = iter([0.0, 5.0, 11.0])
 
-    ok, report = validation_job.run_job(
+    result = validation_job.run_job(
         ["kubectl"],
         "ns",
         ["--platform"],
@@ -139,7 +183,8 @@ def test_a_job_that_never_finishes_fails_at_the_deadline() -> None:
         wait_seconds=10,
     )
 
-    assert not ok and "did not finish within 10 seconds" in report
+    assert not result.passed and result.exit_code is None
+    assert "did not finish within 10 seconds" in result.report
 
 
 def test_a_rollout_prints_only_the_failures_and_does_not_fail(capsys) -> None:

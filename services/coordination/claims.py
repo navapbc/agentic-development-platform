@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
 from database.engine import shared_platform_engine
 from database.models.schema import work_claims
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -18,6 +18,11 @@ RELEASED = "released"
 COMPLETED = "completed"
 
 OwnerActive = Callable[[str], Awaitable[bool]]
+
+
+def path_within(path: str, file_impact: Sequence[str]) -> bool:
+    """Whether a file impact entry names `path` itself or a directory that contains it."""
+    return any(path == entry or path.startswith(entry.rstrip("/") + "/") for entry in file_impact)
 
 
 async def _is_reclaimable(
@@ -82,8 +87,24 @@ def partition_by_file_impact(units: Iterable[WorkUnit]) -> Schedule:
     return Schedule(tuple(admitted), tuple(deferred))
 
 
+async def _holding(
+    claims: Iterable[WorkUnit], path: str, owner_active: OwnerActive | None
+) -> list[WorkUnit]:
+    """The given claimed rows that cover `path` and that no other run could reclaim."""
+    return [
+        claim
+        for claim in claims
+        if path_within(path, claim.file_impact)
+        and not await _is_reclaimable(CLAIMED, claim.workflow_id, owner_active)
+    ]
+
+
 class WorkClaimStore(Protocol):
     async def try_claim(self, unit: WorkUnit) -> ClaimOutcome: ...
+
+    async def active_claims_covering(
+        self, path: str, *, task_id: str, work_unit: str, tenant: str
+    ) -> list[WorkUnit]: ...
 
     async def transition(
         self, claim_id: str, *, expected_version: int, new_state: str
@@ -179,6 +200,41 @@ class PostgresWorkClaimStore:
             ).first()
         return ClaimOutcome(claim_id, False, current.claim_version if current else 0)
 
+    async def active_claims_covering(
+        self, path: str, *, task_id: str, work_unit: str, tenant: str
+    ) -> list[WorkUnit]:
+        engine = self._get_engine()
+        async with engine.begin() as conn:
+            rows = (
+                await conn.execute(
+                    select(
+                        work_claims.c.task_id,
+                        work_claims.c.work_unit,
+                        work_claims.c.execution_id,
+                        work_claims.c.agent_id,
+                        work_claims.c.file_impact,
+                        work_claims.c.owner_workflow_id,
+                    ).where(
+                        work_claims.c.tenant == tenant,
+                        work_claims.c.state == CLAIMED,
+                        or_(work_claims.c.task_id != task_id, work_claims.c.work_unit != work_unit),
+                    )
+                )
+            ).all()
+        claims = [
+            WorkUnit(
+                task_id=row.task_id,
+                work_unit=row.work_unit,
+                execution_id=row.execution_id,
+                agent_id=row.agent_id,
+                file_impact=tuple(row.file_impact or ()),
+                workflow_id=row.owner_workflow_id or "",
+                tenant=tenant,
+            )
+            for row in rows
+        ]
+        return await _holding(claims, path, self._owner_active)
+
     async def transition(
         self, claim_id: str, *, expected_version: int, new_state: str
     ) -> int | None:
@@ -253,6 +309,7 @@ class InMemoryWorkClaimStore:
             existing["agent_id"] = unit.agent_id
             existing["execution_id"] = unit.execution_id
             existing["owner_workflow_id"] = unit.workflow_id
+            existing["unit"] = unit
             return ClaimOutcome(claim_id, True, int(existing["claim_version"]))
         self._claims[claim_id] = {
             "state": CLAIMED,
@@ -260,8 +317,22 @@ class InMemoryWorkClaimStore:
             "agent_id": unit.agent_id,
             "execution_id": unit.execution_id,
             "owner_workflow_id": unit.workflow_id,
+            "unit": unit,
         }
         return ClaimOutcome(claim_id, True, 1)
+
+    async def active_claims_covering(
+        self, path: str, *, task_id: str, work_unit: str, tenant: str
+    ) -> list[WorkUnit]:
+        claims = [
+            unit
+            for row in self._claims.values()
+            if row["state"] == CLAIMED
+            and isinstance(unit := row["unit"], WorkUnit)
+            and unit.tenant == tenant
+            and (unit.task_id, unit.work_unit) != (task_id, work_unit)
+        ]
+        return await _holding(claims, path, self._owner_active)
 
     async def transition(
         self, claim_id: str, *, expected_version: int, new_state: str
