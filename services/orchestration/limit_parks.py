@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from services.orchestration.limit_grants import RUN_SCOPE, LimitGrant
-from services.orchestration.model_path_parks import ParkedRunFinder, resume_park
+from services.orchestration.model_path_parks import ParkedRunFinder, resume_each, resume_park
 from services.orchestration.suspension import RESUME_LIMIT_PARK_UPDATE, SuspendReason
 
 GRANT_ACTOR_TYPE = "limit_grant"
@@ -78,10 +78,9 @@ class LimitParkResumption:
         parked = await self._runs.find(
             grant.tenant, limit_name=grant.limit_name, execution_id=execution_id
         )
-        return [
-            workflow_id
-            for workflow_id in parked
-            if await self._resumer.resume(
+        return await resume_each(
+            parked,
+            lambda workflow_id: self._resumer.resume(
                 workflow_id, limit_name=grant.limit_name, actor=grant.approver
-            )
-        ]
+            ),
+        )

@@ -99,6 +99,36 @@ def test_restart_rolls_each_named_deployment(monkeypatch) -> None:
     ]
 
 
+def _graced(namespace: str, name: str, seconds: int) -> dict:
+    return {
+        "kind": "Deployment",
+        "metadata": {"name": name, "namespace": namespace},
+        "spec": {"template": {"spec": {"terminationGracePeriodSeconds": seconds}}},
+    }
+
+
+def test_a_rollout_waits_through_the_termination_grace_of_the_pods_it_replaces(
+    monkeypatch,
+) -> None:
+    calls: list[list[str]] = []
+    live = {("tenant-adp", "activity-worker"): _graced("tenant-adp", "activity-worker", 2460)}
+
+    def run(args, **_):
+        calls.append(args)
+        deployment = live.get((args[2], args[5])) if args[3:5] == ["get", "deployment"] else None
+        return json.dumps(deployment) if deployment else ""
+
+    monkeypatch.setattr(eks_deploy_task, "run", run)
+
+    eks_deploy_task.restart(["tenant-workers", "inbound-webhook"], {"tenants": [{"name": "adp"}]})
+
+    statuses = {c[5]: c[6] for c in calls if c[3:5] == ["rollout", "status"]}
+    assert statuses == {
+        "deployment/activity-worker": "--timeout=3060s",
+        "deployment/inbound-webhook": "--timeout=630s",
+    }
+
+
 def _review_claim(access_modes: list[str]) -> dict:
     return {
         "kind": "PersistentVolumeClaim",
@@ -135,6 +165,19 @@ def test_a_claim_whose_access_modes_changed_is_deleted_with_its_volume(monkeypat
             "--timeout=300s",
         ],
     ]
+
+
+def test_a_claim_waits_for_its_pods_to_finish_their_activities_before_it_is_deleted(
+    monkeypatch,
+) -> None:
+    calls = _live_claims(monkeypatch, _review_claim(["ReadOnlyMany"]))
+
+    eks_deploy_task.replace_changed_claims(
+        [_review_claim(["ReadWriteMany"]), _graced("tenant-adp-review", "review-worker", 2460)]
+    )
+
+    deletes = [c for c in calls if c[3:4] == ["delete"] or c[1:2] == ["delete"]]
+    assert [c[-1] for c in deletes] == ["--timeout=2760s", "--timeout=2760s"]
 
 
 def test_a_claim_with_unchanged_access_modes_is_kept(monkeypatch) -> None:

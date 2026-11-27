@@ -4,12 +4,13 @@ import base64
 import json
 import re
 import shutil
+import subprocess
 from pathlib import Path
 from urllib.parse import urlsplit
 
 import pytest
 import yaml
-from scripts import k8s_render
+from scripts import k8s_cluster, k8s_render
 from scripts.cluster_env import (
     compose_network,
     litellm_database_url,
@@ -224,6 +225,37 @@ def test_no_pod_mounts_a_host_path(tmp_path: Path) -> None:
 
     assert volumes
     assert all("hostPath" not in volume for volume in volumes)
+
+
+def test_the_local_roll_waits_through_the_termination_grace_of_each_deployment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+    graced = {"spec": {"template": {"spec": {"terminationGracePeriodSeconds": 2460}}}}
+
+    def run(args, **_):
+        calls.append(args)
+        stdout = json.dumps(graced) if "get" in args and "activity-worker" in args else ""
+        return subprocess.CompletedProcess(args, 0, stdout, "")
+
+    monkeypatch.setattr(
+        k8s_cluster,
+        "deployments",
+        lambda settings: [("tenant-adp", "activity-worker"), ("agentic-dev-platform", "litellm")],
+    )
+
+    k8s_cluster.roll(hermetic_settings(), run)
+
+    timeouts = [arg for args in calls if "status" in args for arg in args if "--timeout" in arg]
+    assert timeouts == ["--timeout=3060s", "--timeout=630s"]
+
+
+def test_the_local_workers_keep_the_selector_they_were_created_with(tmp_path: Path) -> None:
+    documents = _rendered(tmp_path)
+
+    for name in ("activity-worker", "review-worker"):
+        worker = _named(documents, "Deployment", name)
+        assert worker["spec"]["selector"]["matchLabels"] == {"app.kubernetes.io/name": name}
 
 
 def test_the_workers_run_the_build_image_and_report_its_build_id(tmp_path: Path) -> None:

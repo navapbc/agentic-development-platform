@@ -59,6 +59,80 @@ async def test_build_worker_activity_role_registers_only_activities() -> None:
         assert not config["workflows"]
 
 
+@pytest.mark.parametrize("role", [WORKER_ROLE_ACTIVITY, WORKER_ROLE_REVIEW, WORKER_ROLE_ALL])
+async def test_an_activity_worker_lets_the_longest_single_attempt_activity_finish_on_shutdown(
+    role: str,
+) -> None:
+    from datetime import timedelta
+
+    from services.orchestration.temporal_workflows.draft_pull_request import (
+        DraftPullRequestInput,
+    )
+
+    longest = timedelta(seconds=DraftPullRequestInput.activity_timeout_seconds)
+    async with (
+        await WorkflowEnvironment.start_time_skipping() as env,
+        build_worker(env.client, f"q-{role}", role) as worker,
+    ):
+        config = worker.config()
+    assert config["graceful_shutdown_timeout"] >= longest
+
+
+class _SlotServices:
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.started: list[str] = []
+
+        async def install(client, settings) -> None:
+            self.started.append("schedules")
+
+        async def socket_mode(settings, client):
+            self.started.append("socket_mode")
+            return "socket"
+
+        def approver_refresh(settings):
+            self.started.append("approver_refresh")
+            return "refresh"
+
+        monkeypatch.setattr(
+            "services.orchestration.tenant_pinning.install_tenant_schedules", install
+        )
+        monkeypatch.setattr(
+            "services.integration.slack.socket_client.start_socket_mode", socket_mode
+        )
+        monkeypatch.setattr(
+            "services.integration.slack.approver_groups.start_approver_group_refresh",
+            approver_refresh,
+        )
+
+
+async def test_a_drain_slot_worker_installs_no_schedule_and_takes_no_slack_interaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    services = _SlotServices(monkeypatch)
+    monkeypatch.setenv("WORKER_SLOT", "drain")
+
+    started = await worker_module._start_current_slot_services(
+        object(), get_settings(), WORKER_ROLE_ACTIVITY
+    )
+
+    assert started == (None, None)
+    assert services.started == []
+
+
+async def test_a_current_slot_worker_installs_its_schedules_and_opens_slack(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    services = _SlotServices(monkeypatch)
+    monkeypatch.delenv("WORKER_SLOT", raising=False)
+
+    started = await worker_module._start_current_slot_services(
+        object(), get_settings(), WORKER_ROLE_ACTIVITY
+    )
+
+    assert started == ("socket", "refresh")
+    assert services.started == ["schedules", "socket_mode", "approver_refresh"]
+
+
 async def test_build_worker_all_role_registers_both() -> None:
     async with await WorkflowEnvironment.start_time_skipping() as env:
         async with build_worker(env.client, "q-all", WORKER_ROLE_ALL) as worker:

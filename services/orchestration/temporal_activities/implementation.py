@@ -26,6 +26,7 @@ class ClaimRequest:
     agent_id: str
     file_impact: list[str] = field(default_factory=list)
     owner_workflow_id: str = ""
+    repo: str = ""
 
 
 @dataclass
@@ -185,6 +186,7 @@ async def claim_work_unit(req: ClaimRequest) -> ClaimResult:
                 file_impact=tuple(req.file_impact),
                 workflow_id=owner_workflow_id,
                 tenant=get_settings().tenant,
+                repo=req.repo,
             )
         )
     except CoordinationAuthError as exc:

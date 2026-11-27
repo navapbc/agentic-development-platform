@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import signal
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -51,6 +52,7 @@ from services.orchestration.temporal_activities import (
     mark_task_parked,
     period_alert_thread,
     persist_execution_state,
+    prepare_dependencies,
     promote_pr,
     read_run_limits,
     read_tenant_budget,
@@ -68,6 +70,7 @@ from services.orchestration.temporal_activities import (
     refresh_park_buttons,
     reset_task_coordination,
     resolve_conflicts,
+    resync_branch,
     review_code,
     review_plan,
     review_security,
@@ -98,6 +101,9 @@ from services.orchestration.temporal_workflows import (
     TenantValidationWorkflow,
 )
 from services.orchestration.temporal_workflows.alert_action import AlertActionWorkflow
+from services.orchestration.temporal_workflows.implementation import (
+    STAGE_ACTIVITY_TIMEOUT_SECONDS,
+)
 from services.orchestration.worker_versioning import deployment_config, set_current_version
 
 logging.basicConfig(level=configured_log_level())
@@ -150,6 +156,8 @@ _ACTIVITIES = [
     resolve_conflicts,
     recheck_issue,
     find_open_pr,
+    prepare_dependencies,
+    resync_branch,
     commit_and_push,
     create_draft_pr,
     link_pr_to_issue,
@@ -202,6 +210,9 @@ def _all_activities() -> list:
     return combined
 
 
+ACTIVITY_SHUTDOWN_GRACE = timedelta(seconds=STAGE_ACTIVITY_TIMEOUT_SECONDS)
+
+
 def _resolve_role() -> str:
     role = os.environ.get("WORKER_ROLE", WORKER_ROLE_ALL).strip().lower()
     if role not in _WORKER_ROLES:
@@ -236,6 +247,7 @@ def build_worker(client: Client, task_queue: str, role: str) -> Worker:
             task_queue=task_queue,
             activities=_ACTIVITIES,
             interceptors=[heartbeat, attribution, *_tenant_interceptors()],
+            graceful_shutdown_timeout=ACTIVITY_SHUTDOWN_GRACE,
             **versioning,
         )
     if role == WORKER_ROLE_REVIEW:
@@ -244,6 +256,7 @@ def build_worker(client: Client, task_queue: str, role: str) -> Worker:
             task_queue=task_queue,
             activities=_REVIEW_ACTIVITIES,
             interceptors=[heartbeat, attribution, *_tenant_interceptors()],
+            graceful_shutdown_timeout=ACTIVITY_SHUTDOWN_GRACE,
             **versioning,
         )
     return Worker(
@@ -253,6 +266,7 @@ def build_worker(client: Client, task_queue: str, role: str) -> Worker:
         activities=_all_activities(),
         workflow_runner=runner,
         interceptors=[heartbeat, attribution, *_tenant_interceptors()],
+        graceful_shutdown_timeout=ACTIVITY_SHUTDOWN_GRACE,
         **versioning,
     )
 
@@ -336,10 +350,12 @@ def _worker_runners(
 
 
 def _shut_down_on_sigterm(workers: list[Worker]) -> None:
-    """Stop polling on SIGTERM and wait for the running activities before the process exits.
+    """Stop polling on SIGTERM and let the running activities finish before the process exits.
 
-    Python's default SIGTERM action ends the process at once, which leaves a rebar store write
-    lock that an activity holds on the shared volume until rebar's age ceiling expires.
+    Each worker waits up to its graceful shutdown timeout for its running activities and cancels
+    those still running after it. Python's default SIGTERM action ends the process at once, which
+    leaves a rebar store write lock that an activity holds on the shared volume until rebar's age
+    ceiling expires.
     """
     loop = asyncio.get_running_loop()
     shutdowns: set[asyncio.Task[None]] = set()
@@ -352,6 +368,31 @@ def _shut_down_on_sigterm(workers: list[Worker]) -> None:
             task.add_done_callback(shutdowns.discard)
 
     loop.add_signal_handler(signal.SIGTERM, shut_down)
+
+
+async def _start_current_slot_services(
+    client: Client, settings: Any, role: str
+) -> tuple[Any, asyncio.Task[None] | None]:
+    """Install the tenant schedules and start Socket Mode and the approver group refresh.
+
+    Returns the Socket Mode client and the refresh task. A worker in the drain slot serves only the
+    runs pinned to its build, so it starts none of them and the current slot keeps sole ownership
+    of the schedules and the Slack interactions.
+    """
+    from scripts.tenant_render import DRAIN_SLOT, SLOT_ENV
+
+    if (
+        role not in (WORKER_ROLE_ACTIVITY, WORKER_ROLE_ALL)
+        or os.environ.get(SLOT_ENV) == DRAIN_SLOT
+    ):
+        return None, None
+    from services.integration.slack.approver_groups import start_approver_group_refresh
+    from services.integration.slack.socket_client import start_socket_mode
+    from services.orchestration.tenant_pinning import install_tenant_schedules
+
+    await install_tenant_schedules(client, settings)
+    socket_mode = await start_socket_mode(settings, client)
+    return socket_mode, start_approver_group_refresh(settings)
 
 
 async def main() -> None:
@@ -415,11 +456,9 @@ async def main() -> None:
         from services.orchestration.authorship import authorship_signing_preflight
         from services.orchestration.index_checkouts import keep_index_checkouts
         from services.orchestration.platform_escalation import platform_escalation_preflight
-        from services.orchestration.tenant_pinning import install_tenant_schedules
 
         platform_escalation_preflight()
         index_checkout_task = asyncio.create_task(keep_index_checkouts(settings))
-        await install_tenant_schedules(client, settings)
         tickets_store_preflight(settings)
         authorship_signing_preflight(settings)
         await _scrub_workspace_credentials(settings.execution_workspace_root)
@@ -464,14 +503,7 @@ async def main() -> None:
                 warn_seconds=settings.aws_credentials_warn_seconds,
             )
         )
-    socket_mode = None
-    approver_group_task = None
-    if role in (WORKER_ROLE_ACTIVITY, WORKER_ROLE_ALL):
-        from services.integration.slack.approver_groups import start_approver_group_refresh
-        from services.integration.slack.socket_client import start_socket_mode
-
-        socket_mode = await start_socket_mode(settings, client)
-        approver_group_task = start_approver_group_refresh(settings)
+    socket_mode, approver_group_task = await _start_current_slot_services(client, settings, role)
     runners = _worker_runners(client, settings, role, workers, queues)
     _shut_down_on_sigterm(workers)
     try:

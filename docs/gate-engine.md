@@ -159,7 +159,7 @@ Credentials reach the pod as files over the exec stream and are removed before p
 
 ## Running the built-in scanners from their own images
 
-The `semgrep` and `trivy` gates are built in, so they carry no engine config. They read `SCANNER_EXECUTION` instead, which follows the same subprocess-or-pod split the external gates use.
+The `semgrep`, `trivy`, and `osv-scanner` gates are built in, so they carry no engine config. They read `SCANNER_EXECUTION` instead, which follows the same subprocess-or-pod split the external gates use.
 
 `subprocess`, the default, invokes the scanner binary on the worker. When the binary is absent the gate reports a `ScannerError` naming the binary and pointing at pod mode, rather than surfacing a bare `FileNotFoundError`.
 
@@ -169,7 +169,10 @@ The `semgrep` and `trivy` gates are built in, so they carry no engine config. Th
 SCANNER_EXECUTION=pod
 SEMGREP_IMAGE=docker.io/semgrep/semgrep:1.177.0@sha256:acaac22ffc7b7cc5926de0751b223bce0b2491c33d18422fa72f632c78d81198
 TRIVY_IMAGE=docker.io/aquasec/trivy:0.74.0@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969
+OSV_SCANNER_IMAGE=<the platform-built osv-scanner image>
 ```
+
+OSV-Scanner runs only from the image the platform builds from [osv-scanner.Dockerfile](../docker/osv-scanner.Dockerfile), which puts `osv-scanner` on the path and carries the npm, PyPI, Go, and Maven databases under `/opt/osv-scanner/db`. Each scan downloads the current databases first and scans with the carried ones when the download fails, as it does in the `external` registry mode. The carried databases date from the image build, and the image is rebuilt only when its Dockerfile changes, so a deployment without egress to `osv-vulnerabilities.storage.googleapis.com` misses advisories published after that build. The upstream image keeps the binary outside the path and carries no databases, so a scan with it fails closed.
 
 Both image settings must be fully qualified, because the builder resolves short names only for official Docker Hub images, so an unqualified `semgrep/semgrep` fails the pull. The defaults above carry a digest as well as a tag, because a tag is mutable and its maintainer can repush it, and the digest is what makes a scan reproducible. Keep the digest when you move a version, and resolve the new one from the registry rather than dropping to a bare tag. Nothing verifies image provenance beyond the reference you supply.
 

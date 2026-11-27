@@ -73,8 +73,7 @@ async def run_checks(req: RunChecksRequest) -> RunChecksResult:
     from scripts.config import get_settings
 
     from services.orchestration.checks.config import checks_for_repo
-    from services.orchestration.checks.runner import ChecksRunner, ChecksSpec
-    from services.orchestration.gates.pod_runner import KubectlPodOps
+    from services.orchestration.checks.runner import ChecksSpec, checks_runner
 
     settings = get_settings()
     config = checks_for_repo(req.repo, settings)
@@ -89,15 +88,7 @@ async def run_checks(req: RunChecksRequest) -> RunChecksResult:
     checkout = tempfile.mkdtemp(prefix="checks-")
     try:
         _clean_checkout(req.workspace_path, checkout)
-        runner = ChecksRunner(
-            KubectlPodOps(),
-            namespace=settings.gate_engine_namespace,
-            builder_image=settings.gate_engine_builder_image,
-            privileged=settings.gate_engine_privileged,
-            node_pool=settings.sandbox_node_pool,
-            tls_verify=settings.gate_registry_tls_verify,
-        )
-        result = await runner.run_checks(
+        result = await checks_runner(settings).run_checks(
             ChecksSpec(
                 repo=req.repo,
                 execution_id=req.execution_id,

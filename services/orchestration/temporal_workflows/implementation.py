@@ -51,6 +51,7 @@ COST_BUDGET_EXCEEDED = "cost_budget_exceeded"
 LLM_CALLS_EXCEEDED = "llm_calls_exceeded"
 MAX_TOKENS_EXCEEDED = "token_budget_exceeded"
 EXISTING_PR_REUSED = "existing_pr_reused"
+STAGE_ACTIVITY_TIMEOUT_SECONDS = 2400.0
 
 
 @dataclass
@@ -68,7 +69,7 @@ class ImplementationInput:
     max_cost_usd: float = 5.0
     max_llm_calls: int = 200
     max_tokens: int = 2_000_000
-    activity_timeout_seconds: float = 2400.0
+    activity_timeout_seconds: float = STAGE_ACTIVITY_TIMEOUT_SECONDS
     plan: str = ""
     context_package: dict[str, Any] = field(default_factory=dict)
     owner_workflow_id: str = ""
@@ -148,6 +149,7 @@ class ImplementationWorkflow:
                     agent_id=params.agent_id or params.execution_id,
                     file_impact=list(params.file_impact),
                     owner_workflow_id=params.owner_workflow_id,
+                    repo=params.repo,
                 ),
                 start_to_close_timeout=short,
                 retry_policy=retry,

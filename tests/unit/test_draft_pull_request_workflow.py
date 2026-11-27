@@ -41,6 +41,8 @@ from services.orchestration.temporal_activities.branch_sync import (
     RecheckResult,
     ResolveRequest,
     ResolveResult,
+    ResyncRequest,
+    ResyncResult,
     SyncRequest,
     SyncResult,
 )
@@ -80,6 +82,10 @@ from services.orchestration.temporal_activities.limits import (
     RunLimitsRequest,
     TenantBudgetRequest,
     TenantBudgetState,
+)
+from services.orchestration.temporal_activities.lockfile import (
+    DependencyStepRequest,
+    DependencyStepResult,
 )
 from services.orchestration.temporal_activities.manifest import RecordManifestRequest
 from services.orchestration.temporal_activities.model_access import (
@@ -252,6 +258,10 @@ def _make_activities(
     audit_events: list[AuditEvent] | None = None,
     claim_finalizations: list[FinalizeClaimRequest] | None = None,
     commit_results: list[CommitPushResult] | None = None,
+    dependency_requests: list[DependencyStepRequest] | None = None,
+    dependency_results: list[DependencyStepResult] | None = None,
+    resync_requests: list[ResyncRequest] | None = None,
+    resync_results: list[ResyncResult] | None = None,
 ):
     @activity.defn(name="persist_execution_state")
     async def fake_persist(payload: ExecutionState) -> str:
@@ -341,6 +351,22 @@ def _make_activities(
                 category=recheck_category, requires_pause=True, reason="issue changed"
             )
         return RecheckResult(category="", requires_pause=False)
+
+    @activity.defn(name="resync_branch")
+    async def fake_resync(req: ResyncRequest) -> ResyncResult:
+        requested = resync_requests if resync_requests is not None else []
+        requested.append(req)
+        if not resync_results:
+            return ResyncResult(status="current", base_head="b" * 40)
+        return resync_results[min(len(requested) - 1, len(resync_results) - 1)]
+
+    @activity.defn(name="prepare_dependencies")
+    async def fake_prepare_dependencies(req: DependencyStepRequest) -> DependencyStepResult:
+        requested = dependency_requests if dependency_requests is not None else []
+        requested.append(req)
+        if not dependency_results:
+            return DependencyStepResult()
+        return dependency_results[min(len(requested) - 1, len(dependency_results) - 1)]
 
     @activity.defn(name="commit_and_push")
     async def fake_commit(req: CommitPushRequest) -> CommitPushResult:
@@ -650,6 +676,8 @@ def _make_activities(
         fake_sync,
         fake_resolve,
         fake_recheck,
+        fake_prepare_dependencies,
+        fake_resync,
         fake_commit,
         fake_create_pr,
         fake_link,
@@ -1774,6 +1802,149 @@ async def test_ci_repair_retry_decision_reruns_and_passes():
     assert len(repairs) == 1
     assert len(ci_triggers) == 3
     assert len(alerts) == 1
+
+
+_NEW_BASE = "d" * 40
+
+
+async def _retry_once(**overrides) -> tuple[Any, dict[str, list]]:
+    """Exhaust one repair, press Retry repair, and answer each later repair park with Retry."""
+    recorded: dict[str, list] = {
+        "commits": [],
+        "resyncs": [],
+        "dependencies": [],
+        "alerts": [],
+    }
+    decisions = overrides.pop("decisions", [True])
+    activities = _make_activities(
+        None,
+        1,
+        recorded["commits"],
+        [],
+        [],
+        ci_results=[FAILURE, FAILURE, SUCCESS],
+        repairs=[],
+        alerts=recorded["alerts"],
+        resync_requests=recorded["resyncs"],
+        dependency_requests=recorded["dependencies"],
+        **overrides,
+    )
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(max_repair_attempts=1),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+            for parks, retry in enumerate(decisions, start=1):
+                while len([a for a in recorded["alerts"] if a.stage == "repair"]) < parks:
+                    await asyncio.sleep(0.05)
+                await handle.signal("submit_repair_decision", args=[retry, "lead"])
+            result = await handle.result()
+    return result, recorded
+
+
+async def test_a_retry_after_the_base_moved_commits_the_branch_onto_it_before_the_checks():
+    result, recorded = await _retry_once(
+        resync_results=[ResyncResult(status="merged", base_head=_NEW_BASE)]
+    )
+
+    assert result.status == PR_PROMOTED
+    resync = recorded["commits"][2]
+    assert (resync.commit, resync.sequence) == (_NEW_BASE, 107)
+    assert recorded["resyncs"][0].commit == "c" * 40
+    assert recorded["dependencies"][2].base_ref == _NEW_BASE
+
+
+async def test_a_run_moved_onto_a_newer_build_gates_the_commits_it_makes_there(monkeypatch):
+    from temporalio.worker import UnsandboxedWorkflowRunner
+
+    commits: list[CommitPushRequest] = []
+    dependencies: list[DependencyStepRequest] = []
+    resyncs: list = []
+    activities = _make_activities(
+        None,
+        1,
+        commits,
+        [],
+        [],
+        ci_results=[FAILURE, FAILURE, SUCCESS],
+        repairs=[],
+        resync_requests=resyncs,
+        dependency_requests=dependencies,
+        resync_results=[ResyncResult(status="merged", base_head=_NEW_BASE)],
+    )
+    children = [ImplementationWorkflow, BranchSyncWorkflow, PullRequestWorkflow, PlanReviewWorkflow]
+    patched = workflow.patched
+    new_patches = ("commit-gates-", "retry-resync-")
+
+    def worker(env, task_queue):
+        return Worker(
+            env.client,
+            task_queue=task_queue,
+            workflows=[DraftPullRequestWorkflow, *children],
+            workflow_runner=UnsandboxedWorkflowRunner(),
+            activities=activities,
+            max_cached_workflows=0,
+        )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        with monkeypatch.context() as old_build:
+            old_build.setattr(
+                workflow,
+                "patched",
+                lambda name: not name.startswith(new_patches) and patched(name),
+            )
+            async with worker(env, task_queue):
+                handle = await env.client.start_workflow(
+                    DraftPullRequestWorkflow.run,
+                    _ci_input(max_repair_attempts=1),
+                    id=f"wf-{uuid.uuid4().hex[:8]}",
+                    task_queue=task_queue,
+                )
+                await _await_human_park(handle)
+        async with worker(env, task_queue):
+            await handle.signal("submit_repair_decision", args=[True, "lead"])
+            result = await handle.result()
+
+    assert result.status == PR_PROMOTED
+    assert [c.guard_workflow_files for c in commits] == [False, False, True]
+    assert [d.commit for d in dependencies] == [_NEW_BASE]
+    assert len(resyncs) == 1
+
+
+async def test_a_retry_with_an_unchanged_base_commits_nothing_new():
+    result, recorded = await _retry_once()
+
+    assert result.status == PR_PROMOTED
+    assert len(recorded["commits"]) == 2
+    assert len(recorded["resyncs"]) == 1
+
+
+async def test_a_re_sync_conflict_parks_for_retry_and_retry_syncs_again():
+    conflict = ResyncResult(status="conflicts", base_head=_NEW_BASE, conflicts=["shared.py"])
+    merged = ResyncResult(status="merged", base_head=_NEW_BASE)
+    result, recorded = await _retry_once(resync_results=[conflict, merged], decisions=[True, True])
+
+    assert result.status == PR_PROMOTED
+    assert len(recorded["resyncs"]) == 2
+    parked = [a for a in recorded["alerts"] if a.stage == "repair"]
+    assert "shared.py" in parked[1].detail
+    assert {step.kind for step in parked[1].remedy.actions} == {
+        StepKind.RETRY_REPAIR,
+        StepKind.ABANDON_REPAIR,
+    }
+
+
+async def test_abandoning_a_re_sync_conflict_ends_the_run_without_a_commit():
+    conflict = ResyncResult(status="conflicts", base_head=_NEW_BASE, conflicts=["shared.py"])
+    result, recorded = await _retry_once(resync_results=[conflict], decisions=[True, False])
+
+    assert result.terminal_reason == HUMAN_ABANDONED
+    assert len(recorded["commits"]) == 2
 
 
 async def test_ci_failure_unactionable_parks_for_human():
@@ -5116,6 +5287,224 @@ async def test_a_file_another_unit_holds_parks_the_commit_and_approve_commits_ag
         ("exec-1:FILES_OUTSIDE_FILE_IMPACT:102", {"files": "tsconfig.build.json"})
     ]
     assert "- `tsconfig.build.json`" in pr_opens[0].body
+
+
+_GUARDED = CommitPushResult(
+    branch="agent/T-1",
+    commit_sha="a" * 40,
+    pushed=False,
+    replayed=False,
+    changed=False,
+    guarded_paths=[".github/workflows/ci.yml"],
+    guarded_diff="+++ b/.github/workflows/ci.yml\n+on: push\n",
+)
+
+
+async def test_a_workflow_file_parks_the_commit_and_approve_pushes_it():
+    commits: list[CommitPushRequest] = []
+    pr_opens: list[OpenPrRequest] = []
+    alerts: list[AlertHumanInterventionRequest] = []
+    activities = _make_activities(
+        None,
+        1,
+        commits,
+        pr_opens,
+        [],
+        ci_result=SUCCESS,
+        alerts=alerts,
+        commit_results=[_GUARDED, _pushed("c" * 40)],
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+            await _await_human_park_stage(handle, "commit")
+            assert len(commits) == 1
+            await handle.signal("submit_gate_decision", args=["workflow_files", True, "lead"])
+            result = await handle.result()
+
+    assert result.status == PR_PROMOTED
+    assert [(c.guard_workflow_files, c.workflow_files_approved) for c in commits] == [
+        (True, False),
+        (True, True),
+    ]
+    parked = [alert for alert in alerts if alert.stage == "commit"]
+    assert len(parked) == 1
+    assert ".github/workflows/ci.yml" in _remedy_text(parked[0])
+    assert "+on: push" in parked[0].detail
+    assert {step.kind for step in parked[0].remedy.actions} == {
+        StepKind.APPROVE_GATE,
+        StepKind.REJECT_GATE,
+    }
+
+
+async def test_rejecting_a_workflow_file_park_abandons_the_run_without_a_push():
+    commits: list[CommitPushRequest] = []
+    pr_opens: list[OpenPrRequest] = []
+    activities = _make_activities(None, 1, commits, pr_opens, [], commit_results=[_GUARDED])
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+            await _await_human_park_stage(handle, "commit")
+            await handle.signal("submit_gate_decision", args=["workflow_files", False, "lead"])
+            result = await handle.result()
+
+    assert result.terminal_reason == HUMAN_ABANDONED
+    assert len(commits) == 1
+    assert pr_opens == []
+
+
+_BLOCKED = DependencyStepResult(
+    dependency_files=["package-lock.json", "package.json"],
+    lockfiles=["package-lock.json"],
+    blocking_count=1,
+    threshold="high",
+    blocking=["MAL-2026-14698 critical package-lock.json:3layerdipstackbndk47@0.1.4"],
+)
+
+
+async def test_a_blocking_dependency_finding_parks_before_the_commit_and_approve_commits():
+    commits: list[CommitPushRequest] = []
+    pr_opens: list[OpenPrRequest] = []
+    alerts: list[AlertHumanInterventionRequest] = []
+    requests: list[DependencyStepRequest] = []
+    activities = _make_activities(
+        None,
+        1,
+        commits,
+        pr_opens,
+        [],
+        ci_result=SUCCESS,
+        alerts=alerts,
+        dependency_requests=requests,
+        dependency_results=[_BLOCKED],
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+            await _await_human_park_stage(handle, "commit")
+            assert commits == []
+            await handle.signal("submit_gate_decision", args=["dependency_scan", True, "lead"])
+            result = await handle.result()
+
+    assert result.status == PR_PROMOTED
+    assert len(commits) == 1
+    assert [(r.commit, r.base_ref) for r in requests] == [(commits[0].commit, _ci_input().base_sha)]
+    parked = [alert for alert in alerts if alert.stage == "commit"]
+    assert "MAL-2026-14698" in parked[0].detail
+
+
+async def test_a_failed_lock_command_parks_and_reject_abandons_the_run_without_a_commit():
+    commits: list[CommitPushRequest] = []
+    alerts: list[AlertHumanInterventionRequest] = []
+    failed = DependencyStepResult(
+        dependency_files=["package.json"],
+        lock_failed=True,
+        lock_detail="`npm install --package-lock-only` for package.json exited 1.\nnpm error 404",
+    )
+    activities = _make_activities(
+        None, 1, commits, [], [], alerts=alerts, dependency_results=[failed]
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+            await _await_human_park_stage(handle, "commit")
+            await handle.signal("submit_gate_decision", args=["lockfile", False, "lead"])
+            result = await handle.result()
+
+    assert result.terminal_reason == HUMAN_ABANDONED
+    assert commits == []
+    parked = [alert for alert in alerts if alert.stage == "commit"]
+    assert "npm error 404" in parked[0].detail
+    assert "package.json" in _remedy_text(parked[0])
+
+
+async def test_an_approved_lockfile_park_still_parks_on_the_dependency_scan():
+    commits: list[CommitPushRequest] = []
+    failed_and_blocked = replace(
+        _BLOCKED, lockfiles=[], lock_failed=True, lock_detail="npm error 404"
+    )
+    activities = _make_activities(None, 1, commits, [], [], dependency_results=[failed_and_blocked])
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+            await _await_human_park_stage(handle, "commit")
+            await handle.signal("submit_gate_decision", args=["lockfile", True, "lead"])
+            for _ in range(50):
+                state = await handle.query(DraftPullRequestWorkflow.suspension_state)
+                if ":dependency_scan:" in state.get("park_key", ""):
+                    break
+                await asyncio.sleep(0.05)
+            assert ":dependency_scan:" in state.get("park_key", "")
+            assert commits == []
+            await handle.signal("submit_gate_decision", args=["dependency_scan", False, "lead"])
+            result = await handle.result()
+
+    assert result.terminal_reason == HUMAN_ABANDONED
+    assert commits == []
+
+
+async def test_a_repair_commit_runs_the_dependency_step_again():
+    commits: list[CommitPushRequest] = []
+    requests: list[DependencyStepRequest] = []
+    activities = _make_activities(
+        None,
+        1,
+        commits,
+        [],
+        [],
+        ci_results=[FAILURE, SUCCESS],
+        repairs=[],
+        dependency_requests=requests,
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            result = await env.client.execute_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+
+    assert result.status == PR_PROMOTED
+    assert [r.commit for r in requests] == [c.commit for c in commits]
+    assert len(requests) == 2
 
 
 async def test_rejecting_a_held_file_park_abandons_the_run_without_a_commit():

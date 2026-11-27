@@ -256,9 +256,16 @@ def test_every_component_names_a_repository_and_a_pin_the_versions_file_holds() 
     pins = base_versions.load()
     held = [c.name for c in upstream_releases.COMPONENTS if c.pin in pins]
     assert len({c.name for c in upstream_releases.COMPONENTS}) == len(upstream_releases.COMPONENTS)
-    assert {"kubectl", "trivy", "semgrep", "litellm", "langfuse-web", "clickhouse", "zoekt"} <= set(
-        held
-    )
+    assert {
+        "kubectl",
+        "trivy",
+        "osv-scanner",
+        "semgrep",
+        "litellm",
+        "langfuse-web",
+        "clickhouse",
+        "zoekt",
+    } <= set(held)
     for component in upstream_releases.COMPONENTS:
         assert (
             component.repository in (upstream_releases.GO_FEED, upstream_releases.AL2023_FEED)

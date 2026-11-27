@@ -6,6 +6,7 @@ from services.orchestration.temporal_activities.bedrock import invoke_model
 from services.orchestration.temporal_activities.branch_sync import (
     recheck_issue,
     resolve_conflicts,
+    resync_branch,
     synchronize_branch,
 )
 from services.orchestration.temporal_activities.checks import run_checks
@@ -38,6 +39,7 @@ from services.orchestration.temporal_activities.limits import (
     read_run_limits,
     read_tenant_budget,
 )
+from services.orchestration.temporal_activities.lockfile import prepare_dependencies
 from services.orchestration.temporal_activities.manifest import record_manifest
 from services.orchestration.temporal_activities.model_access import delete_run_model_key
 from services.orchestration.temporal_activities.notify import (
@@ -103,6 +105,8 @@ __all__ = [
     "classify_test_failures",
     "clear_suspension",
     "commit_and_push",
+    "prepare_dependencies",
+    "resync_branch",
     "count_tick",
     "create_draft_pr",
     "delete_run_model_key",

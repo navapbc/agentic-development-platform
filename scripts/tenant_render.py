@@ -20,10 +20,11 @@ ServiceAccount, the config it reads, and the platform policies that select it by
 its own tenant's workspace, and the sandbox namespace binds its ServiceAccount to the sandbox Role,
 so it starts the tenant's gate and scanner pods in the tenant's sandbox namespace only.
 
-The activity worker and the review worker carry SLOT_LABEL with CURRENT_SLOT in their selector and
-pod template. The eks-deployer runs the previous build beside each as a drain slot, labeled
-DRAIN_SLOT, while runs are pinned to that build. The copied policies select a worker by its name
-label alone, so they select both slots.
+On EKS, `label_current_slots` gives the activity worker and the review worker SLOT_LABEL with
+CURRENT_SLOT in their selector and pod template. The eks-deployer runs the previous build beside
+each as a drain slot, labeled DRAIN_SLOT, while runs are pinned to that build. The copied policies
+select a worker by its name label alone, so they select both slots. A local worker has one slot
+and no slot label, so its selector stays the one it was created with.
 """
 
 from __future__ import annotations
@@ -296,6 +297,21 @@ def _fqdn_services(value: str, services: Iterable[str]) -> str:
             value,
         )
     return value
+
+
+def label_current_slots(documents: Iterable[dict[str, Any]]) -> None:
+    """Select only the current slot's pods in each activity and review worker Deployment."""
+    for document in documents:
+        if document["kind"] != "Deployment" or document["metadata"]["name"] not in (
+            WORKER,
+            REVIEW_WORKER,
+        ):
+            continue
+        spec = document["spec"]
+        spec["selector"].setdefault("matchLabels", {})[SLOT_LABEL] = CURRENT_SLOT
+        spec["template"].setdefault("metadata", {}).setdefault("labels", {})[SLOT_LABEL] = (
+            CURRENT_SLOT
+        )
 
 
 def _tenant_worker(deployment: dict[str, Any], tenant: Tenant, services: list[str]) -> dict:

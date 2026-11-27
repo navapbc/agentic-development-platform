@@ -641,22 +641,57 @@ class LimitGrantDecisions:
             existing = await self._store.get(request.tenant, request.alert_id)
             if existing is None:
                 return AlertOutcome(refusal=Refusal.NOT_PERMITTED)
+            if existing.state == GRANTED and self._resume is not None:
+                resumed, failure = await self._resume_parked(existing)
+                if resumed or failure:
+                    return await self._granted(request, existing, at, resumed, failure)
             return AlertOutcome(
                 reply=f"This request is already {existing.state} by "
                 f"{actor_words(existing.approver)}.",
                 refusal=Refusal.ALREADY_DECIDED,
             )
         await self._record(request, decided)
+        if state == GRANTED and self._resume is not None:
+            resumed, failure = await self._resume_parked(decided)
+            return await self._granted(request, decided, at, resumed, failure)
         await self._edit_post(request, decided, at)
         await self._notify_tenant(decided, request.actor, at)
-        verb = "Granted" if state == GRANTED else "Denied"
-        reply = (
-            f"{verb} {_amount(decided.amount)} more of {decided.limit_name} for {decided.tenant}."
+        return AlertOutcome(
+            reply=f"Denied {_amount(decided.amount)} more of {decided.limit_name} "
+            f"for {decided.tenant}.",
+            applied=True,
         )
-        if state == GRANTED and self._resume is not None:
-            resumed = await self._resume(decided)
-            if resumed:
-                reply += f" Resumed {', '.join(resumed)}."
+
+    async def _resume_parked(self, grant: LimitGrant) -> tuple[Sequence[str], str]:
+        """The runs the grant resumed, or why resuming them failed."""
+        try:
+            return await self._resume(grant), ""
+        except Exception as exc:
+            log.warning("limit grant resume failed", request_id=grant.request_id, error=str(exc))
+            return (), str(exc) or type(exc).__name__
+
+    async def _granted(
+        self,
+        request: AlertRequest,
+        grant: LimitGrant,
+        at: datetime,
+        resumed: Sequence[str],
+        failure: str,
+    ) -> AlertOutcome:
+        """Answer a grant, moving its posts to the decision only once its parked runs resumed.
+
+        A failed resume leaves the posts and their Approve button as they were, so a second
+        Approve click resumes the runs the first one missed.
+        """
+        granted = f"Granted {_amount(grant.amount)} more of {grant.limit_name} for {grant.tenant}."
+        if failure:
+            return AlertOutcome(
+                reply=f"{granted} Resuming its parked runs failed ({failure}). Press Approve "
+                "again to resume them."
+            )
+        await self._edit_post(request, grant, at)
+        await self._notify_tenant(grant, grant.approver, at)
+        reply = f"{granted} Resumed {', '.join(resumed)}." if resumed else granted
         return AlertOutcome(reply=reply, applied=True)
 
     async def _edit_post(self, request: AlertRequest, grant: LimitGrant, at: datetime) -> None:

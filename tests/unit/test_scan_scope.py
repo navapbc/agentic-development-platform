@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import subprocess
 
 import pytest
-from adapters.interfaces.security_scanner import CRITICAL, STATIC, ScanFinding
+from adapters.interfaces.security_scanner import CRITICAL, DEPENDENCY, STATIC, ScanFinding
 from services.orchestration.gates.scan_scope import (
     blocking_findings,
     changed_paths,
+    dependency_baseline,
     is_attributable,
+    packages_in,
     relative_location_path,
 )
 
@@ -239,3 +243,84 @@ async def test_a_diff_reporting_no_paths_falls_back_to_the_repository_and_blocks
     assert "reported no paths" in caplog.text
     finding = _finding("anywhere.py:1")
     assert blocking_findings([finding], changed, "/ws") == [finding]
+
+
+def _lock(**packages: str) -> str:
+    return json.dumps(
+        {
+            "lockfileVersion": 3,
+            "packages": {
+                "": {"name": "app"},
+                **{f"node_modules/{name}": {"version": v} for name, v in packages.items()},
+            },
+        }
+    )
+
+
+def _git(root, *args: str) -> None:
+    subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True)
+
+
+def _dependency(location: str) -> ScanFinding:
+    return ScanFinding(location, "trivy", DEPENDENCY, CRITICAL, "t", location=location)
+
+
+async def test_only_a_dependency_the_change_added_or_upgraded_sets_the_verdict(tmp_path):
+    _git(tmp_path, "init", "-q", "-b", "main")
+    _git(tmp_path, "config", "user.email", "t@example.invalid")
+    _git(tmp_path, "config", "user.name", "t")
+    (tmp_path / "package-lock.json").write_text(_lock(lodash="4.17.15", minimist="1.2.0"))
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-q", "-m", "base")
+    (tmp_path / "package-lock.json").write_text(
+        _lock(lodash="4.17.15", minimist="1.2.5", **{"@babel/core": "7.0.0"})
+    )
+    findings = [
+        _dependency("package-lock.json:lodash@4.17.15"),
+        _dependency("package-lock.json:minimist@1.2.5"),
+        _dependency("package-lock.json:@babel/core@7.0.0"),
+    ]
+    changed = await changed_paths(str(tmp_path), "main")
+
+    baseline = await dependency_baseline(str(tmp_path), "main", {"package-lock.json"})
+    blocking = blocking_findings(findings, changed, str(tmp_path), baseline=baseline)
+
+    assert [f.location for f in blocking] == [
+        "package-lock.json:minimist@1.2.5",
+        "package-lock.json:@babel/core@7.0.0",
+    ]
+
+
+def test_a_go_module_the_merge_base_held_matches_with_or_without_its_v_prefix():
+    baseline = {"go.mod": packages_in("go.mod", "require github.com/a/b v1.2.3\n")}
+    findings = [
+        _dependency("go.mod:github.com/a/b@1.2.3"),
+        _dependency("go.mod:github.com/a/b@v1.2.3"),
+        _dependency("go.mod:github.com/a/b@1.3.0"),
+    ]
+
+    blocking = blocking_findings(findings, frozenset({"go.mod"}), "/ws", baseline=baseline)
+
+    assert [f.location for f in blocking] == ["go.mod:github.com/a/b@1.3.0"]
+
+
+@pytest.mark.parametrize(
+    ("path", "text", "expected"),
+    [
+        ("web/package-lock.json", _lock(**{"@babel/core": "7.0.0"}), {("@babel/core", "7.0.0")}),
+        (
+            "go.sum",
+            "github.com/google/uuid v1.6.0 h1:abc=\ngithub.com/google/uuid v1.6.0/go.mod h1:d=\n",
+            {("github.com/google/uuid", "1.6.0")},
+        ),
+        ("go.mod", "module x\n\nrequire github.com/a/b v1.2.3\n", {("github.com/a/b", "1.2.3")}),
+        (
+            "requirements-dev.txt",
+            "Flask_Login==0.6.3  # pinned\n-r base.txt\n",
+            {("flask-login", "0.6.3")},
+        ),
+        ("pom.xml", "<project/>", None),
+    ],
+)
+def test_a_dependency_file_lists_the_packages_its_format_names(path, text, expected):
+    assert packages_in(path, text) == (None if expected is None else frozenset(expected))

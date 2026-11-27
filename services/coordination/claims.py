@@ -51,6 +51,7 @@ class WorkUnit:
     file_impact: tuple[str, ...] = ()
     workflow_id: str = ""
     tenant: str = ""
+    repo: str = ""
 
 
 @dataclass(frozen=True)
@@ -88,13 +89,17 @@ def partition_by_file_impact(units: Iterable[WorkUnit]) -> Schedule:
 
 
 async def _holding(
-    claims: Iterable[WorkUnit], path: str, owner_active: OwnerActive | None
+    claims: Iterable[WorkUnit], path: str, repo: str, owner_active: OwnerActive | None
 ) -> list[WorkUnit]:
-    """The given claimed rows that cover `path` and that no other run could reclaim."""
+    """The given claimed rows that cover `path` in `repo` and that no other run could reclaim.
+
+    An empty repository on either side matches every repository.
+    """
     return [
         claim
         for claim in claims
-        if path_within(path, claim.file_impact)
+        if (not repo or not claim.repo or claim.repo == repo)
+        and path_within(path, claim.file_impact)
         and not await _is_reclaimable(CLAIMED, claim.workflow_id, owner_active)
     ]
 
@@ -103,7 +108,7 @@ class WorkClaimStore(Protocol):
     async def try_claim(self, unit: WorkUnit) -> ClaimOutcome: ...
 
     async def active_claims_covering(
-        self, path: str, *, task_id: str, work_unit: str, tenant: str
+        self, path: str, *, task_id: str, work_unit: str, tenant: str, repo: str
     ) -> list[WorkUnit]: ...
 
     async def transition(
@@ -137,6 +142,7 @@ class PostgresWorkClaimStore:
                     .values(
                         claim_id=claim_id,
                         tenant=unit.tenant,
+                        repo=unit.repo,
                         task_id=unit.task_id,
                         work_unit=unit.work_unit,
                         execution_id=unit.execution_id,
@@ -183,6 +189,7 @@ class PostgresWorkClaimStore:
                         execution_id=unit.execution_id,
                         agent_id=unit.agent_id,
                         file_impact=list(unit.file_impact) or None,
+                        repo=unit.repo,
                         owner_workflow_id=unit.workflow_id or None,
                         state=CLAIMED,
                         released_at=None,
@@ -201,7 +208,7 @@ class PostgresWorkClaimStore:
         return ClaimOutcome(claim_id, False, current.claim_version if current else 0)
 
     async def active_claims_covering(
-        self, path: str, *, task_id: str, work_unit: str, tenant: str
+        self, path: str, *, task_id: str, work_unit: str, tenant: str, repo: str
     ) -> list[WorkUnit]:
         engine = self._get_engine()
         async with engine.begin() as conn:
@@ -214,6 +221,7 @@ class PostgresWorkClaimStore:
                         work_claims.c.agent_id,
                         work_claims.c.file_impact,
                         work_claims.c.owner_workflow_id,
+                        work_claims.c.repo,
                     ).where(
                         work_claims.c.tenant == tenant,
                         work_claims.c.state == CLAIMED,
@@ -230,10 +238,11 @@ class PostgresWorkClaimStore:
                 file_impact=tuple(row.file_impact or ()),
                 workflow_id=row.owner_workflow_id or "",
                 tenant=tenant,
+                repo=row.repo,
             )
             for row in rows
         ]
-        return await _holding(claims, path, self._owner_active)
+        return await _holding(claims, path, repo, self._owner_active)
 
     async def transition(
         self, claim_id: str, *, expected_version: int, new_state: str
@@ -322,7 +331,7 @@ class InMemoryWorkClaimStore:
         return ClaimOutcome(claim_id, True, 1)
 
     async def active_claims_covering(
-        self, path: str, *, task_id: str, work_unit: str, tenant: str
+        self, path: str, *, task_id: str, work_unit: str, tenant: str, repo: str
     ) -> list[WorkUnit]:
         claims = [
             unit
@@ -332,7 +341,7 @@ class InMemoryWorkClaimStore:
             and unit.tenant == tenant
             and (unit.task_id, unit.work_unit) != (task_id, work_unit)
         ]
-        return await _holding(claims, path, self._owner_active)
+        return await _holding(claims, path, repo, self._owner_active)
 
     async def transition(
         self, claim_id: str, *, expected_version: int, new_state: str

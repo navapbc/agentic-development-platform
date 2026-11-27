@@ -1,4 +1,4 @@
-"""Real security scanner backends: Semgrep for SAST and Trivy for dependency scans.
+"""Real security scanner backends: Semgrep for SAST, and Trivy and OSV-Scanner for dependencies.
 
 Each backend shells out to its tool over an injectable command seam and normalizes the
 tool's JSON into the shared ScanFinding vocabulary. The concrete tool never reaches the
@@ -22,6 +22,7 @@ from adapters.interfaces.security_scanner import (
     UNKNOWN,
     ScanFinding,
     ScanTarget,
+    is_malicious,
 )
 from scripts.config import Settings, get_settings
 from services import process
@@ -101,8 +102,12 @@ def _trivy_findings(payload: dict) -> list[ScanFinding]:
     for result in payload.get("Results") or []:
         target = str(result.get("Target") or "")
         for vuln in result.get("Vulnerabilities") or []:
-            severity = _TRIVY_SEVERITY.get(str(vuln.get("Severity") or "").upper(), UNKNOWN)
             vuln_id = str(vuln.get("VulnerabilityID") or "")
+            severity = (
+                CRITICAL
+                if is_malicious([vuln_id], vuln.get("CweIDs") or ())
+                else _TRIVY_SEVERITY.get(str(vuln.get("Severity") or "").upper(), UNKNOWN)
+            )
             package = str(vuln.get("PkgName") or "")
             version = str(vuln.get("InstalledVersion") or "")
             findings.append(
@@ -164,3 +169,115 @@ class RealTrivyScanner:
         if result.returncode not in self._ok_codes:
             raise ScannerError(self.name, result.returncode, result.stderr)
         return _trivy_findings(json.loads(result.stdout or "{}"))
+
+
+# The osv-scanner image carries its npm, PyPI, Go, and Maven databases in the first directory,
+# for a scan whose pod cannot download fresh ones, and downloads into the second.
+OSV_BAKED_DATABASES = "/opt/osv-scanner/db"
+_OSV_FRESH_DATABASES = "/opt/osv-scanner/fresh"
+_OSV_SEVERITY = {**_TRIVY_SEVERITY, "MODERATE": MEDIUM}
+_OSV_FINDINGS = 1
+_OSV_NO_PACKAGES = 128
+
+
+def _cvss_severity(score: str) -> str:
+    try:
+        value = float(score)
+    except ValueError:
+        return UNKNOWN
+    for floor, severity in ((9.0, CRITICAL), (7.0, HIGH), (4.0, MEDIUM), (0.1, LOW)):
+        if value >= floor:
+            return severity
+    return UNKNOWN
+
+
+def _osv_findings(payload: dict, repo_root: str) -> list[ScanFinding]:
+    """One finding per advisory group of each package, located like a trivy finding.
+
+    A group joins the aliases of one advisory, and its severity is the advisory's GitHub rating,
+    or else the group's highest CVSS score. A malicious-package advisory carries neither.
+    """
+    root = f"{repo_root.rstrip('/')}/"
+    findings: list[ScanFinding] = []
+    for result in payload.get("results") or []:
+        path = str((result.get("source") or {}).get("path") or "").removeprefix(root)
+        for entry in result.get("packages") or []:
+            package = entry.get("package") or {}
+            name, version = str(package.get("name") or ""), str(package.get("version") or "")
+            advisories = {str(v.get("id")): v for v in entry.get("vulnerabilities") or []}
+            for group in entry.get("groups") or []:
+                ids = [str(i) for i in group.get("ids") or []]
+                advisory = next((advisories[i] for i in ids if i in advisories), {})
+                specific = advisory.get("database_specific") or {}
+                aliases = [*ids, *(advisory.get("aliases") or [])]
+                if is_malicious(aliases, specific.get("cwe_ids") or ()):
+                    severity = CRITICAL
+                else:
+                    severity = _OSV_SEVERITY.get(
+                        str(specific.get("severity") or "").upper()
+                    ) or _cvss_severity(str(group.get("max_severity") or ""))
+                advisory_id = ids[0] if ids else ""
+                findings.append(
+                    ScanFinding(
+                        finding_id=f"osv-scanner:{advisory_id}:{name}@{version}",
+                        scanner="osv-scanner",
+                        kind=DEPENDENCY,
+                        severity=severity,
+                        title=str(advisory.get("summary") or advisory_id),
+                        detail=str(advisory.get("details") or ""),
+                        location=f"{path}:{name}@{version}",
+                        rule_id=advisory_id,
+                    )
+                )
+    return findings
+
+
+class RealOsvScanner:
+    """OSV-Scanner over the checkout's lockfiles and manifests, from its offline databases.
+
+    Each scan downloads the current databases first. When the download fails, as it does
+    without egress to the OSV bucket, the scan runs again on the databases the image carries.
+    """
+
+    name = "osv-scanner"
+    _ok_codes = frozenset({0, _OSV_FINDINGS})
+
+    def __init__(self, *, binary: str = "osv-scanner", runner: CommandRunner | None = None) -> None:
+        self._binary = binary
+        self._runner = runner or run_subprocess
+
+    @classmethod
+    def from_settings(
+        cls, settings: Settings | None = None, *, runner: CommandRunner | None = None
+    ) -> RealOsvScanner:
+        return cls(runner=runner)
+
+    def _args(self, databases: str, *, download: bool, repo_root: str) -> list[str]:
+        return [
+            "env",
+            f"OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY={databases}",
+            self._binary,
+            "scan",
+            "source",
+            "--offline-vulnerabilities",
+            *(["--download-offline-databases"] if download else []),
+            "--format",
+            "json",
+            "-r",
+            repo_root,
+        ]
+
+    async def scan(self, target: ScanTarget) -> list[ScanFinding]:
+        root = target.repo_root
+        result = await self._runner(
+            self._args(_OSV_FRESH_DATABASES, download=True, repo_root=root), root
+        )
+        if result.returncode not in self._ok_codes | {_OSV_NO_PACKAGES}:
+            result = await self._runner(
+                self._args(OSV_BAKED_DATABASES, download=False, repo_root=root), root
+            )
+        if result.returncode == _OSV_NO_PACKAGES:
+            return []
+        if result.returncode not in self._ok_codes:
+            raise ScannerError(self.name, result.returncode, result.stderr)
+        return _osv_findings(json.loads(result.stdout or "{}"), root)

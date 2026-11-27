@@ -105,11 +105,17 @@ class CoordinationClient:
         return ClaimOutcome(**data)
 
     async def active_claims_covering(
-        self, path: str, *, task_id: str, work_unit: str, tenant: str
+        self, path: str, *, task_id: str, work_unit: str, tenant: str, repo: str
     ) -> list[WorkUnit]:
         data = await self._post(
             "/claims/covering",
-            {"path": path, "task_id": task_id, "work_unit": work_unit, "tenant": tenant},
+            {
+                "path": path,
+                "task_id": task_id,
+                "work_unit": work_unit,
+                "tenant": tenant,
+                "repo": repo,
+            },
         )
         return [_work_unit(claim) for claim in data["claims"]]
 
@@ -133,6 +139,7 @@ def _work_unit_body(unit: WorkUnit) -> dict[str, Any]:
         "file_impact": list(unit.file_impact),
         "workflow_id": unit.workflow_id,
         "tenant": unit.tenant,
+        "repo": unit.repo,
     }
 
 

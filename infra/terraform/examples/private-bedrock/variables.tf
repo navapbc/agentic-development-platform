@@ -402,7 +402,7 @@ variable "eks_load_balancer_controller_image_repository" {
 }
 
 variable "eks_gate_image_repository_arns" {
-  description = "ECR repositories of the gate engine images the gate pods pull in image mode, beyond the semgrep and trivy repositories the scanner pods pull from."
+  description = "ECR repositories of the gate engine images the gate pods pull in image mode, beyond the semgrep, trivy, and osv-scanner repositories the scanner pods pull from."
   type        = list(string)
   default     = []
 }
@@ -497,6 +497,12 @@ variable "eks_runtime_images" {
 
 variable "eks_trivy_image" {
   description = "trivy image of the scanner pods, for TRIVY_IMAGE. inv publish-platform-images writes it to images.auto.tfvars.json."
+  type        = string
+  default     = ""
+}
+
+variable "eks_osv_scanner_image" {
+  description = "osv-scanner image of the scanner pods, for OSV_SCANNER_IMAGE. inv publish-platform-images writes it to images.auto.tfvars.json."
   type        = string
   default     = ""
 }

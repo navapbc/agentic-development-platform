@@ -165,6 +165,7 @@ work_claims = Table(
     _created_at(),
     Column("released_at", DateTime(timezone=True), nullable=True),
     Column("tenant", String(32), nullable=False, server_default=""),
+    Column("repo", String(255), nullable=False, server_default=""),
     UniqueConstraint("tenant", "task_id", "work_unit", name="uq_work_claims_tenant_task_work_unit"),
 )
 

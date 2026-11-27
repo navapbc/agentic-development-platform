@@ -387,6 +387,34 @@ async def test_a_grant_resumes_the_parked_run_and_a_deny_leaves_it_parked(action
     assert ("Resumed wf-1." in outcome.reply) is resumes
 
 
+async def test_a_grant_whose_resume_failed_keeps_its_post_until_a_second_click_resumes():
+    store = InMemoryLimitGrants([_grant(state=REQUESTED, admin_slack_ts="171.1")])
+    posts = RecordingPosts()
+    attempts: list[str] = []
+
+    async def resume(grant: Any) -> list[str]:
+        attempts.append(grant.request_id)
+        if len(attempts) == 1:
+            raise RuntimeError("deadline exceeded")
+        return ["wf-1"]
+
+    async def audit(event: Any) -> None:
+        return None
+
+    decisions = LimitGrantDecisions(
+        store=store, audit=audit, posts=posts, resume=resume, clock=lambda: NOW
+    )
+
+    failed = await decisions.act(_click("req-1", GRANT_LIMIT))
+    unchanged = list(posts.updates)
+    retried = await decisions.act(_click("req-1", GRANT_LIMIT))
+
+    assert not failed.applied and "deadline exceeded" in failed.reply
+    assert store.rows["req-1"].state == GRANTED and unchanged == []
+    assert retried.applied and "Resumed wf-1." in retried.reply
+    assert len(posts.updates) == 1
+
+
 PARK_KEY = "exec-1:repair:IMPLEMENTATION_MAX_COST_USD:2"
 LIMIT_REF = LimitRequestRef(usage=4.1, park_key=PARK_KEY)
 

@@ -82,6 +82,7 @@ locals {
       GATE_ENGINE_BUILDER_IMAGE    = var.eks_buildah_image
       SEMGREP_IMAGE                = var.eks_semgrep_image
       TRIVY_IMAGE                  = var.eks_trivy_image
+      OSV_SCANNER_IMAGE            = var.eks_osv_scanner_image
       GATE_ENGINE_IMAGES           = jsonencode(var.eks_gate_engine_images)
       RUNTIME_IMAGES               = jsonencode(var.eks_runtime_images)
     }

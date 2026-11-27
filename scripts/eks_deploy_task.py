@@ -52,7 +52,13 @@ from typing import Any
 
 from services import process
 
-from scripts.eks_render import PLATFORM_NAMESPACE, RenderError, render, workloads_last
+from scripts.eks_render import (
+    PLATFORM_NAMESPACE,
+    RenderError,
+    render,
+    termination_grace,
+    workloads_last,
+)
 from scripts.worker_slots import (
     PinnedRuns,
     SlotRefusal,
@@ -71,8 +77,9 @@ CHART = ROOT / "charts" / "aws-load-balancer-controller.tgz"
 DEPLOYMENTS = ("litellm", "inbound-webhook")
 COMMAND_TIMEOUT = 300
 CLAIM_DELETE_SECONDS = 300
-ROLLOUT_TIMEOUT = "10m"
-SCALE_UP_TIMEOUT = "5m"
+ROLLOUT_SECONDS = 600
+ROLLOUT_TIMEOUT = f"{ROLLOUT_SECONDS}s"
+SCALE_UP_SECONDS = 300
 LOG = "[eks-deployer]"
 RUNNING_POD = f"{LOG} running pod "
 REPLICAS_ANNOTATION = "off-hours.agentic-dev-platform/replicas"
@@ -242,9 +249,13 @@ def tenant_gateways(inputs: Mapping[str, Any]) -> list[str]:
     return [f"{worker_namespace(entry['name'])}/{GATEWAY}" for entry in inputs.get("tenants") or []]
 
 
-def rollout(targets: Iterable[str], timeout: str = ROLLOUT_TIMEOUT) -> None:
+def rollout(
+    targets: Iterable[str], seconds: int = ROLLOUT_SECONDS, *, replaces_pods: bool = True
+) -> None:
+    """Wait for each Deployment to roll out and for the pods it replaces to stop."""
     for target in targets:
         namespace, name = _namespaced(target)
+        wait = seconds + (termination_grace(get_deployment(target)) if replaces_pods else 0)
         try:
             run(
                 [
@@ -254,9 +265,9 @@ def rollout(targets: Iterable[str], timeout: str = ROLLOUT_TIMEOUT) -> None:
                     "rollout",
                     "status",
                     f"deployment/{name}",
-                    f"--timeout={timeout}",
+                    f"--timeout={wait}s",
                 ],
-                timeout=900,
+                timeout=wait + 60,
             )
         except DeployError:
             diagnose(name, namespace)
@@ -291,15 +302,20 @@ def replace_changed_claims(documents: list[dict[str, Any]]) -> dict[str, int]:
         )
         drains.update(_drain_replicas(namespace))
         run([KUBECTL, "-n", namespace, "scale", "deployment", "--all", "--replicas=0"])
-        wait = ["--wait=true", f"--timeout={CLAIM_DELETE_SECONDS}s"]
-        run(
-            [KUBECTL, "-n", namespace, "delete", "pvc", name, *wait],
-            timeout=CLAIM_DELETE_SECONDS + 60,
+        seconds = CLAIM_DELETE_SECONDS + max(
+            (
+                termination_grace(d)
+                for d in documents
+                if d.get("kind") == "Deployment" and d["metadata"].get("namespace") == namespace
+            ),
+            default=0,
         )
+        wait = ["--wait=true", f"--timeout={seconds}s"]
+        run([KUBECTL, "-n", namespace, "delete", "pvc", name, *wait], timeout=seconds + 60)
         if current.get("volumeName"):
             run(
                 [KUBECTL, "delete", "pv", current["volumeName"], "--ignore-not-found", *wait],
-                timeout=CLAIM_DELETE_SECONDS + 60,
+                timeout=seconds + 60,
             )
     return drains
 
@@ -668,6 +684,7 @@ def recreate_current(moves: Iterable[SlotMove]) -> None:
             continue
         namespace, name = _namespaced(move.worker)
         print(f"{LOG} recreating {move.worker}, whose selector gains the slot label")
+        seconds = POD_EXIT_SECONDS + termination_grace(move.current)
         run(
             [
                 KUBECTL,
@@ -678,9 +695,9 @@ def recreate_current(moves: Iterable[SlotMove]) -> None:
                 name,
                 "--cascade=foreground",
                 "--wait=true",
-                f"--timeout={POD_EXIT_SECONDS}s",
+                f"--timeout={seconds}s",
             ],
-            timeout=POD_EXIT_SECONDS + 60,
+            timeout=seconds + 60,
         )
 
 
@@ -805,7 +822,7 @@ def scale_up(targets: list[str], inputs: Mapping[str, Any]) -> None:
         )
         print(f"{LOG} {target} scaled to {replicas}")
         restored.append(target)
-    rollout(restored, timeout=SCALE_UP_TIMEOUT)
+    rollout(restored, SCALE_UP_SECONDS, replaces_pods=False)
 
 
 def running_pods(targets: Iterable[str]) -> list[str]:

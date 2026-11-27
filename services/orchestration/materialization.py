@@ -26,6 +26,7 @@ class StagedChange:
     tree: str
     changed: bool
     outside_file_impact: tuple[str, ...] = ()
+    paths: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -247,13 +248,21 @@ class WorkspaceMaterializer:
         """
         path = str(workspace.path)
         await _git("add", "-A", cwd=path)
-        outside: tuple[str, ...] = ()
-        if file_impact:
-            staged_paths = await self.diff_paths_against(workspace, "HEAD")
-            outside = tuple(p for p in staged_paths if not path_within(p, file_impact))
+        staged_paths = tuple(await self.diff_paths_against(workspace, "HEAD"))
+        outside = (
+            tuple(p for p in staged_paths if not path_within(p, file_impact)) if file_impact else ()
+        )
         tree = await _git("write-tree", cwd=path)
         head_tree = await _git("rev-parse", "HEAD^{tree}", cwd=path)
-        return StagedChange(tree=tree, changed=tree != head_tree, outside_file_impact=outside)
+        return StagedChange(
+            tree=tree, changed=tree != head_tree, outside_file_impact=outside, paths=staged_paths
+        )
+
+    async def staged_diff(self, workspace: MaterializedWorkspace, paths: Sequence[str]) -> str:
+        """The staged change to `paths`, as a unified diff against HEAD."""
+        return await _git(
+            "diff", "--cached", "--no-color", "HEAD", "--", *paths, cwd=str(workspace.path)
+        )
 
     async def build_commit_request(
         self,

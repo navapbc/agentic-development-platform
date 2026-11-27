@@ -31,6 +31,7 @@ catalog:
   - docker.io/library/agentic-dev-platform-buildah
   - host.docker.internal:5001/semgrep
   - host.docker.internal:5001/trivy
+  - host.docker.internal:5001/osv-scanner
 
 tenant_prefix: host.docker.internal:5001/tenants/{tenant}/
 
@@ -40,6 +41,7 @@ registries:
   - ghcr.io/openhands/agent-server
   - docker.io/semgrep/semgrep
   - docker.io/aquasec/trivy
+  - ghcr.io/google/osv-scanner
   - docker.io/library/
   - public.ecr.aws/docker/library/
   - public.ecr.aws/amazonlinux/

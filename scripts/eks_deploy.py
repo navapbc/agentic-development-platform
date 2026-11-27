@@ -35,7 +35,8 @@ from scripts.tenant_render import GATEWAY, worker_namespace
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PROVIDERS = REPO_ROOT / "deploy" / "kubernetes" / "aws" / "secret-provider-classes.yaml"
 TASK = "eks-deployer"
-TASK_WAIT = {"Delay": 10, "MaxAttempts": 180}
+# A deploy can wait through a worker's 2460-second termination grace while its activities finish.
+TASK_WAIT = {"Delay": 10, "MaxAttempts": 540}
 LOG = "[eks-deploy]"
 REVIEW_SIGNING_KEY = "review_signing_key"
 CLUSTER_TAG = "elbv2.k8s.aws/cluster"

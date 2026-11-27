@@ -11,7 +11,9 @@ it is identical in Docker Desktop Kubernetes and on EKS and needs no registry.
 from __future__ import annotations
 
 import base64
+import contextlib
 import shlex
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -50,6 +52,7 @@ class ChecksSpec:
     working_dir: str = "/workspace"
     fix_command: str = ""
     changed_paths: tuple[str, ...] = ()
+    lock_command: str = ""
 
 
 @dataclass(frozen=True)
@@ -63,6 +66,15 @@ class ChecksFixResult:
     """Outcome of running a project's declared fix command and re-running its checks."""
 
     verified: bool
+    exit_code: int
+    output: str
+    changed_files: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ChecksLockResult:
+    """Outcome of regenerating a project's lockfiles, with the files the lock command wrote."""
+
     exit_code: int
     output: str
     changed_files: tuple[str, ...] = ()
@@ -101,12 +113,17 @@ def _tls_flag(spec: ChecksSpec, tls_verify: bool) -> str:
     return "--tls-verify=false " if spec.image and not tls_verify else ""
 
 
-def _checks_script(
+def _encoded(script: str) -> str:
+    return f"echo {base64.b64encode(script.encode()).decode()} | base64 -d | sh"
+
+
+def _container_script(
     spec: ChecksSpec,
-    registry: registry_auth_script.RegistrySetup = registry_auth_script.NO_REGISTRY,
-    tls_verify: bool = True,
+    inner: str,
+    registry: registry_auth_script.RegistrySetup,
+    tls_verify: bool,
 ) -> str:
-    b64 = base64.b64encode(spec.command.encode()).decode()
+    """Acquire the project's image, built or pulled, and run `inner` in it on the workspace."""
     if spec.build:
         dockerfile = f"{_WORKSPACE_MOUNT}/{spec.build.lstrip('/')}"
         acquire = (
@@ -115,10 +132,6 @@ def _checks_script(
         )
     else:
         acquire = f"img={shlex.quote(spec.image)}"
-    inner = f"cd {shlex.quote(spec.working_dir)} && echo {b64} | base64 -d | sh"
-    changed = _changed_paths_statement(spec)
-    if changed:
-        inner = f"{changed}\n{inner}"
     return (
         "set -e\n"
         f"{registry.before_pull()}"
@@ -137,12 +150,39 @@ def _checks_script(
     )
 
 
+def _checks_script(
+    spec: ChecksSpec,
+    registry: registry_auth_script.RegistrySetup = registry_auth_script.NO_REGISTRY,
+    tls_verify: bool = True,
+) -> str:
+    inner = f"cd {shlex.quote(spec.working_dir)} && {_encoded(spec.command)}"
+    changed = _changed_paths_statement(spec)
+    if changed:
+        inner = f"{changed}\n{inner}"
+    return _container_script(spec, inner, registry, tls_verify)
+
+
 _MARKER = f"{_WORKSPACE_MOUNT}/.gatefix.marker"
 _MANIFEST = f"{_WORKSPACE_MOUNT}/.gatefix.list"
 _FILES_BEGIN = "GATEFIX_FILES_BEGIN"
 _FILES_END = "GATEFIX_FILES_END"
 _VERIFY_RC = "GATEFIX_VERIFY_RC="
 _FIX_FAILED = "fix command exited "
+
+
+_LIST_CHANGED_FILES = (
+    f"cd {_WORKSPACE_MOUNT} || exit 1",
+    (
+        "find . \\( -name node_modules -o -name .git -o -name .venv "
+        "-o -name __pycache__ -o -name .pytest_cache -o -name .ruff_cache "
+        "-o -name .mypy_cache \\) -prune -o "
+        f"-type f -newer {_MARKER} -print 2>/dev/null "
+        f"| grep -v '/\\.gatefix\\.' | grep -v '^\\./\\.gatefix\\.' > {_MANIFEST}"
+    ),
+    f"echo {_FILES_BEGIN}",
+    f"cat {_MANIFEST}",
+    f"echo {_FILES_END}",
+)
 
 
 def _fix_inner_script(spec: ChecksSpec) -> str:
@@ -164,17 +204,7 @@ def _fix_inner_script(spec: ChecksSpec) -> str:
         spec.fix_command,
         "fix_rc=$?",
         f'[ "$fix_rc" -eq 0 ] || echo "{_FIX_FAILED}$fix_rc"',
-        f"cd {_WORKSPACE_MOUNT} || exit 1",
-        (
-            "find . \\( -name node_modules -o -name .git -o -name .venv "
-            "-o -name __pycache__ -o -name .pytest_cache -o -name .ruff_cache "
-            "-o -name .mypy_cache \\) -prune -o "
-            f"-type f -newer {_MARKER} -print 2>/dev/null "
-            f"| grep -v '/\\.gatefix\\.' | grep -v '^\\./\\.gatefix\\.' > {_MANIFEST}"
-        ),
-        f"echo {_FILES_BEGIN}",
-        f"cat {_MANIFEST}",
-        f"echo {_FILES_END}",
+        *_LIST_CHANGED_FILES,
         f"cd {wd} || exit 1",
         spec.command,
         "verify_rc=$?",
@@ -186,37 +216,21 @@ def _fix_inner_script(spec: ChecksSpec) -> str:
     return "\n".join(lines)
 
 
-def _fix_script(
-    spec: ChecksSpec,
-    registry: registry_auth_script.RegistrySetup = registry_auth_script.NO_REGISTRY,
-    tls_verify: bool = True,
-) -> str:
-    b64 = base64.b64encode(_fix_inner_script(spec).encode()).decode()
-    if spec.build:
-        dockerfile = f"{_WORKSPACE_MOUNT}/{spec.build.lstrip('/')}"
-        acquire = (
-            f"buildah bud {registry.build_flags()}-f {shlex.quote(dockerfile)} -t {_CHECKS_TAG} "
-            f"{shlex.quote(_WORKSPACE_MOUNT)} >&2 && img={_CHECKS_TAG}"
+def _lock_inner_script(spec: ChecksSpec, directories: Sequence[str]) -> str:
+    """Run the lock command in each directory and list the files it wrote, and nothing else.
+
+    No checks command runs, so the lockfile comes out whether or not the project's tests would
+    pass, and the script exits with the first failing lock command's status.
+    """
+    lines = [f"touch {_MARKER}", "lock_rc=0"]
+    for directory in directories:
+        path = f"{_WORKSPACE_MOUNT}/{directory}".rstrip("/")
+        lines.append(
+            f"cd {shlex.quote(path)} && {spec.lock_command} || "
+            '{ rc=$?; [ "$lock_rc" -ne 0 ] || lock_rc=$rc; }'
         )
-    else:
-        acquire = f"img={shlex.quote(spec.image)}"
-    inner = f"echo {b64} | base64 -d | sh"
-    return (
-        "set -e\n"
-        f"{registry.before_pull()}"
-        f"{acquire}\n"
-        'hostflag=""\n'
-        f"gw=$(getent hosts {_HOST_GATEWAY_ALIAS} 2>/dev/null | awk '{{print $1}}' | head -1)\n"
-        f'if [ -n "$gw" ]; then hostflag="--add-host {_HOST_GATEWAY_ALIAS}:$gw"; fi\n'
-        f'ctr=$(buildah from $hostflag {_tls_flag(spec, tls_verify)}"$img")\n'
-        f"{registry.after_pull()}"
-        "set +e\n"
-        f"buildah run --net host -v {_WORKSPACE_MOUNT}:{_WORKSPACE_MOUNT} "
-        f"{_OWNERSHIP_FLAGS} {registry.run_flags()}"
-        f'"$ctr" -- sh -lc {shlex.quote(inner)} 2>&1\n'
-        "rc=$?\n"
-        "exit $rc\n"
-    )
+    lines += [*_LIST_CHANGED_FILES, "exit $lock_rc"]
+    return "\n".join(lines)
 
 
 def parse_fix_output(text: str) -> tuple[tuple[str, ...], str]:
@@ -267,8 +281,12 @@ class ChecksRunner:
         self._privileged = privileged
         self._node_pool = node_pool
 
-    async def run_checks(self, spec: ChecksSpec) -> ChecksResult:
-        pod = checks_pod_name(spec.repo, spec.execution_id)
+    @contextlib.asynccontextmanager
+    async def _pod(
+        self, spec: ChecksSpec, suffix: str = ""
+    ) -> AsyncIterator[tuple[str, registry_auth_script.RegistrySetup]]:
+        """A checks pod holding the checkout, with the registry setup for the project's image."""
+        pod = checks_pod_name(spec.repo, f"{spec.execution_id}{suffix}")
         manifest = build_pod_manifest(
             pod,
             self._namespace,
@@ -283,14 +301,18 @@ class ChecksRunner:
         try:
             await self._ops.wait_ready(pod, self._namespace)
             await self._ops.copy_in(pod, self._namespace, spec.checkout_dir, _WORKSPACE_MOUNT)
-            registry = await registry_auth_script.install(self._ops, pod, self._namespace, images)
-            code, stdout, stderr = await self._ops.exec_capture(
-                pod, self._namespace, _checks_script(spec, registry, self._tls_verify)
-            )
-            output = stdout if not stderr else f"{stdout}\n{stderr}" if stdout else stderr
-            return ChecksResult(exit_code=code, output=output.strip())
+            yield pod, await registry_auth_script.install(self._ops, pod, self._namespace, images)
         finally:
             await self._ops.delete(pod, self._namespace)
+
+    async def _exec(self, pod: str, script: str) -> tuple[int, str]:
+        code, stdout, stderr = await self._ops.exec_capture(pod, self._namespace, script)
+        return code, stdout if not stderr else f"{stdout}\n{stderr}" if stdout else stderr
+
+    async def run_checks(self, spec: ChecksSpec) -> ChecksResult:
+        async with self._pod(spec) as (pod, registry):
+            code, output = await self._exec(pod, _checks_script(spec, registry, self._tls_verify))
+        return ChecksResult(exit_code=code, output=output.strip())
 
     async def run_fix(self, spec: ChecksSpec, staging_dir: str) -> ChecksFixResult:
         """Apply the project's declared fix command, verify it, and stage what it changed.
@@ -300,36 +322,50 @@ class ChecksRunner:
         """
         if not spec.fix_command:
             return ChecksFixResult(verified=False, exit_code=1, output="no fix_command declared")
-        pod = checks_pod_name(spec.repo, f"{spec.execution_id}-fix")
-        manifest = build_pod_manifest(
-            pod,
-            self._namespace,
-            self._builder_image,
-            self._privileged,
-            CHECKS_POD_RESOURCES,
-            node_pool=self._node_pool,
-            service_account=image_admission.pod_service_account(),
+        code, changed, output = await self._run_staged(
+            spec, "-fix", _fix_inner_script(spec), staging_dir
         )
-        images = [spec.image, self._builder_image, *_build_images(spec)]
-        await self._ops.create(manifest)
-        try:
-            await self._ops.wait_ready(pod, self._namespace)
-            await self._ops.copy_in(pod, self._namespace, spec.checkout_dir, _WORKSPACE_MOUNT)
-            registry = await registry_auth_script.install(self._ops, pod, self._namespace, images)
-            code, stdout, stderr = await self._ops.exec_capture(
-                pod, self._namespace, _fix_script(spec, registry, self._tls_verify)
+        return ChecksFixResult(
+            verified=code == 0 and bool(changed),
+            exit_code=code,
+            output=output,
+            changed_files=changed,
+        )
+
+    async def run_lock(
+        self, spec: ChecksSpec, directories: Sequence[str], staging_dir: str
+    ) -> ChecksLockResult:
+        """Regenerate the lockfiles of `directories`, relative to the checkout, and stage them."""
+        code, changed, output = await self._run_staged(
+            spec, "-lock", _lock_inner_script(spec, directories), staging_dir
+        )
+        return ChecksLockResult(exit_code=code, output=output, changed_files=changed)
+
+    async def _run_staged(
+        self, spec: ChecksSpec, suffix: str, script: str, staging_dir: str
+    ) -> tuple[int, tuple[str, ...], str]:
+        """Run `script` in the project's image and stage the files it changed when it exits 0."""
+        async with self._pod(spec, suffix) as (pod, registry):
+            code, combined = await self._exec(
+                pod, _container_script(spec, _encoded(script), registry, self._tls_verify)
             )
-            combined = stdout if not stderr else f"{stdout}\n{stderr}" if stdout else stderr
             changed, output = parse_fix_output(combined)
             if code == 0 and changed:
                 await self._ops.copy_out(
                     pod, self._namespace, _WORKSPACE_MOUNT, staging_dir, _MANIFEST
                 )
-            return ChecksFixResult(
-                verified=code == 0 and bool(changed),
-                exit_code=code,
-                output=output,
-                changed_files=changed,
-            )
-        finally:
-            await self._ops.delete(pod, self._namespace)
+        return code, changed, output
+
+
+def checks_runner(settings) -> ChecksRunner:
+    """The checks runner the settings configure, over the kubectl pod transport."""
+    from services.orchestration.gates import pod_runner
+
+    return ChecksRunner(
+        pod_runner.KubectlPodOps(),
+        namespace=settings.gate_engine_namespace,
+        builder_image=settings.gate_engine_builder_image,
+        privileged=settings.gate_engine_privileged,
+        node_pool=settings.sandbox_node_pool,
+        tls_verify=settings.gate_registry_tls_verify,
+    )

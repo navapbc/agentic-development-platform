@@ -27,6 +27,17 @@ The platform builds all three as targets of [agent-server.Dockerfile](../docker/
 
 The platform builds all four as targets of [checks.Dockerfile](../docker/checks.Dockerfile) on Amazon Linux 2023 minimal, each with bash, git, and the archive tools. A profile names its checks image as `catalog:<name>`, which resolves through `RUNTIME_IMAGES` the way a sandbox image does, and a `checks.yaml` entry may name one the same way. The checks pods pull the dependencies a command installs through the registry mirrors that [gate-engine.md](gate-engine.md#registries) describes. Maven 3.8.4 defaults to version 3.1 of the compiler plugin, which ignores `maven.compiler.release`, so a project whose parent POM does not pin the plugin, as the Spring Boot parent does, pins version 3.6 or later itself.
 
+### The dependency step
+
+The agent sandbox reaches no package registry, so an agent that edits a manifest cannot write the lockfile the checks install from. Before each commit, the platform finds the changed dependency files, which are the manifests and lockfiles of npm, Go, Python, Maven, and Gradle in any directory. When the repository's checks name a `lock_command` and a changed file is one of its `lock_manifests` or `lockfiles`, the command runs in that file's directory in a checks pod, which reaches the registry, and no checks command runs beside it. The lockfiles and manifests it writes there are copied back into the change. The profiles set these defaults.
+
+| Profile | `lock_command` | `lock_manifests` | `lockfiles` |
+|---|---|---|---|
+| `node-react` | `npm install --package-lock-only --ignore-scripts --no-audit --no-fund` | `package.json` | `package-lock.json` |
+| `go-service` | `go mod tidy` | `go.mod` | `go.sum` |
+
+The step then scans the checkout with Trivy and OSV-Scanner, whichever scanner gates the tenant enables, before any checks command installs a package. A finding blocks only when it sits in a changed dependency file and names a package and version the merge-base copy of that file did not already hold, and a malicious-package advisory, an OSV `MAL-` entry or a GitHub advisory filed under CWE-506, counts as critical whatever severity it reports. A lock command that fails parks the run on the `lockfile` gate with the command and its output, and the scan still runs on the manifests and the lockfiles the change carries. A blocking finding parks the run on the `dependency_scan` gate, after an approved `lockfile` park when both apply. A base change to a lockfile that the profile regenerates is never a branch sync conflict, because the step rewrites it from the merged manifest.
+
 ### Gate engines
 
 `security-policy` and `test-policy`, the [example gate engines](../examples/gate-engines), are catalog engines defined in [config/platform/gate-engines.yaml](../config/platform/gate-engines.yaml). Every catalog profile enables `security-policy` as a required gate and `test-policy` as an advisory one.

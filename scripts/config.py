@@ -239,6 +239,10 @@ class Settings(BaseSettings):
         "docker.io/aquasec/trivy:0.74.0"
         "@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969"
     )
+    osv_scanner_image: str = (
+        "ghcr.io/google/osv-scanner:v2.7.1"
+        "@sha256:a70ffffc2bfd33482953e5d6b64c6fcdb30239717a07b0f0d3ab2859ce3e4cde"
+    )
     security_blocking_threshold: str = "high"
 
     openhands_agent_server_image: str = (

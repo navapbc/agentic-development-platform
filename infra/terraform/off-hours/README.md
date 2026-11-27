@@ -44,6 +44,8 @@ The steps run as a chain of asynchronous invocations of one function rather than
 | `StopFoundationServices` | `sleep` | Records and scales `foundation_services` to zero, and waits up to 540 seconds for their tasks to exit. |
 | `CheckBeforePause` | `check` | Fails while any listed service runs a task, an `eks_deployer` deployment runs a pod, or `pg_stat_activity` lists any client connection. |
 
+A tenant worker that is running an activity when the sleep starts keeps its pod until the activity finishes, for up to its 2460-second termination grace, so the check before the foundation fails and alerts while that pod runs, and the platform stays awake until the next sleep or a manual run from `ScaleDownDeployments`.
+
 ECS lowers a service's running count as soon as a task starts to stop, while its containers keep running through the load balancer drain and the stop timeout, so the wait reads the tasks rather than the count. A terminating pod counts as running for the same reason.
 
 The connection check reads `pg_stat_activity` in the `postgres` database through the RDS Data API as the user of the `database.monitor_secret_arn` secret, which is a member of `pg_monitor`. It counts only `client backend` sessions, and leaves out the RDS internal users `rdsadmin` and `rdsrepladmin` and its own user. The ECS and connection checks repeat every 10 seconds for up to 120 seconds, so a connection that closes as its task exits does not fail the check. A cluster that answers `DatabaseResumingException` was paused and holds no connection. Without `database`, the check reads no connection, and without `eks_deployer`, it reads no pod.

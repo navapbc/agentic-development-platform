@@ -310,6 +310,43 @@ def file_held_remedy(
     )
 
 
+def resync_conflict_remedy(issue_key: str) -> Remedy:
+    return remedy(
+        "The base branch changed files the agent branch also changed, which the alert lists, so "
+        "the retry could not bring the branch onto the current base. "
+        "Resolve the conflict on the base branch or on the agent branch, then run ",
+        retry_repair(issue_key),
+        " to sync again and rerun the checks, or run ",
+        abandon_repair(issue_key),
+        " to end the run.",
+    )
+
+
+def lockfile_failed_remedy(issue_key: str, gate: str, *, manifests: Sequence[str]) -> Remedy:
+    return remedy(
+        "The platform could not regenerate the lockfile of "
+        f"{', '.join(manifests) or '<manifest>'}, so the run committed nothing. The alert names "
+        "the command and its error output. Run ",
+        approve_gate(issue_key, gate),
+        " to commit the change without a regenerated lockfile, where the checks and the repair "
+        "loop meet the same error, or ",
+        reject_gate(issue_key, gate),
+        " to cancel the run.",
+    )
+
+
+def workflow_files_remedy(issue_key: str, gate: str, *, paths: Sequence[str]) -> Remedy:
+    return remedy(
+        f"The change adds or changes {', '.join(paths) or '<path>'}, which GitHub runs with the "
+        "repository's Actions secrets once the branch is pushed, so the run pushed nothing. "
+        "Review the diff in the alert, then run ",
+        approve_gate(issue_key, gate),
+        " to commit and push it, or ",
+        reject_gate(issue_key, gate),
+        " to cancel the run.",
+    )
+
+
 def gate_rejected_remedy(issue_key: str, gate: str) -> Remedy:
     return remedy(
         f"The {gate or '<gate>'} gate was rejected, so the run stopped and no pull request will "

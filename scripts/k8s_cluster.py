@@ -31,7 +31,7 @@ WORKER = "activity-worker"
 DEPLOYMENTS = ("litellm", "inbound-webhook")
 GATEWAY = "mcp-gateway"
 REVIEW_WORKER = "review-worker"
-ROLLOUT_TIMEOUT = "600s"
+ROLLOUT_SECONDS = 600
 _ARCHES = {"arm64": "arm64", "aarch64": "arm64", "x86_64": "amd64", "amd64": "amd64"}
 _PROBES = ("startupProbe", "readinessProbe", "livenessProbe")
 
@@ -287,7 +287,27 @@ def roll(settings: Settings, run: Runner = process.run) -> None:
     The renderer stamps each pod template with a digest of the images and generated config,
     so the apply itself rolls a deployment whose inputs changed.
     """
+    from scripts.eks_render import termination_grace
+
     for namespace, name in deployments(settings):
+        live = run(
+            kubectl(
+                settings,
+                "--namespace",
+                namespace,
+                "get",
+                "deployment",
+                name,
+                "-o",
+                "json",
+                "--ignore-not-found",
+            ),
+            timeout=process.SHORT_COMMAND_TIMEOUT_SECONDS,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        seconds = ROLLOUT_SECONDS + termination_grace(json.loads(live) if live.strip() else None)
         run(
             kubectl(
                 settings,
@@ -296,9 +316,9 @@ def roll(settings: Settings, run: Runner = process.run) -> None:
                 "rollout",
                 "status",
                 f"deployment/{name}",
-                f"--timeout={ROLLOUT_TIMEOUT}",
+                f"--timeout={seconds}s",
             ),
-            timeout=process.LONG_COMMAND_TIMEOUT_SECONDS,
+            timeout=seconds + 60,
             check=True,
         )
 

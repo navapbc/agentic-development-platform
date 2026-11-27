@@ -421,6 +421,29 @@ async def test_staging_an_undeclared_ticket_commits_every_changed_path(remote, t
     assert staged.outside_file_impact == ()
 
 
+async def test_a_staged_workflow_file_is_listed_and_its_diff_is_read(remote, tmp_path) -> None:
+    _, manifest_sha = remote
+    materializer = _materializer(remote, tmp_path)
+    workspace = await materializer.materialize(
+        repo=REPO,
+        task_id=TASK_ID,
+        execution_id=EXECUTION_ID,
+        base="main",
+        commit_sha=manifest_sha,
+    )
+    workflows = Path(workspace.path) / ".github" / "workflows"
+    workflows.mkdir(parents=True)
+    (workflows / "ci.yml").write_text("on: push\n", encoding="utf-8")
+    (Path(workspace.path) / "feature.py").write_text("print('hi')\n", encoding="utf-8")
+
+    staged = await materializer.stage(workspace)
+    diff = await materializer.staged_diff(workspace, [".github/workflows/ci.yml"])
+
+    assert staged.paths == (".github/workflows/ci.yml", "feature.py")
+    assert "+on: push" in diff
+    assert "feature.py" not in diff
+
+
 async def test_a_declared_file_in_a_new_directory_is_inside_the_file_impact(
     remote, tmp_path
 ) -> None:

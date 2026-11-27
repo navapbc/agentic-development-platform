@@ -104,7 +104,11 @@ def scanner_gate(name: str, scanner_factory: ScannerFactory) -> Gate:
 
 
 def builtin_scanner_backends() -> dict[str, ScannerFactory]:
-    from adapters.real.security_scanner import RealSemgrepScanner, RealTrivyScanner
+    from adapters.real.security_scanner import (
+        RealOsvScanner,
+        RealSemgrepScanner,
+        RealTrivyScanner,
+    )
 
     return {
         "semgrep": lambda settings=None: _scanner_backend(
@@ -112,6 +116,9 @@ def builtin_scanner_backends() -> dict[str, ScannerFactory]:
         ),
         "trivy": lambda settings=None: _scanner_backend(
             "trivy", RealTrivyScanner.from_settings, settings
+        ),
+        "osv-scanner": lambda settings=None: _scanner_backend(
+            "osv-scanner", RealOsvScanner.from_settings, settings
         ),
     }
 

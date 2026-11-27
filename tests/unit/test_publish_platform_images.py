@@ -275,6 +275,25 @@ def test_every_published_image_has_a_composition_root_variable() -> None:
     assert all(f'variable "{key}"' in variables for key in publisher.TFVARS_KEYS.values())
 
 
+def _terraform_list(path: str, name: str) -> set[str]:
+    text = (REPO_ROOT / path).read_text(encoding="utf-8")
+    body = re.search(rf"{name} = (?:toset\()?\[(.*?)\]", text, re.S).group(1)
+    return set(re.findall(r'"([^"]+)"', body))
+
+
+def test_every_published_image_has_an_ecr_repository_and_the_catalog_matches_terraform() -> None:
+    steps = publisher.image_steps(_stub_publisher(), REPO_ROOT, base_versions.load())
+
+    repositories = _terraform_list("infra/terraform/container-services/images.tf", "images")
+    catalog = _terraform_list(
+        "infra/terraform/examples/private-bedrock/image-governance.tf",
+        "image_catalog_repositories",
+    )
+
+    assert set(steps) <= repositories
+    assert catalog == publisher.SIGNED_CATALOG
+
+
 def test_the_gate_engine_images_map_to_their_engine_names() -> None:
     engine = f"{REGISTRY}/agentic-platform/gate-engine-test-policy:0.3.0-abc-arm64@{DIGEST}"
 

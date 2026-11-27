@@ -12,6 +12,7 @@ from adapters.interfaces.security_scanner import (
     HIGH,
     INFO,
     LOW,
+    MEDIUM,
     STATIC,
     ScanFinding,
     ScanTarget,
@@ -21,7 +22,9 @@ from adapters.interfaces.security_scanner import (
 )
 from adapters.mock.security_scanner import MockSecurityScanner
 from adapters.real.security_scanner import (
+    OSV_BAKED_DATABASES,
     CommandResult,
+    RealOsvScanner,
     RealSemgrepScanner,
     RealTrivyScanner,
     ScannerError,
@@ -131,6 +134,106 @@ async def test_trivy_backend_normalizes_dependency_findings():
     assert findings[0].scanner == "trivy"
     assert findings[0].rule_id == "CVE-2023-0001"
     assert findings[0].location == "requirements.txt:requests@2.0.0"
+
+
+async def test_a_malware_advisory_is_critical_whatever_severity_trivy_reports():
+    sample = json.dumps(
+        {
+            "Results": [
+                {
+                    "Target": "package-lock.json",
+                    "Vulnerabilities": [
+                        {
+                            "VulnerabilityID": "GHSA-mh6f-8j2x-4483",
+                            "PkgName": "flatmap-stream",
+                            "InstalledVersion": "0.1.1",
+                            "Severity": "LOW",
+                            "CweIDs": ["CWE-506"],
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+
+    findings = await RealTrivyScanner(runner=_runner(sample)).scan(_target())
+
+    assert [f.severity for f in findings] == [CRITICAL]
+
+
+_OSV_SAMPLE = json.dumps(
+    {
+        "results": [
+            {
+                "source": {"path": "/tmp/ws/agent-T-1/web/package-lock.json", "type": "lockfile"},
+                "packages": [
+                    {
+                        "package": {"name": "3layerdipstackbndk47", "version": "0.1.4"},
+                        "vulnerabilities": [
+                            {
+                                "id": "MAL-2026-14698",
+                                "aliases": ["GHSA-f6vp-8xqg-j5rv"],
+                                "summary": "Malicious code in 3layerdipstackbndk47 (npm)",
+                            }
+                        ],
+                        "groups": [{"ids": ["MAL-2026-14698"], "max_severity": ""}],
+                    },
+                    {
+                        "package": {"name": "lodash", "version": "4.17.15"},
+                        "vulnerabilities": [
+                            {
+                                "id": "GHSA-29mw-wpgm-hmr9",
+                                "summary": "ReDoS in lodash",
+                                "database_specific": {"severity": "MODERATE"},
+                            },
+                            {"id": "GHSA-p6mc-m468-83gw", "summary": "Prototype pollution"},
+                        ],
+                        "groups": [
+                            {"ids": ["GHSA-29mw-wpgm-hmr9"], "max_severity": "5.3"},
+                            {"ids": ["GHSA-p6mc-m468-83gw"], "max_severity": "7.4"},
+                        ],
+                    },
+                ],
+            }
+        ]
+    }
+)
+
+
+async def test_osv_scanner_reports_malware_as_critical_and_buckets_the_others():
+    findings = await RealOsvScanner(runner=_runner(_OSV_SAMPLE, returncode=1)).scan(_target())
+
+    assert [(f.rule_id, f.severity, f.location) for f in findings] == [
+        ("MAL-2026-14698", CRITICAL, "web/package-lock.json:3layerdipstackbndk47@0.1.4"),
+        ("GHSA-29mw-wpgm-hmr9", MEDIUM, "web/package-lock.json:lodash@4.17.15"),
+        ("GHSA-p6mc-m468-83gw", HIGH, "web/package-lock.json:lodash@4.17.15"),
+    ]
+    assert all(f.kind == DEPENDENCY and f.scanner == "osv-scanner" for f in findings)
+
+
+async def test_osv_scanner_falls_back_to_its_baked_databases_when_the_download_fails():
+    calls: list[list[str]] = []
+
+    async def run(args, cwd):
+        calls.append(list(args))
+        if "--download-offline-databases" in args:
+            return CommandResult(returncode=127, stdout="", stderr="could not load db")
+        return CommandResult(returncode=1, stdout=_OSV_SAMPLE, stderr="")
+
+    findings = await RealOsvScanner(runner=run).scan(_target())
+
+    assert len(findings) == 3
+    assert [c[:2] for c in calls] == [["env", calls[0][1]], ["env", calls[1][1]]]
+    assert calls[1][1] == f"OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY={OSV_BAKED_DATABASES}"
+    assert calls[0][1] != calls[1][1]
+    assert "--download-offline-databases" not in calls[1]
+    assert calls[1][-2:] == ["-r", "/tmp/ws/agent-T-1"]
+
+
+async def test_osv_scanner_reports_nothing_for_a_checkout_without_packages():
+    findings = await RealOsvScanner(runner=_runner("", returncode=128)).scan(_target())
+
+    assert findings == []
 
 
 async def test_scanner_invocations_stay_on_the_documented_exit_code_contract():

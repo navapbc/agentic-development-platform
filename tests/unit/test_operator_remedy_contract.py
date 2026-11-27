@@ -51,7 +51,7 @@ def test_every_alert_site_supplies_a_remedy():
 
 
 def test_the_workflow_still_has_the_alert_sites_this_contract_covers():
-    assert len(_alert_calls()) == 24
+    assert len(_alert_calls()) == 26
 
 
 def test_with_remedy_appends_one_next_step_line():
@@ -365,6 +365,13 @@ def _every_authored_remedy() -> dict[str, Remedy]:
             path="tsconfig.build.json",
             holder_task_id="ADSER-25",
             holder_work_unit="unit-1",
+        ),
+        "resync_conflict": remedies.resync_conflict_remedy("ADSER-24"),
+        "lockfile_failed": remedies.lockfile_failed_remedy(
+            "ADSER-24", "lockfile", manifests=["package.json"]
+        ),
+        "workflow_files": remedies.workflow_files_remedy(
+            "ADSER-24", "workflow_files", paths=[".github/workflows/ci.yml"]
         ),
         "review_blocked": remedies.review_blocked_remedy("ADSER-24", "fail_closed"),
         "plan_rejected": remedies.plan_rejected_remedy("ADSER-24"),

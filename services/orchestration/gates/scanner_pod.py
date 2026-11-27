@@ -86,8 +86,12 @@ def restore_paths(output: str, cwd: str) -> str:
         ("Results", "Target"),
     ):
         for finding in document.get(key) or ():
-            if isinstance(finding, dict):
+            if isinstance(finding, dict) and field in finding:
                 finding[field] = _restore_path(finding.get(field), cwd)
+    for result in document.get("results") or ():
+        source = result.get("source") if isinstance(result, dict) else None
+        if isinstance(source, dict):
+            source["path"] = _restore_path(source.get("path"), cwd)
     paths = document.get("paths")
     if isinstance(paths, dict):
         for key in ("scanned", "skipped"):
@@ -237,9 +241,13 @@ class PodCommandRunner:
 
 
 def pod_command_runner(scanner: str, settings, execution_id: str = "") -> PodCommandRunner:
-    images = {"semgrep": settings.semgrep_image, "trivy": settings.trivy_image}
+    image_setting = {
+        "semgrep": "semgrep_image",
+        "trivy": "trivy_image",
+        "osv-scanner": "osv_scanner_image",
+    }[scanner]
     return PodCommandRunner(
-        images[scanner],
+        getattr(settings, image_setting),
         scanner=scanner,
         execution_id=execution_id,
         namespace=settings.gate_engine_namespace,

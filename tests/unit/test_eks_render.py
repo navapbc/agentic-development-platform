@@ -50,6 +50,7 @@ def _inputs() -> dict[str, Any]:
                 "GATE_ENGINE_BUILDER_IMAGE",
                 "SEMGREP_IMAGE",
                 "TRIVY_IMAGE",
+                "OSV_SCANNER_IMAGE",
             )
         },
         "settings": {
@@ -485,6 +486,21 @@ def test_each_tenant_gets_a_worker_namespace_and_a_sandbox_namespace(overlay) ->
     assert workers == {"tenant-adp", "tenant-payments"}
     assert not [d for d in documents if d["metadata"].get("namespace") == "agent-sandbox"]
     assert [d["kind"] for d in documents][: len(namespaces)] == ["Namespace"] * len(namespaces)
+
+
+@pytest.mark.parametrize(
+    ("namespace", "name"),
+    [("tenant-adp", "activity-worker"), ("tenant-adp-review", "review-worker")],
+)
+def test_a_worker_pod_outlives_the_graceful_shutdown_of_its_activities(
+    overlay, namespace, name
+) -> None:
+    from services.orchestration.worker import ACTIVITY_SHUTDOWN_GRACE
+
+    documents, _ = eks_render.render(overlay, _inputs(), REPOSITORY)
+    pod = _named(documents, "Deployment", name, namespace)["spec"]["template"]["spec"]
+
+    assert pod["terminationGracePeriodSeconds"] > ACTIVITY_SHUTDOWN_GRACE.total_seconds()
 
 
 def test_each_tenant_worker_stops_its_old_pod_before_the_new_one_starts(overlay) -> None:

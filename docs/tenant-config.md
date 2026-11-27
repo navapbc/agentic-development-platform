@@ -93,7 +93,7 @@ Required. `defaults.backend` is `github`, `defaults.default_branch` is `main`, `
 
 ### checks.yaml
 
-Optional. Absent, no repository has checks of its own, and a repository whose runtime profile has checks runs those. A repository on the `github` backend without an entry is held at intake, because the GitHub backend requires checks. A repository on the `local` backend without an entry skips the checks gate. An entry's `working_dir` is `/workspace`, its `timeout_minutes` is 15, and it has no `fix_command` unless it sets one.
+Optional. Absent, no repository has checks of its own, and a repository whose runtime profile has checks runs those. A repository on the `github` backend without an entry is held at intake, because the GitHub backend requires checks. A repository on the `local` backend without an entry skips the checks gate. An entry's `working_dir` is `/workspace`, its `timeout_minutes` is 15, and it has no `fix_command` unless it sets one. `lock_command` names the command that regenerates the lockfiles from the manifests with package scripts disabled, `lock_manifests` the manifests it reads, and `lockfiles` the files it writes. An entry that names no `lock_command` takes its profile's, as the [dependency step](runtime-profiles.md#the-dependency-step) describes.
 
 ### gates.yaml
 

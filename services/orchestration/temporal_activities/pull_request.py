@@ -148,6 +148,10 @@ class FindOpenPrResult:
     head: str = ""
 
 
+# GitHub runs a pushed workflow or action with the repository's Actions secrets before any review.
+WORKFLOW_DIRECTORIES = (".github/workflows", ".github/actions")
+
+
 @dataclass
 class CommitPushRequest:
     repo: str
@@ -160,6 +164,8 @@ class CommitPushRequest:
     file_impact: list[str] = field(default_factory=list)
     work_unit: str = ""
     check_claims: bool = False
+    guard_workflow_files: bool = False
+    workflow_files_approved: bool = False
 
 
 @dataclass
@@ -176,6 +182,8 @@ class CommitPushResult:
     held_path: str = ""
     held_by_task_id: str = ""
     held_by_work_unit: str = ""
+    guarded_paths: list[str] = field(default_factory=list)
+    guarded_diff: str = ""
 
 
 @dataclass
@@ -296,9 +304,11 @@ async def find_open_pr(req: FindOpenPrRequest) -> FindOpenPrResult:
 
 @activity.defn
 async def commit_and_push(req: CommitPushRequest) -> CommitPushResult:
+    from services.coordination.claims import path_within
     from services.coordination.orphans import PostgresOrphanRegistry
     from services.orchestration.change_narrative import read_pull_request_template
     from services.orchestration.materialization import WorkspaceMaterializer
+    from services.orchestration.notifications import bounded_detail
 
     materializer = WorkspaceMaterializer.from_settings(PostgresOrphanRegistry())
     workspace = await materializer.materialize(
@@ -324,6 +334,19 @@ async def commit_and_push(req: CommitPushRequest) -> CommitPushResult:
                 held_path=path,
                 held_by_task_id=holder.task_id,
                 held_by_work_unit=holder.work_unit,
+            )
+    if req.guard_workflow_files and not req.workflow_files_approved:
+        guarded = [path for path in staged.paths if path_within(path, WORKFLOW_DIRECTORIES)]
+        if guarded:
+            return CommitPushResult(
+                branch=workspace.branch,
+                commit_sha=req.commit,
+                pushed=False,
+                replayed=False,
+                excluded_paths=outside,
+                changed=False,
+                guarded_paths=guarded,
+                guarded_diff=bounded_detail(await materializer.staged_diff(workspace, guarded)),
             )
     commit_request = await materializer.build_commit_request(
         workspace, message=req.message, staged=staged
@@ -355,7 +378,7 @@ async def _claim_holding(req: CommitPushRequest, paths: list[str]) -> tuple[str,
     tenant = get_settings().tenant
     for path in paths:
         holders = await client.active_claims_covering(
-            path, task_id=req.task_id, work_unit=req.work_unit, tenant=tenant
+            path, task_id=req.task_id, work_unit=req.work_unit, tenant=tenant, repo=req.repo
         )
         if holders:
             return path, holders[0]

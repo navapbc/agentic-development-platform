@@ -101,6 +101,7 @@ COMPONENTS = (
     Component("openscap", "OpenSCAP/openscap", "OPENSCAP_VERSION"),
     Component("scap-security-guide", "ComplianceAsCode/content", "SSG_VERSION"),
     Component("trivy", "aquasecurity/trivy", "TRIVY_VERSION", "TRIVY"),
+    Component("osv-scanner", "google/osv-scanner", "OSV_SCANNER_VERSION", "OSV_SCANNER"),
     Component("semgrep", "semgrep/semgrep", "SEMGREP_UPSTREAM_IMAGE", "SEMGREP"),
     Component(
         "clickhouse", "ClickHouse/ClickHouse", "CLICKHOUSE_IMAGE", "CLICKHOUSE", "CLICKHOUSE_IMAGE"

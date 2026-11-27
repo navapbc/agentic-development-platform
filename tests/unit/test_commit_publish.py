@@ -101,11 +101,15 @@ class _RecordingHost(_Host):
         return await super().commit_and_push(request)
 
 
+WORKFLOW_FILE = ".github/workflows/ci.yml"
+
+
 class _Materializer:
     """Stages a workspace whose change includes one file outside the file impact."""
 
-    def __init__(self, path: str) -> None:
+    def __init__(self, path: str, extra: tuple[str, ...] = ()) -> None:
         self._path = path
+        self.extra = extra
 
     async def materialize(self, **kwargs) -> MaterializedWorkspace:
         return MaterializedWorkspace(
@@ -121,9 +125,16 @@ class _Materializer:
         )
 
     async def stage(self, workspace, *, file_impact) -> StagedChange:
+        outside = ("tsconfig.build.json", *self.extra)
         return StagedChange(
-            tree=VERIFIED, changed=True, outside_file_impact=("tsconfig.build.json",)
+            tree=VERIFIED,
+            changed=True,
+            outside_file_impact=outside,
+            paths=("src/store.ts", *outside),
         )
+
+    async def staged_diff(self, workspace, paths) -> str:
+        return "".join(f"+++ b/{path}\n+on: push\n" for path in paths)
 
     async def build_commit_request(self, workspace, *, message, staged) -> CommitRequest:
         return replace(_request(), tree=staged.tree, message=message)
@@ -135,10 +146,11 @@ def commit_activity(monkeypatch, tmp_path):
 
     host = _RecordingHost()
     claims = InMemoryWorkClaimStore()
+    materializer = _Materializer(str(tmp_path))
     monkeypatch.setattr(
         WorkspaceMaterializer,
         "from_settings",
-        classmethod(lambda cls, registry: _Materializer(str(tmp_path))),
+        classmethod(lambda cls, registry: materializer),
     )
     monkeypatch.setattr(
         pull_request,
@@ -151,10 +163,11 @@ def commit_activity(monkeypatch, tmp_path):
         ),
     )
     monkeypatch.setattr(implementation, "_build_coordination_client", lambda: claims)
+    host.materializer = materializer
     return host, claims
 
 
-def _commit_push_request(*, check_claims: bool = True) -> CommitPushRequest:
+def _commit_push_request(*, check_claims: bool = True, **fields) -> CommitPushRequest:
     return CommitPushRequest(
         repo=REPO,
         task_id="AGENTDEV-1",
@@ -165,6 +178,7 @@ def _commit_push_request(*, check_claims: bool = True) -> CommitPushRequest:
         file_impact=["src/store.ts"],
         work_unit="unit-1",
         check_claims=check_claims,
+        **{"guard_workflow_files": True, **fields},
     )
 
 
@@ -191,6 +205,36 @@ async def test_a_file_another_active_unit_holds_is_neither_committed_nor_pushed(
     assert result.commit_sha == "a" * 40
     assert (result.held_path, result.held_by_task_id) == ("tsconfig.build.json", "AGENTDEV-2")
     assert host.published == []
+
+
+async def test_a_staged_workflow_file_is_neither_committed_nor_pushed_before_approval(
+    commit_activity,
+):
+    host, _claims = commit_activity
+    host.materializer.extra = (WORKFLOW_FILE,)
+
+    result = await commit_and_push(_commit_push_request())
+
+    assert result.pushed is False
+    assert result.guarded_paths == [WORKFLOW_FILE]
+    assert f"+++ b/{WORKFLOW_FILE}" in result.guarded_diff
+    assert host.published == []
+
+
+@pytest.mark.parametrize(
+    "fields", [{"workflow_files_approved": True}, {"guard_workflow_files": False}]
+)
+async def test_an_approved_or_unguarded_workflow_file_is_committed_and_pushed(
+    commit_activity, fields
+):
+    host, _claims = commit_activity
+    host.materializer.extra = (WORKFLOW_FILE,)
+
+    result = await commit_and_push(_commit_push_request(**fields))
+
+    assert result.pushed is True
+    assert result.guarded_paths == []
+    assert len(host.published) == 1
 
 
 async def test_a_run_recorded_before_the_claim_check_commits_a_held_file(commit_activity):

@@ -104,6 +104,20 @@ def _pod_spec(document: Mapping[str, Any]) -> dict[str, Any] | None:
     return document["spec"]["template"]["spec"]
 
 
+DEFAULT_TERMINATION_GRACE_SECONDS = 30
+
+
+def termination_grace(deployment: Mapping[str, Any] | None) -> int:
+    """Seconds a pod of the Deployment may take to stop after SIGTERM before it is killed.
+
+    A rollout that replaces a worker pod waits this long beyond its own timeout, since the pod
+    keeps running until its activities finish and the Recreate strategy starts the new pod only
+    after the old one exits.
+    """
+    pod = ((deployment or {}).get("spec") or {}).get("template", {}).get("spec") or {}
+    return int(pod.get("terminationGracePeriodSeconds", DEFAULT_TERMINATION_GRACE_SECONDS))
+
+
 def config_map(name: str, data: Mapping[str, str]) -> dict[str, Any]:
     return {
         "apiVersion": "v1",
@@ -534,7 +548,7 @@ def render(
     omit_secrets: Iterable[str] = (),
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Return the environment's manifests and the secret aliases left out of them."""
-    from scripts.tenant_render import tenantize
+    from scripts.tenant_render import label_current_slots, tenantize
     from scripts.validation_job import set_validation_image, set_validation_tenants
     from scripts.webhook_eks_render import (
         route_action_key_fingerprints,
@@ -565,6 +579,7 @@ def render(
         raise RenderError("the inputs name no tenant, and every activity worker serves one")
     generated += slack_poster_ca(inputs)
     documents = route_slack_poster(tenantize(documents + generated, tenants), inputs)
+    label_current_slots(documents)
     set_gateway_hosts(documents, gateway_hosts(inputs))
     omit_secrets = list(omit_secrets)
     skipped = set_tenant_secrets(documents, inputs, omit_secrets)

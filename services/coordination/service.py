@@ -134,6 +134,7 @@ def build_handler(
                         task_id=payload["task_id"],
                         work_unit=payload["work_unit"],
                         tenant=payload["tenant"],
+                        repo=payload.get("repo", ""),
                     )
                 )
                 return {"claims": [asdict(claim) for claim in claims]}

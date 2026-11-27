@@ -8,6 +8,7 @@ locals {
   image_catalog_repositories = [
     "semgrep",
     "trivy",
+    "osv-scanner",
     "gate-engine-security-policy",
     "gate-engine-test-policy",
     "openhands-agent-server",

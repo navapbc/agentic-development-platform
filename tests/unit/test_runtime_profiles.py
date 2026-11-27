@@ -147,6 +147,22 @@ def test_a_profile_supplies_checks_unless_the_repository_has_its_own(environment
     assert required_checks_repos(settings) == frozenset({"api", "portal", "claims"})
 
 
+def test_a_repositorys_own_checks_keep_its_profiles_lock_command(environment) -> None:
+    from services.orchestration.checks.config import checks_for_repo
+
+    settings = _settings()
+    (tenant_dir(environment) / "checks.yaml").write_text(
+        "config_version: 1\nchecks:\n  portal:\n    image: node:24\n    command: npm test\n"
+    )
+
+    checks = checks_for_repo("portal", settings)
+
+    assert checks.command == "npm test"
+    assert checks.lock_command.startswith("npm install --package-lock-only --ignore-scripts")
+    assert checks.lock_files == ("package.json", "package-lock.json")
+    assert checks_for_repo("claims", settings).lock_command == ""
+
+
 def test_a_catalog_checks_image_resolves_through_the_runtime_images(environment) -> None:
     from services.orchestration.checks.config import checks_for_repo
 

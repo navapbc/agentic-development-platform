@@ -80,6 +80,10 @@ _FORWARDED = (
     "The tenant worker is taking this action. Its outcome appears on the alert post and in its "
     "thread."
 )
+_NOT_STARTED = (
+    "The tenant worker has not picked up this action yet, which happens while it restarts. If the "
+    "alert post does not change within a minute, press the button again."
+)
 
 
 @dataclass(frozen=True)
@@ -456,7 +460,9 @@ class ForwardedAlertActions:
     """Take an admitted alert click on its tenant's worker, waiting a bound for the outcome.
 
     A click whose action outlasts the bound keeps running on the worker, which edits the post
-    and replies in its thread, and the click is answered that the worker is taking it.
+    and replies in its thread, and the click is answered that the worker is taking it. When no
+    worker has started the action by then, as while the tenant worker restarts, the click is
+    answered that it has not been picked up.
     """
 
     def __init__(
@@ -486,7 +492,17 @@ class ForwardedAlertActions:
         try:
             return await asyncio.wait_for(handle.result(), timeout=self._bound)
         except TimeoutError:
+            pass
+        from temporalio.api.enums.v1 import PendingActivityState
+        from temporalio.client import WorkflowExecutionStatus
+
+        described = await handle.describe()
+        if described.status != WorkflowExecutionStatus.RUNNING:
+            return await handle.result()
+        started = PendingActivityState.PENDING_ACTIVITY_STATE_STARTED
+        if any(a.state == started for a in described.raw_description.pending_activities):
             return AlertOutcome(reply=_FORWARDED, applied=True)
+        return AlertOutcome(reply=_NOT_STARTED)
 
 
 async def _execution_issue_key(execution_id: str) -> str:

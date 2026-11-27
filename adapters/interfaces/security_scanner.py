@@ -70,6 +70,19 @@ class ScanReport:
     threshold: str
 
 
+# GitHub files a malware advisory under this weakness, and OSV names a malicious-package entry with
+# this prefix. Either reports no severity, or one that does not reflect running hostile code.
+MALWARE_CWE = "CWE-506"
+MALICIOUS_PACKAGE_PREFIX = "MAL-"
+
+
+def is_malicious(advisory_ids: Iterable[str], cwe_ids: Iterable[str] = ()) -> bool:
+    """Whether an advisory reports a malicious package rather than a vulnerability."""
+    return any(i.startswith(MALICIOUS_PACKAGE_PREFIX) for i in advisory_ids) or (
+        MALWARE_CWE in set(cwe_ids)
+    )
+
+
 def severity_rank(severity: str) -> int:
     return _SEVERITY_RANK.get(severity.strip().lower(), 0)
 

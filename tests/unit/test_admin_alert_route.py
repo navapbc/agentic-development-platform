@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 from urllib.parse import urlencode
 
@@ -272,6 +274,63 @@ async def test_the_webhook_forwards_an_admitted_click_to_the_tenant_task_queue()
     assert started["task_queue"] == tenant_task_queue(settings, "beta")
     assert started["request"] is request
     assert outcome.reply == "Resolved."
+
+
+class _PendingHandle:
+    def __init__(self, activity_state) -> None:
+        self._activity_state = activity_state
+
+    async def result(self) -> AlertOutcome:
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    async def describe(self):
+        from temporalio.client import WorkflowExecutionStatus
+
+        activity = SimpleNamespace(state=self._activity_state)
+        return SimpleNamespace(
+            status=WorkflowExecutionStatus.RUNNING,
+            raw_description=SimpleNamespace(pending_activities=[activity]),
+        )
+
+
+@pytest.mark.parametrize(
+    ("state_name", "applied", "reply"),
+    [
+        ("PENDING_ACTIVITY_STATE_STARTED", True, "is taking this action"),
+        ("PENDING_ACTIVITY_STATE_SCHEDULED", False, "has not picked up this action"),
+    ],
+)
+async def test_a_forwarded_click_past_the_bound_says_whether_the_worker_started_it(
+    state_name, applied, reply
+):
+    from services.integration.slack.dispatcher import AlertRequest
+    from services.orchestration.alert_actions import ForwardedAlertActions
+    from temporalio.api.enums.v1 import PendingActivityState
+
+    class _SlowClient:
+        async def start_workflow(self, workflow, request, **options):
+            return _PendingHandle(getattr(PendingActivityState, state_name))
+
+    request = AlertRequest(
+        tenant="beta",
+        subject=MODEL_PATH_ALERT,
+        alert_id="episode-1",
+        action=FIX_DONE,
+        actor=f"slack:{ORG}/{ADMIN}",
+        user=ADMIN,
+        basis="user",
+        channel=ADMIN_CHANNEL,
+        message_ts="200.1",
+        message_blocks=(),
+        admin=True,
+    )
+    settings = hermetic_settings(tenants="acme,beta")
+
+    outcome = await ForwardedAlertActions(_SlowClient(), settings, bound_seconds=0.01).act(request)
+
+    assert outcome.applied is applied
+    assert reply in outcome.reply
 
 
 ADMIN_GROUP = "S0ADMINGRP1"

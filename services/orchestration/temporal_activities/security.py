@@ -45,6 +45,7 @@ class ScanChangeResult:
     severity_counts: dict[str, int] = field(default_factory=dict)
     scanner_verdicts: dict[str, str] = field(default_factory=dict)
     budget_stop: str = ""
+    blocking_finding_ids: list[str] = field(default_factory=list)
 
 
 def _build_security_mediator():
@@ -75,6 +76,7 @@ def _scanner_content_hash(report: ScanReport, scanner: str, findings: list) -> s
 
 async def _verdict_findings(req: ScanChangeRequest, report: ScanReport) -> list:
     """The findings allowed to fail the gate. Every finding stays in the evidence record."""
+    from adapters.interfaces.security_scanner import DEPENDENCY
     from scripts.config import get_settings
 
     from services.integration.credentials import ConfigError
@@ -83,6 +85,8 @@ async def _verdict_findings(req: ScanChangeRequest, report: ScanReport) -> list:
         SCAN_SCOPES,
         blocking_findings,
         changed_paths,
+        dependency_baseline,
+        relative_location_path,
     )
 
     scope = get_settings().scan_scope
@@ -91,7 +95,17 @@ async def _verdict_findings(req: ScanChangeRequest, report: ScanReport) -> list:
     if scope != CHANGED_SCOPE:
         return list(report.findings)
     changed = await changed_paths(req.repo_root, req.base_ref)
-    return blocking_findings(report.findings, changed, req.repo_root)
+    dependency_files = {
+        relative_location_path(f.location, req.repo_root)
+        for f in report.findings
+        if f.kind == DEPENDENCY and f.location
+    }
+    if changed is None:
+        return list(report.findings)
+    baseline = await dependency_baseline(
+        req.repo_root, req.base_ref, dependency_files & (changed or set())
+    )
+    return blocking_findings(report.findings, changed, req.repo_root, baseline=baseline)
 
 
 def _budget_stop_result(mediator, reason: str) -> ScanChangeResult:
@@ -126,13 +140,17 @@ def _budget_stop_result(mediator, reason: str) -> ScanChangeResult:
 
 @activity.defn
 async def scan_change(req: ScanChangeRequest) -> ScanChangeResult:
-    from adapters.interfaces.security_scanner import blocking_count, is_blocking
+    return await scan_with(_build_security_mediator(), req)
+
+
+async def scan_with(mediator, req: ScanChangeRequest) -> ScanChangeResult:
+    """Scan the change with the mediator's backends, attribute the findings, and record evidence."""
+    from adapters.interfaces.security_scanner import is_blocking
 
     from services.integration.litellm_admin import ModelBudgetExceededError
     from services.review.classification import CLASSIFICATION_SECURITY
     from services.review.evidence import EvidenceRecord, build_evidence_sink
 
-    mediator = _build_security_mediator()
     try:
         report = await mediator.scan(
             ScanTarget(
@@ -155,7 +173,11 @@ async def scan_change(req: ScanChangeRequest) -> ScanChangeResult:
             finding.severity, threshold=report.threshold
         ):
             scanner_verdicts[finding.scanner] = "block"
-    attributed_blocking = blocking_count(verdict_findings, threshold=report.threshold)
+    blocking_ids = [
+        f.finding_id
+        for f in verdict_findings
+        if is_blocking(f.severity, threshold=report.threshold)
+    ]
 
     sink = build_evidence_sink()
     evidence_ids: dict[str, str] = {}
@@ -186,10 +208,11 @@ async def scan_change(req: ScanChangeRequest) -> ScanChangeResult:
     return ScanChangeResult(
         scanners=list(report.scanners),
         findings=[ScanFindingRecord(**asdict(f)) for f in report.findings],
-        blocking_count=attributed_blocking,
+        blocking_count=len(blocking_ids),
         threshold=report.threshold,
         content_hash=content_hash,
         evidence_id=next(iter(evidence_ids.values()), ""),
         severity_counts=severity_counts,
         scanner_verdicts=scanner_verdicts,
+        blocking_finding_ids=blocking_ids,
     )

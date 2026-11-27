@@ -313,18 +313,19 @@ async def test_a_postgres_claim_is_unique_per_tenant_task_and_work_unit():
     engine = _InsertCapturingEngine(matched=True)
     store = PostgresWorkClaimStore(cast(AsyncEngine, engine))
 
-    outcome = await store.try_claim(replace(_unit("u1"), tenant="alpha"))
+    outcome = await store.try_claim(replace(_unit("u1"), tenant="alpha", repo="org/app"))
 
     assert outcome.won is True
     assert outcome.claim_id == claim_id_for("AGENTDEV-1", "u1", "alpha")
     assert "ON CONFLICT (tenant, task_id, work_unit) DO NOTHING" in engine.sql
     assert engine.params["tenant"] == "alpha"
+    assert engine.params["repo"] == "org/app"
     assert engine.params["claim_id"] == outcome.claim_id
 
 
-async def _covering(store, path: str, *, tenant: str = "") -> list[str]:
+async def _covering(store, path: str, *, tenant: str = "", repo: str = "") -> list[str]:
     holders = await store.active_claims_covering(
-        path, task_id="AGENTDEV-1", work_unit="u1", tenant=tenant
+        path, task_id="AGENTDEV-1", work_unit="u1", tenant=tenant, repo=repo
     )
     return [holder.task_id for holder in holders]
 
@@ -339,6 +340,16 @@ async def test_an_active_claim_of_another_unit_holds_the_paths_its_file_impact_c
     assert await _covering(store, "srcx/store.ts") == []
     assert await _covering(store, "README.md") == []
     assert await _covering(store, "README.md", tenant="beta") == ["AGENTDEV-3"]
+
+
+async def test_only_a_claim_on_the_same_repository_or_an_unrecorded_one_holds_a_path():
+    store = InMemoryWorkClaimStore()
+    await store.try_claim(replace(_unit("u1", "src", task_id="AGENTDEV-2"), repo="org/app"))
+    await store.try_claim(replace(_unit("u1", "src", task_id="AGENTDEV-3"), repo="org/api"))
+    await store.try_claim(_unit("u1", "src", task_id="AGENTDEV-4"))
+
+    assert await _covering(store, "src/store.ts", repo="org/app") == ["AGENTDEV-2", "AGENTDEV-4"]
+    assert await _covering(store, "src/store.ts") == ["AGENTDEV-2", "AGENTDEV-3", "AGENTDEV-4"]
 
 
 async def test_the_claimants_own_claim_does_not_hold_its_files():
@@ -389,8 +400,9 @@ class _RowsEngine(_StatementCapturingEngine):
         return _RowsConnection(self)
 
 
-def _claim_row(task_id: str, *files: str) -> SimpleNamespace:
+def _claim_row(task_id: str, *files: str, repo: str = "") -> SimpleNamespace:
     return SimpleNamespace(
+        repo=repo,
         task_id=task_id,
         work_unit="u1",
         execution_id="exec-2",
@@ -401,11 +413,17 @@ def _claim_row(task_id: str, *files: str) -> SimpleNamespace:
 
 
 async def test_a_postgres_claim_query_reads_active_claims_and_keeps_those_covering_the_path():
-    engine = _RowsEngine([_claim_row("AGENTDEV-2", "src"), _claim_row("AGENTDEV-3", "docs")])
+    engine = _RowsEngine(
+        [
+            _claim_row("AGENTDEV-2", "src", repo="org/app"),
+            _claim_row("AGENTDEV-3", "docs"),
+            _claim_row("AGENTDEV-4", "src", repo="org/api"),
+        ]
+    )
     store = PostgresWorkClaimStore(cast(AsyncEngine, engine))
 
     holders = await store.active_claims_covering(
-        "src/store.ts", task_id="AGENTDEV-1", work_unit="u1", tenant="alpha"
+        "src/store.ts", task_id="AGENTDEV-1", work_unit="u1", tenant="alpha", repo="org/app"
     )
 
     assert [(holder.task_id, holder.file_impact) for holder in holders] == [
