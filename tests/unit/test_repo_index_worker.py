@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 from services.integration.tenant_config import DirectorySource
+from services.repository_intelligence.indexing import scip_builder
 from services.repository_intelligence.indexing import worker as worker_module
 from services.repository_intelligence.indexing.reindex import IndexRoots
 from services.repository_intelligence.indexing.worker import (
@@ -288,7 +289,7 @@ def test_the_target_loader_adds_a_repository_on_the_next_poll() -> None:
 def test_the_default_reindexer_passes_the_targets_index_roots(monkeypatch) -> None:
     seen: dict[str, object] = {}
 
-    def fake_reindex(root, repo, *, prior_commit=None, index_roots=None):
+    def fake_reindex(root, repo, *, prior_commit=None, index_roots=None, indexer=None):
         seen.update(root=root, repo=repo, prior=prior_commit, index_roots=index_roots)
 
     roots = IndexRoots(Path("/idx/scip/beta"), Path("/idx/zoekt/beta"))
@@ -333,3 +334,27 @@ def test_build_worker_reads_each_tenants_bundle(monkeypatch, tmp_path) -> None:
 
     assert worker is not None
     assert worker.repos() == {("adp", "svc"), ("beta", "svc")}
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("src/app.ts", scip_builder.SCIP_TYPESCRIPT_INDEXER),
+        ("app/main.py", scip_builder.SCIP_PYTHON_INDEXER),
+        ("main.tf", None),
+    ],
+)
+def test_default_reindex_uses_the_indexer_of_the_repository_language(
+    tmp_path, monkeypatch, source, expected
+) -> None:
+    root = tmp_path / "repo"
+    (root / source).parent.mkdir(parents=True, exist_ok=True)
+    (root / source).write_text("", encoding="utf-8")
+    seen: dict[str, object] = {}
+    monkeypatch.setattr(
+        worker_module, "reindex_repo", lambda *_a, indexer, **_k: seen.update(indexer=indexer)
+    )
+
+    worker_module._default_reindex(RepoTarget("repo", root), RepoRef("repo", "aaaaaaa"), None)
+
+    assert seen["indexer"] is expected

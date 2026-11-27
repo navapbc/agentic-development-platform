@@ -40,6 +40,7 @@ MODEL_RETRY_POLICY = RetryPolicy(
 )
 
 _RETRYABLE_STATUS = frozenset({408, 429, 500, 502, 503, 504})
+TRUNCATED_FINISH_REASON = "length"
 
 
 @dataclass
@@ -175,6 +176,14 @@ async def invoke_model(req: ModelRequest) -> ModelResponse:
             response_model=model_id,
             input_tokens=usage.get("prompt_tokens"),
             output_tokens=usage.get("completion_tokens"),
+        )
+    if choice.get("finish_reason") == TRUNCATED_FINISH_REASON:
+        raise ApplicationError(
+            f"{req.logical_model} stopped at max_tokens {req.max_tokens} during stage "
+            f"{req.stage or 'model'}, so its answer is incomplete and is not used. Raise the "
+            "stage's max_tokens, which also holds the model's thinking.",
+            type="ModelOutputTruncated",
+            non_retryable=True,
         )
     try:
         await _persist_prompt_evidence(req, prompt_version=prompt_version, model_id=model_id)

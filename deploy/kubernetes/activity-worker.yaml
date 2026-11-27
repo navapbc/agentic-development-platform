@@ -31,7 +31,11 @@ metadata:
     app.kubernetes.io/name: activity-worker
     app.kubernetes.io/part-of: agentic-dev-platform
 spec:
+  # A tenant's rebar ticket store lives on a shared volume, and rebar cannot reclaim a write lock
+  # that a pod on another node left behind, so the old pod stops before the new one starts.
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: activity-worker

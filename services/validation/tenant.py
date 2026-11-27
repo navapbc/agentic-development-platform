@@ -50,6 +50,7 @@ BUNDLE = "Tenant bundle"
 SLACK_AUTH = "Slack auth"
 SLACK_POST = "Slack post"
 TICKET_STORE = "Ticket store"
+TICKET_STORE_SYNC = "Ticket store sync"
 SOURCE_CONTROL = "Source control"
 GITHUB_TIMEOUT_SECONDS = 10.0
 SLACK_TIMEOUT_SECONDS = 10
@@ -233,8 +234,88 @@ async def check_ticket_store(context: TenantContext) -> list[CheckResult]:
     from services.integration.tickets.factory import resolve_ticket_backend_name
 
     if resolve_ticket_backend_name(context.settings) == REBAR:
-        return [await asyncio.to_thread(_rebar_result, context.tenant)]
+        results = [await asyncio.to_thread(_rebar_result, context.tenant)]
+        sync = await asyncio.to_thread(_rebar_sync_result, context.tenant)
+        return [*results, sync] if sync is not None else results
     return await asyncio.to_thread(_jira_results, context.tenant)
+
+
+def _rebar_sync_result(tenant: str) -> CheckResult | None:
+    """Compare the store's tickets branch with the bucket, for a store whose remote is on S3.
+
+    rebar fetches before a read and pushes after a write on a best-effort basis, so a store
+    that stops converging with its bucket shows only as tickets intake never sees.
+    """
+    from services import process
+    from services.integration.tickets.rebar_config import load_rebar_backend_config
+    from services.integration.tickets.store_remote import read_store_remote
+
+    root = load_rebar_backend_config().repo_root
+    if not (Path(root) / ".git").exists():
+        return None
+    remote = read_store_remote(root)
+    if remote is None or not remote.is_s3:
+        return None
+    fix = remedy(
+        "Resolve the cause, then validate again. A store that stays ahead or behind after "
+        "the tenant's activity worker restarts has a history the bucket does not converge with."
+    )
+
+    def git(*args: str) -> process.CompletedProcess[str]:
+        return process.run(
+            ["git", "-C", root, *args],
+            timeout=process.SHORT_COMMAND_TIMEOUT_SECONDS,
+            capture_output=True,
+            text=True,
+        )
+
+    fetched = git("fetch", "--quiet", remote.name, "tickets")
+    if fetched.returncode != 0:
+        detail = fetched.stderr.strip()[-400:] or "no output"
+        cause = f"fetching tickets from {remote.name} failed: {detail}"
+        return failed(TICKET_STORE_SYNC, cause, fix, confirm=CONFIRM_AGAIN)
+    counted = git(
+        "rev-list", "--left-right", "--count", f"tickets...refs/remotes/{remote.name}/tickets"
+    )
+    if counted.returncode != 0:
+        cause = f"comparing tickets with {remote.name} failed: {counted.stderr.strip()[-400:]}"
+        return failed(TICKET_STORE_SYNC, cause, fix, confirm=CONFIRM_AGAIN)
+    ahead, behind = (int(part) for part in counted.stdout.split())
+    roots = git("rev-list", "--max-parents=0", "tickets").stdout.split()
+    bucket_roots = git("rev-list", "--max-parents=0", f"refs/remotes/{remote.name}/tickets")
+    if set(roots) - set(bucket_roots.stdout.split()):
+        cause = (
+            f"the store's tickets branch starts from a root commit {remote.name} does not hold, "
+            "so the store keeps a history of its own that the bucket never receives, and ticket "
+            "changes made through the bucket may not reach intake"
+        )
+        return failed(
+            TICKET_STORE_SYNC,
+            cause,
+            _reseed_fix(tenant, root, posture_context=""),
+            fix_deployed=_reseed_fix(tenant, root, posture_context=" --context <EKS context>"),
+            confirm=CONFIRM_AGAIN,
+        )
+    if ahead or behind:
+        cause = (
+            f"the store's tickets branch is {ahead} commits ahead of and {behind} commits behind "
+            f"{remote.name}, so ticket writes have not reached the bucket or bucket changes have "
+            "not reached intake"
+        )
+        return failed(TICKET_STORE_SYNC, cause, fix, confirm=CONFIRM_AGAIN)
+    return passed(TICKET_STORE_SYNC, f"the store's tickets branch matches {remote.name}")
+
+
+def _reseed_fix(tenant: str, root: str, *, posture_context: str) -> Any:
+    namespace = f"tenant-{tenant}"
+    return remedy(
+        "Move the store aside with "
+        f"`kubectl{posture_context} -n {namespace} exec deploy/activity-worker -c activity-worker "
+        f"-- mv {root} {root}.diverged`, then restart the tenant's activity worker with "
+        f"`kubectl{posture_context} -n {namespace} rollout restart deploy/activity-worker`, "
+        "which seeds a new store from the bucket. Ticket changes made only in the moved store "
+        "stay in it."
+    )
 
 
 def _rebar_result(tenant: str) -> CheckResult:
@@ -244,6 +325,7 @@ def _rebar_result(tenant: str) -> CheckResult:
     from services.integration.tickets.rebar_config import load_rebar_backend_config
     from services.integration.tickets.store_config import load_tickets_store_config
     from services.integration.tickets.store_remote import check_store_remote, read_store_remote
+    from services.orchestration.rebar_intake import POLL_REFUSED_CAUSE
 
     fix = remedy(
         "Correct `backend.repo_root` or `store` in `tickets.yaml` as the cause names, then "
@@ -269,7 +351,34 @@ def _rebar_result(tenant: str) -> CheckResult:
     except Exception as exc:  # noqa: BLE001
         cause = f"the rebar store at {root} is unreadable ({type(exc).__name__}). {exc}"
         return failed(TICKET_STORE, cause, fix, fix_deployed=deployed, confirm=CONFIRM_AGAIN)
+    if not _poll_authorized(root):
+        identity_fix = remedy(
+            "Set `AUTHORSHIP_IDENTITY_ID` to an identity whose email `poll.identity_roles` maps "
+            "to a reader role, then restart the tenant's activity worker with `inv k8s-reload`."
+        )
+        identity_deployed = remedy(
+            "Set `AUTHORSHIP_IDENTITY_ID` in the tenant's settings to an identity whose email "
+            "`poll.identity_roles` maps to a reader role, then restart the tenant's activity "
+            f"worker with {_restart_worker(tenant)}."
+        )
+        return failed(
+            TICKET_STORE,
+            POLL_REFUSED_CAUSE,
+            identity_fix,
+            fix_deployed=identity_deployed,
+            confirm=CONFIRM_AGAIN,
+        )
     return passed(TICKET_STORE, f"the rebar store at {root} reads {len(tickets)} tickets")
+
+
+def _poll_authorized(root: str) -> bool:
+    from scripts.rebar_poll import RebarIdentityAccess
+
+    from services.integration.tickets.rebar_config import load_poll_config
+
+    poll = load_poll_config()
+    access = RebarIdentityAccess(root, reader_roles=poll.reader_roles, identity_roles=poll)
+    return access.authorize().authorized
 
 
 def _jira_results(tenant: str) -> list[CheckResult]:

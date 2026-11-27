@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import signal
 from pathlib import Path
 from typing import Any
 
@@ -320,6 +321,39 @@ async def _scrub_workspace_credentials(workspace_root: str) -> None:
         )
 
 
+def _worker_runners(
+    client: Client, settings: Any, role: str, workers: list[Worker], queues: list[str]
+) -> list[Any]:
+    """Run the workers, and let only a worker that polls workflow queues move the current version.
+
+    An activity or review worker can start on a build before any workflow worker polls it, and
+    making that build current would route new executions to a workflow queue nobody polls.
+    """
+    runners: list[Any] = [worker.run() for worker in workers]
+    if settings.worker_versioning_enabled and role in (WORKER_ROLE_WORKFLOW, WORKER_ROLE_ALL):
+        runners.append(set_current_version(client, settings, queues))
+    return runners
+
+
+def _shut_down_on_sigterm(workers: list[Worker]) -> None:
+    """Stop polling on SIGTERM and wait for the running activities before the process exits.
+
+    Python's default SIGTERM action ends the process at once, which leaves a rebar store write
+    lock that an activity holds on the shared volume until rebar's age ceiling expires.
+    """
+    loop = asyncio.get_running_loop()
+    shutdowns: set[asyncio.Task[None]] = set()
+
+    def shut_down() -> None:
+        log.info("received SIGTERM, shutting down %d workers", len(workers))
+        for worker in workers:
+            task = loop.create_task(worker.shutdown())
+            shutdowns.add(task)
+            task.add_done_callback(shutdowns.discard)
+
+    loop.add_signal_handler(signal.SIGTERM, shut_down)
+
+
 async def main() -> None:
     settings = get_settings()
     role = _resolve_role()
@@ -438,9 +472,8 @@ async def main() -> None:
 
         socket_mode = await start_socket_mode(settings, client)
         approver_group_task = start_approver_group_refresh(settings)
-    runners = [worker.run() for worker in workers]
-    if settings.worker_versioning_enabled:
-        runners.append(set_current_version(client, settings, queues))
+    runners = _worker_runners(client, settings, role, workers, queues)
+    _shut_down_on_sigterm(workers)
     try:
         await asyncio.gather(*runners)
     finally:

@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 
 _S3_SCHEMES = ("s3://", "s3+zip://")
 _NO_SUCH_REMOTE = 2
+_NO_MATCHING_REF = 2
 TICKETS_WORKTREE = ".tickets-tracker"
 
 
@@ -124,30 +125,76 @@ def seed_store(repo_root: str, config: TicketsStoreConfig, identity_id: str = ""
                 f"git init of the rebar store at {repo_root} failed: {initialized.stderr}"
             )
     remote = configure_store_remote(repo_root, config)
+    bucket_empty = _remote_has_no_tickets_branch(repo_root, remote.name)
     try:
         _rebar(repo_root, "init", "--silent")
     except ConfigError as exc:
         raise ConfigError(f"{exc} {_remote_probe_detail(repo_root, remote.name)}") from exc
     if identity_id:
         _rebar(repo_root, "identity", "use", identity_id)
+    if bucket_empty:
+        _push_new_store(repo_root, remote.name)
     return True
 
 
-def _remote_probe_detail(repo_root: str, remote: str) -> str:
-    """Return git's own answer to the branch probe rebar init runs, which rebar reports only as
-    unreachable."""
+def _probe_remote_branch(repo_root: str, remote: str) -> process.CompletedProcess[str] | None:
     try:
-        probe = process.run(
+        return process.run(
             ["git", "-C", repo_root, "ls-remote", "--exit-code", remote, "refs/heads/tickets"],
             timeout=process.SHORT_COMMAND_TIMEOUT_SECONDS,
             capture_output=True,
             text=True,
         )
     except process.TimeoutExpired:
+        return None
+
+
+def _remote_has_no_tickets_branch(repo_root: str, remote: str) -> bool:
+    """Return whether the remote answers and holds no tickets branch, exit 2 of the probe."""
+    probe = _probe_remote_branch(repo_root, remote)
+    return probe is not None and probe.returncode == _NO_MATCHING_REF
+
+
+def _push_new_store(repo_root: str, remote: str) -> None:
+    """Push a store created against an empty bucket, so the bucket's first history is this one.
+
+    rebar pushes only after a ticket write, so an unpushed seed keeps a history of its own, and
+    a ticket or identity written to the bucket from anywhere else starts a second, unrelated
+    history that the two copies never converge from.
+    """
+    pushed = _git(repo_root, "push", "--quiet", remote, "tickets")
+    if pushed.returncode != 0:
+        raise ConfigError(
+            f"pushing the new rebar store at {repo_root} to the empty bucket of {remote} "
+            f"failed: {pushed.stderr.strip()[-600:]}"
+        )
+
+
+def _remote_probe_detail(repo_root: str, remote: str) -> str:
+    """Return git's own answer to the branch probe rebar init runs, which rebar reports only as
+    unreachable."""
+    probe = _probe_remote_branch(repo_root, remote)
+    if probe is None:
         limit = process.SHORT_COMMAND_TIMEOUT_SECONDS
         return f"git ls-remote {remote} did not answer within {limit}s."
     stderr = probe.stderr.strip()[-600:]
     return f"git ls-remote {remote} exited {probe.returncode}: {stderr or 'no output'}"
+
+
+def select_store_identity(repo_root: str, identity_id: str) -> None:
+    """Select ``identity_id`` in the store when it is not the current identity.
+
+    The selection is store-local state that the bucket does not carry, and a seed sets it only
+    once, so a store seeded before ``AUTHORSHIP_IDENTITY_ID`` was set has no identity and the
+    intake poll refuses it. ``rebar identity use`` fails when the store holds no such identity.
+    """
+    if not identity_id or not store_initialized(repo_root):
+        return
+    import rebar
+
+    if rebar.resolve_current_identity(repo_root=repo_root) == identity_id:
+        return
+    _rebar(repo_root, "identity", "use", identity_id)
 
 
 def _rebar(repo_root: str, *args: str) -> None:
@@ -227,6 +274,7 @@ def tickets_store_preflight(settings: Settings) -> None:
     repo_root = load_rebar_backend_config().repo_root
     if not store_initialized(repo_root):
         seed_absent_store(repo_root, settings)
+    select_store_identity(repo_root, settings.authorship_identity_id)
     remote = read_store_remote(repo_root)
     if remote is None or not remote.is_s3:
         return

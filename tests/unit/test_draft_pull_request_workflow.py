@@ -2170,6 +2170,7 @@ async def test_plan_human_gate_reject_stops_the_run():
     pr_opens: list[OpenPrRequest] = []
     linkbacks: list[LinkbackRequest] = []
     plan_evidence: list[PlanEvidenceRequest] = []
+    persisted: list[ExecutionState] = []
     activities = _make_activities(
         None,
         1,
@@ -2179,6 +2180,7 @@ async def test_plan_human_gate_reject_stops_the_run():
         ci_result=SUCCESS,
         plan_pause=True,
         plan_evidence=plan_evidence,
+        persisted_states=persisted,
     )
 
     async with await WorkflowEnvironment.start_time_skipping() as env:
@@ -2197,6 +2199,7 @@ async def test_plan_human_gate_reject_stops_the_run():
     assert result.status == PLAN_REJECTED
     assert result.plan_status == "rejected"
     assert plan_evidence == []
+    assert persisted[-1].state == "CANCELLED"
 
 
 async def test_plan_human_gate_is_inert_by_default():
@@ -2352,6 +2355,7 @@ async def test_plan_rejected_stops_before_implementation():
     linkbacks: list[LinkbackRequest] = []
     impl_requests: list[ImplementationRequest] = []
     alerts: list[AlertHumanInterventionRequest] = []
+    persisted: list[ExecutionState] = []
     activities = _make_activities(
         None,
         1,
@@ -2362,6 +2366,7 @@ async def test_plan_rejected_stops_before_implementation():
         plan_verdict="block",
         impl_requests=impl_requests,
         alerts=alerts,
+        persisted_states=persisted,
     )
 
     async with await WorkflowEnvironment.start_time_skipping() as env:
@@ -2381,6 +2386,7 @@ async def test_plan_rejected_stops_before_implementation():
     assert len(alerts) == 1
     assert alerts[0].reason == PLAN_REJECTED
     assert alerts[0].stage == "plan"
+    assert persisted[-1].state == "CANCELLED"
 
 
 async def test_planning_and_coding_pin_one_ris_commit():

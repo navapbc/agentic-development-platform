@@ -25,6 +25,7 @@ from services import process
 from services.healthcheck import touch
 from services.repository_intelligence.indexing import scip_builder
 from services.repository_intelligence.indexing.reindex import IndexRoots, reindex_repo
+from services.repository_intelligence.languages import primary_language
 from services.repository_intelligence.normalization.models import RepoRef
 from services.repository_intelligence.tenants import TenantRegistries
 
@@ -83,7 +84,13 @@ def checkout_at_pin(root: Path, pin: str) -> bool:
 
 
 def _default_reindex(target: RepoTarget, repo: RepoRef, prior: str | None) -> None:
-    reindex_repo(target.root, repo, prior_commit=prior, index_roots=target.index_roots)
+    reindex_repo(
+        target.root,
+        repo,
+        prior_commit=prior,
+        index_roots=target.index_roots,
+        indexer=scip_builder.scip_indexer_for(primary_language(target.root)),
+    )
 
 
 class RepoIndexWorker:

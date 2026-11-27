@@ -748,6 +748,7 @@ Run `inv --list` for the full set. The common tasks are below.
 | `inv aws-destroy [--var-file FILE] [--plan-only] [--delete-images] [--delete-stores]` | Destroy the composition root after the account ID is typed, keeping the bootstrap root, the images, and the ticket stores |
 | `inv temporal-deploy` | Apply the Temporal schema, replace the server tasks with its current task definition, register the namespace, and replace the UI tasks |
 | `inv temporal-ui` | Forward `localhost:8443`, or `--port`, to the Temporal UI load balancer through the jump-host |
+| `inv eks-api` | Forward `localhost:9443`, or `--port`, to the private EKS API through the jump-host, and write the kubeconfig of `--context agentic-platform-eks` |
 | `inv publish-temporal-images [--arch arm64\|amd64]` | Build and push the Temporal server and admin-tools images, skipping an image whose tag is already pushed |
 | `inv approve-pr --workflow-id ID [--reject] [--pr-closed] [--merged]` | Release an approval or PR-close pause on a running workflow |
 | `inv gate --issue KEY --gate NAME [--approve\|--reject]` | Resolve a configured human-intervention gate parked at `AWAITING_HUMAN` |

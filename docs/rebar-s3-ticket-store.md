@@ -61,6 +61,10 @@ git fetch s3tickets 'refs/heads/tickets:refs/remotes/s3tickets/tickets' && git r
 
 `0 0` means the local store and S3 agree. `rebar fsck` checks store integrity separately.
 
+## A store with a history of its own
+
+A store whose `rebar init` ran against an empty bucket starts its `tickets` branch from a root commit of its own. A tenant's worker pushes such a store as soon as it seeds it, so the bucket's first history is the worker's. A store initialized elsewhere against the same empty bucket, or a worker store seeded before the bucket held anything, never converges with the bucket. rebar merges the bucket into it on each read and pushes only on a write, so ticket changes made through the bucket can stay invisible to intake. The `Ticket store sync` check of `inv deployment-validate` reports a root commit the bucket does not hold. To recover a tenant's worker store, move it aside with `kubectl -n tenant-<tenant> exec deploy/activity-worker -c activity-worker -- mv /tenants/<tenant>/rebar-tickets /tenants/<tenant>/rebar-tickets.diverged`, then restart the worker with `kubectl -n tenant-<tenant> rollout restart deploy/activity-worker`, which seeds a new store from the bucket and starts a new poll cursor. In AWS, `inv eks-api` forwards the private EKS API through the jump-host and writes the kubeconfig whose `--context agentic-platform-eks` these commands take. Ticket changes made only in the moved store stay in it.
+
 ## Operational notes
 
 The helper clears a stale push lock on its own after `DEFAULT_LOCK_TTL_SECONDS`, which is 60. Override it with `GIT_REMOTE_S3_LOCK_TTL_SECONDS`. The upstream README documents `GIT_REMOTE_S3_LOCK_TTL`, which the code does not read.

@@ -155,17 +155,88 @@ async def test_a_shared_app_tenant_skips_auth_test(monkeypatch) -> None:
 
 
 async def test_a_readable_rebar_store_passes(monkeypatch, tmp_path) -> None:
+    from services.integration.tickets.rebar_config import PollConfig
+
     store = tmp_path / "rebar-tickets"
     seed_rebar_store(store)
     monkeypatch.setattr(
         "services.integration.tickets.rebar_config.load_rebar_backend_config",
         lambda: SimpleNamespace(repo_root=str(store)),
     )
+    monkeypatch.setattr(
+        "services.integration.tickets.rebar_config.load_poll_config",
+        lambda: PollConfig(
+            reader_roles=("tickets-reader",),
+            identity_roles=(("agent-platform@users.noreply.invalid", "tickets-reader"),),
+        ),
+    )
 
     result = _only(await validation_tenant.check_ticket_store(_context(ticket_backend="rebar")))
 
     assert result.status == Status.PASSED
     assert "reads" in result.cause
+
+
+async def test_a_rebar_store_whose_identity_the_poll_refuses_fails(monkeypatch, tmp_path) -> None:
+    store = tmp_path / "rebar-tickets"
+    seed_rebar_store(store)
+    monkeypatch.setattr(
+        "services.integration.tickets.rebar_config.load_rebar_backend_config",
+        lambda: SimpleNamespace(repo_root=str(store)),
+    )
+    monkeypatch.setattr(validation_tenant, "_poll_authorized", lambda root: False)
+
+    result = _only(await validation_tenant.check_ticket_store(_context(ticket_backend="rebar")))
+
+    assert result.status == Status.FAIL
+    assert "AUTHORSHIP_IDENTITY_ID" in result.cause
+
+
+def _synced_store(tmp_path: Path, monkeypatch) -> Path:
+    import subprocess
+
+    from services.integration.tickets import store_remote
+
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+    store = tmp_path / "rebar-tickets"
+    seed_rebar_store(store)
+    subprocess.run(["git", "-C", str(store), "remote", "add", "origin", str(remote)], check=True)
+    subprocess.run(["git", "-C", str(store), "push", "-q", "origin", "tickets"], check=True)
+    monkeypatch.setattr(
+        "services.integration.tickets.rebar_config.load_rebar_backend_config",
+        lambda: SimpleNamespace(repo_root=str(store)),
+    )
+    monkeypatch.setattr(
+        store_remote,
+        "read_store_remote",
+        lambda root: store_remote.StoreRemote("origin", "s3://r@b/tickets", "s3://w@b/tickets"),
+    )
+    return store
+
+
+def test_a_rebar_store_that_matches_its_bucket_passes_the_sync_check(monkeypatch, tmp_path):
+    _synced_store(tmp_path, monkeypatch)
+
+    result = validation_tenant._rebar_sync_result("beta")
+
+    assert result is not None and result.status == Status.PASSED
+
+
+def test_a_rebar_store_with_unpushed_writes_fails_the_sync_check(monkeypatch, tmp_path):
+    import subprocess
+
+    store = _synced_store(tmp_path, monkeypatch)
+    worktree = store / ".tickets-tracker"
+    subprocess.run(
+        ["git", "-C", str(worktree), "commit", "-q", "--allow-empty", "-m", "unpushed"],
+        check=True,
+    )
+
+    result = validation_tenant._rebar_sync_result("beta")
+
+    assert result is not None and result.status == Status.FAIL
+    assert "ahead of and 0 commits behind" in result.cause
 
 
 async def test_a_rebar_store_without_a_repository_fails(monkeypatch, tmp_path) -> None:
@@ -703,3 +774,21 @@ def test_platform_failures_reach_the_administrators_and_not_the_tenants(monkeypa
     _, tenant_body = failure_alert(tenant, DeploymentPosture.HOST)
     assert cause not in tenant_body and fix not in tenant_body
     assert MODEL_PATH in tenant_body
+
+
+def test_a_rebar_store_with_a_history_of_its_own_names_the_reseed(monkeypatch, tmp_path):
+    import subprocess
+
+    store = _synced_store(tmp_path, monkeypatch)
+    other = tmp_path / "other-store"
+    seed_rebar_store(other)
+    remote = tmp_path / "remote.git"
+    subprocess.run(
+        ["git", "-C", str(other), "push", "-q", "-f", str(remote), "tickets"], check=True
+    )
+
+    result = validation_tenant._rebar_sync_result("beta")
+
+    assert result is not None and result.status == Status.FAIL
+    assert "root commit" in result.cause
+    assert f"mv {store} {store}.diverged" in str(result.fix)

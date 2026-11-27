@@ -487,6 +487,15 @@ def test_each_tenant_gets_a_worker_namespace_and_a_sandbox_namespace(overlay) ->
     assert [d["kind"] for d in documents][: len(namespaces)] == ["Namespace"] * len(namespaces)
 
 
+def test_each_tenant_worker_stops_its_old_pod_before_the_new_one_starts(overlay) -> None:
+    inputs = {**_inputs(), "tenants": [_tenant("adp"), _tenant("beta")]}
+    documents, _ = eks_render.render(overlay, inputs, REPOSITORY)
+
+    for tenant in ("tenant-adp", "tenant-beta"):
+        worker = _named(documents, "Deployment", "activity-worker", tenant)
+        assert worker["spec"]["strategy"] == {"type": "Recreate"}
+
+
 def test_a_tenant_worker_runs_on_its_namespaces_paths_and_settings(overlay) -> None:
     documents, _ = eks_render.render(overlay, _inputs(), REPOSITORY)
     worker = _named(documents, "Deployment", "activity-worker", "tenant-adp")["spec"]["template"]

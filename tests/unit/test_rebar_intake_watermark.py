@@ -9,7 +9,7 @@ from scripts.rebar_poll import AccessDecision, PollCursor
 from services.coordination.idempotency import InMemorySideEffectLedger
 from services.integration.jira.snapshot import TaskSnapshot, snapshot_id_for
 from services.orchestration.intake_reconciler import IntakeContext
-from services.orchestration.rebar_intake import reconcile_rebar_intake
+from services.orchestration.rebar_intake import RebarPollRefused, reconcile_rebar_intake
 from tests.support import ModelPathStub, capture_alerts, hermetic_settings, model_path_gate
 
 _ALLOWED = ("ticket_id", "status", "title")
@@ -72,11 +72,18 @@ class _Access:
         return AccessDecision(authorized=True, identity="reader@x", role="tickets-reader")
 
 
+class _Refused:
+    def authorize(self) -> AccessDecision:
+        return AccessDecision(authorized=False, identity="", role="")
+
+
 def _ticket(ticket_id: str, *, status: str) -> dict:
     return {"ticket_id": ticket_id, "status": status, "title": "T"}
 
 
-async def _reconcile(reader: _Reader, watermark: _Watermark, audit: _Audit, ready: set[str]):
+async def _reconcile(
+    reader: _Reader, watermark: _Watermark, audit: _Audit, ready: set[str], access: Any = None
+):
     def _unreachable(ticket_id: str) -> dict:
         raise AssertionError(f"a ticket the poll will not admit was read: {ticket_id}")
 
@@ -84,7 +91,7 @@ async def _reconcile(reader: _Reader, watermark: _Watermark, audit: _Audit, read
         reader=reader,
         watermark=watermark,
         audit=audit,
-        access=_Access(),
+        access=access or _Access(),
         allowed_fields=_ALLOWED,
         ctx=IntakeContext(
             starter=_UNUSED,
@@ -101,6 +108,14 @@ async def _reconcile(reader: _Reader, watermark: _Watermark, audit: _Audit, read
         project="ADEV",
         default_repo="agentic-demo-service",
     )
+
+
+@pytest.mark.asyncio
+async def test_a_poll_that_refuses_the_store_identity_fails_the_pass() -> None:
+    reader = _Reader([_ticket("A", status="open")])
+
+    with pytest.raises(RebarPollRefused, match="AUTHORSHIP_IDENTITY_ID"):
+        await _reconcile(reader, _Watermark(), _Audit(), ready={"A"}, access=_Refused())
 
 
 @pytest.mark.asyncio

@@ -192,6 +192,8 @@ def test_seed_creates_the_store_with_the_split_remote_and_runs_rebar_init(monkey
             assert kwargs["cwd"] == root
             rebar_calls.append(tuple(command[1:]))
             return subprocess.CompletedProcess(command, 0, "", "")
+        if "ls-remote" in command:
+            return subprocess.CompletedProcess(command, 0, "", "")
         return run(command, **kwargs)
 
     monkeypatch.setattr(store_remote.process, "run", fake_run)
@@ -202,6 +204,48 @@ def test_seed_creates_the_store_with_the_split_remote_and_runs_rebar_init(monkey
     assert seeded is True
     assert read_store_remote(root) == StoreRemote("origin", READER_URL, WRITER_URL)
     assert rebar_calls == [("init", "--silent"), ("identity", "use", "2940-c3f4")]
+
+
+def _seed_against(monkeypatch, probe_code: int, push_code: int = 0) -> list[list[str]]:
+    pushes: list[list[str]] = []
+    run = store_remote.process.run
+
+    def fake_run(command, **kwargs):
+        if command[0] == "rebar":
+            return subprocess.CompletedProcess(command, 0, "", "")
+        if "ls-remote" in command:
+            return subprocess.CompletedProcess(command, probe_code, "", "")
+        if "push" in command:
+            pushes.append(command)
+            return subprocess.CompletedProcess(command, push_code, "", "denied")
+        return run(command, **kwargs)
+
+    monkeypatch.setattr(store_remote.process, "run", fake_run)
+    return pushes
+
+
+def test_a_seed_against_an_empty_bucket_pushes_the_new_store(monkeypatch, tmp_path):
+    pushes = _seed_against(monkeypatch, probe_code=2)
+    root = str(tmp_path / "store")
+
+    store_remote.seed_store(root, _parse(_raw()))
+
+    assert [command[-3:] for command in pushes] == [["--quiet", "origin", "tickets"]]
+
+
+def test_a_seed_that_attaches_to_a_bucket_pushes_nothing(monkeypatch, tmp_path):
+    pushes = _seed_against(monkeypatch, probe_code=0)
+
+    store_remote.seed_store(str(tmp_path / "store"), _parse(_raw()))
+
+    assert pushes == []
+
+
+def test_a_failed_push_of_a_new_store_refuses_the_seed(monkeypatch, tmp_path):
+    _seed_against(monkeypatch, probe_code=2, push_code=1)
+
+    with pytest.raises(ConfigError, match="empty bucket of origin failed: denied"):
+        store_remote.seed_store(str(tmp_path / "store"), _parse(_raw()))
 
 
 def test_seed_leaves_an_initialized_store_alone(monkeypatch, store):
@@ -220,6 +264,8 @@ def test_seed_completes_a_store_whose_rebar_init_did_not_finish(monkeypatch, tmp
         if command[0] == "rebar":
             rebar_calls.append(tuple(command[1:]))
             return subprocess.CompletedProcess(command, 0, "", "")
+        if "ls-remote" in command:
+            return subprocess.CompletedProcess(command, 0, "", "")
         return run(command, **kwargs)
 
     monkeypatch.setattr(store_remote.process, "run", fake_run)
@@ -227,6 +273,21 @@ def test_seed_completes_a_store_whose_rebar_init_did_not_finish(monkeypatch, tmp
     assert store_remote.seed_store(partial, _parse(_raw())) is True
     assert read_store_remote(partial) == StoreRemote("origin", READER_URL, WRITER_URL)
     assert rebar_calls == [("init", "--silent")]
+
+
+@pytest.mark.parametrize(("current", "expected"), [(None, 1), ("other-id", 1), ("2940-c3f4", 0)])
+def test_the_configured_identity_is_selected_unless_it_is_current(
+    monkeypatch, store, current, expected
+):
+    import rebar
+
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(rebar, "resolve_current_identity", lambda repo_root: current)
+    monkeypatch.setattr(store_remote, "_rebar", lambda repo_root, *args: calls.append(args))
+
+    store_remote.select_store_identity(store, "2940-c3f4")
+
+    assert calls == [("identity", "use", "2940-c3f4")] * expected
 
 
 def test_a_failed_seed_names_the_remote_probe_error(monkeypatch, tmp_path):

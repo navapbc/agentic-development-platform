@@ -72,6 +72,7 @@ EXPECTED_TASKS = {
     "eks-deploy",
     "deployment-validate",
     "langfuse-ui",
+    "eks-api",
     "temporal-deploy",
     "platform-deploy",
     "temporal-ui",

@@ -301,6 +301,7 @@ _LIMIT_GRANTS_PATCH = "limit-grants"
 _LIMIT_PARK_PATCH = "limit-park"
 _PERIOD_BUDGET_PARK_PATCH = "period-budget-park"
 _PERIOD_BUDGET_THREAD_PATCH = "period-budget-thread"
+_PLAN_REJECTED_PERSIST_PATCH = "plan-rejected-persist"
 _LIMIT_PARK_RESUME_WAIT = timedelta(minutes=5)
 _RUN_LIMIT_NAMES = {
     COST_BUDGET_EXCEEDED: "IMPLEMENTATION_MAX_COST_USD",
@@ -1994,6 +1995,11 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
             )
         )
 
+    async def _persist_plan_rejected(self, params: DraftPullRequestInput, workflow_id: str) -> None:
+        """Settle the execution as CANCELLED, so the orphan reaper does not reclaim it again."""
+        if workflow.patched(_PLAN_REJECTED_PERSIST_PATCH):
+            await self._persist_abandoned(params, workflow_id)
+
     async def _persist_abandoned(self, params: DraftPullRequestInput, workflow_id: str) -> None:
         commit_sha = self._commit.commit_sha if self._commit else params.base_sha
         await workflow.execute_activity(
@@ -2720,6 +2726,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 detail=plan_out.verdict,
                 remedy=plan_rejected_remedy(params.issue_key),
             )
+            await self._persist_plan_rejected(params, workflow_id)
             return _PlanResult(
                 rejected=True,
                 output=DraftPullRequestOutput(
@@ -2755,6 +2762,7 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                     detail="plan rejected by human gate",
                     remedy=gate_rejected_remedy(params.issue_key, "plan"),
                 )
+                await self._persist_plan_rejected(params, workflow_id)
                 return _PlanResult(
                     rejected=True,
                     output=DraftPullRequestOutput(

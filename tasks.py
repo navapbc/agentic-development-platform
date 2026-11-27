@@ -1324,6 +1324,19 @@ def langfuse_ui(c):
     c.run(f"{HOST_PYTHON} -m scripts.langfuse_ui", pty=True)
 
 
+@task(
+    help={
+        "port": "Local port forwarded to the private EKS API (default 9443).",
+        "kubeconfig": "Kubeconfig file to write (default ~/.kube/agentic-platform-eks.json).",
+    }
+)
+def eks_api(c, port=9443, kubeconfig=""):
+    """Forward a local port to the private EKS API through the jump-host and write a kubeconfig."""
+    flags = f" --port {int(port)}"
+    flags += f" --kubeconfig {shlex.quote(kubeconfig)}" if kubeconfig else ""
+    c.run(f"{HOST_PYTHON} -m scripts.eks_api{flags}", pty=True)
+
+
 @task(help={"region": "AWS region (empty uses AWS_REGION)."})
 def temporal_deploy(c, region=""):
     """Apply the Temporal schema, roll the server, and register the namespace."""
@@ -1977,6 +1990,7 @@ for _t in (
     eks_deploy,
     deployment_validate,
     tenant_verify_aws,
+    eks_api,
     langfuse_ui,
     temporal_deploy,
     platform_deploy,

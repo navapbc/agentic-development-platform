@@ -12,8 +12,8 @@ from services import process
 from services.repository_intelligence.indexing.scip_index import ScipIndex
 from services.repository_intelligence.languages import Language
 
-DEFAULT_SCIP_PYTHON_CMD = "npx --yes @sourcegraph/scip-python@0.6.6"
-DEFAULT_SCIP_TYPESCRIPT_CMD = "npx --yes @sourcegraph/scip-typescript@0.3.14"
+DEFAULT_SCIP_PYTHON_CMD = "scip-python"
+DEFAULT_SCIP_TYPESCRIPT_CMD = "scip-typescript"
 DEFAULT_SCIP_JAVA_CMD = "scip-java"
 DEFAULT_SCIP_RUBY_CMD = "scip-ruby"
 DEFAULT_SCIP_CLI = "scip"
@@ -83,6 +83,7 @@ SCIP_PYTHON_INDEXER = ScipIndexer(
     uses_project_flags=True,
     extra_args=("--quiet",),
     inject_python_venv=True,
+    version="0.6.8",
 )
 
 SCIP_TYPESCRIPT_INDEXER = ScipIndexer(
@@ -90,6 +91,7 @@ SCIP_TYPESCRIPT_INDEXER = ScipIndexer(
     language_id="typescript",
     source_suffixes=(".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"),
     infer_tsconfig_when_missing=True,
+    version="0.6.2",
 )
 
 SCIP_JAVA_INDEXER = ScipIndexer(

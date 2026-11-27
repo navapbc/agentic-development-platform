@@ -150,8 +150,8 @@ async def set_current_version(
                     build_id=build_id,
                     conflict_token=described.conflict_token,
                     identity=f"worker-{build_id}",
-                    # The worker services share a build but poll different queues and start
-                    # independently, so the first one to reach this point covers only its own.
+                    # Only the workflow worker reaches this point, and the activity and review
+                    # workers of its build may not poll yet, so their queues may be unregistered.
                     ignore_missing_task_queues=True,
                 )
             )

@@ -137,6 +137,30 @@ async def test_invoke_model_sends_metadata_and_stamps_the_span(monkeypatch) -> N
 
 
 @pytest.mark.asyncio
+async def test_invoke_model_refuses_an_answer_cut_off_at_max_tokens(monkeypatch) -> None:
+    from services.orchestration.temporal_activities import bedrock
+    from temporalio.exceptions import ApplicationError
+
+    response_data = {
+        "choices": [{"message": {"content": "# Plan\n\n1. **"}, "finish_reason": "length"}],
+        "model": "bedrock/claude-x",
+        "usage": {"prompt_tokens": 60, "completion_tokens": 2048},
+    }
+    monkeypatch.setattr(bedrock.httpx, "AsyncClient", lambda **_: _FakeClient({}, response_data))
+    capture_evidence(monkeypatch)
+
+    with pytest.raises(ApplicationError, match="max_tokens 2048") as raised:
+        await bedrock.invoke_model(
+            bedrock.ModelRequest(
+                logical_model="planning-model", prompt="plan", max_tokens=2048, stage="plan"
+            )
+        )
+
+    assert raised.value.non_retryable
+    assert raised.value.type == "ModelOutputTruncated"
+
+
+@pytest.mark.asyncio
 async def test_invoke_model_resolves_a_system_prompt(monkeypatch) -> None:
     from services.orchestration.temporal_activities import bedrock
     from services.prompts import StaticPromptStore, set_store

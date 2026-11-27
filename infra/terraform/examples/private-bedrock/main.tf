@@ -127,6 +127,7 @@ module "vpc_endpoints" {
     local.secret_store_database ? ["rds-data"] : [],
     local.secret_store_cache ? ["elasticache"] : [],
     var.create_container_services && var.container_use_fips_endpoints ? ["bedrock-runtime-fips"] : [],
+    var.create_secret_store && var.create_container_services && var.container_use_fips_endpoints ? ["secretsmanager-fips"] : [],
     local.container_telemetry_exports ? [var.container_use_fips_endpoints ? "xray-fips" : "xray", "aps-workspaces"] : [],
     module.managed_grafana.interface_services,
     var.create_eks ? ["eks-auth"] : [],

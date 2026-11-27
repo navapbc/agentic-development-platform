@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
+import os
+import signal
 import subprocess
 
 import pytest
 from scripts.config import get_settings
+from services.orchestration import worker as worker_module
 from services.orchestration.worker import (
     WORKER_ROLE_ACTIVITY,
     WORKER_ROLE_ALL,
+    WORKER_ROLE_REVIEW,
     WORKER_ROLE_WORKFLOW,
     _resolve_role,
     _scrub_workspace_credentials,
+    _shut_down_on_sigterm,
     build_worker,
 )
 from services.orchestration.worker_versioning import prune_drained_versions, set_current_version
@@ -342,3 +348,50 @@ async def test_activity_worker_startup_clears_a_persisted_workspace_credential(
     config = (checkout / ".git" / "config").read_text(encoding="utf-8")
     assert "ghs-startup-secret" not in config
     assert "https://acme.ghe/acme-org/demo.git" in config
+
+
+class _StoppableWorker:
+    def __init__(self) -> None:
+        self.stopped = asyncio.Event()
+
+    async def run(self) -> None:
+        await self.stopped.wait()
+
+    async def shutdown(self) -> None:
+        self.stopped.set()
+
+
+async def test_sigterm_shuts_every_worker_down_so_run_returns() -> None:
+    workers = [_StoppableWorker(), _StoppableWorker()]
+    _shut_down_on_sigterm(workers)
+    try:
+        running = asyncio.gather(*(worker.run() for worker in workers))
+        os.kill(os.getpid(), signal.SIGTERM)
+        await asyncio.wait_for(running, timeout=5)
+    finally:
+        asyncio.get_running_loop().remove_signal_handler(signal.SIGTERM)
+
+    assert all(worker.stopped.is_set() for worker in workers)
+
+
+@pytest.mark.parametrize(
+    ("role", "moves"),
+    [
+        (WORKER_ROLE_WORKFLOW, True),
+        (WORKER_ROLE_ALL, True),
+        (WORKER_ROLE_ACTIVITY, False),
+        (WORKER_ROLE_REVIEW, False),
+    ],
+)
+def test_only_a_worker_that_polls_workflow_queues_moves_the_current_version(
+    monkeypatch: pytest.MonkeyPatch, role: str, moves: bool
+) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        worker_module, "set_current_version", lambda _c, _s, queues: calls.append(queues)
+    )
+    settings = get_settings().model_copy(update={"worker_versioning_enabled": True})
+
+    worker_module._worker_runners(object(), settings, role, [], ["agent-platform-adp"])
+
+    assert calls == ([["agent-platform-adp"]] if moves else [])

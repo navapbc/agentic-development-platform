@@ -143,3 +143,13 @@ def test_rebuilds_scip_for_ts_repo_forwarding_the_typescript_indexer(tmp_path, m
     )
 
     assert captured["indexer"] is scip_builder.SCIP_TYPESCRIPT_INDEXER
+
+
+def test_without_an_indexer_only_zoekt_is_rebuilt(tmp_path, monkeypatch):
+    recorder: list[str] = []
+    repo, scip_root, _zoekt_root = _install(tmp_path, monkeypatch, recorder)
+
+    reindex.reindex_repo(repo, _REPO, prior_commit=None, indexer=None)
+
+    assert recorder == ["zoekt"]
+    assert not scip_root.exists()
