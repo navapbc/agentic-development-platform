@@ -781,7 +781,11 @@ def test_a_rebar_store_with_a_history_of_its_own_names_the_reseed(monkeypatch, t
 
     store = _synced_store(tmp_path, monkeypatch)
     other = tmp_path / "other-store"
-    seed_rebar_store(other)
+    with monkeypatch.context() as dated:
+        # Commit ids hash the commit time, so two seeds in the same second share a root commit.
+        dated.setenv("GIT_AUTHOR_DATE", "2001-01-01T00:00:00Z")
+        dated.setenv("GIT_COMMITTER_DATE", "2001-01-01T00:00:00Z")
+        seed_rebar_store(other)
     remote = tmp_path / "remote.git"
     subprocess.run(
         ["git", "-C", str(other), "push", "-q", "-f", str(remote), "tickets"], check=True
