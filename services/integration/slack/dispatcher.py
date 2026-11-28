@@ -24,9 +24,10 @@ takes are audited under the administrator actor type.
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -626,13 +627,43 @@ def _outcome_reply(decision: str, actor: str, *, already: bool = False) -> str:
     return f"{word} by {who}."
 
 
-class TemporalWorkflowDecisions:
-    """Apply decision Updates through a Temporal client the process already holds."""
+log = logging.getLogger("slack-dispatcher")
 
-    def __init__(self, client: Any) -> None:
+
+class TemporalWorkflowDecisions:
+    """Apply decision Updates through a Temporal client the process already holds.
+
+    With `repin`, a decision first moves its run onto the current build when that build replays
+    the run's history, so a run parked before a deploy resumes on the deploy. The repin and the
+    Update run as one task that a caller's time bound cannot cancel, so a slow replay leaves the
+    click unconfirmed rather than undelivered.
+    """
+
+    def __init__(
+        self, client: Any, *, repin: Callable[[str], Awaitable[object]] | None = None
+    ) -> None:
         self._client = client
+        self._repin = repin
+        self._delivering: set[asyncio.Task[Any]] = set()
 
     async def apply(self, workflow_id: str, update: str, args: list[Any], update_id: str) -> Any:
+        task = asyncio.ensure_future(self._deliver(workflow_id, update, args, update_id))
+        self._delivering.add(task)
+        task.add_done_callback(self._settle)
+        return await asyncio.shield(task)
+
+    def _settle(self, task: asyncio.Task[Any]) -> None:
+        """Drop the finished task, retrieving an error the caller stopped waiting for."""
+        self._delivering.discard(task)
+        if not task.cancelled():
+            task.exception()
+
+    async def _deliver(self, workflow_id: str, update: str, args: list[Any], update_id: str) -> Any:
+        if self._repin is not None:
+            try:
+                await self._repin(workflow_id)
+            except Exception:
+                log.exception("could not move %s to the current build", workflow_id)
         from temporalio.client import (
             WorkflowUpdateFailedError,
             WorkflowUpdateRPCTimeoutOrCancelledError,

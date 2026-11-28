@@ -9,6 +9,7 @@ resumes nothing.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
@@ -19,6 +20,8 @@ from services.orchestration.suspension import (
     SUSPENSION_STATE_QUERY,
     SuspendReason,
 )
+
+log = logging.getLogger("model-path-parks")
 
 INTAKE_ACTOR = "intake"
 MODEL_PATH_PROBE_ACTOR = "model_path_probe"
@@ -90,11 +93,19 @@ async def resume_park(
 ) -> bool:
     """Resume the run's park on ``reason``, returning whether this call resumed it.
 
-    A ``detail`` other than None also requires the park's detail to equal it.
+    A ``detail`` other than None also requires the park's detail to equal it. The run first moves
+    to the current build when that build replays its history, as `repin_if_replayable` describes.
     """
+    from scripts.config import get_settings
     from temporalio.client import WorkflowUpdateFailedError
     from temporalio.service import RPCError, RPCStatusCode
 
+    from services.orchestration.worker_versioning import repin_if_replayable
+
+    try:
+        await repin_if_replayable(client, get_settings(), workflow_id)
+    except Exception:
+        log.exception("could not move %s to the current build", workflow_id)
     handle = client.get_workflow_handle(workflow_id)
     try:
         state = await handle.query(SUSPENSION_STATE_QUERY, rpc_timeout=_RPC_TIMEOUT)

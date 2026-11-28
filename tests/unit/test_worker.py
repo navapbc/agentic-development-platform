@@ -469,3 +469,83 @@ def test_only_a_worker_that_polls_workflow_queues_moves_the_current_version(
     worker_module._worker_runners(object(), settings, role, [], ["agent-platform-adp"])
 
     assert calls == ([["agent-platform-adp"]] if moves else [])
+
+
+class _Run:
+    def __init__(self, pinned: str) -> None:
+        from types import SimpleNamespace
+
+        from temporalio.api.workflow.v1 import WorkflowExecutionVersioningInfo
+
+        info = WorkflowExecutionVersioningInfo()
+        info.deployment_version.build_id = pinned
+        self._description = SimpleNamespace(
+            raw_description=SimpleNamespace(
+                workflow_execution_info=SimpleNamespace(versioning_info=info)
+            )
+        )
+        self.history_fetched = False
+
+    async def describe(self):
+        return self._description
+
+    async def fetch_history(self):
+        self.history_fetched = True
+        return "history"
+
+
+class _RunClient:
+    def __init__(self, run: _Run) -> None:
+        self._run = run
+
+    def get_workflow_handle(self, workflow_id):
+        return self._run
+
+
+@pytest.mark.parametrize(
+    ("local", "pinned", "failure", "moved"),
+    [
+        ("0.3.0.20261128011248", "0.3.0.20261127211833", None, True),
+        ("0.3.0.20261128011248", "0.3.0.20261127211833", "nondeterminism", False),
+        ("0.3.0.20261127211833", "0.3.0.20261127211833", None, False),
+        ("0.3.0.20261127211833", "0.3.0.20261126000000", None, False),
+    ],
+)
+async def test_a_parked_run_moves_to_the_current_build_only_when_that_build_replays_it(
+    monkeypatch: pytest.MonkeyPatch, local: str, pinned: str, failure: str | None, moved: bool
+) -> None:
+    from types import SimpleNamespace
+
+    import temporalio.worker
+    from services.orchestration import worker_versioning
+
+    current = "0.3.0.20261128011248"
+    moves: list[str] = []
+
+    async def describe(client, name):
+        return name
+
+    async def move(client, settings, workflow_id):
+        moves.append(workflow_id)
+
+    class _Replayer:
+        def __init__(self, **kwargs) -> None:
+            pass
+
+        async def replay_workflow(self, history, *, raise_on_replay_failure):
+            return SimpleNamespace(replay_failure=failure)
+
+    monkeypatch.setattr(worker_versioning, "_describe_deployment", describe)
+    monkeypatch.setattr(worker_versioning, "_current_build_id", lambda described: current)
+    monkeypatch.setattr(worker_versioning, "move_to_current_version", move)
+    monkeypatch.setattr(temporalio.worker, "Replayer", _Replayer)
+    settings = get_settings().model_copy(
+        update={"worker_versioning_enabled": True, "agent_build_id": local}
+    )
+    run = _Run(pinned)
+
+    result = await worker_versioning.repin_if_replayable(_RunClient(run), settings, "wf-1")
+
+    assert result is moved
+    assert moves == (["wf-1"] if moved else [])
+    assert run.history_fetched is (local == current and pinned != current)

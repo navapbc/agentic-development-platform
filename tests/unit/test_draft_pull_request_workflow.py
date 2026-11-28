@@ -1934,6 +1934,30 @@ async def test_a_run_moved_onto_a_newer_build_gates_the_commits_it_makes_there(m
     assert len(resyncs) == 1
 
 
+async def test_a_recorded_run_replays_on_the_workflows_and_sandbox_a_repin_checks_with():
+    from services.orchestration.workflow_registry import WORKFLOWS, workflow_runner
+    from temporalio.worker import Replayer
+
+    activities = _make_activities(None, 1, [], [], [], ci_result=SUCCESS)
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(run_reviews=True),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+            await handle.result()
+            history = await handle.fetch_history()
+
+    replayer = Replayer(workflows=WORKFLOWS, workflow_runner=workflow_runner())
+    replayed = await replayer.replay_workflow(history, raise_on_replay_failure=False)
+
+    assert replayed.replay_failure is None
+
+
 async def test_a_retry_with_an_unchanged_base_commits_nothing_new():
     result, recorded = await _retry_once()
 

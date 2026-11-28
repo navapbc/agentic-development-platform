@@ -468,6 +468,35 @@ async def test_a_temporal_update_cancelled_at_the_bound_reports_the_decision_as_
     assert result.refusal is None
 
 
+class _RecordingUpdateClient:
+    def __init__(self, events: list[str]) -> None:
+        self._events = events
+
+    def get_workflow_handle(self, workflow_id):
+        return self
+
+    async def execute_update(self, *args, **kwargs):
+        self._events.append("update")
+        return ParkDecisionOutcome(decision="approved", actor="slack:U1", applied=True)
+
+
+async def test_a_decision_moves_its_run_first_and_still_lands_when_the_move_outlasts_the_bound():
+    events: list[str] = []
+
+    async def repin(workflow_id: str) -> None:
+        await asyncio.sleep(0.2)
+        events.append(f"repin {workflow_id}")
+
+    decisions = TemporalWorkflowDecisions(_RecordingUpdateClient(events), repin=repin)
+    dispatcher = _dispatcher(decisions, bound=0.05)
+
+    result = await dispatcher.dispatch(_click())
+    await asyncio.sleep(0.3)
+
+    assert result.pending
+    assert events == [f"repin {WORKFLOW}", "update"]
+
+
 async def test_a_tenant_without_slack_settings_takes_no_decisions():
     decisions = _Decisions(outcome=ACCEPTED)
     dispatcher = SlackDispatcher(

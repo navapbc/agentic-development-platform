@@ -89,6 +89,7 @@ from services.orchestration.webhook.tenants import (
     RoutedRepositories,
     TenantRouting,
 )
+from services.orchestration.worker_versioning import repin_if_replayable
 from services.repository_intelligence.tenants import served_tenants
 
 logging.basicConfig(level=configured_log_level())
@@ -342,7 +343,9 @@ async def build_routes(settings: Settings, routing: TenantRouting) -> dict[str, 
     client = await temporal_client.connect(to_host_hostport(settings.temporal_host), settings)
     slack = TenantSlackSettings(settings, routing)
     await slack.refresh_then_start()
-    decisions = TemporalWorkflowDecisions(client)
+    decisions = TemporalWorkflowDecisions(
+        client, repin=lambda workflow_id: repin_if_replayable(client, settings, workflow_id)
+    )
     records = PostgresDecisionRecords(shared_platform_engine())
     alert_actions = ForwardedAlertActions(client, settings)
     shared: dict[str, SharedSlackInteractivity] = {}

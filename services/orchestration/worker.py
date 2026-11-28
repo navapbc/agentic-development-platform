@@ -21,7 +21,6 @@ from observability import (
 from scripts.config import configured_log_level, get_settings
 from temporalio.client import Client
 from temporalio.worker import Worker
-from temporalio.worker.workflow_sandbox import SandboxedWorkflowRunner, SandboxRestrictions
 
 from services import temporal_client
 from services.orchestration.activity_heartbeat import ActivityHeartbeatInterceptor
@@ -87,24 +86,11 @@ from services.orchestration.temporal_activities import (
     verify_authorship_merge,
 )
 from services.orchestration.temporal_activities.alert_action import apply_alert_action
-from services.orchestration.temporal_workflows import (
-    BranchSyncWorkflow,
-    CountingWorkflow,
-    DraftPullRequestWorkflow,
-    DurableTaskWorkflow,
-    ImplementationWorkflow,
-    IntakeWorkflow,
-    JiraIssueIntakeWorkflow,
-    PlanReviewWorkflow,
-    PullRequestWorkflow,
-    ReapWorkflow,
-    TenantValidationWorkflow,
-)
-from services.orchestration.temporal_workflows.alert_action import AlertActionWorkflow
 from services.orchestration.temporal_workflows.implementation import (
     STAGE_ACTIVITY_TIMEOUT_SECONDS,
 )
 from services.orchestration.worker_versioning import deployment_config, set_current_version
+from services.orchestration.workflow_registry import WORKFLOWS, workflow_runner
 
 logging.basicConfig(level=configured_log_level())
 log = logging.getLogger("workflow-worker")
@@ -116,21 +102,6 @@ WORKER_ROLE_REVIEW = "review"
 _WORKER_ROLES = frozenset(
     {WORKER_ROLE_ALL, WORKER_ROLE_WORKFLOW, WORKER_ROLE_ACTIVITY, WORKER_ROLE_REVIEW}
 )
-
-_WORKFLOWS = [
-    DurableTaskWorkflow,
-    CountingWorkflow,
-    PlanReviewWorkflow,
-    ImplementationWorkflow,
-    BranchSyncWorkflow,
-    PullRequestWorkflow,
-    DraftPullRequestWorkflow,
-    ReapWorkflow,
-    IntakeWorkflow,
-    JiraIssueIntakeWorkflow,
-    TenantValidationWorkflow,
-    AlertActionWorkflow,
-]
 
 _REVIEW_ACTIVITIES = [
     evaluate_gate,
@@ -221,11 +192,7 @@ def _resolve_role() -> str:
 
 
 def build_worker(client: Client, task_queue: str, role: str) -> Worker:
-    runner = SandboxedWorkflowRunner(
-        restrictions=SandboxRestrictions.default.with_passthrough_modules(
-            "beartype", "opentelemetry"
-        )
-    )
+    runner = workflow_runner()
     settings = get_settings()
     versioning: dict[str, Any] = {}
     if settings.worker_versioning_enabled:
@@ -235,7 +202,7 @@ def build_worker(client: Client, task_queue: str, role: str) -> Worker:
         return Worker(
             client,
             task_queue=task_queue,
-            workflows=_WORKFLOWS,
+            workflows=WORKFLOWS,
             workflow_runner=runner,
             interceptors=[heartbeat],
             **versioning,
@@ -262,7 +229,7 @@ def build_worker(client: Client, task_queue: str, role: str) -> Worker:
     return Worker(
         client,
         task_queue=task_queue,
-        workflows=_WORKFLOWS,
+        workflows=WORKFLOWS,
         activities=_all_activities(),
         workflow_runner=runner,
         interceptors=[heartbeat, attribution, *_tenant_interceptors()],

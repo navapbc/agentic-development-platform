@@ -173,6 +173,7 @@ async def start_socket_mode(settings: Settings, temporal: Any) -> SocketModeTran
     from database.engine import shared_platform_engine
 
     from services.orchestration.alert_actions import build_tenant_alert_actions
+    from services.orchestration.worker_versioning import repin_if_replayable
 
     def active_slack() -> SlackSettings | None:
         return load_escalation_config(settings, shared_app=shared_app).slack
@@ -181,7 +182,10 @@ async def start_socket_mode(settings: Settings, temporal: Any) -> SocketModeTran
         tenant=settings.tenant,
         action_key=settings.escalation_action_key.encode(),
         slack_settings=active_slack,
-        decisions=TemporalWorkflowDecisions(temporal),
+        decisions=TemporalWorkflowDecisions(
+            temporal,
+            repin=lambda workflow_id: repin_if_replayable(temporal, settings, workflow_id),
+        ),
         records=PostgresDecisionRecords(shared_platform_engine(settings.database_url)),
         alert_actions=build_tenant_alert_actions(settings, temporal),
     )
