@@ -1,8 +1,9 @@
 """Deliver Trivy's vulnerability database to scanner pods that cannot download it.
 
 A scanner pod on EKS reaches no public registry, and it removes its ECR credential before the
-scanner runs. The activity worker pulls the database through the ghcr.io pull-through cache with
-its own ECR token and keeps the compressed layer by digest. Each scan copies that layer into the
+scanner runs. The activity worker pulls the database Aqua publishes to ECR Public through the ECR
+Public pull-through cache, which needs no upstream credential, with its own ECR token, and keeps
+the compressed layer by digest. Each scan copies that layer into the
 pod, which unpacks it for a Trivy run that downloads nothing.
 """
 
@@ -22,7 +23,7 @@ import httpx
 
 from services.orchestration.gates import registry_auth, registry_mirrors
 
-GHCR = "ghcr.io"
+UPSTREAM = "public.ecr.aws"
 REPOSITORY = "aquasecurity/trivy-db"
 TAG = "2"
 POD_DIR = "/trivy-cache"
@@ -41,8 +42,8 @@ class TrivyDatabaseError(RuntimeError):
 
 
 def mirrored_repository(config: registry_mirrors.RegistryConfig | None) -> tuple[str, str] | None:
-    """The registry host and repository that mirror trivy-db, or None when ghcr.io has no mirror."""
-    location = config.mirrors.get(GHCR) if config is not None else None
+    """The registry host and repository mirroring trivy-db, or None without an ECR Public mirror."""
+    location = config.mirrors.get(UPSTREAM) if config is not None else None
     if not location:
         return None
     host, _, prefix = location.partition("/")

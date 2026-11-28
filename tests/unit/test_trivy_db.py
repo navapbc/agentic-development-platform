@@ -1,4 +1,4 @@
-"""The activity worker delivers Trivy's database to scanner pods through the ghcr.io mirror."""
+"""The activity worker delivers Trivy's database to scanner pods through the ECR Public mirror."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from services.orchestration.gates.trivy_db import (
 )
 
 HOST = "123456789012.dkr.ecr.us-east-1.amazonaws.com"
-REPOSITORY = "p-ghcr/aquasecurity/trivy-db"
+REPOSITORY = "p-ecr-public/aquasecurity/trivy-db"
 
 
 class _Registry:
@@ -49,8 +49,8 @@ def _database(registry: _Registry, root, clock=lambda: 1_000_000.0) -> TrivyData
     )
 
 
-def test_the_mirror_of_ghcr_io_names_the_trivy_db_repository():
-    config = RegistryConfig(mode="aws", mirrors={"ghcr.io": f"{HOST}/p-ghcr"})
+def test_the_mirror_of_ecr_public_names_the_trivy_db_repository():
+    config = RegistryConfig(mode="aws", mirrors={"public.ecr.aws": f"{HOST}/p-ecr-public"})
 
     assert mirrored_repository(config) == (HOST, REPOSITORY)
     assert mirrored_repository(RegistryConfig(mode="aws")) is None

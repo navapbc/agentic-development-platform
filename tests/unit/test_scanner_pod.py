@@ -493,14 +493,15 @@ async def test_a_database_that_cannot_be_delivered_is_unavailability_not_a_findi
         await runner(["trivy", "fs", "/checkout"], "/checkout")
 
 
-def test_pod_mode_delivers_the_trivy_database_when_ghcr_io_has_a_mirror(monkeypatch):
+def test_pod_mode_delivers_the_trivy_database_when_ecr_public_has_a_mirror(monkeypatch):
     from adapters.real.security_scanner import RealTrivyScanner
     from services.orchestration.gates import trivy_db
     from services.orchestration.gates.builtin import _scanner_backend
     from services.orchestration.gates.registry_mirrors import RegistryConfig
 
     mirror = RegistryConfig(
-        mode="aws", mirrors={"ghcr.io": "123456789012.dkr.ecr.us-east-1.amazonaws.com/p-ghcr"}
+        mode="aws",
+        mirrors={"public.ecr.aws": "123456789012.dkr.ecr.us-east-1.amazonaws.com/p-ecr-public"},
     )
     monkeypatch.setattr(trivy_db.registry_mirrors, "current", lambda: mirror)
 
@@ -509,7 +510,7 @@ def test_pod_mode_delivers_the_trivy_database_when_ghcr_io_has_a_mirror(monkeypa
     assert built._cache_dir == trivy_db.POD_DIR
     database = built._runner._inputs
     assert isinstance(database, trivy_db.TrivyDatabase)
-    assert database._repository == "p-ghcr/aquasecurity/trivy-db"
+    assert database._repository == "p-ecr-public/aquasecurity/trivy-db"
 
 
 async def test_a_scanner_that_exits_clean_without_a_document_is_unavailable_not_a_clean_scan():
