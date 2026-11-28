@@ -2180,6 +2180,8 @@ async def test_review_pause_for_human_parks_then_approve_proceeds():
     assert result.review_status == "passed"
     assert alerts[0].reason == "gate_paused:security-review"
     assert alerts[0].stage == "review"
+    assert "security-review: reviewed\n- security-review blocking finding" in alerts[0].detail
+    assert "each gate's findings in this alert" in _remedy_text(alerts[0])
 
 
 async def test_review_pause_for_human_reject_blocks():
@@ -2334,6 +2336,7 @@ async def test_plan_human_gate_parks_then_approve_continues():
     pr_opens: list[OpenPrRequest] = []
     linkbacks: list[LinkbackRequest] = []
     plan_evidence: list[PlanEvidenceRequest] = []
+    alerts: list[AlertHumanInterventionRequest] = []
     activities = _make_activities(
         None,
         1,
@@ -2343,6 +2346,7 @@ async def test_plan_human_gate_parks_then_approve_continues():
         ci_result=SUCCESS,
         plan_pause=True,
         plan_evidence=plan_evidence,
+        alerts=alerts,
     )
 
     async with await WorkflowEnvironment.start_time_skipping() as env:
@@ -2363,6 +2367,9 @@ async def test_plan_human_gate_parks_then_approve_continues():
     assert len(plan_evidence) == 1
     assert plan_evidence[0].plan
     assert plan_evidence[0].verdict == "pass"
+    [parked] = [alert for alert in alerts if alert.stage == "plan"]
+    assert parked.detail == f"plan approval requested\n\n{plan_evidence[0].plan}"
+    assert "the plan in this alert" in _remedy_text(parked)
 
 
 async def test_plan_human_gate_reject_stops_the_run():

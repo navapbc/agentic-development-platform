@@ -206,8 +206,9 @@ def slack_routes(
     for tenant in tenants:
         if tenant not in secrets or tenant not in action_keys:
             log.warning(
-                "Slack clicks of tenant %s are refused, because it has no %s<TENANT> secret or "
-                "no %s<TENANT> key",
+                "tenant %s has no Slack interactivity route of its own, because it has no "
+                "%s<TENANT> secret or no %s<TENANT> key. A tenant on the shared Slack app "
+                "receives its clicks through the shared app's route",
                 tenant or "platform",
                 SLACK_SIGNING_ENV_PREFIX,
                 ESCALATION_ACTION_KEY_ENV_PREFIX,

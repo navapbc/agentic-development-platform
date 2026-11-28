@@ -79,10 +79,19 @@ class TrivyDatabase:
         return {POD_DIR: str(await asyncio.to_thread(self.current))}
 
     def prepare(self) -> str:
-        """Unpack the layer in the pod where the scanner's cache directory expects it."""
+        """Unpack the layer in the pod where the scanner's cache directory expects it.
+
+        `copy_in` gives the pod directory the mode of the worker's private layer directory, and
+        the scanner image runs as its own user, so the unpacked cache is opened to every user of
+        the pod, where Trivy also writes its scan cache.
+        """
+        cache = shlex.quote(POD_DIR)
         archive = shlex.quote(f"{POD_DIR}/{ARCHIVE}")
         db = shlex.quote(f"{POD_DIR}/db")
-        return f"mkdir -p {db} && tar -xzf {archive} -C {db} && rm -f {archive}"
+        return (
+            f"mkdir -p {db} && tar -xzf {archive} -C {db} && rm -f {archive} "
+            f"&& chmod -R a+rwX {cache}"
+        )
 
     def current(self) -> Path:
         self._root.mkdir(parents=True, exist_ok=True)

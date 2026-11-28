@@ -41,6 +41,26 @@ def _alert() -> HumanInterventionAlert:
     )
 
 
+def test_alert_detail_masks_credentials_and_keeps_the_text_around_them():
+    from services.orchestration.notifications import bounded_detail
+
+    detail = (
+        "remote https://x-access-token:s3cr3t-value@github.com/o/r.git\n"
+        "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n"
+        "key AKIAIOSFODNN7EXAMPLE and Authorization: Bearer abc.def\n"
+        "the token flow keeps Priority.Normal"
+    )
+
+    masked = bounded_detail(detail)
+
+    assert masked == (
+        "remote https://[masked]@github.com/o/r.git\n"
+        "AWS_SECRET_ACCESS_KEY=[masked]\n"
+        "key [masked] and Authorization: Bearer [masked]\n"
+        "the token flow keeps Priority.Normal"
+    )
+
+
 def test_no_channels_configured_delivers_nothing():
     settings = hermetic_settings(
         slack_webhook_url="",

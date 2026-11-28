@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -365,6 +365,19 @@ def _gate_names(human_review: Sequence[str]) -> str:
     name on any gate.
     """
     return ",".join(entry.removeprefix(_GATE_FAILED_PREFIX) for entry in human_review)
+
+
+def _gate_findings(
+    gates: Sequence[str], summaries: Mapping[str, str], findings: Mapping[str, Sequence[str]]
+) -> str:
+    """Each gate's summary and finding titles, which a park on those gates asks a human to judge."""
+    blocks = []
+    for gate in gates:
+        summary = summaries.get(gate)
+        lines = [f"{gate}: {summary}" if summary else f"{gate}:"]
+        lines += [f"- {title}" for title in findings.get(gate) or ()]
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks)
 
 
 @dataclass
@@ -1476,7 +1489,9 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 (
                     _DEPENDENCY_SCAN_GATE,
                     "\n".join(step.blocking),
-                    gate_decision_remedy(params.issue_key, _DEPENDENCY_SCAN_GATE),
+                    gate_decision_remedy(
+                        params.issue_key, _DEPENDENCY_SCAN_GATE, subject="the blocking findings"
+                    ),
                 )
             )
         for gate, detail, remedy in parks:
@@ -2923,9 +2938,12 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                     workflow_id,
                     gate=",".join(paused),
                     stage="review",
-                    detail=f"paused gates: {', '.join(paused)}",
+                    detail=f"paused gates: {', '.join(paused)}\n\n"
+                    + _gate_findings(paused, summaries, findings),
                     parked_build_id=params.build_id,
-                    remedy=gate_decision_remedy(params.issue_key, ",".join(paused)),
+                    remedy=gate_decision_remedy(
+                        params.issue_key, ",".join(paused), subject="each gate's findings"
+                    ),
                 )
                 blocked = not approved
                 if not approved:
@@ -2943,7 +2961,8 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                     workflow_id,
                     reason=REVIEW_BLOCKED,
                     stage="review",
-                    detail=f"blocking gates: {', '.join(blocking)}",
+                    detail=f"blocking gates: {', '.join(blocking)}\n\n"
+                    + _gate_findings(blocking, summaries, findings),
                     remedy=review_blocked_remedy(
                         params.issue_key, ", ".join(fail_closed or blocking)
                     ),
@@ -3042,8 +3061,8 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
                 workflow_id,
                 gate="plan",
                 stage="plan",
-                detail="plan approval requested",
-                remedy=gate_decision_remedy(params.issue_key, "plan"),
+                detail=f"plan approval requested\n\n{plan_out.plan}".rstrip(),
+                remedy=gate_decision_remedy(params.issue_key, "plan", subject="the plan"),
             )
             if not approved:
                 await self._terminal_alert(
@@ -3480,14 +3499,26 @@ class DraftPullRequestWorkflow(SuspendableWorkflow):
         allowed = decision.allow
         if not decision.allow and not decision.reasons and decision.human_review:
             review_gates = _gate_names(decision.human_review)
+            scanned: dict[str, list[str]] = {}
+            for finding in scan_findings:
+                scanned.setdefault(finding["scanner"], []).append(
+                    f"{finding['rule_id']} {finding['severity']} {finding['location']}"
+                )
             allowed = await self._park_for_gate_decision(
                 params,
                 workflow_id,
                 gate=review_gates,
                 stage="policy",
-                detail=f"policy human review: {review_gates}",
+                detail=f"policy human review: {review_gates}\n\n"
+                + _gate_findings(
+                    review_gates.split(","),
+                    outcome.review_summaries,
+                    {**scanned, **outcome.review_findings},
+                ),
                 parked_build_id=params.build_id,
-                remedy=gate_decision_remedy(params.issue_key, review_gates),
+                remedy=gate_decision_remedy(
+                    params.issue_key, review_gates, subject="each gate's findings"
+                ),
             )
             if not allowed:
                 await self._terminal_alert(

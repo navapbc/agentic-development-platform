@@ -497,6 +497,39 @@ def _longest_fit(text: str, budget: int, measure: Callable[[str], int], *, from_
     return low
 
 
+MASKED = "[masked]"
+
+_CREDENTIALS = (
+    re.compile(
+        r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|\Z)", re.S
+    ),
+    re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"),
+    re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,})"),
+    re.compile(r"\bxox[abposr]-[A-Za-z0-9-]{10,}|\bxapp-[A-Za-z0-9-]{10,}"),
+    re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"),
+)
+_LABELLED = (
+    re.compile(r"(?i)(authorization\s*[:=]\s*(?:bearer|basic|token)\s+)[^\s\"']+"),
+    re.compile(r"(\b[a-z][a-z0-9+.-]*://)[^\s/@:]+:[^\s/@]+(?=@)"),
+    re.compile(
+        r"(\b[A-Z][A-Z0-9_]*(?:PASSWORD|SECRET|TOKEN|API_KEY|ACCESS_KEY)[A-Z0-9_]*\s*[=:]\s*)[^\s\"']+"
+    ),
+)
+
+
+def mask_credentials(text: str) -> str:
+    """Replace each credential-shaped value in alert text, keeping any label that precedes it.
+
+    Alert detail carries tool output, plans, and diffs to Slack and the ticket, and none of those
+    destinations may hold a secret that a command or a model happened to print.
+    """
+    for pattern in _CREDENTIALS:
+        text = pattern.sub(MASKED, text)
+    for pattern in _LABELLED:
+        text = pattern.sub(lambda match: f"{match[1]}{MASKED}", text)
+    return text
+
+
 def bounded_detail(
     detail: str,
     *,
@@ -511,7 +544,9 @@ def bounded_detail(
     needed because a log can be long in lines and a single line can hold a whole minified payload.
     The head holds the cause a command such as ``npm ci`` prints first, and the tail holds the
     end of a test run. ``measure`` gives the rendered length the character limit applies to.
+    Credentials are masked first, as `mask_credentials` describes.
     """
+    detail = mask_credentials(detail)
     lines = detail.splitlines(keepends=True)
     head, tail, prior_lines, prior_chars = _split_at_note(lines, line_limit)
     tail_keep = min(len(tail), line_limit - min(len(head), line_limit // 4))

@@ -129,9 +129,8 @@ def implementation_remedy(token: str, *, issue_key: str, execution_id: str) -> R
             )
         case ImplementationReason.ERROR | ImplementationReason.IMPL_FAILED:
             return remedy(
-                "The coding agent failed before producing a diff. Read the agent transcript "
-                "linked from the implementation stage in the Temporal workflow history, fix the "
-                "blocking condition, then run ",
+                "The coding agent failed before producing a diff. Read the agent's error in this "
+                "alert, fix the blocking condition, then run ",
                 restart_run(issue_key),
                 ".",
             )
@@ -284,10 +283,11 @@ def issue_recheck_remedy(token: str, *, issue_key: str) -> Remedy:
             assert_never(reason)
 
 
-def gate_decision_remedy(issue_key: str, gate: str) -> Remedy:
+def gate_decision_remedy(issue_key: str, gate: str, *, subject: str = "the findings") -> Remedy:
+    """The decision a gate park asks for, naming the `subject` the alert detail carries."""
     return remedy(
-        f"The run is parked waiting for a decision on the {gate or '<gate>'} gate. Review the "
-        "linked evidence and run ",
+        f"The run is parked waiting for a decision on the {gate or '<gate>'} gate. Review "
+        f"{subject} in this alert and run ",
         approve_gate(issue_key, gate),
         " to continue, or ",
         reject_gate(issue_key, gate),
@@ -359,7 +359,7 @@ def gate_rejected_remedy(issue_key: str, gate: str) -> Remedy:
 def review_blocked_remedy(issue_key: str, gates: str) -> Remedy:
     return remedy(
         f"The {gates or 'review'} review gate blocked the change and is configured to fail closed "
-        "rather than ask a human. Address the findings reported by that gate on the branch, then "
+        "rather than ask a human. Address the findings in this alert on the branch, then "
         "run ",
         restart_run(issue_key),
         ".",
