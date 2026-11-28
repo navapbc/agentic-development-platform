@@ -12,8 +12,8 @@ from __future__ import annotations
 import json
 import logging
 import shlex
-from collections.abc import Sequence
-from typing import NoReturn
+from collections.abc import Mapping, Sequence
+from typing import NoReturn, Protocol
 from uuid import uuid4
 
 from adapters.interfaces.security_scanner import ScannerUnavailableError
@@ -33,12 +33,26 @@ from services.orchestration.gates.pod_runner import (
 
 _WORKSPACE_MOUNT = "/workspace"
 
-# Reserved by scan_script for a failed scanner-image pull and a failed scratch-file creation.
+# Reserved by scan_script for a failed scanner-image pull, a failed scratch-file creation, and
+# inputs that could not be prepared.
 # semgrep/error.py defines codes 0-13 and trivy emits 0-2 unless --exit-code is passed, which the
 # adapters do not pass, so neither tool can produce these codes and be mistaken for
 # infrastructure failing.
 IMAGE_PULL_EXIT = 121
 SCRATCH_FILE_EXIT = 122
+INPUT_PREPARE_EXIT = 123
+
+
+class PodInputs(Protocol):
+    """Directories a scanner reads besides the checkout, copied into the pod for each scan."""
+
+    async def directories(self) -> Mapping[str, str]:
+        """Map each pod directory to the worker directory whose contents it receives."""
+        ...
+
+    def prepare(self) -> str:
+        """Shell the pod runs on the copied directories before the scanner image is pulled."""
+        ...
 
 
 def scanner_pod_name(scanner: str, execution_id: str) -> str:
@@ -122,6 +136,8 @@ def scan_script(
     args: Sequence[str],
     registry: registry_auth_script.RegistrySetup = registry_auth_script.NO_REGISTRY,
     tls_verify: bool = True,
+    inputs: Sequence[str] = (),
+    prepare: str = "",
 ) -> str:
     """Build the scanner in its own image and keep the tool's JSON alone on stdout.
 
@@ -133,15 +149,21 @@ def scan_script(
     Pulling the scanner image happens here rather than on the pod's own spec, so it fails as a
     script exit code rather than as a pod event. It exits `IMAGE_PULL_EXIT` so the caller can
     tell a registry that could not be reached from the scanner reporting a vulnerability.
+    Each of `inputs` is mounted at the same path, after `prepare` runs on them.
     """
     command = " ".join(shlex.quote(arg) for arg in args)
     tls_flag = "" if tls_verify else "--tls-verify=false "
+    mounts = "".join(
+        f"-v {shlex.quote(path)}:{shlex.quote(path)} " for path in (_WORKSPACE_MOUNT, *inputs)
+    )
+    prepared = f"{{ {prepare}; }} || exit {INPUT_PREPARE_EXIT}\n" if prepare else ""
     return (
         f"out=$(mktemp) || exit {SCRATCH_FILE_EXIT}\n"
+        f"{prepared}"
         f"{registry.before_pull()}"
         f"ctr=$(buildah from {tls_flag}{shlex.quote(image)}) || exit {IMAGE_PULL_EXIT}\n"
         f"{registry.after_pull()}"
-        f"buildah run --net host -v {_WORKSPACE_MOUNT}:{_WORKSPACE_MOUNT} "
+        f"buildah run --net host {mounts}"
         f'"$ctr" -- {command} > "$out"\n'
         "rc=$?\n"
         'cat "$out" 2>/dev/null\n'
@@ -165,8 +187,10 @@ class PodCommandRunner:
         privileged: bool = False,
         node_pool: str = "",
         tls_verify: bool = True,
+        inputs: PodInputs | None = None,
     ) -> None:
         self._image = image
+        self._inputs = inputs
         self._scanner = scanner
         self._tls_verify = tls_verify
         self._execution_id = execution_id
@@ -188,6 +212,10 @@ class PodCommandRunner:
         losing it surfaces as `PodEngineError`. The scanner image is pulled by the script running
         inside that pod, so losing it surfaces as `IMAGE_PULL_EXIT` from `exec_capture`.
         """
+        try:
+            directories = await self._inputs.directories() if self._inputs else {}
+        except Exception as exc:  # noqa: BLE001
+            self._unavailable(f"could not prepare its inputs: {exc}")
         pod = scanner_pod_name(self._scanner, self._execution_id or uuid4().hex[:8])
         manifest = build_pod_manifest(
             pod,
@@ -203,18 +231,29 @@ class PodCommandRunner:
                 await self._ops.wait_ready(pod, self._namespace)
                 if cwd:
                     await self._ops.copy_in(pod, self._namespace, cwd, _WORKSPACE_MOUNT)
+                for pod_dir, local_dir in directories.items():
+                    await self._ops.copy_in(pod, self._namespace, local_dir, pod_dir)
                 registry = await registry_auth_script.install(
                     self._ops, pod, self._namespace, [self._image]
                 )
                 code, stdout, stderr = await self._ops.exec_capture(
                     pod,
                     self._namespace,
-                    scan_script(self._image, remap_paths(args, cwd), registry, self._tls_verify),
+                    scan_script(
+                        self._image,
+                        remap_paths(args, cwd),
+                        registry,
+                        self._tls_verify,
+                        inputs=tuple(directories),
+                        prepare=self._inputs.prepare() if self._inputs and directories else "",
+                    ),
                 )
                 if code == IMAGE_PULL_EXIT:
                     self._unavailable(f"could not pull {self._image}: {stderr.strip()[:400]}")
                 if code == SCRATCH_FILE_EXIT:
                     self._unavailable(f"could not create a scratch file: {stderr.strip()[:400]}")
+                if code == INPUT_PREPARE_EXIT:
+                    self._unavailable(f"could not prepare its inputs: {stderr.strip()[:400]}")
                 if not stdout.strip() and code == 0:
                     # Both scanners emit a JSON document whenever they run, so a clean exit with
                     # nothing on stdout means the tool never reported. The adapter would parse
@@ -240,7 +279,9 @@ class PodCommandRunner:
         raise ScannerUnavailableError(message)
 
 
-def pod_command_runner(scanner: str, settings, execution_id: str = "") -> PodCommandRunner:
+def pod_command_runner(
+    scanner: str, settings, execution_id: str = "", inputs: PodInputs | None = None
+) -> PodCommandRunner:
     image_setting = {
         "semgrep": "semgrep_image",
         "trivy": "trivy_image",
@@ -255,4 +296,5 @@ def pod_command_runner(scanner: str, settings, execution_id: str = "") -> PodCom
         privileged=settings.gate_engine_privileged,
         node_pool=settings.sandbox_node_pool,
         tls_verify=settings.gate_registry_tls_verify,
+        inputs=inputs,
     )

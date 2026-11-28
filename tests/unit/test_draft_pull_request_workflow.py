@@ -1608,6 +1608,20 @@ async def _await_human_park_stage(handle, stage: str) -> dict[str, str]:
     return state
 
 
+async def _await_park(handle, matches) -> dict[str, str]:
+    """Wait until the run is parked on a decision `matches` accepts.
+
+    A decision signal that reaches a run before its park exists is dropped, so a test that sends
+    one on a fixed time bound fails on a slow runner.
+    """
+    async with asyncio.timeout(60):
+        while True:
+            state = await handle.query(DraftPullRequestWorkflow.suspension_state)
+            if state.get("reason") == SuspendReason.AWAITING_HUMAN.value and matches(state):
+                return state
+            await asyncio.sleep(0.05)
+
+
 async def _await_ci_park(handle) -> dict[str, str]:
     state: dict[str, str] = {}
     for _ in range(50):
@@ -1840,16 +1854,11 @@ async def _retry_once(**overrides) -> tuple[Any, dict[str, list]]:
             )
             answered: set[str] = set()
             for retry in decisions:
-                park_key = ""
-                while not park_key or park_key in answered:
-                    state = await handle.query(DraftPullRequestWorkflow.suspension_state)
-                    if (
-                        state.get("reason") == SuspendReason.AWAITING_HUMAN.value
-                        and state.get("stage") == "repair"
-                    ):
-                        park_key = state.get("park_key", "")
-                    await asyncio.sleep(0.05)
-                answered.add(park_key)
+                state = await _await_park(
+                    handle,
+                    lambda s: s.get("stage") == "repair" and s.get("park_key") not in answered,
+                )
+                answered.add(state["park_key"])
                 await handle.signal("submit_repair_decision", args=[retry, "lead"])
             result = await handle.result()
     return result, recorded
@@ -1914,7 +1923,7 @@ async def test_a_run_moved_onto_a_newer_build_gates_the_commits_it_makes_there(m
                     id=f"wf-{uuid.uuid4().hex[:8]}",
                     task_queue=task_queue,
                 )
-                await _await_human_park(handle)
+                await _await_park(handle, lambda s: s.get("stage") == "repair")
         async with worker(env, task_queue):
             await handle.signal("submit_repair_decision", args=[True, "lead"])
             result = await handle.result()
@@ -5471,14 +5480,9 @@ async def test_an_approved_lockfile_park_still_parks_on_the_dependency_scan():
                 id=f"wf-{uuid.uuid4().hex[:8]}",
                 task_queue=task_queue,
             )
-            await _await_human_park_stage(handle, "commit")
+            await _await_park(handle, lambda s: ":lockfile:" in s.get("park_key", ""))
             await handle.signal("submit_gate_decision", args=["lockfile", True, "lead"])
-            for _ in range(50):
-                state = await handle.query(DraftPullRequestWorkflow.suspension_state)
-                if ":dependency_scan:" in state.get("park_key", ""):
-                    break
-                await asyncio.sleep(0.05)
-            assert ":dependency_scan:" in state.get("park_key", "")
+            await _await_park(handle, lambda s: ":dependency_scan:" in s.get("park_key", ""))
             assert commits == []
             await handle.signal("submit_gate_decision", args=["dependency_scan", False, "lead"])
             result = await handle.result()

@@ -48,8 +48,13 @@ _TRIVY_SEVERITY = {
 
 
 class ScannerError(Exception):
+    """A scanner that exited with a failure code, carrying the end of its stderr.
+
+    A scan in a pod writes the image pull before the tool runs, so the tool's own error is last.
+    """
+
     def __init__(self, scanner: str, returncode: int, stderr: str) -> None:
-        super().__init__(f"{scanner} exited {returncode}: {stderr.strip()[:400]}")
+        super().__init__(f"{scanner} exited {returncode}: {stderr.strip()[-400:]}")
         self.scanner = scanner
         self.returncode = returncode
 
@@ -149,22 +154,46 @@ class RealSemgrepScanner:
 
 
 class RealTrivyScanner:
+    """Trivy over the checkout, from the database in `cache_dir` when one is given.
+
+    With a `cache_dir`, the scan reads the database already there and makes no network request.
+    Without one, Trivy downloads its database first.
+    """
+
     name = "trivy"
     _ok_codes = frozenset({0})
 
-    def __init__(self, *, binary: str = "trivy", runner: CommandRunner | None = None) -> None:
+    def __init__(
+        self, *, binary: str = "trivy", runner: CommandRunner | None = None, cache_dir: str = ""
+    ) -> None:
         self._binary = binary
         self._runner = runner or run_subprocess
+        self._cache_dir = cache_dir
 
     @classmethod
     def from_settings(
-        cls, settings: Settings | None = None, *, runner: CommandRunner | None = None
+        cls,
+        settings: Settings | None = None,
+        *,
+        runner: CommandRunner | None = None,
+        cache_dir: str = "",
     ) -> RealTrivyScanner:
         resolved = settings or get_settings()
-        return cls(binary=resolved.trivy_binary, runner=runner)
+        return cls(binary=resolved.trivy_binary, runner=runner, cache_dir=cache_dir)
 
     async def scan(self, target: ScanTarget) -> list[ScanFinding]:
-        args = [self._binary, "fs", "--format", "json", "--quiet", target.repo_root]
+        offline = (
+            [
+                "--cache-dir",
+                self._cache_dir,
+                "--skip-db-update",
+                "--skip-java-db-update",
+                "--offline-scan",
+            ]
+            if self._cache_dir
+            else []
+        )
+        args = [self._binary, "fs", "--format", "json", "--quiet", *offline, target.repo_root]
         result = await self._runner(args, target.repo_root)
         if result.returncode not in self._ok_codes:
             raise ScannerError(self.name, result.returncode, result.stderr)

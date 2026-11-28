@@ -137,9 +137,14 @@ def _scanner_backend(name: str, factory: Any, settings: Any = None) -> Any:
         )
     if mode != "pod":
         return factory(resolved)
+    from services.orchestration.gates import trivy_db
     from services.orchestration.gates.scanner_pod import pod_command_runner
 
-    return factory(resolved, runner=pod_command_runner(name, resolved))
+    database = trivy_db.database_for(resolved) if name == "trivy" else None
+    if database is None:
+        return factory(resolved, runner=pod_command_runner(name, resolved))
+    runner = pod_command_runner(name, resolved, inputs=database)
+    return factory(resolved, runner=runner, cache_dir=trivy_db.POD_DIR)
 
 
 def _resolve_gate_model(config: Any) -> str:

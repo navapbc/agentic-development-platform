@@ -179,6 +179,39 @@ async def test_a_lockfile_committed_as_a_symlink_is_not_written_through(step, tm
     assert result.lockfiles == []
 
 
+async def test_a_scanner_that_failed_is_named_with_its_reason_in_the_park_detail(step, monkeypatch):
+    failed = ScanFindingRecord(
+        finding_id="trivy-backend-error",
+        scanner="trivy",
+        kind="error",
+        severity="critical",
+        title="gate 'trivy' backend failed",
+        detail="ScannerError: trivy exited 1: failed to download vulnerability DB",
+        rule_id="gate-backend-error",
+    )
+    step(["requirements-dev.txt"], None)
+
+    async def scan(mediator, req):
+        return ScanChangeResult(
+            scanners=["trivy"],
+            findings=[failed],
+            blocking_count=1,
+            threshold="high",
+            content_hash="",
+            evidence_id="ev-1",
+            blocking_finding_ids=[failed.finding_id],
+        )
+
+    monkeypatch.setattr(lockfile, "scan_with", scan)
+
+    result = await prepare_dependencies(_request())
+
+    assert result.blocking == [
+        "gate-backend-error critical trivy: ScannerError: trivy exited 1: "
+        "failed to download vulnerability DB"
+    ]
+
+
 async def test_a_requirements_change_is_scanned_with_no_lock_command(step):
     state = step(["requirements-dev.txt"], PYTHON, runner=None, blocking=1)
 

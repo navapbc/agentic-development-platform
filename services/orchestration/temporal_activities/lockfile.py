@@ -77,7 +77,7 @@ def _materializer():
 
 
 def dependency_mediator(settings):
-    """Trivy and OSV-Scanner, whichever scanner gates the tenant enables.
+    """Trivy and OSV-Scanner, whatever scanner gates the tenant enables.
 
     Every change to a dependency is scanned, so this step does not read the gates config.
     """
@@ -167,6 +167,15 @@ async def _regenerate(
         shutil.rmtree(staging, ignore_errors=True)
 
 
+def _blocking_line(finding) -> str:
+    """One line of the park detail, naming the scanner and its reason when there is no location.
+
+    A scanner that failed reports a finding with no location.
+    """
+    where = finding.location or f"{finding.scanner}: {finding.detail or finding.title}"
+    return f"{finding.rule_id} {finding.severity} {where}"
+
+
 @activity.defn
 async def prepare_dependencies(req: DependencyStepRequest) -> DependencyStepResult:
     from scripts.config import get_settings
@@ -209,10 +218,6 @@ async def prepare_dependencies(req: DependencyStepRequest) -> DependencyStepResu
         lock_detail=failure,
         blocking_count=scan.blocking_count,
         threshold=scan.threshold,
-        blocking=[
-            f"{f.rule_id} {f.severity} {f.location}"
-            for f in scan.findings
-            if f.finding_id in blocking_ids
-        ],
+        blocking=[_blocking_line(f) for f in scan.findings if f.finding_id in blocking_ids],
         evidence_id=scan.evidence_id,
     )
