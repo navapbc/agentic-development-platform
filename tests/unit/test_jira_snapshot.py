@@ -18,11 +18,11 @@ from tests.support import hermetic_settings
 def _allowlist_from_config(monkeypatch):
     monkeypatch.setattr(
         "services.integration.jira.snapshot.allowed_projects",
-        lambda settings=None: {"AGENTDEV"},
+        lambda: {"AGENTDEV"},
     )
     monkeypatch.setattr(
         "services.integration.jira.snapshot.acceptance_field",
-        lambda settings=None: "",
+        lambda: "",
     )
 
 

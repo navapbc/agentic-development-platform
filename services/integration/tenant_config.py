@@ -1,15 +1,16 @@
 """Load each tenant's config bundle, validate it, and pin one version for each run.
 
-A tenant owns the config files that describe its work and its credentials, TENANT_FILES. Its
-bundle holds any of them and layers over config/<environment>, so a file the bundle lacks is read
-from the environment directory. Every other config file belongs to the platform and is read only
-from the environment directory.
+A tenant owns the config files that describe its work and its credentials. A tenant-only file,
+TENANT_ONLY_FILES, is read only from the tenant's bundle, and the platform directory may not hold
+one. A replaceable file, TENANT_REPLACEABLE_FILES, is a platform default that the bundle's copy
+replaces. Every other config file belongs to the platform and is read only from the platform
+directory, config/local or PLATFORM_ENV_CONFIG_DIR.
 
-A bundle may also hold BUNDLE_ONLY_FILES, which never layer over the environment's copy. Its
-image_exceptions.yaml accepts findings only in the tenant's own images, and validation refuses an
-entry outside that scope or without the fields every entry needs.
+A bundle may also hold BUNDLE_ONLY_FILES. Its image_exceptions.yaml accepts findings only in the
+tenant's own images, and validation refuses an entry outside that scope or without the fields
+every entry needs.
 
-The bundle comes from the directory config/<environment>/tenants/<tenant>/, or from the prefix
+The bundle comes from the directory config/local/tenants/<tenant>/, or from the prefix
 tenants/<tenant>/ of TENANT_CONFIG_BUCKET when that is set. A configured process copies each
 bundle it activates into a local store keyed by the bundle's identity, the version of each file,
 and validates it there before activation. A bundle that fails validation is refused and the last
@@ -27,7 +28,7 @@ import os
 import shutil
 import tempfile
 import threading
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -40,17 +41,18 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-TENANT_FILES = (
+TENANT_ONLY_FILES = (
     "repositories",
     "checks",
-    "gates",
     "gate_engine",
-    "registries",
     "github",
     "jira",
     "tickets",
     "profiles",
+    "escalation",
 )
+TENANT_REPLACEABLE_FILES = ("gates", "integrations", "registries")
+TENANT_FILES = (*TENANT_ONLY_FILES, *TENANT_REPLACEABLE_FILES)
 BUNDLE_ONLY_FILES = ("image_exceptions",)
 DIRECTORY = "directory"
 S3 = "s3"
@@ -63,6 +65,11 @@ _pinned_identity: ContextVar[BundleIdentity | None] = ContextVar(
 )
 _active: TenantConfig | None = None
 _active_lock = threading.Lock()
+_bucket_clients: dict[str, Any] = {}
+BUCKET_CONNECT_SECONDS = 5
+BUCKET_READ_SECONDS = 15
+BUCKET_ATTEMPTS = 3
+_bucket_clients_lock = threading.Lock()
 
 
 class BundleUnavailableError(ConfigError):
@@ -99,9 +106,15 @@ class Bundle:
 
 
 class BundleSource(Protocol):
+    location: str
+
     def latest(self) -> BundleIdentity: ...
 
     def fetch(self, identity: BundleIdentity) -> Bundle: ...
+
+    def fetch_files(self, identity: BundleIdentity, names: Iterable[str]) -> dict[str, str]:
+        """Return the text of each named file the identity holds, and no other file."""
+        ...
 
 
 def _content_version(text: str) -> str:
@@ -119,6 +132,7 @@ class DirectorySource:
     def __init__(self, path: Path, tenant: str) -> None:
         self.path = path
         self.tenant = tenant
+        self.location = str(path)
 
     def _read(self) -> dict[str, str]:
         if not self.path.is_dir():
@@ -144,6 +158,17 @@ class DirectorySource:
             )
         return Bundle(current, files)
 
+    def fetch_files(self, identity: BundleIdentity, names: Iterable[str]) -> dict[str, str]:
+        files = {}
+        for name in names:
+            if name not in identity.files:
+                continue
+            try:
+                files[name] = (self.path / f"{name}.yaml").read_text(encoding="utf-8")
+            except FileNotFoundError:
+                continue
+        return files
+
 
 class S3Source:
     """The tenants/<tenant>/ prefix of the versioned config bucket. Any version can be fetched."""
@@ -153,6 +178,7 @@ class S3Source:
         self.bucket = bucket
         self.tenant = tenant
         self.prefix = f"tenants/{tenant}/"
+        self.location = f"s3://{bucket}/{self.prefix}"
 
     def latest(self) -> BundleIdentity:
         files: dict[str, str] = {}
@@ -167,8 +193,14 @@ class S3Source:
         return BundleIdentity(self.tenant, S3, files)
 
     def fetch(self, identity: BundleIdentity) -> Bundle:
+        return Bundle(identity, self.fetch_files(identity, identity.files))
+
+    def fetch_files(self, identity: BundleIdentity, names: Iterable[str]) -> dict[str, str]:
         files = {}
-        for name, version in identity.files.items():
+        for name in names:
+            version = identity.files.get(name)
+            if version is None:
+                continue
             try:
                 response = self.client.get_object(
                     Bucket=self.bucket, Key=f"{self.prefix}{name}.yaml", VersionId=version
@@ -178,7 +210,7 @@ class S3Source:
                     f"{name}.yaml version {version} of tenant {self.tenant} is unreadable: {exc}"
                 ) from exc
             files[name] = response["Body"].read().decode("utf-8")
-        return Bundle(identity, files)
+        return files
 
 
 class BundleStore:
@@ -262,11 +294,22 @@ def tenant_bundle_dir(settings: Settings | None = None) -> Path | None:
         return None
     from services.integration.credentials import env_config_dir
 
-    return env_config_dir(resolved.environment) / "tenants" / resolved.tenant
+    return env_config_dir() / "tenants" / resolved.tenant
+
+
+def refuse_platform_tenant_files(directory: Path) -> None:
+    """Refuse a platform directory that holds a tenant-only file, which no process reads there."""
+    found = [f"{name}.yaml" for name in TENANT_ONLY_FILES if (directory / f"{name}.yaml").is_file()]
+    if found:
+        raise ConfigError(
+            f"{directory} holds {', '.join(found)}, which only a tenant's bundle holds. Move "
+            f"{'it' if len(found) == 1 else 'each'} to config/local/tenants/<tenant>/, or to the "
+            "tenant's config repository in a deployment"
+        )
 
 
 def tenant_file(name: str) -> Path | None:
-    """Return the bundle's copy of a tenant file, or None to read the environment's."""
+    """Return the bundle's copy of a tenant file, or None when the bundle holds none."""
     if name not in TENANT_FILES:
         return None
     directory = tenant_bundle_dir()
@@ -276,10 +319,10 @@ def tenant_file(name: str) -> Path | None:
     return path if path.is_file() else None
 
 
-def _present(name: str, settings: Settings) -> bool:
+def _present(name: str) -> bool:
     from services.integration.credentials import env_config_path
 
-    return env_config_path(name, environment=settings.environment).is_file()
+    return env_config_path(name).is_file()
 
 
 def _required_content(settings: Settings) -> list[str]:
@@ -287,20 +330,20 @@ def _required_content(settings: Settings) -> list[str]:
     from services.integration.tickets.backend import JIRA, REBAR
     from services.integration.tickets.factory import resolve_ticket_backend_name
 
-    if not _present("repositories", settings):
+    if not _present("repositories"):
         return ["repositories.yaml is required and names the tenant's repositories"]
     problems = []
     registry = load_repository_registry(settings)
     if not registry.names():
         problems.append("repositories.yaml names no repository")
-    if not _present("gates", settings):
+    if not _present("gates"):
         problems.append("gates.yaml is required and names the gates a run evaluates")
     backend = resolve_ticket_backend_name(settings)
-    if backend == REBAR and not _present("tickets", settings):
+    if backend == REBAR and not _present("tickets"):
         problems.append("tickets.yaml is required with TICKET_BACKEND=rebar")
-    if backend == JIRA and not _present("jira", settings):
+    if backend == JIRA and not _present("jira"):
         problems.append("jira.yaml is required with TICKET_BACKEND=jira")
-    if registry.names(GITHUB) and not _present("github", settings):
+    if registry.names(GITHUB) and not _present("github"):
         problems.append("github.yaml is required for a repository with backend github")
     from services.integration.image_policy import image_problems
     from services.integration.runtime_profiles import profile_problems
@@ -313,6 +356,7 @@ def _required_content(settings: Settings) -> list[str]:
 def _loaders(settings: Settings) -> list[tuple[str, Callable[[], object]]]:
     from services.integration.credentials import load_env_config
     from services.integration.github.credentials import build_github_credential_resolver
+    from services.integration.integrations import load_integrations_config
     from services.integration.jira.credentials import build_jira_credential_resolver
     from services.integration.tickets.rebar_config import (
         load_poll_config,
@@ -321,39 +365,44 @@ def _loaders(settings: Settings) -> list[tuple[str, Callable[[], object]]]:
     from services.integration.tickets.store_config import load_tickets_store_config
     from services.integration.tickets.write_contract import load_write_back_scopes
     from services.orchestration.checks.config import load_checks_configs
+    from services.orchestration.escalation import load_escalation_config
     from services.orchestration.gates.config import load_gates_config
     from services.orchestration.gates.engine_source import load_gate_engine_configs
     from services.orchestration.gates.registry_mirrors import current as load_registries
 
     def present(name: str) -> bool:
-        return _present(name, settings)
+        return _present(name)
 
     loaders: list[tuple[str, Callable[[], object]]] = [
-        ("checks", lambda: load_checks_configs(settings)),
+        ("checks", lambda: load_checks_configs()),
         ("gate_engine", lambda: load_gate_engine_configs(settings)),
         ("registries", load_registries),
     ]
     if present("gates"):
         loaders.append(("gates", lambda: load_gates_config(settings)))
+    if present("integrations"):
+        loaders.append(("integrations", load_integrations_config))
     if present("github"):
         loaders.append(("github", lambda: build_github_credential_resolver(settings)))
     if present("jira"):
-        loaders.append(("jira", lambda: build_jira_credential_resolver(settings)))
+        loaders.append(("jira", lambda: build_jira_credential_resolver()))
+    if present("escalation"):
+        loaders.append(("escalation", lambda: load_escalation_config(settings)))
     if present("tickets"):
         loaders.extend(
             [
-                ("tickets", lambda: load_rebar_backend_config(settings)),
-                ("tickets", lambda: load_poll_config(settings)),
-                ("tickets", lambda: load_write_back_scopes(settings)),
+                ("tickets", lambda: load_rebar_backend_config()),
+                ("tickets", lambda: load_poll_config()),
+                ("tickets", lambda: load_write_back_scopes()),
             ]
         )
-        if "store" in load_env_config("tickets", environment=settings.environment):
-            loaders.append(("tickets", lambda: load_tickets_store_config(settings)))
+        if "store" in load_env_config("tickets"):
+            loaders.append(("tickets", lambda: load_tickets_store_config()))
     return loaders
 
 
 def validate_bundle(directory: Path, settings: Settings) -> None:
-    """Refuse a bundle whose effective config, layered over the environment's, is unusable.
+    """Refuse a bundle whose effective config, its files over the platform defaults, is unusable.
 
     Every file the bundle holds must be a tenant file, every file the effective config holds
     must parse with the loader the platform uses, and the required content must be present.
@@ -379,7 +428,7 @@ def validate_bundle(directory: Path, settings: Settings) -> None:
     with pinned(directory):
         try:
             problems.extend(_required_content(settings))
-        except ConfigError as exc:
+        except (ConfigError, ValueError) as exc:
             problems.append(str(exc))
         for name, load in _loaders(settings):
             try:
@@ -391,17 +440,37 @@ def validate_bundle(directory: Path, settings: Settings) -> None:
         raise ConfigError(f"the tenant config bundle is refused for these reasons:\n{reasons}")
 
 
+def config_bucket_client(settings: Settings) -> Any:
+    """Return the process's client of the config bucket, whose reads give up within seconds.
+
+    A hung read would otherwise hold a refresh, and the routes waiting on it, for botocore's
+    default minute per attempt.
+    """
+    from botocore.config import Config
+    from scripts.aws_clients import configure_aws_fips, s3_client
+
+    with _bucket_clients_lock:
+        client = _bucket_clients.get(settings.aws_region)
+        if client is None:
+            configure_aws_fips(settings)
+            client = _bucket_clients[settings.aws_region] = s3_client(
+                region=settings.aws_region,
+                config=Config(
+                    connect_timeout=BUCKET_CONNECT_SECONDS,
+                    read_timeout=BUCKET_READ_SECONDS,
+                    retries={"max_attempts": BUCKET_ATTEMPTS, "mode": "standard"},
+                ),
+            )
+        return client
+
+
 def tenant_source(settings: Settings, tenant: str) -> BundleSource:
     """Return the bundle source of the named tenant, which this process only reads."""
     from services.integration.credentials import env_config_dir
 
     if settings.tenant_config_bucket:
-        from scripts.aws_clients import configure_aws_fips, s3_client
-
-        configure_aws_fips(settings)
-        client = s3_client(region=settings.aws_region)
-        return S3Source(client, settings.tenant_config_bucket, tenant)
-    path = env_config_dir(settings.environment) / "tenants" / tenant
+        return S3Source(config_bucket_client(settings), settings.tenant_config_bucket, tenant)
+    path = env_config_dir() / "tenants" / tenant
     return DirectorySource(path, tenant)
 
 
@@ -443,6 +512,12 @@ class TenantConfig:
         """Activate the source's latest bundle when it is new and valid. Return whether it was."""
         with self._lock:
             latest = self.source.latest()
+            if not latest.files:
+                reason = f"{self.source.location} holds no published bundle of tenant {self.tenant}"
+                log.error("%s", reason)
+                if self.active is None:
+                    raise ConfigError(f"{reason}. Publish the tenant's config bundle there.")
+                return False
             if self.active is not None and latest.id == self.active.id:
                 return False
             if latest.id in self._rejected:
@@ -505,3 +580,5 @@ def reset() -> None:
     global _active
     with _active_lock:
         _active = None
+    with _bucket_clients_lock:
+        _bucket_clients.clear()

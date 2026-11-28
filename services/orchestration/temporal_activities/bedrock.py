@@ -21,6 +21,11 @@ from temporalio import activity
 from temporalio.common import RetryPolicy
 from temporalio.exceptions import ApplicationError
 
+from services.orchestration.model_path import (
+    classify_gateway_answer,
+    classify_transport_error,
+    model_unavailable_error,
+)
 from services.prompts import load_prompt
 
 log = structlog.get_logger("model_gateway")
@@ -35,6 +40,7 @@ MODEL_RETRY_POLICY = RetryPolicy(
 )
 
 _RETRYABLE_STATUS = frozenset({408, 429, 500, 502, 503, 504})
+TRUNCATED_FINISH_REASON = "length"
 
 
 @dataclass
@@ -64,6 +70,9 @@ def _raise_for_status(resp: httpx.Response) -> None:
     if resp.status_code < 400:
         return
     detail = f"litellm returned {resp.status_code}: {resp.text[:500]}"
+    hop = classify_gateway_answer(resp.text)
+    if hop is not None:
+        raise model_unavailable_error(hop, detail)
     if resp.status_code in _RETRYABLE_STATUS:
         raise ApplicationError(detail, type="LiteLLMTransient")
     raise ApplicationError(detail, type="LiteLLMRejected", non_retryable=True)
@@ -148,6 +157,11 @@ async def invoke_model(req: ModelRequest) -> ModelResponse:
             try:
                 resp = await client.post("/v1/chat/completions", json=payload, headers=headers)
             except httpx.TransportError as exc:
+                hop = classify_transport_error(exc)
+                if hop is not None:
+                    raise model_unavailable_error(
+                        hop, f"{settings.litellm_base_url} {exc.__class__.__name__} {exc}"
+                    ) from exc
                 raise _unreachable_gateway_error(settings.litellm_base_url, exc) from exc
             _raise_for_status(resp)
             data = resp.json()
@@ -162,6 +176,14 @@ async def invoke_model(req: ModelRequest) -> ModelResponse:
             response_model=model_id,
             input_tokens=usage.get("prompt_tokens"),
             output_tokens=usage.get("completion_tokens"),
+        )
+    if choice.get("finish_reason") == TRUNCATED_FINISH_REASON:
+        raise ApplicationError(
+            f"{req.logical_model} stopped at max_tokens {req.max_tokens} during stage "
+            f"{req.stage or 'model'}, so its answer is incomplete and is not used. Raise the "
+            "stage's max_tokens, which also holds the model's thinking.",
+            type="ModelOutputTruncated",
+            non_retryable=True,
         )
     try:
         await _persist_prompt_evidence(req, prompt_version=prompt_version, model_id=model_id)

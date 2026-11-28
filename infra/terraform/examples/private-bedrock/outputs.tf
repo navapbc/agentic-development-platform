@@ -226,11 +226,11 @@ output "temporal_deploy" {
 }
 
 output "off_hours" {
-  description = "The automation documents that put the services to sleep and wake them, the role they assume, the function that runs their steps, the parameter holding the counts the wake restores, the alert topic, and the metric namespace."
+  description = "The function that runs the sleep and wake steps, the dead-letter queue of the schedule deliveries it did not receive, the parameter holding the counts the wake restores, the alert topic, and the metric namespace."
   value = {
-    documents             = module.off_hours.documents
-    automation_role_arn   = module.off_hours.automation_role_arn
     function_name         = module.off_hours.function_name
+    function_arn          = module.off_hours.function_arn
+    dead_letter_queue_url = module.off_hours.dead_letter_queue_url
     wake_counts_parameter = module.off_hours.wake_counts_parameter
     alert_topic_arn       = module.off_hours.alert_topic_arn
     metric_namespace      = module.off_hours.metric_namespace
@@ -290,6 +290,7 @@ output "eks" {
       GATE_ENGINE_BUILDER_IMAGE    = var.eks_buildah_image
       SEMGREP_IMAGE                = var.eks_semgrep_image
       TRIVY_IMAGE                  = var.eks_trivy_image
+      OSV_SCANNER_IMAGE            = var.eks_osv_scanner_image
       GATE_ENGINE_IMAGES           = jsonencode(var.eks_gate_engine_images)
       RUNTIME_IMAGES               = jsonencode(var.eks_runtime_images)
     }
@@ -297,12 +298,13 @@ output "eks" {
 }
 
 output "tenants" {
-  description = "Each tenant's worker role, namespaces, secrets, image prefix, config bundle prefix and publisher role, and ticket store, with the config bucket."
+  description = "Each tenant's worker role, review worker role, namespaces, secrets, review signing key, image prefix, config bundle prefix and publisher role, and ticket store, with the config bucket."
   value = local.tenants_enabled ? {
     config_bucket = module.tenant_config_store.bucket
     tenants = {
       for name, tenant in local.tenant_records : name => merge(tenant, {
         worker_role_arn        = module.eks_cluster.pod_identity_role_arns["tenant_${name}"]
+        review_role_arn        = module.eks_cluster.pod_identity_role_arns["tenant_${name}_review"]
         workspace_access_point = module.container_services.workspace.tenant_access_point_arns[name]
       })
     }

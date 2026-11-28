@@ -24,7 +24,7 @@ def _jira_blocker(settings: Any) -> str:
     from services.integration.jira.credentials import CLOUD, build_jira_credential_resolver
 
     try:
-        resolver = build_jira_credential_resolver(settings)
+        resolver = build_jira_credential_resolver()
         projects = sorted(resolver.projects())
         if not projects:
             return "jira.yaml names no allowlisted project with a site, token, and board"

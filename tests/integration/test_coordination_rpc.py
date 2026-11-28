@@ -136,3 +136,23 @@ async def test_claim_is_won_once_and_next_batch_defers_file_collisions(coordinat
     schedule = await client.next_batch([unit_a, unit_b])
     assert {u.work_unit for u in schedule.admitted} == {"agent-a"}
     assert {u.work_unit for u in schedule.deferred} == {"agent-b"}
+
+
+async def test_the_claims_of_other_units_covering_a_path_round_trip(coordination_url: str):
+    client = CoordinationClient(coordination_url, token=SHARED_SECRET)
+    holder = WorkUnit("AGENTDEV-2", "unit-1", "exec-2", "agent-b", ("src",), "wf-2", repo="org/app")
+    await client.try_claim(holder)
+
+    held = await client.active_claims_covering(
+        "src/store.ts", task_id=TASK_ID, work_unit="unit-1", tenant="", repo="org/app"
+    )
+    other_repository = await client.active_claims_covering(
+        "src/store.ts", task_id=TASK_ID, work_unit="unit-1", tenant="", repo="org/api"
+    )
+    free = await client.active_claims_covering(
+        "README.md", task_id=TASK_ID, work_unit="unit-1", tenant="", repo="org/app"
+    )
+
+    assert held == [holder]
+    assert other_repository == []
+    assert free == []

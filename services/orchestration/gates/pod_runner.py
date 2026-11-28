@@ -418,7 +418,7 @@ class KubectlPodOps:
             )
         try:
             status = json.loads(proc.stdout).get("status") or {}
-        except (json.JSONDecodeError, AttributeError):
+        except json.JSONDecodeError, AttributeError:
             return with_remedy(
                 "The pod status could not be parsed.", _inspect_the_pod(pod, namespace)
             )

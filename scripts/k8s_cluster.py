@@ -3,7 +3,8 @@
 The platform, OPA, and LiteLLM images are built through the build command the publisher uses,
 loaded into the cluster the way K8S_IMAGE_LOAD names, and rolled out from the rendered
 manifests. Every kubectl call names K8S_CONTEXT, so a workstation with several clusters
-configured deploys to the one the settings select.
+configured deploys to the one the settings select. After the rollout, the deployment validation
+of every tenant runs as a Job, and its failures are printed without failing the deploy.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from services import process
+from services.integration.credentials import env_config_dir
 
 from scripts.config import Settings, get_settings
 
@@ -26,9 +28,10 @@ if TYPE_CHECKING:
 LOG = "[k8s]"
 REPO_ROOT = Path(__file__).resolve().parent.parent
 WORKER = "activity-worker"
-DEPLOYMENTS = ("litellm", "review-worker", "inbound-webhook")
+DEPLOYMENTS = ("litellm", "inbound-webhook")
 GATEWAY = "mcp-gateway"
-ROLLOUT_TIMEOUT = "600s"
+REVIEW_WORKER = "review-worker"
+ROLLOUT_SECONDS = 600
 _ARCHES = {"arm64": "arm64", "aarch64": "arm64", "x86_64": "amd64", "amd64": "amd64"}
 _PROBES = ("startupProbe", "readinessProbe", "livenessProbe")
 
@@ -43,60 +46,87 @@ def namespaced(settings: Settings, *args: str) -> list[str]:
     return kubectl(settings, "--namespace", settings.k8s_namespace, *args)
 
 
-def tenants(settings: Settings) -> list[str]:
-    from services.orchestration.task_queues import tenant_names
+def tenants(*, root: Path | None = None) -> list[str]:
+    """Return the local tenants, the folders of config/local/tenants/ with their settings files."""
+    from scripts import env_file
+    from scripts.local_tenants import TenantLayoutError, local_tenant_names
 
-    return tenant_names(settings) or ([settings.tenant] if settings.tenant else [])
+    try:
+        return local_tenant_names(env_config_dir(root=root or env_file.CHECKOUT_ROOT))
+    except TenantLayoutError as exc:
+        raise SystemExit(f"{LOG} {exc}") from exc
 
 
-def worker_tenant(settings: Settings) -> str:
-    """Return TENANT, or the first tenant TENANTS names, whose activity worker host tasks reach."""
-    names = tenants(settings)
-    if not names:
-        raise SystemExit(f"{LOG} set TENANT or TENANTS, because every activity worker serves one")
-    return settings.tenant or names[0]
+def worker_tenant(settings: Settings, *, root: Path | None = None) -> str:
+    """Return the tenant whose activity worker host tasks reach.
+
+    That is TENANT, which a host task sets from its --tenant flag, or else the one local tenant.
+    With two or more local tenants and no TENANT, the task is refused.
+    """
+    from scripts.local_tenants import TenantLayoutError, select_tenant
+
+    try:
+        return select_tenant(settings.tenant, tenants(root=root))
+    except TenantLayoutError as exc:
+        raise SystemExit(f"{LOG} {exc}") from exc
 
 
 def in_worker_namespace(settings: Settings, *args: str) -> list[str]:
-    """Address the activity worker of TENANT, or of the first tenant TENANTS names."""
+    """Address the activity worker of the tenant worker_tenant selects."""
     from scripts.tenant_render import worker_namespace
 
     return kubectl(settings, "--namespace", worker_namespace(worker_tenant(settings)), *args)
 
 
+def in_review_namespace(settings: Settings, *args: str) -> list[str]:
+    """Address the review worker of the tenant worker_tenant selects."""
+    from scripts.tenant_render import review_namespace
+
+    return kubectl(settings, "--namespace", review_namespace(worker_tenant(settings)), *args)
+
+
 def worker_registry(settings: Settings, root: Path) -> RepositoryRegistry:
     """Load the repositories of the tenant whose activity worker host tasks reach.
 
-    The tenant's bundle names them. Only the home tenant, the one TENANT of `.env` names or else
-    the first tenant TENANTS names, falls back to config/<env>/repositories.yaml, as the cluster
-    render allows. A host task run as `TENANT=<tenant> inv ...` does not make that tenant home.
+    The tenant's bundle, config/local/tenants/<tenant>/repositories.yaml, names them.
     """
-    from dotenv import dotenv_values
+    from services.integration.credentials import ConfigError
     from services.integration.repositories import load_repository_registry
 
     from scripts.repositories_compose import registry_config_dir
 
-    tenant = worker_tenant(settings)
-    names = tenants(settings)
-    configured = (dotenv_values(root / ".env").get("TENANT") or "").strip()
-    home = configured if configured in names else names[0]
-    config_dir = registry_config_dir(settings.environment, tenant, root=root)
-    if config_dir == settings.environment and tenant != home:
-        raise SystemExit(
-            f"{LOG} tenant {tenant} names no repositories of its own in "
-            f"config/{settings.environment}/tenants/{tenant}/repositories.yaml"
+    tenant = worker_tenant(settings, root=root)
+    try:
+        config_dir = registry_config_dir(tenant, root=root)
+    except ConfigError as exc:
+        raise SystemExit(f"{LOG} {exc}") from exc
+    return load_repository_registry(settings, directory=config_dir)
+
+
+def deployments(settings: Settings, *, root: Path | None = None) -> list[tuple[str, str]]:
+    """Return each deployment the local cluster runs, by namespace and name.
+
+    The render reads the checkout's platform directory, so this list does too and ignores
+    PLATFORM_ENV_CONFIG_DIR.
+    """
+    from services.integration.credentials import env_config_dir
+
+    from scripts import env_file
+    from scripts.tenant_render import review_namespace, worker_namespace
+    from scripts.webhook_eks_render import SLACK_POSTER, environment_runs_slack_poster
+
+    root = root or env_file.CHECKOUT_ROOT
+    platform = list(DEPLOYMENTS)
+    if environment_runs_slack_poster(env_config_dir(root=root)):
+        platform.append(SLACK_POSTER)
+    return [(settings.k8s_namespace, name) for name in platform] + [
+        deployment
+        for name in tenants(root=root)
+        for deployment in (
+            (worker_namespace(name), WORKER),
+            (worker_namespace(name), GATEWAY),
+            (review_namespace(name), REVIEW_WORKER),
         )
-    return load_repository_registry(settings, environment=config_dir, root=root)
-
-
-def deployments(settings: Settings) -> list[tuple[str, str]]:
-    """Return each deployment the local cluster runs, by namespace and name."""
-    from scripts.tenant_render import worker_namespace
-
-    return [(settings.k8s_namespace, name) for name in DEPLOYMENTS] + [
-        (worker_namespace(name), deployment)
-        for name in tenants(settings)
-        for deployment in (WORKER, GATEWAY)
     ]
 
 
@@ -222,15 +252,14 @@ def warm_shared_images(
 
 
 def rendered(settings: Settings, build_id: str, compose_files: Sequence[str]) -> list[dict]:
-    from dotenv import dotenv_values
-
     from scripts.cluster_env import compose_config, compose_network
+    from scripts.env_file import platform_env_values
     from scripts.k8s_render import RenderInputs, render
 
     return render(
         RenderInputs(
             settings=settings,
-            env=dotenv_values(REPO_ROOT / ".env"),
+            env=platform_env_values(),
             network=compose_network(compose_config(list(compose_files))),
             build_id=build_id,
             image_registry=image_registry(settings),
@@ -258,7 +287,27 @@ def roll(settings: Settings, run: Runner = process.run) -> None:
     The renderer stamps each pod template with a digest of the images and generated config,
     so the apply itself rolls a deployment whose inputs changed.
     """
+    from scripts.eks_render import termination_grace
+
     for namespace, name in deployments(settings):
+        live = run(
+            kubectl(
+                settings,
+                "--namespace",
+                namespace,
+                "get",
+                "deployment",
+                name,
+                "-o",
+                "json",
+                "--ignore-not-found",
+            ),
+            timeout=process.SHORT_COMMAND_TIMEOUT_SECONDS,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        seconds = ROLLOUT_SECONDS + termination_grace(json.loads(live) if live.strip() else None)
         run(
             kubectl(
                 settings,
@@ -267,22 +316,23 @@ def roll(settings: Settings, run: Runner = process.run) -> None:
                 "rollout",
                 "status",
                 f"deployment/{name}",
-                f"--timeout={ROLLOUT_TIMEOUT}",
+                f"--timeout={seconds}s",
             ),
-            timeout=process.LONG_COMMAND_TIMEOUT_SECONDS,
+            timeout=seconds + 60,
             check=True,
         )
 
 
 def delete_retired(settings: Settings, run: Runner = process.run) -> None:
     """Delete the objects a deployment rendered before tenants, which an apply does not prune."""
+    from scripts.k8s_render import RETIRED_PLATFORM_REVIEW_OBJECTS
     from scripts.tenant_render import PLATFORM_NAMESPACE, RETIRED, SANDBOX_NAMESPACE
 
     moved = {
         PLATFORM_NAMESPACE: settings.k8s_namespace,
         SANDBOX_NAMESPACE: settings.openhands_sandbox_namespace,
     }
-    for kind, namespace, name in RETIRED:
+    for kind, namespace, name in (*RETIRED, *RETIRED_PLATFORM_REVIEW_OBJECTS):
         if kind == "namespace":
             name = moved.get(name, name)
         scope = ["--namespace", moved.get(namespace, namespace)] if namespace else []
@@ -367,6 +417,9 @@ def main(argv: list[str] | None = None) -> int:
     delete_retired(settings)
     roll(settings)
     print(f"{LOG} {settings.k8s_context}/{settings.k8s_namespace} runs build {args.build_id}")
+    from scripts.validation_job import report_after_rollout
+
+    report_after_rollout(kubectl(settings), settings.k8s_namespace)
     return 0
 
 

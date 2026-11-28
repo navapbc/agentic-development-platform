@@ -9,13 +9,18 @@ from services.integration.jira.credentials import StatusFlow
 from services.integration.jira.render import heading, link, paragraph, text
 from services.integration.tickets import REBAR, TicketBackend
 from services.integration.tickets.rebar_backend import (
+    STORE_WRITE_ATTEMPTS,
     RebarTicketBackend,
     render_blocks_to_text,
+    retry_store_write,
 )
 
 
 class _FakeRebar(types.ModuleType):
-    class ConcurrencyError(Exception):
+    class RebarError(RuntimeError):
+        pass
+
+    class ConcurrencyError(RebarError):
         pass
 
     def __init__(self) -> None:
@@ -25,6 +30,7 @@ class _FakeRebar(types.ModuleType):
         self.comments: list[tuple[str, str]] = []
         self._counter = 0
         self.raise_concurrency_once = False
+        self.in_lock_failures = 0
 
     def show_ticket(self, ticket_id: str, *, repo_root: str, include_inbound: bool = False):
         return dict(self.tickets[ticket_id])
@@ -52,6 +58,12 @@ class _FakeRebar(types.ModuleType):
         return {"ticket_id": ticket_id, "from": current_status, "to": target_status}
 
     def comment(self, ticket_id: str, body: str, *, repo_root: str, **kwargs: Any):
+        if self.in_lock_failures:
+            self.in_lock_failures -= 1
+            raise self.RebarError(
+                "rebar comment failed (exit 1): Error: git commit failed while holding lock: "
+                "fatal: could not parse HEAD"
+            )
         self.comments.append((ticket_id, body))
         self.tickets[ticket_id].setdefault("comments", []).append({"body": body})
 
@@ -156,6 +168,44 @@ def test_linkback_posts_a_rebar_comment(fake_rebar: _FakeRebar) -> None:
     body = fake_rebar.comments[0][1]
     assert "Draft pull request opened" in body
     assert "https://git/pr/7" in body
+
+
+def test_a_comment_git_failed_inside_the_lock_is_retried_until_it_lands(
+    fake_rebar: _FakeRebar, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed(fake_rebar)
+    fake_rebar.in_lock_failures = STORE_WRITE_ATTEMPTS - 1
+    delays: list[float] = []
+    monkeypatch.setattr("services.integration.tickets.rebar_backend.time.sleep", delays.append)
+
+    _backend().add_comment("ADSER-1", "Draft PR opened.")
+
+    assert fake_rebar.comments == [("ADSER-1", "Draft PR opened.")]
+    assert delays == [1.0, 2.0, 4.0]
+
+
+def test_a_store_write_stops_retrying_after_its_attempts(fake_rebar: _FakeRebar) -> None:
+    fake_rebar.in_lock_failures = STORE_WRITE_ATTEMPTS
+    _seed(fake_rebar)
+
+    with pytest.raises(fake_rebar.RebarError, match="holding lock"):
+        retry_store_write(
+            lambda: fake_rebar.comment("ADSER-1", "x", repo_root="/tmp/store"),
+            sleep=lambda _: None,
+        )
+    assert fake_rebar.comments == []
+
+
+def test_a_store_write_failure_outside_the_lock_is_not_retried(fake_rebar: _FakeRebar) -> None:
+    calls: list[int] = []
+
+    def refused() -> None:
+        calls.append(1)
+        raise fake_rebar.RebarError("rebar comment failed (exit 1): ticket not found")
+
+    with pytest.raises(fake_rebar.RebarError, match="not found"):
+        retry_store_write(refused, sleep=lambda _: None)
+    assert calls == [1]
 
 
 def test_render_comment_is_plain_text() -> None:

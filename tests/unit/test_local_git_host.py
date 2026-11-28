@@ -411,3 +411,29 @@ def test_the_git_host_still_reports_a_configured_repository_whose_token_is_missi
 
     with pytest.raises(SecretNotFoundError):
         host._auth("demo")
+
+
+async def test_a_commit_without_a_workspace_keeps_the_seeded_tree_and_reads_no_directory(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "stray.txt").write_text("not in the repository\n")
+    host = MockGitHost()
+    host.seed_repo("svc", files={"README.md": "hello\n"})
+    request = CommitRequest(
+        repo="svc",
+        branch="agent/T-1",
+        base="main",
+        message="apply change",
+        workspace="",
+        tree="tree-one",
+        task_id="T-1",
+        execution_id="exec-1",
+    )
+
+    result = await host.commit_and_push(request)
+
+    assert result.pushed is True
+    assert (await host.read_file("svc", "README.md", "agent/T-1")).text == "hello\n"
+    with pytest.raises(FileNotFoundError):
+        await host.read_file("svc", "stray.txt", "agent/T-1")

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 from services.integration.tenant_config import DirectorySource
+from services.repository_intelligence.indexing import scip_builder
 from services.repository_intelligence.indexing import worker as worker_module
 from services.repository_intelligence.indexing.reindex import IndexRoots
 from services.repository_intelligence.indexing.worker import (
@@ -236,7 +237,7 @@ def test_build_worker_builds_targets_from_registry(monkeypatch, tmp_path) -> Non
     monkeypatch.setattr(worker_module, "get_settings", hermetic_settings)
     worker = build_worker()
     assert worker is not None
-    assert worker.repos() == {("", "svc"), ("", "green")}
+    assert worker.repos() == {("adp", "svc"), ("adp", "green")}
 
 
 def test_two_tenants_with_the_same_repository_are_indexed_and_recorded_separately() -> None:
@@ -288,7 +289,7 @@ def test_the_target_loader_adds_a_repository_on_the_next_poll() -> None:
 def test_the_default_reindexer_passes_the_targets_index_roots(monkeypatch) -> None:
     seen: dict[str, object] = {}
 
-    def fake_reindex(root, repo, *, prior_commit=None, index_roots=None):
+    def fake_reindex(root, repo, *, prior_commit=None, index_roots=None, indexer=None):
         seen.update(root=root, repo=repo, prior=prior_commit, index_roots=index_roots)
 
     roots = IndexRoots(Path("/idx/scip/beta"), Path("/idx/zoekt/beta"))
@@ -311,6 +312,11 @@ def test_build_worker_reads_each_tenants_bundle(monkeypatch, tmp_path) -> None:
     configure_repositories(
         monkeypatch, tmp_path / "env", "repositories:\n  svc:\n    index: true\n"
     )
+    adp = tmp_path / "tenants" / "adp"
+    adp.mkdir(parents=True)
+    (adp / "repositories.yaml").write_text(
+        "config_version: 1\nrepositories:\n  svc:\n    index: true\n", encoding="utf-8"
+    )
     beta = tmp_path / "tenants" / "beta"
     beta.mkdir(parents=True)
     (beta / "repositories.yaml").write_text(
@@ -328,3 +334,27 @@ def test_build_worker_reads_each_tenants_bundle(monkeypatch, tmp_path) -> None:
 
     assert worker is not None
     assert worker.repos() == {("adp", "svc"), ("beta", "svc")}
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("src/app.ts", scip_builder.SCIP_TYPESCRIPT_INDEXER),
+        ("app/main.py", scip_builder.SCIP_PYTHON_INDEXER),
+        ("main.tf", None),
+    ],
+)
+def test_default_reindex_uses_the_indexer_of_the_repository_language(
+    tmp_path, monkeypatch, source, expected
+) -> None:
+    root = tmp_path / "repo"
+    (root / source).parent.mkdir(parents=True, exist_ok=True)
+    (root / source).write_text("", encoding="utf-8")
+    seen: dict[str, object] = {}
+    monkeypatch.setattr(
+        worker_module, "reindex_repo", lambda *_a, indexer, **_k: seen.update(indexer=indexer)
+    )
+
+    worker_module._default_reindex(RepoTarget("repo", root), RepoRef("repo", "aaaaaaa"), None)
+
+    assert seen["indexer"] is expected

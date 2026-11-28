@@ -4,7 +4,7 @@ locals {
 
   # Secret store keys each EKS workload reads through the Secrets Store CSI driver. The database
   # keys exist only with Aurora, and the secret store rejects a reader key that names no secret.
-  eks_workloads = {
+  eks_workloads = merge({
     litellm = {
       service_account = "litellm"
       policy_arns     = [module.bedrock_iam.invoke_policy_arn]
@@ -13,9 +13,14 @@ locals {
     inbound_webhook = {
       service_account = "inbound-webhook"
       policy_arns     = aws_iam_policy.eks_temporal_ca[*].arn
-      secrets         = ["database_platform_app", "github_webhook_secret", "jira_webhook_secret"]
+      secrets         = ["database_platform_app", "slack_shared_signing_secret", "slack_shared_app_token"]
     }
-  }
+    deployment_validate = {
+      service_account = "deployment-validate"
+      policy_arns     = aws_iam_policy.eks_temporal_ca[*].arn
+      secrets         = ["database_platform_app", "litellm_master_key"]
+    }
+  }, local.slack_poster_workload)
 
   eks_secret_keys = distinct(flatten([
     for workload in values(local.eks_workloads) : [
@@ -37,8 +42,9 @@ locals {
     local.eks_mcp_gateway_exposed && var.eks_mcp_gateway_domain != "" && !endswith(var.eks_mcp_gateway_domain, ".internal") ? ["*.${var.eks_mcp_gateway_domain}"] : [],
   ) : []
 
-  # The tenant workers and the inbound webhook start and signal Temporal workflows.
-  eks_temporal_client_role_arns = local.eks_enabled ? [for name in concat([for tenant in keys(local.tenants) : "tenant_${tenant}"], ["inbound_webhook"]) : module.eks_cluster.pod_identity_role_arns[name]] : []
+  # The tenant activity and review workers, the inbound webhook, and the deployment validation
+  # connect to Temporal.
+  eks_temporal_client_role_arns = local.eks_enabled ? [for name in concat(flatten([for tenant in keys(local.tenants) : ["tenant_${tenant}", "tenant_${tenant}_review"]]), ["inbound_webhook", "deployment_validate"]) : module.eks_cluster.pod_identity_role_arns[name]] : []
   eks_workspace                 = local.eks_enabled && module.container_services.workspace != null
   eks_deployer_enabled          = local.eks_enabled && var.create_ecs_cluster && var.create_container_services
 
@@ -76,6 +82,7 @@ locals {
       GATE_ENGINE_BUILDER_IMAGE    = var.eks_buildah_image
       SEMGREP_IMAGE                = var.eks_semgrep_image
       TRIVY_IMAGE                  = var.eks_trivy_image
+      OSV_SCANNER_IMAGE            = var.eks_osv_scanner_image
       GATE_ENGINE_IMAGES           = jsonencode(var.eks_gate_engine_images)
       RUNTIME_IMAGES               = jsonencode(var.eks_runtime_images)
     }
@@ -85,7 +92,7 @@ locals {
       LITELLM_DATABASE_PORT = tostring(module.aurora_postgresql.port)
     }
     platform_environment = coalesce(module.container_services.platform_environment, {})
-    environment_config   = merge(local.container_environment_config, local.registry_environment_config, local.image_environment_config)
+    environment_config   = merge(local.container_environment_config, local.registry_environment_config, local.image_environment_config, local.slack_shared_app_environment_config)
     security_groups = {
       cluster         = module.eks_cluster.cluster_security_group_id
       temporal_client = coalesce(module.temporal_control_plane.client_security_group_id, "")
@@ -113,9 +120,9 @@ locals {
   } : null
 }
 
-# The EKS deployments that hold a database connection restart after its credential rotates, and
-# each tenant's activity worker and MCP gateway restart after its repository intelligence token
-# rotates.
+# The EKS deployments that hold a database connection restart after its credential rotates, each
+# tenant's activity worker and MCP gateway restart after its repository intelligence token rotates,
+# and each tenant's review worker restarts after an operator writes its review signing key.
 locals {
   eks_restart = local.eks_deployer_enabled && var.eks_deployer_image != "" && (local.secret_store_database || length(local.tenants) > 0) ? {
     cluster_arn        = module.ecs_cluster.cluster_arn
@@ -124,18 +131,31 @@ locals {
     subnet_ids         = local.management_subnet_ids
     security_group_ids = [module.eks_deployer.security_group_id]
     pass_role_arns     = [module.eks_deployer.execution_role_arn, module.eks_deployer.task_role_arn]
-    deployments = {
+    deployments = merge({
       for key, deployments in {
-        database_platform_app = ["tenant-workers", "inbound-webhook", "mcp-gateway"]
+        database_platform_app = ["tenant-workers", "tenant-review-workers", "inbound-webhook", "mcp-gateway"]
         database_litellm      = ["litellm"]
       } : key => deployments if local.secret_store_database
-    }
-    external_secrets = {
-      for name, tenant in local.tenant_records : "tenant_${name}_ri_token" => {
-        secret_arn  = tenant.repo_intelligence_token_arn
-        deployments = ["${tenant.namespace}/activity-worker", "${tenant.namespace}/mcp-gateway"]
-      }
-    }
+      }, local.slack_shared_app_enabled ? {
+      slack_shared_bot_token      = ["slack-poster"]
+      slack_shared_signing_secret = ["inbound-webhook"]
+      slack_shared_app_token      = ["inbound-webhook"]
+      slack_poster_tls            = ["slack-poster"]
+    } : {})
+    external_secrets = merge(
+      {
+        for name, tenant in local.tenant_records : "tenant_${name}_ri_token" => {
+          secret_arn  = tenant.repo_intelligence_token_arn
+          deployments = ["${tenant.namespace}/activity-worker", "${tenant.namespace}/mcp-gateway"]
+        }
+      },
+      {
+        for name, tenant in local.tenant_records : "review_key_${name}" => {
+          secret_arn  = tenant.review_signing_key_arn
+          deployments = ["${tenant.review_namespace}/review-worker"]
+        }
+      },
+    )
   } : null
 }
 

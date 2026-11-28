@@ -1,8 +1,8 @@
 """Read and write the platform's and each tenant's image_exceptions.yaml.
 
 The two files keep one layout locally and in AWS. Without TENANT_CONFIG_BUCKET the platform file
-is config/<environment>/image_exceptions.yaml and a tenant's file is
-config/<environment>/tenants/<tenant>/image_exceptions.yaml. With it set, the platform file is
+is config/local/image_exceptions.yaml and a tenant's file is
+config/local/tenants/<tenant>/image_exceptions.yaml. With it set, the platform file is
 platform/image_exceptions.yaml in that bucket, read by version ID and cached per version, and a
 tenant's file is tenants/<tenant>/image_exceptions.yaml, one more file of the tenant's bundle.
 
@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 import yaml
+from scripts.aws_clients import S3_CONFLICT_CODES, S3_MISSING_CODES, error_code
 
 from services.integration.credentials import ConfigError, current_config_version
 from services.integration.image_policy import (
@@ -51,8 +52,6 @@ TENANTS_PREFIX = "tenants/"
 CONTENT_TYPE = "application/yaml"
 WRITE_ATTEMPTS = 5
 _CACHE_LIMIT = 64
-_MISSING_CODES = {"404", "NoSuchKey", "NotFound"}
-_CONFLICT_CODES = {"412", "409", "PreconditionFailed", "ConditionalRequestConflict"}
 
 
 class MissingExceptionsError(ConfigError):
@@ -128,11 +127,6 @@ _texts: dict[tuple[str, str, str], str] = {}
 _texts_lock = threading.Lock()
 
 
-def _error_code(exc: BaseException) -> str:
-    response = getattr(exc, "response", None) or {}
-    return str((response.get("Error") or {}).get("Code") or "")
-
-
 class S3File:
     """One key of the versioned config bucket, whose text is cached per version ID."""
 
@@ -149,7 +143,7 @@ class S3File:
         try:
             head = self.client.head_object(Bucket=self.bucket, Key=self.key)
         except Exception as exc:  # noqa: BLE001
-            if _error_code(exc) in _MISSING_CODES:
+            if error_code(exc) in S3_MISSING_CODES:
                 return Snapshot(self.location, None)
             raise UnreadableFileError(f"{self.location} cannot be read: {exc}") from exc
         version = str(head.get("VersionId") or "")
@@ -183,7 +177,7 @@ class S3File:
                 **condition,
             )
         except Exception as exc:
-            if _error_code(exc) in _CONFLICT_CODES:
+            if error_code(exc) in S3_CONFLICT_CODES:
                 raise StaleWriteError(f"{self.location} changed after it was read") from exc
             raise
         return str(response.get("VersionId") or "")
@@ -202,7 +196,7 @@ def platform_file(settings: Settings, client: Any = None) -> ExceptionsFile:
         return S3File(client or _client(settings), settings.tenant_config_bucket, PLATFORM_KEY)
     from services.integration.credentials import env_config_dir
 
-    return LocalFile(env_config_dir(settings.environment) / FILE_NAME)
+    return LocalFile(env_config_dir() / FILE_NAME)
 
 
 def tenant_file(settings: Settings, tenant: str = "") -> LocalFile:
@@ -212,7 +206,7 @@ def tenant_file(settings: Settings, tenant: str = "") -> LocalFile:
     name = tenant or settings.tenant
     if not name:
         raise ConfigError("name the tenant with --tenant or TENANT")
-    return LocalFile(env_config_dir(settings.environment) / "tenants" / name / FILE_NAME)
+    return LocalFile(env_config_dir() / "tenants" / name / FILE_NAME)
 
 
 def tenant_files(settings: Settings, client: Any = None) -> list[tuple[str, ExceptionsFile]]:
@@ -220,7 +214,7 @@ def tenant_files(settings: Settings, client: Any = None) -> list[tuple[str, Exce
     if not settings.tenant_config_bucket:
         from services.integration.credentials import env_config_dir
 
-        root = env_config_dir(settings.environment) / "tenants"
+        root = env_config_dir() / "tenants"
         if not root.is_dir():
             return []
         return [
@@ -267,7 +261,7 @@ def scope_policy(settings: Settings, client: Any = None) -> ImagePolicy:
     With TENANT_CONFIG_BUCKET set it is platform/image_policy.yaml, which the composition root
     writes beside the platform file, so a process without the environment's config, such as a
     GitHub workflow, checks scope against the deployment's policy. Otherwise, or when that object
-    is absent, it is config/<environment>/image_policy.yaml.
+    is absent, it is config/local/image_policy.yaml.
     """
     if settings.tenant_config_bucket:
         snapshot = S3File(
@@ -281,7 +275,7 @@ def scope_policy(settings: Settings, client: Any = None) -> ImagePolicy:
             if not isinstance(raw, Mapping):
                 raise ConfigError(f"{snapshot.location} is not a mapping")
             return parse_policy(raw)
-    return load_policy(settings.environment)
+    return load_policy()
 
 
 def read_platform(
@@ -312,10 +306,11 @@ def tenant_mirrors(directory: Path) -> dict[str, str]:
     path = directory / "registries.yaml"
     if not path.is_file():
         return {}
-    from services.orchestration.gates.registry_mirrors import RegistryConfigError, parse
+    from services.orchestration.gates.registry_mirrors import RegistryConfigError
+    from services.orchestration.gates.registry_mirrors import tenant_mirrors as parse_mirrors
 
     try:
-        return dict(parse(yaml.safe_load(path.read_text(encoding="utf-8")) or {}).mirrors)
+        return parse_mirrors(yaml.safe_load(path.read_text(encoding="utf-8")) or {})
     except (RegistryConfigError, yaml.YAMLError) as exc:
         raise ConfigError(f"{path}: {exc}") from exc
 
@@ -348,7 +343,7 @@ def read_tenant(
     return exceptions
 
 
-def gate_exceptions(environment: str) -> tuple[FindingException, ...]:
+def gate_exceptions() -> tuple[FindingException, ...]:
     """Return the platform's and the run tenant's entries for the pull gate, each in scope.
 
     A file that is missing, unreadable, or invalid contributes no entry, so the gate refuses
@@ -357,9 +352,7 @@ def gate_exceptions(environment: str) -> tuple[FindingException, ...]:
     from scripts.config import get_settings
 
     settings = get_settings()
-    if settings.environment != environment:
-        settings = settings.model_copy(update={"environment": environment})
-    policy = load_policy(environment)
+    policy = load_policy()
     loaders: list[tuple[str, Callable[[], tuple[FindingException, ...]]]] = [
         ("platform", lambda: read_platform(settings, policy=policy)[1]),
         (f"tenant {settings.tenant}", lambda: read_tenant(settings, policy)),

@@ -32,13 +32,17 @@ class ReviewSigningNotConfigured(ReviewAttestationError):
     """Signing is enabled for a signed stage but the key or trust root is missing."""
 
 
-def select_attestor(stage: ReviewStage, settings: Settings | None = None) -> Attestor:
-    """Select the verdict attestor for a review stage.
+def select_attestor(
+    stage: ReviewStage, settings: Settings | None = None, *, tenant: str
+) -> Attestor:
+    """Select the verdict attestor for a review stage of a run of ``tenant``.
 
     Signing is on by default and covers every review stage. A signed stage fails
-    closed when the signing key or trust root is not configured, so a verdict never
-    silently downgrades to the symmetric secret. Every stage uses the HMAC attestor
-    only when signing is disabled.
+    closed when the signing key or trust root is not configured, or when the run has
+    no tenant, so a verdict never silently downgrades to the symmetric secret. The
+    signed attestor signs under the principal of ``tenant`` and verifies against only
+    the active keys of ``tenant``, so a verdict signed with another tenant's key fails.
+    Every stage uses the HMAC attestor only when signing is disabled.
     """
     resolved = settings or get_settings()
     if resolved.review_signing_enabled and stage in SIGNED_STAGES:
@@ -48,9 +52,14 @@ def select_attestor(stage: ReviewStage, settings: Settings | None = None) -> Att
                 "review signing is enabled but the review signing key or "
                 f"review_trust_root_path is not set for stage {stage.value}"
             )
+        if not tenant:
+            raise ReviewSigningNotConfigured(
+                f"review signing is enabled but the run of stage {stage.value} has no tenant, "
+                "so no tenant key can verify its verdict"
+            )
         from services.orchestration.signing_keys import SigningKeyError, review_signing_key_path
         from services.review.attestation import SshsigAttestor
-        from services.review.trust_root import load_trust_root
+        from services.review.trust_root import load_trust_root, review_principal
 
         trust_root = load_trust_root(resolved.review_trust_root_path)
         try:
@@ -59,8 +68,8 @@ def select_attestor(stage: ReviewStage, settings: Settings | None = None) -> Att
             raise ReviewSigningNotConfigured(str(exc)) from exc
         return SshsigAttestor(
             key_path=key_path,
-            principal=trust_root.principal,
-            trust_root=trust_root.allowed_signers(),
+            principal=review_principal(tenant),
+            trust_root=trust_root.allowed_signers(tenant),
         )
     return HmacAttestor(resolved.review_attestation_secret)
 

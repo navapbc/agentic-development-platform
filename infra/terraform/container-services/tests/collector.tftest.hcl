@@ -110,11 +110,8 @@ variables {
   database_app_secret_arn      = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/database/platform_app-a"
   database_migrator_secret_arn = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/database/platform_migrator-b"
   secret_kms_key_arn           = "arn:aws:kms:us-east-1:111111111111:key/secrets"
-  bedrock_invoke_policy_arns   = ["arn:aws:iam::111111111111:policy/agentic-platform-bedrock-invoke"]
   secret_arns = {
     coordination_shared_secret = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/coordination-c"
-    review_signing_key         = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/external/review-signing-key-d"
-    review_attestation_secret  = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/review-attestation-e"
     database_langfuse          = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/database/langfuse-h"
     clickhouse_password        = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/clickhouse-password-i"
     langfuse_salt              = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/langfuse-salt-j"
@@ -165,7 +162,7 @@ variables {
   platform_ca_pem    = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
 }
 
-run "without_a_collector_image_the_review_worker_exports_to_langfuse_itself" {
+run "without_a_collector_image_no_task_exports_to_a_collector" {
   command = plan
 
   variables {
@@ -175,10 +172,14 @@ run "without_a_collector_image_the_review_worker_exports_to_langfuse_itself" {
   assert {
     condition = (
       length(aws_ecs_service.collector) == 0 && output.telemetry == null &&
-      contains([for variable in jsondecode(aws_ecs_task_definition.workload["review-worker"].container_definitions)[1].environment : variable.name], "LANGFUSE_HOST") &&
       contains([for variable in jsondecode(aws_ecs_task_definition.workload["workflow-worker"].container_definitions)[1].environment : "${variable.name}=${variable.value}"], "OTEL_TRACES_EXPORTER=none")
     )
-    error_message = "Without a collector, a task exports to one, or the review worker does not export to Langfuse."
+    error_message = "Without a collector, a task exports to one."
+  }
+
+  assert {
+    condition     = output.langfuse.direct_span_exports
+    error_message = "Without a collector, the langfuse output does not name direct span exports, so no review worker would receive the Langfuse keys."
   }
 }
 
@@ -189,7 +190,7 @@ run "the_collector_receives_every_platform_task_behind_the_load_balancer" {
     condition = (
       one(aws_ecs_service.collector["otel-collector"].load_balancer).container_port == 4317 &&
       alltrue([
-        for name in ["workflow-worker", "review-worker", "coordination", "schedule-bootstrap"] :
+        for name in ["workflow-worker", "coordination", "schedule-bootstrap"] :
         contains([for variable in jsondecode(aws_ecs_task_definition.workload[name].container_definitions)[1].environment : "${variable.name}=${variable.value}"], "OTEL_EXPORTER_OTLP_ENDPOINT=https://otel-collector.platform.internal:443") &&
         !contains([for variable in jsondecode(aws_ecs_task_definition.workload[name].container_definitions)[1].environment : variable.name], "OTEL_TRACES_EXPORTER") &&
         contains(local.workload_security_groups[name], "sg-0internalclient")
@@ -199,13 +200,13 @@ run "the_collector_receives_every_platform_task_behind_the_load_balancer" {
   }
 
   assert {
-    condition = (
-      !contains([for variable in jsondecode(aws_ecs_task_definition.workload["review-worker"].container_definitions)[1].environment : variable.name], "LANGFUSE_HOST") &&
-      contains(output.secret_readers.langfuse_secret_key, aws_iam_role.workload_execution["review-worker"].arn) &&
-      !contains([for secret in jsondecode(aws_ecs_task_definition.workload["review-worker"].container_definitions)[1].secrets : secret.name], "LANGFUSE_SECRET_KEY") &&
-      toset([for secret in jsondecode(aws_ecs_task_definition.collector["otel-collector"].container_definitions)[1].secrets : secret.name]) == toset(["LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY"])
-    )
-    error_message = "The review worker still exports to Langfuse itself, which would record each generation twice."
+    condition     = toset([for secret in jsondecode(aws_ecs_task_definition.collector["otel-collector"].container_definitions)[1].secrets : secret.name]) == toset(["LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY"])
+    error_message = "The collector does not inject the Langfuse keys it exports with."
+  }
+
+  assert {
+    condition     = !output.langfuse.direct_span_exports
+    error_message = "With a collector, the langfuse output names direct span exports, so each generation would reach Langfuse twice."
   }
 }
 
@@ -287,7 +288,7 @@ run "each_service_restarts_after_a_rotation_of_a_credential_it_reads" {
   assert {
     condition = (
       toset(output.secret_restart_services.database_platform_app) == toset([
-        for name in ["workflow-worker-blue", "workflow-worker-green", "review-worker-blue", "review-worker-green", "coordination"] : aws_ecs_service.platform[name].id
+        for name in ["workflow-worker-blue", "workflow-worker-green", "coordination"] : aws_ecs_service.platform[name].id
       ]) &&
       output.secret_restart_services.coordination_shared_secret == [aws_ecs_service.platform["coordination"].id] &&
       alltrue([for services in values(output.secret_restart_services) : length(services) <= 5])

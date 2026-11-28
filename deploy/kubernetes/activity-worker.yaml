@@ -31,7 +31,11 @@ metadata:
     app.kubernetes.io/name: activity-worker
     app.kubernetes.io/part-of: agentic-dev-platform
 spec:
+  # A tenant's rebar ticket store lives on a shared volume, and rebar cannot reclaim a write lock
+  # that a pod on another node left behind, so the old pod stops before the new one starts.
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: activity-worker
@@ -42,6 +46,7 @@ spec:
         app.kubernetes.io/part-of: agentic-dev-platform
     spec:
       serviceAccountName: activity-worker
+      terminationGracePeriodSeconds: 2460
       # A sidecar init container starts and passes its startup probe before the worker
       # starts, and stops after the worker, so an activity that drains during shutdown
       # still reaches the policy engine.
@@ -122,6 +127,12 @@ spec:
               value: "true"
             - name: GATE_ENGINE_EXECUTION
               value: pod
+            - name: SLACK_POSTING_URL
+              value: https://slack-poster:8160
+            - name: SLACK_POSTING_TOKEN_FILE
+              value: /var/run/secrets/slack-posting/token
+            - name: SLACK_POSTING_CA_FILE
+              value: /etc/slack-poster-ca/ca.pem
             - name: REPO_INTELLIGENCE_URL
               valueFrom:
                 configMapKeyRef:
@@ -152,6 +163,12 @@ spec:
               mountPath: /tmp
             - name: home
               mountPath: /home/appuser
+            - name: slack-posting-token
+              mountPath: /var/run/secrets/slack-posting
+              readOnly: true
+            - name: slack-poster-ca
+              mountPath: /etc/slack-poster-ca
+              readOnly: true
           resources:
             requests:
               cpu: 500m
@@ -197,3 +214,14 @@ spec:
           emptyDir: {}
         - name: home
           emptyDir: {}
+        - name: slack-posting-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: slack-posting-service
+                  expirationSeconds: 600
+                  path: token
+        - name: slack-poster-ca
+          configMap:
+            name: slack-poster-ca
+            optional: true

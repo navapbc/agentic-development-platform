@@ -16,6 +16,7 @@ RUN apt-get update \
 WORKDIR /src
 COPY --chown=builder:builder . /src
 USER builder
+HEALTHCHECK NONE
 RUN make -f Makefile.cbm clean-c || true
 RUN make -f Makefile.cbm cbm CC=gcc CXX=g++
 

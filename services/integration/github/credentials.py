@@ -111,6 +111,7 @@ def _parse_default(raw: Mapping[str, object], hosts: dict[str, _Host]) -> _Ident
 
 
 _MOVED_SECTIONS = ("allowlist", "repositories")
+_SINGLE_IDENTITY_REF = "__token__"
 
 
 def parse_github_config(
@@ -121,7 +122,7 @@ def parse_github_config(
     if moved:
         raise ConfigError(
             f"github.yaml sets {' and '.join(moved)}, which repositories.yaml now holds. "
-            "List each repository in config/<env>/repositories.yaml with its host, owner, or "
+            "List each repository in config/local/repositories.yaml with its host, owner, or "
             "token_ref override, and remove the section from github.yaml."
         )
     hosts = _parse_hosts(raw)
@@ -208,13 +209,11 @@ def build_github_credential_resolver(
     settings: Settings | None = None,
     *,
     secret_resolver: SecretResolver | None = None,
-    environment: str | None = None,
 ) -> GitHubCredentialResolver:
     resolved = settings or get_settings()
-    env = environment or resolved.environment
-    registry = load_repository_registry(resolved, environment=env)
-    require_current_config("github", environment=env)
-    raw = load_env_config("github", environment=env)
+    registry = load_repository_registry(resolved)
+    require_current_config("github")
+    raw = load_env_config("github")
     config = parse_github_config(raw, registry)
     secrets = secret_resolver or EnvSecretResolver()
     return GitHubCredentialResolver(config, registry.names(GITHUB), secrets)
@@ -234,10 +233,14 @@ def build_single_identity_resolver(
     named `__token__` that no operator can set, and the resolver would raise where it means
     that this caller configured no credential.
     """
-    identity = _Identity(host="default", owner=owner, token_ref="__token__") if token else None
+    identity = (
+        _Identity(host="default", owner=owner, token_ref=_SINGLE_IDENTITY_REF) if token else None
+    )
     config = GitHubSourceConfig(
         hosts={"default": _Host(api_url=api_url, git_base_url=git_base_url)},
         default=identity,
         repositories={},
     )
-    return GitHubCredentialResolver(config, set(repos), EnvSecretResolver({"__token__": token}))
+    return GitHubCredentialResolver(
+        config, set(repos), EnvSecretResolver({_SINGLE_IDENTITY_REF: token})
+    )

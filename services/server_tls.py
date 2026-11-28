@@ -1,9 +1,13 @@
-"""TLS for the platform HTTP services behind the internal load balancer.
+"""TLS for the platform HTTP services.
 
 With `SERVER_TLS=true` a service issues itself a self-signed certificate when it starts and
 serves HTTPS with it. The load balancer re-encrypts to the task and does not verify the task's
 certificate, so the key is generated in the task and never leaves it. The certificate is also
 written beside the key, so the container health probe can verify the service it calls.
+
+A service whose callers verify it instead serves a mounted certificate and key, which
+`SERVER_TLS_CERTIFICATE_FILE` and `SERVER_TLS_KEY_FILE` name, issued by a CA its callers trust.
+Its health probe trusts the CA file `SERVER_TLS_CA_FILE` names.
 """
 
 from __future__ import annotations
@@ -83,17 +87,37 @@ def issue(directory: Path) -> tuple[Path, Path]:
 
 def server_context(directory: Path) -> ssl.SSLContext:
     certificate, key = issue(directory)
+    return mounted_context(certificate, key)
+
+
+def mounted_context(certificate: Path, key: Path) -> ssl.SSLContext:
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.load_cert_chain(certificate, key)
     return context
 
 
-def wrap(server, *, enabled: bool, configured_dir: str = "") -> None:
-    """Serve `server` over TLS when enabled. The handshake runs on the handler's thread."""
+def expires_at(certificate: Path) -> datetime.datetime:
+    return x509.load_pem_x509_certificate(certificate.read_bytes()).not_valid_after_utc
+
+
+def wrap(
+    server,
+    *,
+    enabled: bool,
+    configured_dir: str = "",
+    certificate_file: str = "",
+    key_file: str = "",
+) -> None:
+    """Serve `server` over TLS when enabled, with the mounted certificate and key when both are
+    named and else a self-signed one. The handshake runs on the handler's thread."""
     if not enabled:
         return
-    context = server_context(certificate_dir(configured_dir))
+    context = (
+        mounted_context(Path(certificate_file), Path(key_file))
+        if certificate_file and key_file
+        else server_context(certificate_dir(configured_dir))
+    )
     server.socket = context.wrap_socket(
         server.socket, server_side=True, do_handshake_on_connect=False
     )
@@ -109,6 +133,9 @@ def wrap(server, *, enabled: bool, configured_dir: str = "") -> None:
     server.handle_error = handle_error
 
 
-def probe_context(configured_dir: str = "") -> ssl.SSLContext:
-    """Trust only the certificate this task issued, for the loopback health probe."""
-    return ssl.create_default_context(cafile=certificate_dir(configured_dir) / CERTIFICATE)
+def probe_context(configured_dir: str = "", ca_file: str = "") -> ssl.SSLContext:
+    """Trust only the CA of a mounted certificate, or else the certificate this task issued, for
+    the loopback health probe."""
+    return ssl.create_default_context(
+        cafile=ca_file or certificate_dir(configured_dir) / CERTIFICATE
+    )

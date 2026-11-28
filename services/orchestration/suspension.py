@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 
 RESUME_SIGNAL = "resume"
+RESUME_MODEL_PATH_UPDATE = "resume_model_path"
+RESUME_LIMIT_PARK_UPDATE = "resume_limit_park"
+REFRESH_PARK_BUTTONS_UPDATE = "refresh_park_buttons"
+SUSPENSION_STATE_QUERY = "suspension_state"
 
 SUSPEND_STATE_ATTR = "SuspendState"
 SUSPEND_REASON_ATTR = "SuspendReason"
@@ -14,7 +18,7 @@ PARKED_BUILD_ID_ATTR = "ParkedByBuildId"
 SUSPENDED_STATE = "suspended"
 
 
-class SuspendReason(str, Enum):
+class SuspendReason(StrEnum):
     AWAITING_CI = "awaiting_ci"
     AWAITING_REVIEW = "awaiting_review"
     AWAITING_FIX = "awaiting_fix"
@@ -22,15 +26,19 @@ class SuspendReason(str, Enum):
     AWAITING_DEPENDENCY = "awaiting_dependency"
     AWAITING_PR_CLOSE = "awaiting_pr_close"
     AWAITING_HUMAN = "awaiting_human"
+    MODEL_UNAVAILABLE = "model_unavailable"
+    LIMIT_REACHED = "limit_reached"
 
 
-class ResumeOn(str, Enum):
+class ResumeOn(StrEnum):
     CI_RESULT = "ci_result"
     HUMAN_APPROVAL = "human_approval"
     NEWER_BUILD = "newer_build"
     BUDGET_RAISED = "budget_raised"
     DEPENDENCY_READY = "dependency_ready"
     PR_CLOSED = "pr_closed"
+    MODEL_RESTORED = "model_restored"
+    LIMIT_GRANTED = "limit_granted"
 
 
 _DEFAULT_RESUME_ON = {
@@ -41,6 +49,8 @@ _DEFAULT_RESUME_ON = {
     SuspendReason.AWAITING_DEPENDENCY: ResumeOn.DEPENDENCY_READY,
     SuspendReason.AWAITING_PR_CLOSE: ResumeOn.PR_CLOSED,
     SuspendReason.AWAITING_HUMAN: ResumeOn.HUMAN_APPROVAL,
+    SuspendReason.MODEL_UNAVAILABLE: ResumeOn.MODEL_RESTORED,
+    SuspendReason.LIMIT_REACHED: ResumeOn.LIMIT_GRANTED,
 }
 
 
@@ -56,6 +66,16 @@ class Suspension:
     parked_build_id: str = ""
     detail: str = ""
     metadata: dict[str, str] = field(default_factory=dict)
+    park_key: str = ""
+
+
+def park_event_id(park_key: str, event_type: str) -> str:
+    """Return the ID of a keyed park's audit event, unique per park through the park's ordinal.
+
+    ``park_key`` is ``<execution>:<stage>:<gate list or repair attempt>:<park ordinal>``.
+    """
+    execution_id, park = park_key.split(":", 1)
+    return f"{execution_id}:{event_type}:{park}"
 
 
 def _numeric_parts(build_id: str) -> tuple[int, ...]:

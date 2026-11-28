@@ -71,8 +71,12 @@ run "the_publish_role_prunes_the_platform_exceptions_and_reads_the_tenant_ones" 
   }
 
   assert {
-    condition     = jsonencode([for statement in jsondecode(aws_iam_role_policy.push[0].policy).Statement : statement.Action if jsonencode(statement.Resource) == jsonencode("*")]) == jsonencode(["ecr:GetAuthorizationToken", "inspector-scan:ScanSbom"])
-    error_message = "The publish role holds a wildcard beyond the ECR token and the SBOM scan."
+    condition = (
+      length([for statement in jsondecode(aws_iam_role_policy.push[0].policy).Statement : statement if contains(flatten([statement.Resource]), "*")]) == 0 &&
+      jsonencode([for statement in jsondecode(aws_iam_role_policy.push_account_actions[0].policy).Statement : statement.Action if jsonencode(statement.Resource) == jsonencode("*")]) == jsonencode(["ecr:GetAuthorizationToken", "inspector-scan:ScanSbom"]) &&
+      length(jsondecode(aws_iam_role_policy.push_account_actions[0].policy).Statement) == 2
+    )
+    error_message = "The publish role holds a * statement beside the config objects, or a wildcard beyond the ECR token and the SBOM scan."
   }
 }
 
@@ -105,9 +109,11 @@ run "the_exception_role_trusts_only_the_image_exception_environment_on_main" {
     condition = (
       one([for statement in jsondecode(aws_iam_role_policy.exception[0].policy).Statement : statement.Resource if statement.Sid == "WriteThePlatformExceptions"]) == "arn:aws:s3:::agentic-platform-tenant-config-abc/platform/image_exceptions.yaml" &&
       jsonencode(one([for statement in jsondecode(aws_iam_role_policy.exception[0].policy).Statement : statement.Resource if statement.Sid == "PullThePlatformImages"])) == jsonencode(concat(var.repository_arns, var.pull_repository_arns)) &&
-      jsonencode([for statement in jsondecode(aws_iam_role_policy.exception[0].policy).Statement : statement.Action if jsonencode(statement.Resource) == jsonencode("*")]) == jsonencode(["ecr:GetAuthorizationToken", "inspector-scan:ScanSbom"])
+      length([for statement in jsondecode(aws_iam_role_policy.exception[0].policy).Statement : statement if jsonencode(statement.Resource) == jsonencode("*")]) == 0 &&
+      jsonencode([for statement in jsondecode(aws_iam_role_policy.exception_account_actions[0].policy).Statement : statement.Action if jsonencode(statement.Resource) == jsonencode("*")]) == jsonencode(["ecr:GetAuthorizationToken", "inspector-scan:ScanSbom"]) &&
+      length(jsondecode(aws_iam_role_policy.exception_account_actions[0].policy).Statement) == 2
     )
-    error_message = "The image-exception role writes beyond the platform exceptions file or pulls beyond the given repositories."
+    error_message = "The image-exception role writes beyond the platform exceptions file, pulls beyond the given repositories, or holds a * statement beside the config objects."
   }
 }
 
@@ -161,7 +167,7 @@ run "the_role_pushes_only_to_the_platform_repositories" {
   assert {
     condition = (
       jsonencode([for statement in jsondecode(aws_iam_role_policy.push[0].policy).Statement : statement.Resource if statement.Sid == "PushThePlatformImages"]) == jsonencode([var.repository_arns]) &&
-      jsonencode([for statement in jsondecode(aws_iam_role_policy.push[0].policy).Statement : statement.Action if jsonencode(statement.Resource) == jsonencode("*")]) == jsonencode(["ecr:GetAuthorizationToken", "inspector-scan:ScanSbom"]) &&
+      jsonencode([for statement in jsondecode(aws_iam_role_policy.push_account_actions[0].policy).Statement : statement.Action if jsonencode(statement.Resource) == jsonencode("*")]) == jsonencode(["ecr:GetAuthorizationToken", "inspector-scan:ScanSbom"]) &&
       length([for statement in jsondecode(aws_iam_role_policy.push[0].policy).Statement : statement if statement.Sid == "SignThePlatformImages"]) == 0
     )
     error_message = "The role can push outside the platform repositories, holds a wildcard beyond the ECR token and the SBOM scan, or signs without a profile."

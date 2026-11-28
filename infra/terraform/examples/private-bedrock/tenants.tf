@@ -3,13 +3,21 @@ locals {
   tenants         = local.tenants_enabled ? var.tenants : {}
 
   # Each tenant's activity worker runs as the activity-worker service account of its own
-  # namespace. Its policies are attached below, outside the cluster module, because the tenant
-  # module needs the role first. Its reader tag admits it to its own prefix of the config bucket.
+  # namespace, and its review worker as the review-worker service account of tenant-<tenant>-review.
+  # Their policies are attached below, outside the cluster module, because the tenant module needs
+  # the roles first. The reader tag admits each to its own prefix of the config bucket.
   tenant_workloads = merge(
     {
       for name in keys(local.tenants) : "tenant_${name}" => {
         service_account = "activity-worker"
         namespace       = "tenant-${name}"
+        tags            = { (module.tenant_config_store.tenant_principal_tag_keys.reader) = name }
+      }
+    },
+    {
+      for name in keys(local.tenants) : "tenant_${name}_review" => {
+        service_account = "review-worker"
+        namespace       = "tenant-${name}-review"
         tags            = { (module.tenant_config_store.tenant_principal_tag_keys.reader) = name }
       }
     },
@@ -23,10 +31,15 @@ locals {
 
   github_oidc_provider_arn = coalesce(var.github_oidc_provider_arn, module.github_image_publisher.oidc_provider_arn, "none")
 
+  # The review worker reads a shared registry token for the gate and scanner pods it starts.
+  review_shared_secrets = ["registry_token"]
   tenant_secret_readers = var.create_secret_store ? {
-    for key in distinct(flatten([for tenant in values(local.tenants) : tenant.shared_secrets])) : key => [
-      for name, tenant in local.tenants : module.eks_cluster.pod_identity_role_arns["tenant_${name}"] if contains(tenant.shared_secrets, key)
-    ]
+    for key in distinct(flatten([for tenant in values(local.tenants) : tenant.shared_secrets])) : key => flatten([
+      for name, tenant in local.tenants : concat(
+        [module.eks_cluster.pod_identity_role_arns["tenant_${name}"]],
+        contains(local.review_shared_secrets, key) ? [module.eks_cluster.pod_identity_role_arns["tenant_${name}_review"]] : [],
+      ) if contains(tenant.shared_secrets, key)
+    ])
   } : {}
 
   tenant_records = { for name, tenant in module.tenant : name => tenant.tenant }
@@ -38,7 +51,22 @@ locals {
     key if !startswith(key, "database_") || local.secret_store_database
   ]
   tenant_platform_secret_readers = local.tenants_enabled && var.create_secret_store ? {
-    for key in local.tenant_platform_secrets : key => tolist([for name in keys(local.tenants) : module.eks_cluster.pod_identity_role_arns["tenant_${name}"]])
+    for key in local.tenant_platform_secrets : key => tolist(flatten([
+      for name in keys(local.tenants) : concat(
+        [module.eks_cluster.pod_identity_role_arns["tenant_${name}"]],
+        contains(local.review_platform_secrets, key) ? [module.eks_cluster.pod_identity_role_arns["tenant_${name}_review"]] : [],
+      )
+    ]))
+  } : {}
+  # The platform secrets each tenant's review worker reads, a subset of tenant_platform_secrets.
+  review_platform_secrets = ["database_platform_app", "review_attestation_secret"]
+  # The review worker exports its generation spans to Langfuse itself only when no collector runs,
+  # and only then holds the project keys, because the rebar tracing library sends to Langfuse
+  # Cloud when it finds the keys without LANGFUSE_HOST.
+  review_langfuse_keys    = ["langfuse_public_key", "langfuse_secret_key"]
+  review_langfuse_secrets = try(module.container_services.langfuse.direct_span_exports, false) ? local.review_langfuse_keys : []
+  tenant_review_langfuse_readers = local.tenants_enabled && var.create_secret_store ? {
+    for key in local.review_langfuse_secrets : key => [for name in keys(local.tenants) : module.eks_cluster.pod_identity_role_arns["tenant_${name}_review"]]
   } : {}
 
   tenant_worker_policy_arns = merge(
@@ -52,6 +80,13 @@ locals {
     for pair in setproduct(keys(local.tenants), keys(local.tenant_worker_policy_arns)) :
     "${pair[0]}-${pair[1]}" => { tenant = pair[0], policy_arn = local.tenant_worker_policy_arns[pair[1]] }
   }
+  # The review worker starts the tenant's gate and scanner pods as the activity worker does, so it
+  # holds the same shared policies, and it calls Bedrock for the review itself.
+  tenant_review_policy_arns = merge(local.tenant_worker_policy_arns, { "bedrock-invoke" = module.bedrock_iam.invoke_policy_arn })
+  tenant_review_policies = {
+    for pair in setproduct(keys(local.tenants), keys(local.tenant_review_policy_arns)) :
+    "${pair[0]}-${pair[1]}" => { tenant = pair[0], policy_arn = local.tenant_review_policy_arns[pair[1]] }
+  }
 
   eks_tenant_inputs = [
     for name, tenant in local.tenants : {
@@ -61,13 +96,20 @@ locals {
         reader = local.tenant_records[name].ticket_store.reader_role_arn
         writer = local.tenant_records[name].ticket_store.writer_role_arn
       }
-      secrets          = merge(local.tenant_records[name].secret_arns, try(module.tenant[name].webhook.secret_arns, {}))
+      secrets          = merge(local.tenant_records[name].secret_arns, try(module.tenant[name].webhook.secret_arns, {}), { review_signing_key = local.tenant_records[name].review_signing_key_arn })
       platform_secrets = distinct(concat(local.tenant_platform_secrets, tenant.shared_secrets, local.temporal_deployed ? ["temporal_ca"] : []))
-      settings         = tenant.settings
-      model_limits     = tenant.model_limits
-      sandbox_quota    = tenant.sandbox_quota
-      image_prefixes   = local.image_prefixes[name]
-      config_bucket    = module.tenant_config_store.bucket
+      review_platform_secrets = distinct(concat(
+        [for key in local.review_platform_secrets : key if contains(local.tenant_platform_secrets, key)],
+        [for key in local.review_shared_secrets : key if contains(tenant.shared_secrets, key)],
+        local.temporal_deployed ? ["temporal_ca"] : [],
+        local.review_langfuse_secrets,
+      ))
+      settings               = tenant.settings
+      model_limits           = tenant.model_limits
+      sandbox_quota          = tenant.sandbox_quota
+      image_prefixes         = local.image_prefixes[name]
+      config_bucket          = module.tenant_config_store.bucket
+      action_key_fingerprint = local.tenant_records[name].action_key_fingerprint_arn
     }
   ]
 }
@@ -108,9 +150,12 @@ module "tenant_config_store" {
   tenants                    = keys(local.tenants)
   shared_readers = concat(
     try(module.container_services.repository_intelligence_roles.task_role_arns, []),
-    local.tenant_webhooks ? [module.eks_cluster.pod_identity_role_arns["inbound_webhook"]] : [],
+    length(local.tenants) > 0 ? [module.eks_cluster.pod_identity_role_arns["inbound_webhook"]] : [],
+    local.slack_shared_app_enabled ? [module.eks_cluster.pod_identity_role_arns["slack_poster"]] : [],
   )
-  tags = var.tags
+  enforce_claims_protocol = var.tenant_config_enforce_claims_protocol
+  claims_backfilled       = var.tenant_config_claims_backfilled
+  tags                    = var.tags
 }
 
 module "tenant" {
@@ -123,9 +168,13 @@ module "tenant" {
   description                   = each.value.description
   worker_role_arn               = module.eks_cluster.pod_identity_role_arns["tenant_${each.key}"]
   worker_role_name              = "${var.name_prefix}-eks-tenant-${each.key}"
+  review_role_arn               = module.eks_cluster.pod_identity_role_arns["tenant_${each.key}_review"]
   secrets                       = each.value.secrets
-  create_webhook_secrets        = local.tenant_webhooks
-  webhook_reader_arn            = local.tenant_webhooks ? module.eks_cluster.pod_identity_role_arns["inbound_webhook"] : ""
+  create_webhook_secrets        = true
+  create_slack_webhook_secret   = true
+  webhook_reader_arn            = module.eks_cluster.pod_identity_role_arns["inbound_webhook"]
+  slack_poster_reader_arn       = local.slack_shared_app_enabled ? module.eks_cluster.pod_identity_role_arns["slack_poster"] : ""
+  escalation_action_key_version = each.value.escalation_action_key_version
   repo_intelligence_reader_arns = compact([try(module.container_services.repository_intelligence_roles.token_reader_role_arn, "")])
   mcp_gateway_token_reader_arns = each.value.mcp_gateway_token_readers
   secret_recovery_window_days   = var.secret_recovery_window_days
@@ -141,6 +190,7 @@ module "tenant" {
     github_repository     = each.value.config_repository.github_repository
     allowed_refs          = each.value.config_repository.allowed_refs
     github_repository_ids = each.value.config_repository.github_repository_ids
+    pull_request_subject  = "pull_request"
   }
   repo_intelligence_token_rotation = module.secret_store.token_rotation
   tags                             = var.tags
@@ -162,6 +212,24 @@ resource "aws_iam_role_policy_attachment" "tenant_worker" {
 
   role       = element(split("/", module.eks_cluster.pod_identity_role_arns["tenant_${each.key}"]), 1)
   policy_arn = module.tenant[each.key].tenant.worker_policy_arn
+
+  depends_on = [module.eks_cluster]
+}
+
+resource "aws_iam_role_policy_attachment" "tenant_review_shared" {
+  for_each = local.tenant_review_policies
+
+  role       = element(split("/", module.eks_cluster.pod_identity_role_arns["tenant_${each.value.tenant}_review"]), 1)
+  policy_arn = each.value.policy_arn
+
+  depends_on = [module.eks_cluster]
+}
+
+resource "aws_iam_role_policy_attachment" "tenant_review" {
+  for_each = local.tenants
+
+  role       = element(split("/", module.eks_cluster.pod_identity_role_arns["tenant_${each.key}_review"]), 1)
+  policy_arn = module.tenant[each.key].tenant.review_policy_arn
 
   depends_on = [module.eks_cluster]
 }

@@ -1,11 +1,11 @@
 """Map each inbound delivery to the tenant that owns it, and hold each tenant's webhook secrets.
 
-The webhook serves every tenant TENANTS names, or the one TENANT names, or, with neither, the
-platform under the tenant key "". It reads each tenant's repositories.yaml and jira.yaml from the
-tenant's config bundle, the directory config/<env>/tenants/<tenant>/ or the prefix
-tenants/<tenant>/ of TENANT_CONFIG_BUCKET, and falls back to the environment's copy as a tenant
-worker does. Both refresh once TENANT_CONFIG_REFRESH_SECONDS have passed, and a file that fails to
-read or parse leaves the last valid copy in force.
+The webhook serves every tenant TENANTS names, or the one TENANT names, and refuses to start with
+neither. It reads each tenant's repositories.yaml and jira.yaml from the tenant's config bundle,
+the directory config/local/tenants/<tenant>/ or the prefix tenants/<tenant>/ of
+TENANT_CONFIG_BUCKET, and a replaceable file the bundle lacks from the platform directory. Both
+refresh once TENANT_CONFIG_REFRESH_SECONDS have passed, and a file that fails to read or parse
+leaves the last valid copy in force.
 
 A pull request delivery belongs to the tenant whose secret signs it, among the tenants whose
 repositories.yaml lists its repository as a GitHub repository. Two tenants may list the same
@@ -16,19 +16,21 @@ deliveries. A Jira delivery names its tenant in its path, /webhook/jira/<tenant>
 for the projects the allowlist of that tenant's jira.yaml names.
 
 Each tenant signs its deliveries with its own secrets, GITHUB_WEBHOOK_SECRET_<TENANT> and
-JIRA_WEBHOOK_SECRET_<TENANT>, so one tenant cannot forge the events of another. When the webhook
-serves one tenant, that tenant without a secret of its own uses GITHUB_WEBHOOK_SECRET and
-JIRA_WEBHOOK_SECRET, the secrets of a single-tenant deployment.
+JIRA_WEBHOOK_SECRET_<TENANT>, so one tenant cannot forge the events of another. A tenant without
+a secret of its own has its deliveries refused, even when it is the one tenant served. A tenant's
+Slack requests verify with SLACK_SIGNING_SECRET_<TENANT>, and its action tokens with
+ESCALATION_ACTION_KEY_<TENANT>, on the same terms. Two tenants on their own Slack apps that
+declare the same Slack app ID, a tenant on its own app that declares the ID of the shared Slack
+app, and two tenants that hold the same Slack signing secret have their Slack requests refused.
 """
 
 from __future__ import annotations
 
 import hashlib
 import logging
-import os
 import threading
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -40,48 +42,30 @@ from services.integration.credentials import (
     current_config_version,
     env_config_dir,
 )
-from services.integration.jira.credentials import allowed_projects, parse_jira_config
+from services.integration.integrations import IntegrationsConfig, parse_integrations_config
+from services.integration.jira.credentials import parse_jira_config
 from services.integration.repositories import GITHUB
-from services.integration.tenant_config import BundleSource, tenant_source
+from services.integration.tenant_config import (
+    TENANT_REPLACEABLE_FILES,
+    BundleSource,
+    tenant_source,
+)
 from services.orchestration.webhook.pr_events import verify_signature
-from services.repository_intelligence.tenants import PLATFORM_TENANT, TenantRegistries
+from services.repository_intelligence.tenants import TenantRegistries
 
 if TYPE_CHECKING:
     from scripts.config import Settings
+
 
 log = logging.getLogger(__name__)
 
 GITHUB_SIGNING_ENV_PREFIX = "GITHUB_WEBHOOK_SECRET_"
 JIRA_SIGNING_ENV_PREFIX = "JIRA_WEBHOOK_SECRET_"
 JIRA_CONFIG = "jira"
+INTEGRATIONS_CONFIG = "integrations"
+MODE_RETRY_SECONDS = 5.0
 
 SourceFactory = Callable[[str], BundleSource]
-
-
-def secret_env_name(prefix: str, tenant: str) -> str:
-    return f"{prefix}{tenant.upper()}"
-
-
-def tenant_secrets(
-    tenants: Sequence[str],
-    prefix: str,
-    platform_secret: str,
-    environ: Mapping[str, str] | None = None,
-) -> dict[str, str]:
-    """Return the signing secret of each tenant that has one.
-
-    A tenant's own variable wins. The platform secret signs for a tenant only when it is the one
-    tenant served, because tenants that share a secret can forge each other's deliveries.
-    """
-    values = os.environ if environ is None else environ
-    secrets: dict[str, str] = {}
-    for tenant in tenants:
-        own = values.get(secret_env_name(prefix, tenant), "").strip() if tenant else ""
-        if own:
-            secrets[tenant] = own
-        elif len(tenants) == 1 and platform_secret:
-            secrets[tenant] = platform_secret
-    return secrets
 
 
 def parse_jira_allowlist(text: str, tenant: str) -> frozenset[str]:
@@ -123,7 +107,15 @@ class TenantRouting:
         self._projects: dict[str, frozenset[str]] = {}
         self._project_versions: dict[str, str] = {}
         self._projects_refreshed_at: dict[str, float] = {}
+        self._modes: dict[str, IntegrationsConfig] = {}
+        self._modes_due_at: dict[str, float] = {}
         self._lock = threading.Lock()
+        self._refresh_locks: dict[tuple[str, str], threading.Lock] = {}
+
+    def _refresh_lock(self, kind: str, tenant: str) -> threading.Lock:
+        """Return the lock of one tenant's refresh, so a slow read stalls no other tenant."""
+        with self._lock:
+            return self._refresh_locks.setdefault((kind, tenant), threading.Lock())
 
     def tenants(self) -> list[str]:
         return self._registries.tenants()
@@ -159,7 +151,7 @@ class TenantRouting:
 
     def jira_projects(self, tenant: str) -> frozenset[str]:
         """Return the projects the allowlist of the tenant's jira.yaml names."""
-        with self._lock:
+        with self._refresh_lock(JIRA_CONFIG, tenant):
             now = self._clock()
             last = self._projects_refreshed_at.get(tenant)
             if last is None or now - last >= self._interval:
@@ -169,9 +161,6 @@ class TenantRouting:
 
     def _refresh_projects(self, tenant: str) -> None:
         try:
-            if tenant == PLATFORM_TENANT:
-                self._projects[tenant] = frozenset(allowed_projects(self._settings))
-                return
             text = self._jira_text(tenant)
             version = hashlib.sha256(text.encode()).hexdigest()
             if self._project_versions.get(tenant) == version:
@@ -180,27 +169,85 @@ class TenantRouting:
         except Exception as exc:  # noqa: BLE001
             log.error(
                 "jira.yaml of tenant %s is refused, keeping the last valid one: %s",
-                tenant or "platform",
+                tenant,
                 exc,
             )
             return
         self._projects[tenant] = projects
         self._project_versions[tenant] = version
 
+    def integrations(self, tenant: str) -> IntegrationsConfig | None:
+        """Return the delivery modes of the tenant's integrations.yaml, else the platform's.
+
+        With neither file, every integration is polling. A file that fails to read or parse leaves
+        the last valid modes in force. Until one read is valid the modes are unknown, so this
+        returns None and the read is retried after MODE_RETRY_SECONDS.
+        """
+        with self._refresh_lock(INTEGRATIONS_CONFIG, tenant):
+            now = self._clock()
+            due = self._modes_due_at.get(tenant)
+            if due is None or now >= due:
+                valid = self._refresh_modes(tenant)
+                known = valid or tenant in self._modes
+                wait = self._interval if known else min(self._interval, MODE_RETRY_SECONDS)
+                self._modes_due_at[tenant] = now + wait
+            return self._modes.get(tenant)
+
+    def mode(self, tenant: str, integration: str) -> str | None:
+        """Return the tenant's delivery mode of the integration, or None while it is unknown."""
+        config = self.integrations(tenant)
+        return None if config is None else config.mode(integration)
+
+    def _refresh_modes(self, tenant: str) -> bool:
+        try:
+            text = self.bundle_text(tenant, INTEGRATIONS_CONFIG)
+            raw = yaml.safe_load(text) if text is not None else {}
+            if not isinstance(raw, Mapping):
+                raise ConfigError("integrations.yaml is not a mapping")
+            if text is not None and config_version(raw) < current_config_version(
+                INTEGRATIONS_CONFIG
+            ):
+                raise ConfigError(
+                    f"integrations.yaml is version {config_version(raw)} and this release "
+                    f"expects version {current_config_version(INTEGRATIONS_CONFIG)}"
+                )
+            self._modes[tenant] = parse_integrations_config(raw)
+        except Exception as exc:  # noqa: BLE001
+            log.error(
+                "integrations.yaml of tenant %s is refused, keeping the last valid one: %s",
+                tenant,
+                exc,
+            )
+            return False
+        return True
+
     def _jira_text(self, tenant: str) -> str:
+        text = self.bundle_text(tenant, JIRA_CONFIG)
+        if text is None:
+            location = self.source(tenant).location
+            raise ConfigError(f"tenant {tenant} has no jira.yaml in {location}")
+        return text
+
+    def source(self, tenant: str) -> BundleSource:
         source = self._sources.get(tenant)
         if source is None:
             source = self._sources[tenant] = self._source_factory(tenant)
-        text = source.fetch(source.latest()).files.get(JIRA_CONFIG)
-        if text is not None:
+        return source
+
+    def bundle_text(self, tenant: str, name: str) -> str | None:
+        """Return the tenant's bundle file, else the platform's copy of a replaceable file.
+
+        This reads the bundle source, which can be S3, so an event loop calls it from a thread.
+        """
+        source = self.source(tenant)
+        text = source.fetch_files(source.latest(), [name]).get(name)
+        if text is not None or name not in TENANT_REPLACEABLE_FILES:
             return text
-        path = env_config_dir(self._settings.environment) / f"{JIRA_CONFIG}.yaml"
+        path = env_config_dir() / f"{name}.yaml"
         try:
             return path.read_text(encoding="utf-8")
-        except FileNotFoundError as exc:
-            raise ConfigError(
-                f"tenant {tenant} has no jira.yaml in its bundle or in {path.parent}"
-            ) from exc
+        except FileNotFoundError:
+            return None
 
 
 @dataclass(frozen=True)

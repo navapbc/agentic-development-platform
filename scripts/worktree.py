@@ -19,7 +19,6 @@ from pathlib import Path
 
 from services import process
 
-PYTHON_VERSION = f"{sys.version_info.major}.{sys.version_info.minor}"
 SYNC_TIMEOUT_SECONDS = process.LONG_COMMAND_TIMEOUT_SECONDS
 
 
@@ -122,15 +121,19 @@ def inspect(worktree: Path) -> VenvStatus:
     return VenvStatus(worktree, VenvState.OK, str(venv))
 
 
-def provision(worktree: Path, *, python_version: str = PYTHON_VERSION) -> None:
-    """Give the worktree its own virtualenv, replacing a symlink that shares another one."""
+def provision(worktree: Path, *, python_version: str = "") -> None:
+    """Give the worktree its own virtualenv, replacing a symlink that shares another one.
+
+    Without ``python_version``, uv takes the version from the worktree's .python-version.
+    """
     if not (worktree / "pyproject.toml").is_file():
         raise RuntimeError(f"{worktree}: not a checkout of this project")
     venv = worktree / ".venv"
     if venv.is_symlink():
         venv.unlink()
+    python = ["--python", python_version] if python_version else []
     process.run(
-        ["uv", "sync", "--locked", "--all-extras", "--python", python_version],
+        ["uv", "sync", "--locked", "--all-extras", *python],
         cwd=str(worktree),
         timeout=SYNC_TIMEOUT_SECONDS,
         check=True,
@@ -210,7 +213,9 @@ def command_check(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="worktree", description=__doc__)
-    parser.add_argument("--python", default=PYTHON_VERSION, help="Python version for the venv.")
+    parser.add_argument(
+        "--python", default="", help="Python version for the venv. Defaults to .python-version."
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     new = sub.add_parser("new", help="Add a worktree and provision its own virtualenv.")

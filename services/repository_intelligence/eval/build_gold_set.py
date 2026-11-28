@@ -68,10 +68,7 @@ def _read_scip_json(scip_cli: str, index_path: Path) -> dict:
 
 
 def _indexer_version(indexer: ScipIndexer) -> str:
-    if indexer.version:
-        return indexer.version
-    _, _, tail = indexer.command.rpartition("@")
-    return tail or "unknown"
+    return indexer.version or "unknown"
 
 
 def _def_item(index: ScipIndex, info: SymbolInfo) -> ExpectedItem | None:
@@ -291,7 +288,7 @@ def _tool_version(command: list[str]) -> str:
             capture_output=True,
             text=True,
         )
-    except (process.CalledProcessError, FileNotFoundError):
+    except process.CalledProcessError, FileNotFoundError:
         return "unknown"
     return (completed.stdout or completed.stderr).strip().splitlines()[0]
 

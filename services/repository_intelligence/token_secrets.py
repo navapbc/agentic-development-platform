@@ -39,6 +39,9 @@ ARN_MAP_ENV = "REPO_INTELLIGENCE_TOKEN_SECRET_ARNS"
 CURRENT_STAGE = "AWSCURRENT"
 PREVIOUS_STAGE = "AWSPREVIOUS"
 UNKNOWN_TOKEN_RELOAD_SECONDS = 10.0
+SECRETS_CONNECT_TIMEOUT_SECONDS = 3
+SECRETS_READ_TIMEOUT_SECONDS = 5
+SECRETS_MAX_ATTEMPTS = 2
 _NOT_FOUND = "ResourceNotFoundException"
 
 
@@ -176,12 +179,26 @@ class SecretTokens:
 
 
 def secrets_manager_client(settings: Settings) -> Any:
-    """Build a Secrets Manager client on the default credential chain, the task role in AWS."""
+    """Build a Secrets Manager client on the default credential chain, the task role in AWS.
+
+    The tokens are read on the request path under one lock, so the client gives up within
+    seconds on an endpoint it cannot reach, and the read keeps the last accepted tokens, rather
+    than holding every request and health check for the SDK's default minute per attempt.
+    """
     import boto3
+    from botocore.config import Config
     from scripts.aws_clients import configure_aws_fips
 
     configure_aws_fips(settings)
-    return boto3.client("secretsmanager", region_name=settings.aws_region)
+    return boto3.client(
+        "secretsmanager",
+        region_name=settings.aws_region,
+        config=Config(
+            connect_timeout=SECRETS_CONNECT_TIMEOUT_SECONDS,
+            read_timeout=SECRETS_READ_TIMEOUT_SECONDS,
+            retries={"max_attempts": SECRETS_MAX_ATTEMPTS, "mode": "standard"},
+        ),
+    )
 
 
 def token_source(

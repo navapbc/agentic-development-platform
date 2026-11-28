@@ -14,6 +14,7 @@ from sqlalchemy import Engine, create_engine, select
 
 from scripts.config import get_settings, to_host_hostport
 from scripts.db_reset import _sync_url
+from scripts.env_file import PLATFORM_ENV_FILE
 
 WORKER_SERVICE = "workflow-worker"
 WORK_SECONDS = 25
@@ -23,7 +24,7 @@ def _compose_cmd() -> list[str]:
     files = ["-f", "compose.yaml"]
     if os.path.exists("compose.override.yaml"):
         files += ["-f", "compose.override.yaml"]
-    return ["docker", "compose", *files]
+    return ["docker", "compose", "--env-file", PLATFORM_ENV_FILE.as_posix(), *files]
 
 
 def _execution_state(engine: Engine, execution_id: str) -> str | None:

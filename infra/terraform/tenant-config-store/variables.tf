@@ -33,6 +33,23 @@ variable "exception_reviewers" {
   default     = []
 }
 
+variable "enforce_claims_protocol" {
+  description = "Deny an upload under tenants/ that lacks the object tag claims-protocol=1, which a publisher running the claim protocol sets on every bundle file. Turn it on after the claims backfill, once every tenant's publisher runs the protocol."
+  type        = bool
+  default     = false
+}
+
+variable "claims_backfilled" {
+  description = "Write platform/claims-protocol.json, which every reader of shared Slack app settings on the bucket requires before it serves a tenant on the shared app. Set it with enforce_claims_protocol on a new deployment's first apply, or once inv tenant-config-claims backfill exits 0 on an existing one."
+  type        = bool
+  default     = false
+
+  validation {
+    condition     = !var.claims_backfilled || var.enforce_claims_protocol
+    error_message = "claims_backfilled requires enforce_claims_protocol, because the object states that every bundle upload runs the claim protocol."
+  }
+}
+
 variable "publish_image_policy" {
   description = "Write image_policy to platform/image_policy.yaml, where the exception writers outside the cluster read the scope of each exceptions file."
   type        = bool

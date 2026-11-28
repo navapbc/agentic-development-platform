@@ -12,6 +12,12 @@ def test_every_dockerfile_pin_matches_the_versions_file() -> None:
     assert base_versions.drift(base_versions.load(), base_versions.dockerfiles()) == []
 
 
+def test_the_pin_check_covers_the_platform_and_hardened_base_dockerfiles() -> None:
+    covered = {path.relative_to(base_versions.REPO_ROOT) for path in base_versions.dockerfiles()}
+
+    assert {Path("docker/Dockerfile"), Path("docker/al2023/base.Dockerfile")} <= covered
+
+
 def test_update_rewrites_only_the_drifted_pins(tmp_path: Path) -> None:
     dockerfile = tmp_path / "x.Dockerfile"
     dockerfile.write_text(

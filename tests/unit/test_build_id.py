@@ -24,7 +24,7 @@ from services.orchestration.suspension import is_newer_build
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 COMPOSE_PATH = REPO_ROOT / "compose.yaml"
-ENV_EXAMPLE_PATH = REPO_ROOT / ".env.example"
+ENV_EXAMPLE_PATH = REPO_ROOT / "config" / "local" / "platform.env.example"
 DOCKERFILE_PATH = REPO_ROOT / "docker" / "Dockerfile"
 
 # vendor/bin holds the acli binary the build fetches, and .gitignore keeps its contents out of

@@ -1,4 +1,5 @@
-"""The platform HTTP services serve TLS with a certificate each task issues itself."""
+"""The platform HTTP services serve TLS with a certificate each task issues itself, or with a
+mounted certificate of a CA their callers trust."""
 
 from __future__ import annotations
 
@@ -11,6 +12,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import httpx
 import pytest
+from cryptography.hazmat.primitives import serialization
+from scripts.slack_poster_tls import issue_leaf, new_ca
 from services import healthcheck, server_tls
 
 
@@ -92,4 +95,30 @@ def test_a_disabled_server_stays_plain_http(tmp_path, monkeypatch) -> None:
         assert not isinstance(server.socket, ssl.SSLSocket)
         assert not (tmp_path / "server-tls").exists()
     finally:
+        server.server_close()
+
+
+@pytest.mark.parametrize(("trusted", "healthy"), [(True, 0), (False, 1)])
+def test_the_health_probe_of_a_mounted_certificate_verifies_it_against_the_mounted_ca(
+    tmp_path, monkeypatch, trusted: bool, healthy: int
+) -> None:
+    ca_key, ca = new_ca()
+    certificate, key = issue_leaf(ca_key, ca, ["127.0.0.1"])
+    (tmp_path / "leaf.pem").write_text(certificate)
+    (tmp_path / "leaf-key.pem").write_text(key)
+    probe_ca = ca if trusted else new_ca()[1]
+    (tmp_path / "ca.pem").write_bytes(probe_ca.public_bytes(serialization.Encoding.PEM))
+    monkeypatch.setenv("SERVER_TLS_CA_FILE", str(tmp_path / "ca.pem"))
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    server_tls.wrap(
+        server,
+        enabled=True,
+        certificate_file=str(tmp_path / "leaf.pem"),
+        key_file=str(tmp_path / "leaf-key.pem"),
+    )
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        assert healthcheck.main(["http", str(server.server_address[1]), "--tls"]) == healthy
+    finally:
+        server.shutdown()
         server.server_close()

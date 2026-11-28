@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any, Protocol
 
 from services.coordination.idempotency import SideEffectLedger, SideEffectRef
@@ -18,6 +19,10 @@ class IntegrationHandler(Protocol):
     name: str
 
     def verify(self, body: bytes, headers: Mapping[str, str]) -> bool: ...
+
+    def tenant(self) -> str:
+        """Return the tenant of the delivery that verify admitted."""
+        ...
 
     def delivery_id(self, headers: Mapping[str, str], payload: dict[str, Any]) -> str: ...
 
@@ -35,12 +40,20 @@ async def handle_inbound(
     handler: IntegrationHandler,
     allowed: frozenset[str],
     ledger: SideEffectLedger,
-    mode: str,
+    mode: Callable[[str], str | None],
 ) -> tuple[int, dict[str, Any]]:
-    if mode not in (WEBHOOK, HYBRID):
-        return 202, {"status": "webhook disabled", "integration": handler.name}
+    """Handle one delivery under the delivery mode of the tenant whose secret signs it.
+
+    `mode` can read the tenant's config bundle, so it runs on a thread. A mode of None is unknown,
+    and the delivery is answered 503 so that the sender records it as failed and can redeliver it.
+    """
     if not handler.verify(body, headers):
         return 401, {"error": "invalid signature"}
+    delivery_mode = await asyncio.to_thread(mode, handler.tenant())
+    if delivery_mode is None:
+        return 503, {"error": "the tenant's delivery mode is not loaded, redeliver later"}
+    if delivery_mode not in (WEBHOOK, HYBRID):
+        return 202, {"status": "webhook disabled", "integration": handler.name}
     try:
         payload = json.loads(body or b"{}")
     except json.JSONDecodeError:

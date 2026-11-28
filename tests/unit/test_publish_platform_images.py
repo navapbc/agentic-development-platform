@@ -106,7 +106,8 @@ def test_the_platform_and_litellm_images_pin_the_rds_ca_bundle_the_temporal_imag
 
     for path in ("docker/Dockerfile", "docker/litellm.Dockerfile"):
         text = (REPO_ROOT / path).read_text(encoding="utf-8")
-        assert "ADD --checksum=sha256:${RDS_CA_BUNDLE_SHA256} --chmod=0444" in text
+        assert 'echo "${RDS_CA_BUNDLE_SHA256}  /out/rds-global-bundle.pem" | sha256sum -c -' in text
+        assert "COPY --from=rds-ca --chmod=0444 /out/rds-global-bundle.pem" in text
         assert checksum(path) == checksum("docker/temporal.Dockerfile")
 
 
@@ -272,6 +273,25 @@ def test_every_published_image_has_a_composition_root_variable() -> None:
     assert published == set(publisher.TFVARS_KEYS)
     variables = (REPO_ROOT / "infra/terraform/examples/private-bedrock/variables.tf").read_text()
     assert all(f'variable "{key}"' in variables for key in publisher.TFVARS_KEYS.values())
+
+
+def _terraform_list(path: str, name: str) -> set[str]:
+    text = (REPO_ROOT / path).read_text(encoding="utf-8")
+    body = re.search(rf"{name} = (?:toset\()?\[(.*?)\]", text, re.S).group(1)
+    return set(re.findall(r'"([^"]+)"', body))
+
+
+def test_every_published_image_has_an_ecr_repository_and_the_catalog_matches_terraform() -> None:
+    steps = publisher.image_steps(_stub_publisher(), REPO_ROOT, base_versions.load())
+
+    repositories = _terraform_list("infra/terraform/container-services/images.tf", "images")
+    catalog = _terraform_list(
+        "infra/terraform/examples/private-bedrock/image-governance.tf",
+        "image_catalog_repositories",
+    )
+
+    assert set(steps) <= repositories
+    assert catalog == publisher.SIGNED_CATALOG
 
 
 def test_the_gate_engine_images_map_to_their_engine_names() -> None:

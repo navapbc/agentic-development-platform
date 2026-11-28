@@ -129,12 +129,29 @@ async def test_the_recorded_tenant_wins_and_is_cached():
         calls.append(execution_id)
         return {"exec-1": "acme", "exec-2": ""}.get(execution_id, "")
 
-    interceptor = TenantAttributionInterceptor("fallback", lookup=lookup)
+    interceptor = TenantAttributionInterceptor(lookup=lookup)
     assert await interceptor.tenant_for("exec-1") == "acme"
     assert await interceptor.tenant_for("exec-1") == "acme"
-    assert await interceptor.tenant_for("exec-2") == "fallback"
-    assert await interceptor.tenant_for("exec-2") == "fallback"
+    assert await interceptor.tenant_for("exec-2") == ""
+    assert await interceptor.tenant_for("exec-2") == ""
     assert calls == ["exec-1", "exec-2", "exec-2"]
+
+
+async def test_a_worker_bound_to_a_tenant_refuses_a_run_another_tenant_recorded():
+    from services.orchestration.tenant_pinning import TENANT_MISMATCH
+    from temporalio.exceptions import ApplicationError
+
+    async def lookup(execution_id: str) -> str:
+        return {"exec-1": "acme", "exec-2": "globex"}.get(execution_id, "")
+
+    interceptor = TenantAttributionInterceptor("acme", lookup=lookup)
+    assert await interceptor.tenant_for("exec-1") == "acme"
+    assert await interceptor.tenant_for("exec-3") == "acme"
+    for _ in range(2):
+        with pytest.raises(ApplicationError) as raised:
+            await interceptor.tenant_for("exec-2")
+        assert raised.value.type == TENANT_MISMATCH
+        assert raised.value.non_retryable
 
 
 async def test_a_failed_lookup_falls_back_to_the_configured_tenant():
@@ -174,7 +191,7 @@ async def test_the_activity_runs_with_the_tenant_in_baggage():
     assert current_tenant() == ""
 
 
-def test_the_review_worker_reads_the_recorded_tenant():
+def test_the_review_worker_reads_the_recorded_tenant_and_serves_its_own():
     from services.orchestration.worker import (
         WORKER_ROLE_ACTIVITY,
         WORKER_ROLE_REVIEW,
@@ -185,7 +202,7 @@ def test_the_review_worker_reads_the_recorded_tenant():
     review = _tenant_attribution(WORKER_ROLE_REVIEW, settings)
     activity = _tenant_attribution(WORKER_ROLE_ACTIVITY, settings)
     assert review._lookup is recorded_execution_tenant
-    assert review._tenant == ""
+    assert review._tenant == "acme"
     assert activity._lookup is None
     assert activity._tenant == "acme"
 

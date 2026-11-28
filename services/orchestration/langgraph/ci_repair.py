@@ -55,13 +55,17 @@ def _bridges_detail(lines: list[str], index: int) -> bool:
 
 
 def failure_summary(log_text: str, *, max_lines: int = 120) -> str:
-    """Pick the failure-relevant lines from a check log, keeping the last max_lines.
+    """Pick the failure-relevant lines from a check log, within max_lines.
 
     Line-oriented tools such as ruff, prettier and eslint put the whole finding on the matched
     line. A test runner instead prints the name of the failing test on that line and the
     diagnosis, such as the assertion diff or the snapshot that no longer matches, in the indented
-    block beneath it. That block is kept so the repair agent is shown what actually differs
-    rather than only the name of the test that failed.
+    block beneath it. That block is kept so the repair agent is shown what differs rather than
+    only the name of the test that failed.
+
+    Over max_lines the summary keeps the first block of adjacent picked lines, up to half of
+    max_lines, and fills the rest with the last picked lines. A command such as ``npm ci`` names
+    its cause at the top and follows it with usage text, while a test run ends with its tally.
     """
     lines = log_text.splitlines()
     keep = [False] * len(lines)
@@ -77,8 +81,14 @@ def failure_summary(log_text: str, *, max_lines: int = 120) -> str:
             if not (detail or bridge):
                 break
             keep[offset] = True
-    picked = [line for index, line in enumerate(lines) if keep[index]]
-    return "\n".join(picked[-max_lines:])
+    picked = [index for index, kept in enumerate(keep) if kept]
+    if len(picked) > max_lines:
+        first_block = 1
+        while first_block < len(picked) and picked[first_block] == picked[first_block - 1] + 1:
+            first_block += 1
+        head = min(first_block, max_lines // 2)
+        picked = picked[:head] + picked[len(picked) - (max_lines - head) :]
+    return "\n".join(lines[index] for index in picked)
 
 
 TEST_FAILURE = "test_failure"

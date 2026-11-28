@@ -84,7 +84,7 @@ def build_intake_cursor_release(settings: Any) -> IntakeCursorRelease:
 
     from services.integration.tickets.rebar_config import load_rebar_backend_config
 
-    repo_root = load_rebar_backend_config(settings).repo_root
+    repo_root = load_rebar_backend_config().repo_root
     path = watermark_path(repo_root)
     return RebarWatermarkIntakeCursor(
         FileWatermarkStore(path), path=path, readiness=_readiness_probe(repo_root)

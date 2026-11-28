@@ -15,7 +15,7 @@ from database.engine import create_platform_engine
 from scripts.config import configured_log_level, get_settings
 from sqlalchemy import text
 
-from services.coordination.auth import SHARED_SECRET_ENV_VAR, SHARED_SECRET_REMEDY
+from services.coordination.auth import COORDINATION_AUTH_SETTING, SHARED_SECRET_REMEDY
 from services.coordination.claims import (
     PostgresWorkClaimStore,
     WorkClaimStore,
@@ -127,6 +127,17 @@ def build_handler(
             if path == "/claims/try":
                 unit = _work_unit(payload)
                 return asdict(_run(claim_store.try_claim(unit)))
+            if path == "/claims/covering":
+                claims = _run(
+                    claim_store.active_claims_covering(
+                        payload["path"],
+                        task_id=payload["task_id"],
+                        work_unit=payload["work_unit"],
+                        tenant=payload["tenant"],
+                        repo=payload.get("repo", ""),
+                    )
+                )
+                return {"claims": [asdict(claim) for claim in claims]}
             if path == "/claims/next_batch":
                 units = [_work_unit(u) for u in payload["units"]]
                 schedule = partition_by_file_impact(units)
@@ -202,7 +213,7 @@ def main() -> None:
     settings = get_settings()
     if not settings.coordination_shared_secret:
         raise SystemExit(
-            f"the coordination service has no {SHARED_SECRET_ENV_VAR}. {SHARED_SECRET_REMEDY}"
+            f"the coordination service has no {COORDINATION_AUTH_SETTING}. {SHARED_SECRET_REMEDY}"
         )
     asyncio.run(wait_for_platform_schema(settings.database_url))
     loop = asyncio.new_event_loop()

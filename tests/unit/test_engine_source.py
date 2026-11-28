@@ -409,13 +409,16 @@ def test_entrypoints_are_config_driven_for_another_engine():
     assert config.classifier_entrypoint == "bin/classify"
 
 
-def test_load_is_inert_when_no_config_file_exists():
+def test_load_is_inert_when_no_config_file_exists(monkeypatch, tmp_path):
     from scripts.config import get_settings
     from services.orchestration.gates.engine_source import load_gate_engine_configs
+    from tests.support import configure_tenant
+
+    configure_tenant(monkeypatch, tmp_path)
 
     settings = get_settings().model_copy(update={"gate_engine_images": {}})
 
-    configs = load_gate_engine_configs(settings, environment="no-such-environment")
+    configs = load_gate_engine_configs(settings)
 
     assert configs == ()
 

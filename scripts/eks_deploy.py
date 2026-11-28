@@ -4,8 +4,10 @@ The workstation needs no kubectl, helm, or route to the private Kubernetes API. 
 `eks` output of the composition root, checks which secrets the overlay mounts hold a current value,
 and starts the eks-deployer one-shot task on the platform ECS cluster with the `deploy` command and
 the secrets to leave out. A pod whose SecretProviderClass names a secret without a value never
-starts, so a workload runs without an external secret its environment has not set yet. The task's
-log is printed once it stops.
+starts, so a workload runs without an external secret its environment has not set yet. A tenant's
+review worker is the exception, because it refuses to start without its review signing key while
+review signing is enabled, so the deploy names each tenant whose key is unset. The task's log is
+printed once it stops.
 
 When the output names MCP gateway hosts, the deploy first checks that the gateway certificate
 covers each host, and after the task succeeds it points each tenant's host in the gateway zone at
@@ -25,17 +27,18 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from services import process
 
-from scripts.eks_render import secret_key
-from scripts.temporal_certs import COMPOSITION_ROOT
+from scripts.eks_render import RenderError, require_platform_escalation, secret_key
+from scripts.temporal_certs import terraform_output
 from scripts.tenant_render import GATEWAY, worker_namespace
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PROVIDERS = REPO_ROOT / "deploy" / "kubernetes" / "aws" / "secret-provider-classes.yaml"
 TASK = "eks-deployer"
-TASK_WAIT = {"Delay": 10, "MaxAttempts": 180}
+# A deploy can wait through a worker's 2460-second termination grace while its activities finish.
+TASK_WAIT = {"Delay": 10, "MaxAttempts": 540}
 LOG = "[eks-deploy]"
+REVIEW_SIGNING_KEY = "review_signing_key"
 CLUSTER_TAG = "elbv2.k8s.aws/cluster"
 INGRESS_STACK_TAG = "ingress.k8s.aws/stack"
 
@@ -78,6 +81,17 @@ def unset_tenant_secrets(tenants: list[dict[str, Any]], secretsmanager: Any) -> 
         for key, arn in sorted((tenant.get("secrets") or {}).items())
         if not _has_value(arn, secretsmanager)
     ]
+
+
+def unset_message(key: str) -> str:
+    tenant, _, name = key.rpartition(":")
+    if tenant and name == REVIEW_SIGNING_KEY:
+        return (
+            f"{key} has no value, so the review worker of {tenant} refuses to start while review "
+            f"signing is enabled. Write the key to the tenant's review-signing-key secret and add "
+            f"its public key to the trust root under tenant {tenant}."
+        )
+    return f"{key} has no value, so the pods that mount it start without it"
 
 
 def platform_mounted_keys(
@@ -145,16 +159,7 @@ def print_log(logs: Any, group: str, stream: str) -> None:
 
 
 def _terraform_eks(env: dict[str, str]) -> dict[str, Any] | None:
-    result = process.run(
-        ["terraform", f"-chdir={COMPOSITION_ROOT}", "output", "-json", "eks"],
-        timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS,
-        capture_output=True,
-        text=True,
-        env=env,
-    )
-    if result.returncode != 0:
-        raise DeployError(f"terraform output failed: {result.stderr.strip()}")
-    return json.loads(result.stdout or "null")
+    return json.loads(terraform_output("eks", env, DeployError) or "null")
 
 
 def certificate_covers(names: Iterable[str], host: str) -> bool:
@@ -243,13 +248,17 @@ def deploy(session: Any, eks: dict[str, Any] | None, command: list[str]) -> int:
     if hosts:
         check_gateway_certificate(session.client("acm"), eks["mcp_gateway_certificate_arn"], hosts)
     if command[0] == "deploy":
+        try:
+            require_platform_escalation(eks.get("environment_config") or {})
+        except RenderError as exc:
+            raise DeployError(str(exc)) from None
         secretsmanager = session.client("secretsmanager")
         tenants = eks.get("tenants") or []
         keys = platform_mounted_keys(mounted_secret_keys(), eks["secret_arns"], tenants)
         unset = unset_secrets(keys, eks["secret_arns"], secretsmanager)
         unset += unset_tenant_secrets(tenants, secretsmanager)
         for key in unset:
-            print(f"{LOG} {key} has no value, so the pods that mount it start without it")
+            print(f"{LOG} {unset_message(key)}")
         command = command + [part for key in unset for part in ("--omit-secret", key)]
     exit_code = run_deployer(
         session.client("ecs"), session.client("logs"), eks["deployer"], command
@@ -273,7 +282,7 @@ def main(argv: list[str] | None = None) -> int:
         default=["deploy"],
         help=(
             "deploy, check-policies, or restart DEPLOYMENT... "
-            "(namespace/name, tenant-workers, or mcp-gateway)"
+            "(namespace/name, tenant-workers, tenant-review-workers, or mcp-gateway)"
         ),
     )
     args = parser.parse_args(argv)

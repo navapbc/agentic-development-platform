@@ -23,11 +23,11 @@ pytestmark = pytest.mark.usefixtures("allow_any_image")
 
 def test_parse_checks_config_image_mode():
     cfg = parse_checks_config(
-        "repo-a", {"image": "python:3.12-slim", "command": "pytest -q", "timeout_minutes": 10}
+        "repo-a", {"image": "python:3.14-slim", "command": "pytest -q", "timeout_minutes": 10}
     )
     assert cfg == ChecksConfig(
         repo="repo-a",
-        image="python:3.12-slim",
+        image="python:3.14-slim",
         build="",
         command="pytest -q",
         working_dir="/workspace",
@@ -37,7 +37,7 @@ def test_parse_checks_config_image_mode():
 
 def test_parse_checks_config_requires_command():
     with pytest.raises(ConfigError):
-        parse_checks_config("repo-a", {"image": "python:3.12-slim"})
+        parse_checks_config("repo-a", {"image": "python:3.14-slim"})
 
 
 def test_parse_checks_config_requires_image_or_build():
@@ -48,13 +48,35 @@ def test_parse_checks_config_requires_image_or_build():
 def test_parse_checks_config_rejects_both_image_and_build():
     with pytest.raises(ConfigError):
         parse_checks_config(
-            "repo-a", {"image": "python:3.12-slim", "build": "Dockerfile", "command": "pytest"}
+            "repo-a", {"image": "python:3.14-slim", "build": "Dockerfile", "command": "pytest"}
+        )
+
+
+def test_parse_checks_config_reads_the_lock_command_and_its_files():
+    cfg = parse_checks_config(
+        "repo-a",
+        {
+            "image": "golang:1.26",
+            "command": "go test ./...",
+            "lock_command": "go mod tidy",
+            "lock_manifests": ["go.mod"],
+            "lockfiles": ["go.sum"],
+        },
+    )
+    assert (cfg.lock_command, cfg.lock_files) == ("go mod tidy", ("go.mod", "go.sum"))
+    assert cfg.lockfiles == ("go.sum",)
+
+
+def test_parse_checks_config_refuses_a_lock_command_without_its_files():
+    with pytest.raises(ConfigError, match="lockfiles"):
+        parse_checks_config(
+            "repo-a", {"image": "golang:1.26", "command": "go test", "lock_command": "go mod tidy"}
         )
 
 
 def test_parse_checks_configs_maps_by_repo():
     configs = parse_checks_configs(
-        {"checks": {"repo-a": {"image": "python:3.12-slim", "command": "pytest -q"}}}
+        {"checks": {"repo-a": {"image": "python:3.14-slim", "command": "pytest -q"}}}
     )
     assert set(configs) == {"repo-a"}
     assert configs["repo-a"].command == "pytest -q"
@@ -67,11 +89,11 @@ def test_checks_script_image_mode_runs_command_in_workdir():
             execution_id="e",
             checkout_dir="/w",
             command="pytest -q",
-            image="python:3.12-slim",
+            image="python:3.14-slim",
             working_dir="/workspace",
         )
     )
-    assert "img=python:3.12-slim" in script
+    assert "img=python:3.14-slim" in script
     assert "buildah bud" not in script
     assert "cd /workspace &&" in script
     assert "base64 -d | sh" in script
@@ -113,7 +135,9 @@ class _FakeOps:
         self._exec_result = exec_result
         self.created = []
         self.copied = []
+        self.copied_out = []
         self.deleted = []
+        self.scripts = []
 
     async def create(self, manifest):
         self.created.append(manifest)
@@ -125,9 +149,10 @@ class _FakeOps:
         self.copied.append((source_dir, dest_dir))
 
     async def copy_out(self, pod, namespace, source_dir, dest_dir, manifest_path):
-        return None
+        self.copied_out.append(dest_dir)
 
     async def exec_capture(self, pod, namespace, script):
+        self.scripts.append(script)
         return self._exec_result
 
     async def delete(self, pod, namespace):
@@ -158,13 +183,52 @@ async def test_run_checks_tears_down_on_success():
     assert ops.deleted
 
 
+def _inner(script: str) -> str:
+    """The script the pod runs inside the project's image, decoded from the outer script."""
+    import base64
+    import re
+
+    return base64.b64decode(re.search(r"echo ([A-Za-z0-9+/=]+) \| base64 -d", script)[1]).decode()
+
+
+_LOCK_OUTPUT = "GATEFIX_FILES_BEGIN\n./web/package-lock.json\nGATEFIX_FILES_END\nadded 268 packages"
+
+
+async def test_the_lock_mode_runs_only_the_lock_command_in_each_directory_and_copies_its_files():
+    ops = _FakeOps((0, _LOCK_OUTPUT, ""))
+    spec = _spec(command="npm ci && npm test", lock_command="npm install --package-lock-only")
+
+    result = await ChecksRunner(ops).run_lock(spec, ("web", ""), "/staging")
+
+    inner = _inner(ops.scripts[0])
+    assert "cd /workspace/web && npm install --package-lock-only" in inner
+    assert "cd /workspace && npm install --package-lock-only" in inner
+    assert "npm ci" not in inner
+    assert result.exit_code == 0
+    assert result.changed_files == ("web/package-lock.json",)
+    assert ops.copied_out == ["/staging"]
+    assert ops.deleted
+
+
+async def test_a_failed_lock_command_copies_nothing_and_reports_its_output():
+    ops = _FakeOps((1, "GATEFIX_FILES_BEGIN\nGATEFIX_FILES_END\nnpm error 404 left-padd", ""))
+
+    result = await ChecksRunner(ops).run_lock(
+        _spec(lock_command="npm install --package-lock-only"), ("",), "/staging"
+    )
+
+    assert result.exit_code == 1
+    assert "npm error 404" in result.output
+    assert ops.copied_out == []
+
+
 def _spec(**overrides) -> ChecksSpec:
     base: dict[str, Any] = {
         "repo": "r",
         "execution_id": "e",
         "checkout_dir": "/w",
         "command": "pytest -q",
-        "image": "python:3.12-slim",
+        "image": "python:3.14-slim",
         "working_dir": "/workspace",
     }
     base.update(overrides)
@@ -239,7 +303,7 @@ def _patch_checks_stack(monkeypatch, runner_cls, *, fix_command=""):
         checks_config_mod,
         "checks_for_repo",
         lambda repo, settings: ChecksConfig(
-            repo=repo, image="python:3.12-slim", command="pytest -q", fix_command=fix_command
+            repo=repo, image="python:3.14-slim", command="pytest -q", fix_command=fix_command
         ),
     )
     monkeypatch.setattr(runner_mod, "ChecksRunner", runner_cls)
@@ -321,7 +385,7 @@ async def test_a_build_mode_run_admits_the_dockerfile_base_images(tmp_path, monk
     from services.orchestration.gates import image_admission
 
     digest = "sha256:" + "a" * 64
-    (tmp_path / "Dockerfile.checks").write_text(f"FROM python:3.13-slim@{digest}\n")
+    (tmp_path / "Dockerfile.checks").write_text(f"FROM python:3.14-slim@{digest}\n")
     admitted: list[list[str]] = []
 
     async def record(images):
@@ -333,13 +397,13 @@ async def test_a_build_mode_run_admits_the_dockerfile_base_images(tmp_path, monk
 
     await runner.run_checks(_spec(image="", build="Dockerfile.checks", checkout_dir=str(tmp_path)))
 
-    assert admitted == [[f"builder@{digest}", f"python:3.13-slim@{digest}"]]
+    assert admitted == [[f"builder@{digest}", f"python:3.14-slim@{digest}"]]
 
 
 async def test_a_build_mode_run_from_an_undigested_base_is_refused(tmp_path):
     from services.orchestration.gates.image_admission import ImageRefusedError
 
-    (tmp_path / "Dockerfile.checks").write_text("FROM python:3.13-slim\n")
+    (tmp_path / "Dockerfile.checks").write_text("FROM python:3.14-slim\n")
     ops = _FakeOps((0, "", ""))
 
     with pytest.raises(ImageRefusedError, match="Dockerfile.checks line 1"):

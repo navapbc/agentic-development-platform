@@ -7,7 +7,7 @@ import stat
 from pathlib import Path
 
 import pytest
-from services.orchestration.checks.runner import ChecksSpec, _checks_script, _fix_script
+from services.orchestration.checks.runner import ChecksSpec, _checks_script, _container_script
 from services.orchestration.gates import registry_auth
 from services.orchestration.gates.pod_runner import PodEngineSpec, _run_script
 from services.orchestration.gates.scanner_pod import PodCommandRunner, scan_script
@@ -122,7 +122,7 @@ def test_each_script_reads_the_auth_file_only_for_the_pull() -> None:
         "scanner": (scan_script(TRIVY, ["trivy", "fs", "/workspace"], PULLING), "buildah run"),
         "gate": (_run_script(spec, PULLING), "buildah run"),
         "checks": (_checks_script(checks, PULLING), "buildah run"),
-        "fix": (_fix_script(checks, PULLING), "buildah run"),
+        "fix and lock": (_container_script(checks, "true", PULLING, True), "buildah run"),
     }
 
     for name, (script, run) in scripts.items():

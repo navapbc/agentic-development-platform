@@ -137,6 +137,30 @@ async def test_invoke_model_sends_metadata_and_stamps_the_span(monkeypatch) -> N
 
 
 @pytest.mark.asyncio
+async def test_invoke_model_refuses_an_answer_cut_off_at_max_tokens(monkeypatch) -> None:
+    from services.orchestration.temporal_activities import bedrock
+    from temporalio.exceptions import ApplicationError
+
+    response_data = {
+        "choices": [{"message": {"content": "# Plan\n\n1. **"}, "finish_reason": "length"}],
+        "model": "bedrock/claude-x",
+        "usage": {"prompt_tokens": 60, "completion_tokens": 2048},
+    }
+    monkeypatch.setattr(bedrock.httpx, "AsyncClient", lambda **_: _FakeClient({}, response_data))
+    capture_evidence(monkeypatch)
+
+    with pytest.raises(ApplicationError, match="max_tokens 2048") as raised:
+        await bedrock.invoke_model(
+            bedrock.ModelRequest(
+                logical_model="planning-model", prompt="plan", max_tokens=2048, stage="plan"
+            )
+        )
+
+    assert raised.value.non_retryable
+    assert raised.value.type == "ModelOutputTruncated"
+
+
+@pytest.mark.asyncio
 async def test_invoke_model_resolves_a_system_prompt(monkeypatch) -> None:
     from services.orchestration.temporal_activities import bedrock
     from services.prompts import StaticPromptStore, set_store
@@ -183,16 +207,12 @@ async def test_invoke_model_resolves_a_system_prompt(monkeypatch) -> None:
     reset_for_testing()
 
 
-@pytest.mark.asyncio
-async def test_invoke_model_names_the_gateway_when_it_cannot_be_reached(monkeypatch) -> None:
-    """A bare ConnectError names a port, not the service the operator has to start."""
-    import httpx
+def _refusing_gateway(monkeypatch, error: Exception):
     from services.orchestration.temporal_activities import bedrock
-    from temporalio.exceptions import ApplicationError
 
     class _RefusingClient(_FakeClient):
         async def post(self, url: str, json: dict, headers: dict) -> _FakeResponse:
-            raise httpx.ConnectError("[Errno 61] Connection refused")
+            raise error
 
     monkeypatch.setattr(bedrock.httpx, "AsyncClient", lambda **_: _RefusingClient({}, {}))
     monkeypatch.setattr(
@@ -200,6 +220,15 @@ async def test_invoke_model_names_the_gateway_when_it_cannot_be_reached(monkeypa
         "get_settings",
         lambda: SimpleNamespace(litellm_base_url="http://localhost:4000", litellm_master_key=""),
     )
+    return bedrock
+
+
+@pytest.mark.asyncio
+async def test_invoke_model_names_the_gateway_when_its_answer_breaks_off(monkeypatch) -> None:
+    import httpx
+    from temporalio.exceptions import ApplicationError
+
+    bedrock = _refusing_gateway(monkeypatch, httpx.ReadError("connection reset by peer"))
 
     with pytest.raises(ApplicationError) as caught:
         await bedrock.invoke_model(
@@ -210,8 +239,37 @@ async def test_invoke_model_names_the_gateway_when_it_cannot_be_reached(monkeypa
     assert "LiteLLM model gateway" in message
     assert "http://localhost:4000" in message
     assert "inv local-up" in message
-    assert "Connection refused" in message
+    assert "connection reset by peer" in message
     assert caught.value.type == "LiteLLMUnreachable"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [
+        "[Errno 61] Connection refused",
+        "[Errno 8] nodename nor servname provided, or not known",
+    ],
+)
+async def test_invoke_model_fails_at_once_when_it_cannot_connect_to_the_gateway(
+    monkeypatch, error: str
+) -> None:
+    import httpx
+    from services.orchestration.model_path import model_unavailable_hop
+    from temporalio.exceptions import ApplicationError
+
+    bedrock = _refusing_gateway(monkeypatch, httpx.ConnectError(error))
+
+    with pytest.raises(ApplicationError) as caught:
+        await bedrock.invoke_model(
+            bedrock.ModelRequest(logical_model="planning-model", prompt="hello")
+        )
+
+    assert caught.value.type == "ModelUnavailable"
+    assert caught.value.non_retryable is True
+    assert model_unavailable_hop(caught.value) == "litellm"
+    assert "http://localhost:4000" in str(caught.value)
+    assert error in str(caught.value)
 
 
 def test_token_cost_discounts_cached_tokens():

@@ -1,12 +1,12 @@
 # syntax=docker/dockerfile:1
 
-ARG AL2023_IMAGE=public.ecr.aws/amazonlinux/amazonlinux:2023-minimal@sha256:158a9044f9dc0777f098b76c8b54346f6ed4560b9a6a416dec7a5ba3bc483af4
+ARG AL2023_IMAGE=public.ecr.aws/amazonlinux/amazonlinux:2023-minimal@sha256:75a2d4226d9b98c914d7eed878a03bef4f365ad548be5d28d464ccba504cec79
 ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.13.8@sha256:5cc1805e2426484abca4ad46ea783bab281fdb225fd82d8ce6d66a81254bac85
 
 FROM ${UV_IMAGE} AS uv
 
 FROM ${AL2023_IMAGE} AS go
-ARG AL2023_RELEASE=2023.12.20261112
+ARG AL2023_RELEASE=2023.12.20261120
 ARG GO_VERSION=1.27.4
 ARG GO_SHA256_AMD64=7226736c2339719cda28fbf3a54d71aa63bcefe376e98cef00034268dab24840
 ARG GO_SHA256_ARM64=3392582988a273a87ab5043ee1b2c9c17a2c3c00580bf9326c47a2e0aaaeac92
@@ -64,16 +64,15 @@ RUN NAME=terraform-ls \
     go-component
 
 FROM go AS zoekt
-ARG ZOEKT_COMMIT=2cb19912a4073e5a9895658b7cb135ee4b35733b
+ARG ZOEKT_VERSION=v0.0.0-20260729135938-2cb19912a407
 ARG ZOEKT_GO_GET=golang.org/x/net@v0.62.0,google.golang.org/grpc@v1.83.2
-# zoekt publishes no releases, so the pin is a commit.
+# zoekt tags no releases, so the pin is the Go pseudo-version of a commit. The default GOSUMDB
+# verifies every module download, and a checksum mismatch fails the build.
 WORKDIR /src
-RUN git init --quiet \
- && git fetch --quiet --depth 1 https://github.com/sourcegraph/zoekt "${ZOEKT_COMMIT}" \
- && git checkout --quiet FETCH_HEAD \
- && GOFLAGS=-mod=mod go get $(printf '%s' "${ZOEKT_GO_GET}" | tr , ' ') \
- && GOFLAGS=-mod=mod go build -trimpath -ldflags="-s -w" -o /out/zoekt ./cmd/zoekt \
- && GOFLAGS=-mod=mod go build -trimpath -ldflags="-s -w" -o /out/zoekt-index ./cmd/zoekt-index
+RUN go mod init zoekt-build \
+ && GOFLAGS=-mod=mod go get "github.com/sourcegraph/zoekt@${ZOEKT_VERSION}" $(printf '%s' "${ZOEKT_GO_GET}" | tr , ' ') \
+ && GOFLAGS=-mod=mod go build -trimpath -ldflags="-s -w" -o /out/zoekt github.com/sourcegraph/zoekt/cmd/zoekt \
+ && GOFLAGS=-mod=mod go build -trimpath -ldflags="-s -w" -o /out/zoekt-index github.com/sourcegraph/zoekt/cmd/zoekt-index
 
 FROM go AS downloads
 ARG SCIP_JAVA_VERSION=v0.14.2
@@ -92,7 +91,7 @@ RUN mkdir -p /out/bin \
  && chmod 0555 /out/bin/*
 
 FROM ${AL2023_IMAGE} AS runtime
-ARG AL2023_RELEASE=2023.12.20261112
+ARG AL2023_RELEASE=2023.12.20261120
 ARG AST_GREP_VERSION=0.51.2
 ARG SCIP_PYTHON_VERSION=0.6.8
 ARG SCIP_PYTHON_TYPESCRIPT_VERSION=4.9.5
@@ -104,14 +103,14 @@ ENV PYTHONUNBUFFERED=1 \
     BIND_HOST=0.0.0.0 \
     VIRTUAL_ENV=/opt/venv \
     UV_PROJECT_ENVIRONMENT=/opt/venv \
-    UV_PYTHON=/usr/bin/python3.13 \
+    UV_PYTHON=/usr/bin/python3.14 \
     UV_PYTHON_DOWNLOADS=never \
     UV_LINK_MODE=copy \
     UV_NO_CACHE=1 \
     JAVA_HOME=/usr/lib/jvm/java-21-amazon-corretto \
     PATH=/opt/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 RUN dnf -y --releasever="${AL2023_RELEASE}" upgrade \
- && dnf -y --releasever="${AL2023_RELEASE}" install python3.13 git nodejs24 nodejs24-npm \
+ && dnf -y --releasever="${AL2023_RELEASE}" install python3.14 git nodejs24 nodejs24-npm \
       php8.4-cli php8.4-mbstring php8.4-xml java-21-amazon-corretto-devel maven-amazon-corretto21 shadow-utils \
  && npm install --global --prefix /usr/local "@ast-grep/cli@${AST_GREP_VERSION}" \
  && npm install --global --prefix /usr/local "@sourcegraph/scip-typescript@${SCIP_TYPESCRIPT_VERSION}" \
@@ -150,5 +149,6 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 COPY --chmod=0555 docker/platform-entrypoint.sh /usr/local/bin/platform-entrypoint
 RUN cis-harden
 USER appuser
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 CMD ["python", "-m", "services.healthcheck", "http", "8120"]
 ENTRYPOINT ["/usr/local/bin/platform-entrypoint"]
 CMD ["python", "-m", "services.repository_intelligence.server"]

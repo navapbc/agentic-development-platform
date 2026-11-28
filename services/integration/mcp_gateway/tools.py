@@ -46,6 +46,19 @@ class IssueReader(Protocol):
     def get_issue(self, issue_key: str) -> dict[str, Any]: ...
 
 
+@dataclass(frozen=True)
+class UnconfiguredIssueReader:
+    """The Jira reader of a tenant whose bundle holds no jira.yaml, which refuses every read."""
+
+    tenant: str
+
+    def get_issue(self, issue_key: str) -> dict[str, Any]:
+        raise ConfigError(
+            f"tenant {self.tenant} has no jira.yaml, so the gateway reads no Jira issue such as "
+            f"{issue_key}"
+        )
+
+
 class RepoReader(Protocol):
     async def read_file(self, repo: str, path: str, ref: str) -> FileContent: ...
 
@@ -73,13 +86,15 @@ class ReadOnlyToolset:
 
         The deployment gives the gateway only its tenant's credentials and repository
         intelligence token, and the tenant's active config bundle supplies the allowlisted Jira
-        projects and repositories.
+        projects and repositories. A tenant whose bundle holds no jira.yaml, such as a tenant on
+        the rebar ticket backend, gets a Jira reader that refuses every read.
         """
         from services.coordination.idempotency import PostgresSideEffectLedger
         from services.coordination.sequencing import PostgresSequenceGate
         from services.integration.github.factory import build_git_host
         from services.integration.github.mediator import GitHubMediator
         from services.integration.jira.adapter import ProjectRoutingJiraReader
+        from services.integration.tenant_config import tenant_file
         from services.orchestration.repo_intelligence_client import fetch_context_package
 
         resolved = settings or get_settings()
@@ -89,12 +104,17 @@ class ReadOnlyToolset:
             )
         ledger = PostgresSideEffectLedger()
         gate = PostgresSequenceGate()
+        reads_jira = tenant_file("jira") is not None
         return cls(
-            jira=ProjectRoutingJiraReader(resolved),
+            jira=(
+                ProjectRoutingJiraReader(resolved)
+                if reads_jira
+                else UnconfiguredIssueReader(resolved.tenant)
+            ),
             github=GitHubMediator.from_settings(build_git_host(resolved), ledger, gate, resolved),
             evidence=PostgresEvidenceReader(resolved.tenant),
             context_fetch=fetch_context_package,
-            acceptance_field=acceptance_field(resolved),
+            acceptance_field=acceptance_field() if reads_jira else "",
             tenant=resolved.tenant,
         )
 

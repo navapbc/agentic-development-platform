@@ -44,7 +44,7 @@ variable "trusted_principals" {
 }
 
 variable "trusted_principals_by_condition" {
-  description = "IAM role or user ARNs in this account allowed to assume the created reader and writer roles through an aws:PrincipalArn condition on the account principal. Unlike trusted_principals, IAM does not require the principal to exist, so the trust creates no Terraform dependency on it and holds when the principal is deleted and recreated under the same name. Each principal needs an identity policy that allows sts:AssumeRole on the roles."
+  description = "IAM role or user ARNs in this account allowed to assume the created reader and writer roles through an aws:PrincipalArn condition on the account principal. Unlike trusted_principals, IAM does not require the principal to exist, so the trust creates no Terraform dependency on it and holds when the principal is deleted and recreated under the same name. Each principal needs an identity policy that allows sts:AssumeRole and sts:TagSession on the roles, because an EKS Pod Identity session carries transitive session tags."
   type        = list(string)
   default     = []
 

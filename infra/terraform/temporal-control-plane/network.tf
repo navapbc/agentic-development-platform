@@ -267,7 +267,7 @@ resource "aws_lb_listener" "frontend" {
   port              = local.frontend_port
   protocol          = local.frontend_from_secrets ? "TCP" : "TLS"
   certificate_arn   = local.frontend_from_secrets ? null : var.frontend_acm_certificate_arn
-  ssl_policy        = local.frontend_from_secrets ? null : "ELBSecurityPolicy-TLS13-1-2-FIPS-2023-04"
+  ssl_policy        = local.frontend_from_secrets ? null : "ELBSecurityPolicy-TLS13-1-2-Res-FIPS-2023-04"
   alpn_policy       = local.frontend_from_secrets ? null : "HTTP2Only"
 
   default_action {

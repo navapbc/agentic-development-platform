@@ -1,7 +1,8 @@
 # Mirrors the gate, checks, and scanner pods pull images and packages through. Leave the file out
 # on a workstation, where the pods reach the public registries. In AWS the private-bedrock
 # composition generates the aws mode file when registry_mode = "aws". Write this file into
-# container_config_dir for registry_mode = "external".
+# container_config_dir for registry_mode = "external". A tenant's registries.yaml adds mirrors and
+# package indexes on the hosts this file names and names the tenant's own credential.
 config_version: 1
 mode: external
 
@@ -17,9 +18,3 @@ packages:
   pypi: https://artifactory.example.gov/artifactory/api/pypi/pypi-remote/simple
   npm: https://artifactory.example.gov/artifactory/api/npm/npm-remote/
   go: https://artifactory.example.gov/artifactory/api/go/go-remote
-
-# Read-only identity the pods present to the registry. token_env names the variable the activity
-# worker reads the token from, which the registry_token secret sets in AWS.
-credential:
-  username: agentic-platform-reader
-  token_env: REGISTRY_TOKEN

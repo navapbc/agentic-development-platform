@@ -8,7 +8,7 @@ import httpx
 import pytest
 from services.integration.intake_readiness import intake_blocker
 from services.integration.jira.cloud_client import JiraCloudClient, JiraCloudError
-from tests.support import hermetic_settings
+from tests.support import configure_tenant, hermetic_settings, tenant_dir
 
 TOKEN = "INTAKE_READINESS_TEST_TOKEN"
 
@@ -20,7 +20,7 @@ def _jira_config(
     email: str = "agent@example.com",
 ) -> None:
     directory.mkdir(parents=True, exist_ok=True)
-    (directory / "jira.yaml").write_text(
+    (tenant_dir(directory) / "jira.yaml").write_text(
         f"""config_version: 1
 allowlist: [ADP]
 acceptance_field: ""
@@ -37,7 +37,7 @@ projects: {{}}
 """,
         encoding="utf-8",
     )
-    monkeypatch.setenv("PLATFORM_ENV_CONFIG_DIR", str(directory))
+    configure_tenant(monkeypatch, directory)
 
 
 def test_a_rebar_source_needs_no_secret() -> None:

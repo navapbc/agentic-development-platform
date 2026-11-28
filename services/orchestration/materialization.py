@@ -13,6 +13,7 @@ from adapters.interfaces.git_host import CommitRequest, agent_branch_name
 from scripts.config import Settings, get_settings
 
 from services import process
+from services.coordination.claims import path_within
 from services.coordination.orphans import BRANCH, STAGING, OrphanArtifact, OrphanRegistry
 from services.integration.github.git_auth import NO_AUTH, GitAuth, no_auth_for
 from services.integration.github.mediator import RepoNotAllowedError
@@ -20,15 +21,12 @@ from services.integration.github.mediator import RepoNotAllowedError
 _SLUG = re.compile(r"[^A-Za-z0-9._-]+")
 
 
-def _within(path: str, allowed: Sequence[str]) -> bool:
-    return any(path == entry or path.startswith(entry.rstrip("/") + "/") for entry in allowed)
-
-
 @dataclass(frozen=True)
 class StagedChange:
     tree: str
     changed: bool
-    excluded: tuple[str, ...] = ()
+    outside_file_impact: tuple[str, ...] = ()
+    paths: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -240,30 +238,31 @@ class WorkspaceMaterializer:
         return sorted(entry for entry in out.split("\0") if entry)
 
     async def stage(
-        self, workspace: MaterializedWorkspace, *, allowed_paths: Sequence[str] = ()
+        self, workspace: MaterializedWorkspace, *, file_impact: Sequence[str] = ()
     ) -> StagedChange:
-        """Stage the workspace, limited to `allowed_paths` when the ticket declared any.
+        """Stage every change in the workspace and report the paths outside `file_impact`.
 
-        Build tooling rewrites tracked files the ticket never asked for, so an unrestricted
-        `git add -A` publishes whatever the workspace happens to hold. Declared paths are
-        intersected with the changed set before reaching git, because `git add -A -- <path>`
-        aborts on a pathspec that matches nothing. The index is reset to HEAD first, since the
-        implementation activity stages this same workspace before the commit activity runs.
+        Build tooling rewrites files the ticket never declared, such as lockfiles and build
+        configs, and the change usually needs them, so they are committed and reported rather
+        than dropped. A ticket that declares no file impact reports nothing.
         """
         path = str(workspace.path)
-        if not allowed_paths:
-            await _git("add", "-A", cwd=path)
-            excluded: tuple[str, ...] = ()
-        else:
-            changed = await self.changed_paths(workspace)
-            admitted = [p for p in changed if _within(p, allowed_paths)]
-            excluded = tuple(p for p in changed if p not in set(admitted))
-            await _git("read-tree", "HEAD", cwd=path)
-            if admitted:
-                await _git("add", "-A", "--", *admitted, cwd=path)
+        await _git("add", "-A", cwd=path)
+        staged_paths = tuple(await self.diff_paths_against(workspace, "HEAD"))
+        outside = (
+            tuple(p for p in staged_paths if not path_within(p, file_impact)) if file_impact else ()
+        )
         tree = await _git("write-tree", cwd=path)
         head_tree = await _git("rev-parse", "HEAD^{tree}", cwd=path)
-        return StagedChange(tree=tree, changed=tree != head_tree, excluded=excluded)
+        return StagedChange(
+            tree=tree, changed=tree != head_tree, outside_file_impact=outside, paths=staged_paths
+        )
+
+    async def staged_diff(self, workspace: MaterializedWorkspace, paths: Sequence[str]) -> str:
+        """The staged change to `paths`, as a unified diff against HEAD."""
+        return await _git(
+            "diff", "--cached", "--no-color", "HEAD", "--", *paths, cwd=str(workspace.path)
+        )
 
     async def build_commit_request(
         self,
@@ -271,11 +270,10 @@ class WorkspaceMaterializer:
         *,
         message: str,
         staged: StagedChange | None = None,
-        allowed_paths: Sequence[str] = (),
     ) -> CommitRequest:
         resolved = staged
         if resolved is None:
-            resolved = await self.stage(workspace, allowed_paths=allowed_paths)
+            resolved = await self.stage(workspace)
         return CommitRequest(
             repo=workspace.repo,
             branch=workspace.branch,

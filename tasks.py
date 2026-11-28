@@ -9,15 +9,16 @@ import os
 import shlex
 import sys
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from invoke import Collection, Exit, task
 from scripts.build_id import recorded_build_id, resolve_build_id
+from scripts.env_file import PLATFORM_ENV_FILE
 from services import process
 
-COMPOSE = "docker compose"
+COMPOSE = f"docker compose --env-file {PLATFORM_ENV_FILE.as_posix()}"
 
 # A task that runs on the host must use the interpreter running invoke. A bare `python` resolves
 # to whatever the operator's PATH offers, which on a machine with a system or pyenv Python has
@@ -25,7 +26,28 @@ COMPOSE = "docker compose"
 HOST_PYTHON = shlex.quote(sys.executable)
 
 
-def _env_file_value(name: str, path: str = ".env") -> str:
+def require_pinned_python(
+    version_file: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".python-version"),
+    running: tuple[int, int] = (sys.version_info.major, sys.version_info.minor),
+) -> None:
+    """Refuse to run on an interpreter older than the one .python-version names."""
+    try:
+        with open(version_file, encoding="utf-8") as handle:
+            pinned = handle.read().strip()
+    except FileNotFoundError:
+        return
+    required = tuple(int(part) for part in pinned.split(".")[:2])
+    if running < required:
+        raise SystemExit(
+            f"inv runs on Python {running[0]}.{running[1]}, and .python-version requires "
+            f"{pinned}. Run `uv sync --locked --all-extras` without --python, then rerun."
+        )
+
+
+require_pinned_python()
+
+
+def _env_file_value(name: str, path: str = PLATFORM_ENV_FILE.as_posix()) -> str:
     if not os.path.exists(path):
         return ""
     with open(path, encoding="utf-8") as handle:
@@ -39,12 +61,29 @@ def _env_file_value(name: str, path: str = ".env") -> str:
     return ""
 
 
+_DEV_MOUNTS_COMPOSE = "compose.dev-mounts.yaml"
+_DEV_MOUNTS_FLAG = "COMPOSE_DEV_MOUNTS"
+
+
+def _compose_overlays() -> list[str]:
+    """Return the overlays applied on top of compose.yaml, in Compose's merge order.
+
+    The workflow worker runs workflow code from the image the last build produced, unless
+    COMPOSE_DEV_MOUNTS opts in to running it from the working tree.
+    """
+    dev_mounts = (os.environ.get(_DEV_MOUNTS_FLAG) or _env_file_value(_DEV_MOUNTS_FLAG)).lower()
+    overlays = ["compose.override.yaml"]
+    if dev_mounts in ("1", "true", "yes"):
+        overlays.append(_DEV_MOUNTS_COMPOSE)
+    overlays.append(_REPOSITORIES_COMPOSE)
+    return [overlay for overlay in overlays if os.path.exists(overlay)]
+
+
 def _compose_file_list() -> list[str]:
     configured = os.environ.get("COMPOSE_FILE") or _env_file_value("COMPOSE_FILE")
     if configured:
         return configured.split(os.environ.get("COMPOSE_PATH_SEPARATOR", os.pathsep))
-    overlays = ("compose.override.yaml", _REPOSITORIES_COMPOSE)
-    return ["compose.yaml", *(overlay for overlay in overlays if os.path.exists(overlay))]
+    return ["compose.yaml", *_compose_overlays()]
 
 
 def _compose_files() -> str:
@@ -52,15 +91,14 @@ def _compose_files() -> str:
 
     Explicit -f flags override COMPOSE_FILE, so emitting them unconditionally would make
     every task target a different projection of the stack than the one Compose itself
-    resolves. Compose reads COMPOSE_FILE from the environment and from the project .env,
-    so both are checked here.
+    resolves. Compose reads COMPOSE_FILE from the environment and from its env file,
+    config/local/platform.env, so both are checked here.
     """
     if os.environ.get("COMPOSE_FILE") or _env_file_value("COMPOSE_FILE"):
         return ""
     files = ["-f", "compose.yaml"]
-    for overlay in ("compose.override.yaml", _REPOSITORIES_COMPOSE):
-        if os.path.exists(overlay):
-            files += ["-f", overlay]
+    for overlay in _compose_overlays():
+        files += ["-f", overlay]
     return " ".join(files)
 
 
@@ -80,20 +118,48 @@ def _on_host(command: str) -> str:
     return command
 
 
-def _run_scripted(c, command: str, *, local: bool, tenant: str = "") -> None:
-    """Run a python -m command in the in-cluster activity worker, or on the host with local=True.
+def _tenant(requested: str = "") -> str:
+    """Return the tenant a host task acts on, the one --tenant names or else the one local tenant.
 
-    A tenant selects that tenant's activity worker, or runs the host command with TENANT set to it.
+    With two or more local tenants, a task without --tenant is refused.
     """
+    from scripts.local_tenants import TenantLayoutError, select_tenant
+
+    try:
+        return select_tenant(requested)
+    except TenantLayoutError as exc:
+        raise Exit(str(exc)) from exc
+
+
+def _tenant_env(requested: str = "") -> dict[str, str]:
+    """Return the TENANT that makes a host command load the tenant's settings file.
+
+    The command reads config/local/platform.env and then config/local/tenants/<tenant>.env.
+    """
+    return {"TENANT": _tenant(requested)}
+
+
+_TENANT_HELP = "Tenant to act for. It may be omitted only when one local tenant exists."
+_CONTEXT_HELP = "kubectl context of the worker's cluster (empty uses K8S_CONTEXT)."
+
+
+def _run_scripted(c, command: str, *, local: bool, tenant: str = "", context: str = "") -> None:
+    """Run a python -m command in the tenant's activity worker, or on the host with local=True.
+
+    The host command runs with TENANT set to the tenant, so it reads the tenant's settings file.
+    A context selects the kubectl context of the worker's cluster in place of K8S_CONTEXT.
+    """
+    env = _tenant_env(tenant)
     if local:
-        c.run(_on_host(command), pty=True, env={"TENANT": tenant} if tenant else {})
+        c.run(_on_host(command), pty=True, env=env)
         return
     from scripts.config import get_settings
     from scripts.k8s_cluster import exec_argv
 
-    settings = get_settings()
-    if tenant:
-        settings = settings.model_copy(update={"tenant": tenant})
+    update = {"tenant": env["TENANT"]}
+    if context:
+        update["k8s_context"] = context
+    settings = get_settings().model_copy(update=update)
     c.run(shlex.join(exec_argv(settings, shlex.split(command), tty=False)), pty=True)
 
 
@@ -104,11 +170,14 @@ def _compose_file_flags() -> str:
     return "".join(f" --compose-file {shlex.quote(name)}" for name in names)
 
 
-def _k8s(c, action: str, build_id: str = "", extra: str = "") -> None:
+def _k8s(
+    c, action: str, build_id: str = "", extra: str = "", env: dict[str, str] | None = None
+) -> None:
     flags = f" --build-id {shlex.quote(build_id)}" if build_id else ""
     c.run(
         f"{HOST_PYTHON} -m scripts.k8s_cluster {action}{flags}{_compose_file_flags()}{extra}",
         pty=True,
+        env=env or {},
     )
 
 
@@ -138,7 +207,7 @@ def connectivity_check(c):
 
 @task
 def config_check(c):
-    """Report each per-environment config file version against the version this release expects."""
+    """Report each config file version against the version this release expects."""
     c.run(f"{HOST_PYTHON} -m scripts.config_check", pty=True)
 
 
@@ -180,7 +249,8 @@ def local_up(c, force=False):
     c.run(f"{COMPOSE} {files} up -d --wait --wait-timeout 600 --remove-orphans")
     _k8s(c, "reload", build_id)
     aws_login(c)
-    repos_sync(c)
+    for tenant in _local_tenants():
+        repos_sync(c, tenant=tenant)
     _report_exceptions_setup()
 
 
@@ -193,14 +263,16 @@ def local_up(c, force=False):
 def k8s_reload(c, force=False):
     """Rebuild the platform images for the current sources and roll compose and the cluster.
 
-    The compose workflow worker and the cluster workers register as one Worker Deployment
-    version, so both move to the build these sources produce.
+    The compose override is regenerated first, so repository intelligence serves the tenant
+    folders as they are now. The compose workflow worker and the cluster workers register as one
+    Worker Deployment version, so both move to the build these sources produce.
     """
     outgoing = recorded_build_id()
     build_id = resolve_build_id()
     if build_id != outgoing and not force:
         _refuse_to_strand(outgoing)
     os.environ["AGENT_BUILD_ID"] = build_id
+    repos_compose(c)
     files = _compose_files()
     _compose_build(c, files, build_id)
     c.run(f"{COMPOSE} {files} up -d --wait --wait-timeout 600 --remove-orphans")
@@ -214,11 +286,46 @@ def aws_login(c):
     c.run(f"{HOST_PYTHON} -m scripts.aws_login", pty=True)
 
 
-@task(help={"repo": "Sync only this repository or gate engine."})
-def repos_sync(c, repo=""):
-    """Copy the local-backend repositories and local gate engines into the cluster volume."""
+@task(
+    help={
+        "watch": "Check every interval until stopped, as the launchd agent does.",
+        "interval": "Seconds between checks under --watch, 60 by default.",
+    }
+)
+def local_renew(c, watch=False, interval=60):
+    """Renew a static-key AWS session near expiry and start the Bedrock tunnel when it stopped."""
+    if watch:
+        c.run(f"{HOST_PYTHON} -m scripts.local_renew watch --interval {int(interval)}")
+    else:
+        c.run(f"{HOST_PYTHON} -m scripts.local_renew run")
+
+
+@task(help={"interval": "Seconds between checks of the agent, 60 by default."})
+def local_renew_install(c, interval=60):
+    """Install a macOS launchd agent that keeps inv local-renew --watch running."""
+    c.run(f"{HOST_PYTHON} -m scripts.local_renew install --interval {int(interval)}")
+
+
+@task
+def local_renew_uninstall(c):
+    """Unload and remove the launchd agent that runs inv local-renew --watch."""
+    c.run(f"{HOST_PYTHON} -m scripts.local_renew uninstall")
+
+
+def _local_tenants() -> list[str]:
+    from scripts.local_tenants import TenantLayoutError, local_tenant_names
+
+    try:
+        return local_tenant_names()
+    except TenantLayoutError as exc:
+        raise Exit(str(exc)) from exc
+
+
+@task(help={"repo": "Sync only this repository or gate engine.", "tenant": _TENANT_HELP})
+def repos_sync(c, repo="", tenant=""):
+    """Copy the tenant's local-backend repositories and local gate engines into its worker."""
     flag = f" --repo {shlex.quote(repo)}" if repo else ""
-    c.run(f"{HOST_PYTHON} -m scripts.repos_sync{flag}", pty=True)
+    c.run(f"{HOST_PYTHON} -m scripts.repos_sync{flag}", pty=True, env=_tenant_env(tenant))
 
 
 @task(
@@ -249,38 +356,49 @@ def runtime_images(c):
 def _tenant_config_flags(tenant: str, bundle_dir: str, extra: dict[str, str]) -> str:
     flags = f" --tenant {shlex.quote(tenant)}" if tenant else ""
     flags += f" --dir {shlex.quote(bundle_dir)}" if bundle_dir else ""
-    for name, value in extra.items():
-        flags += f" --{name} {shlex.quote(value)}" if value else ""
-    return flags
+    return flags + _optional_flags(extra)
+
+
+def _optional_flags(pairs: Mapping[str, str]) -> str:
+    return "".join(f" --{name} {shlex.quote(value)}" for name, value in pairs.items() if value)
 
 
 @task(
     help={
-        "tenant": "Tenant name (default TENANT).",
-        "bundle_dir": "Bundle directory (default config/<env>/tenants/<tenant>).",
-        "environment_dir": "Environment config directory the bundle layers over.",
+        "tenant": "Tenant name. It may be omitted only when one local tenant exists.",
+        "bundle_dir": "Bundle directory (default config/local/tenants/<tenant>).",
+        "bucket": "Tenant config bucket the claims probe lists (default TENANT_CONFIG_BUCKET).",
+        "platform_dir": "Platform config directory whose replaceable files the bundle may omit.",
     }
 )
-def tenant_config_validate(c, tenant="", bundle_dir="", environment_dir=""):
-    """Validate a tenant config bundle layered over the environment's config."""
-    flags = _tenant_config_flags(tenant, bundle_dir, {"environment-dir": environment_dir})
-    c.run(f"{HOST_PYTHON} -m scripts.tenant_config validate{flags}", pty=True)
+def tenant_config_validate(c, tenant="", bundle_dir="", bucket="", platform_dir=""):
+    """Validate a tenant config bundle against the platform config."""
+    from scripts.config import get_settings
+
+    flags = _tenant_config_flags(
+        tenant or _tenant(), bundle_dir, {"bucket": bucket, "platform-dir": platform_dir}
+    )
+    c.run(
+        f"{HOST_PYTHON} -m scripts.tenant_config validate{flags}",
+        pty=True,
+        env=_aws_env(get_settings()),
+    )
 
 
 @task(
     help={
-        "tenant": "Tenant name (default TENANT).",
-        "bundle_dir": "Bundle directory (default config/<env>/tenants/<tenant>).",
+        "tenant": "Tenant name. It may be omitted only when one local tenant exists.",
+        "bundle_dir": "Bundle directory (default config/local/tenants/<tenant>).",
         "bucket": "Tenant config bucket (default TENANT_CONFIG_BUCKET).",
-        "environment_dir": "Environment config directory the bundle layers over.",
+        "platform_dir": "Platform config directory whose replaceable files the bundle may omit.",
     }
 )
-def tenant_config_publish(c, tenant="", bundle_dir="", bucket="", environment_dir=""):
+def tenant_config_publish(c, tenant="", bundle_dir="", bucket="", platform_dir=""):
     """Validate a tenant config bundle and publish it to the tenant config bucket."""
     from scripts.config import get_settings
 
     flags = _tenant_config_flags(
-        tenant, bundle_dir, {"bucket": bucket, "environment-dir": environment_dir}
+        tenant or _tenant(), bundle_dir, {"bucket": bucket, "platform-dir": platform_dir}
     )
     c.run(
         f"{HOST_PYTHON} -m scripts.tenant_config publish{flags}",
@@ -289,11 +407,42 @@ def tenant_config_publish(c, tenant="", bundle_dir="", bucket="", environment_di
     )
 
 
-@task(help={"repo": "Fetch only this repository."})
-def fetch_results(c, repo=""):
+@task(
+    help={
+        "command": "backfill, report, release, or sweep.",
+        "tenant": "Tenant whose claim release removes, for release.",
+        "kind": (
+            "Claim kind, slack-channel, slack-own-channel, slack-app, jira-project, or "
+            "registry-username."
+        ),
+        "value": "Claim value, a Slack ID, or a Jira site, project key, and intake label.",
+        "bucket": "Tenant config bucket (default TENANT_CONFIG_BUCKET).",
+        "platform_dir": "Platform config directory whose replaceable files the bundles may omit.",
+    }
+)
+def tenant_config_claims(c, command, tenant="", kind="", value="", bucket="", platform_dir=""):
+    """Backfill, report, release, or sweep the claims of published tenant bundles, as an admin."""
+    from scripts.config import get_settings
+
+    if command not in ("backfill", "report", "release", "sweep"):
+        raise SystemExit("command must be backfill, report, release, or sweep")
+    flags = _tenant_config_flags(
+        tenant,
+        "",
+        {"kind": kind, "value": value, "bucket": bucket, "platform-dir": platform_dir},
+    )
+    c.run(
+        f"{HOST_PYTHON} -m scripts.tenant_config claims-{command}{flags}",
+        pty=True,
+        env=_aws_env(get_settings()),
+    )
+
+
+@task(help={"repo": "Fetch only this repository.", "tenant": _TENANT_HELP})
+def fetch_results(c, repo="", tenant=""):
     """Fetch the agent branches and their results refs from the cluster into the host checkouts."""
     flag = f" --repo {shlex.quote(repo)}" if repo else ""
-    c.run(f"{HOST_PYTHON} -m scripts.fetch_results{flag}", pty=True)
+    c.run(f"{HOST_PYTHON} -m scripts.fetch_results{flag}", pty=True, env=_tenant_env(tenant))
 
 
 @dataclass(frozen=True)
@@ -367,8 +516,9 @@ def _report_exceptions_setup() -> None:
 def _use_hardened_base() -> None:
     """Build the hardened base when it is absent and point the Compose builds at it.
 
-    The reference is also written to .env, so a `docker compose build` run outside the tasks
-    starts from the same base instead of the minimal image, which has no cis-harden.
+    The reference is also written to config/local/platform.env, so a
+    `docker compose --env-file config/local/platform.env build` run outside the tasks starts from
+    the same base instead of the minimal image, which has no cis-harden.
     """
     from scripts.al2023_base import Base
     from scripts.env_file import set_values
@@ -570,21 +720,27 @@ def platform_logs(c, match=""):
     c.run(f"{HOST_PYTHON} -m scripts.platform_logs{flag}", pty=True)
 
 
-@task(help={"service": "Optional single service to tail."})
-def logs(c, service=""):
+@task(help={"service": "Optional single service to tail.", "tenant": _TENANT_HELP})
+def logs(c, service="", tenant=""):
     """Follow logs for the compose stack, or for one compose service or cluster deployment.
 
-    The activity worker and the MCP gateway run per tenant, and TENANT selects whose to follow.
+    The activity worker, the MCP gateway, and the review worker run per tenant, and --tenant
+    selects whose to follow.
     """
-    from scripts.k8s_cluster import DEPLOYMENTS, GATEWAY
+    from scripts.k8s_cluster import DEPLOYMENTS, GATEWAY, REVIEW_WORKER
     from scripts.tenant_render import WORKER
 
-    if service in DEPLOYMENTS or service in (WORKER, GATEWAY):
+    if service in DEPLOYMENTS or service in (WORKER, GATEWAY, REVIEW_WORKER):
         from scripts.config import get_settings
-        from scripts.k8s_cluster import in_worker_namespace, namespaced
+        from scripts.k8s_cluster import in_review_namespace, in_worker_namespace, namespaced
 
-        address = namespaced if service in DEPLOYMENTS else in_worker_namespace
-        argv = address(get_settings(), "logs", "-f", f"deployment/{service}", "--all-containers")
+        settings = get_settings()
+        if service in DEPLOYMENTS:
+            address = namespaced
+        else:
+            address = in_review_namespace if service == REVIEW_WORKER else in_worker_namespace
+            settings = settings.model_copy(update={"tenant": _tenant(tenant)})
+        argv = address(settings, "logs", "-f", f"deployment/{service}", "--all-containers")
         c.run(shlex.join(argv), pty=True)
         return
     c.run(f"{COMPOSE} {_compose_files()} logs -f {service}".strip(), pty=True)
@@ -630,9 +786,13 @@ def seed(c):
         "limit": "Import at most N tickets (0 means no limit).",
         "reset": "Wipe the store and re-init empty before importing.",
         "local": "Run on the host instead of the activity worker pod.",
+        "tenant": _TENANT_HELP,
+        "context": _CONTEXT_HELP,
     }
 )
-def import_rebar_tickets(c, xlsx="", root="", status="", limit=0, reset=False, local=False):
+def import_rebar_tickets(
+    c, xlsx="", root="", status="", limit=0, reset=False, local=False, tenant="", context=""
+):
     """Import a Jira xlsx export into the local rebar ticket store."""
     flags = xlsx
     if root:
@@ -643,7 +803,13 @@ def import_rebar_tickets(c, xlsx="", root="", status="", limit=0, reset=False, l
         flags += f" --limit {limit}"
     if reset:
         flags += " --reset"
-    _run_scripted(c, f"python -m scripts.import_rebar_tickets {flags}".strip(), local=local)
+    _run_scripted(
+        c,
+        f"python -m scripts.import_rebar_tickets {flags}".strip(),
+        local=local,
+        tenant=tenant,
+        context=context,
+    )
 
 
 @task(
@@ -652,9 +818,13 @@ def import_rebar_tickets(c, xlsx="", root="", status="", limit=0, reset=False, l
         "field-changes": "Report field changes.",
         "status-changes": "Report status changes.",
         "local": "Run on the host instead of in the activity worker pod.",
+        "tenant": _TENANT_HELP,
+        "context": _CONTEXT_HELP,
     }
 )
-def rebar_changes(c, new=False, field_changes=False, status_changes=False, local=False):
+def rebar_changes(
+    c, new=False, field_changes=False, status_changes=False, local=False, tenant="", context=""
+):
     """Report rebar ticket changes since the last intake pass without starting work."""
     flags = []
     if new:
@@ -663,18 +833,27 @@ def rebar_changes(c, new=False, field_changes=False, status_changes=False, local
         flags.append("--field-changes")
     if status_changes:
         flags.append("--status-changes")
-    _run_scripted(c, f"python -m scripts.rebar_poll {' '.join(flags)}".strip(), local=local)
+    _run_scripted(
+        c,
+        f"python -m scripts.rebar_poll {' '.join(flags)}".strip(),
+        local=local,
+        tenant=tenant,
+        context=context,
+    )
 
 
-@task(help={"local": "Run on the host instead of in the activity worker pod."})
-def rebar_store_remote(c, local=False):
+@task(
+    help={"local": "Run on the host instead of in the activity worker pod.", "tenant": _TENANT_HELP}
+)
+def rebar_store_remote(c, local=False, tenant=""):
     """Point the rebar ticket store at its S3 bucket as the reader for fetch and writer for push."""
     command = "python -m scripts.rebar_store_remote"
+    env = _tenant_env(tenant)
     if local:
-        c.run(_on_host(command), pty=True)
+        c.run(_on_host(command), pty=True, env=env)
         return
     # A one-off pod, because the activity worker refuses to start while the remote is wrong.
-    _k8s(c, "one-off", extra=f" -- {command}")
+    _k8s(c, "one-off", extra=f" -- {command}", env=env)
 
 
 def _rebar_gate_env() -> dict[str, str]:
@@ -723,7 +902,7 @@ def _host_source_control_env() -> dict[str, str]:
     """Rewrite the container workspace root in the local artifacts setting to its host directory.
 
     operator-done runs on the host against the same artifacts the workers write, so the
-    container-relative SOURCE_CONTROL_LOCAL_ARTIFACTS_ROOT from .env must resolve to the host
+    container-relative SOURCE_CONTROL_LOCAL_ARTIFACTS_ROOT of the settings must resolve to the host
     directory that backs the workspace mount. Outside the platform image, the repository
     registry already locates each local repository at its host path.
     """
@@ -744,20 +923,24 @@ def _host_source_control_env() -> dict[str, str]:
         "branch": "The promoted local branch.",
         "completion-signal-id": "Expected completion-signal id to verify before signaling.",
         "closed-unmerged": "Complete as closed-unmerged rather than merged.",
+        "tenant": _TENANT_HELP,
     }
 )
-def operator_done(c, workflow_id, repo, branch, completion_signal_id="", closed_unmerged=False):
+def operator_done(
+    c, workflow_id, repo, branch, completion_signal_id="", closed_unmerged=False, tenant=""
+):
     """Complete a local-backend run by verifying artifacts and signaling the workflow."""
     flags = f"--workflow-id {workflow_id} --repo {repo} --branch {branch}"
     if completion_signal_id:
         flags += f" --completion-signal-id {completion_signal_id}"
     if closed_unmerged:
         flags += " --closed-unmerged"
-    fetch_results(c, repo=repo)
+    env = _tenant_env(tenant)
+    fetch_results(c, repo=repo, tenant=env["TENANT"])
     c.run(
         f"{HOST_PYTHON} -m scripts.operator_done {flags}",
         pty=True,
-        env=_host_source_control_env(),
+        env={**env, **_host_source_control_env()},
     )
 
 
@@ -794,7 +977,7 @@ def db_bootstrap_roles(c, function_name="", region=""):
     settings = get_settings()
     flags = f" --function-name {shlex.quote(function_name)}"
     flags += f" --region {shlex.quote(region)}" if region else ""
-    env = {"AWS_PROFILE": settings.aws_profile, "AWS_REGION": settings.aws_region}
+    env = _profile_env(settings)
     c.run(f"{HOST_PYTHON} -m scripts.db_bootstrap_roles{flags}", pty=True, env=env)
 
 
@@ -851,7 +1034,7 @@ def ci(c):
     """Run the portable CI checks: lint, format, the hermetic tests, and the evaluation gate."""
     c.run(f"{HOST_PYTHON} -m ruff check", pty=True)
     c.run(f"{HOST_PYTHON} -m ruff format --check", pty=True)
-    c.run(f"{HOST_PYTHON} -m pytest -q tests/unit tests/end_to_end", pty=True)
+    c.run(f"{HOST_PYTHON} -m pytest -q tests/unit tests/end_to_end tests/integration", pty=True)
     c.run(f"{HOST_PYTHON} -m scripts.eval_gate", pty=True)
 
 
@@ -935,10 +1118,28 @@ def workflow_status(c):
     c.run(f"{HOST_PYTHON} -m scripts.workflow_status", pty=True)
 
 
-@task
-def resume_parked(c):
-    """Resume parked workflows a newer agent build can retry."""
-    c.run(f"{HOST_PYTHON} -m scripts.resume_parked", pty=True)
+@task(
+    help={
+        "issue": "Resume the run of this issue parked on the model path, for example ADSER-24.",
+        "workflow_id": "Resume the run of this workflow ID parked on the model path.",
+        "local": "With --issue or --workflow-id, run on the host instead of the activity worker.",
+        "tenant": _TENANT_HELP,
+        "context": _CONTEXT_HELP,
+    }
+)
+def resume_parked(c, issue="", workflow_id="", local=False, tenant="", context=""):
+    """Resume the parked workflows a newer build can retry, or one run parked on the model path."""
+    if issue and workflow_id:
+        raise Exit("pass at most one of --issue or --workflow-id")
+    if not (issue or workflow_id):
+        c.run(f"{HOST_PYTHON} -m scripts.resume_parked", pty=True)
+        return
+    target = (
+        f"--issue {shlex.quote(issue)}" if issue else f"--workflow-id {shlex.quote(workflow_id)}"
+    )
+    _run_scripted(
+        c, f"python -m scripts.resume_parked {target}", local=local, tenant=tenant, context=context
+    )
 
 
 @task
@@ -991,7 +1192,7 @@ def publish_jumphost_image(
     flags += f" --exceptions {shlex.quote(exceptions)}" if exceptions else ""
     flags += f" --builder {shlex.quote(builder)}" if builder else ""
     flags += " --unsigned" if unsigned else ""
-    env = {"AWS_PROFILE": settings.aws_profile, "AWS_REGION": settings.aws_region}
+    env = _profile_env(settings)
     c.run(f"{HOST_PYTHON} -m scripts.publish_jumphost_image{flags}", pty=True, env=env)
 
 
@@ -1012,7 +1213,7 @@ def publish_temporal_images(c, name_prefix="", arch="arm64", region="", exceptio
     flags += f" --name-prefix {shlex.quote(name_prefix)}" if name_prefix else ""
     flags += f" --region {shlex.quote(region)}" if region else ""
     flags += f" --exceptions {shlex.quote(exceptions)}" if exceptions else ""
-    env = {"AWS_PROFILE": settings.aws_profile, "AWS_REGION": settings.aws_region}
+    env = _profile_env(settings)
     c.run(f"{HOST_PYTHON} -m scripts.publish_temporal_images{flags}", pty=True, env=env)
 
 
@@ -1054,13 +1255,9 @@ def publish_platform_images(
     flags += f" --manifest {shlex.quote(manifest)}" if manifest else ""
     flags += f" --exceptions {shlex.quote(exceptions)}" if exceptions else ""
     flags += " --unsigned" if unsigned else ""
-    for name, value in (
-        ("stage", stage),
-        ("group", group),
-        ("partial", partial),
-        ("partials", partials),
-    ):
-        flags += f" --{name} {shlex.quote(value)}" if value else ""
+    flags += _optional_flags(
+        {"stage": stage, "group": group, "partial": partial, "partials": partials}
+    )
     c.run(
         f"{HOST_PYTHON} -m scripts.publish_platform_images{flags}", pty=True, env=_aws_env(settings)
     )
@@ -1097,6 +1294,10 @@ def _aws_env(settings) -> dict[str, str]:
 
 
 _AWS_CREDENTIAL_VARIABLES = ("AWS_ACCESS_KEY_ID", "AWS_WEB_IDENTITY_TOKEN_FILE")
+
+
+def _profile_env(settings) -> dict[str, str]:
+    return {"AWS_PROFILE": settings.aws_profile, "AWS_REGION": settings.aws_region}
 
 
 @task(
@@ -1143,6 +1344,19 @@ def langfuse_ui(c):
     c.run(f"{HOST_PYTHON} -m scripts.langfuse_ui", pty=True)
 
 
+@task(
+    help={
+        "port": "Local port forwarded to the private EKS API (default 9443).",
+        "kubeconfig": "Kubeconfig file to write (default ~/.kube/agentic-platform-eks.json).",
+    }
+)
+def eks_api(c, port=9443, kubeconfig=""):
+    """Forward a local port to the private EKS API through the jump-host and write a kubeconfig."""
+    flags = f" --port {int(port)}"
+    flags += f" --kubeconfig {shlex.quote(kubeconfig)}" if kubeconfig else ""
+    c.run(f"{HOST_PYTHON} -m scripts.eks_api{flags}", pty=True)
+
+
 @task(help={"region": "AWS region (empty uses AWS_REGION)."})
 def temporal_deploy(c, region=""):
     """Apply the Temporal schema, roll the server, and register the namespace."""
@@ -1150,7 +1364,7 @@ def temporal_deploy(c, region=""):
 
     settings = get_settings()
     flags = f" --region {shlex.quote(region)}" if region else ""
-    env = {"AWS_PROFILE": settings.aws_profile, "AWS_REGION": settings.aws_region}
+    env = _profile_env(settings)
     c.run(f"{HOST_PYTHON} -m scripts.temporal_deploy{flags}", pty=True, env=env)
 
 
@@ -1161,14 +1375,14 @@ def platform_deploy(c, region=""):
 
     settings = get_settings()
     flags = f" --region {shlex.quote(region)}" if region else ""
-    env = {"AWS_PROFILE": settings.aws_profile, "AWS_REGION": settings.aws_region}
+    env = _profile_env(settings)
     c.run(f"{HOST_PYTHON} -m scripts.platform_deploy{flags}", pty=True, env=env)
 
 
 @task(
     help={
         "command": "deploy (default), check-policies, or restart followed by deployment names, "
-        "namespace/name, or tenant-workers.",
+        "namespace/name, tenant-workers, tenant-review-workers, or mcp-gateway.",
         "region": "AWS region (empty uses AWS_REGION).",
     }
 )
@@ -1179,8 +1393,32 @@ def eks_deploy(c, command="deploy", region=""):
     settings = get_settings()
     flags = f" --region {shlex.quote(region)}" if region else ""
     words = " ".join(shlex.quote(word) for word in command.split())
-    env = {"AWS_PROFILE": settings.aws_profile, "AWS_REGION": settings.aws_region}
+    env = _profile_env(settings)
     c.run(f"{HOST_PYTHON} -m scripts.eks_deploy{flags} {words}", pty=True, env=env)
+
+
+@task(
+    help={
+        "platform": "Run the platform checks only.",
+        "all_tenants": "Run the platform checks and the validation of every tenant.",
+        "tenant": "Run the platform checks and the validation of this tenant.",
+        "post": "Post each validated tenant's report to its Slack channel.",
+        "context": "kubectl context of the cluster (empty uses the current context).",
+    }
+)
+def deployment_validate(c, platform=False, all_tenants=False, tenant="", post=False, context=""):
+    """Run the deployment validation as a Job in the cluster and print its report."""
+    if [bool(platform), bool(all_tenants), bool(tenant)].count(True) != 1:
+        raise Exit("Name exactly one of --platform, --all-tenants, or --tenant <tenant>.")
+    if platform:
+        flags = " --platform"
+    elif all_tenants:
+        flags = " --all-tenants"
+    else:
+        flags = f" --tenant {shlex.quote(tenant)}"
+    flags += " --post" if post else ""
+    flags += f" --context {shlex.quote(context)}" if context else ""
+    c.run(f"{HOST_PYTHON} -m scripts.validation_job{flags}", pty=True)
 
 
 @task(
@@ -1190,7 +1428,8 @@ def eks_deploy(c, command="deploy", region=""):
         "region": "AWS region (empty uses the eks output's region).",
         "admin_role_arn": "Role that must read no tenant secret (default role/platform-admin).",
         "repo": "TENANT=REPOSITORY to probe, repeatable (default the first indexed one).",
-        "only": "Comma-separated groups to run of iam, env, ri, mounts (default all).",
+        "only": "Comma-separated groups of iam, env, ri, mounts, review, claims, slack, registry "
+        "(default all).",
     },
     iterable=["repo"],
 )
@@ -1198,14 +1437,15 @@ def tenant_verify_aws(c, context="", outputs="", region="", admin_role_arn="", r
     """Check the AWS tenant boundary with read-only calls and print a pass or fail table."""
     from scripts.config import get_settings
 
-    options = {
-        "--context": context,
-        "--outputs": outputs,
-        "--region": region,
-        "--admin-role-arn": admin_role_arn,
-        "--only": only,
-    }
-    flags = "".join(f" {flag} {shlex.quote(value)}" for flag, value in options.items() if value)
+    flags = _optional_flags(
+        {
+            "context": context,
+            "outputs": outputs,
+            "region": region,
+            "admin-role-arn": admin_role_arn,
+            "only": only,
+        }
+    )
     flags += "".join(f" --repo {shlex.quote(pair)}" for pair in repo or [])
     c.run(
         f"{HOST_PYTHON} -m scripts.tenant_verify_aws{flags}", pty=True, env=_aws_env(get_settings())
@@ -1273,8 +1513,36 @@ def temporal_certs(
     settings = get_settings()
     flags = f" --dir {shlex.quote(dir)}"
     flags += " --import-to-acm" if import_to_acm else ""
-    env = {"AWS_PROFILE": settings.aws_profile, "AWS_REGION": settings.aws_region}
+    env = _profile_env(settings)
     c.run(f"{HOST_PYTHON} -m scripts.temporal_certs put{flags}", pty=True, env=env)
+
+
+@task(
+    help={
+        "action": "issue to sign the certificate with an existing CA, or put to store it.",
+        "dir": "Directory holding ca.pem and ca-key.pem from temporal-certs --internal-name.",
+        "days": "issue: validity in days (default 397).",
+        "force": "issue: replace a posting service certificate already in the directory.",
+    }
+)
+def slack_poster_certs(c, action, dir, days=397, force=False):  # noqa: A002
+    """Issue the Slack posting service certificate, or check it and store it in its secret."""
+    from scripts.config import get_settings
+
+    if action == "issue":
+        flags = f" --dir {shlex.quote(dir)} --days {int(days)}"
+        flags += " --force" if force else ""
+        c.run(f"{HOST_PYTHON} -m scripts.slack_poster_certs issue{flags}", pty=True)
+        return
+    if action != "put":
+        raise Exit("action must be issue or put")
+    settings = get_settings()
+    env = _profile_env(settings)
+    c.run(
+        f"{HOST_PYTHON} -m scripts.slack_poster_certs put --dir {shlex.quote(dir)}",
+        pty=True,
+        env=env,
+    )
 
 
 @task(
@@ -1299,7 +1567,7 @@ def clickhouse_certs(c, action, dir, name="", days=397, force=False):  # noqa: A
     if action != "put":
         raise Exit("action must be issue or put")
     settings = get_settings()
-    env = {"AWS_PROFILE": settings.aws_profile, "AWS_REGION": settings.aws_region}
+    env = _profile_env(settings)
     c.run(
         f"{HOST_PYTHON} -m scripts.clickhouse_certs put --dir {shlex.quote(dir)}", pty=True, env=env
     )
@@ -1325,7 +1593,7 @@ def webhook_certs(c, action, dir, name="", days=397, force=False):  # noqa: A002
         flags += f" --days {int(days)}" + (f" --name {shlex.quote(name)}" if name else "")
         flags += " --force" if force else ""
     settings = get_settings()
-    env = {"AWS_PROFILE": settings.aws_profile, "AWS_REGION": settings.aws_region}
+    env = _profile_env(settings)
     c.run(f"{HOST_PYTHON} -m scripts.webhook_certs {action}{flags}", pty=True, env=env)
 
 
@@ -1349,7 +1617,7 @@ def mcp_gateway_certs(c, action, dir, domain="", days=397, force=False):  # noqa
         flags += f" --days {int(days)}" + (f" --domain {shlex.quote(domain)}" if domain else "")
         flags += " --force" if force else ""
     settings = get_settings()
-    env = {"AWS_PROFILE": settings.aws_profile, "AWS_REGION": settings.aws_region}
+    env = _profile_env(settings)
     c.run(f"{HOST_PYTHON} -m scripts.mcp_gateway_certs {action}{flags}", pty=True, env=env)
 
 
@@ -1363,12 +1631,20 @@ def reap(c, apply=False):
     help={
         "root": "Workspace root to scrub (empty uses EXECUTION_WORKSPACE_ROOT).",
         "local": "Run on the host instead of the activity worker pod.",
+        "tenant": _TENANT_HELP,
+        "context": _CONTEXT_HELP,
     }
 )
-def scrub_workspaces(c, root="", local=False):
+def scrub_workspaces(c, root="", local=False, tenant="", context=""):
     """Clear the git credential earlier releases persisted into execution workspaces."""
     root_flag = f" --root {root}" if root else ""
-    _run_scripted(c, f"python -m scripts.scrub_workspaces{root_flag}", local=local)
+    _run_scripted(
+        c,
+        f"python -m scripts.scrub_workspaces{root_flag}",
+        local=local,
+        tenant=tenant,
+        context=context,
+    )
 
 
 @task(
@@ -1378,9 +1654,11 @@ def scrub_workspaces(c, root="", local=False):
         "retry": "Clear the intake dedup for a failed ticket so the next pass relaunches it.",
         "repo": "Scope a --retry to one repository.",
         "local": "Run on the host instead of the activity worker pod.",
+        "tenant": _TENANT_HELP,
+        "context": _CONTEXT_HELP,
     }
 )
-def intake(c, source="", schedule=False, retry="", repo="", local=False):
+def intake(c, source="", schedule=False, retry="", repo="", local=False, tenant="", context=""):
     """Reconcile ticket intake from Jira or rebar into draft PR executions (one pass by default)."""
     flags = [f"--source {source}"] if source else []
     if retry:
@@ -1389,7 +1667,13 @@ def intake(c, source="", schedule=False, retry="", repo="", local=False):
             flags.append(f"--repo {repo}")
     elif schedule:
         flags.append("--schedule")
-    _run_scripted(c, f"python -m scripts.intake {' '.join(flags)}".strip(), local=local)
+    _run_scripted(
+        c,
+        f"python -m scripts.intake {' '.join(flags)}".strip(),
+        local=local,
+        tenant=tenant,
+        context=context,
+    )
 
 
 @task(
@@ -1397,15 +1681,16 @@ def intake(c, source="", schedule=False, retry="", repo="", local=False):
         "repo": "Allowlisted repository name to pre-index.",
         "commit": "Commit to index (empty uses the head).",
         "local": "Run on the host instead of the activity worker pod.",
+        "tenant": _TENANT_HELP,
+        "context": _CONTEXT_HELP,
     }
 )
-def index_repo(c, repo, commit="", local=False):
+def index_repo(c, repo, commit="", local=False, tenant="", context=""):
     """Pre-index a repository in repository intelligence before intake."""
     flags = f"--repo {repo}" + (f" --commit {commit}" if commit else "")
-    _run_scripted(c, f"python -m scripts.index_repo {flags}", local=local)
-
-
-_TENANT_HELP = "Act for this tenant's run instead of the tenant TENANT names."
+    _run_scripted(
+        c, f"python -m scripts.index_repo {flags}", local=local, tenant=tenant, context=context
+    )
 
 
 @task(
@@ -1417,14 +1702,21 @@ _TENANT_HELP = "Act for this tenant's run instead of the tenant TENANT names."
         ),
         "local": "Run on the host instead of the activity worker pod.",
         "tenant": _TENANT_HELP,
+        "context": _CONTEXT_HELP,
     }
 )
-def repair(c, issue, retry=False, abandon=False, local=False, tenant=""):
+def repair(c, issue, retry=False, abandon=False, local=False, tenant="", context=""):
     """Release the AWAITING_HUMAN pause on a workflow parked after CI repair exhaustion."""
     if retry == abandon:
         raise Exit("pass exactly one of --retry or --abandon")
     decision = "--retry" if retry else "--abandon"
-    _run_scripted(c, f"python -m scripts.repair {issue} {decision}", local=local, tenant=tenant)
+    _run_scripted(
+        c,
+        f"python -m scripts.repair {issue} {decision}",
+        local=local,
+        tenant=tenant,
+        context=context,
+    )
 
 
 @task(
@@ -1435,9 +1727,10 @@ def repair(c, issue, retry=False, abandon=False, local=False, tenant=""):
         "reject": "Reject the gate and cancel the run.",
         "local": "Run on the host instead of the activity worker pod.",
         "tenant": _TENANT_HELP,
+        "context": _CONTEXT_HELP,
     }
 )
-def gate(c, issue, gate, approve=False, reject=False, local=False, tenant=""):
+def gate(c, issue, gate, approve=False, reject=False, local=False, tenant="", context=""):
     """Release the AWAITING_HUMAN pause on a workflow parked at a configured human gate."""
     if approve == reject:
         raise Exit("pass exactly one of --approve or --reject")
@@ -1447,6 +1740,7 @@ def gate(c, issue, gate, approve=False, reject=False, local=False, tenant=""):
         f"python -m scripts.gate_decision {issue} --gate {gate} {decision}",
         local=local,
         tenant=tenant,
+        context=context,
     )
 
 
@@ -1456,12 +1750,19 @@ def gate(c, issue, gate, approve=False, reject=False, local=False, tenant=""):
         "repo": "Scope the intake retry to one repository when the issue fanned out to several.",
         "local": "Run on the host instead of the activity worker pod.",
         "tenant": _TENANT_HELP,
+        "context": _CONTEXT_HELP,
     }
 )
-def restart(c, issue, repo="", local=False, tenant=""):
+def restart(c, issue, repo="", local=False, tenant="", context=""):
     """Abandon a parked workflow and re-trigger intake for a fresh execution."""
     repo_flag = f" --repo {repo}" if repo else ""
-    _run_scripted(c, f"python -m scripts.restart {issue}{repo_flag}", local=local, tenant=tenant)
+    _run_scripted(
+        c,
+        f"python -m scripts.restart {issue}{repo_flag}",
+        local=local,
+        tenant=tenant,
+        context=context,
+    )
 
 
 @task(
@@ -1535,6 +1836,7 @@ def demo_repo_intelligence(c, repo="agentic-demo-service", commit="", focus="Tas
         "full_pipeline": "Run CI, reviews, scan, policy, and the approval pause on Temporal.",
         "ci_job": "CI job for the full pipeline (empty uses <repo>-ci).",
         "await_pr_close": "After promotion, park for the PR-closed signal and finish on close.",
+        "tenant": _TENANT_HELP,
     }
 )
 def demo_draft_pr(
@@ -1548,6 +1850,7 @@ def demo_draft_pr(
     full_pipeline=False,
     ci_job="",
     await_pr_close=False,
+    tenant="",
 ):
     """Demo: open a real draft PR on GitHub through the full coordination stack (Act 4)."""
     flags = f"--repo {repo} --task {task}"
@@ -1558,7 +1861,11 @@ def demo_draft_pr(
     flags += " --full-pipeline" if full_pipeline else ""
     flags += f" --ci-job {ci_job}" if ci_job else ""
     flags += " --await-pr-close" if await_pr_close else ""
-    c.run(f"{HOST_PYTHON} -m scripts.demo_draft_pr {flags}".strip(), pty=True)
+    c.run(
+        f"{HOST_PYTHON} -m scripts.demo_draft_pr {flags}".strip(),
+        pty=True,
+        env=_tenant_env(tenant),
+    )
 
 
 @task(
@@ -1615,12 +1922,12 @@ def webhook_teardown(c, repo=""):
 
 @task(
     help={
-        "scope": "platform for config/<env>/image_exceptions.yaml, tenant for the tenant's file.",
+        "scope": "platform for config/local/image_exceptions.yaml, tenant for the tenant's file.",
         "image": "The image as repository@sha256:digest.",
         "finding": "The finding ID, such as a CVE.",
         "reason": "Why the finding is accepted.",
         "expires": "The last day the entry applies, YYYY-MM-DD, within 30 days.",
-        "tenant": "Tenant name for the tenant scope. Defaults to TENANT.",
+        "tenant": "Tenant for the tenant scope. It may be omitted when one local tenant exists.",
         "requester": "Who requests the entry. Defaults to the operating system user.",
         "approver": "Who approves a platform entry.",
     }
@@ -1632,19 +1939,22 @@ def image_exceptions_add(
     flags = f" --scope {shlex.quote(scope)} --image {shlex.quote(image)}"
     flags += f" --finding {shlex.quote(finding)} --reason {shlex.quote(reason)}"
     flags += f" --expires {shlex.quote(expires)}"
-    for name, value in (("tenant", tenant), ("requester", requester), ("approver", approver)):
-        flags += f" --{name} {shlex.quote(value)}" if value else ""
+    if scope == "tenant":
+        tenant = _tenant(tenant)
+    flags += _optional_flags({"tenant": tenant, "requester": requester, "approver": approver})
     c.run(f"{HOST_PYTHON} -m scripts.image_exceptions add --local{flags}", pty=True)
 
 
 @task(
     help={
-        "scope": "platform for config/<env>/image_exceptions.yaml, tenant for the tenant's file.",
-        "tenant": "Tenant name for the tenant scope. Defaults to TENANT.",
+        "scope": "platform for config/local/image_exceptions.yaml, tenant for the tenant's file.",
+        "tenant": "Tenant for the tenant scope. It may be omitted when one local tenant exists.",
     }
 )
 def image_exceptions_prune(c, scope, tenant=""):
     """Remove the expired entries from a local image exceptions file."""
+    if scope == "tenant":
+        tenant = _tenant(tenant)
     flags = f" --scope {shlex.quote(scope)}"
     flags += f" --tenant {shlex.quote(tenant)}" if tenant else ""
     c.run(f"{HOST_PYTHON} -m scripts.image_exceptions prune --local{flags}", pty=True)
@@ -1710,6 +2020,7 @@ for _t in (
     test,
     ci,
     workflow_status,
+    resume_parked,
     durability_proof,
     prune_worker_versions,
     sast,
@@ -1725,9 +2036,12 @@ for _t in (
     temporal_certs,
     clickhouse_certs,
     webhook_certs,
+    slack_poster_certs,
     mcp_gateway_certs,
     eks_deploy,
+    deployment_validate,
     tenant_verify_aws,
+    eks_api,
     langfuse_ui,
     temporal_deploy,
     platform_deploy,
@@ -1749,11 +2063,15 @@ for _t in (
     k8s_delete,
     k8s_reload,
     aws_login,
+    local_renew,
+    local_renew_install,
+    local_renew_uninstall,
     repos_sync,
     gate_engine_images,
     runtime_images,
     tenant_config_validate,
     tenant_config_publish,
+    tenant_config_claims,
     fetch_results,
     webhook_setup,
     webhook_teardown,

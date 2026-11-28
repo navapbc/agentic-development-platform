@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
+from collections.abc import Callable
+from dataclasses import replace
+from datetime import timedelta
+from typing import Any
 
 import pytest
 from openhands.runtime.caps import COMPLETED
@@ -12,6 +17,8 @@ from services.coordination.sequencing import (
     InMemorySequenceGate,
     SequencedAction,
 )
+from services.integration.slack.tokens import ActionToken
+from services.operator_remedy import StepKind
 from services.orchestration.branch_sync import FAST_FORWARD
 from services.orchestration.gates.contract import (
     GateContext,
@@ -34,6 +41,8 @@ from services.orchestration.temporal_activities.branch_sync import (
     RecheckResult,
     ResolveRequest,
     ResolveResult,
+    ResyncRequest,
+    ResyncResult,
     SyncRequest,
     SyncResult,
 )
@@ -67,6 +76,17 @@ from services.orchestration.temporal_activities.implementation import (
     ResetCoordinationRequest,
     ResetCoordinationResult,
 )
+from services.orchestration.temporal_activities.limits import (
+    PeriodAlertThread,
+    RunLimits,
+    RunLimitsRequest,
+    TenantBudgetRequest,
+    TenantBudgetState,
+)
+from services.orchestration.temporal_activities.lockfile import (
+    DependencyStepRequest,
+    DependencyStepResult,
+)
 from services.orchestration.temporal_activities.manifest import RecordManifestRequest
 from services.orchestration.temporal_activities.model_access import (
     DeleteRunModelKeyRequest,
@@ -75,6 +95,10 @@ from services.orchestration.temporal_activities.model_access import (
 from services.orchestration.temporal_activities.notify import (
     AlertHumanInterventionRequest,
     AlertHumanInterventionResult,
+    ParkPost,
+    RefreshParkButtonsRequest,
+    RefreshParkButtonsResult,
+    SettleParkPostsRequest,
 )
 from services.orchestration.temporal_activities.persistence import (
     AuditEvent,
@@ -143,19 +167,24 @@ from services.orchestration.temporal_workflows.draft_pull_request import (
     DEPENDENCY_CYCLE,
     DEPENDENCY_UNRESOLVED,
     EXISTING_PR_REUSED,
+    HUMAN_ABANDONED,
     PLAN_REJECTED,
     POLICY_DENIED,
     PR_PROMOTED,
     PROMOTION_CANCELLED,
     REVIEW_BLOCKED,
+    RUN_FAILED,
     DraftPullRequestInput,
     DraftPullRequestOutput,
     DraftPullRequestWorkflow,
+    ParkDecisionOutcome,
 )
 from services.orchestration.temporal_workflows.implementation import ImplementationWorkflow
 from services.orchestration.temporal_workflows.pull_request import PullRequestWorkflow
 from services.orchestration.temporal_workflows.review import PlanReviewWorkflow
+from sqlalchemy import String
 from temporalio import activity, workflow
+from temporalio.client import WorkflowUpdateFailedError
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 from temporalio.worker.workflow_sandbox import SandboxedWorkflowRunner, SandboxRestrictions
@@ -198,6 +227,11 @@ def _make_activities(
     scan_blocking_findings: int = 0,
     scan_result_findings: list[ScanFindingRecord] | None = None,
     scan_result_severity_counts: dict[str, int] | None = None,
+    run_limits: RunLimits | None = None,
+    limit_reads: list[RunLimitsRequest] | None = None,
+    tenant_budget: dict[str, Any] | None = None,
+    budget_reads: list[TenantBudgetRequest] | None = None,
+    period_thread: PeriodAlertThread | None = None,
     scan_change_raises: bool = False,
     policy_requests: list[EvaluatePromotionRequest] | None = None,
     policy_allow: bool = True,
@@ -223,6 +257,11 @@ def _make_activities(
     persisted_states: list[ExecutionState] | None = None,
     audit_events: list[AuditEvent] | None = None,
     claim_finalizations: list[FinalizeClaimRequest] | None = None,
+    commit_results: list[CommitPushResult] | None = None,
+    dependency_requests: list[DependencyStepRequest] | None = None,
+    dependency_results: list[DependencyStepResult] | None = None,
+    resync_requests: list[ResyncRequest] | None = None,
+    resync_results: list[ResyncResult] | None = None,
 ):
     @activity.defn(name="persist_execution_state")
     async def fake_persist(payload: ExecutionState) -> str:
@@ -313,9 +352,27 @@ def _make_activities(
             )
         return RecheckResult(category="", requires_pause=False)
 
+    @activity.defn(name="resync_branch")
+    async def fake_resync(req: ResyncRequest) -> ResyncResult:
+        requested = resync_requests if resync_requests is not None else []
+        requested.append(req)
+        if not resync_results:
+            return ResyncResult(status="current", base_head="b" * 40)
+        return resync_results[min(len(requested) - 1, len(resync_results) - 1)]
+
+    @activity.defn(name="prepare_dependencies")
+    async def fake_prepare_dependencies(req: DependencyStepRequest) -> DependencyStepResult:
+        requested = dependency_requests if dependency_requests is not None else []
+        requested.append(req)
+        if not dependency_results:
+            return DependencyStepResult()
+        return dependency_results[min(len(requested) - 1, len(dependency_results) - 1)]
+
     @activity.defn(name="commit_and_push")
     async def fake_commit(req: CommitPushRequest) -> CommitPushResult:
         commits.append(req)
+        if commit_results:
+            return commit_results[min(len(commits) - 1, len(commit_results) - 1)]
         sha = "c" * 40
         if commit_shas:
             sha = commit_shas[min(len(commits) - 1, len(commit_shas) - 1)]
@@ -434,6 +491,24 @@ def _make_activities(
             finalized=True,
             state="completed" if req.completed else "released",
         )
+
+    @activity.defn(name="read_run_limits")
+    async def fake_read_run_limits(req: RunLimitsRequest) -> RunLimits:
+        if limit_reads is not None:
+            limit_reads.append(req)
+        return run_limits or req.configured
+
+    @activity.defn(name="read_tenant_budget")
+    async def fake_read_tenant_budget(req: TenantBudgetRequest) -> TenantBudgetState:
+        if budget_reads is not None:
+            budget_reads.append(req)
+        if tenant_budget is None or not tenant_budget.get("spent"):
+            return TenantBudgetState(spent=False)
+        return TenantBudgetState(spent=True, usage="100 of 100 USD", spend=100.0)
+
+    @activity.defn(name="period_alert_thread")
+    async def fake_period_alert_thread(req: TenantBudgetRequest) -> PeriodAlertThread:
+        return period_thread or PeriodAlertThread(reason="no period alert in this test")
 
     @activity.defn(name="delete_run_model_key")
     async def fake_delete_run_model_key(req: DeleteRunModelKeyRequest) -> DeleteRunModelKeyResult:
@@ -601,6 +676,8 @@ def _make_activities(
         fake_sync,
         fake_resolve,
         fake_recheck,
+        fake_prepare_dependencies,
+        fake_resync,
         fake_commit,
         fake_create_pr,
         fake_link,
@@ -617,6 +694,9 @@ def _make_activities(
         fake_reset,
         fake_finalize,
         fake_delete_run_model_key,
+        fake_read_run_limits,
+        fake_read_tenant_budget,
+        fake_period_alert_thread,
         fake_load_gate_plan,
         fake_evaluate_gate,
         fake_invoke_model,
@@ -933,6 +1013,90 @@ async def test_dependency_detected_parks_then_resumes_and_completes():
     assert calls["detect"] == 2
     assert calls["link"] == 1
     assert calls["recapture"] == 1
+
+
+async def test_a_replanned_plan_gate_records_each_decision_under_its_own_park():
+    from dataclasses import replace
+
+    audits: list[AuditEvent] = []
+    activities = _make_activities(
+        None, 1, [], [], [], ci_result=SUCCESS, plan_pause=True, audit_events=audits
+    )
+    detections = iter(
+        [
+            DetectDependencyResult(
+                detected=True,
+                active=True,
+                blocking_task_id="T-2",
+                blocking_execution_id="exec-2",
+                reason="file_overlap",
+                overlap=["feature.py"],
+            )
+        ]
+    )
+
+    @activity.defn(name="detect_dependency")
+    async def fake_detect(req: DetectDependencyRequest) -> DetectDependencyResult:
+        return next(detections, DetectDependencyResult(detected=False, active=True))
+
+    @activity.defn(name="record_dependency_link")
+    async def fake_link(req: RecordDependencyLinkRequest) -> RecordDependencyLinkResult:
+        return RecordDependencyLinkResult(linked=True, detail=req.blocking_issue_key)
+
+    @activity.defn(name="signal_dependency_ready")
+    async def fake_signal(req: SignalDependencyReadyRequest) -> SignalDependencyReadyResult:
+        return SignalDependencyReadyResult(0)
+
+    @activity.defn(name="capture_base_head")
+    async def fake_capture(req: CaptureBaseHeadRequest) -> CaptureBaseHeadResult:
+        return CaptureBaseHeadResult(base_sha="b" * 40)
+
+    @activity.defn(name="check_dependency_cycle")
+    async def fake_cycle(req: CheckDependencyCycleRequest) -> CheckDependencyCycleResult:
+        return CheckDependencyCycleResult(is_cycle=False)
+
+    activities = [*activities, fake_detect, fake_link, fake_signal, fake_capture, fake_cycle]
+    workflow_input = replace(
+        _ci_input(run_reviews=True, run_planning=True), run_dependency_detection=True
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                workflow_input,
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+            first_key = await _await_park_key(handle, "plan")
+            await handle.execute_update(
+                "apply_gate_decision", args=[first_key, True, "slack:E1/U-FIRST"]
+            )
+            for _ in range(80):
+                state = await handle.query(DraftPullRequestWorkflow.suspension_state)
+                if state.get("reason") == SuspendReason.AWAITING_DEPENDENCY.value:
+                    break
+                await asyncio.sleep(0.05)
+            await handle.signal(RESUME_SIGNAL, ResumeOn.DEPENDENCY_READY.value)
+            second_key = await _await_park_key(handle, "plan")
+            await handle.execute_update(
+                "apply_gate_decision", args=[second_key, True, "slack:E1/U-SECOND"]
+            )
+            result = await handle.result()
+
+    assert result.status == PR_PROMOTED
+    assert first_key != second_key
+    decisions = {decision.event_id: decision.actor_id for decision in _decisions(audits)}
+    first, second = (
+        ActionToken("alpha", "exec-1", "wf", key, "gate", ("approve",), 0).decision_event_id
+        for key in (first_key, second_key)
+    )
+    assert first != second
+    assert (decisions.get(first), decisions.get(second)) == (
+        "slack:E1/U-FIRST",
+        "slack:E1/U-SECOND",
+    )
 
 
 async def test_dependency_cycle_fails_the_run():
@@ -1401,7 +1565,7 @@ async def test_triage_environment_verdict_escalates_to_human():
     assert result.status == CI_FAILED
     assert result.terminal_reason == "human_abandoned"
     assert len(repairs) == 0
-    assert len(alerts) == 1
+    assert len(alerts) == 2
 
 
 async def _await_human_park(handle) -> dict[str, str]:
@@ -1417,6 +1581,20 @@ async def _await_human_park(handle) -> dict[str, str]:
     return state
 
 
+async def _await_limit_park(handle, previous_key: str = "") -> dict[str, str]:
+    state: dict[str, str] = {}
+    for _ in range(200):
+        state = await handle.query(DraftPullRequestWorkflow.suspension_state)
+        key = state.get("park_key", "")
+        if state.get("reason") == SuspendReason.LIMIT_REACHED.value and key not in (
+            "",
+            previous_key,
+        ):
+            return state
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"no limit park: {state}")
+
+
 async def _await_human_park_stage(handle, stage: str) -> dict[str, str]:
     state: dict[str, str] = {}
     for _ in range(50):
@@ -1428,6 +1606,20 @@ async def _await_human_park_stage(handle, stage: str) -> dict[str, str]:
             return state
         await asyncio.sleep(0.05)
     return state
+
+
+async def _await_park(handle, matches) -> dict[str, str]:
+    """Wait until the run is parked on a decision `matches` accepts.
+
+    A decision signal that reaches a run before its park exists is dropped, so a test that sends
+    one on a fixed time bound fails on a slow runner.
+    """
+    async with asyncio.timeout(60):
+        while True:
+            state = await handle.query(DraftPullRequestWorkflow.suspension_state)
+            if state.get("reason") == SuspendReason.AWAITING_HUMAN.value and matches(state):
+                return state
+            await asyncio.sleep(0.05)
 
 
 async def _await_ci_park(handle) -> dict[str, str]:
@@ -1480,9 +1672,15 @@ async def test_ci_repair_exhausted_parks_for_human_and_abandons():
     assert result.repair_attempts == 2
     assert len(repairs) == 2
     assert len(ci_triggers) == 3
-    assert len(alerts) == 1
+    assert len(alerts) == 2
     assert alerts[0].reason == "repair_exhausted"
     assert alerts[0].stage == "repair"
+    assert (alerts[1].reason, alerts[1].stage, alerts[1].park_key) == (
+        "human_abandoned",
+        "repair",
+        "",
+    )
+    assert [step.kind for step in alerts[1].remedy.actions] == [StepKind.RESTART_RUN]
 
 
 async def test_ci_repair_stops_on_cumulative_budget():
@@ -1515,8 +1713,8 @@ async def test_ci_repair_stops_on_cumulative_budget():
                 id=f"wf-{uuid.uuid4().hex[:8]}",
                 task_queue=task_queue,
             )
-            state = await _await_human_park(handle)
-            assert state["reason"] == SuspendReason.AWAITING_HUMAN.value
+            state = await _await_limit_park(handle)
+            assert state["reason"] == SuspendReason.LIMIT_REACHED.value
             assert state["stage"] == "repair"
             await handle.signal("submit_repair_decision", args=[False, "release-manager"])
             result = await handle.result()
@@ -1526,7 +1724,7 @@ async def test_ci_repair_stops_on_cumulative_budget():
     repair_usage = [record for record in usage if record.stage == "REPAIRING"]
     assert len(repair_usage) == 3
     assert [round(record.cost_usd, 2) for record in repair_usage] == [0.1, 0.2, 0.3]
-    assert len(alerts) == 1
+    assert len(alerts) == 2
     assert alerts[0].reason == "cost_budget_exceeded"
     assert alerts[0].stage == "repair"
 
@@ -1568,7 +1766,7 @@ async def test_repair_usage_records_carry_the_running_total():
                 id=f"wf-{uuid.uuid4().hex[:8]}",
                 task_queue=task_queue,
             )
-            state = await _await_human_park(handle)
+            state = await _await_limit_park(handle)
             assert state["stage"] == "repair"
             await handle.signal("submit_repair_decision", args=[False, "release-manager"])
             await handle.result()
@@ -1620,6 +1818,177 @@ async def test_ci_repair_retry_decision_reruns_and_passes():
     assert len(alerts) == 1
 
 
+_NEW_BASE = "d" * 40
+
+
+async def _retry_once(**overrides) -> tuple[Any, dict[str, list]]:
+    """Exhaust one repair, press Retry repair, and answer each later repair park with Retry."""
+    recorded: dict[str, list] = {
+        "commits": [],
+        "resyncs": [],
+        "dependencies": [],
+        "alerts": [],
+    }
+    decisions = overrides.pop("decisions", [True])
+    activities = _make_activities(
+        None,
+        1,
+        recorded["commits"],
+        [],
+        [],
+        ci_results=[FAILURE, FAILURE, SUCCESS],
+        repairs=[],
+        alerts=recorded["alerts"],
+        resync_requests=recorded["resyncs"],
+        dependency_requests=recorded["dependencies"],
+        **overrides,
+    )
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(max_repair_attempts=1),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+            answered: set[str] = set()
+            for retry in decisions:
+                state = await _await_park(
+                    handle,
+                    lambda s: s.get("stage") == "repair" and s.get("park_key") not in answered,
+                )
+                answered.add(state["park_key"])
+                await handle.signal("submit_repair_decision", args=[retry, "lead"])
+            result = await handle.result()
+    return result, recorded
+
+
+async def test_a_retry_after_the_base_moved_commits_the_branch_onto_it_before_the_checks():
+    result, recorded = await _retry_once(
+        resync_results=[ResyncResult(status="merged", base_head=_NEW_BASE)]
+    )
+
+    assert result.status == PR_PROMOTED
+    resync = recorded["commits"][2]
+    assert (resync.commit, resync.sequence) == (_NEW_BASE, 107)
+    assert recorded["resyncs"][0].commit == "c" * 40
+    assert recorded["dependencies"][2].base_ref == _NEW_BASE
+
+
+async def test_a_run_moved_onto_a_newer_build_gates_the_commits_it_makes_there(monkeypatch):
+    from temporalio.worker import UnsandboxedWorkflowRunner
+
+    commits: list[CommitPushRequest] = []
+    dependencies: list[DependencyStepRequest] = []
+    resyncs: list = []
+    activities = _make_activities(
+        None,
+        1,
+        commits,
+        [],
+        [],
+        ci_results=[FAILURE, FAILURE, SUCCESS],
+        repairs=[],
+        resync_requests=resyncs,
+        dependency_requests=dependencies,
+        resync_results=[ResyncResult(status="merged", base_head=_NEW_BASE)],
+    )
+    children = [ImplementationWorkflow, BranchSyncWorkflow, PullRequestWorkflow, PlanReviewWorkflow]
+    patched = workflow.patched
+    new_patches = ("commit-gates-", "retry-resync-")
+
+    def worker(env, task_queue):
+        return Worker(
+            env.client,
+            task_queue=task_queue,
+            workflows=[DraftPullRequestWorkflow, *children],
+            workflow_runner=UnsandboxedWorkflowRunner(),
+            activities=activities,
+            max_cached_workflows=0,
+        )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        with monkeypatch.context() as old_build:
+            old_build.setattr(
+                workflow,
+                "patched",
+                lambda name: not name.startswith(new_patches) and patched(name),
+            )
+            async with worker(env, task_queue):
+                handle = await env.client.start_workflow(
+                    DraftPullRequestWorkflow.run,
+                    _ci_input(max_repair_attempts=1),
+                    id=f"wf-{uuid.uuid4().hex[:8]}",
+                    task_queue=task_queue,
+                )
+                await _await_park(handle, lambda s: s.get("stage") == "repair")
+        async with worker(env, task_queue):
+            await handle.signal("submit_repair_decision", args=[True, "lead"])
+            result = await handle.result()
+
+    assert result.status == PR_PROMOTED
+    assert [c.guard_workflow_files for c in commits] == [False, False, True]
+    assert [d.commit for d in dependencies] == [_NEW_BASE]
+    assert len(resyncs) == 1
+
+
+async def test_a_recorded_run_replays_on_the_workflows_and_sandbox_a_repin_checks_with():
+    from services.orchestration.workflow_registry import WORKFLOWS, workflow_runner
+    from temporalio.worker import Replayer
+
+    activities = _make_activities(None, 1, [], [], [], ci_result=SUCCESS)
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(run_reviews=True),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+            await handle.result()
+            history = await handle.fetch_history()
+
+    replayer = Replayer(workflows=WORKFLOWS, workflow_runner=workflow_runner())
+    replayed = await replayer.replay_workflow(history, raise_on_replay_failure=False)
+
+    assert replayed.replay_failure is None
+
+
+async def test_a_retry_with_an_unchanged_base_commits_nothing_new():
+    result, recorded = await _retry_once()
+
+    assert result.status == PR_PROMOTED
+    assert len(recorded["commits"]) == 2
+    assert len(recorded["resyncs"]) == 1
+
+
+async def test_a_re_sync_conflict_parks_for_retry_and_retry_syncs_again():
+    conflict = ResyncResult(status="conflicts", base_head=_NEW_BASE, conflicts=["shared.py"])
+    merged = ResyncResult(status="merged", base_head=_NEW_BASE)
+    result, recorded = await _retry_once(resync_results=[conflict, merged], decisions=[True, True])
+
+    assert result.status == PR_PROMOTED
+    assert len(recorded["resyncs"]) == 2
+    parked = [a for a in recorded["alerts"] if a.stage == "repair"]
+    assert "shared.py" in parked[1].detail
+    assert {step.kind for step in parked[1].remedy.actions} == {
+        StepKind.RETRY_REPAIR,
+        StepKind.ABANDON_REPAIR,
+    }
+
+
+async def test_abandoning_a_re_sync_conflict_ends_the_run_without_a_commit():
+    conflict = ResyncResult(status="conflicts", base_head=_NEW_BASE, conflicts=["shared.py"])
+    result, recorded = await _retry_once(resync_results=[conflict], decisions=[True, False])
+
+    assert result.terminal_reason == HUMAN_ABANDONED
+    assert len(recorded["commits"]) == 2
+
+
 async def test_ci_failure_unactionable_parks_for_human():
     commits: list[CommitPushRequest] = []
     pr_opens: list[OpenPrRequest] = []
@@ -1659,7 +2028,7 @@ async def test_ci_failure_unactionable_parks_for_human():
     assert result.repair_attempts == 0
     assert len(repairs) == 0
     assert len(ci_triggers) == 1
-    assert len(alerts) == 1
+    assert len(alerts) == 2
 
 
 async def test_ci_pass_flows_through_review_gates_with_attestations():
@@ -1700,6 +2069,47 @@ async def test_ci_pass_flows_through_review_gates_with_attestations():
     assert len(review_requests) == 3
     assert review_requests[0].ref == "c" * 40
     assert review_requests[0].repo_root == "/tmp/ws/agent-T-1"
+
+
+async def test_review_gates_run_on_the_review_queue_the_intake_named():
+    from dataclasses import replace
+
+    review_queue = "agent-platform-review-beta"
+    reviewed: list[tuple[str, str]] = []
+
+    @activity.defn(name="evaluate_gate")
+    async def review_worker_evaluate_gate(req: EvaluateGateRequest) -> GateResult:
+        reviewed.append((req.gate, activity.info().task_queue))
+        return GateResult(
+            name=req.gate,
+            kind="review",
+            verdict="pass",
+            attestation_hash=f"sha256:{req.gate}",
+            summary="reviewed",
+            metadata={"model_id": "review-model", "prompt_version": f"{req.gate}/v1"},
+        )
+
+    activities = _make_activities(None, 1, [], [], [], ci_result=SUCCESS)
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        review_worker = Worker(
+            env.client, task_queue=review_queue, activities=[review_worker_evaluate_gate]
+        )
+        async with await _start_ci_worker(env, task_queue, activities), review_worker:
+            result = await env.client.execute_workflow(
+                DraftPullRequestWorkflow.run,
+                replace(_ci_input(run_reviews=True), review_task_queue=review_queue),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+
+    assert result.review_status == "passed"
+    assert sorted(reviewed) == [
+        ("acceptance", review_queue),
+        ("code-review", review_queue),
+        ("security-review", review_queue),
+    ]
 
 
 async def test_review_blocking_finding_stops_before_policy_gate():
@@ -1794,6 +2204,8 @@ async def test_review_pause_for_human_parks_then_approve_proceeds():
     assert result.review_status == "passed"
     assert alerts[0].reason == "gate_paused:security-review"
     assert alerts[0].stage == "review"
+    assert "security-review: reviewed\n- security-review blocking finding" in alerts[0].detail
+    assert "each gate's findings in this alert" in _remedy_text(alerts[0])
 
 
 async def test_review_pause_for_human_reject_blocks():
@@ -1948,6 +2360,7 @@ async def test_plan_human_gate_parks_then_approve_continues():
     pr_opens: list[OpenPrRequest] = []
     linkbacks: list[LinkbackRequest] = []
     plan_evidence: list[PlanEvidenceRequest] = []
+    alerts: list[AlertHumanInterventionRequest] = []
     activities = _make_activities(
         None,
         1,
@@ -1957,6 +2370,7 @@ async def test_plan_human_gate_parks_then_approve_continues():
         ci_result=SUCCESS,
         plan_pause=True,
         plan_evidence=plan_evidence,
+        alerts=alerts,
     )
 
     async with await WorkflowEnvironment.start_time_skipping() as env:
@@ -1977,6 +2391,9 @@ async def test_plan_human_gate_parks_then_approve_continues():
     assert len(plan_evidence) == 1
     assert plan_evidence[0].plan
     assert plan_evidence[0].verdict == "pass"
+    [parked] = [alert for alert in alerts if alert.stage == "plan"]
+    assert parked.detail == f"plan approval requested\n\n{plan_evidence[0].plan}"
+    assert "the plan in this alert" in _remedy_text(parked)
 
 
 async def test_plan_human_gate_reject_stops_the_run():
@@ -1984,6 +2401,7 @@ async def test_plan_human_gate_reject_stops_the_run():
     pr_opens: list[OpenPrRequest] = []
     linkbacks: list[LinkbackRequest] = []
     plan_evidence: list[PlanEvidenceRequest] = []
+    persisted: list[ExecutionState] = []
     activities = _make_activities(
         None,
         1,
@@ -1993,6 +2411,7 @@ async def test_plan_human_gate_reject_stops_the_run():
         ci_result=SUCCESS,
         plan_pause=True,
         plan_evidence=plan_evidence,
+        persisted_states=persisted,
     )
 
     async with await WorkflowEnvironment.start_time_skipping() as env:
@@ -2011,6 +2430,7 @@ async def test_plan_human_gate_reject_stops_the_run():
     assert result.status == PLAN_REJECTED
     assert result.plan_status == "rejected"
     assert plan_evidence == []
+    assert persisted[-1].state == "CANCELLED"
 
 
 async def test_plan_human_gate_is_inert_by_default():
@@ -2166,6 +2586,7 @@ async def test_plan_rejected_stops_before_implementation():
     linkbacks: list[LinkbackRequest] = []
     impl_requests: list[ImplementationRequest] = []
     alerts: list[AlertHumanInterventionRequest] = []
+    persisted: list[ExecutionState] = []
     activities = _make_activities(
         None,
         1,
@@ -2176,6 +2597,7 @@ async def test_plan_rejected_stops_before_implementation():
         plan_verdict="block",
         impl_requests=impl_requests,
         alerts=alerts,
+        persisted_states=persisted,
     )
 
     async with await WorkflowEnvironment.start_time_skipping() as env:
@@ -2195,6 +2617,7 @@ async def test_plan_rejected_stops_before_implementation():
     assert len(alerts) == 1
     assert alerts[0].reason == PLAN_REJECTED
     assert alerts[0].stage == "plan"
+    assert persisted[-1].state == "CANCELLED"
 
 
 async def test_planning_and_coding_pin_one_ris_commit():
@@ -3159,7 +3582,8 @@ async def test_a_repair_refused_for_the_run_budget_alerts_with_the_budget_reason
 
     assert len(repairs) == 1
     assert [(alert.reason, alert.stage) for alert in alerts] == [
-        (RUN_MODEL_BUDGET_EXCEEDED, "repair")
+        (RUN_MODEL_BUDGET_EXCEEDED, "repair"),
+        ("human_abandoned", "repair"),
     ]
     assert result.terminal_reason == "human_abandoned"
 
@@ -3345,3 +3769,1869 @@ async def test_a_run_parked_on_a_code_defect_before_the_alert_replays_without_it
         workflows=[DefectOnceDraftPr, *children], workflow_runner=UnsandboxedWorkflowRunner()
     ).replay_workflow(history, raise_on_replay_failure=False)
     assert replayed.replay_failure is None
+
+
+_CHILD_WORKFLOWS = [
+    ImplementationWorkflow,
+    BranchSyncWorkflow,
+    PullRequestWorkflow,
+    PlanReviewWorkflow,
+]
+
+
+@workflow.defn(name="DraftPullRequestWorkflow")
+class _PreParkKeyDraftPr(DraftPullRequestWorkflow):
+    """The workflow as it ran before parks carried a decision key."""
+
+    @workflow.run
+    async def run(self, params: DraftPullRequestInput) -> DraftPullRequestOutput:
+        return await super().run(params)
+
+    def _park_keys_enabled(self) -> bool:
+        return False
+
+
+def _unsandboxed_worker(env, task_queue: str, activities, workflow_class):
+    from temporalio.worker import UnsandboxedWorkflowRunner
+
+    return Worker(
+        env.client,
+        task_queue=task_queue,
+        workflows=[workflow_class, *_CHILD_WORKFLOWS],
+        workflow_runner=UnsandboxedWorkflowRunner(),
+        activities=activities,
+        max_cached_workflows=0,
+    )
+
+
+async def _await_park_key(handle, stage: str) -> str:
+    state: dict = {}
+    for _ in range(100):
+        state = await handle.query(DraftPullRequestWorkflow.suspension_state)
+        if (
+            state.get("reason") == SuspendReason.AWAITING_HUMAN.value
+            and state.get("stage") == stage
+            and state.get("park_key")
+        ):
+            return state["park_key"]
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"no keyed park at {stage}: {state}")
+
+
+def _decisions(audits: list[AuditEvent]) -> list[AuditEvent]:
+    return [event for event in audits if event.event_type == "HUMAN_INTERVENTION_DECISION"]
+
+
+@pytest.mark.parametrize(
+    ("stage", "options", "workflow_input", "signal", "unkeyed_subject"),
+    [
+        (
+            "review",
+            {
+                "ci_result": SUCCESS,
+                "security_verdict": "block",
+                "review_on_block": {"security-review": "pause_for_human"},
+            },
+            {"run_reviews": True},
+            ("submit_gate_decision", ["security-review", True, "security-lead"]),
+            "review:security-review",
+        ),
+        (
+            "repair",
+            {"ci_results": [FAILURE, FAILURE, SUCCESS]},
+            {"max_repair_attempts": 1},
+            ("submit_repair_decision", [True, "release-manager"]),
+            "1",
+        ),
+    ],
+)
+async def test_a_park_recorded_before_park_keys_continues_on_the_keyed_worker(
+    stage, options, workflow_input, signal, unkeyed_subject
+):
+    from temporalio.worker import Replayer, UnsandboxedWorkflowRunner
+
+    alerts: list[AlertHumanInterventionRequest] = []
+    audits: list[AuditEvent] = []
+    activities = _make_activities(
+        None, 1, [], [], [], alerts=alerts, audit_events=audits, **options
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        workflow_id = f"wf-{uuid.uuid4().hex[:8]}"
+        async with _unsandboxed_worker(env, task_queue, activities, _PreParkKeyDraftPr):
+            handle = await env.client.start_workflow(
+                "DraftPullRequestWorkflow",
+                _ci_input(**workflow_input),
+                id=workflow_id,
+                task_queue=task_queue,
+                result_type=DraftPullRequestOutput,
+            )
+            await _await_human_park_stage(handle, stage)
+        async with _unsandboxed_worker(env, task_queue, activities, DraftPullRequestWorkflow):
+            await handle.signal(signal[0], args=signal[1])
+            result = await handle.result()
+            history = await handle.fetch_history()
+
+    assert result.status == PR_PROMOTED
+    assert [alert.park_key for alert in alerts] == [""]
+    assert [
+        (event.event_id, event.actor_type, event.correlation_ids) for event in _decisions(audits)
+    ] == [(f"exec-1:HUMAN_INTERVENTION_DECISION:{unkeyed_subject}", None, {})]
+    replayed = await Replayer(
+        workflows=[DraftPullRequestWorkflow, *_CHILD_WORKFLOWS],
+        workflow_runner=UnsandboxedWorkflowRunner(),
+    ).replay_workflow(history, raise_on_replay_failure=False)
+    assert replayed.replay_failure is None
+
+
+async def test_a_gate_update_resolves_only_the_park_the_run_waits_on():
+    from temporalio.client import WorkflowUpdateFailedError
+
+    alerts: list[AlertHumanInterventionRequest] = []
+    audits: list[AuditEvent] = []
+    activities = _make_activities(
+        None,
+        1,
+        [],
+        [],
+        [],
+        ci_result=SUCCESS,
+        security_verdict="block",
+        review_on_block={"security-review": "pause_for_human"},
+        alerts=alerts,
+        audit_events=audits,
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(run_reviews=True),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+            with pytest.raises(WorkflowUpdateFailedError):
+                await handle.execute_update(
+                    "apply_gate_decision",
+                    args=["exec-1:review:security-review:1", True, "slack:E1/U1"],
+                )
+            park_key = await _await_park_key(handle, "review")
+            with pytest.raises(WorkflowUpdateFailedError):
+                await handle.execute_update(
+                    "apply_gate_decision", args=[f"{park_key}-stale", True, "slack:E1/U1"]
+                )
+            with pytest.raises(WorkflowUpdateFailedError):
+                await handle.execute_update(
+                    "apply_repair_decision", args=[park_key, True, "slack:E1/U1"]
+                )
+            outcome = await handle.execute_update(
+                "apply_gate_decision",
+                args=[park_key, True, "slack:E1/U1", "slack", "group:S0123456789"],
+                id=f"slack-decision:{park_key}",
+                result_type=ParkDecisionOutcome,
+            )
+            result = await handle.result()
+
+    assert result.status == PR_PROMOTED
+    assert [alert.park_key for alert in alerts] == [park_key]
+    assert outcome == ParkDecisionOutcome(
+        decision="approved", actor="slack:E1/U1", actor_type="slack", applied=True
+    )
+    [decision] = _decisions(audits)
+    assert (decision.decision, decision.actor_type, decision.actor_id) == (
+        "approved",
+        "slack",
+        "slack:E1/U1",
+    )
+    assert decision.correlation_ids == {
+        "park_key": park_key,
+        "approval_basis": "group:S0123456789",
+    }
+    token = ActionToken(
+        tenant="alpha",
+        execution_id="exec-1",
+        workflow_id="wf",
+        park_key=park_key,
+        kind="gate",
+        actions=("approve",),
+        expires_at=0,
+    )
+    assert token.decision_event_id == decision.event_id
+
+
+async def test_review_and_policy_parks_on_the_same_gate_get_distinct_keys():
+    from temporalio.client import WorkflowUpdateFailedError
+
+    alerts: list[AlertHumanInterventionRequest] = []
+    activities = _make_activities(
+        None,
+        1,
+        [],
+        [],
+        [],
+        ci_result=SUCCESS,
+        security_verdict="block",
+        review_on_block={"security-review": "pause_for_human"},
+        policy_allow=False,
+        policy_human_review=["gate_failed:security-review"],
+        alerts=alerts,
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(run_reviews=True, run_policy=True),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+            review_key = await _await_park_key(handle, "review")
+            await handle.execute_update(
+                "apply_gate_decision", args=[review_key, True, "slack:E1/U1"]
+            )
+            policy_key = await _await_park_key(handle, "policy")
+            with pytest.raises(WorkflowUpdateFailedError):
+                await handle.execute_update(
+                    "apply_gate_decision", args=[review_key, True, "slack:E1/U1"]
+                )
+            await handle.execute_update(
+                "apply_gate_decision", args=[policy_key, True, "slack:E1/U1"]
+            )
+            result = await handle.result()
+
+    assert review_key != policy_key
+    assert result.status == PR_PROMOTED
+
+
+async def test_a_repair_update_for_an_earlier_park_is_rejected_after_the_run_reparks():
+    from temporalio.client import WorkflowUpdateFailedError
+
+    alerts: list[AlertHumanInterventionRequest] = []
+    activities = _make_activities(
+        None, 1, [], [], [], ci_results=[FAILURE, FAILURE, FAILURE, FAILURE], alerts=alerts
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(max_repair_attempts=1),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+            first_key = await _await_park_key(handle, "repair")
+            await handle.execute_update(
+                "apply_repair_decision", args=[first_key, True, "slack:E1/U1"]
+            )
+            second_key = first_key
+            for _ in range(100):
+                second_key = await _await_park_key(handle, "repair")
+                if second_key != first_key:
+                    break
+                await asyncio.sleep(0.05)
+            with pytest.raises(WorkflowUpdateFailedError):
+                await handle.execute_update(
+                    "apply_repair_decision", args=[first_key, False, "slack:E1/U1"]
+                )
+            update_id = f"slack-decision:{second_key}"
+            first, repeated = await asyncio.gather(
+                handle.execute_update(
+                    "apply_repair_decision",
+                    args=[second_key, False, "slack:E1/U2"],
+                    id=update_id,
+                    result_type=ParkDecisionOutcome,
+                ),
+                handle.execute_update(
+                    "apply_repair_decision",
+                    args=[second_key, False, "slack:E1/U2"],
+                    id=update_id,
+                    result_type=ParkDecisionOutcome,
+                ),
+            )
+            result = await handle.result()
+
+    assert second_key != first_key
+    assert [alert.park_key for alert in alerts] == [first_key, second_key, ""]
+    assert first == repeated
+    assert first.decision == "abandon"
+    assert result.terminal_reason == "human_abandoned"
+
+
+async def test_a_stray_wake_does_not_end_a_keyed_gate_park():
+    audits: list[AuditEvent] = []
+    activities = _make_activities(
+        None,
+        1,
+        [],
+        [],
+        [],
+        ci_result=SUCCESS,
+        security_verdict="block",
+        review_on_block={"security-review": "pause_for_human"},
+        audit_events=audits,
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(run_reviews=True),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+            park_key = await _await_park_key(handle, "review")
+            await handle.signal("submit_pr_approval", args=[True, "someone"])
+            await handle.signal("submit_repair_decision", args=[False, "release-manager"])
+            await asyncio.sleep(0.2)
+            assert await _await_park_key(handle, "review") == park_key
+            await handle.signal(
+                "submit_gate_decision", args=["security-review", True, "security-lead"]
+            )
+            result = await handle.result()
+
+    assert result.status == PR_PROMOTED
+    [decision] = _decisions(audits)
+    assert (decision.decision, decision.actor_type, decision.actor_id) == (
+        "approved",
+        "operator",
+        "security-lead",
+    )
+
+
+@pytest.mark.parametrize(
+    ("stage", "options", "workflow_input", "signal", "update", "earlier"),
+    [
+        (
+            "review",
+            {
+                "ci_result": SUCCESS,
+                "security_verdict": "block",
+                "review_on_block": {"security-review": "pause_for_human"},
+            },
+            {"run_reviews": True},
+            ("submit_gate_decision", ["security-review", True, "security-lead"]),
+            "apply_gate_decision",
+            ParkDecisionOutcome("approved", "security-lead", "operator", applied=False),
+        ),
+        (
+            "repair",
+            {"ci_results": [FAILURE, FAILURE, SUCCESS]},
+            {"max_repair_attempts": 1},
+            ("submit_repair_decision", [True, "release-manager"]),
+            "apply_repair_decision",
+            ParkDecisionOutcome("retry", "release-manager", "operator", applied=False),
+        ),
+    ],
+)
+async def test_an_update_that_meets_a_signalled_decision_returns_the_earlier_decision(
+    stage, options, workflow_input, signal, update, earlier
+):
+    audits: list[AuditEvent] = []
+    activities = _make_activities(None, 1, [], [], [], audit_events=audits, **options)
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with _unsandboxed_worker(env, task_queue, activities, DraftPullRequestWorkflow):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(**workflow_input),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+            park_key = await _await_park_key(handle, stage)
+        await handle.signal(signal[0], args=signal[1])
+        pending = asyncio.create_task(
+            handle.execute_update(
+                update, args=[park_key, False, "slack:E1/U1"], result_type=ParkDecisionOutcome
+            )
+        )
+        await asyncio.sleep(0.5)
+        async with _unsandboxed_worker(env, task_queue, activities, DraftPullRequestWorkflow):
+            outcome = await pending
+            await handle.result()
+
+    assert outcome == earlier
+    [decision] = _decisions(audits)
+    assert (decision.decision, decision.actor_id) == (earlier.decision, earlier.actor)
+
+
+async def test_audit_event_ids_for_a_long_policy_gate_list_fit_the_audit_column():
+    from dataclasses import replace
+
+    from database.models.schema import audit_events
+
+    gates = [
+        "gate_failed:security-review-extended",
+        "gate_failed:accessibility-conformance",
+        "gate_failed:dependency-license-audit",
+    ]
+    audits: list[AuditEvent] = []
+    activities = _make_activities(
+        None,
+        1,
+        [],
+        [],
+        [],
+        ci_result=SUCCESS,
+        policy_allow=False,
+        policy_human_review=gates,
+        audit_events=audits,
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                replace(
+                    _ci_input(run_reviews=True, run_policy=True), execution_id="intake-1a2b3c4d"
+                ),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+            park_key = await _await_park_key(handle, "policy")
+            await handle.execute_update("apply_gate_decision", args=[park_key, True, "slack:E1/U1"])
+            await handle.result()
+
+    longest = max(len(event.event_id) for event in audits)
+    column_type = audit_events.c.event_id.type
+    assert isinstance(column_type, String)
+    assert longest > 64
+    assert longest <= (column_type.length or 0)
+
+
+def _failing_plan_model(
+    activities: list[Callable[..., Any]], *, alert_raises: bool = False
+) -> list[Callable[..., Any]]:
+    from temporalio.exceptions import ApplicationError
+
+    @activity.defn(name="invoke_model")
+    async def failing_invoke_model(req: ModelRequest) -> ModelResponse:
+        raise ApplicationError(
+            "500 Internal Server Error", type="LiteLLMTransient", non_retryable=True
+        )
+
+    @activity.defn(name="alert_human_intervention")
+    async def failing_alert(req: AlertHumanInterventionRequest) -> AlertHumanInterventionResult:
+        raise ApplicationError("alert channels unreachable", non_retryable=True)
+
+    replaced: dict[str, Callable[..., Any]] = {"fake_invoke_model": failing_invoke_model}
+    if alert_raises:
+        replaced["fake_alert"] = failing_alert
+    return [replaced.get(fn.__name__, fn) for fn in activities]
+
+
+def _root_cause(error: BaseException) -> BaseException:
+    while error.__cause__ is not None:
+        error = error.__cause__
+    return error
+
+
+async def test_a_run_whose_plan_review_fails_is_recorded_failed_and_alerted():
+    from temporalio.client import WorkflowFailureError
+
+    alerts: list[AlertHumanInterventionRequest] = []
+    persisted: list[ExecutionState] = []
+    audits: list[AuditEvent] = []
+    finalizations: list[FinalizeClaimRequest] = []
+    activities = _failing_plan_model(
+        _make_activities(
+            None,
+            1,
+            [],
+            [],
+            [],
+            alerts=alerts,
+            persisted_states=persisted,
+            audit_events=audits,
+            claim_finalizations=finalizations,
+        )
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        workflow_id = f"wf-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            with pytest.raises(WorkflowFailureError) as failed:
+                await env.client.execute_workflow(
+                    DraftPullRequestWorkflow.run,
+                    _ci_input(run_planning=True),
+                    id=workflow_id,
+                    task_queue=task_queue,
+                )
+            history = await env.client.get_workflow_handle(workflow_id).fetch_history()
+
+    assert str(_root_cause(failed.value)) == "LiteLLMTransient: 500 Internal Server Error"
+    assert [(alert.reason, alert.stage) for alert in alerts] == [(RUN_FAILED, "plan")]
+    assert alerts[0].detail == "LiteLLMTransient: 500 Internal Server Error"
+    assert [(step.kind, step.issue_key) for step in alerts[0].remedy.actions] == [
+        ("restart_run", "T-1")
+    ]
+    assert (persisted[-1].state, persisted[-1].workflow_id) == ("FAILED", workflow_id)
+    failures = [event for event in audits if event.event_type == "RUN_FAILED"]
+    assert [(event.stage, event.new_state, event.reason) for event in failures] == [
+        ("plan", "FAILED", "LiteLLMTransient: 500 Internal Server Error")
+    ]
+    assert any("run-failed-alert" in marker for marker in _patch_markers(history))
+
+
+async def test_a_failed_run_alert_never_replaces_the_run_failure():
+    from temporalio.client import WorkflowFailureError
+
+    persisted: list[ExecutionState] = []
+    activities = _failing_plan_model(
+        _make_activities(None, 1, [], [], [], persisted_states=persisted), alert_raises=True
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            with pytest.raises(WorkflowFailureError) as failed:
+                await env.client.execute_workflow(
+                    DraftPullRequestWorkflow.run,
+                    _ci_input(run_planning=True),
+                    id=f"wf-{uuid.uuid4().hex[:8]}",
+                    task_queue=task_queue,
+                )
+
+    assert str(_root_cause(failed.value)) == "LiteLLMTransient: 500 Internal Server Error"
+    assert persisted[-1].state == "FAILED"
+
+
+@workflow.defn(name="DraftPullRequestWorkflow")
+class _PreRunFailedAlertDraftPr(DraftPullRequestWorkflow):
+    @workflow.run
+    async def run(self, params: DraftPullRequestInput) -> DraftPullRequestOutput:
+        try:
+            outcome = await self._orchestrate(params)
+        except Exception:
+            await self._finalize_claim(params)
+            raise
+        await self._finalize_claim(params)
+        return outcome
+
+
+async def test_a_run_failed_before_the_failure_alert_replays_without_it():
+    from temporalio.client import WorkflowFailureError
+    from temporalio.worker import Replayer, UnsandboxedWorkflowRunner
+
+    alerts: list[AlertHumanInterventionRequest] = []
+    activities = _failing_plan_model(_make_activities(None, 1, [], [], [], alerts=alerts))
+    children = [ImplementationWorkflow, BranchSyncWorkflow, PullRequestWorkflow, PlanReviewWorkflow]
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        workflow_id = f"wf-{uuid.uuid4().hex[:8]}"
+        async with Worker(
+            env.client,
+            task_queue=task_queue,
+            workflows=[_PreRunFailedAlertDraftPr, *children],
+            workflow_runner=UnsandboxedWorkflowRunner(),
+            activities=activities,
+        ):
+            with pytest.raises(WorkflowFailureError):
+                await env.client.execute_workflow(
+                    "DraftPullRequestWorkflow",
+                    _ci_input(run_planning=True),
+                    id=workflow_id,
+                    task_queue=task_queue,
+                    result_type=DraftPullRequestOutput,
+                )
+            history = await env.client.get_workflow_handle(workflow_id).fetch_history()
+
+    assert alerts == []
+    replayed = await Replayer(
+        workflows=[DraftPullRequestWorkflow, *children],
+        workflow_runner=UnsandboxedWorkflowRunner(),
+    ).replay_workflow(history, raise_on_replay_failure=False)
+    assert replayed.replay_failure is None
+
+
+async def test_child_workflows_record_the_run_workflow_on_the_execution():
+    persisted: list[ExecutionState] = []
+    activities = _make_activities(None, 1, [], [], [], persisted_states=persisted)
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        workflow_id = f"wf-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            await env.client.execute_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(run_planning=True),
+                id=workflow_id,
+                task_queue=task_queue,
+            )
+
+    assert {"PLANNING", "IMPLEMENTING", "PR_CREATED"} <= {state.state for state in persisted}
+    assert {state.workflow_id for state in persisted} == {workflow_id}
+
+
+def _model_path_outages(
+    activities: list[Callable[..., Any]],
+    hops: list[str],
+    suspensions: list[RecordSuspensionRequest],
+) -> list[Callable[..., Any]]:
+    from services.orchestration.model_path import model_unavailable_error
+
+    remaining = list(hops)
+
+    @activity.defn(name="invoke_model")
+    async def outage_invoke_model(req: ModelRequest) -> ModelResponse:
+        if remaining:
+            raise model_unavailable_error(remaining.pop(0), "litellm returned 500")
+        return ModelResponse(
+            logical_model=req.logical_model,
+            content="Plan:\n- Edit feature.py to add the change",
+            model_id="planning-model",
+        )
+
+    @activity.defn(name="record_suspension")
+    async def recording_suspension(req: RecordSuspensionRequest) -> str:
+        suspensions.append(req)
+        return req.workflow_id
+
+    replaced: dict[str, Callable[..., Any]] = {
+        "fake_invoke_model": outage_invoke_model,
+        "fake_record_suspension": recording_suspension,
+    }
+    return [replaced.get(fn.__name__, fn) for fn in activities]
+
+
+async def _await_model_path_park(handle, previous_key: str = "") -> str:
+    state: dict = {}
+    for _ in range(200):
+        state = await handle.query(DraftPullRequestWorkflow.suspension_state)
+        key = state.get("park_key", "")
+        if state.get("reason") == SuspendReason.MODEL_UNAVAILABLE.value and key not in (
+            "",
+            previous_key,
+        ):
+            return key
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"no model path park: {state}")
+
+
+def _plan_child_ids(history) -> list[str]:
+    return [
+        event.start_child_workflow_execution_initiated_event_attributes.workflow_id
+        for event in history.events
+        if event.HasField("start_child_workflow_execution_initiated_event_attributes")
+        and "-plan-" in event.start_child_workflow_execution_initiated_event_attributes.workflow_id
+    ]
+
+
+class _OneRunParks:
+    def __init__(self, client, workflow_id: str) -> None:
+        from services.orchestration.model_path_parks import TemporalParkResumer
+
+        self._resumer = TemporalParkResumer(client)
+        self._workflow_id = workflow_id
+
+    async def parked(self, tenant: str) -> list[str]:
+        return [self._workflow_id]
+
+    async def resume(self, workflow_id: str) -> bool:
+        return await self._resumer.resume(
+            workflow_id, actor="model_path_probe", actor_type="intake"
+        )
+
+
+async def test_a_plan_child_on_an_unavailable_model_path_parks_and_resumes_on_recovery():
+    from services.coordination.idempotency import InMemorySideEffectLedger
+    from temporalio.worker import Replayer, UnsandboxedWorkflowRunner
+    from tests.support import ModelPathStub, model_path_gate
+
+    alerts: list[AlertHumanInterventionRequest] = []
+    persisted: list[ExecutionState] = []
+    audits: list[AuditEvent] = []
+    contexts: list[ContextRequest] = []
+    suspensions: list[RecordSuspensionRequest] = []
+    activities = _model_path_outages(
+        _make_activities(
+            None,
+            1,
+            [],
+            [],
+            [],
+            alerts=alerts,
+            persisted_states=persisted,
+            audit_events=audits,
+            context_requests=contexts,
+        ),
+        ["bedrock_path"],
+        suspensions,
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        workflow_id = f"wf-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(run_planning=True),
+                id=workflow_id,
+                task_queue=task_queue,
+            )
+            park_key = await _await_model_path_park(handle)
+            parked_state = persisted[-1].state
+            gate = model_path_gate(
+                ModelPathStub(""),
+                ledger=InMemorySideEffectLedger(),
+                parks=_OneRunParks(env.client, workflow_id),
+            )
+            await gate.sweep()
+            result = await handle.result()
+            history = await handle.fetch_history()
+
+    assert result.status == PR_PROMOTED
+    assert parked_state == "AWAITING_HUMAN"
+    assert park_key == "exec-1:plan:model_unavailable:1"
+    assert [(alert.reason, alert.stage, alert.park_key) for alert in alerts] == [
+        ("model_unavailable", "plan", "")
+    ]
+    assert [(step.kind, step.key, step.issue_key) for step in alerts[0].remedy.actions] == [
+        ("restore_model_path", "bedrock_path", ""),
+        ("resume_parked", "", "T-1"),
+    ]
+    assert [(req.reason, req.stage, req.detail) for req in suspensions] == [
+        ("model_unavailable", "plan", "bedrock_path")
+    ]
+    assert len(contexts) == 1
+    assert _plan_child_ids(history) == [f"{workflow_id}-plan-0", f"{workflow_id}-plan-1"]
+    resumed = [event for event in audits if event.event_type == "MODEL_PATH_RESUMED"]
+    assert [(event.actor_type, event.correlation_ids) for event in resumed] == [
+        ("intake", {"park_key": park_key})
+    ]
+    assert not [event for event in audits if event.event_type == "RUN_FAILED"]
+    replayed = await Replayer(
+        workflows=[DraftPullRequestWorkflow, *_CHILD_WORKFLOWS],
+        workflow_runner=UnsandboxedWorkflowRunner(),
+    ).replay_workflow(history, raise_on_replay_failure=False)
+    assert replayed.replay_failure is None
+
+
+async def test_a_second_outage_parks_again_under_a_new_key_that_an_earlier_resume_cannot_end():
+    from services.orchestration.model_path_parks import TemporalParkResumer
+    from services.orchestration.suspension import RESUME_MODEL_PATH_UPDATE
+    from temporalio.client import WorkflowUpdateFailedError
+
+    alerts: list[AlertHumanInterventionRequest] = []
+    suspensions: list[RecordSuspensionRequest] = []
+    activities = _model_path_outages(
+        _make_activities(None, 1, [], [], [], alerts=alerts),
+        ["bedrock_path", "credentials"],
+        suspensions,
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        workflow_id = f"wf-{uuid.uuid4().hex[:8]}"
+        resumer = TemporalParkResumer(env.client)
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(run_planning=True),
+                id=workflow_id,
+                task_queue=task_queue,
+            )
+            first = await _await_model_path_park(handle)
+            assert await resumer.resume(workflow_id, actor="op", actor_type="operator")
+            second = await _await_model_path_park(handle, previous_key=first)
+            with pytest.raises(WorkflowUpdateFailedError):
+                await handle.execute_update(
+                    RESUME_MODEL_PATH_UPDATE, args=[first, "op", "operator"]
+                )
+            assert await resumer.resume(workflow_id, actor="op", actor_type="operator")
+            result = await handle.result()
+            history = await handle.fetch_history()
+
+    assert result.status == PR_PROMOTED
+    assert (first, second) == (
+        "exec-1:plan:model_unavailable:1",
+        "exec-1:plan:model_unavailable:2",
+    )
+    assert [alert.remedy.actions[0].key for alert in alerts] == ["bedrock_path", "credentials"]
+    assert [req.detail for req in suspensions] == ["bedrock_path", "credentials"]
+    assert _plan_child_ids(history) == [f"{workflow_id}-plan-{n}" for n in range(3)]
+
+
+async def test_a_model_path_park_outlives_a_worker_restart_and_resumes_once():
+    from services.orchestration.model_path_parks import TemporalParkResumer
+
+    audits: list[AuditEvent] = []
+    activities = _model_path_outages(
+        _make_activities(None, 1, [], [], [], audit_events=audits), ["litellm"], []
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        workflow_id = f"wf-{uuid.uuid4().hex[:8]}"
+        async with _unsandboxed_worker(env, task_queue, activities, DraftPullRequestWorkflow):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(run_planning=True),
+                id=workflow_id,
+                task_queue=task_queue,
+            )
+            await _await_model_path_park(handle)
+        resumer = TemporalParkResumer(env.client)
+        async with _unsandboxed_worker(env, task_queue, activities, DraftPullRequestWorkflow):
+            outcomes = await asyncio.gather(
+                resumer.resume(workflow_id, actor="op", actor_type="operator"),
+                resumer.resume(workflow_id, actor="intake", actor_type="intake"),
+            )
+            late = await resumer.resume(workflow_id, actor="op", actor_type="operator")
+            result = await handle.result()
+
+    assert result.status == PR_PROMOTED
+    assert sorted(outcomes) == [False, True]
+    assert late is False
+    assert len([event for event in audits if event.event_type == "MODEL_PATH_RESUMED"]) == 1
+
+
+async def test_a_resume_while_the_suspension_is_still_clearing_is_refused():
+    from services.orchestration.model_path_parks import TemporalParkResumer
+
+    clearing, release = asyncio.Event(), asyncio.Event()
+
+    @activity.defn(name="clear_suspension")
+    async def slow_clear_suspension(req: ClearSuspensionRequest) -> str:
+        clearing.set()
+        await release.wait()
+        return req.workflow_id
+
+    activities = [
+        slow_clear_suspension if getattr(fn, "__name__", "") == "fake_clear_suspension" else fn
+        for fn in _model_path_outages(_make_activities(None, 1, [], [], []), ["litellm"], [])
+    ]
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        workflow_id = f"wf-{uuid.uuid4().hex[:8]}"
+        async with _unsandboxed_worker(env, task_queue, activities, DraftPullRequestWorkflow):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(run_planning=True),
+                id=workflow_id,
+                task_queue=task_queue,
+            )
+            await _await_model_path_park(handle)
+            resumer = TemporalParkResumer(env.client)
+            first = await resumer.resume(workflow_id, actor="intake", actor_type="intake")
+            await clearing.wait()
+            second = await resumer.resume(workflow_id, actor="op", actor_type="operator")
+            release.set()
+            result = await handle.result()
+
+    assert (first, second) == (True, False)
+    assert result.status == PR_PROMOTED
+
+
+@workflow.defn(name="DraftPullRequestWorkflow")
+class _PreModelPathParkDraftPr(DraftPullRequestWorkflow):
+    @workflow.run
+    async def run(self, params: DraftPullRequestInput) -> DraftPullRequestOutput:
+        return await super().run(params)
+
+    def _model_path_parks_enabled(self) -> bool:
+        return False
+
+
+async def test_a_run_without_the_model_path_park_patch_fails_and_replays_as_before():
+    from temporalio.client import WorkflowFailureError
+    from temporalio.worker import Replayer, UnsandboxedWorkflowRunner
+
+    alerts: list[AlertHumanInterventionRequest] = []
+    persisted: list[ExecutionState] = []
+    activities = _model_path_outages(
+        _make_activities(None, 1, [], [], [], alerts=alerts, persisted_states=persisted),
+        ["bedrock_path"],
+        [],
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        workflow_id = f"wf-{uuid.uuid4().hex[:8]}"
+        async with _unsandboxed_worker(env, task_queue, activities, _PreModelPathParkDraftPr):
+            with pytest.raises(WorkflowFailureError) as failed:
+                await env.client.execute_workflow(
+                    "DraftPullRequestWorkflow",
+                    _ci_input(run_planning=True),
+                    id=workflow_id,
+                    task_queue=task_queue,
+                    result_type=DraftPullRequestOutput,
+                )
+            history = await env.client.get_workflow_handle(workflow_id).fetch_history()
+
+    assert str(_root_cause(failed.value)).startswith("ModelUnavailable: ")
+    assert [(alert.reason, alert.stage) for alert in alerts] == [(RUN_FAILED, "plan")]
+    assert persisted[-1].state == "FAILED"
+    assert not any("model-path-park" in marker for marker in _patch_markers(history))
+    replayed = await Replayer(
+        workflows=[DraftPullRequestWorkflow, *_CHILD_WORKFLOWS],
+        workflow_runner=UnsandboxedWorkflowRunner(),
+    ).replay_workflow(history, raise_on_replay_failure=False)
+    assert replayed.replay_failure is None
+
+
+_ORIGINAL_TS = "1700000000.000100"
+
+
+def _park_post_activities(refreshes: list, settles: list, alert_times: list) -> list:
+    buttons = json.dumps([{"type": "section"}, {"type": "actions", "elements": []}])
+
+    @activity.defn(name="alert_human_intervention")
+    async def fake_alert(req: AlertHumanInterventionRequest) -> AlertHumanInterventionResult:
+        scheduled = activity.info().scheduled_time
+        alert_times.append(scheduled)
+        return AlertHumanInterventionResult(
+            channels=["slack"],
+            park_post=ParkPost("C1", _ORIGINAL_TS, buttons) if req.park_key else None,
+            issued_at=int(scheduled.timestamp()),
+            ttl_hours=72,
+        )
+
+    @activity.defn(name="refresh_park_buttons")
+    async def fake_refresh(req: RefreshParkButtonsRequest) -> RefreshParkButtonsResult:
+        scheduled = activity.info().scheduled_time
+        refreshes.append((scheduled, req))
+        fresh = ParkPost("C1", f"thread.{len(refreshes)}", buttons)
+        return RefreshParkButtonsResult(
+            posts=[*(replace(post, blocks="[]") for post in req.posts), fresh],
+            issued_at=int(scheduled.timestamp()),
+            ttl_hours=72,
+        )
+
+    @activity.defn(name="settle_park_posts")
+    async def fake_settle(req: SettleParkPostsRequest) -> None:
+        settles.append(req)
+
+    activities = [
+        activity_fn
+        for activity_fn in _make_activities(None, 1, [], [], [], ci_result=SUCCESS, plan_pause=True)
+        if activity_fn.__temporal_activity_definition.name != "alert_human_intervention"
+    ]
+    return [*activities, fake_alert, fake_refresh, fake_settle]
+
+
+async def _until(condition: Callable[[], bool]) -> None:
+    for _ in range(100):
+        if condition():
+            return
+        await asyncio.sleep(0.05)
+    raise AssertionError("the condition did not hold")
+
+
+async def test_a_park_posts_fresh_buttons_in_its_thread_before_each_expiry_until_decided():
+    refreshes: list = []
+    settles: list = []
+    alert_times: list = []
+    activities = _park_post_activities(refreshes, settles, alert_times)
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(run_reviews=True, run_planning=True),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+            park_key = await _await_park_key(handle, "plan")
+            await env.sleep(timedelta(hours=67))
+            assert refreshes == []
+            await env.sleep(timedelta(hours=2))
+            await _until(lambda: len(refreshes) == 1)
+            await env.sleep(timedelta(hours=68))
+            await _until(lambda: len(refreshes) == 2)
+            await handle.execute_update(
+                "apply_gate_decision", args=[park_key, True, "slack:E1/U-LEAD"]
+            )
+            result = await handle.result()
+
+    assert result.status == PR_PROMOTED
+    [alerted] = alert_times
+    (first_at, first), (second_at, second) = refreshes
+    lead_before_expiry = 68 * 3600
+    assert 0 <= first_at.timestamp() - int(alerted.timestamp()) - lead_before_expiry < 60
+    assert 0 <= second_at.timestamp() - int(first_at.timestamp()) - lead_before_expiry < 60
+    assert first.reminder and second.reminder
+    assert first.alert.park_key == park_key
+    assert [post.ts for post in first.posts] == [_ORIGINAL_TS]
+    assert [post.ts for post in second.posts] == [_ORIGINAL_TS, "thread.1"]
+    [settled] = settles
+    assert (settled.decision, settled.actor) == ("approved", "slack:E1/U-LEAD")
+    assert [post.ts for post in settled.posts] == [_ORIGINAL_TS, "thread.1", "thread.2"]
+
+
+async def test_a_park_decided_before_its_reminder_posts_no_reminder():
+    refreshes: list = []
+    settles: list = []
+    activities = _park_post_activities(refreshes, settles, [])
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(run_reviews=True, run_planning=True),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+            park_key = await _await_park_key(handle, "plan")
+            await handle.execute_update("apply_gate_decision", args=[park_key, False, "slack:E1/U"])
+            await handle.result()
+
+    assert refreshes == []
+    assert [(settle.decision, [post.ts for post in settle.posts]) for settle in settles] == [
+        ("rejected", [_ORIGINAL_TS])
+    ]
+
+
+async def test_repeated_refresh_requests_post_one_set_of_fresh_buttons_a_minute():
+    refreshes: list = []
+    settles: list = []
+    activities = _park_post_activities(refreshes, settles, [])
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(run_reviews=True, run_planning=True),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+            park_key = await _await_park_key(handle, "plan")
+            asked = [
+                await handle.execute_update("refresh_park_buttons", args=[park_key])
+                for _ in range(3)
+            ]
+            await _until(lambda: len(refreshes) == 1)
+            with pytest.raises(WorkflowUpdateFailedError):
+                await handle.execute_update("refresh_park_buttons", args=[f"{park_key}0"])
+            await env.sleep(timedelta(minutes=2))
+            asked.append(await handle.execute_update("refresh_park_buttons", args=[park_key]))
+            await _until(lambda: len(refreshes) == 2)
+            await handle.execute_update("apply_gate_decision", args=[park_key, True, "slack:E1/U"])
+            await handle.result()
+
+    assert asked == [True, False, False, True]
+    assert [request.reminder for _, request in refreshes] == [False, False]
+    [settled] = settles
+    assert [post.ts for post in settled.posts] == [_ORIGINAL_TS, "thread.1", "thread.2"]
+
+
+async def test_a_park_history_without_the_button_refresh_patch_replays(monkeypatch):
+    from temporalio.worker import Replayer, UnsandboxedWorkflowRunner
+
+    patch_id = "park-button-refresh"
+    refreshes: list = []
+    settles: list = []
+    activities = _park_post_activities(refreshes, settles, [])
+    children = [ImplementationWorkflow, BranchSyncWorkflow, PullRequestWorkflow, PlanReviewWorkflow]
+    patched = workflow.patched
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        with monkeypatch.context() as pre_patch:
+            pre_patch.setattr(workflow, "patched", lambda name: name != patch_id and patched(name))
+            async with Worker(
+                env.client,
+                task_queue=task_queue,
+                workflows=[DraftPullRequestWorkflow, *children],
+                workflow_runner=UnsandboxedWorkflowRunner(),
+                activities=activities,
+            ):
+                handle = await env.client.start_workflow(
+                    DraftPullRequestWorkflow.run,
+                    _ci_input(run_reviews=True, run_planning=True),
+                    id=f"wf-{uuid.uuid4().hex[:8]}",
+                    task_queue=task_queue,
+                )
+                park_key = await _await_park_key(handle, "plan")
+                with pytest.raises(WorkflowUpdateFailedError):
+                    await handle.execute_update("refresh_park_buttons", args=[park_key])
+                await handle.execute_update(
+                    "apply_gate_decision", args=[park_key, True, "slack:E1/U"]
+                )
+                await handle.result()
+                history = await handle.fetch_history()
+
+    assert not any(patch_id in marker for marker in _patch_markers(history))
+    assert (refreshes, settles) == ([], [])
+    replayed = await Replayer(
+        workflows=[DraftPullRequestWorkflow, *children],
+        workflow_runner=UnsandboxedWorkflowRunner(),
+    ).replay_workflow(history, raise_on_replay_failure=False)
+    assert replayed.replay_failure is None
+
+
+async def _run_capturing_limits(monkeypatch, *, patched_limits: bool):
+    from temporalio.worker import UnsandboxedWorkflowRunner
+
+    reads: list[RunLimitsRequest] = []
+    granted = RunLimits(max_cost_usd=7.5, max_llm_calls=250, max_tokens=2_500_000)
+    activities = _make_activities(None, 1, [], [], [], run_limits=granted, limit_reads=reads)
+    children = [ImplementationWorkflow, BranchSyncWorkflow, PullRequestWorkflow, PlanReviewWorkflow]
+    params = _ci_input()
+    child_budgets: list[tuple[float, int, int]] = []
+    execute_child_workflow = workflow.execute_child_workflow
+    patched = workflow.patched
+
+    async def capture_budget(child, arg, **kwargs):
+        if child == ImplementationWorkflow.run:
+            child_budgets.append((arg.max_cost_usd, arg.max_llm_calls, arg.max_tokens))
+        return await execute_child_workflow(child, arg, **kwargs)
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        with monkeypatch.context() as run:
+            run.setattr(workflow, "execute_child_workflow", capture_budget)
+            if not patched_limits:
+                run.setattr(
+                    workflow, "patched", lambda name: name != "limit-grants" and patched(name)
+                )
+            async with Worker(
+                env.client,
+                task_queue=task_queue,
+                workflows=[DraftPullRequestWorkflow, *children],
+                workflow_runner=UnsandboxedWorkflowRunner(),
+                activities=activities,
+            ):
+                handle = await env.client.start_workflow(
+                    DraftPullRequestWorkflow.run,
+                    params,
+                    id=f"wf-{uuid.uuid4().hex[:8]}",
+                    task_queue=task_queue,
+                )
+                await handle.result()
+                history = await handle.fetch_history()
+    return params, reads, child_budgets, history, children
+
+
+async def test_the_implementation_runs_under_the_limits_the_grant_activity_returns(monkeypatch):
+    params, reads, child_budgets, history, _ = await _run_capturing_limits(
+        monkeypatch, patched_limits=True
+    )
+
+    assert reads[0].execution_id == params.execution_id
+    assert reads[0].configured == RunLimits(
+        max_cost_usd=params.max_cost_usd,
+        max_llm_calls=params.max_llm_calls,
+        max_tokens=params.max_tokens,
+    )
+    assert child_budgets == [(7.5, 250, 2_500_000)]
+    assert "limit-grants" in " ".join(_patch_markers(history))
+
+
+async def test_a_history_without_the_limit_grants_patch_replays_under_the_configured_limits(
+    monkeypatch,
+):
+    from temporalio.worker import Replayer, UnsandboxedWorkflowRunner
+
+    params, reads, child_budgets, history, children = await _run_capturing_limits(
+        monkeypatch, patched_limits=False
+    )
+
+    assert reads == []
+    assert child_budgets == [(params.max_cost_usd, params.max_llm_calls, params.max_tokens)]
+    assert not any("limit-grants" in marker for marker in _patch_markers(history))
+    replayed = await Replayer(
+        workflows=[DraftPullRequestWorkflow, *children],
+        workflow_runner=UnsandboxedWorkflowRunner(),
+    ).replay_workflow(history, raise_on_replay_failure=False)
+    assert replayed.replay_failure is None
+
+
+def _granted_cost(activities, granted: dict[str, float], reads: list[RunLimitsRequest]):
+    @activity.defn(name="read_run_limits")
+    async def fake_read_run_limits(req: RunLimitsRequest) -> RunLimits:
+        reads.append(req)
+        if "cost" in granted:
+            return replace(req.configured, max_cost_usd=granted["cost"])
+        return req.configured
+
+    return [
+        fake_read_run_limits if fn.__name__ == "fake_read_run_limits" else fn for fn in activities
+    ]
+
+
+async def test_a_run_at_its_cost_limit_parks_and_a_grant_reruns_the_repair_under_the_new_limit():
+    from services.orchestration.suspension import RESUME_LIMIT_PARK_UPDATE
+    from temporalio.client import WorkflowUpdateFailedError
+    from temporalio.worker import Replayer, UnsandboxedWorkflowRunner
+
+    repairs: list[ApplyCIRepairRequest] = []
+    alerts: list[AlertHumanInterventionRequest] = []
+    audits: list[AuditEvent] = []
+    persisted: list[ExecutionState] = []
+    reads: list[RunLimitsRequest] = []
+    granted: dict[str, float] = {}
+    activities = _granted_cost(
+        _make_activities(
+            None,
+            1,
+            [],
+            [],
+            [],
+            ci_result=FAILURE,
+            repairs=repairs,
+            alerts=alerts,
+            audit_events=audits,
+            persisted_states=persisted,
+        ),
+        granted,
+        reads,
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(max_repair_attempts=20, max_cost_usd=0.35),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+            first = await _await_limit_park(handle)
+            repairs_at_first_park = len(repairs)
+            parked_state = persisted[-1].state
+            granted["cost"] = 0.65
+            resumed = await handle.execute_update(
+                RESUME_LIMIT_PARK_UPDATE, args=[first["park_key"], "slack:E1/UADMIN", "limit_grant"]
+            )
+            second = await _await_limit_park(handle, previous_key=first["park_key"])
+            with pytest.raises(WorkflowUpdateFailedError):
+                await handle.execute_update(
+                    RESUME_LIMIT_PARK_UPDATE, args=[first["park_key"], "slack:E1/UADMIN"]
+                )
+            await handle.execute_update(
+                "apply_repair_decision", args=[second["park_key"], False, "slack:E1/UTENANT"]
+            )
+            result = await handle.result()
+            history = await handle.fetch_history()
+
+    assert parked_state == "AWAITING_HUMAN"
+    assert first["detail"] == "IMPLEMENTATION_MAX_COST_USD"
+    assert resumed["applied"] is True
+    assert repairs_at_first_park == 3
+    assert len(repairs) == 6
+    assert result.terminal_reason == "human_abandoned"
+    assert persisted[-1].state == "CANCELLED"
+    assert [alert.park_key for alert in alerts] == [first["park_key"], second["park_key"], ""]
+    assert "Usage: 0.4 of 0.35 USD" in alerts[0].detail
+    decisions = [event for event in audits if event.event_type == "LIMIT_PARK_DECISION"]
+    assert [(event.decision, event.actor_id) for event in decisions] == [
+        ("resume", "slack:E1/UADMIN"),
+        ("human_abandoned", "slack:E1/UTENANT"),
+    ]
+    replayed = await Replayer(
+        workflows=[DraftPullRequestWorkflow, *_CHILD_WORKFLOWS],
+        workflow_runner=UnsandboxedWorkflowRunner(),
+    ).replay_workflow(history, raise_on_replay_failure=False)
+    assert replayed.replay_failure is None
+
+
+async def test_a_limit_park_posts_fresh_buttons_before_expiry_and_settles_its_posts_on_a_grant():
+    from services.orchestration.suspension import RESUME_LIMIT_PARK_UPDATE
+
+    refreshes: list = []
+    settles: list = []
+    alerts: list = []
+    reads: list[RunLimitsRequest] = []
+    granted: dict[str, float] = {}
+    park_fakes = _park_post_activities(refreshes, settles, alerts)[-3:]
+    faked = {fn.__temporal_activity_definition.name for fn in park_fakes}
+    activities = [
+        fn
+        for fn in _granted_cost(
+            _make_activities(None, 1, [], [], [], ci_result=FAILURE), granted, reads
+        )
+        if fn.__temporal_activity_definition.name not in faked
+    ]
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, [*activities, *park_fakes]):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(max_repair_attempts=20, max_cost_usd=0.35),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+            first = await _await_limit_park(handle)
+            await env.sleep(timedelta(hours=67))
+            assert refreshes == []
+            await env.sleep(timedelta(hours=2))
+            await _until(lambda: len(refreshes) == 1)
+            granted["cost"] = 0.65
+            await handle.execute_update(
+                RESUME_LIMIT_PARK_UPDATE, args=[first["park_key"], "slack:E1/UADMIN", "limit_grant"]
+            )
+            second = await _await_limit_park(handle, previous_key=first["park_key"])
+            await handle.execute_update(
+                "apply_repair_decision", args=[second["park_key"], False, "slack:E1/UTENANT"]
+            )
+            await handle.result()
+
+    [(_, refresh)] = refreshes
+    assert refresh.reminder
+    assert (refresh.alert.park_key, refresh.alert.limit_usage) == (first["park_key"], 0.4)
+    granted_settle, abandoned_settle = settles
+    assert (granted_settle.decision, granted_settle.actor) == ("granted", "slack:E1/UADMIN")
+    assert [post.ts for post in granted_settle.posts] == [_ORIGINAL_TS, "thread.1"]
+    assert (abandoned_settle.decision, abandoned_settle.actor) == ("abandon", "slack:E1/UTENANT")
+
+
+async def test_a_run_without_the_limit_park_patch_stops_at_its_limit_and_replays(monkeypatch):
+    from temporalio.worker import Replayer, UnsandboxedWorkflowRunner
+
+    alerts: list[AlertHumanInterventionRequest] = []
+    activities = _make_activities(None, 1, [], [], [], ci_result=FAILURE, alerts=alerts)
+    patched = workflow.patched
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        with monkeypatch.context() as run:
+            run.setattr(workflow, "patched", lambda name: name != "limit-park" and patched(name))
+            async with Worker(
+                env.client,
+                task_queue=task_queue,
+                workflows=[DraftPullRequestWorkflow, *_CHILD_WORKFLOWS],
+                workflow_runner=UnsandboxedWorkflowRunner(),
+                activities=activities,
+            ):
+                handle = await env.client.start_workflow(
+                    DraftPullRequestWorkflow.run,
+                    _ci_input(max_repair_attempts=10, max_cost_usd=0.35),
+                    id=f"wf-{uuid.uuid4().hex[:8]}",
+                    task_queue=task_queue,
+                )
+                state = await _await_human_park(handle)
+                await handle.signal("submit_repair_decision", args=[False, "release-manager"])
+                result = await handle.result()
+                history = await handle.fetch_history()
+
+    assert state["reason"] == SuspendReason.AWAITING_HUMAN.value
+    assert result.terminal_reason == "human_abandoned"
+    assert [alert.reason for alert in alerts] == ["cost_budget_exceeded", "human_abandoned"]
+    assert not any("limit-park" in marker for marker in _patch_markers(history))
+    replayed = await Replayer(
+        workflows=[DraftPullRequestWorkflow, *_CHILD_WORKFLOWS],
+        workflow_runner=UnsandboxedWorkflowRunner(),
+    ).replay_workflow(history, raise_on_replay_failure=False)
+    assert replayed.replay_failure is None
+
+
+@pytest.mark.parametrize(
+    ("actor", "actor_type"),
+    [("slack:E1/UADMIN", "limit_grant"), ("period_reset", "period_reset")],
+    ids=["period grant", "period reset"],
+)
+async def test_a_spent_period_budget_parks_the_run_at_its_next_stage_until_a_resume(
+    actor, actor_type
+):
+    from services.orchestration.suspension import RESUME_LIMIT_PARK_UPDATE
+    from temporalio.worker import Replayer, UnsandboxedWorkflowRunner
+
+    commits: list[CommitPushRequest] = []
+    alerts: list[AlertHumanInterventionRequest] = []
+    settles: list[SettleParkPostsRequest] = []
+    audits: list[AuditEvent] = []
+    reads: list[TenantBudgetRequest] = []
+    budget = {"spent": True}
+    buttons = json.dumps([{"type": "section"}, {"type": "actions", "elements": []}])
+
+    @activity.defn(name="alert_human_intervention")
+    async def fake_alert(req: AlertHumanInterventionRequest) -> AlertHumanInterventionResult:
+        alerts.append(req)
+        return AlertHumanInterventionResult(
+            channels=["slack"],
+            park_post=ParkPost("CT", "reply.1", buttons, thread_ts=req.thread_ts)
+            if req.park_key
+            else None,
+            issued_at=int(activity.info().scheduled_time.timestamp()),
+            ttl_hours=72,
+        )
+
+    @activity.defn(name="settle_park_posts")
+    async def fake_settle(req: SettleParkPostsRequest) -> None:
+        settles.append(req)
+
+    faked = {"alert_human_intervention", "settle_park_posts"}
+    activities = [
+        fn
+        for fn in _make_activities(
+            None,
+            1,
+            commits,
+            [],
+            [],
+            audit_events=audits,
+            tenant_budget=budget,
+            budget_reads=reads,
+            period_thread=PeriodAlertThread(channel="CT", ts="100.1"),
+        )
+        if fn.__temporal_activity_definition.name not in faked
+    ] + [fake_alert, fake_settle]
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+            parked = await _await_limit_park(handle)
+            commits_while_parked = len(commits)
+            budget["spent"] = False
+            resumed = await handle.execute_update(
+                RESUME_LIMIT_PARK_UPDATE, args=[parked["park_key"], actor, actor_type]
+            )
+            result = await handle.result()
+            history = await handle.fetch_history()
+
+    assert (parked["stage"], parked["detail"]) == ("implementation", "TENANT_MODEL_BUDGET_USD")
+    assert commits_while_parked == 0
+    assert resumed["applied"] is True
+    assert commits
+    assert result.terminal_reason != "human_abandoned"
+    [park_alert] = [alert for alert in alerts if alert.park_key]
+    assert (park_alert.stage, park_alert.thread_ts) == ("implementation", "100.1")
+    assert "Usage: 100 of 100 USD this period" in park_alert.detail
+    [parked_event] = [event for event in audits if event.event_type == "LIMIT_PARKED"]
+    assert parked_event.correlation_ids["period_alert_ts"] == "100.1"
+    [settle] = settles
+    assert settle.decision == ("period_reset" if actor_type == "period_reset" else "granted")
+    assert [(post.ts, post.thread_ts) for post in settle.posts] == [("reply.1", "100.1")]
+    [decision] = [event for event in audits if event.event_type == "LIMIT_PARK_DECISION"]
+    assert (decision.decision, decision.actor_id, decision.actor_type) == (
+        "resume",
+        actor,
+        actor_type,
+    )
+    assert len(reads) >= 3
+    replayed = await Replayer(
+        workflows=[DraftPullRequestWorkflow, *_CHILD_WORKFLOWS],
+        workflow_runner=UnsandboxedWorkflowRunner(),
+    ).replay_workflow(history, raise_on_replay_failure=False)
+    assert replayed.replay_failure is None
+
+
+async def test_a_run_without_the_period_budget_patch_reads_no_budget_and_replays(monkeypatch):
+    from temporalio.worker import Replayer, UnsandboxedWorkflowRunner
+
+    commits: list[CommitPushRequest] = []
+    reads: list[TenantBudgetRequest] = []
+    activities = _make_activities(
+        None, 1, commits, [], [], tenant_budget={"spent": True}, budget_reads=reads
+    )
+    patched = workflow.patched
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        with monkeypatch.context() as run:
+            run.setattr(
+                workflow, "patched", lambda name: name != "period-budget-park" and patched(name)
+            )
+            async with await _start_ci_worker(env, task_queue, activities):
+                handle = await env.client.start_workflow(
+                    DraftPullRequestWorkflow.run,
+                    _ci_input(),
+                    id=f"wf-{uuid.uuid4().hex[:8]}",
+                    task_queue=task_queue,
+                )
+                result = await handle.result()
+                history = await handle.fetch_history()
+
+    assert reads == []
+    assert commits
+    assert result.terminal_reason != "human_abandoned"
+    replayed = await Replayer(
+        workflows=[DraftPullRequestWorkflow, *_CHILD_WORKFLOWS],
+        workflow_runner=UnsandboxedWorkflowRunner(),
+    ).replay_workflow(history, raise_on_replay_failure=False)
+    assert replayed.replay_failure is None
+
+
+def _pushed(sha: str, *outside: str) -> CommitPushResult:
+    return CommitPushResult(
+        branch="agent/T-1",
+        commit_sha=sha,
+        pushed=True,
+        replayed=False,
+        excluded_paths=list(outside),
+    )
+
+
+_HELD = CommitPushResult(
+    branch="agent/T-1",
+    commit_sha="a" * 40,
+    pushed=False,
+    replayed=False,
+    excluded_paths=["tsconfig.build.json"],
+    changed=False,
+    held_path="tsconfig.build.json",
+    held_by_task_id="T-2",
+    held_by_work_unit="unit-1",
+)
+
+
+def _remedy_text(alert: AlertHumanInterventionRequest) -> str:
+    return "".join(step.text for step in alert.remedy.steps)
+
+
+async def test_a_file_another_unit_holds_parks_the_commit_and_approve_commits_again():
+    commits: list[CommitPushRequest] = []
+    pr_opens: list[OpenPrRequest] = []
+    alerts: list[AlertHumanInterventionRequest] = []
+    audits: list[AuditEvent] = []
+    activities = _make_activities(
+        None,
+        1,
+        commits,
+        pr_opens,
+        [],
+        ci_result=SUCCESS,
+        alerts=alerts,
+        audit_events=audits,
+        commit_results=[_HELD, _pushed("c" * 40, "tsconfig.build.json")],
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+            state = await _await_human_park_stage(handle, "commit")
+            assert state["reason"] == SuspendReason.AWAITING_HUMAN.value
+            assert len(commits) == 1
+            await handle.signal("submit_gate_decision", args=["file_claim", True, "lead"])
+            result = await handle.result()
+
+    assert result.status == PR_PROMOTED
+    assert [(c.check_claims, c.work_unit) for c in commits] == [(True, "unit-1")] * 2
+    parked = [alert for alert in alerts if alert.stage == "commit"]
+    assert len(parked) == 1
+    assert "tsconfig.build.json" in _remedy_text(parked[0])
+    assert "unit-1 of T-2" in _remedy_text(parked[0])
+    assert {step.kind for step in parked[0].remedy.actions} == {
+        StepKind.APPROVE_GATE,
+        StepKind.REJECT_GATE,
+    }
+    outside = [event for event in audits if event.event_type == "FILES_OUTSIDE_FILE_IMPACT"]
+    assert [(event.event_id, event.artifact_hashes) for event in outside] == [
+        ("exec-1:FILES_OUTSIDE_FILE_IMPACT:102", {"files": "tsconfig.build.json"})
+    ]
+    assert "- `tsconfig.build.json`" in pr_opens[0].body
+
+
+_GUARDED = CommitPushResult(
+    branch="agent/T-1",
+    commit_sha="a" * 40,
+    pushed=False,
+    replayed=False,
+    changed=False,
+    guarded_paths=[".github/workflows/ci.yml"],
+    guarded_diff="+++ b/.github/workflows/ci.yml\n+on: push\n",
+)
+
+
+async def test_a_workflow_file_parks_the_commit_and_approve_pushes_it():
+    commits: list[CommitPushRequest] = []
+    pr_opens: list[OpenPrRequest] = []
+    alerts: list[AlertHumanInterventionRequest] = []
+    activities = _make_activities(
+        None,
+        1,
+        commits,
+        pr_opens,
+        [],
+        ci_result=SUCCESS,
+        alerts=alerts,
+        commit_results=[_GUARDED, _pushed("c" * 40)],
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+            await _await_human_park_stage(handle, "commit")
+            assert len(commits) == 1
+            await handle.signal("submit_gate_decision", args=["workflow_files", True, "lead"])
+            result = await handle.result()
+
+    assert result.status == PR_PROMOTED
+    assert [(c.guard_workflow_files, c.workflow_files_approved) for c in commits] == [
+        (True, False),
+        (True, True),
+    ]
+    parked = [alert for alert in alerts if alert.stage == "commit"]
+    assert len(parked) == 1
+    assert ".github/workflows/ci.yml" in _remedy_text(parked[0])
+    assert "+on: push" in parked[0].detail
+    assert {step.kind for step in parked[0].remedy.actions} == {
+        StepKind.APPROVE_GATE,
+        StepKind.REJECT_GATE,
+    }
+
+
+async def test_rejecting_a_workflow_file_park_abandons_the_run_without_a_push():
+    commits: list[CommitPushRequest] = []
+    pr_opens: list[OpenPrRequest] = []
+    activities = _make_activities(None, 1, commits, pr_opens, [], commit_results=[_GUARDED])
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+            await _await_human_park_stage(handle, "commit")
+            await handle.signal("submit_gate_decision", args=["workflow_files", False, "lead"])
+            result = await handle.result()
+
+    assert result.terminal_reason == HUMAN_ABANDONED
+    assert len(commits) == 1
+    assert pr_opens == []
+
+
+_BLOCKED = DependencyStepResult(
+    dependency_files=["package-lock.json", "package.json"],
+    lockfiles=["package-lock.json"],
+    blocking_count=1,
+    threshold="high",
+    blocking=["MAL-2026-14698 critical package-lock.json:3layerdipstackbndk47@0.1.4"],
+)
+
+
+async def test_a_blocking_dependency_finding_parks_before_the_commit_and_approve_commits():
+    commits: list[CommitPushRequest] = []
+    pr_opens: list[OpenPrRequest] = []
+    alerts: list[AlertHumanInterventionRequest] = []
+    requests: list[DependencyStepRequest] = []
+    activities = _make_activities(
+        None,
+        1,
+        commits,
+        pr_opens,
+        [],
+        ci_result=SUCCESS,
+        alerts=alerts,
+        dependency_requests=requests,
+        dependency_results=[_BLOCKED],
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+            await _await_human_park_stage(handle, "commit")
+            assert commits == []
+            await handle.signal("submit_gate_decision", args=["dependency_scan", True, "lead"])
+            result = await handle.result()
+
+    assert result.status == PR_PROMOTED
+    assert len(commits) == 1
+    assert [(r.commit, r.base_ref) for r in requests] == [(commits[0].commit, _ci_input().base_sha)]
+    parked = [alert for alert in alerts if alert.stage == "commit"]
+    assert "MAL-2026-14698" in parked[0].detail
+
+
+async def test_a_failed_lock_command_parks_and_reject_abandons_the_run_without_a_commit():
+    commits: list[CommitPushRequest] = []
+    alerts: list[AlertHumanInterventionRequest] = []
+    failed = DependencyStepResult(
+        dependency_files=["package.json"],
+        lock_failed=True,
+        lock_detail="`npm install --package-lock-only` for package.json exited 1.\nnpm error 404",
+    )
+    activities = _make_activities(
+        None, 1, commits, [], [], alerts=alerts, dependency_results=[failed]
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+            await _await_human_park_stage(handle, "commit")
+            await handle.signal("submit_gate_decision", args=["lockfile", False, "lead"])
+            result = await handle.result()
+
+    assert result.terminal_reason == HUMAN_ABANDONED
+    assert commits == []
+    parked = [alert for alert in alerts if alert.stage == "commit"]
+    assert "npm error 404" in parked[0].detail
+    assert "package.json" in _remedy_text(parked[0])
+
+
+async def test_an_approved_lockfile_park_still_parks_on_the_dependency_scan():
+    commits: list[CommitPushRequest] = []
+    failed_and_blocked = replace(
+        _BLOCKED, lockfiles=[], lock_failed=True, lock_detail="npm error 404"
+    )
+    activities = _make_activities(None, 1, commits, [], [], dependency_results=[failed_and_blocked])
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+            await _await_park(handle, lambda s: ":lockfile:" in s.get("park_key", ""))
+            await handle.signal("submit_gate_decision", args=["lockfile", True, "lead"])
+            await _await_park(handle, lambda s: ":dependency_scan:" in s.get("park_key", ""))
+            assert commits == []
+            await handle.signal("submit_gate_decision", args=["dependency_scan", False, "lead"])
+            result = await handle.result()
+
+    assert result.terminal_reason == HUMAN_ABANDONED
+    assert commits == []
+
+
+async def test_a_repair_commit_runs_the_dependency_step_again():
+    commits: list[CommitPushRequest] = []
+    requests: list[DependencyStepRequest] = []
+    activities = _make_activities(
+        None,
+        1,
+        commits,
+        [],
+        [],
+        ci_results=[FAILURE, SUCCESS],
+        repairs=[],
+        dependency_requests=requests,
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            result = await env.client.execute_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+
+    assert result.status == PR_PROMOTED
+    assert [r.commit for r in requests] == [c.commit for c in commits]
+    assert len(requests) == 2
+
+
+async def test_rejecting_a_held_file_park_abandons_the_run_without_a_commit():
+    commits: list[CommitPushRequest] = []
+    pr_opens: list[OpenPrRequest] = []
+    ci_triggers: list = []
+    activities = _make_activities(
+        None,
+        1,
+        commits,
+        pr_opens,
+        [],
+        ci_triggers=ci_triggers,
+        commit_results=[_HELD],
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+            await _await_human_park_stage(handle, "commit")
+            await handle.signal("submit_gate_decision", args=["file_claim", False, "lead"])
+            result = await handle.result()
+
+    assert result.terminal_reason == HUMAN_ABANDONED
+    assert len(commits) == 1
+    assert ci_triggers == []
+    assert pr_opens == []
+
+
+async def test_a_repair_commit_on_a_held_file_parks_and_reject_abandons_the_run():
+    commits: list[CommitPushRequest] = []
+    ci_triggers: list = []
+    activities = _make_activities(
+        None,
+        1,
+        commits,
+        [],
+        [],
+        ci_triggers=ci_triggers,
+        ci_results=[FAILURE, SUCCESS],
+        commit_results=[_pushed("c" * 40), _HELD],
+    )
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            handle = await env.client.start_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+            state = await _await_human_park_stage(handle, "commit")
+            assert state["reason"] == SuspendReason.AWAITING_HUMAN.value, state
+            await handle.signal("submit_gate_decision", args=["file_claim", False, "lead"])
+            result = await handle.result()
+
+    assert result.terminal_reason == HUMAN_ABANDONED
+    assert len(commits) == 2
+    assert len(ci_triggers) == 1
+
+
+async def test_a_commit_inside_the_file_impact_records_no_outside_files_event():
+    audits: list[AuditEvent] = []
+    pr_opens: list[OpenPrRequest] = []
+    activities = _make_activities(None, 1, [], pr_opens, [], ci_result=SUCCESS, audit_events=audits)
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        task_queue = f"draft-{uuid.uuid4().hex[:8]}"
+        async with await _start_ci_worker(env, task_queue, activities):
+            result = await env.client.execute_workflow(
+                DraftPullRequestWorkflow.run,
+                _ci_input(),
+                id=f"wf-{uuid.uuid4().hex[:8]}",
+                task_queue=task_queue,
+            )
+
+    assert result.status == PR_PROMOTED
+    assert not any(event.event_type == "FILES_OUTSIDE_FILE_IMPACT" for event in audits)
+    assert "file impact" not in pr_opens[0].body

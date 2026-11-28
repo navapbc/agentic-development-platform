@@ -1,13 +1,6 @@
 # Local developer overrides applied automatically by Compose on top of compose.yaml.
 services:
   workflow-worker:
-    volumes:
-      - ./services:/app/services
-      - ./adapters:/app/adapters
-      - ./schemas:/app/schemas
-      - ./database:/app/database
-      - ./scripts:/app/scripts
-      - ./observability:/app/observability
     environment:
       LOG_LEVEL: DEBUG
 

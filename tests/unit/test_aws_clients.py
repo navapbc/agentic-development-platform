@@ -1,9 +1,9 @@
-"""Tests for the S3 client builder shared by the evidence store paths."""
+"""Tests for the S3 client builder and the AWS error code reader the S3 callers share."""
 
 from __future__ import annotations
 
 import pytest
-from scripts.aws_clients import s3_client
+from scripts.aws_clients import error_code, s3_client
 
 
 @pytest.fixture
@@ -40,3 +40,16 @@ def test_one_key_alone_uses_the_default_chain(missing_profile):
 
     with pytest.raises(ProfileNotFound):
         s3_client(region="us-east-1", access_key="minio")
+
+
+def test_error_code_reads_a_wrapped_client_error():
+    class ClientError(Exception):
+        response = {"Error": {"Code": "AccessDenied"}}
+
+    try:
+        try:
+            raise ClientError
+        except ClientError as cause:
+            raise RuntimeError("unreadable") from cause
+    except RuntimeError as exc:
+        assert error_code(exc) == "AccessDenied"

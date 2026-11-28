@@ -33,6 +33,11 @@ output "platform_policy_key" {
   value       = local.platform_policy_key
 }
 
+output "claims_protocol_key" {
+  description = "Key of the object whose presence lets the readers of shared Slack app settings serve a tenant on the shared app."
+  value       = local.claims_protocol_key
+}
+
 output "platform_exceptions_read_policy_arn" {
   description = "IAM policy that reads the platform image exceptions file, for each tenant worker. Null when the module is disabled."
   value       = try(aws_iam_policy.platform_exceptions_read[0].arn, null)

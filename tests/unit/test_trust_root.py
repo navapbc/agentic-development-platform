@@ -14,7 +14,8 @@ from services.review.trust_root import (
     parse_trust_root,
 )
 
-_PRINCIPAL = "review-signer@nava"
+_TENANT = "adp"
+_PRINCIPAL = "review-signer@adp"
 
 
 def _public_key(tmp_path: Path, name: str) -> str:
@@ -27,14 +28,14 @@ def _public_key(tmp_path: Path, name: str) -> str:
 
 
 def _bundle(keys: list[dict]) -> dict:
-    return {"version": 1, "principal": _PRINCIPAL, "keys": keys}
+    return {"version": 1, "keys": [{"tenant": _TENANT, **key} for key in keys]}
 
 
 def test_active_key_renders_into_allowed_signers():
     tr = parse_trust_root(_bundle([{"id": "k1", "public_key": "ssh-ed25519 AAAAkey1"}]))
-    signers = tr.allowed_signers()
+    signers = tr.allowed_signers(_TENANT)
     assert signers == f"{_PRINCIPAL} ssh-ed25519 AAAAkey1"
-    assert tr.active_key_ids() == ["k1"]
+    assert tr.active_key_ids(_TENANT) == ["k1"]
 
 
 def test_revoked_key_is_excluded():
@@ -46,8 +47,8 @@ def test_revoked_key_is_excluded():
             ]
         )
     )
-    assert tr.active_key_ids() == ["k2"]
-    assert "AAAAkey1" not in tr.allowed_signers()
+    assert tr.active_key_ids(_TENANT) == ["k2"]
+    assert "AAAAkey1" not in tr.allowed_signers(_TENANT)
 
 
 def test_out_of_window_key_is_excluded():
@@ -68,8 +69,8 @@ def test_out_of_window_key_is_excluded():
         )
     )
     now = datetime(2026, 6, 1, tzinfo=UTC)
-    assert tr.active_key_ids(now) == []
-    assert tr.allowed_signers(now) == ""
+    assert tr.active_key_ids(_TENANT, now) == []
+    assert tr.allowed_signers(_TENANT, now) == ""
 
 
 def test_rotation_window_admits_both_then_only_new():
@@ -90,15 +91,15 @@ def test_rotation_window_admits_both_then_only_new():
         )
     )
     during = datetime(2026, 6, 10, tzinfo=UTC)
-    assert sorted(tr.active_key_ids(during)) == ["new", "old"]
+    assert sorted(tr.active_key_ids(_TENANT, during)) == ["new", "old"]
 
     after = datetime(2026, 7, 1, tzinfo=UTC)
-    assert tr.active_key_ids(after) == ["new"]
+    assert tr.active_key_ids(_TENANT, after) == ["new"]
 
 
 def test_malformed_bundle_fails_closed():
     with pytest.raises(TrustRootError):
-        parse_trust_root({"principal": _PRINCIPAL, "keys": []})
+        parse_trust_root({"keys": []})
     with pytest.raises(TrustRootError):
         parse_trust_root(_bundle([]))
     with pytest.raises(TrustRootError):
@@ -127,8 +128,31 @@ def test_load_trust_root_reads_yaml_file(tmp_path: Path):
         encoding="utf-8",
     )
     tr = load_trust_root(bundle_path)
-    assert tr.principal == _PRINCIPAL
-    assert public_line in tr.allowed_signers()
+    assert tr.tenants() == [_TENANT]
+    assert public_line in tr.allowed_signers(_TENANT)
+
+
+def test_key_without_tenant_is_refused_with_its_id():
+    with pytest.raises(TrustRootError, match="'untenanted'"):
+        parse_trust_root(
+            {"version": 1, "keys": [{"id": "untenanted", "public_key": "ssh-ed25519 A"}]}
+        )
+
+
+def test_only_the_named_tenants_keys_render_under_its_principal():
+    tr = parse_trust_root(
+        {
+            "version": 1,
+            "keys": [
+                {"id": "adp-1", "tenant": "adp", "public_key": "ssh-ed25519 AAAAadp"},
+                {"id": "beta-1", "tenant": "beta", "public_key": "ssh-ed25519 AAAAbeta"},
+            ],
+        }
+    )
+
+    assert tr.allowed_signers("beta") == "review-signer@beta ssh-ed25519 AAAAbeta"
+    assert tr.active_key_ids("adp") == ["adp-1"]
+    assert tr.active_keys("") == ()
 
 
 def test_load_trust_root_missing_file_fails_closed(tmp_path: Path):

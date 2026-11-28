@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from services.integration.credentials import ConfigError
 from services.integration.tickets.write_contract import (
@@ -10,6 +12,7 @@ from services.integration.tickets.write_contract import (
     WriteBackContext,
     WriteBackError,
     authorize_write_back,
+    load_write_back_scopes,
     parse_write_back_scopes,
     write_back_audit,
 )
@@ -80,3 +83,28 @@ def test_parse_scopes_reads_allowlist() -> None:
 def test_parse_scopes_rejects_unknown_scope() -> None:
     with pytest.raises(ConfigError, match="unknown write-back scope"):
         parse_write_back_scopes({"write_back": {"allowed_scopes": ["bogus"]}})
+
+
+def _tickets_yaml(root: Path, text: str) -> None:
+    directory = root / "config" / "local"
+    directory.mkdir(parents=True)
+    (directory / "tickets.yaml").write_text(text, encoding="utf-8")
+
+
+def test_a_tenant_without_tickets_yaml_allows_every_scope(tmp_path: Path) -> None:
+    assert load_write_back_scopes(root=tmp_path) == WRITE_SCOPES
+
+
+def test_a_current_tickets_yaml_supplies_its_allowlist(tmp_path: Path) -> None:
+    _tickets_yaml(tmp_path, "config_version: 1\nwrite_back:\n  allowed_scopes: [status]\n")
+
+    assert load_write_back_scopes(root=tmp_path) == (STATUS,)
+
+
+def test_an_outdated_tickets_yaml_is_refused_rather_than_allowing_every_scope(
+    tmp_path: Path,
+) -> None:
+    _tickets_yaml(tmp_path, "config_version: 0\nwrite_back:\n  allowed_scopes: [status]\n")
+
+    with pytest.raises(ConfigError, match="expects version 1"):
+        load_write_back_scopes(root=tmp_path)

@@ -99,8 +99,9 @@ module "cloudtrail" {
     local.tenants_enabled && length(var.tenants) > 0 ? [module.tenant_config_store.bucket_arn] : [],
     [for tenant in values(local.tenant_records) : tenant.ticket_store.bucket_arn],
   )
-  name_prefix = var.name_prefix
-  tags        = var.tags
+  data_event_function_arns = module.off_hours.function_arn == null ? [] : [module.off_hours.function_arn]
+  name_prefix              = var.name_prefix
+  tags                     = var.tags
 }
 
 module "vpc_endpoints" {
@@ -126,6 +127,7 @@ module "vpc_endpoints" {
     local.secret_store_database ? ["rds-data"] : [],
     local.secret_store_cache ? ["elasticache"] : [],
     var.create_container_services && var.container_use_fips_endpoints ? ["bedrock-runtime-fips"] : [],
+    var.create_secret_store && var.create_container_services && var.container_use_fips_endpoints ? ["secretsmanager-fips"] : [],
     local.container_telemetry_exports ? [var.container_use_fips_endpoints ? "xray-fips" : "xray", "aps-workspaces"] : [],
     module.managed_grafana.interface_services,
     var.create_eks ? ["eks-auth"] : [],

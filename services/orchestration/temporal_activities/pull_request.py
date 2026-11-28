@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import structlog
 from temporalio import activity
+
+if TYPE_CHECKING:
+    from services.coordination.claims import WorkUnit
 
 log = structlog.get_logger("ticket_write_back")
 
@@ -144,6 +148,10 @@ class FindOpenPrResult:
     head: str = ""
 
 
+# GitHub runs a pushed workflow or action with the repository's Actions secrets before any review.
+WORKFLOW_DIRECTORIES = (".github/workflows", ".github/actions")
+
+
 @dataclass
 class CommitPushRequest:
     repo: str
@@ -154,6 +162,10 @@ class CommitPushRequest:
     message: str
     sequence: int = 2
     file_impact: list[str] = field(default_factory=list)
+    work_unit: str = ""
+    check_claims: bool = False
+    guard_workflow_files: bool = False
+    workflow_files_approved: bool = False
 
 
 @dataclass
@@ -163,8 +175,15 @@ class CommitPushResult:
     pushed: bool
     replayed: bool
     pr_template: str = ""
+    # The paths outside the file impact keep this field name because recorded workflow
+    # histories carry it, and the replayed legacy repair branch reads it.
     excluded_paths: list[str] = field(default_factory=list)
     changed: bool = True
+    held_path: str = ""
+    held_by_task_id: str = ""
+    held_by_work_unit: str = ""
+    guarded_paths: list[str] = field(default_factory=list)
+    guarded_diff: str = ""
 
 
 @dataclass
@@ -285,9 +304,11 @@ async def find_open_pr(req: FindOpenPrRequest) -> FindOpenPrResult:
 
 @activity.defn
 async def commit_and_push(req: CommitPushRequest) -> CommitPushResult:
+    from services.coordination.claims import path_within
     from services.coordination.orphans import PostgresOrphanRegistry
     from services.orchestration.change_narrative import read_pull_request_template
     from services.orchestration.materialization import WorkspaceMaterializer
+    from services.orchestration.notifications import bounded_detail
 
     materializer = WorkspaceMaterializer.from_settings(PostgresOrphanRegistry())
     workspace = await materializer.materialize(
@@ -297,7 +318,36 @@ async def commit_and_push(req: CommitPushRequest) -> CommitPushResult:
         base=req.base,
         commit_sha=req.commit,
     )
-    staged = await materializer.stage(workspace, allowed_paths=req.file_impact)
+    staged = await materializer.stage(workspace, file_impact=req.file_impact)
+    outside = list(staged.outside_file_impact)
+    if req.check_claims:
+        held = await _claim_holding(req, outside)
+        if held is not None:
+            path, holder = held
+            return CommitPushResult(
+                branch=workspace.branch,
+                commit_sha=req.commit,
+                pushed=False,
+                replayed=False,
+                excluded_paths=outside,
+                changed=False,
+                held_path=path,
+                held_by_task_id=holder.task_id,
+                held_by_work_unit=holder.work_unit,
+            )
+    if req.guard_workflow_files and not req.workflow_files_approved:
+        guarded = [path for path in staged.paths if path_within(path, WORKFLOW_DIRECTORIES)]
+        if guarded:
+            return CommitPushResult(
+                branch=workspace.branch,
+                commit_sha=req.commit,
+                pushed=False,
+                replayed=False,
+                excluded_paths=outside,
+                changed=False,
+                guarded_paths=guarded,
+                guarded_diff=bounded_detail(await materializer.staged_diff(workspace, guarded)),
+            )
     commit_request = await materializer.build_commit_request(
         workspace, message=req.message, staged=staged
     )
@@ -309,9 +359,30 @@ async def commit_and_push(req: CommitPushRequest) -> CommitPushResult:
         pushed=result.pushed,
         replayed=result.replayed,
         pr_template=read_pull_request_template(workspace.path),
-        excluded_paths=list(staged.excluded),
+        excluded_paths=outside,
         changed=staged.changed,
     )
+
+
+async def _claim_holding(req: CommitPushRequest, paths: list[str]) -> tuple[str, WorkUnit] | None:
+    """The first path another active work unit's claim covers, with that claim."""
+    if not paths:
+        return None
+    from scripts.config import get_settings
+
+    from services.orchestration.temporal_activities.implementation import (
+        _build_coordination_client,
+    )
+
+    client = _build_coordination_client()
+    tenant = get_settings().tenant
+    for path in paths:
+        holders = await client.active_claims_covering(
+            path, task_id=req.task_id, work_unit=req.work_unit, tenant=tenant, repo=req.repo
+        )
+        if holders:
+            return path, holders[0]
+    return None
 
 
 @activity.defn
@@ -499,7 +570,9 @@ async def record_pr_approval(req: RecordApprovalRequest) -> RecordApprovalResult
         verdict = "approved" if approved else "rejected"
         backend = _build_ticket_backend(req.issue_key)
         actor = approver or PLATFORM_ACTOR
-        note = f"Promotion {verdict} by {actor} (execution {req.execution_id})."
+        from services.integration.slack.messages import actor_words
+
+        note = f"Promotion {verdict} by {actor_words(actor)} (execution {req.execution_id})."
         existing = backend.list_comment_bodies(req.issue_key)
         if not any(note in body for body in existing):
             backend.add_comment(req.issue_key, note)

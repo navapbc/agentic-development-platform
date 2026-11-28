@@ -181,7 +181,7 @@ flowchart LR
 
 ## Local environment
 
-The local stack runs in Docker Compose ([compose.yaml](../compose.yaml), [compose.override.yaml](../compose.override.yaml)) and on the Docker Desktop Kubernetes cluster ([deploy/kubernetes/local](../deploy/kubernetes/local)). The cluster runs the workloads that run on EKS in AWS, and no pod mounts a host directory. Each block names the function it performs. Blocks built in this repository list the technologies that implement them. Off-the-shelf products are named without a technology list. Edge labels are the destination port. A cluster workload reaches a Compose service on the port Compose publishes on the host. Dashed edges are optional paths that the default `.env.example` values leave disabled.
+The local stack runs in Docker Compose ([compose.yaml](../compose.yaml), [compose.override.yaml](../compose.override.yaml), and the opt-in [compose.dev-mounts.yaml](../compose.dev-mounts.yaml)) and on the Docker Desktop Kubernetes cluster ([deploy/kubernetes/local](../deploy/kubernetes/local)). The cluster runs the workloads that run on EKS in AWS, and no pod mounts a host directory. Each block names the function it performs. Blocks built in this repository list the technologies that implement them. Off-the-shelf products are named without a technology list. Edge labels are the destination port. A cluster workload reaches a Compose service on the port Compose publishes on the host. Dashed edges are optional paths that the default `config/local/platform.env.example` values leave disabled.
 
 ```mermaid
 flowchart LR
@@ -411,14 +411,14 @@ Component roles:
 
 | Block | Role |
 |---|---|
-| Durable Workflow Engine | Temporal persists workflow state in PostgreSQL and dispatches tasks to the workers on the `agent-platform` and `agent-platform-review` task queues. |
+| Durable Workflow Engine | Temporal persists workflow state in PostgreSQL and dispatches tasks to the workers on the `agent-platform` queue and on each tenant's `agent-platform-<tenant>` run queue and `agent-platform-review-<tenant>` review queue. |
 | Workflow Orchestrator | Runs the intake, plan review, implementation, branch sync, pull request, draft pull request, and reap workflows. It executes no side effects. |
 | Agent Activities | Runs every side effect the workflows request: planning model calls, repository context, work claims, code generation in the OpenHands sandbox, git push, pull request creation, Jira updates, policy checks, and alerts. |
 | CI Repair and Conflict Resolution | LangGraph state graphs that run in-process in the activity worker. CI repair calls the model gateway. Conflict resolution resolves trivial merge conflicts without a model. |
 | Open Policy Agent | Evaluates the pull request promotion policy. It runs as a sidecar of the activity worker, bound to the pod's loopback, so no Service exposes it. |
 | Review Gate Worker | Runs the plan, code, security, and acceptance review gates with rebar against the execution's checkout on the workspace volume. Native mode calls Bedrock directly through the relay sidecar. Proxied mode calls the model gateway. |
 | Coordination Service | Holds work claims, sequencing, and side-effect idempotency in PostgreSQL, and checks claim owners against Temporal. Every mutating call needs the shared bearer token. |
-| Repository Intelligence Service | Builds code context packages for planning from Zoekt search, SCIP symbol indexes, ast-grep, language servers, and codebase-memory-mcp. It and the index worker receive only the settings the `x-repo-intelligence-env` anchor of `compose.yaml` lists, not `.env`, and read the repository registry, each tenant's bundle directory, and the checkouts through the read-only mounts `inv repos-compose` writes to `compose.repositories.yaml`. After a registry edit, `inv repos-compose` and then `inv k8s-reload`, or `docker compose` with `compose.repositories.yaml` among its files, recreate both services. |
+| Repository Intelligence Service | Builds code context packages for planning from Zoekt search, SCIP symbol indexes, ast-grep, language servers, and codebase-memory-mcp. It and the index worker receive only the settings the `x-repo-intelligence-env` anchor of `compose.yaml` lists, not a settings file, and read the repository registry, each tenant's bundle directory, and the checkouts through the read-only mounts `inv repos-compose` writes to `compose.repositories.yaml`. After a registry edit, `inv repos-compose` and then `inv k8s-reload`, or `docker compose` with `compose.repositories.yaml` among its files, recreate both services. |
 | Repository Index Worker | Polls the target repositories for new commits and rebuilds the Zoekt and SCIP indexes on the shared volume. |
 | LiteLLM Model Gateway | Maps logical model names to Bedrock Claude models and sends generation traces to Langfuse with credential-shaped strings redacted. Compose services and host tasks reach it on host port 4000 through a `LoadBalancer` Service. |
 | Bedrock Relay and Bedrock Tunnel | Each relay answers on the `bedrock-runtime` hostname on its pod's loopback and forwards to the host tunnel, which forwards over an SSM session to the jump-host in AWS. |
@@ -477,7 +477,7 @@ flowchart LR
                     ALB["Temporal Web UI Load Balancer<br/><i>internal Application Load Balancer</i>"]
                     TUI["Temporal Web UI"]
                     TADM["Temporal Schema and Namespace Setup<br/><i>Temporal admin-tools</i>"]
-                    ROT["Secret Rotation Function<br/><i>AWS Lambda, Python 3.13, boto3</i>"]
+                    ROT["Secret Rotation Function<br/><i>AWS Lambda, Python 3.14, boto3</i>"]
                 end
 
                 subgraph DATA["Data subnets, two AZs"]

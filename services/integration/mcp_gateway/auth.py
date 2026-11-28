@@ -12,8 +12,7 @@ from services.http_front_door import bearer_token_accepted
 
 AUTH_ENV_VAR = "MCP_GATEWAY_TOKEN"
 AUTH_REMEDY = (
-    f"Set {AUTH_ENV_VAR} in .env for the home tenant, or in "
-    "config/<environment>/tenants/<tenant>.env for another tenant, then run inv k8s-deploy. A "
+    f"Set {AUTH_ENV_VAR} in config/local/tenants/<tenant>.env, then run inv k8s-deploy. A "
     "deployed gateway reads it from its tenant's mcp-gateway-token secret in Secrets Manager."
 )
 _POLICY_VIOLATION = 1008

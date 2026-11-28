@@ -7,6 +7,10 @@ locals {
   create_public_tier  = var.create_network && local.egress_mode != "none"
   create_dns_firewall = coalesce(var.create_dns_firewall, var.create_network)
 
+  smtp_port    = tonumber(lookup(var.container_platform_settings, "SMTP_PORT", "587"))
+  smtp_host    = lookup(var.container_platform_settings, "SMTP_HOST", "")
+  smtp_domains = local.smtp_host == "" || can(regex("^[0-9.:]+$", local.smtp_host)) ? [] : [local.smtp_host]
+
   app_cidrs = var.create_network ? aws_subnet.private[*].cidr_block : var.endpoint_allowed_cidrs
 
   management_subnet_ids = var.create_network ? aws_subnet.management[*].id : (
@@ -164,6 +168,7 @@ module "egress" {
   public_subnet_id        = local.create_public_tier ? aws_subnet.public[0].id : ""
   private_route_table_ids = var.create_network ? [aws_route_table.private[0].id, aws_route_table.management[0].id] : []
   source_cidr_blocks      = distinct(concat(local.app_cidrs, local.management_cidrs))
+  allowed_egress_ports    = distinct([443, local.smtp_port])
   kms_key_arn             = var.kms_key_arn
   tags                    = var.tags
 
@@ -177,7 +182,7 @@ module "dns_firewall" {
   name_prefix                = var.name_prefix
   vpc_id                     = local.vpc_id
   default_action             = var.dns_firewall_default_action
-  additional_allowed_domains = distinct(concat(var.dns_firewall_additional_domains, local.container_internal_domains, local.eks_domains))
+  additional_allowed_domains = distinct(concat(var.dns_firewall_additional_domains, local.smtp_domains, local.container_internal_domains, local.eks_domains, local.slack_domains))
   redirect_trusted_domains   = local.registry_domains
   kms_key_arn                = var.kms_key_arn
   tags                       = var.tags

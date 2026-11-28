@@ -102,27 +102,17 @@ def parse_poll_config(raw: Mapping[str, Any]) -> PollConfig:
     )
 
 
-def load_poll_config(
-    settings: Any = None, *, environment: str | None = None, root: Path | None = None
-) -> PollConfig:
-    from scripts.config import get_settings
+def load_poll_config(*, root: Path | None = None) -> PollConfig:
 
     from services.integration.credentials import load_env_config, require_current_config
 
-    resolved = settings or get_settings()
-    env = environment or resolved.environment
-    require_current_config("tickets", environment=env, root=root)
-    return parse_poll_config(load_env_config("tickets", environment=env, root=root))
+    require_current_config("tickets", root=root)
+    return parse_poll_config(load_env_config("tickets", root=root))
 
 
-def load_rebar_backend_config(
-    settings: Any = None, *, environment: str | None = None, root: Path | None = None
-) -> RebarBackendConfig:
-    from scripts.config import get_settings
+def load_rebar_backend_config(*, root: Path | None = None) -> RebarBackendConfig:
 
     from services.integration.credentials import load_env_config, require_current_config
 
-    resolved = settings or get_settings()
-    env = environment or resolved.environment
-    require_current_config("tickets", environment=env, root=root)
-    return parse_rebar_backend_config(load_env_config("tickets", environment=env, root=root))
+    require_current_config("tickets", root=root)
+    return parse_rebar_backend_config(load_env_config("tickets", root=root))

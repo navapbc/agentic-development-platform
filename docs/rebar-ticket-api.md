@@ -70,6 +70,12 @@ The platform's logical lifecycle stages resolve to this vocabulary through the s
 
 Comments are a list of dicts with `body`, `author`, `author_email`, and `timestamp`.
 
+## File impact and the commit
+
+The `file_impact` field lists the repository paths a ticket declares it changes. An entry names a file, or a directory that covers every path beneath it. The platform commits every file the run changes, including files outside the file impact such as a lockfile or a build config that tooling rewrote. Each commit that includes such files records one `FILES_OUTSIDE_FILE_IMPACT` audit event that names them, and the pull request body lists them in its changes section. A ticket that declares no file impact reports no files outside it.
+
+Before each commit, the platform checks every file outside the file impact against the claims of the other active work units of the same tenant on the same repository. When the stored file impact of another unit's claim covers such a file, the run commits and pushes nothing and parks on the `file_claim` gate, with an alert that names the file and the holding unit. `inv gate --issue <issue> --gate file_claim --approve` checks the claims again and commits when no active unit holds the file, or parks again while one still does, and `--reject` abandons the run. A released or completed claim holds no files, and neither does a claim whose owning workflow has stopped. A claim recorded before claims stored their repository holds its files on every repository of the tenant until it is released.
+
 ## Concurrency
 
 Transitions and claims use optimistic concurrency. A stale `current_status` on `transition`, or a non-open ticket on `claim`, raises `ConcurrencyError` with engine exit code 10. The backend maps this onto an idempotent no-op when the observed terminal state already matches the intended outcome, and surfaces it otherwise.

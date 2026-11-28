@@ -60,7 +60,7 @@ def _finder(model: str = "openai:review-model") -> list[ModelProvenance]:
 
 
 def _clean_raw() -> RawReview:
-    return RawReview(verdict=Verdict.PASS, provenance=_finder(), summary="clean")
+    return RawReview(verdict=Verdict.PASSED, provenance=_finder(), summary="clean")
 
 
 def _blocking_raw() -> RawReview:
@@ -154,7 +154,7 @@ def test_raw_from_decided_passes_when_nothing_blocks():
 
     raw = _raw_from_decided(decided, "review-model", "m")
 
-    assert raw.verdict is Verdict.PASS
+    assert raw.verdict is Verdict.PASSED
 
 
 @dataclass
@@ -188,7 +188,7 @@ def test_run_multipass_drops_a_fabricated_citation_and_passes(monkeypatch):
 
     for stage in (ReviewStage.PLAN_REVIEW, ReviewStage.CODE_REVIEW, ReviewStage.SECURITY_REVIEW):
         raw = kernel._run_multipass(_input(stage), _StubCfg(), "review-model")
-        assert raw.verdict is Verdict.PASS
+        assert raw.verdict is Verdict.PASSED
         assert raw.findings == []
 
 
@@ -240,19 +240,19 @@ def test_run_multipass_sums_usage_across_finder_and_verifiers(monkeypatch):
     assert raw.usage.llm_calls == stub.calls
 
 
-def _keygen(tmp_path):
+def _keygen(tmp_path, name: str = "signer"):
     import subprocess
 
-    key_path = tmp_path / "signer"
+    key_path = tmp_path / name
     subprocess.run(
         ["ssh-keygen", "-t", "ed25519", "-f", str(key_path), "-N", "", "-C", "", "-q"],
         check=True,
     )
-    public_line = (tmp_path / "signer.pub").read_text(encoding="utf-8").strip()
+    public_line = (tmp_path / f"{name}.pub").read_text(encoding="utf-8").strip()
     return str(key_path), public_line
 
 
-def _signing_settings(tmp_path):
+def _signing_settings(tmp_path, extra_keys: tuple[dict, ...] = ()):
     import yaml
     from scripts.config import Settings
 
@@ -262,8 +262,7 @@ def _signing_settings(tmp_path):
         yaml.safe_dump(
             {
                 "version": 1,
-                "principal": "review-signer@nava",
-                "keys": [{"id": "k1", "public_key": public_line}],
+                "keys": [{"id": "k1", "tenant": "adp", "public_key": public_line}, *extra_keys],
             }
         ),
         encoding="utf-8",
@@ -280,7 +279,9 @@ def test_select_attestor_defaults_to_hmac_without_signing():
     from services.review.attestation import HmacAttestor
     from services.review.gate import select_attestor
 
-    attestor = select_attestor(ReviewStage.CODE_REVIEW, Settings(review_signing_enabled=False))
+    attestor = select_attestor(
+        ReviewStage.CODE_REVIEW, Settings(review_signing_enabled=False), tenant="adp"
+    )
     assert isinstance(attestor, HmacAttestor)
 
 
@@ -296,7 +297,7 @@ def test_select_attestor_fails_closed_when_signing_enabled_but_unconfigured():
     )
     for stage in ReviewStage:
         with pytest.raises(ReviewSigningNotConfigured):
-            select_attestor(stage, settings)
+            select_attestor(stage, settings, tenant="adp")
 
 
 def test_select_attestor_signs_every_stage(tmp_path):
@@ -305,7 +306,7 @@ def test_select_attestor_signs_every_stage(tmp_path):
 
     settings = _signing_settings(tmp_path)
     for stage in ReviewStage:
-        assert isinstance(select_attestor(stage, settings), SshsigAttestor)
+        assert isinstance(select_attestor(stage, settings, tenant="adp"), SshsigAttestor)
 
 
 def test_select_attestor_reports_an_unreadable_injected_key_as_not_configured(tmp_path):
@@ -316,7 +317,14 @@ def test_select_attestor_reports_an_unreadable_injected_key_as_not_configured(tm
     )
 
     with pytest.raises(ReviewSigningNotConfigured):
-        select_attestor(ReviewStage.CODE_REVIEW, settings)
+        select_attestor(ReviewStage.CODE_REVIEW, settings, tenant="adp")
+
+
+def test_select_attestor_fails_closed_for_a_run_without_tenant(tmp_path):
+    from services.review.gate import ReviewSigningNotConfigured, select_attestor
+
+    with pytest.raises(ReviewSigningNotConfigured):
+        select_attestor(ReviewStage.CODE_REVIEW, _signing_settings(tmp_path), tenant="")
 
 
 def test_select_attestor_uses_hmac_when_signing_disabled(tmp_path):
@@ -326,7 +334,7 @@ def test_select_attestor_uses_hmac_when_signing_disabled(tmp_path):
 
     settings = Settings(review_signing_enabled=False)
     for stage in ReviewStage:
-        assert isinstance(select_attestor(stage, settings), HmacAttestor)
+        assert isinstance(select_attestor(stage, settings, tenant="adp"), HmacAttestor)
 
 
 async def test_gate_records_the_envelope_field_in_evidence():
@@ -343,17 +351,44 @@ async def test_signed_gate_verifies_and_records_scheme(tmp_path):
     from services.review.gate import select_attestor
 
     settings = _signing_settings(tmp_path)
-    attestor = select_attestor(ReviewStage.CODE_REVIEW, settings)
+    attestor = select_attestor(ReviewStage.CODE_REVIEW, settings, tenant="adp")
     sink = _RecordingSink()
     gate = ReviewGate(FakeReviewKernel(_clean_raw()), sink, attestor)
 
     result = await gate.review(_input(ReviewStage.CODE_REVIEW), execution_id="exec-signed")
 
     assert result.attestation.algorithm == "sshsig"
-    assert result.attestation.key_id == "review-signer@nava"
+    assert result.attestation.key_id == "review-signer@adp"
     record = sink.records[0]
     assert record.metadata["algorithm"] == "sshsig"
-    assert record.metadata["key_id"] == "review-signer@nava"
+    assert record.metadata["key_id"] == "review-signer@adp"
     assert record.metadata["envelope"]
     payload = verdict_payload(_input(ReviewStage.CODE_REVIEW), _clean_raw())
     assert attestor.verify(result.attestation, payload) is True
+
+
+async def test_a_verdict_signed_with_one_tenants_key_fails_for_another_tenants_run(tmp_path):
+    from services.review.gate import select_attestor
+
+    _, beta_public = _keygen(tmp_path, "beta")
+    settings = _signing_settings(
+        tmp_path, ({"id": "beta-1", "tenant": "beta", "public_key": beta_public},)
+    )
+    review = _input(ReviewStage.CODE_REVIEW)
+
+    adp_gate = ReviewGate(
+        FakeReviewKernel(_clean_raw()),
+        _RecordingSink(),
+        select_attestor(ReviewStage.CODE_REVIEW, settings, tenant="adp"),
+    )
+    assert (await adp_gate.review(review, execution_id="exec-adp")).attestation.envelope
+
+    beta_sink = _RecordingSink()
+    beta_gate = ReviewGate(
+        FakeReviewKernel(_clean_raw()),
+        beta_sink,
+        select_attestor(ReviewStage.CODE_REVIEW, settings, tenant="beta"),
+    )
+    with pytest.raises(ReviewAttestationError):
+        await beta_gate.review(review, execution_id="exec-beta")
+    assert beta_sink.records == []

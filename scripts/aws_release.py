@@ -5,6 +5,11 @@ to `images.auto.tfvars.json` in the composition root, which Terraform loads with
 plans the root, applies the plan after confirmation, and runs `inv platform-deploy`, which rolls
 the services onto the task definitions the apply registered, then `inv eks-deploy` when the root
 has an EKS cluster.
+
+Before `inv platform-deploy`, the eks-deployer runs its `preflight`, which decides the worker
+slots of each tenant's EKS workers for the new build without changing them. A preflight that
+finds no slot, because both slots hold builds with pinned runs, stops the release before the ECS
+workflow worker makes the new build current.
 """
 
 from __future__ import annotations
@@ -112,6 +117,17 @@ def release(
     return deploy()
 
 
+def deploy(deploy_args: list[str]) -> int:
+    from scripts.eks_deploy import main as eks_deploy
+    from scripts.platform_deploy import main as platform_deploy
+
+    return (
+        eks_deploy([*deploy_args, "preflight"])
+        or platform_deploy(deploy_args)
+        or eks_deploy(deploy_args)
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--var-file", default="greenfield.tfvars", help="In the composition root.")
@@ -120,9 +136,6 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--yes", action="store_true", help="Apply without asking.")
     args = parser.parse_args(argv)
-
-    from scripts.eks_deploy import main as eks_deploy
-    from scripts.platform_deploy import main as platform_deploy
 
     def confirm() -> bool:
         if args.yes:
@@ -134,7 +147,7 @@ def main(argv: list[str] | None = None) -> int:
         return release(
             ROOT / args.var_file,
             confirm=confirm,
-            deploy=lambda: platform_deploy(deploy_args) or eks_deploy(deploy_args),
+            deploy=lambda: deploy(deploy_args),
         )
     except ReleaseError as exc:
         print(f"{LOG} {exc}", file=sys.stderr)

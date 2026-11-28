@@ -150,8 +150,8 @@ async def set_current_version(
                     build_id=build_id,
                     conflict_token=described.conflict_token,
                     identity=f"worker-{build_id}",
-                    # The worker services share a build but poll different queues and start
-                    # independently, so the first one to reach this point covers only its own.
+                    # Only the workflow worker reaches this point, and the activity and review
+                    # workers of its build may not poll yet, so their queues may be unregistered.
                     ignore_missing_task_queues=True,
                 )
             )
@@ -207,6 +207,53 @@ async def pinned_executions(
         if len(stranded) >= limit:
             break
     return stranded
+
+
+def _pinned_build(description) -> str:
+    """The build a run's workflow tasks route to, from its override or else its version."""
+    info = description.raw_description.workflow_execution_info.versioning_info
+    override = info.versioning_override
+    if override.HasField("pinned") and override.pinned.version.build_id:
+        return override.pinned.version.build_id
+    return info.deployment_version.build_id
+
+
+async def repin_if_replayable(client: Client, settings, workflow_id: str) -> bool:
+    """Move a run pinned to an older build onto this one when this build replays its history.
+
+    Only a process on the deployment's current build repins, so the replay checks the code that
+    then runs the execution. A run whose history this build cannot replay, because a change since
+    its build is not guarded by a patch, stays on its build, which its drain slot keeps serving.
+    """
+    from temporalio.worker import Replayer
+
+    from services.orchestration.workflow_registry import WORKFLOWS, workflow_runner
+
+    if not settings.worker_versioning_enabled:
+        return False
+    current = _current_build_id(await _describe_deployment(client, settings.worker_deployment_name))
+    if not current or current != settings.agent_build_id:
+        return False
+    handle = client.get_workflow_handle(workflow_id)
+    pinned = _pinned_build(await handle.describe())
+    if not pinned or not is_newer_build(current, pinned):
+        return False
+    replayer = Replayer(workflows=WORKFLOWS, workflow_runner=workflow_runner())
+    replayed = await replayer.replay_workflow(
+        await handle.fetch_history(), raise_on_replay_failure=False
+    )
+    if replayed.replay_failure is not None:
+        log.warning(
+            "%s stays on build %s, because build %s does not replay its history: %s",
+            workflow_id,
+            pinned,
+            current,
+            replayed.replay_failure,
+        )
+        return False
+    await move_to_current_version(client, settings, workflow_id)
+    log.info("moved %s from build %s to build %s", workflow_id, pinned, current)
+    return True
 
 
 async def move_to_current_version(client: Client, settings, workflow_id: str) -> None:

@@ -190,7 +190,7 @@ variable "dns_firewall_default_action" {
 }
 
 variable "dns_firewall_additional_domains" {
-  description = "Domains added to the DNS Firewall allowlist, such as the SMTP relay host."
+  description = "Domains added to the DNS Firewall allowlist. The SMTP_HOST of container_platform_settings is added without being listed here, and the NAT instance forwards its SMTP_PORT, 587 unless set."
   type        = list(string)
   default     = []
 }
@@ -402,13 +402,13 @@ variable "eks_load_balancer_controller_image_repository" {
 }
 
 variable "eks_gate_image_repository_arns" {
-  description = "ECR repositories of the gate engine images the gate pods pull in image mode, beyond the semgrep and trivy repositories the scanner pods pull from."
+  description = "ECR repositories of the gate engine images the gate pods pull in image mode, beyond the semgrep, trivy, and osv-scanner repositories the scanner pods pull from."
   type        = list(string)
   default     = []
 }
 
 variable "registry_mode" {
-  description = "Where the gate, checks, and scanner pods pull images and packages from. aws mirrors images through ECR pull-through caches and allows the package registries in DNS Firewall, external uses an Artifactory or compatible service that config/<env>/registries.yaml names, and none leaves the pods with no route to a public registry."
+  description = "Where the gate, checks, and scanner pods pull images and packages from. aws mirrors images through ECR pull-through caches and allows the package registries in DNS Firewall, external uses an Artifactory or compatible service that the platform registries.yaml in container_config_dir names, and none leaves the pods with no route to a public registry."
   type        = string
   default     = "none"
 
@@ -501,6 +501,12 @@ variable "eks_trivy_image" {
   default     = ""
 }
 
+variable "eks_osv_scanner_image" {
+  description = "osv-scanner image of the scanner pods, for OSV_SCANNER_IMAGE. inv publish-platform-images writes it to images.auto.tfvars.json."
+  type        = string
+  default     = ""
+}
+
 variable "create_container_services" {
   description = "Create the platform container services on the platform ECS cluster, starting with the ECR repositories for their images."
   type        = bool
@@ -537,14 +543,8 @@ variable "container_repo_intelligence_image" {
   default     = ""
 }
 
-variable "container_environment" {
-  description = "ENVIRONMENT the platform tasks report, which names their config/<environment> files."
-  type        = string
-  default     = "aws"
-}
-
 variable "container_config_dir" {
-  description = "Directory outside the repository holding the environment's config files, such as tickets.yaml, which the tasks receive. Empty sends none. The plan fails when it holds image_exceptions.yaml, because platform finding exceptions live in the tenant config bucket and are added through the image-exception workflow."
+  description = "Directory outside the repository holding the platform's config files, such as integrations.yaml and image_policy.yaml, which the tasks and pods receive. Empty sends none. The plan fails when it holds a tenant-only file, which belongs in the tenant's config bundle, or image_exceptions.yaml, because platform finding exceptions live in the tenant config bucket and are added through the image-exception workflow."
   type        = string
   default     = ""
 }
@@ -560,7 +560,6 @@ variable "container_service_counts" {
   type        = map(number)
   default = {
     workflow-worker   = 1
-    review-worker     = 1
     coordination      = 1
     repo-intelligence = 1
     repo-index-worker = 1
@@ -823,10 +822,10 @@ variable "github_publish_refs" {
 }
 
 variable "tenants" {
-  description = "Tenants that share the deployment, keyed by a name of 2 to 16 lowercase letters and digits. Each tenant is a trust boundary with its own activity worker identity, secrets, image prefix, config bundle prefix, ticket store, and workspace. secrets lists the secrets created empty under <name_prefix>/tenants/<tenant>/ for the tenant to fill. shared_secrets lists secret store keys the tenant's worker may also read. config_repository names the GitHub repository whose workflows publish the tenant's config bundle and images. ticket_store sets the bucket name, operators, admins, and GitHub OIDC writer of the tenant's rebar store. mcp_gateway_token_readers are the principals besides the tenant's gateway that may read its MCP gateway token, such as the operators who give it to the tenant's MCP clients. mcp_gateway_host replaces mcp-<tenant>.<eks_mcp_gateway_domain> as the host name of the tenant's MCP gateway with another <label>.<eks_mcp_gateway_domain>. settings are environment variables only the tenant's worker receives, such as TICKET_BACKEND, and override container_platform_settings. model_limits sets the tenant's LiteLLM spend and rate limits in the worker environment. monthly_budget_usd is the tenant team's monthly budget in US dollars, rpm_limit and tpm_limit are the tenant team's requests and tokens per minute, and 0 sets no limit for each of the three. run_budget_usd is the budget of each run's virtual key in US dollars. sandbox_quota is the ResourceQuota hard limits of the tenant's sandbox namespace, such as requests.cpu or pods. create_eks requires at least one tenant."
+  description = "Tenants that share the deployment, keyed by a name of 2 to 16 lowercase letters and digits. Each tenant is a trust boundary with its own activity worker identity, secrets, image prefix, config bundle prefix, ticket store, and workspace. secrets lists the secrets created empty under <name_prefix>/tenants/<tenant>/ for the tenant to fill. shared_secrets lists secret store keys the tenant's worker may also read. config_repository names the GitHub repository whose workflows publish the tenant's config bundle and images. ticket_store sets the bucket name, operators, admins, and GitHub OIDC writer of the tenant's rebar store. mcp_gateway_token_readers are the principals besides the tenant's gateway that may read its MCP gateway token, such as the operators who give it to the tenant's MCP clients. mcp_gateway_host replaces mcp-<tenant>.<eks_mcp_gateway_domain> as the host name of the tenant's MCP gateway with another <label>.<eks_mcp_gateway_domain>. settings are environment variables only the tenant's worker receives, such as TICKET_BACKEND, and override container_platform_settings. model_limits sets the tenant's LiteLLM spend and rate limits in the worker environment. monthly_budget_usd is the tenant team's monthly budget in US dollars, rpm_limit and tpm_limit are the tenant team's requests and tokens per minute, and 0 sets no limit for each of the three. run_budget_usd is the budget of each run's virtual key in US dollars. sandbox_quota is the ResourceQuota hard limits of the tenant's sandbox namespace, such as requests.cpu or pods. escalation_action_key_version is the write-only version of the tenant's generated escalation action key and its fingerprint, and raising it writes a new key and fingerprint together. A tenant created before the fingerprint existed raises it once. create_eks requires at least one tenant."
   type = map(object({
     description    = string
-    secrets        = optional(list(string), ["github_token", "jira_api_token", "jira_pat", "authorship_signing_key", "registry_token", "slack_webhook_url"])
+    secrets        = optional(list(string), ["github_token", "jira_api_token", "jira_pat", "authorship_signing_key", "registry_token", "slack_webhook_url", "slack_bot_token", "slack_app_token"])
     shared_secrets = optional(list(string), [])
     config_repository = optional(object({
       github_repository = string
@@ -856,7 +855,8 @@ variable "tenants" {
       tpm_limit          = optional(number, 0)
       run_budget_usd     = optional(number, 10)
     }), {})
-    sandbox_quota = optional(map(string), {})
+    sandbox_quota                 = optional(map(string), {})
+    escalation_action_key_version = optional(number, 1)
   }))
   default = {}
 
@@ -934,4 +934,26 @@ variable "image_policy_registries" {
   description = "Registry repositories or prefixes, ending in /, a tenant pod may pull from besides the catalog, the tenant's prefix, and the pull-through caches."
   type        = list(string)
   default     = []
+}
+
+variable "slack_shared_app" {
+  description = "The shared Slack app that tenants may select with slack.app shared in escalation.yaml, by its app ID, its workspace or Enterprise Grid organization ID, and its Web API base URL. Null runs no Slack posting service. The bot token and signing secret are the secret store's slack_shared_bot_token and slack_shared_signing_secret. Run inv tenant-config-claims backfill before any tenant publishes app: shared."
+  type = object({
+    app_id          = string
+    organization_id = string
+    api_base_url    = optional(string, "https://slack.com/api/")
+  })
+  default = null
+}
+
+variable "tenant_config_enforce_claims_protocol" {
+  description = "Refuse a tenant bundle upload that does not carry the claims-protocol tag. Turn it on after inv tenant-config-claims backfill has claimed the values of the published bundles."
+  type        = bool
+  default     = false
+}
+
+variable "tenant_config_claims_backfilled" {
+  description = "Write platform/claims-protocol.json to the tenant config bucket. The webhook, the posting service, and the tenant publishers serve or publish a tenant on the shared Slack app only while it exists. Requires tenant_config_enforce_claims_protocol. Set both on a new deployment's first apply, or once inv tenant-config-claims backfill exits 0 on an existing one."
+  type        = bool
+  default     = false
 }

@@ -21,6 +21,7 @@ locals {
 
   platform_exceptions_key = "platform/image_exceptions.yaml"
   platform_policy_key     = "platform/image_policy.yaml"
+  claims_protocol_key     = "platform/claims-protocol.json"
 
   tenant_tag_keys = {
     reader    = "tenant-config-reader"
@@ -164,6 +165,23 @@ resource "aws_s3_object" "platform_image_policy" {
   key                    = local.platform_policy_key
   content                = var.image_policy
   content_type           = "application/yaml"
+  server_side_encryption = "aws:kms"
+  kms_key_id             = aws_kms_key.this[0].arn
+
+  depends_on = [
+    aws_s3_bucket_versioning.this,
+    aws_s3_bucket_server_side_encryption_configuration.this,
+    aws_s3_bucket_policy.this,
+  ]
+}
+
+resource "aws_s3_object" "claims_protocol" {
+  count = local.enabled && var.claims_backfilled ? 1 : 0
+
+  bucket                 = aws_s3_bucket.this[0].id
+  key                    = local.claims_protocol_key
+  content                = jsonencode({ claims_protocol = 1 })
+  content_type           = "application/json"
   server_side_encryption = "aws:kms"
   kms_key_id             = aws_kms_key.this[0].arn
 

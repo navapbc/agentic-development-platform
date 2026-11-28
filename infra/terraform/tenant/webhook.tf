@@ -1,38 +1,49 @@
 variable "create_webhook_secrets" {
-  description = "Create the tenant's GitHub and Jira webhook signing secrets, which only webhook_reader_arn reads. The platform's inbound webhook verifies the tenant's deliveries with them when it serves more than one tenant, and the deployment grants its role every tenant's secrets, keys, and bundles in one policy."
+  description = "Create the tenant's GitHub and Jira signing secrets, which only webhook_reader_arn reads. The platform's inbound webhook verifies the tenant's GitHub and Jira deliveries with them, however many tenants it serves, and the deployment grants its role every tenant's secrets, keys, and bundles in one policy."
+  type        = bool
+  default     = false
+}
+
+variable "create_slack_webhook_secret" {
+  description = "Create the tenant's Slack signing secret, which only webhook_reader_arn reads, and admit webhook_reader_arn to the tenant's escalation action key, whatever the tenant count. The inbound webhook verifies the tenant's Slack actions with both, because the tenant's worker signs them with the action key."
   type        = bool
   default     = false
 }
 
 variable "webhook_reader_arn" {
-  description = "Pod Identity role ARN of the platform's inbound webhook, the one principal that reads the tenant's webhook signing secrets. Required with create_webhook_secrets."
+  description = "Pod Identity role ARN of the platform's inbound webhook, the one principal that reads the tenant's webhook signing secrets and, beside the tenant worker, its escalation action key. Required with create_webhook_secrets or create_slack_webhook_secret."
   type        = string
   default     = ""
 }
 
 locals {
-  webhook_enabled      = local.enabled && var.create_webhook_secrets
-  webhook_secret_keys  = ["github_webhook_secret", "jira_webhook_secret"]
-  webhook_secret_names = local.webhook_enabled ? toset(local.webhook_secret_keys) : toset([])
+  webhook_enabled       = local.enabled && var.create_webhook_secrets
+  slack_webhook_enabled = local.enabled && var.create_slack_webhook_secret
+  webhook_secret_keys   = ["github_webhook_secret", "jira_webhook_secret", "slack_signing_secret"]
+  webhook_secret_names = toset(concat(
+    local.webhook_enabled ? ["github_webhook_secret", "jira_webhook_secret"] : [],
+    local.slack_webhook_enabled ? ["slack_signing_secret"] : [],
+  ))
 }
 
 resource "terraform_data" "webhook_guard" {
-  count = local.webhook_enabled ? 1 : 0
+  count = local.webhook_enabled || local.slack_webhook_enabled ? 1 : 0
 
   lifecycle {
     precondition {
       condition     = var.webhook_reader_arn != ""
-      error_message = "create_webhook_secrets needs webhook_reader_arn, the Pod Identity role of the platform's inbound webhook."
+      error_message = "create_webhook_secrets and create_slack_webhook_secret need webhook_reader_arn, the Pod Identity role of the platform's inbound webhook."
     }
     precondition {
       condition     = length(setintersection(toset(var.secrets), toset(local.webhook_secret_keys))) == 0
-      error_message = "secrets may not name github_webhook_secret or jira_webhook_secret, which create_webhook_secrets creates for the inbound webhook alone."
+      error_message = "secrets may not name github_webhook_secret, jira_webhook_secret, or slack_signing_secret, which the module creates for the inbound webhook alone."
     }
   }
 }
 
-# Each secret holds the value the tenant's GitHub or Jira webhook signs with. An operator stores
-# it, and until then the deployment mounts no value and the webhook refuses the tenant's deliveries.
+# Each secret holds the value the tenant's GitHub webhook, Jira webhook, or Slack app signs with.
+# An operator stores it, and until then the deployment mounts no value and the webhook refuses the
+# tenant's deliveries.
 resource "aws_secretsmanager_secret" "webhook" {
   for_each = local.webhook_secret_names
 
@@ -72,9 +83,12 @@ resource "aws_secretsmanager_secret_policy" "webhook" {
 }
 
 output "webhook" {
-  description = "The tenant's webhook signing secret ARNs, keyed github_webhook_secret and jira_webhook_secret, and the tenant key that encrypts them, which the inbound webhook's role needs through Secrets Manager, or null without create_webhook_secrets."
-  value = local.webhook_enabled ? {
-    secret_arns = { for key, secret in aws_secretsmanager_secret.webhook : key => secret.arn }
+  description = "The ARNs of the tenant secrets the inbound webhook reads, keyed github_webhook_secret, jira_webhook_secret, slack_signing_secret, and escalation_action_key, and the tenant key that encrypts them, which the inbound webhook's role needs through Secrets Manager, or null without create_webhook_secrets and create_slack_webhook_secret. With create_slack_webhook_secret alone it names only the Slack signing secret and the escalation action key."
+  value = local.webhook_enabled || local.slack_webhook_enabled ? {
+    secret_arns = merge(
+      { for key, secret in aws_secretsmanager_secret.webhook : key => secret.arn },
+      { escalation_action_key = local.escalation_action_key_arn },
+    )
     kms_key_arn = local.kms_key_arn
   } : null
 }

@@ -1,10 +1,11 @@
-"""Hermetic reaper test: delete an expired agent branch on a bare git remote."""
+"""Hermetic reaper tests: an expired agent branch on a bare git remote, deleted through REST."""
 
 from __future__ import annotations
 
 import subprocess
 from datetime import UTC, datetime, timedelta
 
+import httpx
 import pytest
 from adapters.interfaces.git_host import agent_branch_name
 from adapters.real.git_host import RealGitHost
@@ -46,16 +47,19 @@ def bare_remote(tmp_path) -> str:
     return str(remote)
 
 
-def _backend(bare_remote: str) -> RealGitHost:
+def _backend(
+    bare_remote: str, *, token: str = "", transport: httpx.AsyncBaseTransport | None = None
+) -> RealGitHost:
     return RealGitHost(
         build_single_identity_resolver(
             api_url="https://ghes.invalid/api/v3",
             owner=OWNER,
             git_base_url="",
-            token="",
+            token=token,
             repos={REPO},
         ),
         remote_url_for=lambda repo: bare_remote,
+        transport=transport,
     )
 
 
@@ -81,10 +85,15 @@ async def test_dry_run_leaves_branch_present(bare_remote: str) -> None:
     assert await _remote_heads(backend, branch)
 
 
-async def test_apply_deletes_branch_on_remote(bare_remote: str) -> None:
-    backend = _backend(bare_remote)
+async def test_apply_deletes_the_expired_branch_through_rest(bare_remote: str) -> None:
+    deleted: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        deleted.append((request.method, request.url.path))
+        return httpx.Response(204)
+
+    backend = _backend(bare_remote, token="t", transport=httpx.MockTransport(handler))
     branch = agent_branch_name("AGENTDEV-1")
-    await backend.ensure_branch(REPO, branch, "main")
     registry = InMemoryOrphanRegistry()
     orphan_id = await registry.register(
         OrphanArtifact(BRANCH, f"{REPO}:{branch}", repository=REPO, ttl_at=PAST)
@@ -95,5 +104,5 @@ async def test_apply_deletes_branch_on_remote(bare_remote: str) -> None:
     )
 
     assert len(receipt.applied) == 1
-    assert not await _remote_heads(backend, branch)
+    assert deleted == [("DELETE", f"/api/v3/repos/{OWNER}/{REPO}/git/refs/heads/{branch}")]
     assert registry.states[orphan_id] == REAPED

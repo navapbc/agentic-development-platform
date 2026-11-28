@@ -4,7 +4,7 @@ This guide covers how to set up a development environment, the standards your ch
 
 ## Ground rules
 
-- Never commit secrets. `.env` holds local values and stays out of version control.
+- Never commit secrets. `config/local/platform.env` and each tenant's `config/local/tenants/<tenant>.env` hold local values and stay out of version control.
 - Inference goes through the LiteLLM container to Amazon Bedrock.
 - The `invoke` task runner and Python under `scripts/` are the primary developer surface.
 
@@ -58,6 +58,6 @@ Authorship is recorded by the git author on each commit and is shown in the repo
 2. `basedpyright` passes on the packages you changed.
 3. `inv test` passes.
 4. `inv smoke-test` passes against a running stack.
-5. The diff contains only in-scope files, and `.env` and other secrets are not staged.
+5. The diff contains only in-scope files, and the settings files and other secrets are not staged.
 6. The commit message follows the shape above.
 

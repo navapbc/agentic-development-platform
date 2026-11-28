@@ -1,0 +1,143 @@
+# Release verification
+
+This runbook checks a release on a workstation two ways, as a developer who upgrades an existing v0.2.1 stack and as one who installs v0.3.0 fresh. Each run ends by resolving parked runs from Slack. Run the upgrade first and the fresh install last, so the workstation ends on a clean v0.3.0 stack. Check each step's expected result before the next step.
+
+Both versions use the Compose project `agentic-dev-platform` and the kind cluster of the same name, so the runs cannot overlap. Several steps are one-way. The Temporal schema upgrade, the Valkey snapshot rewrite, the ClickHouse data upgrade, and the platform migrations cannot be reversed by checking out an older version, so the backup comes first.
+
+## Prerequisites
+
+- The `v0.2.1` tag. Create it once with `git tag v0.2.1 772496f5 && git push origin v0.2.1`.
+- A Slack workspace where you can create and install an app, a channel for the alerts, a second Slack user who is not on the allowlist, and an app created from [`config/platform/slack-app-manifest.yaml.example`](../config/platform/slack-app-manifest.yaml.example) with Socket Mode on, its bot token, and an app-level token with `connections:write`. [slack-escalation.md](slack-escalation.md#creating-the-app) lists the steps to create the app.
+- A ticket that parks at a gate and one that parks for repair, prepared for each run as the Slack flows below describe.
+
+## 1. Back up the current stack
+
+| Step | Command | Expected result |
+|---|---|---|
+| 1.1 | `export BACKUP="$HOME/adp-release-backup/$(date -u +%Y%m%dT%H%M%SZ)" && mkdir -p "$BACKUP"` | The directory exists |
+| 1.2 | `cp .env "$BACKUP/" 2>/dev/null; cp -R config/local "$BACKUP/config-local" && cp .build-id.json "$BACKUP/" 2>/dev/null; ls "$BACKUP"` | `config-local` is listed, which holds `platform.env` and the tenant folders and settings files, and `.env` is listed for a stack older than `config/local/platform.env` |
+| 1.3 | `docker compose exec -T postgres sh -c 'pg_dumpall -U "$POSTGRES_USER"' > "$BACKUP/postgres.sql"` | A non-empty dump holding `agent_platform`, `temporal`, `temporal_visibility`, `langfuse`, and `litellm` |
+| 1.4 | The Langfuse, Valkey, and ClickHouse backup command in the README section on moving a checkout to the current Langfuse versions, with `"$HOME/langfuse-backup"` replaced by `"$BACKUP/langfuse"` | `cache-dump.rdb`, `clickhouse-data.tgz`, and `langfuse.dump` in `$BACKUP/langfuse` |
+
+Restoring is manual. Recreate each database from `postgres.sql`, restore the Langfuse files as the README describes, and copy `config-local` back, with `.env` when the backup holds one.
+
+## 2. Upgrade from v0.2.1
+
+| Step | Command or action | Expected result |
+|---|---|---|
+| 2.1 | From the v0.3.0 checkout, `inv local-destroy`, then `rm -f .build-id.json` | No `agentic-dev-platform` container, volume, or kind cluster remains |
+| 2.2 | `git worktree add --detach ../adp-v021 v0.2.1`, then follow the v0.2.1 README first-time setup in that worktree, with a Python virtual environment of its own | `inv smoke-test` passes on v0.2.1 |
+| 2.3 | On v0.2.1, run one ticket to a finished run and one to a resolved gate park with `inv gate` | Both executions are recorded, and `inv workflow-status` shows both closed |
+| 2.4 | Drain as `docs/tenant-config.md` describes under Before the upgrade. Then `docker compose exec -T postgres psql -U "$POSTGRES_USER" -d agent_platform -tAc "select count(*) from agent_platform.executions where state = 'AWAITING_HUMAN'"` | `0`, and `inv workflow-status` lists no running workflow |
+| 2.5 | Move each v0.2.1 ticket whose run finished to Done, or remove its intake label, as `docs/tenant-config.md` describes under After the upgrade | Intake will select only the tickets meant to run again |
+| 2.6 | `docker compose stop`, then copy `../adp-v021/.env`, `../adp-v021/config/local`, and `../adp-v021/.build-id.json` into the v0.3.0 checkout | The v0.3.0 checkout holds the v0.2.1 settings |
+| 2.7 | Apply every entry under Breaking changes in the 0.3.0 section of the [changelog](../CHANGELOG.md) to the copied `.env` and `config/local`. Move the platform settings of `.env` to `config/local/platform.env` and the tenant's settings to `config/local/tenants/<tenant>.env`, move each tenant-only file of `config/local/` into `config/local/tenants/<tenant>/`, and delete `.env`. Copy `config/local/image_policy.yaml.example`, add the Slack settings and the tenant's `escalation.yaml` as section 4 describes, and run `uv sync --locked --all-extras` | `inv config-check` reports every file current |
+| 2.8 | Run the one-time Langfuse cleanup the README names, then `inv runtime-images`, `inv gate-engine-images`, and `inv temporal-upgrade` | The images are written to `config/local/platform.env`, and Temporal reports 1.32.2 |
+| 2.9 | `inv local-up` | Every service starts, and the tenant's activity worker logs that it installed its intake schedule |
+| 2.10 | `docker compose exec -T postgres psql -U "$POSTGRES_USER" -d agent_platform -tAc "select version_num from agent_platform.alembic_version"` | `0022_model_path_post_blocks` |
+| 2.11 | `inv config-check` and `inv smoke-test` | Both pass |
+| 2.12 | `docker compose exec -T postgres psql -U "$POSTGRES_USER" -d agent_platform -tAc "select count(*) from agent_platform.executions where tenant is null"` | The two v0.2.1 executions, with no tenant |
+| 2.13 | Watch one intake cycle | Intake admits only the tickets meant to run, and none of the v0.2.1 tickets moved to Done |
+| 2.14 | Run the Slack flows in section 4 | Every flow gives its expected result |
+
+## 3. Fresh v0.3.0 install
+
+| Step | Command or action | Expected result |
+|---|---|---|
+| 3.1 | `inv local-destroy` and `rm -f .build-id.json` | No `agentic-dev-platform` container, volume, or kind cluster remains, the cluster workspace volume included |
+| 3.2 | `mv config/local config-local.upgrade && git checkout -- config/local` | Only the committed templates remain in `config/local`, with no tenant folder or settings file |
+| 3.3 | Follow the README first-time setup from `config/local/platform.env.example`, the `config/local` templates, and the tenant templates `config/local/tenants/tenant.example` and `config/local/tenants/tenant.example.env`, then add the Slack settings and the tenant's `escalation.yaml` as section 4 describes | `inv config-check` reports every file current |
+| 3.4 | `inv local-up` | Every service starts |
+| 3.5 | Repeat 2.10 and 2.11 | `0022_model_path_post_blocks`, and both checks pass |
+| 3.6 | Run the Slack flows in section 4 | Every flow gives its expected result |
+
+After the fresh run, remove `config-local.upgrade` and the `../adp-v021` worktree with `git worktree remove ../adp-v021`.
+
+## 4. Slack flows
+
+Set up Slack for the first tenant before the first start.
+
+1. In the tenant's settings file `config/local/tenants/<tenant>.env`, set `SLACK_BOT_TOKEN` to the app's bot token, `SLACK_APP_TOKEN` to its app-level token, and `ESCALATION_ACTION_KEY` to the output of `openssl rand -hex 32`. The app's bot token scopes include `usergroups:read`. An app created from an earlier manifest needs the scope added and a reinstall, as [The `usergroups:read` scope](slack-escalation.md#the-usergroupsread-scope) describes.
+2. Copy `config/local/tenants/tenant.example/escalation.yaml.example` to `config/local/tenants/<tenant>/escalation.yaml`. Set `transport: socket`, the channel ID, the organization ID, and the app ID. Keep the template's `gate: channel` and `repair: channel`, so the flows start in channel mode.
+3. To observe email, start Mailpit with `docker compose --profile verify up -d mailpit`, set `SMTP_HOST=host.docker.internal`, `SMTP_PORT=1025`, `ALERT_EMAIL_FROM`, and `ALERT_EMAIL_TO` in `config/local/platform.env`, and read the messages at http://localhost:8025.
+4. For a gate park, enable the `plan` gate in `config/local/gates.yaml`. For a repair park, give the ticket's repository a `checks.yaml` command that exits non-zero.
+5. For the group flows, create a Slack user group that holds your Slack user and not the second Slack user, and find its ID as [Finding a group ID](slack-escalation.md#finding-a-group-id) describes.
+6. Copy `config/platform/platform-escalation.yaml.example` to `config/platform/platform-escalation.yaml`, remove its `slack` section, and set `email` to one address with a dotted domain, such as `admins@platform.test`. The administrator alerts then reach Mailpit over the same `SMTP_HOST` and `SMTP_PORT`. `inv config-check` reports `platform-escalation.yaml: administrators by email to admins@platform.test`.
+7. Keep the host agent uninstalled with `inv local-renew-uninstall` until the host agent flow, because it restarts a stopped tunnel within a minute.
+
+The flows run in the order of the table. The flows through the Slack outage run in channel mode, the refused alert click sets `repair` to a list, and the last three set `gate` to a list.
+
+| Flow | Action | Expected result |
+|---|---|---|
+| Gate approve | Admit a ticket, wait for its plan gate park, and click Approve | The message shows Approved and your actor with no buttons, the run continues, and the `HUMAN_INTERVENTION_DECISION` audit event has `actor_type` `slack` and `approval_basis` `channel` in its correlation IDs |
+| Gate reject | Park a second ticket at the plan gate and click Reject | The message shows Rejected, and the run stops |
+| Repair retry | Admit the repair ticket, wait for its repair park, and click Retry repair | The run repairs again and parks again with a new message |
+| Stale click | Click Retry repair on the first repair message | An ephemeral reply says the message belongs to an earlier park, and a `SLACK_ACTION_REFUSED` event records `earlier_park` |
+| Repair abandon | Click Abandon on the newest repair message | The message shows Abandoned, and the execution ends `CANCELLED` |
+| Double click | Click Approve twice in quick succession on a gate park | One decision is recorded, and both clicks report it |
+| Run limit park | Set `IMPLEMENTATION_MAX_COST_USD=0.05` in the tenant's settings file, run `inv k8s-reload`, and admit a ticket whose CI fails | The run parks with `LIMIT_PARKED` in its audit events, and the tenant post carries Request increase, Acknowledge, Park all jobs, and Abandon |
+| Request increase | On the run limit park, choose the first amount under Request increase | An ephemeral reply states the request is with the administrators, the administrator channel shows the request with Approve and Deny, and a `LIMIT_INCREASE_REQUESTED` event records the amount |
+| Administrator Approve | In the administrator channel, click Approve on the request | The administrator post shows Granted, the tenant post shows Granted with a thread reply, a `LIMIT_INCREASE_GRANTED` event records the approver, and the run resumes its repair under the raised limit. Set `IMPLEMENTATION_MAX_COST_USD` back and run `inv k8s-reload` |
+| Period budget parks | With two runs in flight, set `TENANT_MODEL_BUDGET_USD` below the tenant's spend in the period and run `inv k8s-reload` | One period alert posts at the top level, and each run posts its park with Abandon as a reply in that alert's thread. Each `LIMIT_PARKED` event names the alert in `period_alert_ts`. Grant the period from the alert's Request increase, and both thread replies and the period alert show Granted while both runs resume |
+| Park all jobs and Resume jobs | Set `TENANT_MODEL_BUDGET_USD` below the tenant's spend in the period, run `inv k8s-reload`, and wait for the next intake pass. Click Park all jobs on the period alert, then click Resume jobs | One period alert arrives with Request increase, Acknowledge, and Park all jobs. Park all jobs records `TENANT_JOBS_PAUSED` and shows Resume jobs, and intake defers every ticket while a running run finishes. Resume jobs records `TENANT_JOBS_RESUMED` and shows Park all jobs. Set `TENANT_MODEL_BUDGET_USD` back and run `inv k8s-reload` |
+| Slack outage | Set `SLACK_BOT_TOKEN` to an invalid value, run `inv k8s-reload`, and park a run | The Jira comment and the email in Mailpit arrive, the alert's `alert_channels` omits `slack`, and the run is parked. Restore the token and run `inv k8s-reload` |
+| Model path outage | Run `inv tunnel-stop`, label a ticket for intake, and wait for one intake pass | The pass starts no run and logs `intake_deferred` with `model_unavailable` and the `bedrock_path` hop. One `model_path_unavailable` post arrives with What happened, Effect, Status, and How to validate, and with Acknowledge, Run validation, and Fix done. The tenant's Jira comment and email name no command and point to the Slack post. Mailpit holds one administrator email to `admins@platform.test` with the error and `inv tunnel-start --detach` |
+| Alert acknowledge | Click Acknowledge on the outage post | The post shows Acknowledged with your Slack user and the time, and a `SLACK_ALERT_ACTION` audit event records `acknowledged` with `actor_type` `slack` and `basis` `channel` |
+| Alert validation | Click Run validation on the outage post | An ephemeral reply says the report is posted in the thread, and a reply in the post's thread shows `FAIL Model path` |
+| Fix done while failing | Click Fix done on the outage post with the tunnel still stopped | An ephemeral reply names the `bedrock_path` hop that still fails, and the post stays open |
+| Fix done | Run `inv tunnel-start --detach`, then click Fix done on the outage post | The post shows Resolved with your Slack user, the recovery is posted in its thread, Mailpit holds one administrator recovery email, and the deferred ticket's run starts within the same minute |
+| Stale alert click | Click Acknowledge on the resolved outage post | An ephemeral reply says the alert is already resolved, and a `SLACK_ACTION_REFUSED` event records `resolved` |
+| Refused alert click | Set `repair` to a list with one `user_id` entry naming your Slack user, run `inv k8s-reload`, and repeat the model path outage. As the second Slack user, click Acknowledge | An ephemeral reply refuses it, a `SLACK_ACTION_REFUSED` event records `not_allowed`, and the post is unchanged. Run `inv tunnel-start --detach`, click Fix done as yourself, and set `repair` back to `channel` |
+| Model path outage in flight | Label a ticket for intake, and run `inv tunnel-stop` while its execution is at `PLANNING`. Wait for one intake pass, then run `inv tunnel-start --detach` and wait for the next pass | The run parks rather than fails. Its execution is at `AWAITING_HUMAN`, and a `MODEL_PATH_PARKED` audit event names the `bedrock_path` hop. The tenant's `model_unavailable` alert states that a platform fault paused the run and that work resumes on its own, with no command and no buttons, and Mailpit holds the administrator email naming `inv tunnel-start --detach` and `inv resume-parked --issue <issue>`. After the tunnel starts, the outage post is resolved, a `MODEL_PATH_RESUMED` audit event has `actor_type` `intake`, and the run completes its plan stage and continues without a new intake |
+| Host agent | Run `inv local-renew-install`, then `inv tunnel-stop`, label a ticket for intake, and wait two minutes | `launchctl print gui/$(id -u)/com.navapbc.agentic-dev-platform.local-renew` shows the agent running. The agent log `~/Library/Logs/agentic-dev-platform-local-renew.log` records the tunnel restart, the outage post's thread holds the agent's report, and the post resolves with no click, after which the ticket's run starts. Run `inv local-renew-uninstall` |
+| Outside the allowlist | In users mode, set `gate` to a list with one `user_id` entry naming your Slack user, run `inv k8s-reload`, park a gate run, and as the second Slack user click Approve | An ephemeral reply refuses it, and a `SLACK_ACTION_REFUSED` event records `not_allowed`. Click Approve as yourself, and the decision event has `approval_basis` `user` |
+| Group member | In groups mode, set `gate` to a list with one `group_id` entry naming the user group, and run `inv k8s-reload`. The restarted worker reads the group at start. Park a gate run, click Approve as the second Slack user, then click Approve as yourself | The second user's click is refused as `not_allowed`. Your click applies the decision, and the decision event has `approval_basis` `group:<group ID>` |
+| Stale group record | With the group entry in force, park a gate run. Backdate the tenant's group records with `echo "UPDATE slack_approver_groups SET refreshed_at = now() - interval '11 minutes' WHERE tenant = '<tenant>';" \| docker compose --env-file config/local/platform.env exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'`, and click Approve as yourself before the worker's next read, which runs every 5 minutes | Your click is refused with an ephemeral reply that the group's members have not been read in the last ten minutes, and a `SLACK_ACTION_REFUSED` event records `group_stale`. After the worker's next read, click Approve again, and the decision applies. Set `gate` back to `channel` |
+
+During the gate approve and the outside the allowlist flows, `RUN_LIVE_SLACK=1 LIVE_SLACK_EXECUTION_ID=<execution> pytest -q tests/integration/test_slack_live.py -k <flow>` asserts the audit records while you click, with `approved_from_slack` or `outside_the_allowlist` as the flow. The test waits up to five minutes for the click.
+
+Record the Socket Mode hosts during both runs. Run `curl -s -X POST -H "Authorization: Bearer $SLACK_APP_TOKEN" https://slack.com/api/apps.connections.open` several times, note every distinct host of the `wss://` URL it returns, and add them to the DNS Firewall hosts in the [private-bedrock example README](../infra/terraform/examples/private-bedrock/README.md). An unused URL expires on its own.
+
+### Shared app flows
+
+These flows run once, after the fresh install, with two tenants on the shared app. They need a second Slack app created from [`config/platform/slack-shared-app-manifest.yaml.example`](../config/platform/slack-shared-app-manifest.yaml.example) with Socket Mode on and an app-level token with `connections:write`, as [slack-escalation.md](slack-escalation.md#creating-the-shared-app) describes, and two channels `C1` and `C2` with the shared bot invited to both. The inbound webhook opens the Socket Mode connection out to Slack, so the local stack needs no public URL, tunnel, or relay.
+
+1. Copy `config/local/slack-shared-app.yaml.example` to `config/local/slack-shared-app.yaml` and set the shared app's ID and organization. Set `SLACK_SHARED_BOT_TOKEN` and `SLACK_SHARED_APP_TOKEN` in `config/local/platform.env`.
+2. Give the first tenant and a second tenant each an `escalation.yaml` with `app: shared`, `transport: webhook`, and its own channel, `C1` for the first tenant and `C2` for the second, and give each tenant its own `ESCALATION_ACTION_KEY` in its `config/local/tenants/<tenant>.env`. Run `inv k8s-reload`.
+
+| Flow | Action | Expected result |
+|---|---|---|
+| Poster readiness | Run `kubectl -n agentic-dev-platform get deploy slack-poster` | The deployment is available, and its log has `slack_auth_test_passed` with the shared app's organization |
+| Socket Mode connection | Run `kubectl -n agentic-dev-platform logs deploy/inbound-webhook \| grep "Socket Mode client connected"` | The webhook logs that the shared app's Socket Mode client connected |
+| Tenant isolation | Park a gate run for each tenant, and click Approve on each message | Each alert posts to its own tenant's channel only, each park resolves for its own tenant, and the `HUMAN_INTERVENTION_DECISION` events have `actor_type` `slack` |
+| Shared group read | Set the first tenant's `gate` to a list with one `group_id` entry naming the user group, run `inv k8s-reload`, park a gate run for the first tenant, and click Approve as yourself | The decision applies, its decision event has `approval_basis` `group:<group ID>`, and the `slack-poster` log has no `slack_group_read_refused` or `slack_group_read_failed` event. Set `gate` back to `channel` |
+| Unrouted channel | Change the second tenant's channel to an unused `C` ID, run `inv k8s-reload`, and click a button on the earlier `C2` message | An ephemeral reply refuses it, and a `SLACK_ACTION_REFUSED` event records `unrouted` with the `_shared` route and `C2`. Restore the channel |
+| Channel clash | Set the second tenant's channel to `C1` and run `inv k8s-reload` and `inv tenant-config-validate --tenant <second tenant>` | Both refuse the configuration, naming the `slack-channel` claim on `C1`. Restore the channel |
+| Worker identity | Run `kubectl -n agentic-dev-platform port-forward svc/slack-poster 8160:8160` in one terminal, then `curl -sk -X POST https://localhost:8160/v1/messages -H "Authorization: Bearer $(kubectl -n tenant-<tenant> create token activity-worker --audience slack-posting-service)" -d '{"text":"x"}'` in another | The posting service answers 401, since the token is bound to no pod, and its log records `slack_post_refused` |
+| Verified TLS | Run `kubectl -n tenant-<tenant> exec deploy/activity-worker -c activity-worker -- /usr/local/bin/platform-entrypoint python -m scripts.tenant_verify_aws poster-tls` | The output ends with `TENANT_VERIFY_RESULT` and a `ready` of 200 and a `days_left` of at least 30, read over TLS that trusts only `/etc/slack-poster-ca/ca.pem` |
+| Channel change | Set the second tenant's channel to an unused `C` ID, run `inv k8s-reload`, and click a button on an earlier message in its old channel | Without a tenant config bucket no claim is retained, so an ephemeral reply refuses the click and names the channel change and the `Next step:` command. Restore the channel |
+
+## 5. AWS deployment
+
+Run the read-only tenant checks in the AWS session against the deployed release, from the repository root with the session's credentials:
+
+```bash
+inv tenant-verify-aws --context <EKS kubectl context>
+```
+
+The `claims` group checks the claim protocol, including the tagging grant a tagged upload needs, and `platform/claims-protocol.json` through the bucket policy, and the `slack` group checks `slack-poster` readiness, each tenant worker's verified TLS to it, and that the fingerprint of each worker's action key matches the one `slack-poster` holds for the tenant. Each must report no FAIL. `inv tenant-config-claims report --bucket <config bucket>` must exit 0, and lists any channel a tenant retains with its release time.
+
+## 6. Deployment validation
+
+Run these from the repository root after section 3 or 4 locally, and after section 5 in the AWS session with an EKS kubectl context. A step that alerts or posts needs the Slack settings of section 4.
+
+| Step | Command or action | Expected result |
+|---|---|---|
+| 6.1 | `inv k8s-reload` | The output ends with `[deployment-validate] every check passed`, or with each failing check and its fix, and the reload exits 0 either way |
+| 6.2 | `inv deployment-validate --all-tenants` | The report holds the platform section and one section per tenant, each check reports PASS or SKIP, the output ends with `Deployment validation passed.`, and the task exits 0 |
+| 6.3 | `inv deployment-validate --tenant <tenant> --post` | The tenant's channel receives one report that names only that tenant, shows `PASS Slack post`, and lists Model path, Temporal, and Database schema as one line each with no URL, role ARN, or other tenant |
+| 6.4 | `inv deployment-validate --platform` and `inv deployment-validate` | The first reports only the platform checks. The second exits non-zero and names the three scopes |
+| 6.5 | `inv tunnel-stop`, then `inv deployment-validate --all-tenants` | The task exits 1. The platform section fails each model alias at the `bedrock_path` hop with the fix `inv tunnel-start --detach`, and each tenant section shows `FAIL Model path` without the hop. Run `inv tunnel-start --detach` and repeat 6.2 |
+| 6.6 | Set the first tenant's `SLACK_BOT_TOKEN` to an invalid value, run `inv k8s-reload`, then `kubectl -n agentic-dev-platform create job --from=cronjob/deployment-validate deployment-validate-alert` and wait for it to finish | Mailpit receives one alert email for the first tenant, since its Slack token is refused, and the alert lists `Slack auth` with its fix and no PASS line. The second tenant receives no alert. Restore the token and run `inv k8s-reload` |
+| 6.7 | In the AWS session, `inv deployment-validate --all-tenants --context <EKS kubectl context>` | The report passes, the AWS identity check reports that Bedrock accepted a call LiteLLM signed with its Pod Identity role, and each tenant section passes |
+| 6.8 | In the AWS session, `inv eks-deploy` | The deployer log ends with the validation result, and the deploy exits 0 |

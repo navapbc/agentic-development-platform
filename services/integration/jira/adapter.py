@@ -62,7 +62,7 @@ class JiraAdapter:
         return normalize_issue(
             self.get_issue(issue_key),
             raw_comments=tuple(raw_comments),
-            acceptance_field=acceptance_field(get_settings()),
+            acceptance_field=acceptance_field(),
         ).to_dict()
 
     def search_issues(self, jql: str, *, page_size: int = 50) -> list[dict[str, Any]]:
@@ -167,13 +167,11 @@ def project_of(issue_key: str) -> str:
 
 
 def build_jira_adapter(
-    settings: Settings | None = None,
     *,
     project: str,
     resolver: JiraCredentialResolver | None = None,
 ) -> JiraAdapter:
-    resolved = settings or get_settings()
-    resolver = resolver or build_jira_credential_resolver(resolved)
+    resolver = resolver or build_jira_credential_resolver()
     cred = resolver.resolve(project)
     if cred is None:
         raise UnconfiguredProjectError(project)
@@ -195,7 +193,7 @@ def build_jira_adapter_for_issue(
     *,
     resolver: JiraCredentialResolver | None = None,
 ) -> JiraAdapter:
-    return build_jira_adapter(settings, project=project_of(issue_key), resolver=resolver)
+    return build_jira_adapter(project=project_of(issue_key), resolver=resolver)
 
 
 def apply_status(reader: Any, issue_key: str, target_status: str) -> bool:
@@ -213,7 +211,7 @@ class ProjectRoutingJiraReader:
 
     def __init__(self, settings: Settings | None = None) -> None:
         self._settings = settings or get_settings()
-        self._resolver = build_jira_credential_resolver(self._settings)
+        self._resolver = build_jira_credential_resolver()
 
     def get_issue(self, issue_key: str) -> dict[str, Any]:
         adapter = build_jira_adapter_for_issue(issue_key, self._settings, resolver=self._resolver)

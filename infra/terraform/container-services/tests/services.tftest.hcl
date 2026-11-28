@@ -72,11 +72,8 @@ variables {
   database_app_secret_arn      = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/database/platform_app-a"
   database_migrator_secret_arn = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/database/platform_migrator-b"
   secret_kms_key_arn           = "arn:aws:kms:us-east-1:111111111111:key/secrets"
-  bedrock_invoke_policy_arns   = ["arn:aws:iam::111111111111:policy/agentic-platform-bedrock-invoke"]
   secret_arns = {
     coordination_shared_secret = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/coordination-c"
-    review_signing_key         = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/external/review-signing-key-d"
-    review_attestation_secret  = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentic-platform/review-attestation-e"
   }
   temporal = {
     endpoint                 = "agentic-platform-temporal-1.elb.us-east-1.amazonaws.com:7233"
@@ -121,7 +118,7 @@ run "every_task_injects_secrets_by_arn_and_holds_none" {
 
   assert {
     condition = alltrue([
-      for name in ["workflow-worker", "review-worker", "coordination", "db-migrate", "schedule-bootstrap"] :
+      for name in ["workflow-worker", "coordination", "db-migrate", "schedule-bootstrap"] :
       contains([for variable in jsondecode(aws_ecs_task_definition.workload[name].container_definitions)[1].environment : "${variable.name}=${variable.value}"], "PGSSLMODE=verify-full") &&
       !strcontains(one([for variable in jsondecode(aws_ecs_task_definition.workload[name].container_definitions)[1].environment : variable.value if variable.name == "DATABASE_URL"]), "@")
     ])
@@ -147,9 +144,10 @@ run "every_task_reads_the_repository_list_at_the_checkouts_path" {
       for name, definition in aws_ecs_task_definition.workload : alltrue([
         contains([for variable in jsondecode(definition.container_definitions)[1].environment : "${variable.name}=${variable.value}"], "REPOSITORY_ROOT=/repositories"),
         contains([for variable in jsondecode(definition.container_definitions)[1].environment : variable.name], "PLATFORM_ENV_CONFIG"),
+        !contains([for variable in jsondecode(definition.container_definitions)[1].environment : variable.name], "ENVIRONMENT"),
       ])
     ])
-    error_message = "A task does not find the repositories at the checkouts path, or does not receive the environment config."
+    error_message = "A task does not find the repositories at the checkouts path, does not receive the platform config, or receives the ENVIRONMENT setting every process refuses."
   }
 }
 
@@ -160,8 +158,6 @@ run "each_execution_role_reads_only_its_secrets" {
     condition = (
       toset(one([for statement in jsondecode(aws_iam_role_policy.workload_execution["workflow-worker"].policy).Statement : statement.Resource if statement.Sid == "ReadTheInjectedSecrets"])) ==
       toset([var.database_app_secret_arn, var.temporal.ca_secret_arn]) &&
-      toset(one([for statement in jsondecode(aws_iam_role_policy.workload_execution["review-worker"].policy).Statement : statement.Resource if statement.Sid == "ReadTheInjectedSecrets"])) ==
-      toset([var.database_app_secret_arn, var.temporal.ca_secret_arn, var.secret_arns.review_signing_key, var.secret_arns.review_attestation_secret]) &&
       toset(one([for statement in jsondecode(aws_iam_role_policy.workload_execution["db-migrate"].policy).Statement : statement.Resource if statement.Sid == "ReadTheInjectedSecrets"])) ==
       toset([var.database_migrator_secret_arn])
     )
@@ -174,25 +170,30 @@ run "each_execution_role_reads_only_its_secrets" {
   }
 }
 
-run "only_the_review_worker_calls_bedrock_and_only_the_index_writers_write_the_index" {
+run "no_review_worker_runs_on_ecs_and_only_the_index_writers_write_the_index" {
   command = apply
 
   assert {
-    condition     = length(aws_iam_role_policy_attachment.review_bedrock) == 1 && aws_iam_role_policy_attachment.review_bedrock[0].policy_arn == var.bedrock_invoke_policy_arns[0]
-    error_message = "The review worker task role lacks the Bedrock policy."
+    condition = (
+      !contains(keys(aws_ecs_task_definition.workload), "review-worker") &&
+      length([for name in keys(aws_ecs_service.platform) : name if startswith(name, "review-worker")]) == 0 &&
+      !contains(keys(aws_iam_role.workload_task), "review-worker") &&
+      !contains(keys(aws_iam_role.workload_execution), "review-worker") &&
+      !contains(keys(output.deploy.versioned_services), "review-worker") &&
+      !contains(keys(output.secret_readers), "review_signing_key") &&
+      !contains(keys(output.secret_readers), "review_attestation_secret")
+    )
+    error_message = "The module plans a review worker, its roles, or its secret readers, and each tenant's review worker runs on EKS."
   }
 
   assert {
-    condition     = toset(keys(aws_iam_role_policy.workload_task)) == toset(["review-worker", "repo-intelligence", "repo-index-worker"])
+    condition     = toset(keys(aws_iam_role_policy.workload_task)) == toset(["repo-intelligence", "repo-index-worker"])
     error_message = "A task role grants AWS actions to a task that calls none."
   }
 
   assert {
-    condition = (
-      one([for statement in jsondecode(aws_iam_role_policy.workload_task["review-worker"].policy).Statement : statement.Action if statement.Sid == "MountCheckouts"]) == ["elasticfilesystem:ClientMount"] &&
-      one([for statement in jsondecode(aws_iam_role_policy.workload_task["repo-index-worker"].policy).Statement : statement.Action if statement.Sid == "MountIndex"]) == ["elasticfilesystem:ClientMount", "elasticfilesystem:ClientWrite"]
-    )
-    error_message = "The review worker can write the checkouts, or the index worker cannot write the index."
+    condition     = one([for statement in jsondecode(aws_iam_role_policy.workload_task["repo-index-worker"].policy).Statement : statement.Action if statement.Sid == "MountIndex"]) == ["elasticfilesystem:ClientMount", "elasticfilesystem:ClientWrite"]
+    error_message = "The index worker cannot write the index."
   }
 }
 
@@ -203,7 +204,6 @@ run "each_service_joins_only_the_groups_it_needs" {
     condition = (
       contains(aws_ecs_service.platform["workflow-worker-blue"].network_configuration[0].security_groups, "sg-0temporalclient") &&
       !contains(aws_ecs_service.platform["workflow-worker-blue"].network_configuration[0].security_groups, "sg-0internalclient") &&
-      contains(aws_ecs_service.platform["review-worker-green"].network_configuration[0].security_groups, "sg-0internalclient") &&
       !contains(aws_ecs_service.platform["repo-intelligence"].network_configuration[0].security_groups, "sg-0temporalclient")
     )
     error_message = "A service joins a group it does not call through, or misses one it does."
@@ -228,7 +228,7 @@ run "each_temporal_worker_has_a_blue_and_a_green_slot" {
 
   assert {
     condition = toset(keys(aws_ecs_service.platform)) == toset([
-      "workflow-worker-blue", "workflow-worker-green", "review-worker-blue", "review-worker-green",
+      "workflow-worker-blue", "workflow-worker-green",
       "coordination", "repo-intelligence", "repo-index-worker",
     ])
     error_message = "A Temporal worker lacks a slot, or another service has slots."
@@ -311,14 +311,8 @@ run "each_tenant_gets_its_own_workspace_root" {
   }
 
   assert {
-    condition = (
-      aws_efs_access_point.workspace["tenants"].root_directory[0].path == "/tenants" &&
-      contains(
-        [for mount in jsondecode(aws_ecs_task_definition.workload["review-worker"].container_definitions)[1].mountPoints : "${mount.sourceVolume}:${mount.containerPath}:${try(mount.readOnly, false)}"],
-        "tenants:/tenants:true",
-      )
-    )
-    error_message = "The review worker does not mount the tenants root read-only at the path the tenant workers write."
+    condition     = aws_efs_access_point.workspace["tenants"].root_directory[0].path == "/tenants"
+    error_message = "The tenants access point is not rooted at the path the tenant workers write."
   }
 
   assert {
@@ -380,14 +374,6 @@ run "repository_intelligence_reads_each_tenant_checkouts_and_bundle" {
       toset(["tmp:/tmp:false", "tenants:/tenants:true", "index:/app/repository_indexes:false"])
     ])
     error_message = "Repository intelligence or the index worker does not mount the tenants root read-only in place of the checkouts."
-  }
-
-  assert {
-    condition = contains(
-      [for mount in jsondecode(aws_ecs_task_definition.workload["review-worker"].container_definitions)[1].mountPoints : "${mount.sourceVolume}:${mount.containerPath}:${try(mount.readOnly, false)}"],
-      "checkouts:/repositories:true",
-    )
-    error_message = "The review worker lost its checkouts mount."
   }
 
   assert {
@@ -454,28 +440,6 @@ run "repository_intelligence_reads_each_tenant_checkouts_and_bundle" {
   }
 
   assert {
-    condition = (
-      one([for statement in jsondecode(aws_iam_role_policy.workload_task["review-worker"].policy).Statement : statement if statement.Sid == "ListTheTenantBundles"]).Condition.StringLike["s3:prefix"] == ["tenants/*"] &&
-      one([for statement in jsondecode(aws_iam_role_policy.workload_task["review-worker"].policy).Statement : statement if statement.Sid == "ReadTheTenantBundles"]).Resource == "arn:aws:s3:::agentic-platform-tenant-config-abc/tenants/*" &&
-      one([for statement in jsondecode(aws_iam_role_policy.workload_task["review-worker"].policy).Statement : statement if statement.Sid == "ReadTheTenantBundles"]).Action == ["s3:GetObject", "s3:GetObjectVersion"] &&
-      one([for statement in jsondecode(aws_iam_role_policy.workload_task["review-worker"].policy).Statement : statement if statement.Sid == "DecryptTheTenantBundles"]).Resource == var.tenant_config_kms_key_arn &&
-      one([for statement in jsondecode(aws_iam_role_policy.workload_task["review-worker"].policy).Statement : statement if statement.Sid == "DecryptTheTenantBundles"]).Condition.StringEquals["kms:ViaService"] == "s3.us-east-1.amazonaws.com" &&
-      contains([for variable in jsondecode(aws_ecs_task_definition.workload["review-worker"].container_definitions)[1].environment : "${variable.name}=${variable.value}"], "TENANT_CONFIG_BUCKET=agentic-platform-tenant-config-abc") &&
-      contains(output.repository_intelligence_roles.task_role_arns, aws_iam_role.workload_task["review-worker"].arn)
-    )
-    error_message = "The review worker does not read the tenant bundles read-only through S3, does not receive the config bucket, or is not listed as a bundle reader."
-  }
-
-  assert {
-    condition = alltrue([
-      for statement in jsondecode(aws_iam_role_policy.workload_task["review-worker"].policy).Statement :
-      alltrue([for action in flatten([statement.Action]) : contains(["s3:ListBucket", "s3:ListBucketVersions", "s3:GetObject", "s3:GetObjectVersion", "kms:Decrypt"], action)])
-      if can(regex("TenantBundles$", statement.Sid))
-    ])
-    error_message = "The review worker holds a tenant bundle action beyond list, read, and decrypt."
-  }
-
-  assert {
     condition     = contains(keys(aws_vpc_security_group_ingress_rule.workspace_from_workloads), "repo-intelligence") && contains(keys(aws_vpc_security_group_ingress_rule.workspace_from_workloads), "repo-index-worker")
     error_message = "The workspace mount targets do not admit NFS from repository intelligence and the index worker."
   }
@@ -486,8 +450,8 @@ run "repository_intelligence_reads_each_tenant_checkouts_and_bundle" {
   }
 
   assert {
-    condition     = output.repository_intelligence_roles.execution_role_arn != "" && output.repository_intelligence_roles.token_reader_role_arn == aws_iam_role.workload_task["repo-intelligence"].arn && length(output.repository_intelligence_roles.task_role_arns) == 3
-    error_message = "The output does not name the repository intelligence execution role, its token reader task role, and the three bundle reader task roles."
+    condition     = output.repository_intelligence_roles.execution_role_arn != "" && output.repository_intelligence_roles.token_reader_role_arn == aws_iam_role.workload_task["repo-intelligence"].arn && length(output.repository_intelligence_roles.task_role_arns) == 2
+    error_message = "The output does not name the repository intelligence execution role, its token reader task role, and the two bundle reader task roles."
   }
 }
 
@@ -503,14 +467,6 @@ run "without_tenants_repository_intelligence_reads_the_checkouts" {
       )
     ])
     error_message = "Without tenants, repository intelligence or the index worker does not mount the checkouts, or reads a config bucket."
-  }
-
-  assert {
-    condition = (
-      !contains([for variable in jsondecode(aws_ecs_task_definition.workload["review-worker"].container_definitions)[1].environment : variable.name], "TENANT_CONFIG_BUCKET") &&
-      length([for statement in jsondecode(aws_iam_role_policy.workload_task["review-worker"].policy).Statement : statement if can(regex("TenantBundles$", statement.Sid))]) == 0
-    )
-    error_message = "Without tenants, the review worker receives a config bucket or reads one."
   }
 
   assert {

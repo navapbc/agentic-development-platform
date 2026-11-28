@@ -6,8 +6,8 @@ so they are pushed to the local registry the gate engines use, which the host re
 `localhost:5001` and the pods as `host.docker.internal:5001`. The command writes
 OPENHANDS_AGENT_SERVER_IMAGE, the agent-server-python-node image, GATE_ENGINE_BUILDER_IMAGE,
 RUNTIME_IMAGES, which makes catalog:agent-server-jvm, catalog:agent-server-go, and the
-catalog:checks-* images resolve, SEMGREP_IMAGE, and TRIVY_IMAGE into .env, each reference pinned
-by its digest.
+catalog:checks-* images resolve, SEMGREP_IMAGE, TRIVY_IMAGE, and OSV_SCANNER_IMAGE into
+config/local/platform.env, each reference pinned by its digest.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ LOG = "[runtime-images]"
 BUILDER = "agentic-dev-platform-buildah"
 SEMGREP_IMAGE = "agentic-dev-platform-semgrep"
 TRIVY_IMAGE = "agentic-dev-platform-trivy"
+OSV_SCANNER_IMAGE = "agentic-dev-platform-osv-scanner"
 
 
 def local_digest(image: str, settings) -> str:
@@ -54,7 +55,7 @@ def main(argv: list[str] | None = None) -> int:
 
     from scripts.build_id import release_version
     from scripts.config import get_settings
-    from scripts.env_file import set_values
+    from scripts.env_file import PLATFORM_ENV_FILE, set_values
     from scripts.gate_engine_images import pull_references
     from scripts.k8s_cluster import (
         REPO_ROOT,
@@ -66,6 +67,7 @@ def main(argv: list[str] | None = None) -> int:
     from scripts.publish_platform_images import (
         AGENT_SERVER,
         BUILDAH,
+        OSV_SCANNER,
         RUNTIME_IMAGES,
         SEMGREP,
         TRIVY,
@@ -96,6 +98,7 @@ def main(argv: list[str] | None = None) -> int:
         **{name: spec for name, spec in RUNTIME_IMAGES.items() if name.startswith("checks-")},
         SEMGREP_IMAGE: SEMGREP,
         TRIVY_IMAGE: TRIVY,
+        OSV_SCANNER_IMAGE: OSV_SCANNER,
     }
     with build_context(REPO_ROOT) as context:
         pushed = push_locally(
@@ -107,17 +110,19 @@ def main(argv: list[str] | None = None) -> int:
     agent_server = pinned.pop(AGENT_SERVER.name)
     semgrep = pinned.pop(SEMGREP_IMAGE)
     trivy = pinned.pop(TRIVY_IMAGE)
+    osv_scanner = pinned.pop(OSV_SCANNER_IMAGE)
     values = {
         "RUNTIME_IMAGES": json.dumps(pinned, separators=(",", ":")),
         "OPENHANDS_AGENT_SERVER_IMAGE": agent_server,
         "GATE_ENGINE_BUILDER_IMAGE": builder,
         "SEMGREP_IMAGE": semgrep,
         "TRIVY_IMAGE": trivy,
+        "OSV_SCANNER_IMAGE": osv_scanner,
         "GATE_REGISTRY_TLS_VERIFY": "false",
     }
     set_values(values)
     for key, value in values.items():
-        print(f"{LOG} wrote {key}={value} to .env")
+        print(f"{LOG} wrote {key}={value} to {PLATFORM_ENV_FILE}")
     print(f"{LOG} run inv k8s-reload to roll the workers onto them")
     return 0
 

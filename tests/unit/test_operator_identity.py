@@ -12,7 +12,7 @@ def test_local_operator_matches_the_os_account():
         import pwd
 
         assert identity == pwd.getpwuid(os.getuid()).pw_name
-    except (ImportError, KeyError):
+    except ImportError, KeyError:
         import getpass
 
         assert identity == getpass.getuser()
@@ -23,7 +23,7 @@ def test_local_operator_ignores_a_spoofed_actor_environment(monkeypatch):
         import pwd
 
         expected = pwd.getpwuid(os.getuid()).pw_name
-    except (ImportError, KeyError):
+    except ImportError, KeyError:
         return
     monkeypatch.setenv("USER", "someone-else")
     monkeypatch.setenv("LOGNAME", "someone-else")

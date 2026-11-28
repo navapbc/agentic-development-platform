@@ -22,10 +22,8 @@ def test_jira_allowlist_and_acceptance_field_are_read_from_the_config(tmp_path: 
         "config_version: 1\nallowlist:\n  - ' AGENTDEV '\n  - ''\n"
         "acceptance_field: customfield_10\n",
     )
-    settings = hermetic_settings()
-
-    assert allowed_projects(settings, environment="local", root=tmp_path) == {"AGENTDEV"}
-    assert acceptance_field(settings, environment="local", root=tmp_path) == "customfield_10"
+    assert allowed_projects(root=tmp_path) == {"AGENTDEV"}
+    assert acceptance_field(root=tmp_path) == "customfield_10"
 
 
 def test_region_and_profile_defaults_are_fedramp_aligned():

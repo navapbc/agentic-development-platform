@@ -84,7 +84,7 @@ def authorship_signing_active(settings: Settings | None = None) -> bool:
 def store_repo_root(settings: Settings | None = None) -> str:
     from services.integration.tickets.rebar_config import load_rebar_backend_config
 
-    return load_rebar_backend_config(settings or get_settings()).repo_root
+    return load_rebar_backend_config().repo_root
 
 
 def public_key_line(key_path: str) -> str:

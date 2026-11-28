@@ -240,7 +240,10 @@ def test_a_third_build_with_both_slots_pinned_stops_before_any_service_moves() -
         slots={"blue": ("workflow:1", 2), "green": ("workflow:2", 2)},
     )
 
-    with pytest.raises(deployer.DeployError, match="both workflow-worker slots"):
+    with pytest.raises(
+        deployer.DeployError,
+        match=r"both workflow-worker slots .*build 0\.3\.0\.0 pinned by .* and build 0\.3\.0\.1",
+    ):
         deployer.deploy(ecs, SETTINGS)
 
     assert not any(call[0] == "update_service" for call in ecs.calls)

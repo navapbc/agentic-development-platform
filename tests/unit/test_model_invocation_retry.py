@@ -50,3 +50,52 @@ def test_the_retry_policy_backs_off_exponentially_across_several_attempts():
     assert MODEL_RETRY_POLICY.initial_interval is not None
     assert MODEL_RETRY_POLICY.maximum_interval is not None
     assert MODEL_RETRY_POLICY.maximum_interval > MODEL_RETRY_POLICY.initial_interval
+
+
+_EXPIRED_SESSION = (
+    '{"error":{"message":"litellm.APIConnectionError: Credentials were refreshed, but the '
+    'refreshed credentials are still expired.","type":null,"param":null,"code":"500"}}'
+)
+_EXPIRED_TOKEN = (
+    "litellm.APIConnectionError: BedrockException - An error occurred (ExpiredTokenException) "
+    "when calling the InvokeModel operation: The security token included in the request is expired"
+)
+_UNRECOGNIZED_CLIENT = (
+    'litellm.AuthenticationError: BedrockException - {"message":"The security token included in '
+    'the request is invalid.","__type":"UnrecognizedClientException"}'
+)
+_TUNNEL_DOWN = (
+    "litellm.APIConnectionError: BedrockException - Cannot connect to host "
+    "bedrock-runtime.us-east-1.amazonaws.com:443 ssl:default [Connection refused]"
+)
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "hop"),
+    [
+        (500, _EXPIRED_SESSION, "credentials"),
+        (500, _EXPIRED_TOKEN, "credentials"),
+        (401, _UNRECOGNIZED_CLIENT, "credentials"),
+        (500, _TUNNEL_DOWN, "bedrock_path"),
+    ],
+)
+def test_a_model_path_failure_fails_at_once_naming_its_hop(status: int, body: str, hop: str):
+    from services.orchestration.model_path import model_unavailable_hop
+
+    with pytest.raises(ApplicationError) as caught:
+        _raise_for_status(_response(status, body))
+
+    assert caught.value.type == "ModelUnavailable"
+    assert caught.value.non_retryable is True
+    assert model_unavailable_hop(caught.value) == hop
+    assert f"the {hop} hop" in str(caught.value)
+
+
+def test_an_unrelated_gateway_failure_stays_retryable():
+    body = 'litellm.InternalServerError: BedrockException - {"message":"Model is overloaded"}'
+
+    with pytest.raises(ApplicationError) as caught:
+        _raise_for_status(_response(503, body))
+
+    assert caught.value.type == "LiteLLMTransient"
+    assert caught.value.non_retryable is False

@@ -256,7 +256,7 @@ run "an_acm_frontend_terminates_tls_at_the_nlb" {
   assert {
     condition = (
       aws_lb_listener.frontend[0].protocol == "TLS" && aws_lb_listener.frontend[0].alpn_policy == "HTTP2Only" &&
-      aws_lb_listener.frontend[0].ssl_policy == "ELBSecurityPolicy-TLS13-1-2-FIPS-2023-04" &&
+      aws_lb_listener.frontend[0].ssl_policy == "ELBSecurityPolicy-TLS13-1-2-Res-FIPS-2023-04" &&
       aws_lb_target_group.frontend[0].protocol == "TLS"
     )
     error_message = "The ACM frontend is not terminated under the FIPS policy with HTTP/2 and re-encrypted."

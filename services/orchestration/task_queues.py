@@ -3,13 +3,17 @@
 Every run of a tenant runs on agent-platform-<tenant>, the base queue TEMPORAL_TASK_QUEUE with the
 tenant appended. The shared workflow worker polls the base queue and every tenant queue that
 TENANTS lists, and each tenant's activity worker polls its own queue only, so a run's activities,
-which default to its workflow's queue, reach only its tenant's worker. Review activities keep the
-explicit review queue.
+which default to its workflow's queue, reach only its tenant's worker. A run's review-stage
+activities run on agent-platform-review-<tenant>, the base REVIEW_TASK_QUEUE with the tenant
+appended, which only that tenant's review worker polls.
 """
 
 from __future__ import annotations
 
+import re
 from typing import Any
+
+TENANT_NAME = re.compile(r"^(?!default$)[a-z][a-z0-9]{1,15}$")
 
 
 def tenant_names(settings: Any) -> list[str]:
@@ -25,6 +29,17 @@ def run_task_queue(settings: Any) -> str:
     if not settings.tenant:
         return settings.temporal_task_queue
     return tenant_task_queue(settings, settings.tenant)
+
+
+def review_task_queue(settings: Any, tenant: str) -> str:
+    return f"{settings.review_task_queue}-{tenant}"
+
+
+def run_review_task_queue(settings: Any) -> str:
+    """Return the review queue of this process's tenant, or the base review queue without one."""
+    if not settings.tenant:
+        return settings.review_task_queue
+    return review_task_queue(settings, settings.tenant)
 
 
 def workflow_task_queues(settings: Any) -> list[str]:

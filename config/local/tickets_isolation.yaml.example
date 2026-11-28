@@ -1,0 +1,7 @@
+# The buckets and writer roles no tenant's rebar ticket store may reuse. Validation refuses a
+# tenant tickets.yaml whose store or roles overlap any of them, and a tickets.yaml that sets its own.
+config_version: 1
+evidence_bucket: agentic-evidence
+audit_bucket: agentic-audit
+evidence_writer_role: arn:aws:iam::000000000000:role/evidence-writer
+audit_writer_role: arn:aws:iam::000000000000:role/audit-writer

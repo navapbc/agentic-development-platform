@@ -313,10 +313,121 @@ async def test_a_postgres_claim_is_unique_per_tenant_task_and_work_unit():
     engine = _InsertCapturingEngine(matched=True)
     store = PostgresWorkClaimStore(cast(AsyncEngine, engine))
 
-    outcome = await store.try_claim(replace(_unit("u1"), tenant="alpha"))
+    outcome = await store.try_claim(replace(_unit("u1"), tenant="alpha", repo="org/app"))
 
     assert outcome.won is True
     assert outcome.claim_id == claim_id_for("AGENTDEV-1", "u1", "alpha")
     assert "ON CONFLICT (tenant, task_id, work_unit) DO NOTHING" in engine.sql
     assert engine.params["tenant"] == "alpha"
+    assert engine.params["repo"] == "org/app"
     assert engine.params["claim_id"] == outcome.claim_id
+
+
+async def _covering(store, path: str, *, tenant: str = "", repo: str = "") -> list[str]:
+    holders = await store.active_claims_covering(
+        path, task_id="AGENTDEV-1", work_unit="u1", tenant=tenant, repo=repo
+    )
+    return [holder.task_id for holder in holders]
+
+
+async def test_an_active_claim_of_another_unit_holds_the_paths_its_file_impact_covers():
+    store = InMemoryWorkClaimStore()
+    await store.try_claim(_unit("u1", "src", "tsconfig.json", task_id="AGENTDEV-2"))
+    await store.try_claim(replace(_unit("u1", "README.md", task_id="AGENTDEV-3"), tenant="beta"))
+
+    assert await _covering(store, "src/store.ts") == ["AGENTDEV-2"]
+    assert await _covering(store, "tsconfig.json") == ["AGENTDEV-2"]
+    assert await _covering(store, "srcx/store.ts") == []
+    assert await _covering(store, "README.md") == []
+    assert await _covering(store, "README.md", tenant="beta") == ["AGENTDEV-3"]
+
+
+async def test_only_a_claim_on_the_same_repository_or_an_unrecorded_one_holds_a_path():
+    store = InMemoryWorkClaimStore()
+    await store.try_claim(replace(_unit("u1", "src", task_id="AGENTDEV-2"), repo="org/app"))
+    await store.try_claim(replace(_unit("u1", "src", task_id="AGENTDEV-3"), repo="org/api"))
+    await store.try_claim(_unit("u1", "src", task_id="AGENTDEV-4"))
+
+    assert await _covering(store, "src/store.ts", repo="org/app") == ["AGENTDEV-2", "AGENTDEV-4"]
+    assert await _covering(store, "src/store.ts") == ["AGENTDEV-2", "AGENTDEV-3", "AGENTDEV-4"]
+
+
+async def test_the_claimants_own_claim_does_not_hold_its_files():
+    store = InMemoryWorkClaimStore()
+    await store.try_claim(_unit("u1", "src"))
+
+    assert await _covering(store, "src/store.ts") == []
+
+
+async def test_a_released_or_completed_claim_does_not_hold_its_files():
+    store = InMemoryWorkClaimStore()
+    released = replace(_unit("u1", "src", task_id="AGENTDEV-2"), workflow_id="wf-2")
+    completed = replace(_unit("u1", "src", task_id="AGENTDEV-3"), workflow_id="wf-3")
+    released_claim = await store.try_claim(released)
+    completed_claim = await store.try_claim(completed)
+
+    await store.release(released_claim.claim_id, owner_workflow_id="wf-2")
+    await store.complete(completed_claim.claim_id, owner_workflow_id="wf-3")
+
+    assert await _covering(store, "src/store.ts") == []
+
+
+async def test_a_claim_whose_owner_workflow_stopped_does_not_hold_its_files():
+    async def owner_active(workflow_id: str) -> bool:
+        return workflow_id == "wf-live"
+
+    store = InMemoryWorkClaimStore(owner_active=owner_active)
+    await store.try_claim(replace(_unit("u1", "src", task_id="AGENTDEV-2"), workflow_id="wf-gone"))
+    await store.try_claim(replace(_unit("u1", "src", task_id="AGENTDEV-3"), workflow_id="wf-live"))
+
+    assert await _covering(store, "src/store.ts") == ["AGENTDEV-3"]
+
+
+class _RowsConnection(_StatementCapturingConnection):
+    async def execute(self, statement):
+        compiled = statement.compile(dialect=postgresql.dialect())
+        self._engine.sql = str(compiled)
+        self._engine.params = dict(compiled.params)
+        return SimpleNamespace(all=lambda: self._engine.rows)
+
+
+class _RowsEngine(_StatementCapturingEngine):
+    def __init__(self, rows: list[SimpleNamespace]) -> None:
+        super().__init__(matched=True)
+        self.rows = rows
+
+    def begin(self):
+        return _RowsConnection(self)
+
+
+def _claim_row(task_id: str, *files: str, repo: str = "") -> SimpleNamespace:
+    return SimpleNamespace(
+        repo=repo,
+        task_id=task_id,
+        work_unit="u1",
+        execution_id="exec-2",
+        agent_id="agent-u1",
+        file_impact=list(files) or None,
+        owner_workflow_id="wf-2",
+    )
+
+
+async def test_a_postgres_claim_query_reads_active_claims_and_keeps_those_covering_the_path():
+    engine = _RowsEngine(
+        [
+            _claim_row("AGENTDEV-2", "src", repo="org/app"),
+            _claim_row("AGENTDEV-3", "docs"),
+            _claim_row("AGENTDEV-4", "src", repo="org/api"),
+        ]
+    )
+    store = PostgresWorkClaimStore(cast(AsyncEngine, engine))
+
+    holders = await store.active_claims_covering(
+        "src/store.ts", task_id="AGENTDEV-1", work_unit="u1", tenant="alpha", repo="org/app"
+    )
+
+    assert [(holder.task_id, holder.file_impact) for holder in holders] == [
+        ("AGENTDEV-2", ("src",))
+    ]
+    assert CLAIMED in engine.params.values()
+    assert "alpha" in engine.params.values()

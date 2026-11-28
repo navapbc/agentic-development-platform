@@ -153,7 +153,7 @@ def resolve_symbol_span(repo_root: str | Path, qualified: str) -> SymbolSpan | N
         return None
     try:
         tree = ast.parse(module_file.read_text(encoding="utf-8"))
-    except (OSError, SyntaxError):
+    except OSError, SyntaxError:
         return None
     node = _find_node(tree, remainder)
     if node is None:
@@ -178,7 +178,7 @@ def build_test_index(repo_root: str | Path) -> dict[str, Location]:
             continue
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"))
-        except (OSError, SyntaxError):
+        except OSError, SyntaxError:
             continue
         module = path.stem
         rel = relative.as_posix()

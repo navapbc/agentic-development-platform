@@ -92,7 +92,7 @@ def test_no_diff_rejected(tmp_path):
 
 
 def test_predicted_outcome_only_pass_accepts():
-    assert predicted_outcome(Verdict.PASS) == "met"
+    assert predicted_outcome(Verdict.PASSED) == "met"
     assert predicted_outcome(Verdict.BLOCK) == "unmet"
     assert predicted_outcome(Verdict.INDETERMINATE) == "unmet"
 
@@ -176,7 +176,7 @@ def test_scoring_perfect_agreement(tmp_path):
     _write_case(tmp_path, "a", "met", base="a\n", head="b\n")
     _write_case(tmp_path, "b", "unmet", base="a\n", head="b\n")
     cases = read_acceptance_set(tmp_path)
-    kernel = _VerdictKernel({"met": Verdict.PASS, "unmet": Verdict.BLOCK}, cases)
+    kernel = _VerdictKernel({"met": Verdict.PASSED, "unmet": Verdict.BLOCK}, cases)
     scorecard = score(cases, kernel)
     assert scorecard.agreements == 2
     assert scorecard.false_accepts == 0
@@ -189,7 +189,7 @@ def test_scoring_counts_false_accepts(tmp_path):
     _write_case(tmp_path, "a", "met", base="a\n", head="b\n")
     _write_case(tmp_path, "b", "unmet", base="a\n", head="b\n")
     cases = read_acceptance_set(tmp_path)
-    kernel = _VerdictKernel({"met": Verdict.PASS, "unmet": Verdict.PASS}, cases)
+    kernel = _VerdictKernel({"met": Verdict.PASSED, "unmet": Verdict.PASSED}, cases)
     scorecard = score(cases, kernel)
     assert scorecard.false_accepts == 1
     passed, reasons = assess(scorecard)
@@ -218,7 +218,7 @@ def test_adequacy_bar_is_fixed_not_computed():
 @requires_git
 def test_score_runs_through_the_committed_set_with_an_oracle():
     cases = read_acceptance_set(_ROOT_SET)
-    kernel = _VerdictKernel({"met": Verdict.PASS, "unmet": Verdict.BLOCK}, cases)
+    kernel = _VerdictKernel({"met": Verdict.PASSED, "unmet": Verdict.BLOCK}, cases)
     scorecard = score(cases, kernel)
     assert scorecard.agreement_rate == 1.0
     assert scorecard.results[0].verdict in ("pass", "block")

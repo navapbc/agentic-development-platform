@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
+from scripts import config_check
 from scripts.config_check import report_required_secrets
 from services.integration.credentials import (
     ConfigError,
@@ -11,6 +13,9 @@ from services.integration.credentials import (
     current_config_version,
     require_current_config,
 )
+from tests.support import hermetic_settings, local_tenants
+
+TENANT_TEMPLATE = Path(__file__).resolve().parents[2] / "config/local/tenants/tenant.example"
 
 
 def _write(root: Path, name: str, suffix: str, body: str) -> None:
@@ -35,34 +40,34 @@ def test_up_to_date_passes(tmp_path: Path) -> None:
     _write(tmp_path, "widgets", ".example", "config_version: 1\nmodes: {}\n")
     _write(tmp_path, "widgets", "", "config_version: 1\nmodes: {}\n")
 
-    status = config_status("widgets", environment="local", root=tmp_path, current=1)
+    status = config_status("widgets", root=tmp_path, current=1)
 
     assert status.present is True
     assert status.up_to_date is True
     assert status.operator_version == 1
     assert status.current_version == 1
     assert status.example_matches_current is True
-    require_current_config("widgets", environment="local", root=tmp_path, current=1)
+    require_current_config("widgets", root=tmp_path, current=1)
 
 
 def test_require_current_config_does_not_read_the_example(tmp_path: Path) -> None:
     _write(tmp_path, "widgets", "", "config_version: 1\nmodes: {}\n")
 
-    require_current_config("widgets", environment="local", root=tmp_path, current=1)
+    require_current_config("widgets", root=tmp_path, current=1)
 
 
 def test_outdated_fails_closed(tmp_path: Path) -> None:
     _write(tmp_path, "widgets", "", "config_version: 1\nmodes: {}\n")
 
     with pytest.raises(ConfigError, match="expects version 2"):
-        require_current_config("widgets", environment="local", root=tmp_path, current=2)
+        require_current_config("widgets", root=tmp_path, current=2)
 
 
 def test_config_status_reports_template_drift(tmp_path: Path) -> None:
     _write(tmp_path, "widgets", ".example", "config_version: 1\nmodes: {}\n")
     _write(tmp_path, "widgets", "", "config_version: 1\nmodes: {}\n")
 
-    status = config_status("widgets", environment="local", root=tmp_path, current=2)
+    status = config_status("widgets", root=tmp_path, current=2)
 
     assert status.example_version == 1
     assert status.current_version == 2
@@ -70,21 +75,21 @@ def test_config_status_reports_template_drift(tmp_path: Path) -> None:
 
 
 def test_missing_operator_file_does_not_fail_closed(tmp_path: Path) -> None:
-    require_current_config("widgets", environment="local", root=tmp_path, current=1)
+    require_current_config("widgets", root=tmp_path, current=1)
 
 
 def test_config_status_requires_the_example(tmp_path: Path) -> None:
     _write(tmp_path, "widgets", "", "config_version: 1\n")
 
     with pytest.raises(ConfigError, match="missing committed template"):
-        config_status("widgets", environment="local", root=tmp_path, current=1)
+        config_status("widgets", root=tmp_path, current=1)
 
 
 def test_non_integer_version_raises(tmp_path: Path) -> None:
     _write(tmp_path, "widgets", "", "config_version: nope\n")
 
     with pytest.raises(ConfigError, match="config_version must be an integer"):
-        require_current_config("widgets", environment="local", root=tmp_path, current=1)
+        require_current_config("widgets", root=tmp_path, current=1)
 
 
 def test_config_check_reports_a_missing_required_secret(tmp_path: Path, capsys) -> None:
@@ -112,3 +117,25 @@ def test_config_check_passes_a_present_required_secret(tmp_path: Path, capsys) -
 
     assert report_required_secrets(resolver) == 0
     assert "MISSING" not in capsys.readouterr().out
+
+
+def test_config_check_without_a_tenant_reads_each_local_tenant_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    tenants = local_tenants(monkeypatch, tmp_path, "adp", "beta")
+    monkeypatch.setenv("PLATFORM_ENV_CONFIG_DIR", str(tenants.parent))
+    monkeypatch.setattr(config_check, "get_settings", lambda: hermetic_settings(tenant=""))
+    shutil.copytree(TENANT_TEMPLATE, tenants / "tenant.example")
+    (tenants / "adp" / "github.yaml").write_text("config_version: 2\n")
+    (tenants / "beta" / "github.yaml").write_text("config_version: 1\n")
+
+    assert config_check.main() == 1
+
+    output = capsys.readouterr().out
+    assert "[config-check] tenants/adp/github: up to date (version 2)" in output
+    assert "[config-check] tenants/beta/github: OUTDATED, version 1 < 2" in output
+    assert (
+        "[config-check] tenants/adp/repositories: not created "
+        "(copy config/local/tenants/tenant.example/repositories.yaml)"
+    ) in output
+    assert "tenant file, and this process reads no tenant's bundle" not in output

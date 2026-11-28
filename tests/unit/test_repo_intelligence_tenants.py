@@ -6,16 +6,14 @@ import logging
 from pathlib import Path
 
 import pytest
+from services.integration.credentials import ConfigError
 from services.integration.tenant_config import DirectorySource
 from services.repository_intelligence import tenants
 from services.repository_intelligence.indexing.reindex import IndexRoots
 from services.repository_intelligence.tenant_tokens import derive_token
 from services.repository_intelligence.tenants import (
-    PLATFORM_TENANT,
     TenantRegistries,
     configured_tokens,
-    home_tenant,
-    migrate_home_indexes,
     served_tenants,
 )
 from tests.support import configure_repositories, hermetic_settings
@@ -60,29 +58,24 @@ def _registries(tmp_path: Path, monkeypatch, *, tenants_value="adp,beta", tenant
     return settings, registries
 
 
-def test_served_tenants_prefers_tenants_then_tenant_then_platform_mode():
+def test_served_tenants_prefers_tenants_then_tenant():
     assert served_tenants(hermetic_settings(tenants="adp, beta", tenant="beta")) == ["adp", "beta"]
     assert served_tenants(hermetic_settings(tenants="", tenant="adp")) == ["adp"]
     assert served_tenants(hermetic_settings(tenants="", tenant="")) == []
 
 
-def test_home_tenant_is_tenant_when_served_else_the_first_tenant():
-    assert home_tenant(hermetic_settings(tenants="adp,beta", tenant="beta")) == "beta"
-    assert home_tenant(hermetic_settings(tenants="adp,beta", tenant="")) == "adp"
-    assert home_tenant(hermetic_settings(tenants="", tenant="")) == PLATFORM_TENANT
-
-
-def test_each_tenant_reads_its_bundle_and_falls_back_to_the_environment(tmp_path, monkeypatch):
+def test_each_tenant_reads_only_its_bundle(tmp_path, monkeypatch, caplog):
     _bundle(tmp_path, "beta", "repositories:\n  beta-web:\n    index: false\n")
     _bundle(tmp_path, "adp", None)
     _, registries = _registries(tmp_path, monkeypatch)
 
-    adp = registries.registry("adp")
+    with caplog.at_level(logging.ERROR):
+        adp = registries.registry("adp")
     beta = registries.registry("beta")
 
-    assert adp is not None and adp.names() == {"platform-svc"}
+    assert adp is None
+    assert "tenant adp has no repositories.yaml" in caplog.text
     assert beta is not None and beta.names() == {"beta-web"}
-    assert adp.location("platform-svc") == "/tenants/adp/repositories/platform-svc"
     assert beta.location("beta-web") == "/tenants/beta/repositories/beta-web"
 
 
@@ -146,22 +139,16 @@ def test_an_outdated_config_version_is_refused(tmp_path, monkeypatch):
     (directory / "repositories.yaml").write_text(
         "config_version: 0\nrepositories:\n  beta-web: {}\n", encoding="utf-8"
     )
-    _bundle(tmp_path, "adp", None)
+    _bundle(tmp_path, "adp", "repositories:\n  adp-web: {}\n")
     _, registries = _registries(tmp_path, monkeypatch)
 
     assert registries.registry("beta") is None
     assert registries.registry("adp") is not None
 
 
-def test_platform_mode_serves_the_platform_registry_under_the_empty_tenant(tmp_path, monkeypatch):
-    _, registries = _registries(tmp_path, monkeypatch, tenants_value="", tenant="")
-
-    assert registries.platform_mode
-    assert registries.tenants() == [PLATFORM_TENANT]
-    registry = registries.registry(PLATFORM_TENANT)
-    assert registry is not None and registry.names() == {"platform-svc"}
-    (entry,) = registries.indexed()
-    assert entry.tenant == PLATFORM_TENANT and entry.index_roots is None
+def test_registries_without_a_tenant_refuse_to_start(tmp_path, monkeypatch):
+    with pytest.raises(ConfigError, match="no tenant is served"):
+        _registries(tmp_path, monkeypatch, tenants_value="", tenant="")
 
 
 def test_configured_tokens_derive_each_tenant_token_from_the_key():
@@ -181,62 +168,6 @@ def test_configured_tokens_prefer_the_per_tenant_variable():
     assert tokens == {"beta": "beta-secret"}
 
 
-def test_platform_mode_accepts_its_own_token_and_none_without_one():
-    with_token = hermetic_settings(tenants="", tenant="", repo_intelligence_token="platform")
-    without = hermetic_settings(tenants="", tenant="", repo_intelligence_token="")
-
-    assert configured_tokens(with_token, environ={}) == {PLATFORM_TENANT: "platform"}
-    assert configured_tokens(without, environ={}) == {}
-
-
-def _index(root: Path, name: str) -> Path:
-    path = root / name
-    path.mkdir(parents=True)
-    (path / "marker").write_text(name, encoding="utf-8")
-    return path
-
-
-def test_migration_moves_the_home_tenant_indexes_under_the_tenant(tmp_path, monkeypatch):
-    _bundle(tmp_path, "adp", "repositories:\n  svc:\n    index: true\n")
-    _bundle(tmp_path, "beta", "repositories:\n  other:\n    index: true\n")
-    settings, registries = _registries(tmp_path, monkeypatch)
-    roots = IndexRoots(tmp_path / "scip", tmp_path / "zoekt")
-    _index(roots.scip, "svc@aaaaaaa")
-    _index(roots.zoekt, "svc@aaaaaaa")
-    _index(roots.scip, "other@bbbbbbb")
-
-    moved = migrate_home_indexes(registries, settings, roots)
-
-    assert sorted(moved) == sorted(
-        [roots.scip / "adp" / "svc@aaaaaaa", roots.zoekt / "adp" / "svc@aaaaaaa"]
-    )
-    assert (roots.scip / "adp" / "svc@aaaaaaa" / "marker").read_text() == "svc@aaaaaaa"
-    assert not (roots.scip / "svc@aaaaaaa").exists()
-    assert (roots.scip / "other@bbbbbbb").is_dir()
-    assert migrate_home_indexes(registries, settings, roots) == []
-
-
-def test_migration_keeps_an_index_whose_target_exists(tmp_path, monkeypatch):
-    _bundle(tmp_path, "adp", "repositories:\n  svc:\n    index: true\n")
-    _bundle(tmp_path, "beta", None)
-    settings, registries = _registries(tmp_path, monkeypatch)
-    roots = IndexRoots(tmp_path / "scip", tmp_path / "zoekt")
-    _index(roots.scip, "svc@aaaaaaa")
-    _index(roots.scip / "adp", "svc@aaaaaaa")
-
-    assert migrate_home_indexes(registries, settings, roots) == []
-    assert (roots.scip / "svc@aaaaaaa").is_dir()
-
-
-def test_migration_does_nothing_in_platform_mode(tmp_path, monkeypatch):
-    settings, registries = _registries(tmp_path, monkeypatch, tenants_value="", tenant="")
-    roots = IndexRoots(tmp_path / "scip", tmp_path / "zoekt")
-    _index(roots.scip, "platform-svc@aaaaaaa")
-
-    assert migrate_home_indexes(registries, settings, roots) == []
-    assert (roots.scip / "platform-svc@aaaaaaa").is_dir()
-
-
 @pytest.mark.parametrize("tenant", ["adp", "beta"])
 def test_tenant_index_roots_nest_under_the_tenant(tenant):
     base = IndexRoots(Path("/idx/scip"), Path("/idx/zoekt"))
@@ -244,4 +175,3 @@ def test_tenant_index_roots_nest_under_the_tenant(tenant):
     roots = tenants.tenant_index_roots(tenant, base)
 
     assert roots == IndexRoots(Path(f"/idx/scip/{tenant}"), Path(f"/idx/zoekt/{tenant}"))
-    assert tenants.tenant_index_roots(PLATFORM_TENANT, base) is None

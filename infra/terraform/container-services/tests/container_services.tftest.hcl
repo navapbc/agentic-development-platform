@@ -48,6 +48,7 @@ run "repositories_hold_every_image_the_services_run" {
       "agentic-platform/buildah",
       "agentic-platform/semgrep",
       "agentic-platform/trivy",
+      "agentic-platform/osv-scanner",
       "agentic-platform/eks-deployer",
       "agentic-platform/gate-engine-security-policy",
       "agentic-platform/gate-engine-test-policy",
@@ -64,7 +65,7 @@ run "repositories_hold_every_image_the_services_run" {
   }
 
   assert {
-    condition     = keys(output.repository_urls) == sort(["platform", "repo-intelligence", "otel-collector", "langfuse-web", "langfuse-worker", "clickhouse", "tls-sidecar", "opa", "litellm", "openhands-agent-server", "buildah", "semgrep", "trivy", "eks-deployer", "gate-engine-security-policy", "gate-engine-test-policy", "agent-server-jvm", "agent-server-go", "checks-python", "checks-node", "checks-jvm", "checks-go", "al2023-base", "al2023-openscap"])
+    condition     = keys(output.repository_urls) == sort(["platform", "repo-intelligence", "otel-collector", "langfuse-web", "langfuse-worker", "clickhouse", "tls-sidecar", "opa", "litellm", "openhands-agent-server", "buildah", "semgrep", "trivy", "osv-scanner", "eks-deployer", "gate-engine-security-policy", "gate-engine-test-policy", "agent-server-jvm", "agent-server-go", "checks-python", "checks-node", "checks-jvm", "checks-go", "al2023-base", "al2023-openscap"])
     error_message = "The repository_urls output does not name every image."
   }
 }

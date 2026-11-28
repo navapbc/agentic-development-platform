@@ -25,7 +25,7 @@ from services.review.types import (
     ReviewStage,
     Verdict,
 )
-from tests.support import configure_repositories, hermetic_settings
+from tests.support import hermetic_settings
 
 
 class _CapturingKernel:
@@ -52,7 +52,7 @@ def _provenance(tier: str) -> list[ModelProvenance]:
 
 
 def _clean(tier: str) -> RawReview:
-    return RawReview(verdict=Verdict.PASS, provenance=_provenance(tier), summary="clean")
+    return RawReview(verdict=Verdict.PASSED, provenance=_provenance(tier), summary="clean")
 
 
 def _blocking(tier: str) -> RawReview:
@@ -72,7 +72,7 @@ async def _invoke(monkeypatch, activity_fn, raw: RawReview):
     monkeypatch.setattr(
         review,
         "build_review_gate",
-        lambda stage=None: ReviewGate(kernel, sink, HmacAttestor("t")),
+        lambda stage=None, tenant="": ReviewGate(kernel, sink, HmacAttestor("t")),
     )
     req = ReviewRequest(
         task_id="T-1", execution_id="exec-1", subject="a diff", context_summary="ctx"
@@ -147,31 +147,6 @@ def test_resolve_repo_root_prefers_explicit_existing_root(tmp_path):
 
 
 @pytest.fixture
-def platform_mode(monkeypatch):
-    monkeypatch.setattr("scripts.config.get_settings", lambda: hermetic_settings())
-
-
-def test_resolve_repo_root_maps_repo_to_ris_path(tmp_path, monkeypatch, platform_mode):
-    configure_repositories(
-        monkeypatch,
-        tmp_path / "config",
-        f"repositories:\n  demo:\n    index: true\n    path: {tmp_path}\n",
-    )
-    req = ReviewRequest(task_id="T", execution_id="E", subject="s", repo="demo")
-    assert review._resolve_repo_root(req) == str(tmp_path)
-
-
-def test_resolve_repo_root_returns_none_for_missing_path(tmp_path, monkeypatch, platform_mode):
-    configure_repositories(
-        monkeypatch,
-        tmp_path / "config",
-        "repositories:\n  demo:\n    index: true\n    path: /nonexistent/path/xyz\n",
-    )
-    req = ReviewRequest(task_id="T", execution_id="E", subject="s", repo="demo")
-    assert review._resolve_repo_root(req) is None
-
-
-@pytest.fixture
 def two_tenants(tmp_path, monkeypatch):
     """Serve adp and beta with checkouts under a tenants mount in tmp_path."""
     mount = tmp_path / "tenants"
@@ -237,6 +212,21 @@ def test_resolve_repo_root_refuses_a_tenant_that_is_not_served(two_tenants):
 def test_resolve_repo_root_none_without_repo():
     req = ReviewRequest(task_id="T", execution_id="E", subject="s")
     assert review._resolve_repo_root(req) is None
+
+
+async def test_review_gate_is_built_for_the_runs_bound_tenant(monkeypatch):
+    tenants: list[str] = []
+
+    def build(stage=None, tenant=""):
+        tenants.append(tenant)
+        return ReviewGate(_CapturingKernel(_clean("review-model")), _Sink(), HmacAttestor("t"))
+
+    monkeypatch.setattr(review, "build_review_gate", build)
+    req = ReviewRequest(task_id="T-1", execution_id="exec-1", subject="a diff")
+    with bind_execution(tenant="beta"):
+        await review_code(req)
+
+    assert tenants == ["beta"]
 
 
 async def test_code_review_is_repo_grounded(monkeypatch):

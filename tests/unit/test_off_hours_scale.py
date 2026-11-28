@@ -1,9 +1,8 @@
-"""The off-hours script the SSM Automation documents run."""
+"""The off-hours function that EventBridge Scheduler invokes for each sleep and wake step."""
 
 from __future__ import annotations
 
 import importlib.util
-import io
 import json
 from pathlib import Path
 
@@ -156,6 +155,96 @@ def test_a_task_still_running_its_containers_keeps_the_service_pending(scale) ->
     assert result["still_running"] == [ARN.format("coordination")]
 
 
+NODE_GROUP = "arn:aws:eks:us-east-1:111111111111:nodegroup/platform-eks/platform-eks-{}/0000"
+
+
+class _Eks:
+    def __init__(self, sizes: dict[str, tuple[int, int]], status: str = "Successful") -> None:
+        self.sizes = {
+            NODE_GROUP.format(name): {"minSize": minimum, "maxSize": 3, "desiredSize": desired}
+            for name, (minimum, desired) in sizes.items()
+        }
+        self.status = status
+        self.updates: list[tuple[str, dict]] = []
+
+    def _arn(self, cluster: str, name: str) -> str:
+        assert cluster == "platform-eks"
+        return NODE_GROUP.format(name.removeprefix("platform-eks-"))
+
+    def describe_nodegroup(self, clusterName: str, nodegroupName: str):
+        return {
+            "nodegroup": {"scalingConfig": dict(self.sizes[self._arn(clusterName, nodegroupName)])}
+        }
+
+    def update_nodegroup_config(self, clusterName: str, nodegroupName: str, scalingConfig: dict):
+        self.updates.append((nodegroupName, scalingConfig))
+        self.sizes[self._arn(clusterName, nodegroupName)].update(scalingConfig)
+        return {"update": {"id": f"update-{len(self.updates)}"}}
+
+    def describe_update(self, name: str, nodegroupName: str, updateId: str):
+        errors = [{"errorMessage": "insufficient capacity"}] if self.status == "Failed" else []
+        return {"update": {"id": updateId, "status": self.status, "errors": errors}}
+
+    def scaling(self) -> dict[str, tuple[int, int]]:
+        return {
+            arn.split("platform-eks-")[1].split("/")[0]: (size["minSize"], size["desiredSize"])
+            for arn, size in self.sizes.items()
+        }
+
+
+def _node_group_events(*names: str) -> dict:
+    return {
+        "NodeGroups": [NODE_GROUP.format(name) for name in names],
+        "Parameter": PARAMETER,
+        "WaitSeconds": 0,
+    }
+
+
+def test_the_sleep_records_each_node_group_size_and_the_wake_restores_it(scale) -> None:
+    eks, ssm = _Eks({"platform": (1, 3), "sandbox": (1, 1), "spare": (0, 0)}), _Ssm()
+    events = _node_group_events("platform", "sandbox", "spare")
+
+    asleep = scale.sleep_node_groups(events, None, eks, ssm)
+    recorded = json.loads(ssm.value)
+    scale.sleep_node_groups(events, None, eks, ssm)
+
+    assert eks.scaling() == {"platform": (0, 0), "sandbox": (0, 0), "spare": (0, 0)}
+    assert (
+        json.loads(ssm.value)
+        == recorded
+        == {
+            NODE_GROUP.format("platform"): {"minSize": 1, "desiredSize": 3},
+            NODE_GROUP.format("sandbox"): {"minSize": 1, "desiredSize": 1},
+        }
+    )
+    assert asleep["still_updating"] == []
+
+    scale.wake_node_groups(events, None, eks, ssm)
+    scale.wake_node_groups(events, None, eks, ssm)
+
+    assert eks.scaling() == {"platform": (1, 3), "sandbox": (1, 1), "spare": (0, 0)}
+    assert len(eks.updates) == 4
+    assert ssm.recorded() == {}
+
+
+def test_the_node_group_wake_skips_a_size_already_restored(scale) -> None:
+    eks, ssm = _Eks({"platform": (1, 3)}), _Ssm()
+    ssm.value = json.dumps({NODE_GROUP.format("platform"): {"minSize": 1, "desiredSize": 3}})
+
+    result = scale.wake_node_groups(_node_group_events("platform"), None, eks, ssm)
+
+    assert eks.updates == []
+    assert result == {"scaled_up": [NODE_GROUP.format("platform")], "still_updating": []}
+    assert ssm.recorded() == {}
+
+
+def test_a_failed_node_group_update_fails_the_step_with_its_errors(scale) -> None:
+    eks = _Eks({"platform": (1, 3)}, status="Failed")
+
+    with pytest.raises(RuntimeError, match="platform-eks-platform ended Failed. insufficient"):
+        scale.sleep_node_groups(_node_group_events("platform"), None, eks, _Ssm())
+
+
 DEPLOYER = {
     "Cluster": "arn:aws:ecs:us-east-1:111111111111:cluster/platform",
     "TaskFamily": "platform-eks-deployer",
@@ -234,7 +323,7 @@ class _CloudWatch:
 def _check_events(*names: str, allowed: list[str] | None = None) -> dict:
     return {
         "Check": "BeforePause",
-        "Document": "sleep",
+        "Run": "sleep",
         "Namespace": "platform/OffHours",
         "Topic": "arn:aws:sns:us-east-1:111111111111:platform-off-hours-alerts",
         "Services": [ARN.format(name) for name in names],
@@ -346,114 +435,181 @@ def test_the_wake_stops_before_the_workers_while_temporal_is_unhealthy(scale) ->
     }
 
 
-def test_a_failed_run_is_counted_and_alerts_with_its_execution(scale) -> None:
+RECORD = {
+    "Namespace": "platform/OffHours",
+    "Topic": "arn:aws:sns:us-east-1:111111111111:platform-off-hours-alerts",
+    "LogGroup": "/aws/lambda/platform-off-hours",
+}
+PLAN = {
+    "sleep": {
+        "Steps": [
+            {"name": "StopServices", "handler": "sleep", "payload": {"Services": ["coordination"]}},
+            {"name": "CheckBeforePause", "handler": "check", "payload": {"Check": "BeforePause"}},
+        ],
+        "Record": {**RECORD, "Run": "sleep"},
+    }
+}
+SCHEDULED = {
+    "Run": "sleep",
+    "ScheduleArn": "arn:aws:scheduler:us-east-1:111111111111:schedule/default/off-hours-sleep",
+    "ScheduledTime": "2026-01-05T02:00:00Z",
+    "SchedulerExecutionId": "exec-1",
+    "Attempt": "1",
+}
+FUNCTION_ARN = "arn:aws:lambda:us-east-1:111111111111:function:platform-off-hours"
+
+
+class _Context:
+    aws_request_id = "request-1"
+    invoked_function_arn = FUNCTION_ARN
+
+
+class _Lambda:
+    def __init__(self, error: Exception | None = None) -> None:
+        self.error = error
+        self.invocations: list[dict] = []
+
+    def invoke(self, FunctionName: str, InvocationType: str, Payload: bytes) -> None:
+        if self.error:
+            raise self.error
+        self.invocations.append(
+            {"FunctionName": FunctionName, "InvocationType": InvocationType, **json.loads(Payload)}
+        )
+
+
+def _run(scale, event: dict, lambda_client: _Lambda | None = None):
+    lambda_client = lambda_client or _Lambda()
+    sns, cloudwatch = _Sns(), _CloudWatch()
+    result = scale.handler(event, _Context(), PLAN, lambda_client, cloudwatch, sns)
+    return result, lambda_client, cloudwatch, sns
+
+
+def test_a_failed_run_is_counted_and_alerts_with_the_audit_query(scale) -> None:
     sns, cloudwatch = _Sns(), _CloudWatch()
     events = {
+        **RECORD,
         "Result": "Failed",
-        "Document": "wake",
-        "Namespace": "platform/OffHours",
-        "Topic": "arn:aws:sns:us-east-1:111111111111:platform-off-hours-alerts",
-        "ExecutionId": "0123-abcd",
+        "Run": "wake",
+        "RunId": "exec-1",
+        "Step": "StartServices",
+        "Error": "RuntimeError: coordination did not start",
     }
 
     scale.record(events, None, cloudwatch, sns)
 
     assert cloudwatch.metrics == [("Failed", 1)]
-    assert "0123-abcd" in sns.messages[0]
+    assert "run exec-1 failed at step StartServices. RuntimeError" in sns.messages[0]
+    assert (
+        "aws logs filter-log-events --log-group-name /aws/lambda/platform-off-hours "
+        "--filter-pattern '{ $.run_id = \"exec-1\" }'" in sns.messages[0]
+    )
 
 
-def test_the_function_dispatches_each_step_to_its_handler(scale, monkeypatch) -> None:
+def test_a_step_runs_its_handler_and_hands_the_run_to_the_next_step(scale, monkeypatch) -> None:
     calls = []
-    monkeypatch.setitem(scale.HANDLERS, "wake", lambda events, context: calls.append(events) or 7)
+    monkeypatch.setitem(scale.HANDLERS, "sleep", lambda events, context: calls.append(events))
 
-    assert scale.handler({"Handler": "wake", "Input": {"Services": []}}, None) == 7
-    assert calls == [{"Services": []}]
-    with pytest.raises(ValueError, match="no off-hours handler named 'drop_database'"):
-        scale.handler({"Handler": "drop_database", "Input": {}}, None)
+    result, lambda_client, cloudwatch, sns = _run(scale, SCHEDULED)
 
-
-INVOKE = SCRIPT.with_name("invoke.py")
-
-
-class _Lambda:
-    def __init__(
-        self, payload: object, function_error: str | None = None, throttles: int = 0
-    ) -> None:
-        self.payload = payload
-        self.function_error = function_error
-        self.throttles = throttles
-        self.requests: list[dict] = []
-
-    def invoke(self, FunctionName: str, Payload: bytes):
-        self.requests.append({"FunctionName": FunctionName, **json.loads(Payload)})
-        if len(self.requests) <= self.throttles:
-            raise ClientError(
-                {"Error": {"Code": "TooManyRequestsException", "Message": "Rate exceeded"}},
-                "Invoke",
-            )
-        response: dict[str, object] = {"Payload": io.BytesIO(json.dumps(self.payload).encode())}
-        if self.function_error:
-            response["FunctionError"] = self.function_error
-        return response
-
-
-@pytest.fixture(scope="module")
-def invoke():
-    spec = importlib.util.spec_from_file_location("off_hours_invoke", INVOKE)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def _step(handler: str, throttle_seconds: int = 60) -> dict:
-    return {
-        "Function": "platform-off-hours",
-        "Handler": handler,
-        "Input": {"Check": "BeforePause"},
-        "ReadTimeout": 590,
-        "ThrottleSeconds": throttle_seconds,
-    }
-
-
-def test_a_step_returns_what_the_function_returns(invoke, monkeypatch) -> None:
-    client = _Lambda({"findings": []})
-    monkeypatch.setattr(invoke.boto3, "client", lambda *args, **kwargs: client)
-
-    assert invoke.invoke(_step("check"), None) == {"findings": []}
-    assert client.requests == [
+    assert result == {"result": "Continued", "run_id": "exec-1", "step": "StopServices"}
+    assert calls == [{"Services": ["coordination"]}]
+    assert lambda_client.invocations == [
         {
-            "FunctionName": "platform-off-hours",
-            "Handler": "check",
-            "Input": {"Check": "BeforePause"},
+            "FunctionName": FUNCTION_ARN,
+            "InvocationType": "Event",
+            **SCHEDULED,
+            "Step": 1,
+            "RunId": "exec-1",
         }
     ]
+    assert cloudwatch.metrics == [] and sns.messages == []
 
 
-def test_a_step_fails_when_the_function_raises(invoke, monkeypatch) -> None:
-    client = _Lambda(
-        {"errorMessage": "BeforePause found 1. EKS pod litellm-0 is running."}, "Unhandled"
+def test_the_last_step_records_the_run_completed(scale, monkeypatch) -> None:
+    monkeypatch.setitem(scale.HANDLERS, "check", lambda events, context: {"findings": []})
+
+    result, lambda_client, cloudwatch, sns = _run(
+        scale, {**SCHEDULED, "Step": 1, "RunId": "exec-1"}
     )
-    monkeypatch.setattr(invoke.boto3, "client", lambda *args, **kwargs: client)
 
-    with pytest.raises(RuntimeError, match="check failed. BeforePause found 1"):
-        invoke.invoke(_step("check"), None)
-
-
-def test_a_throttled_step_retries_until_the_function_accepts_it(invoke, monkeypatch) -> None:
-    client = _Lambda({"result": "Failed"}, throttles=2)
-    monkeypatch.setattr(invoke.boto3, "client", lambda *args, **kwargs: client)
-    monkeypatch.setattr(invoke.time, "sleep", lambda seconds: None)
-
-    assert invoke.invoke(_step("record"), None) == {"result": "Failed"}
-    assert len(client.requests) == 3
+    assert result == {"result": "Completed", "run_id": "exec-1"}
+    assert lambda_client.invocations == []
+    assert cloudwatch.metrics == [("Completed", 1)] and sns.messages == []
 
 
-def test_a_step_still_throttled_at_its_deadline_fails(invoke, monkeypatch) -> None:
-    client = _Lambda({}, throttles=99)
-    monkeypatch.setattr(invoke.boto3, "client", lambda *args, **kwargs: client)
-    monkeypatch.setattr(invoke.time, "sleep", lambda seconds: None)
+def test_a_failed_step_ends_the_run_and_alerts_without_raising(scale, monkeypatch) -> None:
+    def fail(events, context):
+        raise RuntimeError("BeforePause found 1. EKS pod litellm-0 is running.")
 
-    with pytest.raises(ClientError, match="TooManyRequestsException"):
-        invoke.invoke(_step("record", throttle_seconds=0), None)
-    assert len(client.requests) == 1
+    monkeypatch.setitem(scale.HANDLERS, "check", fail)
+
+    result, lambda_client, cloudwatch, sns = _run(
+        scale, {**SCHEDULED, "Step": 1, "RunId": "exec-1"}
+    )
+
+    assert result == {"result": "Failed", "run_id": "exec-1", "step": "CheckBeforePause"}
+    assert lambda_client.invocations == []
+    assert cloudwatch.metrics == [("Failed", 1)]
+    assert "failed at step CheckBeforePause. RuntimeError: BeforePause found 1" in sns.messages[0]
+
+
+def test_a_step_that_cannot_hand_over_records_the_run_failed(scale, monkeypatch) -> None:
+    monkeypatch.setitem(scale.HANDLERS, "sleep", lambda events, context: None)
+    throttled = ClientError(
+        {"Error": {"Code": "TooManyRequestsException", "Message": "Rate exceeded"}}, "Invoke"
+    )
+
+    result, _, cloudwatch, sns = _run(scale, SCHEDULED, _Lambda(throttled))
+
+    assert result == {"result": "Failed", "run_id": "exec-1", "step": "StopServices"}
+    assert cloudwatch.metrics == [("Failed", 1)]
+    assert "TooManyRequestsException" in sns.messages[0]
+
+
+def test_each_step_writes_a_started_and_a_finished_audit_record(scale, monkeypatch, caplog) -> None:
+    monkeypatch.setitem(scale.HANDLERS, "sleep", lambda events, context: {"stopped": 1})
+
+    with caplog.at_level("INFO", logger="off_hours"):
+        _run(scale, {"Run": "sleep"})
+
+    started, finished = caplog.records
+    for record in (started, finished):
+        assert (record.event, record.run, record.run_id, record.step) == (
+            "off_hours_step",
+            "sleep",
+            "request-1",
+            "StopServices",
+        )
+        assert (record.step_number, record.steps, record.trigger) == (1, 2, "direct")
+    assert started.phase == "started"
+    assert (finished.phase, finished.outcome, finished.result, finished.next_step) == (
+        "succeeded",
+        "success",
+        {"stopped": 1},
+        "CheckBeforePause",
+    )
+    assert finished.duration_ms >= 0
+
+
+def test_a_scheduled_step_names_its_schedule_in_the_audit_record(
+    scale, monkeypatch, caplog
+) -> None:
+    monkeypatch.setitem(scale.HANDLERS, "sleep", lambda events, context: None)
+
+    with caplog.at_level("INFO", logger="off_hours"):
+        _run(scale, SCHEDULED)
+
+    record = caplog.records[0]
+    assert record.trigger == "schedule"
+    assert (record.ScheduleArn, record.ScheduledTime, record.Attempt) == (
+        SCHEDULED["ScheduleArn"],
+        SCHEDULED["ScheduledTime"],
+        "1",
+    )
+
+
+def test_an_unknown_run_or_step_is_refused(scale) -> None:
+    with pytest.raises(ValueError, match="no off-hours run named 'drop_database'"):
+        _run(scale, {"Run": "drop_database"})
+    with pytest.raises(ValueError, match="the off-hours sleep run has no step 2"):
+        _run(scale, {"Run": "sleep", "Step": 2})

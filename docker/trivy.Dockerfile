@@ -3,10 +3,10 @@
 # The trivy scanner image the scanner pods run. The pod runs `trivy` from PATH against the
 # mounted workspace, and trivy downloads its vulnerability database at run time.
 
-ARG AL2023_IMAGE=public.ecr.aws/amazonlinux/amazonlinux:2023-minimal@sha256:158a9044f9dc0777f098b76c8b54346f6ed4560b9a6a416dec7a5ba3bc483af4
+ARG AL2023_IMAGE=public.ecr.aws/amazonlinux/amazonlinux:2023-minimal@sha256:75a2d4226d9b98c914d7eed878a03bef4f365ad548be5d28d464ccba504cec79
 
 FROM ${AL2023_IMAGE} AS go
-ARG AL2023_RELEASE=2023.12.20261112
+ARG AL2023_RELEASE=2023.12.20261120
 ARG GO_VERSION=1.27.4
 ARG GO_SHA256_AMD64=7226736c2339719cda28fbf3a54d71aa63bcefe376e98cef00034268dab24840
 ARG GO_SHA256_ARM64=3392582988a273a87ab5043ee1b2c9c17a2c3c00580bf9326c47a2e0aaaeac92
@@ -45,7 +45,7 @@ RUN NAME=trivy \
     go-component
 
 FROM ${AL2023_IMAGE}
-ARG AL2023_RELEASE=2023.12.20261112
+ARG AL2023_RELEASE=2023.12.20261120
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 RUN dnf -y --releasever="${AL2023_RELEASE}" upgrade \
  && dnf -y --releasever="${AL2023_RELEASE}" install shadow-utils \
@@ -57,4 +57,5 @@ RUN dnf -y --releasever="${AL2023_RELEASE}" upgrade \
 COPY --from=trivy /out/trivy /usr/local/bin/trivy
 RUN cis-harden
 USER 10001:10001
+HEALTHCHECK NONE
 ENTRYPOINT ["/usr/local/bin/trivy"]

@@ -23,7 +23,7 @@ Audit events persist to the same bucket under the `audit/` prefix, keyed by the 
 
 ## Local development
 
-The evidence object store is off by default. To exercise it locally against MinIO, set `EVIDENCE_OBJECT_STORE_ENABLED=true`, `EVIDENCE_OBJECT_STORE_ENDPOINT_URL`, `EVIDENCE_OBJECT_STORE_BUCKET`, and the MinIO credentials in `.env`, then run `inv evidence-bucket-bootstrap` once to create the bucket with Object Lock and a default retention. The worker refuses to start when the store is enabled but the bucket is missing or unlocked.
+The evidence object store is off by default. To exercise it locally against MinIO, set `EVIDENCE_OBJECT_STORE_ENABLED=true`, `EVIDENCE_OBJECT_STORE_ENDPOINT_URL`, `EVIDENCE_OBJECT_STORE_BUCKET`, and the MinIO credentials in `config/local/platform.env`, then run `inv evidence-bucket-bootstrap` once to create the bucket with Object Lock and a default retention. The worker refuses to start when the store is enabled but the bucket is missing or unlocked.
 
 ## Usage
 

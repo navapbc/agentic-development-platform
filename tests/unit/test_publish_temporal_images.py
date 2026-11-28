@@ -28,9 +28,13 @@ def test_both_images_pin_the_same_rds_ca_bundle() -> None:
     admin_tools = _dockerfile("temporal-admin-tools.Dockerfile")
 
     assert _bundle_checksum(server) == _bundle_checksum(admin_tools)
+    verify = 'echo "${RDS_CA_BUNDLE_SHA256}  /out/rds-global-bundle.pem" | sha256sum -c -'
+    install = (
+        "COPY --from=rds-ca --chmod=0444 /out/rds-global-bundle.pem /etc/ssl/rds-global-bundle.pem"
+    )
     for dockerfile in (server, admin_tools):
-        assert "ADD --checksum=sha256:${RDS_CA_BUNDLE_SHA256}" in dockerfile
-        assert "/etc/ssl/rds-global-bundle.pem" in dockerfile
+        assert verify in dockerfile
+        assert install in dockerfile
 
 
 @pytest.mark.parametrize(

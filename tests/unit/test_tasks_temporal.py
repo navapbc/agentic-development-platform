@@ -12,6 +12,7 @@ import yaml
 from invoke import Exit
 from invoke.context import Context
 from invoke.runners import Result
+from tests.support import local_tenants
 
 COMPOSE = f"{tasks_module.COMPOSE} -f compose.yaml"
 BUILD_ID = "0.3.0.20261028093000"
@@ -113,7 +114,10 @@ def test_the_target_matches_the_release_the_dockerfiles_build():
         assert source_version(dockerfile) == tasks_module.TEMPORAL_TARGET.version
 
 
-def test_local_up_starts_compose_then_the_cluster_with_credentials_and_repositories(project):
+def test_local_up_starts_compose_then_the_cluster_with_credentials_and_repositories(
+    project, monkeypatch
+):
+    local_tenants(monkeypatch, project, "adp", "beta")
     context = _DatabaseContext({"temporal": None, "temporal_visibility": None})
 
     tasks_module.local_up(context)
@@ -130,7 +134,9 @@ def test_local_up_starts_compose_then_the_cluster_with_credentials_and_repositor
         "--compose-file compose.yaml",
         f"{tasks_module.HOST_PYTHON} -m scripts.aws_login",
         f"{tasks_module.HOST_PYTHON} -m scripts.repos_sync",
+        f"{tasks_module.HOST_PYTHON} -m scripts.repos_sync",
     ]
+    assert [env for _, env in context.commands[-2:]] == [{"TENANT": "adp"}, {"TENANT": "beta"}]
 
 
 @pytest.mark.parametrize(("databases", "created"), [(set(), ["litellm"]), ({"litellm"}, [])])

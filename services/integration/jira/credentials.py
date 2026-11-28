@@ -6,8 +6,6 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from scripts.config import Settings, get_settings
-
 from services.integration.credentials import (
     ConfigError,
     EnvSecretResolver,
@@ -21,6 +19,7 @@ CLOUD = "cloud"
 DATACENTER = "datacenter"
 _AUTH_MODES = {CLOUD, DATACENTER}
 _FLOW_STAGES = ("work_started", "ready_for_review", "terminal")
+_SINGLE_PROJECT_REF = "__token__"
 
 
 @dataclass(frozen=True)
@@ -347,6 +346,13 @@ class JiraCredentialResolver:
         _validate_flow(effective.flow, effective.statuses)
         return effective.flow
 
+    def site_url(self, project: str) -> str:
+        """Return the URL of the project's Jira site without resolving its token, or ``""``."""
+        if project not in self._allowlist:
+            return ""
+        effective = self._effective(project)
+        return effective.site.url if effective is not None else ""
+
     def _effective(self, project: str) -> _Effective | None:
         override = self._config.projects.get(project)
         default = self._config.default
@@ -407,15 +413,11 @@ class JiraCredentialResolver:
 
 
 def build_jira_credential_resolver(
-    settings: Settings | None = None,
     *,
     secret_resolver: SecretResolver | None = None,
-    environment: str | None = None,
 ) -> JiraCredentialResolver:
-    resolved = settings or get_settings()
-    env = environment or resolved.environment
-    require_current_config("jira", environment=env)
-    raw = load_env_config("jira", environment=env)
+    require_current_config("jira")
+    raw = load_env_config("jira")
     config = parse_jira_config(raw)
     secrets = secret_resolver or EnvSecretResolver()
     resolver = JiraCredentialResolver(config, set(config.allowlist), secrets)
@@ -425,30 +427,22 @@ def build_jira_credential_resolver(
 
 
 def allowed_projects(
-    settings: Settings | None = None,
     *,
-    environment: str | None = None,
     root: Path | None = None,
 ) -> set[str]:
-    """Return the allowlisted projects declared in config/<env>/jira.yaml."""
-    resolved = settings or get_settings()
-    env = environment or resolved.environment
-    require_current_config("jira", environment=env, root=root)
-    raw = load_env_config("jira", environment=env, root=root)
+    """Return the allowlisted projects declared in the tenant's jira.yaml."""
+    require_current_config("jira", root=root)
+    raw = load_env_config("jira", root=root)
     return set(parse_jira_config(raw).allowlist)
 
 
 def acceptance_field(
-    settings: Settings | None = None,
     *,
-    environment: str | None = None,
     root: Path | None = None,
 ) -> str:
-    """Return the acceptance-criteria field id declared in config/<env>/jira.yaml."""
-    resolved = settings or get_settings()
-    env = environment or resolved.environment
-    require_current_config("jira", environment=env, root=root)
-    raw = load_env_config("jira", environment=env, root=root)
+    """Return the acceptance-criteria field id declared in the tenant's jira.yaml."""
+    require_current_config("jira", root=root)
+    raw = load_env_config("jira", root=root)
     return parse_jira_config(raw).acceptance_field
 
 
@@ -473,7 +467,7 @@ def build_single_project_resolver(
         default=_Identity(
             site="default",
             email=email or None,
-            token_ref="__token__",
+            token_ref=_SINGLE_PROJECT_REF,
             board=board,
             statuses=tuple(statuses),
             flow=flow or StatusFlow(),
@@ -482,4 +476,6 @@ def build_single_project_resolver(
         ),
         projects={},
     )
-    return JiraCredentialResolver(config, {project}, EnvSecretResolver({"__token__": token}))
+    return JiraCredentialResolver(
+        config, {project}, EnvSecretResolver({_SINGLE_PROJECT_REF: token})
+    )

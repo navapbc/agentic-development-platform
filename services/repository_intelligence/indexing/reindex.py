@@ -51,7 +51,7 @@ def changed_paths(
             capture_output=True,
             text=True,
         )
-    except (process.CalledProcessError, OSError):
+    except process.CalledProcessError, OSError:
         return None
     return tuple(line for line in completed.stdout.splitlines() if line)
 
@@ -63,21 +63,53 @@ def reindex_repo(
     prior_commit: str | None = None,
     index_root: Path | None = None,
     index_roots: IndexRoots | None = None,
-    indexer: ScipIndexer = scip_builder.SCIP_PYTHON_INDEXER,
+    indexer: ScipIndexer | None = scip_builder.SCIP_PYTHON_INDEXER,
     source_suffixes: tuple[str, ...] | None = None,
 ) -> None:
     """Reindex repo at its target commit, reusing SCIP when no source file changed.
 
     index_roots places each backend under its own root and takes precedence over index_root,
-    which places both backends under one root.
+    which places both backends under one root. Without an indexer only Zoekt is rebuilt.
     """
     root = Path(repo_root).resolve()
     project = root.name
     target_sha = repo.commit_sha
-    changed = changed_paths(root, prior_commit, target_sha)
-    suffixes = source_suffixes if source_suffixes is not None else indexer.source_suffixes
+    if indexer is not None:
+        _reindex_scip(
+            root,
+            project,
+            target_sha,
+            prior_commit=prior_commit,
+            scip_root=index_roots.scip
+            if index_roots
+            else index_root or scip_builder.default_index_root(),
+            indexer=indexer,
+            suffixes=source_suffixes if source_suffixes is not None else indexer.source_suffixes,
+        )
 
-    scip_root = index_roots.scip if index_roots else index_root or scip_builder.default_index_root()
+    zoekt_root = (
+        index_roots.zoekt if index_roots else index_root or zoekt_builder.default_index_root()
+    )
+    _atomic_build(
+        lambda staging: zoekt_builder.build_zoekt_index(
+            root, commit=target_sha, index_root=staging, refresh=True
+        ),
+        index_dir=zoekt_builder.index_dir(project, target_sha, zoekt_root),
+        real_root=zoekt_root,
+    )
+
+
+def _reindex_scip(
+    root: Path,
+    project: str,
+    target_sha: str,
+    *,
+    prior_commit: str | None,
+    scip_root: Path,
+    indexer: ScipIndexer,
+    suffixes: tuple[str, ...],
+) -> None:
+    changed = changed_paths(root, prior_commit, target_sha)
     reuse_scip = (
         changed is not None
         and prior_commit is not None
@@ -95,17 +127,6 @@ def reindex_repo(
             index_dir=scip_builder.index_dir(project, target_sha, scip_root),
             real_root=scip_root,
         )
-
-    zoekt_root = (
-        index_roots.zoekt if index_roots else index_root or zoekt_builder.default_index_root()
-    )
-    _atomic_build(
-        lambda staging: zoekt_builder.build_zoekt_index(
-            root, commit=target_sha, index_root=staging, refresh=True
-        ),
-        index_dir=zoekt_builder.index_dir(project, target_sha, zoekt_root),
-        real_root=zoekt_root,
-    )
 
 
 def _touches(paths: tuple[str, ...], suffixes: tuple[str, ...]) -> bool:

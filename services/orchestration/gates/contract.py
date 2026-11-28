@@ -6,11 +6,11 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
-PASS = "pass"
+PASSED = "pass"
 BLOCK = "block"
 ADVISORY = "advisory"
 CANCELLED = "cancelled"
-_VERDICTS = frozenset({PASS, BLOCK, ADVISORY})
+_VERDICTS = frozenset({PASSED, BLOCK, ADVISORY})
 
 GATE_CONTRACT_VERSION = "1"
 

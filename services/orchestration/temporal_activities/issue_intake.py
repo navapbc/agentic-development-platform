@@ -32,6 +32,7 @@ class JiraIssueIntakeReport:
     duplicates: int = 0
     held: int = 0
     skipped: str = ""
+    deferred: int = 0
 
 
 def candidate_issue_jql(issue_key: str, project: str, intake_label: str) -> str:
@@ -62,11 +63,11 @@ async def intake_jira_issue(request: JiraIssueIntakeRequest) -> JiraIssueIntakeR
     if resolve_ticket_backend_name(settings) != JIRA:
         return JiraIssueIntakeReport(skipped="the tenant takes intake from another ticket backend")
     project = project_of(request.issue_key)
-    resolver = build_jira_credential_resolver(settings)
+    resolver = build_jira_credential_resolver()
     cred = resolver.resolve(project)
     if cred is None:
         return JiraIssueIntakeReport(skipped=f"project {project} is not configured")
-    adapter = build_jira_adapter(settings, project=project, resolver=resolver)
+    adapter = build_jira_adapter(project=project, resolver=resolver)
     issues = adapter.search_issues(
         candidate_issue_jql(request.issue_key, project, cred.intake_label)
     )
@@ -80,4 +81,5 @@ async def intake_jira_issue(request: JiraIssueIntakeRequest) -> JiraIssueIntakeR
         started=sum(1 for record in report.started if not record.duplicate),
         duplicates=sum(1 for record in report.started if record.duplicate),
         held=len(report.held),
+        deferred=len(report.deferred),
     )

@@ -9,6 +9,7 @@ renders as the command that reaches the tenant's activity worker directly.
 
 from __future__ import annotations
 
+import re
 import shlex
 from dataclasses import dataclass, replace
 from enum import StrEnum
@@ -17,6 +18,8 @@ from typing import assert_never
 NEXT_STEP_PREFIX = "Next step:"
 
 WORKER_DEPLOYMENT = "activity-worker"
+LITELLM_NAMESPACE = "agentic-dev-platform"
+LITELLM_DEPLOYMENT = "litellm"
 DEPLOYED_OPERATOR_TOOLS = frozenset({"aws", "kubectl"})
 
 
@@ -29,22 +32,35 @@ class StepKind(StrEnum):
     TEXT = "text"
     RESTART_RUN = "restart_run"
     RETRY_REPAIR = "retry_repair"
+    ABANDON_REPAIR = "abandon_repair"
     APPROVE_GATE = "approve_gate"
     REJECT_GATE = "reject_gate"
     ROLL_UP_COST = "roll_up_cost"
     CONFIG_KEY = "config_key"
     WORKER_SETTING = "worker_setting"
+    RESTORE_MODEL_PATH = "restore_model_path"
+    RESUME_PARKED = "resume_parked"
 
 
 COMMAND_KINDS = frozenset(
     {
         StepKind.RESTART_RUN,
         StepKind.RETRY_REPAIR,
+        StepKind.ABANDON_REPAIR,
         StepKind.APPROVE_GATE,
         StepKind.REJECT_GATE,
         StepKind.ROLL_UP_COST,
+        StepKind.RESTORE_MODEL_PATH,
+        StepKind.RESUME_PARKED,
     }
 )
+
+# Keyed by the model path hop tokens of services.orchestration.model_path.
+_MODEL_PATH_HOST_COMMANDS = {
+    "credentials": "inv aws-login",
+    "bedrock_path": "inv tunnel-start --detach",
+    "litellm": "inv k8s-reload",
+}
 
 
 @dataclass(frozen=True)
@@ -99,6 +115,10 @@ def retry_repair(issue_key: str) -> RemedyStep:
     return RemedyStep(StepKind.RETRY_REPAIR, issue_key=issue_key)
 
 
+def abandon_repair(issue_key: str) -> RemedyStep:
+    return RemedyStep(StepKind.ABANDON_REPAIR, issue_key=issue_key)
+
+
 def approve_gate(issue_key: str, gate: str) -> RemedyStep:
     return RemedyStep(StepKind.APPROVE_GATE, issue_key=issue_key, gate=gate)
 
@@ -112,7 +132,7 @@ def roll_up_cost(execution_id: str) -> RemedyStep:
 
 
 def config_key(config: str, key: str) -> RemedyStep:
-    """Name a key of a per-environment config file, located for the operator's posture.
+    """Name a key of a platform or tenant config file, located for the operator's posture.
 
     Both halves are checked against the committed template by the operator remedy contract tests,
     so a key renamed in the template fails the suite rather than sending an operator to a key that
@@ -123,6 +143,14 @@ def config_key(config: str, key: str) -> RemedyStep:
 
 def worker_setting(name: str) -> RemedyStep:
     return RemedyStep(StepKind.WORKER_SETTING, key=name)
+
+
+def restore_model_path(hop: str) -> RemedyStep:
+    return RemedyStep(StepKind.RESTORE_MODEL_PATH, key=hop)
+
+
+def resume_parked_run(issue_key: str) -> RemedyStep:
+    return RemedyStep(StepKind.RESUME_PARKED, issue_key=issue_key)
 
 
 def _value(value: str, placeholder: str) -> str:
@@ -137,12 +165,18 @@ def _host_command(kind: StepKind, step: RemedyStep) -> str:
             return f"inv restart --issue {issue}{tenant}"
         case StepKind.RETRY_REPAIR:
             return f"inv repair --issue {issue} --retry{tenant}"
+        case StepKind.ABANDON_REPAIR:
+            return f"inv repair --issue {issue} --abandon{tenant}"
         case StepKind.APPROVE_GATE | StepKind.REJECT_GATE:
             decision = "--approve" if kind is StepKind.APPROVE_GATE else "--reject"
             gate = _value(step.gate, "<gate>")
             return f"inv gate --issue {issue} --gate {gate} {decision}{tenant}"
         case StepKind.ROLL_UP_COST:
             return f"inv cost-rollup --execution-id {_value(step.execution_id, '<execution_id>')}"
+        case StepKind.RESTORE_MODEL_PATH:
+            return _MODEL_PATH_HOST_COMMANDS.get(step.key, "inv connectivity-check")
+        case StepKind.RESUME_PARKED:
+            return f"inv resume-parked --issue {issue}{tenant}"
         case StepKind.TEXT | StepKind.CONFIG_KEY | StepKind.WORKER_SETTING:
             return ""
         case _:
@@ -156,19 +190,30 @@ def _worker_module(kind: StepKind, step: RemedyStep) -> str:
             return f"scripts.restart {issue}"
         case StepKind.RETRY_REPAIR:
             return f"scripts.repair {issue} --retry"
+        case StepKind.ABANDON_REPAIR:
+            return f"scripts.repair {issue} --abandon"
         case StepKind.APPROVE_GATE | StepKind.REJECT_GATE:
             decision = "--approve" if kind is StepKind.APPROVE_GATE else "--reject"
             return f"scripts.gate_decision {issue} --gate {_value(step.gate, '<gate>')} {decision}"
         case StepKind.ROLL_UP_COST:
             execution = _value(step.execution_id, "<execution_id>")
             return f"scripts.cost_rollup --execution-id {execution}"
-        case StepKind.TEXT | StepKind.CONFIG_KEY | StepKind.WORKER_SETTING:
+        case StepKind.RESUME_PARKED:
+            return f"scripts.resume_parked --issue {issue}"
+        case (
+            StepKind.TEXT
+            | StepKind.CONFIG_KEY
+            | StepKind.WORKER_SETTING
+            | StepKind.RESTORE_MODEL_PATH
+        ):
             return ""
         case _:
             assert_never(kind)
 
 
 def _deployed_command(kind: StepKind, step: RemedyStep) -> str:
+    if kind is StepKind.RESTORE_MODEL_PATH:
+        return f"kubectl -n {LITELLM_NAMESPACE} rollout restart deploy/{LITELLM_DEPLOYMENT}"
     module = _worker_module(kind, step)
     if not module:
         return ""
@@ -206,45 +251,54 @@ def _is_tenant_file(config: str) -> bool:
     return config in TENANT_FILES
 
 
-def _config_location(step: RemedyStep, posture: DeploymentPosture, environment: str) -> str:
+def _config_location(step: RemedyStep, posture: DeploymentPosture) -> str:
+    from services.integration.tenant_config import TENANT_ONLY_FILES
+
     file = f"{step.config}.yaml"
     tenant = step.tenant or "<tenant>"
+    tenant_only = step.config in TENANT_ONLY_FILES
     match posture:
         case DeploymentPosture.HOST:
-            shared = f"config/{environment}/{file}"
-            if not (step.tenant and _is_tenant_file(step.config)):
+            shared = f"config/local/{file}"
+            own = f"config/local/tenants/{tenant}/{file}"
+            if tenant_only:
+                return f"`{step.key}` in `{own}`"
+            if not _is_tenant_file(step.config):
                 return f"`{step.key}` in `{shared}`"
             return (
-                f"`{step.key}` in `config/{environment}/tenants/{step.tenant}/{file}`, or in "
-                f"`{shared}` when the tenant bundle does not hold `{file}`"
+                f"`{step.key}` in `{own}`, or in `{shared}` when the tenant's folder does not "
+                f"hold `{file}`"
             )
         case DeploymentPosture.DEPLOYED:
+            platform = (
+                f"`{file}` of the platform config the platform reads from `PLATFORM_ENV_CONFIG_DIR`"
+            )
             if not _is_tenant_file(step.config):
-                return (
-                    f"`{step.key}` in `{file}` of the environment config the platform reads from "
-                    "`PLATFORM_ENV_CONFIG_DIR`"
-                )
-            return (
+                return f"`{step.key}` in {platform}"
+            bundle = (
                 f"`{step.key}` in `{file}` of the tenant config bundle under `tenants/{tenant}/` "
                 "of the bucket `TENANT_CONFIG_BUCKET` names, published from the tenant's config "
                 "repository"
+            )
+            return (
+                bundle
+                if tenant_only
+                else f"{bundle}, or in {platform} when the bundle does not hold it"
             )
         case _:
             assert_never(posture)
 
 
-def _setting_location(step: RemedyStep, posture: DeploymentPosture, environment: str) -> str:
+def _setting_location(step: RemedyStep, posture: DeploymentPosture) -> str:
     match posture:
         case DeploymentPosture.HOST:
-            tenant_file = (
-                f", or in `config/{environment}/tenants/{step.tenant}.env` when `{step.tenant}` "
-                "is not the home tenant"
-                if step.tenant
-                else ""
-            )
-            return (
-                f"`{step.key}` in `.env`{tenant_file}, applied to the workers with `inv k8s-reload`"
-            )
+            from scripts.config import is_tenant_setting
+
+            tenant = step.tenant or "<tenant>"
+            location = f"`config/local/tenants/{tenant}.env`"
+            if not is_tenant_setting(step.key):
+                location += " for one tenant, or in `config/local/platform.env` for every tenant"
+            return f"`{step.key}` in {location}, applied to the workers with `inv k8s-reload`"
         case DeploymentPosture.DEPLOYED:
             tenant = step.tenant or "<tenant>"
             return (
@@ -255,7 +309,7 @@ def _setting_location(step: RemedyStep, posture: DeploymentPosture, environment:
             assert_never(posture)
 
 
-def render_step(step: RemedyStep, posture: DeploymentPosture, *, environment: str) -> str:
+def render_step(step: RemedyStep, posture: DeploymentPosture) -> str:
     kind = _kind(step)
     if kind is None:
         return step.text
@@ -263,23 +317,115 @@ def render_step(step: RemedyStep, posture: DeploymentPosture, *, environment: st
         case StepKind.TEXT:
             return step.text
         case StepKind.CONFIG_KEY:
-            return _config_location(step, posture, environment)
+            return _config_location(step, posture)
         case StepKind.WORKER_SETTING:
-            return _setting_location(step, posture, environment)
+            return _setting_location(step, posture)
         case (
             StepKind.RESTART_RUN
             | StepKind.RETRY_REPAIR
+            | StepKind.ABANDON_REPAIR
             | StepKind.APPROVE_GATE
             | StepKind.REJECT_GATE
             | StepKind.ROLL_UP_COST
+            | StepKind.RESTORE_MODEL_PATH
+            | StepKind.RESUME_PARKED
         ):
             return f"`{command(step, posture)}`"
         case _:
             assert_never(kind)
 
 
-def render(remedy: Remedy, posture: DeploymentPosture, *, environment: str) -> str:
-    return "".join(render_step(step, posture, environment=environment) for step in remedy.steps)
+def render(remedy: Remedy, posture: DeploymentPosture) -> str:
+    return "".join(render_step(step, posture) for step in remedy.steps)
+
+
+BUTTON_LABELS = {
+    StepKind.RESTART_RUN: "Restart run",
+    StepKind.RETRY_REPAIR: "Retry repair",
+    StepKind.ABANDON_REPAIR: "Abandon",
+    StepKind.APPROVE_GATE: "Approve",
+    StepKind.REJECT_GATE: "Reject",
+}
+"""The label of the Slack button each tenant action becomes."""
+
+ACKNOWLEDGE_LABEL = "Acknowledge"
+VALIDATE_LABEL = "Run validation"
+FIX_DONE_LABEL = "Fix done"
+ADMINISTRATORS = "the platform administrators"
+_RUN_VERB = re.compile(r"(?i)\b(run|running)\s+$")
+_TENANT_VERBS = {
+    (True, "run"): "press",
+    (True, "running"): "pressing",
+    (False, "run"): "ask for",
+    (False, "running"): "asking for",
+}
+
+
+def _administrator_action(kind: StepKind, step: RemedyStep) -> str:
+    match kind:
+        case StepKind.ROLL_UP_COST:
+            execution = f"`{step.execution_id}`" if step.execution_id else "of this run"
+            return f"the cost rollup of execution {execution}"
+        case StepKind.RESTORE_MODEL_PATH:
+            return "the restore of the model path"
+        case StepKind.RESUME_PARKED:
+            return "the resume of the parked run"
+        case _:
+            return ""
+
+
+def _tenant_config_location(step: RemedyStep) -> str:
+    file = f"{step.config}.yaml"
+    if _is_tenant_file(step.config):
+        tenant = f" of tenant `{step.tenant}`" if step.tenant else ""
+        return f"`{step.key}` in `{file}` of the tenant config repository{tenant}"
+    return f"`{step.key}` in the platform's `{file}`, which {ADMINISTRATORS} change"
+
+
+def render_tenant_step(step: RemedyStep) -> str:
+    """Render one step for a tenant who acts through Slack buttons and holds no platform access.
+
+    The rendering names no shell command, path, or platform location in any posture.
+    """
+    kind = _kind(step)
+    if kind is None or kind is StepKind.TEXT:
+        return step.text
+    label = BUTTON_LABELS.get(kind)
+    if label:
+        return f"the {label} button"
+    if kind is StepKind.CONFIG_KEY:
+        return _tenant_config_location(step)
+    if kind is StepKind.WORKER_SETTING:
+        return f"the `{step.key}` setting, which {ADMINISTRATORS} set"
+    return f"{_administrator_action(kind, step)} from {ADMINISTRATORS}"
+
+
+def render_for_tenant(remedy: Remedy) -> str:
+    """Render a remedy whose actions are buttons on the tenant's Slack alert.
+
+    Remedy prose is written for a command, as in ``then run`` before an action, so the verb that
+    precedes a button becomes ``press`` and the verb that precedes an administrator action becomes
+    ``ask for``.
+    """
+    parts: list[str] = []
+    for step in remedy.steps:
+        kind = _kind(step)
+        if kind in COMMAND_KINDS and parts:
+            button = kind in BUTTON_LABELS
+
+            def _verb(match: re.Match[str], button: bool = button) -> str:
+                word = match.group(1)
+                verb = _TENANT_VERBS[(button, word.lower())]
+                return (verb[:1].upper() + verb[1:] if word[0].isupper() else verb) + " "
+
+            parts[-1] = _RUN_VERB.sub(_verb, parts[-1])
+        parts.append(render_tenant_step(step))
+    return "".join(parts)
+
+
+def button_actions(remedy: Remedy) -> tuple[RemedyStep, ...]:
+    """The remedy's actions that a tenant takes with a button, in the order the prose names them."""
+    return tuple(step for step in remedy.actions if _kind(step) in BUTTON_LABELS)
 
 
 def with_remedy(body: str, remedy_text: str) -> str:

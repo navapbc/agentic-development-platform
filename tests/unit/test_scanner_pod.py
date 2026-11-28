@@ -14,6 +14,7 @@ from adapters.real.security_scanner import (
 from services.orchestration.gates.pod_runner import PodEngineError
 from services.orchestration.gates.scanner_pod import (
     IMAGE_PULL_EXIT,
+    INPUT_PREPARE_EXIT,
     SCRATCH_FILE_EXIT,
     PodCommandRunner,
     remap_paths,
@@ -61,6 +62,13 @@ async def test_subprocess_runner_names_the_missing_binary_and_the_pod_alternativ
     message = str(excinfo.value)
     assert "definitely-not-installed is not installed" in message
     assert "scanner_execution" in message
+
+
+def test_a_scanner_error_keeps_the_end_of_stderr_where_the_tool_reports():
+    pull = "Copying blob sha256:" + "a" * 64 + "\n"
+    error = ScannerError("trivy", 1, pull * 20 + "FATAL failed to download vulnerability DB")
+
+    assert str(error).endswith("FATAL failed to download vulnerability DB")
 
 
 def test_scanner_arguments_point_at_the_workspace_mount_not_the_worker_path():
@@ -342,6 +350,7 @@ class _Settings:
         self.gate_registry_tls_verify = False
         self.semgrep_binary = "semgrep"
         self.trivy_binary = "trivy"
+        self.execution_workspace_root = "/tenants/acme/workspaces"
 
 
 @pytest.mark.parametrize("scanner", ["semgrep", "trivy"])
@@ -434,6 +443,74 @@ async def test_a_trivy_scan_through_the_pod_parses_into_findings():
     assert findings[0].location.startswith("/checkout/package-lock.json")
     assert "/workspace" not in findings[0].location
     assert "trivy fs" in ops.script
+
+
+class _Database:
+    def __init__(self, failure: Exception | None = None) -> None:
+        self._failure = failure
+
+    async def directories(self):
+        if self._failure is not None:
+            raise self._failure
+        return {"/trivy-cache": "/tenants/acme/workspaces/.trivy-db/sha256-abc"}
+
+    def prepare(self) -> str:
+        return "unpack-the-layer"
+
+
+async def test_a_trivy_scan_with_a_delivered_database_reads_it_offline_in_the_pod():
+    from adapters.interfaces.security_scanner import ScanTarget
+    from adapters.real.security_scanner import RealTrivyScanner
+
+    ops = FakePodOps(exit_code=0, stdout=json.dumps({"Results": []}))
+    runner = PodCommandRunner(
+        "docker.io/aquasec/trivy:0.74.0", scanner="trivy", ops=ops, inputs=_Database()
+    )
+    scanner = RealTrivyScanner(runner=runner, cache_dir="/trivy-cache")
+
+    await scanner.scan(ScanTarget(repo="org/app", ref="HEAD", repo_root="/checkout"))
+
+    assert ("/tenants/acme/workspaces/.trivy-db/sha256-abc", "/trivy-cache") in ops.copied_in
+    assert ops.script.index("unpack-the-layer") < ops.script.index("buildah from")
+    assert "-v /trivy-cache:/trivy-cache" in ops.script
+    for flag in ("--cache-dir /trivy-cache", "--skip-db-update", "--offline-scan"):
+        assert flag in ops.script
+
+
+@pytest.mark.parametrize(
+    ("database", "exit_code"),
+    [(_Database(RuntimeError("manifest answered 404")), 0), (_Database(), INPUT_PREPARE_EXIT)],
+)
+async def test_a_database_that_cannot_be_delivered_is_unavailability_not_a_finding(
+    database, exit_code
+):
+    ops = FakePodOps(exit_code=exit_code)
+    runner = PodCommandRunner(
+        "docker.io/aquasec/trivy:0.74.0", scanner="trivy", ops=ops, inputs=database
+    )
+
+    with pytest.raises(ScannerUnavailableError, match="could not prepare its inputs"):
+        await runner(["trivy", "fs", "/checkout"], "/checkout")
+
+
+def test_pod_mode_delivers_the_trivy_database_when_ecr_public_has_a_mirror(monkeypatch):
+    from adapters.real.security_scanner import RealTrivyScanner
+    from services.orchestration.gates import trivy_db
+    from services.orchestration.gates.builtin import _scanner_backend
+    from services.orchestration.gates.registry_mirrors import RegistryConfig
+
+    mirror = RegistryConfig(
+        mode="aws",
+        mirrors={"public.ecr.aws": "123456789012.dkr.ecr.us-east-1.amazonaws.com/p-ecr-public"},
+    )
+    monkeypatch.setattr(trivy_db.registry_mirrors, "current", lambda: mirror)
+
+    built = _scanner_backend("trivy", RealTrivyScanner.from_settings, _Settings("pod"))
+
+    assert built._cache_dir == trivy_db.POD_DIR
+    database = built._runner._inputs
+    assert isinstance(database, trivy_db.TrivyDatabase)
+    assert database._repository == "p-ecr-public/aquasecurity/trivy-db"
 
 
 async def test_a_scanner_that_exits_clean_without_a_document_is_unavailable_not_a_clean_scan():

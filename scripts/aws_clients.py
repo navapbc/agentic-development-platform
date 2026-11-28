@@ -11,11 +11,23 @@ LiteLLM gateway, receive the variable through their container environment.
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from typing import Any
 
 from scripts.config import Settings, get_settings
 
 _FIPS_ENV_VAR = "AWS_USE_FIPS_ENDPOINT"
+S3_MISSING_CODES = frozenset({"404", "NoSuchKey", "NotFound"})
+S3_CONFLICT_CODES = frozenset({"412", "409", "PreconditionFailed", "ConditionalRequestConflict"})
+
+
+def error_code(exc: BaseException) -> str:
+    """Return the AWS error code of a botocore error, or of the error it was raised from."""
+    for error in (exc, exc.__cause__):
+        response = getattr(error, "response", None)
+        if isinstance(response, Mapping) and (code := (response.get("Error") or {}).get("Code")):
+            return str(code)
+    return ""
 
 
 def configure_aws_fips(settings: Settings | None = None) -> None:
@@ -36,13 +48,14 @@ def s3_client(
     endpoint_url: str = "",
     access_key: str = "",
     secret_key: str = "",
+    config: Any = None,
 ) -> Any:
     """Build an S3 client, signing with the given keys when both are set.
 
     A client given explicit keys ignores ``AWS_PROFILE``. Compose passes the operator profile
-    from ``.env`` into containers that do not mount ``~/.aws``, and botocore raises
-    ProfileNotFound for a missing profile even when the client is given keys. Without keys
-    the default credential chain applies, which is the task role in AWS.
+    from ``config/local/platform.env`` into containers that do not mount ``~/.aws``, and
+    botocore raises ProfileNotFound for a missing profile even when the client is given keys.
+    Without keys the default credential chain applies, which is the task role in AWS.
     """
     import boto3
     import botocore.session
@@ -50,6 +63,8 @@ def s3_client(
     kwargs: dict[str, Any] = {"region_name": region}
     if endpoint_url:
         kwargs["endpoint_url"] = endpoint_url
+    if config is not None:
+        kwargs["config"] = config
     if not (access_key and secret_key):
         return boto3.client("s3", **kwargs)
     profile_free = botocore.session.Session(session_vars={"profile": (None, None, None, None)})

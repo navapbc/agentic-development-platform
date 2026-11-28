@@ -1,7 +1,8 @@
 """Optional live Jira smokes, skipped unless explicitly enabled.
 
-Configure the Cloud and Data Center sites in config/<env>/jira.yaml and export the tokens the
-config references, for example JIRA_API_TOKEN and JIRA_PAT, in .env.
+Configure the Cloud and Data Center sites in config/local/tenants/<tenant>/jira.yaml and set the
+tokens the config references, for example JIRA_API_TOKEN and JIRA_PAT, in
+config/local/tenants/<tenant>.env.
 
 Cloud smokes run when RUN_LIVE_JIRA_CLOUD=1 and call the REST API with the site's account email
 and API token. Data Center smokes run when RUN_LIVE_JIRA_DC=1. The read smokes are non-mutating.
@@ -30,12 +31,12 @@ _created_description = ""
 
 
 def _smoke_project(settings: Settings) -> str:
-    projects = sorted(allowed_projects(settings))
+    projects = sorted(allowed_projects())
     return projects[0] if projects else ""
 
 
 def _live_adapter(settings: Settings, project: str):
-    return build_jira_adapter(settings, project=project)
+    return build_jira_adapter(project=project)
 
 
 requires_live_cloud = pytest.mark.skipif(

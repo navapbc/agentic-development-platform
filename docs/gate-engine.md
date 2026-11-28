@@ -1,10 +1,10 @@
 # Integrating an external gate
 
-The platform drives every external review or scanner tool as a gate through one config-driven mechanism. A tool is never installed into the platform. It is named in `config/<env>/gate_engine.yaml`, resolved from a config-selected source, and run as a subprocess or in an ephemeral gate pod, whose output the platform parses onto the shared finding scale. The adapter is tool-agnostic, so a SARIF-emitting scanner such as Semgrep, Snyk, or SonarQube and a model-driven reviewer are added the same way, with no packaging and no code change. [examples/gate-engines](../examples/gate-engines) holds two worked examples, a deterministic security scan that writes SARIF and a test coverage review that asks the model gateway for suggested test cases. This is the only way to add an external gate. There is no plugin or pip-install path.
+The platform drives every external review or scanner tool as a gate through one config-driven mechanism. A tool is never installed into the platform. It is named in the tenant's `gate_engine.yaml`, resolved from a config-selected source, and run as a subprocess or in an ephemeral gate pod, whose output the platform parses onto the shared finding scale. The adapter is tool-agnostic, so a SARIF-emitting scanner such as Semgrep, Snyk, or SonarQube and a model-driven reviewer are added the same way, with no packaging and no code change. [examples/gate-engines](../examples/gate-engines) holds two worked examples, a deterministic security scan that writes SARIF and a test coverage review that asks the model gateway for suggested test cases. This is the only way to add an external gate. There is no plugin or pip-install path.
 
 ## Inert by default
 
-The external-gate path is off until a deployment writes `config/<env>/gate_engine.yaml` with at least one enabled engine. With the file absent or every engine disabled, `load_gate_engine_configs` returns no engines and no engine gate registers. The built-in rebar `security-review` gate stays the reviewer. The repository ships only `config/local/gate_engine.yaml.example`.
+The external-gate path is off until a tenant's bundle holds a `gate_engine.yaml` with at least one enabled engine, `config/local/tenants/<tenant>/gate_engine.yaml` locally. With the file absent or every engine disabled, `load_gate_engine_configs` returns no engines and no engine gate registers. The built-in rebar `security-review` gate stays the reviewer. The repository ships only `config/local/gate_engine.yaml.example`.
 
 ## The contract a tool satisfies
 
@@ -49,7 +49,7 @@ A Snyk or SonarQube gate is the same shape, with `review_entrypoint` pointing at
 
 ## Enabling engines
 
-`config/<env>/gate_engine.yaml` holds a list of engines. Each entry backs one gate, named by `name`, so several engines run side by side.
+A tenant's `gate_engine.yaml` holds a list of engines. The tenant template ships it as `config/local/tenants/tenant.example/gate_engine.yaml.example`. Each entry backs one gate, named by `name`, so several engines run side by side.
 
 ```yaml
 config_version: 1
@@ -127,7 +127,7 @@ engines:
     cache_root: .agent-context/engine-cache
 ```
 
-Add each engine's gate to `config/<env>/gates.yaml` by its `name`, with its own `enabled` and `required` flags, the same as any other gate, so a deployment runs it advisory or blocking, beside or in place of the built-in reviewer.
+Add each engine's gate to the effective `gates.yaml`, the platform's `config/local/gates.yaml` or the tenant's own copy that replaces it, by its `name`, with its own `enabled` and `required` flags, the same as any other gate, so a deployment runs it advisory or blocking, beside or in place of the built-in reviewer.
 
 ```yaml
 gates:
@@ -150,16 +150,16 @@ It defaults to `false` and should stay there wherever the cluster allows it, bec
 
 ## Registries
 
-The gate, checks, and scanner pods pull their images with buildah, and a project's checks command installs its own dependencies. On a workstation they reach the public registries. In AWS, DNS Firewall resolves none of them, so `config/<env>/registries.yaml` names the mirrors the pods use instead, and the activity worker copies a buildah `registries.conf` drop-in into each pod that sends every listed upstream prefix to its mirror. A Dockerfile `FROM python:3.12-slim@sha256:...` or a checks image named `node:22@sha256:...` is therefore pulled from the mirror with no change to the repository.
+The gate, checks, and scanner pods pull their images with buildah, and a project's checks command installs its own dependencies. On a workstation they reach the public registries. In AWS, DNS Firewall resolves none of them, so the platform's `registries.yaml` names the mirrors the pods use instead, and the activity worker copies a buildah `registries.conf` drop-in into each pod that sends every listed upstream prefix to its mirror. A Dockerfile `FROM python:3.14-slim@sha256:...` or a checks image named `node:22@sha256:...` is therefore pulled from the mirror with no change to the repository.
 
 - `mode: aws`, which the `private-bedrock` composition generates when `registry_mode = "aws"`, mirrors each upstream through an ECR pull-through cache. The activity worker hands the pod an ECR token, and the pod installs packages from the public PyPI, npm, and Go module indexes, which DNS Firewall resolves by name.
-- `mode: external` mirrors images and packages through an Artifactory or compatible service. The pod receives `PIP_INDEX_URL`, `NPM_CONFIG_REGISTRY`, and `GOPROXY` for the package indexes and a netrc and npmrc holding the token, which the activity worker reads from the variable `credential.token_env` names. [registries.yaml.example](../config/local/registries.yaml.example) shows the shape.
+- `mode: external` mirrors images and packages through an Artifactory or compatible service. The pod receives `PIP_INDEX_URL`, `NPM_CONFIG_REGISTRY`, and `GOPROXY` for the package indexes and a netrc and npmrc holding the token. The activity worker reads the token from `REGISTRY_TOKEN`, which only the tenant's own settings file or its `registry_token` secret supplies, and presents it with the `credential.username` of the tenant's `registries.yaml`. A tenant file that sets `credential.token_env` is refused. [registries.yaml.example](../config/local/registries.yaml.example) shows the platform file, and the tenant template [registries.yaml.example](../config/local/tenants/tenant.example/registries.yaml.example) shows the tenant's.
 
 Credentials reach the pod as files over the exec stream and are removed before project or engine code runs. Composer and other package managers are not configured, and OS package sources that use plain HTTP, such as the Debian mirrors an `apt-get` in a Dockerfile reads, are not reachable in either mode. A gate engine whose Dockerfile installs OS packages therefore runs in AWS in image mode, from an image published with them, not from a build in the pod.
 
 ## Running the built-in scanners from their own images
 
-The `semgrep` and `trivy` gates are built in, so they carry no engine config. They read `SCANNER_EXECUTION` instead, which follows the same subprocess-or-pod split the external gates use.
+The `semgrep`, `trivy`, and `osv-scanner` gates are built in, so they carry no engine config. They read `SCANNER_EXECUTION` instead, which follows the same subprocess-or-pod split the external gates use.
 
 `subprocess`, the default, invokes the scanner binary on the worker. When the binary is absent the gate reports a `ScannerError` naming the binary and pointing at pod mode, rather than surfacing a bare `FileNotFoundError`.
 
@@ -169,7 +169,12 @@ The `semgrep` and `trivy` gates are built in, so they carry no engine config. Th
 SCANNER_EXECUTION=pod
 SEMGREP_IMAGE=docker.io/semgrep/semgrep:1.177.0@sha256:acaac22ffc7b7cc5926de0751b223bce0b2491c33d18422fa72f632c78d81198
 TRIVY_IMAGE=docker.io/aquasec/trivy:0.74.0@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969
+OSV_SCANNER_IMAGE=<the platform-built osv-scanner image>
 ```
+
+OSV-Scanner runs only from the image the platform builds from [osv-scanner.Dockerfile](../docker/osv-scanner.Dockerfile), which puts `osv-scanner` on the path and carries the npm, PyPI, Go, and Maven databases under `/opt/osv-scanner/db`. Each scan downloads the current databases first and scans with the carried ones when the download fails, as it does in the `external` registry mode. The carried databases date from the image build, and the image is rebuilt only when its Dockerfile changes, so a deployment without egress to `osv-vulnerabilities.storage.googleapis.com` misses advisories published after that build. The upstream image keeps the binary outside the path and carries no databases, so a scan with it fails closed.
+
+Trivy downloads its vulnerability database from `mirror.gcr.io` or `ghcr.io` at the start of each scan, which a scanner pod without egress cannot reach. Aqua also publishes the database to `public.ecr.aws/aquasecurity/trivy-db`. When the environment's `registries.yaml` mirrors `public.ecr.aws`, as the `aws` registry mode does through its ECR Public pull-through cache, which needs no upstream credential, the activity worker pulls `aquasecurity/trivy-db:2` through that mirror with its own ECR token instead. It keeps the compressed layer under `<EXECUTION_WORKSPACE_ROOT>/.trivy-db` by digest, verifies the layer against its digest, and resolves the tag again at most every 6 hours. Each scan copies the layer into the pod at `/trivy-cache`, the pod unpacks it before it pulls the Trivy image, and Trivy runs with `--skip-db-update`, `--skip-java-db-update`, and `--offline-scan`, so the scan makes no network request and no registry credential is present while it runs. A database that cannot be resolved or unpacked is infrastructure failure, retried as below. Without an ECR Public mirror, Trivy downloads its own database.
 
 Both image settings must be fully qualified, because the builder resolves short names only for official Docker Hub images, so an unqualified `semgrep/semgrep` fails the pull. The defaults above carry a digest as well as a tag, because a tag is mutable and its maintainer can repush it, and the digest is what makes a scan reproducible. Keep the digest when you move a version, and resolve the new one from the registry rather than dropping to a bare tag. Nothing verifies image provenance beyond the reference you supply.
 
@@ -205,7 +210,7 @@ Because the boundary is the invocation and JSON contract, another review or clas
 
 ## Tenants and runtime profiles
 
-`gate_engine.yaml` and `gates.yaml` belong to the tenant an activity worker serves. Each tenant's config bundle may carry its own copy, which wins over the copy in `config/<env>/`, and the worker validates the bundle, including every engine image, before it activates it, as [tenant config](tenant-config.md) describes. The engine entries of one tenant never reach another tenant's worker, and a tenant entry may not reuse the name of a catalog engine.
+`gate_engine.yaml` belongs to the tenant an activity worker serves, and only the tenant's bundle holds it. `gates.yaml` is a platform file that a copy in the tenant's bundle replaces. The worker validates the bundle, including every engine image, before it activates it, as [tenant config](tenant-config.md) describes. The engine entries of one tenant never reach another tenant's worker, and a tenant entry may not reuse the name of a catalog engine.
 
 A repository's runtime profile may carry gate overrides in the `gates.yaml` entry format. The worker applies them after the tenant's `gates.yaml`, so a profile entry wins for that profile's repositories, as [runtime profiles](runtime-profiles.md#resolution) describes. A profile that enables an engine gate that does not register, such as a catalog engine whose image `GATE_ENGINE_IMAGES` does not name, is refused with its bundle.
 

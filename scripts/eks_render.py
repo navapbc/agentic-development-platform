@@ -14,9 +14,11 @@ The inputs are the JSON the eks-deployer task definition carries in DEPLOY_INPUT
 - `security_groups`, the cluster, Temporal client, and internal client group IDs
 - `secrets`, each secret store key, and `temporal_ca`, mapped to its secret ARN
 - `tenants`, each tenant's name, the volume handle of its workspace access point, its ticket store
-  roles, its secret ARNs, the platform secret keys it reads, its settings, its model limits, its
+  roles, its secret ARNs, the platform secret keys its worker reads and those its review worker
+  reads, its settings, its model limits, its
   sandbox quota, the image prefixes its sandbox pods may run, the config bucket, and the host name
-  of its MCP gateway, from which `scripts.tenant_render` renders its worker and sandbox namespaces
+  of its MCP gateway, from which `scripts.tenant_render` renders its worker, review, and sandbox
+  namespaces
 - `vpc_cidr`, `service_cidr`, `gate_egress_cidrs`, and `gate_egress_internet`
 - `ingress`, the webhook and gateway certificate ARNs and the gateway client CIDRs
 """
@@ -42,9 +44,14 @@ SECURITY_GROUP_POLICIES = {
 }
 GATE_EGRESS_POLICY = "gate-engine-egress"
 LITELLM_FILES = ("litellm-config.yaml", "litellm_redaction.py")
-# Secrets the tenant module generates for every tenant, which no overlay provider lists. The
-# tenant's worker reads each as the upper-cased key.
-TENANT_GENERATED_SECRETS = ("repo_intelligence_token",)
+# Secrets only a tenant holds, which no overlay provider lists because the secret store has no key
+# for them. The worker of a tenant that holds one reads it as the upper-cased key.
+TENANT_ONLY_SECRETS = (
+    "repo_intelligence_token",
+    "escalation_action_key",
+    "slack_bot_token",
+    "slack_app_token",
+)
 # The worker's secrets the tenant's MCP gateway also reads, for its Jira and GitHub readers and
 # its repository intelligence calls.
 GATEWAY_WORKER_SECRETS = ("github_token", "jira_api_token", "jira_pat", "repo_intelligence_token")
@@ -57,6 +64,19 @@ MODEL_LIMIT_ENV = {
 
 
 WORKLOAD_KINDS = frozenset({"Deployment", "StatefulSet", "DaemonSet", "Job", "CronJob", "Pod"})
+PLATFORM_ESCALATION_FILE = "platform-escalation.yaml"
+
+
+def require_platform_escalation(environment_config: Mapping[str, str]) -> None:
+    """Refuse an environment config without platform-escalation.yaml, which the workers and the
+    Slack posting service refuse to start without."""
+    if PLATFORM_ESCALATION_FILE not in environment_config:
+        raise RenderError(
+            f"the environment config holds no {PLATFORM_ESCALATION_FILE}, and the workers and the "
+            f"Slack posting service refuse to start without it. Copy "
+            f"config/platform/{PLATFORM_ESCALATION_FILE}.example to {PLATFORM_ESCALATION_FILE} "
+            "in container_config_dir, name the administrator destination, and apply"
+        )
 
 
 def workloads_last(documents: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -82,6 +102,20 @@ def _pod_spec(document: Mapping[str, Any]) -> dict[str, Any] | None:
     if document.get("kind") != "Deployment":
         return None
     return document["spec"]["template"]["spec"]
+
+
+DEFAULT_TERMINATION_GRACE_SECONDS = 30
+
+
+def termination_grace(deployment: Mapping[str, Any] | None) -> int:
+    """Seconds a pod of the Deployment may take to stop after SIGTERM before it is killed.
+
+    A rollout that replaces a worker pod waits this long beyond its own timeout, since the pod
+    keeps running until its activities finish and the Recreate strategy starts the new pod only
+    after the old one exits.
+    """
+    pod = ((deployment or {}).get("spec") or {}).get("template", {}).get("spec") or {}
+    return int(pod.get("terminationGracePeriodSeconds", DEFAULT_TERMINATION_GRACE_SECONDS))
 
 
 def config_map(name: str, data: Mapping[str, str]) -> dict[str, Any]:
@@ -160,6 +194,25 @@ def tenant_workspace(
     return volume, claim
 
 
+def tenant_review_workspace(
+    documents: list[dict[str, Any]], tenant: str, volume_handle: str
+) -> tuple[dict[str, Any], ...]:
+    """Return a read-only volume and claim of the tenant's workspace for its review namespace.
+
+    A claim binds one volume, so the review namespace's claim binds a second volume of the same
+    access point. The EFS CSI driver refuses the ReadOnlyMany access mode, so the volume keeps the
+    workspace's ReadWriteMany mode and csi.readOnly makes the driver mount it read-only.
+    """
+    from scripts.tenant_render import review_namespace
+
+    volume, claim = tenant_workspace(documents, tenant, volume_handle)
+    volume["metadata"]["name"] = f"tenant-{tenant}-review-workspace"
+    volume["spec"]["csi"]["readOnly"] = True
+    claim["metadata"]["namespace"] = review_namespace(tenant)
+    claim["spec"]["volumeName"] = volume["metadata"]["name"]
+    return volume, claim
+
+
 def tenant_specs(documents: list[dict[str, Any]], inputs: Mapping[str, Any]) -> list[Any]:
     from scripts.tenant_render import Tenant, worker_env
 
@@ -178,6 +231,9 @@ def tenant_specs(documents: list[dict[str, Any]], inputs: Mapping[str, Any]) -> 
                 name=name,
                 env=env,
                 workspace=tenant_workspace(documents, name, entry["workspace_volume_handle"]),
+                review_workspace=tenant_review_workspace(
+                    documents, name, entry["workspace_volume_handle"]
+                ),
                 config={"rebar-store-aws-config": {"config": rebar_profiles(entry["rebar_roles"])}},
                 quota=entry.get("sandbox_quota") or {},
                 image_prefixes=tuple(entry.get("image_prefixes") or ()),
@@ -193,20 +249,29 @@ def set_tenant_secrets(
 ) -> list[str]:
     """Point the platform providers at the platform secrets and each tenant's at its own.
 
-    A tenant's provider mounts the platform secrets its role may read and its own secrets, and
-    leaves out every other key. An omitted key is `<key>` for a platform secret and
-    `<tenant>:<key>` for a tenant secret without a current value.
+    A provider of a tenant's worker or review namespace mounts the platform secrets its role may
+    read, `platform_secrets` for the worker and `review_platform_secrets` for the review worker,
+    and the tenant's own secrets it lists, and leaves out every other key. An omitted key is
+    `<key>` for a platform secret and `<tenant>:<key>` for a tenant secret without a current value.
     """
-    from scripts.tenant_render import worker_namespace
+    from scripts.tenant_render import review_namespace, worker_namespace
 
     omitted = set(omit)
-    tenants = {worker_namespace(entry["name"]): entry for entry in inputs.get("tenants") or []}
+    tenants = {
+        namespace(entry["name"]): (entry, readable)
+        for entry in inputs.get("tenants") or []
+        for namespace, readable in (
+            (worker_namespace, "platform_secrets"),
+            (review_namespace, "review_platform_secrets"),
+        )
+    }
     platform = [d for d in documents if d.get("metadata", {}).get("namespace") not in tenants]
     skipped = set_secrets(platform, inputs["secrets"], {key for key in omitted if ":" not in key})
-    for namespace, entry in tenants.items():
+    for namespace, (entry, readable) in tenants.items():
         name = entry["name"]
         own = entry.get("secrets") or {}
-        arns = {key: inputs["secrets"][key] for key in entry.get("platform_secrets") or []}
+        keys = entry.get(readable, entry.get("platform_secrets")) or []
+        arns = {key: inputs["secrets"][key] for key in keys}
         arns.update(own)
         providers = [
             d
@@ -214,7 +279,7 @@ def set_tenant_secrets(
             if d.get("kind") == "SecretProviderClass"
             and d["metadata"].get("namespace") == namespace
         ]
-        add_generated_secrets(providers, own)
+        add_tenant_only_secrets(providers, own)
         add_gateway_secrets(providers)
         mounted = {
             secret_key(item["objectName"]): item.get("objectAlias", "")
@@ -229,8 +294,7 @@ def set_tenant_secrets(
     return skipped
 
 
-def add_generated_secrets(providers: list[dict[str, Any]], own: Mapping[str, str]) -> None:
-    """Add each generated secret the tenant holds to its worker's provider."""
+def add_tenant_only_secrets(providers: list[dict[str, Any]], own: Mapping[str, str]) -> None:
     from scripts.tenant_render import WORKER
 
     for provider in providers:
@@ -244,7 +308,7 @@ def add_generated_secrets(providers: list[dict[str, Any]], own: Mapping[str, str
                 "objectType": "secretsmanager",
                 "objectAlias": key.upper(),
             }
-            for key in TENANT_GENERATED_SECRETS
+            for key in TENANT_ONLY_SECRETS
             if key in own and key not in listed
         ]
         provider["spec"]["parameters"]["objects"] = json.dumps(objects)
@@ -333,6 +397,31 @@ def set_network_cidrs(
                     block["cidr"] = vpc_cidr
                 elif block and block["cidr"] == SYNTHETIC_SERVICE_CIDR:
                     block["cidr"] = service_cidr
+
+
+PLATFORM_BASELINE_POLICY = "platform-baseline"
+DEFAULT_SMTP_PORT = 587
+
+
+def set_smtp_egress(
+    documents: list[dict[str, Any]], platform_environment: Mapping[str, Any]
+) -> None:
+    """Point the platform baseline's SMTP egress at SMTP_PORT, 587 unless the environment sets it.
+
+    The workers, the inbound webhook, and the deployment-validate Job send alert email, and the
+    tenant namespaces copy the platform baseline.
+    """
+    raw = str(platform_environment.get("SMTP_PORT") or DEFAULT_SMTP_PORT).strip()
+    if not raw.isdigit() or not 0 < int(raw) < 65536:
+        raise RenderError(f"SMTP_PORT {raw!r} of the platform environment is not a TCP port")
+    for document in documents:
+        if (
+            document.get("kind") != "NetworkPolicy"
+            or document["metadata"]["name"] != PLATFORM_BASELINE_POLICY
+        ):
+            continue
+        smtp = next(r for r in document["spec"]["egress"] if _ports(r) == [DEFAULT_SMTP_PORT])
+        smtp["ports"] = [{"protocol": "TCP", "port": int(raw)}]
 
 
 def _ports(rule: Mapping[str, Any]) -> list[int]:
@@ -459,11 +548,20 @@ def render(
     omit_secrets: Iterable[str] = (),
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Return the environment's manifests and the secret aliases left out of them."""
-    from scripts.tenant_render import tenantize
-    from scripts.webhook_eks_render import route_webhook_tenants
+    from scripts.tenant_render import label_current_slots, tenantize
+    from scripts.validation_job import set_validation_image, set_validation_tenants
+    from scripts.webhook_eks_render import (
+        route_action_key_fingerprints,
+        route_slack_poster,
+        route_webhook_tenants,
+        slack_poster_ca,
+    )
 
     documents = copy.deepcopy(overlay_documents)
+    require_platform_escalation(inputs.get("environment_config") or {})
     set_images(documents, inputs["images"])
+    set_validation_image(documents, inputs["images"]["platform"])
+    set_validation_tenants(documents, [entry["name"] for entry in inputs.get("tenants") or []])
     set_settings(documents, inputs)
     set_security_groups(documents, inputs["security_groups"])
     set_network_cidrs(
@@ -473,15 +571,19 @@ def render(
         inputs["gate_egress_cidrs"],
         bool(inputs.get("gate_egress_internet")),
     )
+    set_smtp_egress(documents, inputs.get("platform_environment") or {})
     documents = set_ingress(documents, inputs.get("ingress") or {})
     generated = generated_objects(inputs, root)
     tenants = tenant_specs(documents, inputs)
     if not tenants:
         raise RenderError("the inputs name no tenant, and every activity worker serves one")
-    documents = tenantize(documents + generated, tenants)
+    generated += slack_poster_ca(inputs)
+    documents = route_slack_poster(tenantize(documents + generated, tenants), inputs)
+    label_current_slots(documents)
     set_gateway_hosts(documents, gateway_hosts(inputs))
     omit_secrets = list(omit_secrets)
     skipped = set_tenant_secrets(documents, inputs, omit_secrets)
     skipped += route_webhook_tenants(documents, inputs, omit_secrets)
+    route_action_key_fingerprints(documents, inputs)
     stamp_config_hash(documents, [])
     return documents, skipped

@@ -93,7 +93,7 @@ resource "aws_lambda_function" "rotation" {
   function_name    = "${var.name_prefix}-${each.key}-rotation"
   description      = "Rotates the ${each.key} credentials in Secrets Manager."
   role             = each.value.role
-  runtime          = "python3.13"
+  runtime          = "python3.14"
   handler          = each.value.handler
   filename         = data.archive_file.rotation[0].output_path
   source_code_hash = data.archive_file.rotation[0].output_base64sha256

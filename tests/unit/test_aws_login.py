@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import pytest
 from scripts import aws_login
 from services.aws_credentials import expiry_report, watch_credentials
-from tests.support import hermetic_settings
+from tests.support import hermetic_settings, local_tenants
 
 NOW = datetime(2026, 11, 7, 12, 0, tzinfo=UTC)
 HELPER = Path(__file__).resolve().parents[2] / "deploy/kubernetes/local/aws/credential-process.py"
@@ -146,6 +146,19 @@ def test_the_secret_carries_the_record_in_the_configured_namespace() -> None:
     assert manifest["metadata"]["namespace"] == "ns"
     assert manifest["metadata"]["name"] == aws_login.CREDENTIALS_OBJECT
     assert set(manifest["data"]) == {"credentials.json"}
+
+
+def test_the_secret_reaches_the_platform_and_each_tenant_review_namespace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    local_tenants(monkeypatch, tmp_path, "adp", "beta")
+    settings = hermetic_settings(k8s_namespace="ns")
+
+    namespaces = aws_login.credential_namespaces(settings)
+    manifest = aws_login.secret_manifest(settings, {"Version": 1}, "tenant-beta-review")
+
+    assert namespaces == ["ns", "tenant-adp-review", "tenant-beta-review"]
+    assert manifest["metadata"]["namespace"] == "tenant-beta-review"
 
 
 @pytest.mark.parametrize(

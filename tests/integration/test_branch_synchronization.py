@@ -10,6 +10,9 @@ from services.orchestration.branch_sync import (
     CONFLICTS,
     FAST_FORWARD,
     REBASED,
+    RESYNC_CONFLICTS,
+    RESYNC_CURRENT,
+    RESYNC_MERGED,
     GitBranchSynchronizer,
 )
 
@@ -150,3 +153,100 @@ async def test_resolved_path_is_excluded_from_conflicts(remote, tmp_path) -> Non
     assert outcome.status == REBASED
     assert outcome.base_head == base_head
     assert outcome.conflicts == []
+
+
+async def test_a_regenerated_lockfile_the_base_also_changed_is_not_a_conflict(
+    remote, tmp_path
+) -> None:
+    remote_path, base_sha = remote
+    _advance_base(remote_path, tmp_path, "package-lock.json", '{"lockfileVersion": 3, "a": 1}\n')
+    workspace = _workspace(remote_path, tmp_path)
+    (workspace / "package-lock.json").write_text('{"lockfileVersion": 3, "b": 2}\n')
+
+    outcome = await _synchronizer(remote_path).synchronize(
+        repo=REPO,
+        base="main",
+        base_sha=base_sha,
+        branch=BRANCH,
+        workspace_path=str(workspace),
+        resolved_files={},
+        regenerated=frozenset({"package-lock.json"}),
+    )
+
+    assert outcome.status == REBASED
+    assert outcome.conflicts == []
+
+
+def _committed_workspace(remote_path: str, tmp_path: Path, files: dict[str, str]) -> Path:
+    workspace = _workspace(remote_path, tmp_path)
+    for path, text in files.items():
+        (workspace / path).write_text(text, encoding="utf-8")
+    _git(["add", "."], str(workspace))
+    _git([*_identity(), "commit", "-q", "-m", "agent change"], str(workspace))
+    return workspace
+
+
+async def test_a_committed_branch_with_a_current_base_is_left_alone(remote, tmp_path) -> None:
+    remote_path, _ = remote
+    workspace = _committed_workspace(remote_path, tmp_path, {"feature.py": "added = True\n"})
+    head = _git(["rev-parse", "HEAD"], str(workspace))
+
+    outcome = await _synchronizer(remote_path).resync(
+        repo=REPO, base="main", workspace_path=str(workspace)
+    )
+
+    assert outcome.status == RESYNC_CURRENT
+    assert _git(["rev-parse", "HEAD"], str(workspace)) == head
+
+
+async def test_a_committed_branch_is_moved_onto_the_new_base_with_its_change_staged(
+    remote, tmp_path
+) -> None:
+    remote_path, _ = remote
+    workspace = _committed_workspace(remote_path, tmp_path, {"feature.py": "added = True\n"})
+    base_head = _advance_base(remote_path, tmp_path, "shared.py", "value = 1\n")
+
+    outcome = await _synchronizer(remote_path).resync(
+        repo=REPO, base="main", workspace_path=str(workspace)
+    )
+
+    assert (outcome.status, outcome.base_head) == (RESYNC_MERGED, base_head)
+    assert _git(["rev-parse", "HEAD"], str(workspace)) == base_head
+    assert (workspace / "shared.py").read_text() == "value = 1\n"
+    assert _git(["diff", "--cached", "--name-only"], str(workspace)) == "feature.py"
+    assert not (workspace / ".git" / "MERGE_HEAD").exists()
+
+
+async def test_a_conflicting_base_change_reports_the_paths_and_restores_the_branch(
+    remote, tmp_path
+) -> None:
+    remote_path, _ = remote
+    workspace = _committed_workspace(remote_path, tmp_path, {"shared.py": "value = 2\n"})
+    head = _git(["rev-parse", "HEAD"], str(workspace))
+    _advance_base(remote_path, tmp_path, "shared.py", "value = 1\n")
+
+    outcome = await _synchronizer(remote_path).resync(
+        repo=REPO, base="main", workspace_path=str(workspace)
+    )
+
+    assert (outcome.status, outcome.conflicts) == (RESYNC_CONFLICTS, ["shared.py"])
+    assert _git(["rev-parse", "HEAD"], str(workspace)) == head
+    assert _git(["status", "--porcelain"], str(workspace)) == ""
+
+
+async def test_a_conflict_only_in_a_regenerated_lockfile_takes_the_base_copy(
+    remote, tmp_path
+) -> None:
+    remote_path, _ = remote
+    workspace = _committed_workspace(remote_path, tmp_path, {"package-lock.json": "agent\n"})
+    _advance_base(remote_path, tmp_path, "package-lock.json", "base\n")
+
+    outcome = await _synchronizer(remote_path).resync(
+        repo=REPO,
+        base="main",
+        workspace_path=str(workspace),
+        regenerated=frozenset({"package-lock.json"}),
+    )
+
+    assert outcome.status == RESYNC_MERGED
+    assert (workspace / "package-lock.json").read_text() == "base\n"

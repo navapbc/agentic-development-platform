@@ -7,7 +7,7 @@ from typing import Any
 
 from services.orchestration.gates.contract import (
     BLOCK,
-    PASS,
+    PASSED,
     REVIEW,
     SCANNER,
     Gate,
@@ -43,7 +43,7 @@ def review_gate(name: str, review_fn: ReviewFn) -> Gate:
         return GateResult(
             name=name,
             kind=REVIEW,
-            verdict=BLOCK if outcome.verdict == BLOCK else PASS,
+            verdict=BLOCK if outcome.verdict == BLOCK else PASSED,
             findings=findings,
             summary=outcome.summary,
             attestation_hash=outcome.attestation_hash,
@@ -95,7 +95,7 @@ def scanner_gate(name: str, scanner_factory: ScannerFactory) -> Gate:
         return GateResult(
             name=name,
             kind=SCANNER,
-            verdict=BLOCK if blocking else PASS,
+            verdict=BLOCK if blocking else PASSED,
             findings=findings,
             summary=f"{len(findings)} findings over {len(raw)} scanned",
         )
@@ -104,7 +104,11 @@ def scanner_gate(name: str, scanner_factory: ScannerFactory) -> Gate:
 
 
 def builtin_scanner_backends() -> dict[str, ScannerFactory]:
-    from adapters.real.security_scanner import RealSemgrepScanner, RealTrivyScanner
+    from adapters.real.security_scanner import (
+        RealOsvScanner,
+        RealSemgrepScanner,
+        RealTrivyScanner,
+    )
 
     return {
         "semgrep": lambda settings=None: _scanner_backend(
@@ -112,6 +116,9 @@ def builtin_scanner_backends() -> dict[str, ScannerFactory]:
         ),
         "trivy": lambda settings=None: _scanner_backend(
             "trivy", RealTrivyScanner.from_settings, settings
+        ),
+        "osv-scanner": lambda settings=None: _scanner_backend(
+            "osv-scanner", RealOsvScanner.from_settings, settings
         ),
     }
 
@@ -130,9 +137,14 @@ def _scanner_backend(name: str, factory: Any, settings: Any = None) -> Any:
         )
     if mode != "pod":
         return factory(resolved)
+    from services.orchestration.gates import trivy_db
     from services.orchestration.gates.scanner_pod import pod_command_runner
 
-    return factory(resolved, runner=pod_command_runner(name, resolved))
+    database = trivy_db.database_for(resolved) if name == "trivy" else None
+    if database is None:
+        return factory(resolved, runner=pod_command_runner(name, resolved))
+    runner = pod_command_runner(name, resolved, inputs=database)
+    return factory(resolved, runner=runner, cache_dir=trivy_db.POD_DIR)
 
 
 def _resolve_gate_model(config: Any) -> str:
@@ -192,7 +204,9 @@ def engine_review_backend(config: Any, profile: str = "") -> Any:
         )
         litellm_base_url = settings.sandbox_litellm_base_url
         litellm_api_key = ""
-        run_model_access = RunModelAccess(settings)
+        from services.orchestration.limit_grants import PostgresLimitGrants
+
+        run_model_access = RunModelAccess(settings, grants=PostgresLimitGrants())
     return AiReviewScanner(
         name=config.name,
         config=config,

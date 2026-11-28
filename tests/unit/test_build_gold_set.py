@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 from services.repository_intelligence.eval import build_gold_set
 from services.repository_intelligence.eval.gold_schema import read_gold_set
 from services.repository_intelligence.indexing.scip_builder import (
-    SCIP_PYTHON_INDEXER,
     SCIP_TYPESCRIPT_INDEXER,
 )
 
@@ -51,9 +51,10 @@ def _write_json(tmp_path: Path, payload: dict) -> Path:
     return scip_json
 
 
-def test_indexer_version_reads_the_pinned_command():
-    assert build_gold_set._indexer_version(SCIP_TYPESCRIPT_INDEXER) == "0.3.14"
-    assert build_gold_set._indexer_version(SCIP_PYTHON_INDEXER) == "0.6.6"
+def test_indexer_version_is_unknown_for_an_indexer_without_a_version():
+    assert build_gold_set._indexer_version(replace(SCIP_TYPESCRIPT_INDEXER, version=None)) == (
+        "unknown"
+    )
 
 
 def test_main_typescript_emits_structural_records_only(tmp_path, monkeypatch):
@@ -80,7 +81,7 @@ def test_main_typescript_emits_structural_records_only(tmp_path, monkeypatch):
     assert exit_code == 0
     meta, records = read_gold_set(out_path)
     assert meta is not None
-    assert meta.oracles["structure"] == "scip-typescript@0.3.14"
+    assert meta.oracles["structure"] == "scip-typescript@0.6.2"
     query_types = {str(record.query_type) for record in records}
     assert "module_dependencies" not in query_types
     assert "related_tests" not in query_types

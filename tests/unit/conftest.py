@@ -16,3 +16,8 @@ def allow_any_image(monkeypatch):
 
     monkeypatch.setattr(image_admission, "admit_images", admit_images)
     monkeypatch.setattr(image_admission, "pod_service_account", lambda: "")
+
+
+@pytest.fixture(autouse=True)
+def _state_outside_home(monkeypatch, tmp_path_factory):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path_factory.mktemp("state")))

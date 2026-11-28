@@ -70,15 +70,16 @@ locals {
   }
 
   external_secrets = {
-    github_token           = "GitHub token for the source control integration, set as GITHUB_TOKEN."
-    github_webhook_secret  = "GitHub webhook signing secret, set as GITHUB_WEBHOOK_SECRET."
-    jira_api_token         = "Jira Cloud API token, set as JIRA_API_TOKEN."
-    jira_pat               = "Jira Data Center personal access token, set as JIRA_PAT."
-    jira_webhook_secret    = "Jira webhook signing secret, set as JIRA_WEBHOOK_SECRET."
-    slack_webhook_url      = "Slack incoming webhook URL for alerts, set as SLACK_WEBHOOK_URL."
-    review_signing_key     = "OpenSSH private key that signs review verdicts, set as REVIEW_SIGNING_KEY."
-    authorship_signing_key = "OpenSSH private key that signs authored artifacts, set as AUTHORSHIP_SIGNING_KEY."
-    registry_token         = "Read-only token of an external registry such as Artifactory, set as REGISTRY_TOKEN."
+    github_token                = "GitHub token for the source control integration, set as GITHUB_TOKEN."
+    jira_api_token              = "Jira Cloud API token, set as JIRA_API_TOKEN."
+    jira_pat                    = "Jira Data Center personal access token, set as JIRA_PAT."
+    slack_webhook_url           = "Slack incoming webhook URL for alerts, set as SLACK_WEBHOOK_URL."
+    slack_shared_bot_token      = "Bot token of the shared Slack app, which only the Slack posting service reads, set as SLACK_SHARED_BOT_TOKEN."
+    slack_shared_signing_secret = "Signing secret of the shared Slack app, which only the inbound webhook reads, set as SLACK_SHARED_SIGNING_SECRET."
+    slack_shared_app_token      = "App-level token of the shared Slack app with connections:write, which only the inbound webhook reads to take clicks over Socket Mode, set as SLACK_SHARED_APP_TOKEN."
+    slack_poster_tls            = "Server certificate and key of the Slack posting service, issued from the platform CA by inv slack-poster-certs and stored as JSON with certificate and private_key."
+    authorship_signing_key      = "OpenSSH private key that signs authored artifacts, set as AUTHORSHIP_SIGNING_KEY."
+    registry_token              = "Read-only token of an external registry such as Artifactory, set as REGISTRY_TOKEN."
   }
 
   database_roles = {

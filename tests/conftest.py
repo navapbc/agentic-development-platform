@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import dotenv.main
+import pytest
+import scripts.env_file
 
 # load_dotenv() and dotenv_values() called without a path search upward from the calling
 # module, and the in-repository virtualenv puts the developer's .env on that path. litellm
@@ -12,6 +15,11 @@ import dotenv.main
 # exporter that fails against the unreachable collector at interpreter exit. Tests read
 # configuration only from explicit files, so implicit discovery finds nothing.
 dotenv.main.find_dotenv = lambda *args, **kwargs: ""
+
+# The settings files and the tenant folders are read under the checkout root, so pointing it at
+# a directory that does not exist keeps this checkout's config/local/platform.env, its tenant
+# settings files, and its tenant folders out of every test.
+scripts.env_file.CHECKOUT_ROOT = Path(__file__).resolve().parent / "no-checkout"
 
 _ENV_SNAPSHOT: dict[str, str] = {}
 
@@ -29,3 +37,12 @@ def pytest_collection_finish(session):
         del os.environ[key]
     for key, value in _ENV_SNAPSHOT.items():
         os.environ[key] = value
+
+
+@pytest.fixture(autouse=True)
+def _fresh_settings():
+    from scripts.config import get_settings
+
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()

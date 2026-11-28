@@ -1,6 +1,7 @@
 # NetworkPolicies for strict mode, where a pod that no policy selects is denied all traffic.
 # Host-networked pods are exempt. 10.0.0.0/16 stands for the VPC CIDR, and 172.20.0.0/16 for the
-# cluster's service CIDR. 169.254.170.23 is the EKS Pod Identity agent on each node.
+# cluster's service CIDR. 169.254.170.23 is the EKS Pod Identity agent on each node. The render sets
+# the platform-baseline SMTP port, 587 here, to SMTP_PORT of the platform environment.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -78,6 +79,12 @@ spec:
           port: 443
     - to:
         - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 587
+    - to:
+        - ipBlock:
             cidr: 10.0.0.0/16
       ports:
         - protocol: TCP
@@ -91,6 +98,13 @@ spec:
       ports:
         - protocol: TCP
           port: 4000
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: slack-poster
+      ports:
+        - protocol: TCP
+          port: 8160
     - to:
         - namespaceSelector:
             matchLabels:

@@ -55,7 +55,7 @@ def _input() -> ReviewInput:
 
 def _raw() -> RawReview:
     return RawReview(
-        verdict=Verdict.PASS,
+        verdict=Verdict.PASSED,
         provenance=[ModelProvenance(leg="finder", tier="review-model", model_id="m")],
         summary="clean",
     )
@@ -98,13 +98,12 @@ async def test_revoked_key_blocks(tmp_path: Path):
     trust_root = parse_trust_root(
         {
             "version": 1,
-            "principal": _PRINCIPAL,
-            "keys": [{"id": "k1", "public_key": public_line, "revoked": True}],
+            "keys": [{"id": "k1", "tenant": "adp", "public_key": public_line, "revoked": True}],
         }
     )
     sink = _RecordingSink()
     gate = ReviewGate(
-        FakeReviewKernel(_raw()), sink, _attestor(key_path, trust_root.allowed_signers())
+        FakeReviewKernel(_raw()), sink, _attestor(key_path, trust_root.allowed_signers("adp"))
     )
 
     with pytest.raises(ReviewAttestationError):

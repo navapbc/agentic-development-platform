@@ -2,10 +2,10 @@
 
 A component built from source, or an image the platform builds instead of copying, returns to
 the upstream release once that release scans clean. `check` reads the newest release of each
-pinned component from the GitHub releases API, or from go.dev for Go, and writes the result with
-the upstream images the daily `publish-images` run scans with `inv image-scan`. `report` renders
-the result and those scans as markdown. A release the check cannot read is recorded with its
-error and never fails the run.
+pinned component from the GitHub releases API, from go.dev for Go, or from the Go module proxy for
+a module pinned by its pseudo-version, and writes the result with the upstream images the daily
+`publish-images` run scans with `inv image-scan`. `report` renders the result and those scans as
+markdown. A release the check cannot read is recorded with its error and never fails the run.
 """
 
 from __future__ import annotations
@@ -26,10 +26,11 @@ from scripts import base_versions
 GO_FEED = "go.dev"
 GITHUB_API = "https://api.github.com"
 GO_DOWNLOADS = "https://go.dev/dl/?mode=json"
+GO_MODULE_PROXY = "proxy.golang.org"
 # Amazon Linux 2023 publishes no GitHub release. Each release is an image tag in ECR Public, which
 # answers a tag list with an anonymous pull token.
 AL2023_FEED = "public.ecr.aws/amazonlinux/amazonlinux"
-AL2023_TOKEN = "https://public.ecr.aws/token/?scope=repository:amazonlinux/amazonlinux:pull"
+AL2023_PULL_AUTH = "https://public.ecr.aws/token/?scope=repository:amazonlinux/amazonlinux:pull"
 AL2023_TAGS = "https://public.ecr.aws/v2/amazonlinux/amazonlinux/tags/list?n=1000"
 _AL2023_RELEASE_TAG = re.compile(r"(2023\.\d+\.\d{8})\.\d+")
 _STABLE_TAG = re.compile(r"v?\d+(?:\.\d+)+")
@@ -43,6 +44,8 @@ UNAVAILABLE = "unavailable"
 ERROR = "error"
 _FETCH_TIMEOUT_SECONDS = 20.0
 _VERSION = re.compile(r"\d+(?:\.\d+)+")
+_MODULE_RELEASE = re.compile(r"v(\d+)\.(\d+)\.(\d+)")
+_PSEUDO_VERSION = re.compile(r"v(\d+)\.(\d+)\.(\d+)-(?:[0-9A-Za-z.-]*\.)?(\d{14})-[0-9a-f]{12}")
 _FINDING_LINE = re.compile(r"^\[image-scan\] {3}(?P<id>\S+) \((?:low|medium|high|critical)\)", re.M)
 
 Fetch = Callable[[str], Any]
@@ -82,6 +85,7 @@ COMPONENTS = (
     Component("notation", "notaryproject/notation", "NOTATION_VERSION", "NOTATION"),
     Component("scip", "sourcegraph/scip", "SCIP_VERSION", "SCIP"),
     Component("terraform-ls", "hashicorp/terraform-ls", "TERRAFORM_LS_VERSION", "TERRAFORM_LS"),
+    Component("zoekt", f"{GO_MODULE_PROXY}/github.com/sourcegraph/zoekt", "ZOEKT_VERSION"),
     Component("scip-java", "sourcegraph/scip-java", "SCIP_JAVA_VERSION"),
     Component("scip-ruby", "sourcegraph/scip-ruby", "SCIP_RUBY_VERSION"),
     Component("scip-python", "sourcegraph/scip-python", "SCIP_PYTHON_VERSION"),
@@ -97,6 +101,7 @@ COMPONENTS = (
     Component("openscap", "OpenSCAP/openscap", "OPENSCAP_VERSION"),
     Component("scap-security-guide", "ComplianceAsCode/content", "SSG_VERSION"),
     Component("trivy", "aquasecurity/trivy", "TRIVY_VERSION", "TRIVY"),
+    Component("osv-scanner", "google/osv-scanner", "OSV_SCANNER_VERSION", "OSV_SCANNER"),
     Component("semgrep", "semgrep/semgrep", "SEMGREP_UPSTREAM_IMAGE", "SEMGREP"),
     Component(
         "clickhouse", "ClickHouse/ClickHouse", "CLICKHOUSE_IMAGE", "CLICKHOUSE", "CLICKHOUSE_IMAGE"
@@ -210,6 +215,27 @@ def is_newer(newest: str, pinned: str) -> bool:
     return newest_key is not None and pinned_key is not None and newest_key > pinned_key
 
 
+def module_key(version: str) -> tuple[int, ...] | None:
+    """Return a sort key that orders a pseudo-version by commit time, below its base release."""
+    if match := _PSEUDO_VERSION.fullmatch(version):
+        major, minor, patch, stamp = (int(part) for part in match.groups())
+        return (major, minor, patch, 0, stamp)
+    if match := _MODULE_RELEASE.fullmatch(version):
+        return (*(int(part) for part in match.groups()), 1, 0)
+    return None
+
+
+def is_newer_module(newest: str, pinned: str) -> bool:
+    newest_key, pinned_key = module_key(newest), module_key(pinned)
+    return newest_key is not None and pinned_key is not None and newest_key > pinned_key
+
+
+def go_module(component: Component) -> str:
+    """Return the module path of a component the Go module proxy serves, or an empty string."""
+    feed, _, module = component.repository.partition("/")
+    return module if feed == GO_MODULE_PROXY else ""
+
+
 def _image_parts(reference: str) -> tuple[str, str]:
     """Return the name and tag of an image reference, dropping any digest."""
     remainder = reference.partition("@")[0]
@@ -248,8 +274,11 @@ def newest_release(component: Component, fetch: Fetch) -> tuple[str, str]:
                 version = str(release["version"])
                 return version, f"https://go.dev/doc/devel/release#{version}"
         raise ValueError("go.dev lists no stable release")
+    if module := go_module(component):
+        version = str(fetch(f"https://{GO_MODULE_PROXY}/{module}/@latest")["Version"])
+        return version, f"https://pkg.go.dev/{module}@{version}"
     if component.repository == AL2023_FEED:
-        token = fetch(AL2023_TOKEN)["token"]
+        token = fetch(AL2023_PULL_AUTH)["token"]
         tags = fetch(f"{AL2023_TAGS}#{token}")["tags"]
         releases = {match.group(1) for tag in tags if (match := _AL2023_RELEASE_TAG.fullmatch(tag))}
         if not releases:
@@ -305,8 +334,10 @@ def check(
             scan_image = upstream if image_mode == BUILD else ""
             releases.append(Release(**common, scan_image=scan_image, error=_one_line(exc)))
             continue
-        newer = is_newer(newest, pinned)
-        target = retarget(pins[component.pin], newest)
+        if go_module(component):
+            newer, target = is_newer_module(newest, pinned), newest
+        else:
+            newer, target = is_newer(newest, pinned), retarget(pins[component.pin], newest)
         scan_image = ""
         if image_mode == BUILD and upstream:
             scan_image = (newer and newer_image(upstream, newest)) or upstream

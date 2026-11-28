@@ -53,7 +53,7 @@ def test_failure_summary_captures_a_ruff_finding_and_classifies_lint():
 
 def test_lint_failure_is_not_misclassified_by_dependency_install_noise():
     summary = failure_summary(
-        "Requirement already satisfied: bandit>=1.7 in ./.venv/lib/python3.13/site-packages\n"
+        "Requirement already satisfied: bandit>=1.7 in ./.venv/lib/python3.14/site-packages\n"
         "+ ruff check .\n"
         "B904 Within an `except` clause, raise exceptions with `raise ... from err`\n"
         "Found 2 errors.\n"
@@ -385,3 +385,24 @@ def test_package_manager_advisories_never_reach_the_repair_agent():
     summary = failure_summary(_JEST_SNAPSHOT_LOG)
 
     assert "npm warn deprecated" not in summary
+
+
+def test_failure_summary_over_its_line_limit_keeps_the_first_marker_block():
+    log = "\n".join(
+        [
+            "+ npm ci",
+            "npm error code EUSAGE",
+            "npm error The `npm ci` command can only install with an existing package-lock.json",
+            "",
+            *(f"tests/test_{n}.py::test_case FAILED" for n in range(300)),
+        ]
+    )
+
+    summary = failure_summary(log, max_lines=120).splitlines()
+
+    assert len(summary) <= 120
+    assert summary[:2] == [
+        "npm error code EUSAGE",
+        "npm error The `npm ci` command can only install with an existing package-lock.json",
+    ]
+    assert summary[-1] == "tests/test_299.py::test_case FAILED"

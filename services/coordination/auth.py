@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-SHARED_SECRET_ENV_VAR = "COORDINATION_SHARED_SECRET"
+COORDINATION_AUTH_SETTING = "COORDINATION_SHARED_SECRET"
 
 SHARED_SECRET_REMEDY = (
-    f"Set {SHARED_SECRET_ENV_VAR} in .env to one value the coordination service and the "
-    "workers both read, then restart the stack with inv local-up."
+    f"Set {COORDINATION_AUTH_SETTING} in config/local/platform.env to one value the coordination "
+    "service and the workers both read, then restart the stack with inv local-up."
 )
 
 

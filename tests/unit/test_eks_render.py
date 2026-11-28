@@ -33,8 +33,6 @@ def _inputs() -> dict[str, Any]:
         "jira_pat",
         "slack_webhook_url",
         "registry_token",
-        "github_webhook_secret",
-        "jira_webhook_secret",
         "langfuse_public_key",
         "langfuse_secret_key",
         "temporal_ca",
@@ -52,6 +50,7 @@ def _inputs() -> dict[str, Any]:
                 "GATE_ENGINE_BUILDER_IMAGE",
                 "SEMGREP_IMAGE",
                 "TRIVY_IMAGE",
+                "OSV_SCANNER_IMAGE",
             )
         },
         "settings": {
@@ -60,7 +59,10 @@ def _inputs() -> dict[str, Any]:
             "LITELLM_DATABASE_PORT": "5432",
         },
         "platform_environment": {"DATABASE_URL": "postgresql+asyncpg://db:5432/agent_platform"},
-        "environment_config": {"repositories.yaml": "version: 1\n"},
+        "environment_config": {
+            "repositories.yaml": "version: 1\n",
+            "platform-escalation.yaml": "config_version: 1\n",
+        },
         "security_groups": {
             "cluster": "sg-c",
             "temporal_client": "sg-t",
@@ -87,6 +89,7 @@ def _tenant(name: str) -> dict[str, Any]:
         "authorship_signing_key",
         "registry_token",
         "mcp_gateway_token",
+        "review_signing_key",
     )
     return {
         "name": name,
@@ -177,13 +180,13 @@ def test_each_container_runs_the_published_image(overlay) -> None:
 
 def test_providers_name_the_secret_arns_and_leave_out_unset_ones(overlay) -> None:
     documents, skipped = eks_render.render(
-        overlay, _inputs(), REPOSITORY, omit_secrets=["adp:github_token", "jira_webhook_secret"]
+        overlay, _inputs(), REPOSITORY, omit_secrets=["adp:github_token"]
     )
     provider = _named(documents, "SecretProviderClass", "activity-worker", "tenant-adp")
     activity = json.loads(provider["spec"]["parameters"]["objects"])
     names = [entry["objectName"] for entry in activity]
 
-    assert sorted(skipped) == ["inbound-webhook:JIRA_WEBHOOK_SECRET", "tenant-adp:GITHUB_TOKEN"]
+    assert skipped == ["tenant-adp:GITHUB_TOKEN"]
     assert "arn:aws:secretsmanager:us-west-2:9:secret:temporal_ca" in names
     assert "arn:aws:secretsmanager:us-west-2:9:secret:tenants/adp/jira_pat" in names
     assert not [name for name in names if name.endswith("github_token")]
@@ -384,7 +387,8 @@ def test_the_generated_config_maps_carry_the_environment(overlay) -> None:
     environment = _named(documents, "ConfigMap", "agentic-platform-env", "tenant-adp")["data"]
     assert environment["DATABASE_URL"].startswith("postgresql+asyncpg://")
     assert _named(documents, "ConfigMap", "platform-config", "tenant-adp")["data"] == {
-        "repositories.yaml": "version: 1\n"
+        "repositories.yaml": "version: 1\n",
+        "platform-escalation.yaml": "config_version: 1\n",
     }
     assert (
         "model_list"
@@ -484,6 +488,62 @@ def test_each_tenant_gets_a_worker_namespace_and_a_sandbox_namespace(overlay) ->
     assert [d["kind"] for d in documents][: len(namespaces)] == ["Namespace"] * len(namespaces)
 
 
+@pytest.mark.parametrize(
+    ("namespace", "name"),
+    [("tenant-adp", "activity-worker"), ("tenant-adp-review", "review-worker")],
+)
+def test_a_worker_pod_outlives_the_graceful_shutdown_of_its_activities(
+    overlay, namespace, name
+) -> None:
+    from services.orchestration.worker import ACTIVITY_SHUTDOWN_GRACE
+
+    documents, _ = eks_render.render(overlay, _inputs(), REPOSITORY)
+    pod = _named(documents, "Deployment", name, namespace)["spec"]["template"]["spec"]
+
+    assert pod["terminationGracePeriodSeconds"] > ACTIVITY_SHUTDOWN_GRACE.total_seconds()
+
+
+def test_each_tenant_worker_stops_its_old_pod_before_the_new_one_starts(overlay) -> None:
+    inputs = {**_inputs(), "tenants": [_tenant("adp"), _tenant("beta")]}
+    documents, _ = eks_render.render(overlay, inputs, REPOSITORY)
+
+    for tenant in ("tenant-adp", "tenant-beta"):
+        worker = _named(documents, "Deployment", "activity-worker", tenant)
+        assert worker["spec"]["strategy"] == {"type": "Recreate"}
+
+
+@pytest.mark.parametrize(
+    ("namespace", "name"),
+    [("tenant-adp", "activity-worker"), ("tenant-adp-review", "review-worker")],
+)
+def test_a_drain_slot_pod_keeps_its_workers_policies_and_leaves_the_current_selector(
+    overlay, namespace, name
+) -> None:
+    from scripts.eks_deploy_task import _matches, drain_copy
+
+    documents, _ = eks_render.render(overlay, _inputs(), REPOSITORY)
+    current = _named(documents, "Deployment", name, namespace)
+    drain = drain_copy(current)
+    current_pod = current["spec"]["template"]["metadata"]["labels"]
+    drain_pod = drain["spec"]["template"]["metadata"]["labels"]
+    policies = [
+        d
+        for d in documents
+        if d["kind"] in ("NetworkPolicy", "SecurityGroupPolicy")
+        and d["metadata"].get("namespace") == namespace
+        and _matches(d["spec"]["podSelector"], current_pod)
+    ]
+
+    assert current_pod["agentic-dev-platform/slot"] == "current"
+    assert _matches(current["spec"]["selector"], current_pod)
+    assert not _matches(current["spec"]["selector"], drain_pod)
+    assert _matches(drain["spec"]["selector"], drain_pod)
+    assert not _matches(drain["spec"]["selector"], current_pod)
+    assert policies
+    assert all(_matches(policy["spec"]["podSelector"], drain_pod) for policy in policies)
+    assert drain["spec"]["template"]["spec"]["serviceAccountName"] == name
+
+
 def test_a_tenant_worker_runs_on_its_namespaces_paths_and_settings(overlay) -> None:
     documents, _ = eks_render.render(overlay, _inputs(), REPOSITORY)
     worker = _named(documents, "Deployment", "activity-worker", "tenant-adp")["spec"]["template"]
@@ -575,6 +635,103 @@ def test_a_tenant_mounts_no_other_tenants_secrets(overlay) -> None:
     assert "arn:aws:secretsmanager:us-west-2:9:secret:tenants/payments/github_token" in names
 
 
+def test_each_tenant_runs_one_review_worker_with_its_own_secret_provider(overlay) -> None:
+    inputs = _inputs()
+    inputs["tenants"].append(_tenant("payments"))
+    documents, _ = eks_render.render(overlay, inputs, REPOSITORY)
+    reviewers = {
+        d["metadata"]["namespace"]
+        for d in documents
+        if d["kind"] == "Deployment" and d["metadata"]["name"] == "review-worker"
+    }
+
+    assert reviewers == {"tenant-adp-review", "tenant-payments-review"}
+    for tenant, other in (("adp", "payments"), ("payments", "adp")):
+        namespace = f"tenant-{tenant}-review"
+        deployment = _named(documents, "Deployment", "review-worker", namespace)
+        spec = deployment["spec"]["template"]["spec"]
+        container = next(c for c in spec["containers"] if c["name"] == "review-worker")
+        env = {e["name"]: e.get("value") for e in container["env"]}
+        provider = _named(documents, "SecretProviderClass", "review-worker", namespace)
+        objects = json.loads(provider["spec"]["parameters"]["objects"])
+        secrets = {entry["objectAlias"]: entry["objectName"] for entry in objects}
+        volume = next(v for v in spec["volumes"] if v["name"] == "secrets")
+        claim = _named(documents, "PersistentVolumeClaim", "workspaces", namespace)
+        binding = _named(
+            documents, "RoleBinding", "review-worker-sandbox", f"tenant-{tenant}-sandbox"
+        )
+        activity = _named(documents, "SecretProviderClass", "activity-worker", f"tenant-{tenant}")
+
+        assert env["TENANT"] == tenant
+        assert env["GATE_ENGINE_NAMESPACE"] == f"tenant-{tenant}-sandbox"
+        assert spec["serviceAccountName"] == "review-worker"
+        assert _named(documents, "ServiceAccount", "review-worker", namespace)
+        assert volume["csi"]["volumeAttributes"]["secretProviderClass"] == "review-worker"
+        assert secrets["REVIEW_SIGNING_KEY"] == (
+            f"arn:aws:secretsmanager:us-west-2:9:secret:tenants/{tenant}/review_signing_key"
+        )
+        assert not [name for name in secrets.values() if f"/{other}/" in name]
+        assert "review_signing_key" not in activity["spec"]["parameters"]["objects"]
+        review_volume = _named(documents, "PersistentVolume", f"tenant-{tenant}-review-workspace")
+        assert claim["spec"]["accessModes"] == ["ReadWriteMany"]
+        assert review_volume["spec"]["accessModes"] == ["ReadWriteMany"]
+        assert review_volume["spec"]["csi"]["readOnly"] is True
+        assert claim["spec"]["volumeName"] == f"tenant-{tenant}-review-workspace"
+        assert binding["subjects"] == [
+            {"kind": "ServiceAccount", "name": "review-worker", "namespace": namespace}
+        ]
+    assert not [
+        d
+        for d in documents
+        if d["metadata"].get("namespace") == "agentic-dev-platform"
+        and d["metadata"]["name"] == "review-worker"
+    ]
+
+
+def _review_langfuse(overlay, exports: bool) -> tuple[dict[str, str], dict[str, str], set[str]]:
+    inputs = _inputs()
+    review = ["database_platform_app", "review_attestation_secret", "temporal_ca"]
+    langfuse = ["langfuse_public_key", "langfuse_secret_key"] if exports else []
+    inputs["tenants"][0]["review_platform_secrets"] = review + langfuse
+    documents, skipped = eks_render.render(overlay, inputs, REPOSITORY)
+    assert skipped == []
+    provider = _named(documents, "SecretProviderClass", "review-worker", "tenant-adp-review")
+    secrets = {
+        entry["objectAlias"]: entry["objectName"]
+        for entry in json.loads(provider["spec"]["parameters"]["objects"])
+    }
+    activity = _named(documents, "SecretProviderClass", "activity-worker", "tenant-adp")
+    deployment = _named(documents, "Deployment", "review-worker", "tenant-adp-review")
+    container = deployment["spec"]["template"]["spec"]["containers"][0]
+    sources = {ref["configMapRef"]["name"] for ref in container.get("envFrom", [])}
+    settings = _named(documents, "ConfigMap", "agentic-platform-eks", "tenant-adp-review")["data"]
+    assert "agentic-platform-eks" in sources
+    assert "LANGFUSE" not in activity["spec"]["parameters"]["objects"]
+    return secrets, settings, {e["name"] for e in container["env"]}
+
+
+def test_without_a_collector_the_review_worker_mounts_the_langfuse_keys(overlay) -> None:
+    secrets, settings, env = _review_langfuse(overlay, exports=True)
+
+    assert secrets["LANGFUSE_PUBLIC_KEY"] == (
+        "arn:aws:secretsmanager:us-west-2:9:secret:langfuse_public_key"
+    )
+    assert secrets["LANGFUSE_SECRET_KEY"] == (
+        "arn:aws:secretsmanager:us-west-2:9:secret:langfuse_secret_key"
+    )
+    assert settings["LANGFUSE_HOST"] == "https://langfuse.example.internal"
+    assert "LANGFUSE_HOST" not in env
+
+
+def test_with_a_collector_or_without_langfuse_the_review_worker_holds_no_langfuse_key(
+    overlay,
+) -> None:
+    secrets, _, _ = _review_langfuse(overlay, exports=False)
+
+    assert not [alias for alias in secrets if alias.startswith("LANGFUSE_")]
+    assert secrets["REVIEW_ATTESTATION_SECRET"].endswith(":review_attestation_secret")
+
+
 def test_a_deployment_without_tenants_is_refused(overlay) -> None:
     inputs = _inputs()
     inputs["tenants"] = []
@@ -653,3 +810,193 @@ def test_a_tenant_without_a_token_mounts_none(overlay) -> None:
     aliases = [e["objectAlias"] for e in json.loads(provider["spec"]["parameters"]["objects"])]
 
     assert "REPO_INTELLIGENCE_TOKEN" not in aliases
+
+
+def test_a_tenants_slack_tokens_reach_only_its_own_worker(overlay) -> None:
+    inputs = _inputs()
+    inputs["tenants"].append(_tenant("payments"))
+    for tenant in inputs["tenants"]:
+        for key in ("slack_bot_token", "slack_app_token"):
+            tenant["secrets"][key] = (
+                f"arn:aws:secretsmanager:us-west-2:9:secret:{tenant['name']}/{key}"
+            )
+    documents, skipped = eks_render.render(overlay, inputs, REPOSITORY)
+
+    assert skipped == []
+    for name in ("adp", "payments"):
+        provider = _named(documents, "SecretProviderClass", "activity-worker", f"tenant-{name}")
+        objects = json.loads(provider["spec"]["parameters"]["objects"])
+        slack = {e["objectAlias"]: e["objectName"] for e in objects if "slack_" in e["objectName"]}
+        assert slack == {
+            "SLACK_BOT_TOKEN": f"arn:aws:secretsmanager:us-west-2:9:secret:{name}/slack_bot_token",
+            "SLACK_APP_TOKEN": f"arn:aws:secretsmanager:us-west-2:9:secret:{name}/slack_app_token",
+        }
+    for provider in documents:
+        if (
+            provider["kind"] != "SecretProviderClass"
+            or provider["metadata"]["name"] == "activity-worker"
+        ):
+            continue
+        names = [e["objectName"] for e in json.loads(provider["spec"]["parameters"]["objects"])]
+        assert not [
+            name for name in names if "slack_bot_token" in name or "slack_app_token" in name
+        ]
+
+
+def test_a_tenant_worker_receives_its_escalation_action_key(overlay) -> None:
+    inputs = _inputs()
+    key = "arn:aws:secretsmanager:us-west-2:9:secret:tenants/adp/escalation-action-key"
+    inputs["tenants"][0]["secrets"]["escalation_action_key"] = key
+    documents, skipped = eks_render.render(overlay, inputs, REPOSITORY)
+    provider = _named(documents, "SecretProviderClass", "activity-worker", "tenant-adp")
+    objects = json.loads(provider["spec"]["parameters"]["objects"])
+
+    assert skipped == []
+    assert [e for e in objects if e["objectAlias"] == "ESCALATION_ACTION_KEY"] == [
+        {
+            "objectName": key,
+            "objectType": "secretsmanager",
+            "objectAlias": "ESCALATION_ACTION_KEY",
+        }
+    ]
+
+
+def test_the_validation_cronjob_runs_the_published_image_with_its_own_identity(overlay) -> None:
+    inputs = {**_inputs(), "tenants": [_tenant("adp"), _tenant("beta")]}
+    documents, _ = eks_render.render(overlay, inputs, REPOSITORY)
+
+    cronjob = _named(documents, "CronJob", "deployment-validate", "agentic-dev-platform")
+    pod = cronjob["spec"]["jobTemplate"]["spec"]["template"]["spec"]
+    container = pod["containers"][0]
+    assert container["image"] == inputs["images"]["platform"]
+    assert {"name": "TENANTS", "value": "adp,beta"} in container["env"]
+    assert all("secretRef" not in source for source in container["envFrom"])
+    assert pod["serviceAccountName"] == "deployment-validate"
+    secrets = next(v for v in pod["volumes"] if v["name"] == "secrets")
+    assert secrets["csi"]["volumeAttributes"]["secretProviderClass"] == "deployment-validate"
+    provider = _named(
+        documents, "SecretProviderClass", "deployment-validate", "agentic-dev-platform"
+    )
+    names = sorted(e["objectName"] for e in json.loads(provider["spec"]["parameters"]["objects"]))
+    assert names == [
+        "arn:aws:secretsmanager:us-west-2:9:secret:database_platform_app",
+        "arn:aws:secretsmanager:us-west-2:9:secret:litellm_master_key",
+        "arn:aws:secretsmanager:us-west-2:9:secret:temporal_ca",
+    ]
+    groups = _named(documents, "SecurityGroupPolicy", "temporal-clients", "agentic-dev-platform")
+    assert "deployment-validate" in groups["spec"]["podSelector"]["matchExpressions"][0]["values"]
+
+
+def test_the_validation_cronjob_reads_the_administrator_email_settings(overlay) -> None:
+    email = {
+        "SMTP_HOST": "smtp.example.test",
+        "SMTP_PORT": "587",
+        "ALERT_EMAIL_FROM": "adp@example.test",
+        "ALERT_EMAIL_TO": "oncall@example.test",
+    }
+    inputs = _inputs()
+    inputs["platform_environment"] = {**(inputs.get("platform_environment") or {}), **email}
+    documents, _ = eks_render.render(overlay, inputs, REPOSITORY)
+
+    cronjob = _named(documents, "CronJob", "deployment-validate", "agentic-dev-platform")
+    container = cronjob["spec"]["jobTemplate"]["spec"]["template"]["spec"]["containers"][0]
+    assert {"configMapRef": {"name": "agentic-platform-env"}} in container["envFrom"]
+    settings = _named(documents, "ConfigMap", "agentic-platform-env", "agentic-dev-platform")
+    assert {key: settings["data"][key] for key in email} == email
+
+
+def _smtp_ports(policy: dict[str, Any]) -> list[int]:
+    return [
+        port["port"]
+        for rule in policy["spec"]["egress"]
+        if any(peer.get("ipBlock", {}).get("cidr") == "0.0.0.0/0" for peer in rule["to"])
+        for port in rule["ports"]
+        if port["port"] != 443
+    ]
+
+
+@pytest.mark.parametrize(("setting", "port"), [({}, 587), ({"SMTP_PORT": "2525"}, 2525)])
+def test_the_platform_and_tenant_baselines_admit_smtp_egress_on_the_smtp_port(
+    overlay, setting, port
+) -> None:
+    inputs = _inputs()
+    inputs["platform_environment"] = {**(inputs.get("platform_environment") or {}), **setting}
+    documents, _ = eks_render.render(overlay, inputs, REPOSITORY)
+
+    platform = _named(documents, "NetworkPolicy", "platform-baseline", "agentic-dev-platform")
+    tenant = _named(documents, "NetworkPolicy", "platform-baseline", "tenant-adp")
+    assert _smtp_ports(platform) == [port]
+    assert _smtp_ports(tenant) == [port]
+
+
+def test_a_render_refuses_an_smtp_port_that_is_not_a_tcp_port(overlay) -> None:
+    inputs = _inputs()
+    inputs["platform_environment"] = {
+        **(inputs.get("platform_environment") or {}),
+        "SMTP_PORT": "x",
+    }
+
+    with pytest.raises(eks_render.RenderError, match="SMTP_PORT"):
+        eks_render.render(overlay, inputs, REPOSITORY)
+
+
+def _posting_pod(documents, kind: str, name: str) -> dict[str, Any]:
+    document = _named(documents, kind, name, "agentic-dev-platform")
+    if kind == "CronJob":
+        return document["spec"]["jobTemplate"]["spec"]["template"]["spec"]
+    return document["spec"]["template"]["spec"]
+
+
+@pytest.mark.parametrize(
+    ("kind", "name"), [("Deployment", "inbound-webhook"), ("CronJob", "deployment-validate")]
+)
+def test_the_platform_callers_present_a_posting_service_token(overlay, kind, name) -> None:
+    documents, _ = eks_render.render(overlay, _inputs(), REPOSITORY)
+
+    pod = _posting_pod(documents, kind, name)
+    env = {entry["name"]: entry.get("value") for entry in pod["containers"][0]["env"]}
+    assert env["SLACK_POSTING_URL"] == "https://slack-poster:8160"
+    assert env["SLACK_POSTING_TOKEN_FILE"] == "/var/run/secrets/slack-posting/token"
+    volumes = {volume["name"]: volume for volume in pod["volumes"]}
+    [source] = volumes["slack-posting-token"]["projected"]["sources"]
+    assert source["serviceAccountToken"]["audience"] == "slack-posting-service"
+
+
+def test_an_environment_config_without_platform_escalation_is_refused(overlay) -> None:
+    inputs = _inputs()
+    del inputs["environment_config"]["platform-escalation.yaml"]
+
+    with pytest.raises(eks_render.RenderError) as refused:
+        eks_render.render(overlay, inputs, REPOSITORY)
+
+    assert "platform-escalation.yaml" in str(refused.value)
+    assert "config/platform/platform-escalation.yaml.example" in str(refused.value)
+
+
+def test_every_pod_that_reads_platform_escalation_reads_it_from_the_environment_config(
+    overlay,
+) -> None:
+    inputs = _inputs()
+    inputs["environment_config"]["platform-escalation.yaml"] = "config_version: 1\n"
+    documents, _ = eks_render.render(overlay, inputs, REPOSITORY)
+
+    config = _named(documents, "ConfigMap", "platform-config", "agentic-dev-platform")
+    assert config["data"]["platform-escalation.yaml"] == "config_version: 1\n"
+    cronjob = _named(documents, "CronJob", "deployment-validate", "agentic-dev-platform")
+    pods = [
+        _named(documents, "Deployment", "activity-worker", "tenant-adp")["spec"]["template"],
+        _named(documents, "Deployment", "inbound-webhook", "agentic-dev-platform")["spec"][
+            "template"
+        ],
+        cronjob["spec"]["jobTemplate"]["spec"]["template"],
+    ]
+    for pod in pods:
+        container = pod["spec"]["containers"][0]
+        assert {"name": "PLATFORM_ENV_CONFIG_DIR", "value": "/app/config/env"} in container["env"]
+        mount = next(m for m in container["volumeMounts"] if m["mountPath"] == "/app/config/env")
+        volume = next(v for v in pod["spec"]["volumes"] if v["name"] == mount["name"])
+        names = [volume.get("configMap", {}).get("name")] + [
+            source.get("configMap", {}).get("name")
+            for source in volume.get("projected", {}).get("sources", [])
+        ]
+        assert "platform-config" in names

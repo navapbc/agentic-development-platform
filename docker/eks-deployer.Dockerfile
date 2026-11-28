@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1
 
-ARG AL2023_IMAGE=public.ecr.aws/amazonlinux/amazonlinux:2023-minimal@sha256:158a9044f9dc0777f098b76c8b54346f6ed4560b9a6a416dec7a5ba3bc483af4
+ARG AL2023_IMAGE=public.ecr.aws/amazonlinux/amazonlinux:2023-minimal@sha256:75a2d4226d9b98c914d7eed878a03bef4f365ad548be5d28d464ccba504cec79
 
 FROM ${AL2023_IMAGE} AS go
-ARG AL2023_RELEASE=2023.12.20261112
+ARG AL2023_RELEASE=2023.12.20261120
 ARG GO_VERSION=1.27.4
 ARG GO_SHA256_AMD64=7226736c2339719cda28fbf3a54d71aa63bcefe376e98cef00034268dab24840
 ARG GO_SHA256_ARM64=3392582988a273a87ab5043ee1b2c9c17a2c3c00580bf9326c47a2e0aaaeac92
@@ -79,12 +79,12 @@ RUN NAME=aws-iam-authenticator \
     go-component
 
 FROM ${AL2023_IMAGE}
-ARG AL2023_RELEASE=2023.12.20261112
+ARG AL2023_RELEASE=2023.12.20261120
 RUN dnf -y --releasever="${AL2023_RELEASE}" upgrade \
- && dnf -y --releasever="${AL2023_RELEASE}" install python3.12 \
+ && dnf -y --releasever="${AL2023_RELEASE}" install python3.14 \
  && dnf clean all \
  && rm -rf /var/cache/dnf \
- && ln -s /usr/bin/python3.12 /usr/local/bin/python
+ && ln -s /usr/bin/python3.14 /usr/local/bin/python
 
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 
@@ -97,7 +97,7 @@ RUN mkdir -p /opt/eks-deployer/charts
 ADD --chmod=0444 --checksum=sha256:9255bf39873b6cb31106dbe61dc87c3617bff4197783b5b94381811a13f99c3c https://aws.github.io/eks-charts/aws-load-balancer-controller-3.6.2.tgz /opt/eks-deployer/charts/aws-load-balancer-controller.tgz
 
 COPY LICENSE NOTICE /usr/share/doc/agentic-dev-platform/
-COPY scripts/__init__.py scripts/eks_render.py scripts/tenant_render.py scripts/webhook_eks_render.py scripts/eks_deploy_task.py /opt/eks-deployer/scripts/
+COPY scripts/__init__.py scripts/eks_render.py scripts/tenant_render.py scripts/webhook_eks_render.py scripts/validation_job.py scripts/worker_slots.py scripts/eks_deploy_task.py /opt/eks-deployer/scripts/
 COPY services/__init__.py services/process.py /opt/eks-deployer/services/
 COPY deploy/kubernetes /opt/eks-deployer/deploy/kubernetes
 COPY openhands/policies /opt/eks-deployer/openhands/policies
@@ -108,5 +108,6 @@ WORKDIR /opt/eks-deployer
 ENV HOME=/tmp PYTHONDONTWRITEBYTECODE=1 EKS_DEPLOYER_ROOT=/opt/eks-deployer
 RUN cis-harden
 USER 65534:65534
+HEALTHCHECK NONE
 ENTRYPOINT ["python", "-m", "scripts.eks_deploy_task"]
 CMD ["deploy"]

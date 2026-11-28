@@ -7,7 +7,7 @@ or the scan of the component's newest upstream image. `targets` lists the images
 as markdown.
 
 The files come from the source TENANT_CONFIG_BUCKET selects, platform/image_exceptions.yaml and
-tenants/<tenant>/image_exceptions.yaml in the bucket, or config/<environment>/ without it.
+tenants/<tenant>/image_exceptions.yaml in the bucket, or config/local/ without it.
 `report --prune` removes the platform entries that expired or whose finding the rebuild or the
 excepted image no longer reports, through a conditional write, and lists each removal and the
 file's new version. Tenant entries are only reported, since each tenant publishes its own file.

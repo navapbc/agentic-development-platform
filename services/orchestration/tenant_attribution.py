@@ -1,10 +1,10 @@
 """Bind each activity's tenant into the telemetry baggage, so its model calls and spans carry it.
 
-A tenant's activity worker serves only its own task queue, so every activity it runs belongs to
-the tenant its `TENANT` setting names. The shared review worker serves every tenant and has no
-`TENANT`, so it reads the tenant from the execution record of the run the activity input names.
-The baggage tenant becomes the `tenant:<tenant>` tag of each LiteLLM request and Langfuse trace,
-and the `tenant` attribute of each span.
+A tenant's activity worker and review worker serve only their tenant's task queues, so every
+activity they run belongs to the tenant their `TENANT` setting names. The review worker also reads
+the tenant from the execution record of the run the activity input names, and refuses a run that
+another tenant recorded. The baggage tenant becomes the `tenant:<tenant>` tag of each LiteLLM
+request and Langfuse trace, and the `tenant` attribute of each span.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
 from observability import bind_execution
+from temporalio.exceptions import ApplicationError
 from temporalio.worker import ActivityInboundInterceptor, ExecuteActivityInput
 from temporalio.worker import Interceptor as WorkerInterceptor
 
@@ -51,8 +52,9 @@ class TenantAttributionInterceptor(WorkerInterceptor):
     """Bind the worker's tenant, or the tenant a run's execution record names, to each activity.
 
     With a lookup, the recorded tenant of the run wins and the worker's tenant is the fallback
-    for an activity whose run has no record yet. A lookup that fails leaves the activity
-    attributed to the fallback, because attribution must not fail a review.
+    for an activity whose run has no record yet. A worker bound to a tenant refuses, without
+    retry, an activity whose run another tenant recorded. A lookup that fails leaves the activity
+    attributed to the fallback, because an unavailable record must not fail a review.
     """
 
     def __init__(self, tenant: str = "", lookup: Lookup | None = None) -> None:
@@ -68,7 +70,7 @@ class TenantAttributionInterceptor(WorkerInterceptor):
             return self._tenant
         if execution_id in self._recorded:
             self._recorded.move_to_end(execution_id)
-            return self._recorded[execution_id]
+            return self._refuse_other_tenant(execution_id, self._recorded[execution_id])
         try:
             recorded = await self._lookup(execution_id)
         except Exception as exc:  # noqa: BLE001
@@ -79,6 +81,18 @@ class TenantAttributionInterceptor(WorkerInterceptor):
         self._recorded[execution_id] = recorded
         while len(self._recorded) > _CACHE_SIZE:
             self._recorded.popitem(last=False)
+        return self._refuse_other_tenant(execution_id, recorded)
+
+    def _refuse_other_tenant(self, execution_id: str, recorded: str) -> str:
+        if self._tenant and recorded != self._tenant:
+            from services.orchestration.tenant_pinning import TENANT_MISMATCH
+
+            raise ApplicationError(
+                f"execution {execution_id} belongs to tenant {recorded}, and this worker serves "
+                f"tenant {self._tenant}",
+                type=TENANT_MISMATCH,
+                non_retryable=True,
+            )
         return recorded
 
 

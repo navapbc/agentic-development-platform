@@ -33,6 +33,18 @@ class RebarIntakeReport:
     blocked: int
 
 
+POLL_REFUSED_CAUSE = (
+    "the rebar store's current identity has no email that poll.identity_roles of tickets.yaml "
+    "maps to a role in poll.reader_roles, so the intake poll read no ticket. Set "
+    "AUTHORSHIP_IDENTITY_ID to an identity whose email maps to a reader role, then restart the "
+    "tenant's activity worker, which selects it in the store."
+)
+
+
+class RebarPollRefused(RuntimeError):
+    """The intake poll refused the store's current identity."""
+
+
 async def reconcile_rebar_intake(
     *,
     reader: TicketStoreReader,
@@ -70,7 +82,7 @@ async def reconcile_rebar_intake(
             return False
         return len(report.started) > before_started or len(report.held) > before_held
 
-    await run_poll(
+    poll = await run_poll(
         reader=reader,
         watermark=watermark,
         audit=audit,
@@ -80,6 +92,8 @@ async def reconcile_rebar_intake(
         intake=handle,
         idempotency=idempotency,
     )
+    if not poll.authorized:
+        raise RebarPollRefused(POLL_REFUSED_CAUSE)
     return RebarIntakeReport(
         started=sum(1 for record in report.started if not record.duplicate),
         duplicates=sum(1 for record in report.started if record.duplicate),

@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
+import os
+import signal
 import subprocess
 
 import pytest
 from scripts.config import get_settings
+from services.orchestration import worker as worker_module
 from services.orchestration.worker import (
     WORKER_ROLE_ACTIVITY,
     WORKER_ROLE_ALL,
+    WORKER_ROLE_REVIEW,
     WORKER_ROLE_WORKFLOW,
     _resolve_role,
     _scrub_workspace_credentials,
+    _shut_down_on_sigterm,
     build_worker,
 )
 from services.orchestration.worker_versioning import prune_drained_versions, set_current_version
@@ -51,6 +57,80 @@ async def test_build_worker_activity_role_registers_only_activities() -> None:
             config = worker.config()
         assert config["activities"]
         assert not config["workflows"]
+
+
+@pytest.mark.parametrize("role", [WORKER_ROLE_ACTIVITY, WORKER_ROLE_REVIEW, WORKER_ROLE_ALL])
+async def test_an_activity_worker_lets_the_longest_single_attempt_activity_finish_on_shutdown(
+    role: str,
+) -> None:
+    from datetime import timedelta
+
+    from services.orchestration.temporal_workflows.draft_pull_request import (
+        DraftPullRequestInput,
+    )
+
+    longest = timedelta(seconds=DraftPullRequestInput.activity_timeout_seconds)
+    async with (
+        await WorkflowEnvironment.start_time_skipping() as env,
+        build_worker(env.client, f"q-{role}", role) as worker,
+    ):
+        config = worker.config()
+    assert config["graceful_shutdown_timeout"] >= longest
+
+
+class _SlotServices:
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.started: list[str] = []
+
+        async def install(client, settings) -> None:
+            self.started.append("schedules")
+
+        async def socket_mode(settings, client):
+            self.started.append("socket_mode")
+            return "socket"
+
+        def approver_refresh(settings):
+            self.started.append("approver_refresh")
+            return "refresh"
+
+        monkeypatch.setattr(
+            "services.orchestration.tenant_pinning.install_tenant_schedules", install
+        )
+        monkeypatch.setattr(
+            "services.integration.slack.socket_client.start_socket_mode", socket_mode
+        )
+        monkeypatch.setattr(
+            "services.integration.slack.approver_groups.start_approver_group_refresh",
+            approver_refresh,
+        )
+
+
+async def test_a_drain_slot_worker_installs_no_schedule_and_takes_no_slack_interaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    services = _SlotServices(monkeypatch)
+    monkeypatch.setenv("WORKER_SLOT", "drain")
+
+    started = await worker_module._start_current_slot_services(
+        object(), get_settings(), WORKER_ROLE_ACTIVITY
+    )
+
+    assert started == (None, None)
+    assert services.started == []
+
+
+async def test_a_current_slot_worker_installs_its_schedules_and_opens_slack(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    services = _SlotServices(monkeypatch)
+    monkeypatch.delenv("WORKER_SLOT", raising=False)
+
+    started = await worker_module._start_current_slot_services(
+        object(), get_settings(), WORKER_ROLE_ACTIVITY
+    )
+
+    assert started == ("socket", "refresh")
+    assert services.started == ["schedules", "socket_mode", "approver_refresh"]
 
 
 async def test_build_worker_all_role_registers_both() -> None:
@@ -342,3 +422,130 @@ async def test_activity_worker_startup_clears_a_persisted_workspace_credential(
     config = (checkout / ".git" / "config").read_text(encoding="utf-8")
     assert "ghs-startup-secret" not in config
     assert "https://acme.ghe/acme-org/demo.git" in config
+
+
+class _StoppableWorker:
+    def __init__(self) -> None:
+        self.stopped = asyncio.Event()
+
+    async def run(self) -> None:
+        await self.stopped.wait()
+
+    async def shutdown(self) -> None:
+        self.stopped.set()
+
+
+async def test_sigterm_shuts_every_worker_down_so_run_returns() -> None:
+    workers = [_StoppableWorker(), _StoppableWorker()]
+    _shut_down_on_sigterm(workers)
+    try:
+        running = asyncio.gather(*(worker.run() for worker in workers))
+        os.kill(os.getpid(), signal.SIGTERM)
+        await asyncio.wait_for(running, timeout=5)
+    finally:
+        asyncio.get_running_loop().remove_signal_handler(signal.SIGTERM)
+
+    assert all(worker.stopped.is_set() for worker in workers)
+
+
+@pytest.mark.parametrize(
+    ("role", "moves"),
+    [
+        (WORKER_ROLE_WORKFLOW, True),
+        (WORKER_ROLE_ALL, True),
+        (WORKER_ROLE_ACTIVITY, False),
+        (WORKER_ROLE_REVIEW, False),
+    ],
+)
+def test_only_a_worker_that_polls_workflow_queues_moves_the_current_version(
+    monkeypatch: pytest.MonkeyPatch, role: str, moves: bool
+) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        worker_module, "set_current_version", lambda _c, _s, queues: calls.append(queues)
+    )
+    settings = get_settings().model_copy(update={"worker_versioning_enabled": True})
+
+    worker_module._worker_runners(object(), settings, role, [], ["agent-platform-adp"])
+
+    assert calls == ([["agent-platform-adp"]] if moves else [])
+
+
+class _Run:
+    def __init__(self, pinned: str) -> None:
+        from types import SimpleNamespace
+
+        from temporalio.api.workflow.v1 import WorkflowExecutionVersioningInfo
+
+        info = WorkflowExecutionVersioningInfo()
+        info.deployment_version.build_id = pinned
+        self._description = SimpleNamespace(
+            raw_description=SimpleNamespace(
+                workflow_execution_info=SimpleNamespace(versioning_info=info)
+            )
+        )
+        self.history_fetched = False
+
+    async def describe(self):
+        return self._description
+
+    async def fetch_history(self):
+        self.history_fetched = True
+        return "history"
+
+
+class _RunClient:
+    def __init__(self, run: _Run) -> None:
+        self._run = run
+
+    def get_workflow_handle(self, workflow_id):
+        return self._run
+
+
+@pytest.mark.parametrize(
+    ("local", "pinned", "failure", "moved"),
+    [
+        ("0.3.0.20261128011248", "0.3.0.20261127211833", None, True),
+        ("0.3.0.20261128011248", "0.3.0.20261127211833", "nondeterminism", False),
+        ("0.3.0.20261127211833", "0.3.0.20261127211833", None, False),
+        ("0.3.0.20261127211833", "0.3.0.20261126000000", None, False),
+    ],
+)
+async def test_a_parked_run_moves_to_the_current_build_only_when_that_build_replays_it(
+    monkeypatch: pytest.MonkeyPatch, local: str, pinned: str, failure: str | None, moved: bool
+) -> None:
+    from types import SimpleNamespace
+
+    import temporalio.worker
+    from services.orchestration import worker_versioning
+
+    current = "0.3.0.20261128011248"
+    moves: list[str] = []
+
+    async def describe(client, name):
+        return name
+
+    async def move(client, settings, workflow_id):
+        moves.append(workflow_id)
+
+    class _Replayer:
+        def __init__(self, **kwargs) -> None:
+            pass
+
+        async def replay_workflow(self, history, *, raise_on_replay_failure):
+            return SimpleNamespace(replay_failure=failure)
+
+    monkeypatch.setattr(worker_versioning, "_describe_deployment", describe)
+    monkeypatch.setattr(worker_versioning, "_current_build_id", lambda described: current)
+    monkeypatch.setattr(worker_versioning, "move_to_current_version", move)
+    monkeypatch.setattr(temporalio.worker, "Replayer", _Replayer)
+    settings = get_settings().model_copy(
+        update={"worker_versioning_enabled": True, "agent_build_id": local}
+    )
+    run = _Run(pinned)
+
+    result = await worker_versioning.repin_if_replayable(_RunClient(run), settings, "wf-1")
+
+    assert result is moved
+    assert moves == (["wf-1"] if moved else [])
+    assert run.history_fetched is (local == current and pinned != current)

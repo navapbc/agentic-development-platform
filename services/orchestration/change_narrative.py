@@ -55,6 +55,7 @@ class PullRequestNarrative:
     summary: str
     description: str
     testing: str
+    outside_file_impact: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -68,7 +69,9 @@ def compose_pull_request_body(template: str, narrative: PullRequestNarrative) ->
     preamble, sections = _split(source)
     filled = [_fill(section, narrative) for section in sections]
     blocks = [block for block in (_render(preamble), *filled) if block]
-    return "\n\n".join(blocks) + "\n"
+    if not any(_categorise(section.heading) == _CHANGES for section in sections):
+        blocks.append(_outside_file_impact(narrative))
+    return "\n\n".join(block for block in blocks if block) + "\n"
 
 
 def read_pull_request_template(root: str) -> str:
@@ -139,7 +142,7 @@ def _content(category: str, narrative: PullRequestNarrative, *, ticket_resolved:
     if category == _TICKET:
         return [] if ticket_resolved else [narrative.issue_key]
     if category == _CHANGES:
-        return [narrative.summary]
+        return [narrative.summary, _outside_file_impact(narrative)]
     if category == _CONTEXT:
         provenance = (
             f"Opened by the agentic development platform for {narrative.issue_key}, "
@@ -149,6 +152,13 @@ def _content(category: str, narrative: PullRequestNarrative, *, ticket_resolved:
     if category == _TESTING:
         return [narrative.testing]
     return []
+
+
+def _outside_file_impact(narrative: PullRequestNarrative) -> str:
+    if not narrative.outside_file_impact:
+        return ""
+    listed = "\n".join(f"- `{path}`" for path in narrative.outside_file_impact)
+    return f"These files changed outside the declared file impact of the ticket:\n\n{listed}"
 
 
 def _resolve_ticket_tokens(lines: list[str], issue_key: str) -> tuple[list[str], bool]:

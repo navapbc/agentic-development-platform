@@ -11,7 +11,7 @@ resource "aws_iam_policy" "worker" {
         Sid      = "ReadTheTenantSecrets"
         Effect   = "Allow"
         Action   = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
-        Resource = concat([for secret in aws_secretsmanager_secret.this : secret.arn], [local.repo_intelligence_token_arn, local.mcp_gateway_token_arn])
+        Resource = concat([for secret in aws_secretsmanager_secret.this : secret.arn], [local.repo_intelligence_token_arn, local.mcp_gateway_token_arn, local.escalation_action_key_arn])
       }],
       [
         {
@@ -44,7 +44,7 @@ resource "aws_iam_policy" "worker" {
         {
           Sid      = "AssumeTheTicketStoreRoles"
           Effect   = "Allow"
-          Action   = "sts:AssumeRole"
+          Action   = ["sts:AssumeRole", "sts:TagSession"]
           Resource = [module.ticket_store.reader_role_arn, module.ticket_store.writer_role_arn]
         },
         {

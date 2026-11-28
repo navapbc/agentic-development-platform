@@ -1,7 +1,8 @@
 """Write the workstation's AWS credentials to the cluster Secret the Bedrock clients read.
 
-LiteLLM and the review worker read the Secret through credential_process, which rereads it
-before the credentials it last returned expire, so a renewal reaches them without a restart.
+LiteLLM and each tenant's review worker read the Secret through credential_process, which rereads
+it before the credentials it last returned expire, so a renewal reaches them without a restart.
+The Secret is written to the platform namespace and to each local tenant's review namespace.
 
 - AWS_LOGIN_COMMAND, when set, is run to sign in and must print credentials in the
   credential_process JSON format, for example `kion favorite <name> --credential-process`.
@@ -26,7 +27,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from services import process
-from services.aws_credentials import expiry_report
+from services.aws_credentials import expiration_stamp, expiry_report
 
 from scripts.config import Settings, get_settings
 
@@ -89,12 +90,12 @@ def from_profile(profile: str, session_factory: Callable[[str], Any] | None = No
             record["SessionToken"] = frozen.token
         expiry = getattr(credentials, "_expiry_time", None)
         if expiry is not None:
-            record["Expiration"] = _iso(expiry)
+            record["Expiration"] = expiration_stamp(expiry)
         return record
 
     try:
         return resolve()
-    except (SSOTokenLoadError, TokenRetrievalError, UnauthorizedSSOTokenError):
+    except SSOTokenLoadError, TokenRetrievalError, UnauthorizedSSOTokenError:
         print(f"{LOG} the SSO session of {profile} has expired, signing in", file=sys.stderr)
         process.run(
             ["aws", "sso", "login", "--profile", profile],
@@ -121,7 +122,7 @@ def session_token(
         "AccessKeyId": issued["AccessKeyId"],
         "SecretAccessKey": issued["SecretAccessKey"],
         "SessionToken": issued["SessionToken"],
-        "Expiration": _iso(issued["Expiration"]),
+        "Expiration": expiration_stamp(issued["Expiration"]),
     }
 
 
@@ -155,11 +156,9 @@ def obtain(
     return {"Version": 1, **record}
 
 
-def _iso(moment: datetime) -> str:
-    return moment.astimezone(UTC).isoformat().replace("+00:00", "Z")
-
-
-def secret_manifest(settings: Settings, record: Mapping[str, Any]) -> dict[str, Any]:
+def secret_manifest(
+    settings: Settings, record: Mapping[str, Any], namespace: str = ""
+) -> dict[str, Any]:
     payload = base64.b64encode(json.dumps(record).encode()).decode()
     return {
         "apiVersion": "v1",
@@ -167,38 +166,79 @@ def secret_manifest(settings: Settings, record: Mapping[str, Any]) -> dict[str, 
         "type": "Opaque",
         "metadata": {
             "name": CREDENTIALS_OBJECT,
-            "namespace": settings.k8s_namespace,
+            "namespace": namespace or settings.k8s_namespace,
             "labels": {"app.kubernetes.io/part-of": "agentic-dev-platform"},
         },
         "data": {KEY: payload},
     }
 
 
+def credential_namespaces(settings: Settings) -> list[str]:
+    """Return the platform namespace and the review namespace of each local tenant."""
+    from scripts.k8s_cluster import tenants
+    from scripts.tenant_render import review_namespace
+
+    return [settings.k8s_namespace, *(review_namespace(name) for name in tenants())]
+
+
+def login_environ() -> dict[str, str]:
+    """Return the process environment over the non-empty values of config/local/platform.env."""
+    from scripts.env_file import platform_env_values
+
+    dotenv = {key: value for key, value in platform_env_values().items() if value}
+    return {**dotenv, **os.environ}
+
+
+def stored_record(settings: Settings) -> dict[str, Any] | None:
+    """Return the credentials in the platform namespace's Secret, or None when it is absent."""
+    from scripts.k8s_cluster import namespaced
+
+    result = process.run(
+        namespaced(
+            settings,
+            "get",
+            "secret",
+            CREDENTIALS_OBJECT,
+            "--ignore-not-found",
+            "-o",
+            "jsonpath={.data.credentials\\.json}",
+        ),
+        timeout=process.SHORT_COMMAND_TIMEOUT_SECONDS,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise LoginError(result.stderr.strip() or f"kubectl exited {result.returncode}")
+    encoded = result.stdout.strip()
+    return json.loads(base64.b64decode(encoded)) if encoded else None
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
-    from dotenv import dotenv_values
-
-    from scripts.k8s_cluster import REPO_ROOT, kubectl
+    from scripts.k8s_cluster import kubectl
 
     argparse.ArgumentParser(description=__doc__).parse_args(argv)
     settings = get_settings()
-    dotenv = {key: value for key, value in dotenv_values(REPO_ROOT / ".env").items() if value}
     try:
-        record = obtain(settings, environ={**dotenv, **os.environ})
+        record = obtain(settings, environ=login_environ())
     except LoginError as exc:
         print(f"{LOG} {exc}", file=sys.stderr)
         return 1
+    namespaces = credential_namespaces(settings)
+    manifests = [secret_manifest(settings, record, namespace) for namespace in namespaces]
     process.run(
         kubectl(settings, "apply", "-f", "-"),
-        input=json.dumps(secret_manifest(settings, record)),
+        input=json.dumps({"apiVersion": "v1", "kind": "List", "items": manifests}),
         text=True,
         timeout=process.SHORT_COMMAND_TIMEOUT_SECONDS,
         check=True,
         stdout=process.DEVNULL,
     )
     _, report = expiry_report(record, settings.aws_credentials_warn_seconds, datetime.now(UTC))
-    print(f"{LOG} wrote {settings.k8s_namespace}/{CREDENTIALS_OBJECT}, {report}")
+    written = ", ".join(f"{namespace}/{CREDENTIALS_OBJECT}" for namespace in namespaces)
+    print(f"{LOG} wrote {written}, {report}")
     return 0
 
 

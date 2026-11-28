@@ -169,8 +169,7 @@ async def _project_autofix(req: ApplyCIRepairRequest, workspace_path: str) -> bo
     from scripts.config import get_settings
 
     from services.orchestration.checks.config import checks_for_repo
-    from services.orchestration.checks.runner import ChecksRunner, ChecksSpec
-    from services.orchestration.gates.pod_runner import KubectlPodOps
+    from services.orchestration.checks.runner import ChecksSpec, checks_runner
     from services.orchestration.langgraph.ci_repair import failing_files
     from services.orchestration.temporal_activities.checks import _clean_checkout
 
@@ -184,15 +183,7 @@ async def _project_autofix(req: ApplyCIRepairRequest, workspace_path: str) -> bo
     staging = tempfile.mkdtemp(prefix="fix-out-")
     try:
         _clean_checkout(workspace_path, checkout)
-        runner = ChecksRunner(
-            KubectlPodOps(),
-            namespace=settings.gate_engine_namespace,
-            builder_image=settings.gate_engine_builder_image,
-            privileged=settings.gate_engine_privileged,
-            node_pool=settings.sandbox_node_pool,
-            tls_verify=settings.gate_registry_tls_verify,
-        )
-        result = await runner.run_fix(
+        result = await checks_runner(settings).run_fix(
             ChecksSpec(
                 repo=req.repo,
                 execution_id=req.execution_id,
@@ -260,8 +251,8 @@ def _apply_staged_files(
     for entry in changed:
         if not in_repair_scope(entry, scope):
             continue
-        source = _confined(staging_root, entry)
-        target = _confined(workspace_root, entry)
+        source = confined(staging_root, entry)
+        target = confined(workspace_root, entry)
         if source is None or target is None:
             continue
         if not source.is_file() or not target.is_file():
@@ -271,9 +262,13 @@ def _apply_staged_files(
     return applied
 
 
-def _confined(root: Path, entry: str) -> Path | None:
-    """Resolve entry under root, rejecting anything that escapes it through .. or a symlink."""
-    candidate = (root / entry).resolve()
-    if candidate == root or root not in candidate.parents:
+def confined(root: Path, entry: str) -> Path | None:
+    """Resolve entry under a resolved root, rejecting a path that goes through .. or any symlink.
+
+    A symlink is refused even when it points inside the root, because the agent can commit one
+    that redirects a copy onto a file it may not change, such as one under .git/.
+    """
+    candidate = root / entry
+    if candidate.resolve() != candidate or root not in candidate.parents:
         return None
     return candidate

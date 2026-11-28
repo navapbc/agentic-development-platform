@@ -25,8 +25,9 @@ from services import process
 from services.healthcheck import touch
 from services.repository_intelligence.indexing import scip_builder
 from services.repository_intelligence.indexing.reindex import IndexRoots, reindex_repo
+from services.repository_intelligence.languages import primary_language
 from services.repository_intelligence.normalization.models import RepoRef
-from services.repository_intelligence.tenants import TenantRegistries, migrate_home_indexes
+from services.repository_intelligence.tenants import TenantRegistries
 
 log = logging.getLogger("repo-index-worker")
 
@@ -83,7 +84,13 @@ def checkout_at_pin(root: Path, pin: str) -> bool:
 
 
 def _default_reindex(target: RepoTarget, repo: RepoRef, prior: str | None) -> None:
-    reindex_repo(target.root, repo, prior_commit=prior, index_roots=target.index_roots)
+    reindex_repo(
+        target.root,
+        repo,
+        prior_commit=prior,
+        index_roots=target.index_roots,
+        indexer=scip_builder.scip_indexer_for(primary_language(target.root)),
+    )
 
 
 class RepoIndexWorker:
@@ -214,7 +221,6 @@ def build_worker(registries: TenantRegistries | None = None) -> RepoIndexWorker 
 def main() -> None:
     settings = get_settings()
     registries = TenantRegistries(settings)
-    migrate_home_indexes(registries, settings)
     worker = build_worker(registries)
     if worker is None:
         log.warning("no repositories configured, so repo-index-worker idles until one is")

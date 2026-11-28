@@ -8,13 +8,10 @@ metadata:
 rules:
   - resources: [pods]
     apiGroups: [""]
-    verbs: [get, list, watch, create, patch, delete]
+    verbs: [get, list, watch, create, delete]
   - resources: [pods/exec]
     apiGroups: [""]
     verbs: [get, create]
-  - resources: [pods/log]
-    apiGroups: [""]
-    verbs: [get]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

@@ -6,7 +6,7 @@ import pytest
 import services.orchestration.gates.config as gates_config
 import services.orchestration.gates.registry as gates_registry
 from services.orchestration.gates.contract import (
-    PASS,
+    PASSED,
     REVIEW,
     GateContext,
     GateResult,
@@ -27,7 +27,7 @@ async def test_evaluate_gate_writes_one_evidence_record(monkeypatch):
         return GateResult(
             name="code-review",
             kind=REVIEW,
-            verdict=PASS,
+            verdict=PASSED,
             attestation_hash="sha256:code-review",
         )
 
@@ -48,13 +48,13 @@ async def test_evaluate_gate_writes_one_evidence_record(monkeypatch):
 
     result = await evaluate_gate(EvaluateGateRequest(gate="code-review", context=_context()))
 
-    assert result.verdict == PASS
+    assert result.verdict == PASSED
     assert len(persisted) == 1
     assert persisted[0].source_component == "gate:code-review"
     assert persisted[0].execution_id == "exec-1"
     assert persisted[0].content_hash == "sha256:code-review"
     assert persisted[0].metadata["gate"] == "code-review"
-    assert persisted[0].metadata["verdict"] == PASS
+    assert persisted[0].metadata["verdict"] == PASSED
 
 
 async def test_record_manifest_pins_the_gate_set(monkeypatch):

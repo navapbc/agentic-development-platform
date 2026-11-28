@@ -26,6 +26,7 @@ class ClaimRequest:
     agent_id: str
     file_impact: list[str] = field(default_factory=list)
     owner_workflow_id: str = ""
+    repo: str = ""
 
 
 @dataclass
@@ -113,8 +114,9 @@ def _build_materializer():
 
 async def _run_model_key(execution_id: str) -> str:
     from services.integration.litellm_admin import ensure_run_model_key
+    from services.orchestration.limit_grants import PostgresLimitGrants
 
-    return await ensure_run_model_key(execution_id)
+    return await ensure_run_model_key(execution_id, grants=PostgresLimitGrants())
 
 
 async def _model_budget_stop(execution_id: str, failure_text: str) -> str:
@@ -184,6 +186,7 @@ async def claim_work_unit(req: ClaimRequest) -> ClaimResult:
                 file_impact=tuple(req.file_impact),
                 workflow_id=owner_workflow_id,
                 tenant=get_settings().tenant,
+                repo=req.repo,
             )
         )
     except CoordinationAuthError as exc:

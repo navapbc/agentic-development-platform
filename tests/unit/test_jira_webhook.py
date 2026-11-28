@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +22,7 @@ from services.orchestration.intake_reconciler import (
 )
 from services.orchestration.webhook.inbound import handle_inbound
 from services.orchestration.webhook.jira_events import JiraIntakeHandler
-from tests.support import hermetic_settings
+from tests.support import ModelPathStub, capture_alerts, hermetic_settings, model_path_gate
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "webhooks"
 _ALLOWED_PROJECTS = frozenset({"ADSER"})
@@ -141,7 +141,9 @@ def _context(world: _World) -> IntakeContext:
 
 
 def _handler(world: _World, *, secret: str = _SECRET) -> JiraIntakeHandler:
-    return JiraIntakeHandler(secret=secret, jira_resolver=world.resolver, context=_context(world))
+    return JiraIntakeHandler(
+        tenant="adp", secret=secret, jira_resolver=world.resolver, context=_context(world)
+    )
 
 
 async def _post(world: _World, *, body: bytes, mode: str, headers=None, secret: str = _SECRET):
@@ -151,7 +153,7 @@ async def _post(world: _World, *, body: bytes, mode: str, headers=None, secret: 
         handler=_handler(world, secret=secret),
         allowed=_ALLOWED_PROJECTS,
         ledger=world.ledger,
-        mode=mode,
+        mode=lambda tenant: mode,
     )
 
 
@@ -176,7 +178,7 @@ async def _poll(world: _World, *, issue: dict):
 def _hermetic_config(monkeypatch):
     monkeypatch.setattr(
         "services.orchestration.intake_reconciler.jira_allowed_projects",
-        lambda settings=None: set(_ALLOWED_PROJECTS),
+        lambda: set(_ALLOWED_PROJECTS),
     )
     monkeypatch.setattr(
         "services.orchestration.intake_reconciler.source_control_repos",
@@ -184,15 +186,15 @@ def _hermetic_config(monkeypatch):
     )
     monkeypatch.setattr(
         "services.orchestration.intake_reconciler.acceptance_field",
-        lambda settings=None: "",
+        lambda: "",
     )
     monkeypatch.setattr(
         "services.integration.jira.snapshot.allowed_projects",
-        lambda settings=None: set(_ALLOWED_PROJECTS),
+        lambda: set(_ALLOWED_PROJECTS),
     )
     monkeypatch.setattr(
         "services.integration.jira.snapshot.acceptance_field",
-        lambda settings=None: "",
+        lambda: "",
     )
 
 
@@ -320,3 +322,55 @@ async def test_a_delivery_during_its_own_in_flight_dispatch_is_told_to_retry():
     assert code == 200
     assert redelivered[0][0] == 409
     assert len(world.starter.starts) == 1
+
+
+async def test_a_webhook_pickup_on_an_unhealthy_model_path_defers_until_a_poll(monkeypatch):
+    alerts = capture_alerts(monkeypatch)
+    world = _world()
+    path = ModelPathStub("litellm")
+    gate = model_path_gate(path, ledger=world.ledger)
+    body = _fixture("jira_datacenter_issue_created.json")
+    handler = JiraIntakeHandler(
+        tenant="adp",
+        secret=_SECRET,
+        jira_resolver=world.resolver,
+        context=replace(_context(world), model_path=gate),
+    )
+
+    code, payload = await handle_inbound(
+        body,
+        {"X-Hub-Signature": _signature(body)},
+        handler=handler,
+        allowed=_ALLOWED_PROJECTS,
+        ledger=world.ledger,
+        mode=lambda tenant: WEBHOOK,
+    )
+
+    assert code == 200
+    assert (payload["started"], payload["deferred"]) == (0, 1)
+    assert world.starter.starts == []
+    assert len(alerts) == 1
+
+    path.hop = ""
+    path.next_pass()
+    await reconcile_intake(
+        read_source=_SingleIssue(json.loads(body)["issue"]),
+        starter=world.starter,
+        alerter=world.alerter,
+        ledger=world.ledger,
+        execution_seeder=world.seeder,
+        settings=hermetic_settings(),
+        jira_resolver=world.resolver,
+        snapshot_store=world.store,
+        model_path=gate,
+    )
+
+    assert [start.issue_key for start in world.starter.starts] == ["ADSER-42"]
+
+
+class _SingleIssue:
+    def __init__(self, issue: dict) -> None:
+        self._issue = issue
+
+    async def list_candidate_issues(self, project: str) -> list[dict]:
+        return [dict(self._issue)] if project in _ALLOWED_PROJECTS else []

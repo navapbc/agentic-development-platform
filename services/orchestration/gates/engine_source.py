@@ -332,9 +332,7 @@ def triage_engine(configs: tuple[GateEngineConfig, ...]) -> GateEngineConfig | N
     return None
 
 
-def load_gate_engine_configs(
-    settings=None, *, environment: str | None = None
-) -> tuple[GateEngineConfig, ...]:
+def load_gate_engine_configs(settings=None) -> tuple[GateEngineConfig, ...]:
     from scripts.config import get_settings, in_platform_image
 
     from services.integration.credentials import (
@@ -345,11 +343,10 @@ def load_gate_engine_configs(
     )
 
     resolved = settings or get_settings()
-    env = environment or resolved.environment
     configs: tuple[GateEngineConfig, ...] = ()
-    if env_config_path("gate_engine", environment=env).exists():
-        require_current_config("gate_engine", environment=env)
-        configs = parse_gate_engine_configs(load_env_config("gate_engine", environment=env))
+    if env_config_path("gate_engine").exists():
+        require_current_config("gate_engine")
+        configs = parse_gate_engine_configs(load_env_config("gate_engine"))
     catalog = catalog_engines(resolved.gate_engine_images)
     reused = sorted({config.name for config in configs} & set(catalog_engine_names()))
     if reused:

@@ -16,14 +16,12 @@ import os
 from pathlib import Path
 from typing import Any
 
-from services import process
-
 from scripts.temporal_certs import (
-    COMPOSITION_ROOT,
     SERVER_AUTH,
     CertificateError,
     _check_leaf,
     issue_server_certificate,
+    terraform_output,
 )
 
 CERTIFICATE = "clickhouse.pem"
@@ -57,16 +55,7 @@ def put(directory: Path, clickhouse: dict[str, Any] | None, secretsmanager: Any)
 
 
 def _terraform_clickhouse(env: dict[str, str]) -> dict[str, Any] | None:
-    result = process.run(
-        ["terraform", f"-chdir={COMPOSITION_ROOT}", "output", "-json", "container_clickhouse"],
-        timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS,
-        capture_output=True,
-        text=True,
-        env=env,
-    )
-    if result.returncode != 0:
-        raise CertificateError(f"terraform output failed: {result.stderr.strip()}")
-    return json.loads(result.stdout)
+    return json.loads(terraform_output("container_clickhouse", env, CertificateError))
 
 
 def main(argv: list[str] | None = None) -> int:

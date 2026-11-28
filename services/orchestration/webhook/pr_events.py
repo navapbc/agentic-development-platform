@@ -85,7 +85,7 @@ def parse_pr_closed_event(
 def repository_name(body: bytes) -> str | None:
     try:
         payload = json.loads(body or b"{}")
-    except (json.JSONDecodeError, UnicodeDecodeError):
+    except json.JSONDecodeError, UnicodeDecodeError:
         return None
     if not isinstance(payload, dict):
         return None
@@ -106,16 +106,6 @@ class RepositoryTenants(Protocol):
     def select_tenant(self, repository: str | None, body: bytes, signature: str) -> str | None: ...
 
 
-@dataclass(frozen=True)
-class PlatformRepositories:
-    """Every repository belongs to the platform, and one secret signs every delivery."""
-
-    secret: str
-
-    def select_tenant(self, repository: str | None, body: bytes, signature: str) -> str | None:
-        return "" if verify_signature(self.secret, body, signature) else None
-
-
 class PrClosedHandler:
     """Route a PR-closed delivery to the tenant whose secret signs it.
 
@@ -133,10 +123,9 @@ class PrClosedHandler:
         *,
         resolver: WorkflowResolver,
         signaller: WorkflowSignaller,
-        secret: str = "",
-        tenants: RepositoryTenants | None = None,
+        tenants: RepositoryTenants,
     ) -> None:
-        self._tenants = tenants or PlatformRepositories(secret)
+        self._tenants = tenants
         self._resolver = resolver
         self._signaller = signaller
 
@@ -145,6 +134,9 @@ class PrClosedHandler:
         tenant = self._tenants.select_tenant(repository_name(body), body, signature)
         _selected_tenant.set(tenant)
         return tenant is not None
+
+    def tenant(self) -> str:
+        return _selected_tenant.get() or ""
 
     def delivery_id(self, headers: Mapping[str, str], payload: dict[str, Any]) -> str:
         return headers.get(_DELIVERY_HEADER, "")

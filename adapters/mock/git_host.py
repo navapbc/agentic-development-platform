@@ -38,6 +38,8 @@ def _read_workspace(path: str) -> dict[str, str] | None:
     those bytes back out on encode. Skipping such a file would make this backend disagree with
     the git-backed ones about which paths a commit carries.
     """
+    if not path:
+        return None
     root = Path(path)
     if not root.is_dir():
         return None

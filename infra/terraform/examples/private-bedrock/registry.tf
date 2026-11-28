@@ -1,6 +1,6 @@
 # Images and packages for the gate, checks, and scanner pods, which DNS Firewall keeps from every
 # public registry. aws mode mirrors images through ECR pull-through caches and resolves the
-# package registries. external mode resolves only the registry config/<env>/registries.yaml names.
+# package registries. external mode resolves only the registry the platform registries.yaml names.
 locals {
   registry_aws  = local.eks_enabled && var.registry_mode == "aws"
   registry_host = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.region}.${data.aws_partition.current.dns_suffix}"

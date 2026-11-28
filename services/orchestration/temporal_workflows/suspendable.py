@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 
 from temporalio import workflow
 
@@ -17,6 +18,10 @@ from services.orchestration.suspension import (
     default_resume_on,
 )
 
+PARK_DECISION_KEY_PATCH = "park-decision-key"
+REPAIR_STAGE = "repair"
+STALE_DECISION = "this decision does not match the park the run is waiting on"
+
 
 def is_code_defect(exc: BaseException) -> bool:
     if isinstance(exc, asyncio.CancelledError):
@@ -29,6 +34,44 @@ class SuspendableWorkflow:
         self._resume_requested = False
         self._resume_trigger = ""
         self._suspension: Suspension | None = None
+        self._park_keys: bool | None = None
+        self._park_seq: int = 0
+
+    def _park_keys_enabled(self) -> bool:
+        """Whether this run keys its parks, which runs started before the patch do not."""
+        if self._park_keys is None:
+            self._park_keys = workflow.patched(PARK_DECISION_KEY_PATCH)
+        return self._park_keys
+
+    def _next_park_key(self, execution_id: str, stage: str, subject: str) -> str:
+        """Return the key of the next park, unique within the run through its ordinal.
+
+        ``subject`` is the gate list of a gate park or the attempt count of a repair park.
+        """
+        if not self._park_keys_enabled():
+            return ""
+        return self._numbered_park_key(execution_id, stage, subject)
+
+    def _numbered_park_key(self, execution_id: str, stage: str, subject: str) -> str:
+        self._park_seq += 1
+        return f"{execution_id}:{stage}:{subject}:{self._park_seq}"
+
+    def _waiting_park_key(self, *, repair: bool) -> str:
+        suspension = self._suspension
+        if suspension is None or not suspension.park_key:
+            return ""
+        # The Abandon button of a limit park sends the repair decision.
+        if suspension.reason == SuspendReason.LIMIT_REACHED:
+            return suspension.park_key if repair else ""
+        if suspension.reason != SuspendReason.AWAITING_HUMAN:
+            return ""
+        if (suspension.stage == REPAIR_STAGE) != repair:
+            return ""
+        return suspension.park_key
+
+    def _require_waiting_park(self, park_key: str, *, repair: bool) -> None:
+        if not park_key or self._waiting_park_key(repair=repair) != park_key:
+            raise ValueError(STALE_DECISION)
 
     @workflow.signal(name=RESUME_SIGNAL)
     def resume(self, trigger: str = "") -> None:
@@ -46,6 +89,7 @@ class SuspendableWorkflow:
             "stage": suspension.stage,
             "parked_build_id": suspension.parked_build_id,
             "detail": suspension.detail,
+            "park_key": suspension.park_key,
         }
 
     @staticmethod
@@ -78,8 +122,21 @@ class SuspendableWorkflow:
             )
         )
 
-    async def await_resume(self, suspension: Suspension) -> ResumeOn | None:
+    async def await_resume(
+        self, suspension: Suspension, *, until: Callable[[], bool] | None = None
+    ) -> ResumeOn | None:
+        """Park until a resume signal matches, or, when ``until`` is given, until it holds.
+
+        With ``until`` the resume signal and its trigger are ignored, so only the condition
+        ends the park.
+        """
         self._suspension = suspension
+        if until is not None:
+            await workflow.wait_condition(until)
+            self._suspension = None
+            self._resume_requested = False
+            self._resume_trigger = ""
+            return suspension.resume_on
         while True:
             self._resume_requested = False
             self._resume_trigger = ""

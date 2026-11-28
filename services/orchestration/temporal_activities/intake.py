@@ -36,11 +36,15 @@ async def _reclaim_orphaned_slots(client, execution_store, settings) -> None:
     from datetime import UTC, datetime, timedelta
 
     from services.orchestration.execution_reconciler import reconcile_orphaned_executions
-    from services.orchestration.intake_runtime import TemporalWorkflowLiveness
+    from services.orchestration.intake_runtime import (
+        OrphanReclaimAlerter,
+        TemporalWorkflowLiveness,
+    )
 
     await reconcile_orphaned_executions(
         store=execution_store,
         liveness=TemporalWorkflowLiveness(client),
+        notifier=OrphanReclaimAlerter(settings),
         now=datetime.now(UTC),
         grace=timedelta(seconds=settings.execution_orphan_grace_seconds),
     )
@@ -59,19 +63,24 @@ async def _reconcile_jira_pass() -> IntakeReconcileReport:
         NotificationsAlerter,
         PostgresExecutionSeeder,
         TemporalStarter,
+        build_model_path_gate,
     )
+    from services.orchestration.tenant_jobs import build_tenant_hold
 
     settings = get_settings()
-    jira_resolver = build_jira_credential_resolver(settings)
+    jira_resolver = build_jira_credential_resolver()
     client = await temporal_client.connect(settings.temporal_host, settings)
     execution_store = PostgresExecutionSeeder()
     starter = TemporalStarter(client, settings)
     await _reclaim_orphaned_slots(client, execution_store, settings)
+    ledger = PostgresSideEffectLedger()
+    model_path = build_model_path_gate(settings, ledger, client=client)
+    tenant_hold = build_tenant_hold(settings, ledger, client=client)
     report = await reconcile_intake(
         read_source=JiraPollReadSource(settings=settings, resolver=jira_resolver),
         starter=starter,
         alerter=NotificationsAlerter(settings),
-        ledger=PostgresSideEffectLedger(),
+        ledger=ledger,
         execution_seeder=execution_store,
         settings=settings,
         jira_resolver=jira_resolver,
@@ -79,7 +88,11 @@ async def _reconcile_jira_pass() -> IntakeReconcileReport:
         run_counter=execution_store,
         base_resolver=starter,
         checks_repos=required_checks_repos(settings),
+        model_path=model_path,
+        tenant_hold=tenant_hold,
     )
+    if model_path is not None:
+        await model_path.sweep()
     return IntakeReconcileReport(
         started=sum(1 for record in report.started if not record.duplicate),
         duplicates=sum(1 for record in report.started if record.duplicate),
@@ -102,7 +115,6 @@ async def _reconcile_rebar_pass() -> IntakeReconcileReport:
 
     from services import temporal_client
     from services.coordination.idempotency import PostgresSideEffectLedger
-    from services.integration.jira.credentials import acceptance_field
     from services.integration.source_control import source_control_repos
     from services.integration.tickets.rebar_config import (
         load_poll_config,
@@ -114,32 +126,41 @@ async def _reconcile_rebar_pass() -> IntakeReconcileReport:
         NotificationsAlerter,
         PostgresExecutionSeeder,
         TemporalStarter,
+        build_model_path_gate,
     )
     from services.orchestration.rebar_intake import reconcile_rebar_intake
+    from services.orchestration.tenant_jobs import build_tenant_hold
 
     settings = get_settings()
-    backend = load_rebar_backend_config(settings)
-    poll_config = load_poll_config(settings)
+    backend = load_rebar_backend_config()
+    poll_config = load_poll_config()
     repo_root = backend.repo_root
     client = await temporal_client.connect(settings.temporal_host, settings)
     execution_store = PostgresExecutionSeeder()
     starter = TemporalStarter(client, settings)
     await _reclaim_orphaned_slots(client, execution_store, settings)
 
+    ledger = PostgresSideEffectLedger()
+    model_path = build_model_path_gate(settings, ledger, client=client)
+    tenant_hold = build_tenant_hold(settings, ledger, client=client)
     ctx = IntakeContext(
         starter=starter,
         alerter=NotificationsAlerter(settings),
-        ledger=PostgresSideEffectLedger(),
+        ledger=ledger,
         execution_seeder=execution_store,
         snapshot_store=None,
         github_allow=frozenset(source_control_repos(settings)),
-        field_id=acceptance_field(settings),
+        field_id="",
         settings=settings,
         active_guard=execution_store,
         admission=await build_admission(settings, execution_store),
         base_resolver=starter,
         checks_repos=required_checks_repos(settings),
+        model_path=model_path,
+        tenant_hold=tenant_hold,
     )
+    if tenant_hold is not None:
+        await tenant_hold.admit()
 
     ready_ids = {str(t.get("ticket_id") or "") for t in rebar.ready(repo_root=repo_root)}
 
@@ -160,6 +181,8 @@ async def _reconcile_rebar_pass() -> IntakeReconcileReport:
         default_repo=backend.default_repo,
         idempotency=InMemoryIdempotencyGuard(),
     )
+    if model_path is not None:
+        await model_path.sweep()
     return IntakeReconcileReport(
         started=report.started,
         duplicates=report.duplicates,

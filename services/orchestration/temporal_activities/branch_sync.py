@@ -59,15 +59,74 @@ class RecheckResult:
     reason: str = ""
 
 
+@dataclass
+class ResyncRequest:
+    repo: str
+    task_id: str
+    execution_id: str
+    base: str
+    commit: str
+
+
+@dataclass
+class ResyncResult:
+    status: str
+    base_head: str
+    conflicts: list[str] = field(default_factory=list)
+
+
 def _build_synchronizer():
     from services.orchestration.branch_sync import GitBranchSynchronizer
 
     return GitBranchSynchronizer.from_settings()
 
 
+def _lockfiles(checks) -> frozenset[str]:
+    """The lockfiles the dependency step regenerates, which a base change cannot conflict with."""
+    return frozenset(checks.lockfiles if checks is not None and checks.lock_command else ())
+
+
+@activity.defn
+async def resync_branch(req: ResyncRequest) -> ResyncResult:
+    """Bring the committed agent branch onto the current base head in the run's workspace.
+
+    The workspace returns to the branch head first, so a retried attempt starts from the commit
+    rather than from a merge an earlier attempt left behind.
+    """
+    from scripts.config import get_settings
+
+    from services.coordination.orphans import PostgresOrphanRegistry
+    from services.orchestration.checks.config import checks_for_repo
+    from services.orchestration.materialization import WorkspaceMaterializer
+
+    materializer = WorkspaceMaterializer.from_settings(PostgresOrphanRegistry())
+    workspace = await materializer.materialize(
+        repo=req.repo,
+        task_id=req.task_id,
+        execution_id=req.execution_id,
+        base=req.base,
+        commit_sha=req.commit,
+    )
+    await materializer.discard_changes(workspace)
+    outcome = await _build_synchronizer().resync(
+        repo=req.repo,
+        base=req.base,
+        workspace_path=workspace.path,
+        regenerated=_lockfiles(checks_for_repo(req.repo, get_settings())),
+    )
+    return ResyncResult(
+        status=outcome.status, base_head=outcome.base_head, conflicts=list(outcome.conflicts)
+    )
+
+
 @activity.defn
 async def synchronize_branch(req: SyncRequest) -> SyncResult:
+    from scripts.config import get_settings
+
+    from services.orchestration.checks.config import checks_for_repo
+
     synchronizer = _build_synchronizer()
+    checks = checks_for_repo(req.repo, get_settings())
     outcome: SyncOutcome = await synchronizer.synchronize(
         repo=req.repo,
         base=req.base,
@@ -75,6 +134,7 @@ async def synchronize_branch(req: SyncRequest) -> SyncResult:
         branch=req.branch,
         workspace_path=req.workspace_path,
         resolved_files=req.resolved_files,
+        regenerated=_lockfiles(checks),
     )
     return SyncResult(
         status=outcome.status,

@@ -18,7 +18,7 @@ def _make_worktree(parent: Path, name: str) -> Path:
 
 
 def _make_venv(worktree: Path, editable_target: Path | None) -> Path:
-    site_packages = worktree / ".venv" / "lib" / "python3.12" / "site-packages"
+    site_packages = worktree / ".venv" / "lib" / "python3.14" / "site-packages"
     site_packages.mkdir(parents=True)
     if editable_target is not None:
         editable_target.mkdir(parents=True, exist_ok=True)

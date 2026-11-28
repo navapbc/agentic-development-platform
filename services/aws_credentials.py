@@ -20,12 +20,16 @@ def expiry_of(record: Mapping[str, Any]) -> datetime | None:
     return datetime.fromisoformat(str(stored).replace("Z", "+00:00")) if stored else None
 
 
+def expiration_stamp(moment: datetime) -> str:
+    return moment.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
 def expiry_report(record: Mapping[str, Any], warn_seconds: int, now: datetime) -> tuple[bool, str]:
     """Return whether the credentials need renewal and a sentence that says when they expire."""
     expiry = expiry_of(record)
     if expiry is None:
         return False, "the credentials carry no expiry"
-    stamp = expiry.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    stamp = expiration_stamp(expiry)
     remaining = (expiry - now).total_seconds()
     if remaining <= 0:
         return True, f"the credentials expired at {stamp}. Run {RENEW}"

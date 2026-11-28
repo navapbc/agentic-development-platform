@@ -31,7 +31,7 @@ spec:
     matchExpressions:
       - key: app.kubernetes.io/name
         operator: In
-        values: [activity-worker, inbound-webhook]
+        values: [activity-worker, review-worker, inbound-webhook, deployment-validate]
   securityGroups:
     groupIds:
       - sg-00000000000000001

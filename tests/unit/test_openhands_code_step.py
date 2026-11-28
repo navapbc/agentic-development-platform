@@ -131,7 +131,7 @@ def test_the_built_code_step_never_hands_the_master_key_to_the_sandbox(monkeypat
 
     settings = hermetic_settings(litellm_master_key="sk-master-secret")
 
-    async def ensure_run_model_key(execution_id, *, settings=None, client=None):
+    async def ensure_run_model_key(execution_id, *, settings=None, client=None, grants=None):
         return f"sk-run-{execution_id}"
 
     monkeypatch.setattr(litellm_admin, "ensure_run_model_key", ensure_run_model_key)

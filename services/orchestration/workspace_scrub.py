@@ -104,7 +104,7 @@ def scrub_workspace_credentials(root: Path) -> WorkspaceScrubReceipt:
             if _scrub_checkout(git_dir):
                 rewritten.append(workspace)
         except (OSError, RuntimeError) as exc:
-            log.error("workspace credential scrub failed for %s: %s", workspace, exc)
+            log.error("workspace remote URL rewrite failed for %s: %s", workspace, exc)
             failed.append(workspace)
     return WorkspaceScrubReceipt(
         scanned=len(checkouts), rewritten=tuple(rewritten), failed=tuple(failed)

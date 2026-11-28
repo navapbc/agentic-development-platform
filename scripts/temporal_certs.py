@@ -433,17 +433,21 @@ def put(
     return actions
 
 
-def _terraform_tls(env: dict[str, str]) -> dict[str, Any]:
+def terraform_output(name: str, env: dict[str, str], error: type[Exception]) -> str:
     result = process.run(
-        ["terraform", f"-chdir={COMPOSITION_ROOT}", "output", "-json", "temporal_tls"],
+        ["terraform", f"-chdir={COMPOSITION_ROOT}", "output", "-json", name],
         timeout=process.MEDIUM_COMMAND_TIMEOUT_SECONDS,
         capture_output=True,
         text=True,
         env=env,
     )
     if result.returncode != 0:
-        raise CertificateError(f"terraform output failed: {result.stderr.strip()}")
-    return json.loads(result.stdout)
+        raise error(f"terraform output failed: {result.stderr.strip()}")
+    return result.stdout
+
+
+def _terraform_tls(env: dict[str, str]) -> dict[str, Any]:
+    return json.loads(terraform_output("temporal_tls", env, CertificateError))
 
 
 def _names(values: list[str] | None, default: str) -> list[str]:

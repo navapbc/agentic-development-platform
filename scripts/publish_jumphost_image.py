@@ -57,7 +57,7 @@ def signing_builder(explicit: str, images_file: Path | None = None) -> str:
         return explicit
     try:
         references = json.loads((images_file or IMAGES_FILE).read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError):
+    except FileNotFoundError, json.JSONDecodeError:
         return ""
     return references.get(TFVARS_KEYS[BUILDAH.name], "")
 

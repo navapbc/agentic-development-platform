@@ -10,22 +10,33 @@ Every catalog image is built for arm64 and pinned by digest.
 
 | Catalog name | Base image | Adds | Toolchains |
 |---|---|---|---|
-| `agent-server-python-node` | Amazon Linux 2023 minimal, the platform's `OPENHANDS_AGENT_SERVER_IMAGE` | The `openhands-agent-server` package the platform's SDK version pins, installed from a hash-locked requirements file | Python 3.13, pip, Node 24, npm, git, tmux |
+| `agent-server-python-node` | Amazon Linux 2023 minimal, the platform's `OPENHANDS_AGENT_SERVER_IMAGE` | The `openhands-agent-server` package the platform's SDK version pins, installed from a hash-locked requirements file | Python 3.14, pip, Node 24, npm, git, tmux |
 | `agent-server-jvm` | `agent-server-python-node` | Corretto 21 and Maven 3.8.4 from the Amazon Linux packages | Everything above, plus `java`, `javac`, and `mvn`. Gradle projects use their `./gradlew` wrapper |
 | `agent-server-go` | `agent-server-python-node` | Go 1.26 from the Amazon Linux package | Everything above, plus `go` |
 
-The platform builds all three as targets of [agent-server.Dockerfile](../docker/agent-server.Dockerfile). `agent-server-python-node` serves both Python and Node, including ReactJS. The agent runs in CLI mode, which turns the browser tools off, so the images carry no browser, no editor server, and no kernel packages. [docker/agent-server/requirements.txt](../docker/agent-server/requirements.txt) locks the agent server's Python dependencies with hashes. Regenerate it with `uv pip compile --no-config docker/agent-server/requirements.in --override docker/agent-server/overrides.txt --python-platform linux --python-version 3.13 --generate-hashes -o docker/agent-server/requirements.txt` after a change to the SDK version.
+The platform builds all three as targets of [agent-server.Dockerfile](../docker/agent-server.Dockerfile). `agent-server-python-node` serves both Python and Node, including ReactJS. The agent runs in CLI mode, which turns the browser tools off, so the images carry no browser, no editor server, and no kernel packages. [docker/agent-server/requirements.txt](../docker/agent-server/requirements.txt) locks the agent server's Python dependencies with hashes. Regenerate it with `uv pip compile --no-config docker/agent-server/requirements.in --override docker/agent-server/overrides.txt --python-platform linux --python-version 3.14 --generate-hashes -o docker/agent-server/requirements.txt` after a change to the SDK version.
 
 ### Checks images
 
 | Catalog name | Profile | Toolchain from the Amazon Linux packages | Default command |
 |---|---|---|---|
-| `checks-python` | `python-fastapi` | Python 3.13 and pip | `pip install -r requirements-dev.txt && pytest -q` |
+| `checks-python` | `python-fastapi` | Python 3.14 and pip | `pip install -r requirements-dev.txt && pytest -q` |
 | `checks-node` | `node-react` | Node 24 and npm | `npm ci && npm test -- --watchAll=false` |
 | `checks-jvm` | `java-spring` | Corretto 21 and Maven 3.8.4 | `mvn -B -q verify` |
 | `checks-go` | `go-service` | Go 1.26 | `go vet ./... && go test ./...` |
 
 The platform builds all four as targets of [checks.Dockerfile](../docker/checks.Dockerfile) on Amazon Linux 2023 minimal, each with bash, git, and the archive tools. A profile names its checks image as `catalog:<name>`, which resolves through `RUNTIME_IMAGES` the way a sandbox image does, and a `checks.yaml` entry may name one the same way. The checks pods pull the dependencies a command installs through the registry mirrors that [gate-engine.md](gate-engine.md#registries) describes. Maven 3.8.4 defaults to version 3.1 of the compiler plugin, which ignores `maven.compiler.release`, so a project whose parent POM does not pin the plugin, as the Spring Boot parent does, pins version 3.6 or later itself.
+
+### The dependency step
+
+The agent sandbox reaches no package registry, so an agent that edits a manifest cannot write the lockfile the checks install from. Before each commit, the platform finds the changed dependency files, which are the manifests and lockfiles of npm, Go, Python, Maven, and Gradle in any directory. When the repository's checks name a `lock_command` and a changed file is one of its `lock_manifests` or `lockfiles`, the command runs in that file's directory in a checks pod, which reaches the registry, and no checks command runs beside it. The lockfiles and manifests it writes there are copied back into the change. The profiles set these defaults.
+
+| Profile | `lock_command` | `lock_manifests` | `lockfiles` |
+|---|---|---|---|
+| `node-react` | `npm install --package-lock-only --ignore-scripts --no-audit --no-fund` | `package.json` | `package-lock.json` |
+| `go-service` | `go mod tidy` | `go.mod` | `go.sum` |
+
+The step then scans the checkout with Trivy and OSV-Scanner before any checks command installs a package, whatever scanner gates the tenant enables. A finding blocks only when it sits in a changed dependency file and names a package and version the merge-base copy of that file did not already hold, and a malicious-package advisory, an OSV `MAL-` entry or a GitHub advisory filed under CWE-506, counts as critical whatever severity it reports. A lock command that fails parks the run on the `lockfile` gate with the command and its output, and the scan still runs on the manifests and the lockfiles the change carries. A blocking finding parks the run on the `dependency_scan` gate, after an approved `lockfile` park when both apply. A base change to a lockfile that the profile regenerates is never a branch sync conflict, because the step rewrites it from the merged manifest.
 
 ### Gate engines
 
@@ -107,4 +118,4 @@ The tenant's CI pushes the image to `<name_prefix>/tenants/<tenant>/` in ECR thr
 
 ## Publishing the catalog
 
-`inv publish-platform-images` and the `publish-images` workflow build `agent-server-jvm`, `agent-server-go`, and the four checks images into their ECR repositories and write them to `eks_runtime_images` in `images.auto.tfvars.json`, which `inv eks-deploy` sets as `RUNTIME_IMAGES` on the activity worker. The same command builds `agent-server-python-node` into the `openhands-agent-server` repository and writes it to `eks_agent_server_image`. Locally, `inv runtime-images` builds the catalog images, the buildah builder, and the semgrep and trivy images into the cluster's image store and writes `RUNTIME_IMAGES`, `OPENHANDS_AGENT_SERVER_IMAGE`, `GATE_ENGINE_BUILDER_IMAGE`, `SEMGREP_IMAGE`, and `TRIVY_IMAGE` into `.env`, each pinned by digest.
+`inv publish-platform-images` and the `publish-images` workflow build `agent-server-jvm`, `agent-server-go`, and the four checks images into their ECR repositories and write them to `eks_runtime_images` in `images.auto.tfvars.json`, which `inv eks-deploy` sets as `RUNTIME_IMAGES` on the activity worker. The same command builds `agent-server-python-node` into the `openhands-agent-server` repository and writes it to `eks_agent_server_image`. Locally, `inv runtime-images` builds the catalog images, the buildah builder, and the semgrep and trivy images into the cluster's image store and writes `RUNTIME_IMAGES`, `OPENHANDS_AGENT_SERVER_IMAGE`, `GATE_ENGINE_BUILDER_IMAGE`, `SEMGREP_IMAGE`, and `TRIVY_IMAGE` into `config/local/platform.env`, each pinned by digest.

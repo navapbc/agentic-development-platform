@@ -44,7 +44,19 @@ def test_typescript_indexer_argv_omits_project_flags():
     assert "--project-name" not in argv
     assert "--quiet" not in argv
     assert argv[-2:] == ["--output", "/out/index.scip"]
-    assert "scip-typescript@0.3.14" in argv[2]
+    assert argv[:2] == ["scip-typescript", "index"]
+
+
+def test_each_scip_indexer_version_matches_the_repo_intelligence_image():
+    dockerfile = (
+        Path(__file__).resolve().parents[2] / "docker" / "repo-intelligence.Dockerfile"
+    ).read_text(encoding="utf-8")
+    pins = {
+        "SCIP_PYTHON_VERSION": SCIP_PYTHON_INDEXER,
+        "SCIP_TYPESCRIPT_VERSION": SCIP_TYPESCRIPT_INDEXER,
+    }
+    for arg, indexer in pins.items():
+        assert f"ARG {arg}={indexer.version}\n" in dockerfile, arg
 
 
 def test_typescript_indexer_infers_tsconfig_when_missing(tmp_path):

@@ -3,7 +3,7 @@
 The compose `registry` service is the local stand-in for ECR. The host pushes to it as
 `localhost:5001`, and the gate pods pull from it as `host.docker.internal:5001` over plain HTTP,
 so the worker needs `GATE_REGISTRY_TLS_VERIFY=false` and the `GATE_ENGINE_IMAGES` value this
-writes into .env, each reference pinned by the digest the registry holds.
+writes into config/local/platform.env, each reference pinned by the digest the registry holds.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 
-from scripts.env_file import set_values
+from scripts.env_file import PLATFORM_ENV_FILE, set_values
 from scripts.k8s_cluster import local_arch
 from scripts.publish_platform_images import push_engines_locally
 
@@ -41,7 +41,7 @@ def main(argv: list[str] | None = None) -> int:
     }
     set_values(values)
     for key, value in values.items():
-        print(f"{LOG} wrote {key}={value} to .env")
+        print(f"{LOG} wrote {key}={value} to {PLATFORM_ENV_FILE}")
     print(f"{LOG} run inv k8s-reload to roll the workers onto them")
     return 0
 

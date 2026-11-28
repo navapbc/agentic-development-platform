@@ -35,8 +35,8 @@ Check the box below if your PR will require UAT and is not feature-flagged.
 """
 
 
-def narrative(**overrides: str) -> PullRequestNarrative:
-    defaults = {
+def narrative(**overrides: object) -> PullRequestNarrative:
+    defaults: dict[str, object] = {
         "issue_key": "PRJ-6948",
         "execution_id": "exec-9",
         "summary": "Removed the deprecated size prop from the Button component.",
@@ -195,3 +195,30 @@ def test_template_lookup_finds_the_lowercase_repository_root_variant(tmp_path):
 
 def test_template_lookup_returns_empty_when_the_repository_has_no_template(tmp_path):
     assert read_pull_request_template(str(tmp_path)) == ""
+
+
+_OUTSIDE = ("tsconfig.build.json", "package-lock.json")
+
+
+def test_body_names_each_file_outside_the_file_impact_under_the_changes():
+    body = compose_pull_request_body(TICKETED_TEMPLATE, narrative(outside_file_impact=_OUTSIDE))
+
+    changes = body.split("## 🛠 Changes", 1)[1].split("## ℹ️ Context for reviewers", 1)[0]
+    assert "- `tsconfig.build.json`" in changes
+    assert "- `package-lock.json`" in changes
+    assert "outside the declared file impact" in changes
+
+
+def test_body_names_files_outside_the_file_impact_when_the_template_has_no_changes_section():
+    template = "## Deployment notes\n\nCoordinate with the platform team before merging.\n"
+
+    body = compose_pull_request_body(template, narrative(outside_file_impact=_OUTSIDE))
+
+    assert "- `tsconfig.build.json`" in body
+    assert "- `package-lock.json`" in body
+
+
+def test_body_says_nothing_about_the_file_impact_when_every_file_was_declared():
+    body = compose_pull_request_body(TICKETED_TEMPLATE, narrative())
+
+    assert "file impact" not in body

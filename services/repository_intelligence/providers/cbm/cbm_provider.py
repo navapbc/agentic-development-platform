@@ -97,7 +97,7 @@ class CBMProvider:
                 timeout=self._timeout,
                 check=False,
             )
-        except (OSError, process.SubprocessError):
+        except OSError, process.SubprocessError:
             return False
         return completed.returncode == 0
 
@@ -253,7 +253,7 @@ class CBMProvider:
     def _int(value: str | None) -> int:
         try:
             return int(value) if value not in (None, "-", "") else 0
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return 0
 
     def _location(self, row: dict[str, str]) -> Location:
@@ -353,7 +353,7 @@ class CBMProvider:
                 continue
             try:
                 bases = json.loads(row.get("bases", "[]"))
-            except (json.JSONDecodeError, TypeError):
+            except json.JSONDecodeError, TypeError:
                 continue
             if short in bases:
                 results.append(self._symbol_from_row(row, 0.9))

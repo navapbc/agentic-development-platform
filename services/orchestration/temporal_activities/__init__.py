@@ -6,6 +6,7 @@ from services.orchestration.temporal_activities.bedrock import invoke_model
 from services.orchestration.temporal_activities.branch_sync import (
     recheck_issue,
     resolve_conflicts,
+    resync_branch,
     synchronize_branch,
 )
 from services.orchestration.temporal_activities.checks import run_checks
@@ -33,9 +34,19 @@ from services.orchestration.temporal_activities.intake import (
     reconcile_intake_pass,
 )
 from services.orchestration.temporal_activities.issue_intake import intake_jira_issue
+from services.orchestration.temporal_activities.limits import (
+    period_alert_thread,
+    read_run_limits,
+    read_tenant_budget,
+)
+from services.orchestration.temporal_activities.lockfile import prepare_dependencies
 from services.orchestration.temporal_activities.manifest import record_manifest
 from services.orchestration.temporal_activities.model_access import delete_run_model_key
-from services.orchestration.temporal_activities.notify import alert_human_intervention
+from services.orchestration.temporal_activities.notify import (
+    alert_human_intervention,
+    refresh_park_buttons,
+    settle_park_posts,
+)
 from services.orchestration.temporal_activities.persistence import (
     persist_execution_state,
     record_audit_event,
@@ -75,11 +86,14 @@ from services.orchestration.temporal_activities.suspension import (
     clear_suspension,
     record_suspension,
 )
+from services.orchestration.temporal_activities.validation import validate_tenant
 
 __all__ = [
     "IntakeReconcileReport",
     "IntakeReconcileRequest",
     "alert_human_intervention",
+    "refresh_park_buttons",
+    "settle_park_posts",
     "analyze_ci_failure",
     "apply_ci_repair",
     "apply_task_status",
@@ -91,9 +105,14 @@ __all__ = [
     "classify_test_failures",
     "clear_suspension",
     "commit_and_push",
+    "prepare_dependencies",
+    "resync_branch",
     "count_tick",
     "create_draft_pr",
     "delete_run_model_key",
+    "read_run_limits",
+    "read_tenant_budget",
+    "period_alert_thread",
     "detect_dependency",
     "evaluate_gate",
     "load_gate_plan",
@@ -128,6 +147,7 @@ __all__ = [
     "signal_dependency_ready",
     "synchronize_branch",
     "unmark_task_parked",
+    "validate_tenant",
     "verify_acceptance",
     "verify_authorship_merge",
 ]

@@ -7,7 +7,7 @@ config_version: 1
 
 profiles:
   python-fastapi:
-    description: Python services such as FastAPI, on Python 3.13.
+    description: Python services such as FastAPI, on Python 3.14.
     sandbox_image: catalog:agent-server-python-node
     checks:
       image: catalog:checks-python
@@ -26,6 +26,9 @@ profiles:
     checks:
       image: catalog:checks-node
       command: "npm ci && npm test -- --watchAll=false"
+      lock_command: "npm install --package-lock-only --ignore-scripts --no-audit --no-fund"
+      lock_manifests: [package.json]
+      lockfiles: [package-lock.json]
     gates:
       - name: security-policy
         enabled: true
@@ -54,6 +57,9 @@ profiles:
     checks:
       image: catalog:checks-go
       command: "go vet ./... && go test ./..."
+      lock_command: "go mod tidy"
+      lock_manifests: [go.mod]
+      lockfiles: [go.sum]
     gates:
       - name: security-policy
         enabled: true

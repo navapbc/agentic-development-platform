@@ -100,17 +100,19 @@ def parse_write_back_scopes(raw: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(parsed)
 
 
-def load_write_back_scopes(
-    settings: Any = None, *, environment: str | None = None, root: Path | None = None
-) -> tuple[str, ...]:
-    from scripts.config import get_settings
+def load_write_back_scopes(*, root: Path | None = None) -> tuple[str, ...]:
+    """Return the tenant's write-back allowlist, or every scope when it has no tickets.yaml.
 
-    from services.integration.credentials import load_env_config, require_current_config
+    A Jira tenant ships no tickets.yaml. An outdated tickets.yaml raises rather than falling
+    back, because the fallback allows every scope and would drop the configured allowlist.
+    """
+    from services.integration.credentials import (
+        env_config_path,
+        load_env_config,
+        require_current_config,
+    )
 
-    resolved = settings or get_settings()
-    env = environment or resolved.environment
-    try:
-        require_current_config("tickets", environment=env, root=root)
-    except ConfigError:
+    if not env_config_path("tickets", root=root).exists():
         return _DEFAULT_ALLOWED_SCOPES
-    return parse_write_back_scopes(load_env_config("tickets", environment=env, root=root))
+    require_current_config("tickets", root=root)
+    return parse_write_back_scopes(load_env_config("tickets", root=root))

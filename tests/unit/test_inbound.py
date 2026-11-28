@@ -34,6 +34,9 @@ class _FakeHandler:
     def verify(self, body: bytes, headers: Mapping[str, str]) -> bool:
         return self._signature_ok
 
+    def tenant(self) -> str:
+        return "adp"
+
     def delivery_id(self, headers: Mapping[str, str], payload: dict[str, Any]) -> str:
         return headers.get(_DELIVERY, "")
 
@@ -63,7 +66,7 @@ async def _run(handler: _FakeHandler, *, mode: str, headers: dict[str, str], bod
         handler=handler,
         allowed=_ALLOWED,
         ledger=InMemorySideEffectLedger(),
-        mode=mode,
+        mode=lambda tenant: mode,
     )
 
 
@@ -73,6 +76,36 @@ async def test_polling_mode_refuses_with_202() -> None:
     assert code == 202
     assert payload == {"status": "webhook disabled", "integration": "fake"}
     assert handler.dispatched == []
+
+
+async def test_an_unsigned_delivery_is_refused_before_the_mode_is_read() -> None:
+    read: list[str] = []
+    code, _ = await handle_inbound(
+        _body(),
+        {_DELIVERY: "d1"},
+        handler=_FakeHandler(signature_ok=False),
+        allowed=_ALLOWED,
+        ledger=InMemorySideEffectLedger(),
+        mode=lambda tenant: read.append(tenant) or POLLING,
+    )
+
+    assert code == 401
+    assert read == []
+
+
+async def test_the_mode_is_the_mode_of_the_verified_tenant() -> None:
+    read: list[str] = []
+    code, _ = await handle_inbound(
+        _body(),
+        {_DELIVERY: "d1"},
+        handler=_FakeHandler(),
+        allowed=_ALLOWED,
+        ledger=InMemorySideEffectLedger(),
+        mode=lambda tenant: read.append(tenant) or WEBHOOK,
+    )
+
+    assert code == 200
+    assert read == ["adp"]
 
 
 async def test_hybrid_mode_dispatches() -> None:
@@ -132,10 +165,20 @@ async def test_duplicate_delivery_replays_without_redispatch() -> None:
     ledger = InMemorySideEffectLedger()
     headers = {_DELIVERY: "d1"}
     first = await handle_inbound(
-        _body(), headers, handler=handler, allowed=_ALLOWED, ledger=ledger, mode=WEBHOOK
+        _body(),
+        headers,
+        handler=handler,
+        allowed=_ALLOWED,
+        ledger=ledger,
+        mode=lambda tenant: WEBHOOK,
     )
     second = await handle_inbound(
-        _body(), headers, handler=handler, allowed=_ALLOWED, ledger=ledger, mode=WEBHOOK
+        _body(),
+        headers,
+        handler=handler,
+        allowed=_ALLOWED,
+        ledger=ledger,
+        mode=lambda tenant: WEBHOOK,
     )
     assert first == (200, {"status": "handled", "name": "widget"})
     assert second == (200, {"duplicate": True, "status": "handled", "name": "widget"})

@@ -5,7 +5,7 @@ variable "create_off_hours_schedule" {
 }
 
 variable "name_prefix" {
-  description = "Prefix for the schedules, documents, roles, parameter, alert topic, and metric namespace."
+  description = "Prefix for the schedules, function, roles, parameter, alert topic, dead-letter queue, and metric namespace."
   type        = string
 }
 
@@ -44,7 +44,7 @@ variable "health_checked_services" {
 }
 
 variable "eks_deployer" {
-  description = "The eks-deployer task the automation runs to scale and check the EKS deployments that connect to the database, and those deployments, each as namespace/name, a platform deployment name, tenant-workers, or mcp-gateway. Null leaves EKS out."
+  description = "The eks-deployer task the off-hours function runs to scale and check the EKS deployments that connect to the database, and those deployments, each as namespace/name, a platform deployment name, tenant-workers, tenant-review-workers, or mcp-gateway. Null leaves EKS out."
   type = object({
     cluster_arn        = string
     task_family        = string
@@ -56,6 +56,12 @@ variable "eks_deployer" {
     deployments        = list(string)
   })
   default = null
+}
+
+variable "node_group_arns" {
+  description = "EKS managed node groups the sleep scales to zero nodes after the check before the foundation, and the wake restores before the foundation services start."
+  type        = list(string)
+  default     = []
 }
 
 variable "database" {
@@ -104,7 +110,7 @@ variable "foundation_wait_seconds" {
 
   validation {
     condition     = var.foundation_wait_seconds >= 0 && var.foundation_wait_seconds <= 540
-    error_message = "foundation_wait_seconds must be between 0 and 540, under the 600-second step limit."
+    error_message = "foundation_wait_seconds must be between 0 and 540, within the 600-second function timeout of the step."
   }
 }
 

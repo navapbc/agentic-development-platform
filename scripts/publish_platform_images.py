@@ -11,10 +11,10 @@ registry.
   images, the example gate engine images under `examples/gate-engines`, and the catalog sandbox
   images `agent-server-jvm`, `agent-server-go`, and `checks-*` are tagged
   `<version>-<content hash>-<arch>`.
-- trivy, semgrep, ClickHouse, LiteLLM, and Langfuse web and worker are built from the versions
-  `docker/al2023/versions.env` pins and tagged `<version>-<content hash>-<arch>`. A component whose
-  `<NAME>_IMAGE_MODE` pin is `release` is copied from its pinned upstream image instead, tagged
-  with its upstream version, and must keep the pinned digest.
+- trivy, osv-scanner, semgrep, ClickHouse, LiteLLM, and Langfuse web and worker are built from
+  the versions `docker/al2023/versions.env` pins and tagged `<version>-<content hash>-<arch>`. A
+  component whose `<NAME>_IMAGE_MODE` pin is `release` is copied from its pinned upstream image
+  instead, tagged with its upstream version, and must keep the pinned digest.
 
 The images are built from the files git tracks or would track, so ignored local artifacts such
 as the binaries under `vendor/bin` never reach an image.
@@ -68,6 +68,7 @@ from scripts.publish_temporal_images import (
     build_command,
     content_hash,
 )
+from scripts.worker_slots import build_id_of
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LOG = "[publish-platform-images]"
@@ -88,6 +89,7 @@ TFVARS_KEYS = {
     "buildah": "eks_buildah_image",
     "semgrep": "eks_semgrep_image",
     "trivy": "eks_trivy_image",
+    "osv-scanner": "eks_osv_scanner_image",
     "eks-deployer": "eks_deployer_image",
 }
 PLATFORM = ImageSpec("platform", "docker/Dockerfile", ())
@@ -149,6 +151,9 @@ GATE_ENGINES = {
 }
 RUNTIME_IMAGES_KEY = "eks_runtime_images"
 TRIVY = ImageSpec("trivy", "docker/trivy.Dockerfile", ("docker/al2023/go-component.sh",))
+OSV_SCANNER = ImageSpec(
+    "osv-scanner", "docker/osv-scanner.Dockerfile", ("docker/al2023/go-component.sh",)
+)
 SEMGREP = ImageSpec("semgrep", "docker/semgrep.Dockerfile", ("docker/semgrep",))
 CLICKHOUSE = ImageSpec("clickhouse", "docker/clickhouse.Dockerfile", ())
 LITELLM = ImageSpec("litellm", "docker/litellm.Dockerfile", ("docker/litellm",))
@@ -170,6 +175,7 @@ RELEASE = "release"
 # component's <NAME>_IMAGE_MODE pin in docker/al2023/versions.env is release.
 IMAGE_COMPONENTS = {
     "trivy": (TRIVY, "TRIVY_UPSTREAM_IMAGE"),
+    "osv-scanner": (OSV_SCANNER, "OSV_SCANNER_UPSTREAM_IMAGE"),
     "semgrep": (SEMGREP, "SEMGREP_UPSTREAM_IMAGE"),
     "clickhouse": (CLICKHOUSE, "CLICKHOUSE_IMAGE"),
     "litellm": (LITELLM, "LITELLM_UPSTREAM_IMAGE"),
@@ -203,6 +209,7 @@ SIGNED_CATALOG = frozenset(
     {
         "semgrep",
         "trivy",
+        "osv-scanner",
         "gate-engine-security-policy",
         "gate-engine-test-policy",
         "openhands-agent-server",
@@ -293,10 +300,6 @@ def published_platform_tag(ecr, repository: str, source_hash: str, arch: str) ->
         if tag.endswith(suffix):
             return tag, digest
     return "", ""
-
-
-def build_id_of(tag: str) -> str:
-    return tag.rsplit("-", 2)[0]
 
 
 @contextmanager
@@ -532,7 +535,7 @@ FINALIZE_STAGE = "finalize"
 PUBLISH_GROUPS = {
     "langfuse-web": ("langfuse-web",),
     "langfuse-worker": ("langfuse-worker",),
-    "scanners": ("trivy", "repo-intelligence"),
+    "scanners": ("trivy", "osv-scanner", "repo-intelligence"),
     "platform": ("platform", "eks-deployer", "opa"),
     "sandbox": ("openhands-agent-server", "agent-server-jvm", "agent-server-go"),
     "checks": ("checks-python", "checks-node", "checks-jvm", "checks-go"),

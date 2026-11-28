@@ -60,7 +60,7 @@ def _wire(monkeypatch, *, backend: str = "jira", issues=None, projects=("BETA",)
     )
     monkeypatch.setattr(
         "services.integration.jira.credentials.build_jira_credential_resolver",
-        lambda settings: _Resolver(set(projects)),
+        lambda: _Resolver(set(projects)),
     )
     monkeypatch.setattr(
         "services.integration.jira.adapter.build_jira_adapter", lambda *a, **k: adapter

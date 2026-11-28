@@ -216,14 +216,14 @@ def test_load_env_config_reads_yaml(tmp_path):
     env_dir.mkdir(parents=True)
     (env_dir / "github.yaml").write_text("hosts: {}\n", encoding="utf-8")
 
-    loaded = load_env_config("github", environment="local", root=tmp_path)
+    loaded = load_env_config("github", root=tmp_path)
 
     assert loaded == {"hosts": {}}
 
 
 def test_load_env_config_missing_file_raises(tmp_path):
     with pytest.raises(ConfigError):
-        load_env_config("github", environment="local", root=tmp_path)
+        load_env_config("github", root=tmp_path)
 
 
 def test_load_platform_config_reads_tracked_yaml(tmp_path):
@@ -266,7 +266,9 @@ def test_a_missing_secret_names_the_variable_the_env_file_and_the_next_command(t
 
 
 def test_committed_example_template_is_valid_and_resolves():
-    example = Path(__file__).resolve().parents[2] / "config" / "local" / "github.yaml.example"
+    example = (
+        Path(__file__).resolve().parents[2] / "config/local/tenants/tenant.example/github.yaml"
+    )
     raw = yaml.safe_load(example.read_text(encoding="utf-8"))
     resolver = GitHubCredentialResolver(
         parse_github_config(raw), {"sample-repo"}, EnvSecretResolver({"GITHUB_TOKEN": "tok"})

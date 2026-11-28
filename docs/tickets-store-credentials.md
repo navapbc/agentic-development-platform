@@ -1,6 +1,6 @@
 # Rebar Ticket-Store Credentials
 
-The rebar ticket store keeps its storage credentials isolated from the evidence and audit stores. The isolation is declared in `config/<env>/tickets.yaml`. Copy the committed template with `cp config/local/tickets.yaml.example config/local/tickets.yaml` and edit the copy.
+The rebar ticket store keeps its storage credentials isolated from the evidence and audit stores. Each tenant declares its store in its own `tickets.yaml`, `config/local/tenants/<tenant>/tickets.yaml` locally, copied from the `tickets.yaml.example` of the tenant template. The platform declares the buckets and roles every store must avoid in `tickets_isolation.yaml`, `config/local/tickets_isolation.yaml` locally, copied from `config/local/tickets_isolation.yaml.example`. In AWS the operator writes `tickets_isolation.yaml` into `container_config_dir` beside the other platform files.
 
 ## Fields
 
@@ -9,7 +9,7 @@ The rebar ticket store keeps its storage credentials isolated from the evidence 
 - `roles.read_only` is the role the reader profile assumes for the change-detection poll and every fetch. It has read-only access to the store.
 - `roles.write` is the role the writer profile assumes for status transitions, linkback, approval recording, and every push. It differs from the read-only role.
 - `provenance.require_actor` and `provenance.require_run_id` must both be true. Every tickets-branch ref write records the actor and the run id.
-- `isolation.evidence_bucket`, `isolation.audit_bucket`, `isolation.evidence_writer_role`, and `isolation.audit_writer_role` name the buckets and roles the tickets store must never reuse.
+- `evidence_bucket`, `audit_bucket`, `evidence_writer_role`, and `audit_writer_role` of the platform's `tickets_isolation.yaml` name the buckets and roles no tenant's tickets store may reuse. A tenant `tickets.yaml` that sets `isolation` is refused.
 
 ## Remote
 
@@ -17,7 +17,7 @@ The rebar ticket store keeps its storage credentials isolated from the evidence 
 
 ## Validation
 
-When the store's remote is an S3 URL, the activity worker validates this file at startup and refuses to start when any of these hold.
+When the store's remote is an S3 URL, the activity worker validates the tenant's `tickets.yaml` against `tickets_isolation.yaml` at startup and refuses to start when any of these hold.
 
 - The read-only polling role equals the write role, or the reader profile equals the writer profile.
 - Either tickets role equals the evidence writer role or the audit writer role.

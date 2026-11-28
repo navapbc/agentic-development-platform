@@ -10,6 +10,7 @@ from services.orchestration.temporal_workflows.reap import ReapWorkflow
 from services.orchestration.temporal_workflows.review import (
     PlanReviewWorkflow,
 )
+from services.orchestration.temporal_workflows.validation import TenantValidationWorkflow
 
 __all__ = [
     "BranchSyncWorkflow",
@@ -22,4 +23,5 @@ __all__ = [
     "PlanReviewWorkflow",
     "PullRequestWorkflow",
     "ReapWorkflow",
+    "TenantValidationWorkflow",
 ]

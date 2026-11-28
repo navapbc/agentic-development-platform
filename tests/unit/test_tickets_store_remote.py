@@ -45,9 +45,16 @@ def _raw(**store: Any) -> dict[str, Any]:
     }
 
 
+def _parse(raw: dict[str, Any]) -> Any:
+    """Parse the tenant sections of raw against its isolation section, the platform's file."""
+    tenant = {key: value for key, value in raw.items() if key != "isolation"}
+    return parse_tickets_store_config(tenant, raw["isolation"])
+
+
 @pytest.fixture
 def store(tmp_path: Path) -> str:
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / store_remote.TICKETS_WORKTREE).mkdir()
     return str(tmp_path)
 
 
@@ -68,14 +75,14 @@ def profiles(monkeypatch, tmp_path: Path):
 
 
 def test_remote_urls_name_the_profile_bucket_and_normalized_prefix():
-    config = parse_tickets_store_config(_raw())
+    config = _parse(_raw())
 
     assert config.store.remote_url("rebar-tickets-reader") == READER_URL
 
 
 def test_equal_profiles_are_rejected():
     with pytest.raises(ConfigError, match="reader profile must differ"):
-        parse_tickets_store_config(_raw(writer_profile="rebar-tickets-reader"))
+        _parse(_raw(writer_profile="rebar-tickets-reader"))
 
 
 def test_a_store_without_a_remote_reads_as_local_only(store):
@@ -83,7 +90,7 @@ def test_a_store_without_a_remote_reads_as_local_only(store):
 
 
 def test_configure_sets_the_reader_fetch_url_and_the_writer_push_url(store):
-    configure_store_remote(store, parse_tickets_store_config(_raw()))
+    configure_store_remote(store, _parse(_raw()))
 
     assert read_store_remote(store) == StoreRemote("origin", READER_URL, WRITER_URL)
 
@@ -91,22 +98,20 @@ def test_configure_sets_the_reader_fetch_url_and_the_writer_push_url(store):
 def test_configure_replaces_an_existing_remote(store):
     subprocess.run(["git", "-C", store, "remote", "add", "origin", "s3://other/x"], check=True)
 
-    configure_store_remote(store, parse_tickets_store_config(_raw()))
+    configure_store_remote(store, _parse(_raw()))
 
     assert read_store_remote(store) == StoreRemote("origin", READER_URL, WRITER_URL)
 
 
 def test_configure_requires_both_profiles(store):
     with pytest.raises(ConfigError, match="reader_profile and store.writer_profile"):
-        configure_store_remote(store, parse_tickets_store_config(_raw(writer_profile="")))
+        configure_store_remote(store, _parse(_raw(writer_profile="")))
 
 
 def test_check_accepts_the_configured_remote(profiles):
     profiles()
 
-    check_store_remote(
-        StoreRemote("origin", READER_URL, WRITER_URL), parse_tickets_store_config(_raw())
-    )
+    check_store_remote(StoreRemote("origin", READER_URL, WRITER_URL), _parse(_raw()))
 
 
 @pytest.mark.parametrize(
@@ -121,25 +126,21 @@ def test_check_rejects_a_remote_that_does_not_match_the_config(profiles, fetch, 
     profiles()
 
     with pytest.raises(ConfigError, match=message):
-        check_store_remote(StoreRemote("origin", fetch, push), parse_tickets_store_config(_raw()))
+        check_store_remote(StoreRemote("origin", fetch, push), _parse(_raw()))
 
 
 def test_check_rejects_a_profile_that_assumes_another_role(profiles):
     profiles(writer_role="arn:aws:iam::111111111111:role/evidence-writer")
 
     with pytest.raises(ConfigError, match="assumes"):
-        check_store_remote(
-            StoreRemote("origin", READER_URL, WRITER_URL), parse_tickets_store_config(_raw())
-        )
+        check_store_remote(StoreRemote("origin", READER_URL, WRITER_URL), _parse(_raw()))
 
 
 def test_check_rejects_an_undefined_profile(monkeypatch, tmp_path):
     monkeypatch.setenv("AWS_CONFIG_FILE", str(tmp_path / "missing"))
 
     with pytest.raises(ConfigError, match="is not defined"):
-        check_store_remote(
-            StoreRemote("origin", READER_URL, WRITER_URL), parse_tickets_store_config(_raw())
-        )
+        check_store_remote(StoreRemote("origin", READER_URL, WRITER_URL), _parse(_raw()))
 
 
 def _preflight_env(monkeypatch, store: str, raw: dict[str, Any]) -> Settings:
@@ -148,11 +149,9 @@ def _preflight_env(monkeypatch, store: str, raw: dict[str, Any]) -> Settings:
     monkeypatch.setattr(
         rebar_config,
         "load_rebar_backend_config",
-        lambda _settings: rebar_config.RebarBackendConfig(repo_root=store),
+        lambda: rebar_config.RebarBackendConfig(repo_root=store),
     )
-    monkeypatch.setattr(
-        store_config, "load_tickets_store_config", lambda _settings: parse_tickets_store_config(raw)
-    )
+    monkeypatch.setattr(store_config, "load_tickets_store_config", lambda: _parse(raw))
     return Settings(ticket_backend="rebar")
 
 
@@ -168,7 +167,7 @@ def test_preflight_skips_a_local_only_store(monkeypatch, store):
 
 def test_preflight_validates_isolation_for_an_s3_store(monkeypatch, store, profiles):
     profiles()
-    configure_store_remote(store, parse_tickets_store_config(_raw()))
+    configure_store_remote(store, _parse(_raw()))
     raw = _raw()
     raw["isolation"]["evidence_bucket"] = "rebar-tickets"
     settings = _preflight_env(monkeypatch, store, raw)
@@ -179,7 +178,7 @@ def test_preflight_validates_isolation_for_an_s3_store(monkeypatch, store, profi
 
 def test_preflight_accepts_a_consistent_s3_store(monkeypatch, store, profiles):
     profiles()
-    configure_store_remote(store, parse_tickets_store_config(_raw()))
+    configure_store_remote(store, _parse(_raw()))
 
     tickets_store_preflight(_preflight_env(monkeypatch, store, _raw()))
 
@@ -193,22 +192,122 @@ def test_seed_creates_the_store_with_the_split_remote_and_runs_rebar_init(monkey
             assert kwargs["cwd"] == root
             rebar_calls.append(tuple(command[1:]))
             return subprocess.CompletedProcess(command, 0, "", "")
+        if "ls-remote" in command:
+            return subprocess.CompletedProcess(command, 0, "", "")
         return run(command, **kwargs)
 
     monkeypatch.setattr(store_remote.process, "run", fake_run)
     root = str(tmp_path / "store")
 
-    seeded = store_remote.seed_store(root, parse_tickets_store_config(_raw()), "2940-c3f4")
+    seeded = store_remote.seed_store(root, _parse(_raw()), "2940-c3f4")
 
     assert seeded is True
     assert read_store_remote(root) == StoreRemote("origin", READER_URL, WRITER_URL)
     assert rebar_calls == [("init", "--silent"), ("identity", "use", "2940-c3f4")]
 
 
-def test_seed_leaves_an_existing_store_alone(monkeypatch, store):
+def _seed_against(monkeypatch, probe_code: int, push_code: int = 0) -> list[list[str]]:
+    pushes: list[list[str]] = []
+    run = store_remote.process.run
+
+    def fake_run(command, **kwargs):
+        if command[0] == "rebar":
+            return subprocess.CompletedProcess(command, 0, "", "")
+        if "ls-remote" in command:
+            return subprocess.CompletedProcess(command, probe_code, "", "")
+        if "push" in command:
+            pushes.append(command)
+            return subprocess.CompletedProcess(command, push_code, "", "denied")
+        return run(command, **kwargs)
+
+    monkeypatch.setattr(store_remote.process, "run", fake_run)
+    return pushes
+
+
+def test_a_seed_against_an_empty_bucket_pushes_the_new_store(monkeypatch, tmp_path):
+    pushes = _seed_against(monkeypatch, probe_code=2)
+    root = str(tmp_path / "store")
+
+    store_remote.seed_store(root, _parse(_raw()))
+
+    assert [command[-3:] for command in pushes] == [["--quiet", "origin", "tickets"]]
+
+
+def test_a_seed_that_attaches_to_a_bucket_pushes_nothing(monkeypatch, tmp_path):
+    pushes = _seed_against(monkeypatch, probe_code=0)
+
+    store_remote.seed_store(str(tmp_path / "store"), _parse(_raw()))
+
+    assert pushes == []
+
+
+def test_a_failed_push_of_a_new_store_refuses_the_seed(monkeypatch, tmp_path):
+    _seed_against(monkeypatch, probe_code=2, push_code=1)
+
+    with pytest.raises(ConfigError, match="empty bucket of origin failed: denied"):
+        store_remote.seed_store(str(tmp_path / "store"), _parse(_raw()))
+
+
+def test_seed_leaves_an_initialized_store_alone(monkeypatch, store):
     monkeypatch.setattr(store_remote, "configure_store_remote", pytest.fail)
 
-    assert store_remote.seed_store(store, parse_tickets_store_config(_raw())) is False
+    assert store_remote.seed_store(store, _parse(_raw())) is False
+
+
+def test_seed_completes_a_store_whose_rebar_init_did_not_finish(monkeypatch, tmp_path):
+    partial = str(tmp_path / "store")
+    subprocess.run(["git", "init", "-q", partial], check=True)
+    rebar_calls: list[tuple[str, ...]] = []
+    run = store_remote.process.run
+
+    def fake_run(command, **kwargs):
+        if command[0] == "rebar":
+            rebar_calls.append(tuple(command[1:]))
+            return subprocess.CompletedProcess(command, 0, "", "")
+        if "ls-remote" in command:
+            return subprocess.CompletedProcess(command, 0, "", "")
+        return run(command, **kwargs)
+
+    monkeypatch.setattr(store_remote.process, "run", fake_run)
+
+    assert store_remote.seed_store(partial, _parse(_raw())) is True
+    assert read_store_remote(partial) == StoreRemote("origin", READER_URL, WRITER_URL)
+    assert rebar_calls == [("init", "--silent")]
+
+
+@pytest.mark.parametrize(("current", "expected"), [(None, 1), ("other-id", 1), ("2940-c3f4", 0)])
+def test_the_configured_identity_is_selected_unless_it_is_current(
+    monkeypatch, store, current, expected
+):
+    import rebar
+
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(rebar, "resolve_current_identity", lambda repo_root: current)
+    monkeypatch.setattr(store_remote, "_rebar", lambda repo_root, *args: calls.append(args))
+
+    store_remote.select_store_identity(store, "2940-c3f4")
+
+    assert calls == [("identity", "use", "2940-c3f4")] * expected
+
+
+def test_a_failed_seed_names_the_remote_probe_error(monkeypatch, tmp_path):
+    run = store_remote.process.run
+
+    def fake_run(command, **kwargs):
+        if command[0] == "rebar":
+            return subprocess.CompletedProcess(
+                command, 1, "", "could not determine whether origin/tickets exists"
+            )
+        if "ls-remote" in command:
+            return subprocess.CompletedProcess(
+                command, 128, "", "fatal: Unable to locate credentials"
+            )
+        return run(command, **kwargs)
+
+    monkeypatch.setattr(store_remote.process, "run", fake_run)
+
+    with pytest.raises(ConfigError, match="exited 128: fatal: Unable to locate credentials"):
+        store_remote.seed_store(str(tmp_path / "store"), _parse(_raw()))
 
 
 def test_preflight_seeds_an_absent_s3_store_before_checking_it(monkeypatch, tmp_path, profiles):
@@ -234,7 +333,7 @@ def test_preflight_does_not_seed_without_a_store_config(monkeypatch, tmp_path):
 
     settings = _preflight_env(monkeypatch, str(tmp_path / "store"), _raw())
 
-    def missing(_settings):
+    def missing():
         raise ConfigError("tickets.yaml has no store section")
 
     monkeypatch.setattr(store_config, "load_tickets_store_config", missing)

@@ -53,7 +53,7 @@ def classify(applied: Iterable[str], script: ScriptDirectory) -> SchemaState:
         try:
             if script.get_revision(revision) is None:
                 return SchemaState.UNKNOWN
-        except (CommandError, RevisionError):
+        except CommandError, RevisionError:
             return SchemaState.UNKNOWN
     return SchemaState.BEHIND
 

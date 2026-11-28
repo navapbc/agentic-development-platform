@@ -36,6 +36,8 @@ with workflow.unsafe.imports_passed_through():
 
 REPLAN_CAP = 2
 PLANNING_MODEL = "planning-model"
+# The planning model thinks before it answers, and its thinking counts against max_tokens.
+PLAN_MAX_TOKENS = 16000
 
 
 @dataclass
@@ -84,7 +86,9 @@ class PlanReviewWorkflow:
         retry = RetryPolicy(maximum_attempts=3)
         short = timedelta(seconds=30)
         model_timeout = timedelta(minutes=5)
-        workflow_id = workflow.info().workflow_id
+        info = workflow.info()
+        workflow_id = info.workflow_id
+        execution_owner = info.parent.workflow_id if info.parent else workflow_id
 
         async def persist(state: str) -> None:
             await workflow.execute_activity(
@@ -93,7 +97,7 @@ class PlanReviewWorkflow:
                     execution_id=params.execution_id,
                     task_id=params.task_id,
                     state=state,
-                    workflow_id=workflow_id,
+                    workflow_id=execution_owner,
                     repository=params.repo or None,
                     repository_sha=params.commit or None,
                 ),
@@ -153,7 +157,7 @@ class PlanReviewWorkflow:
             ModelRequest(
                 logical_model=PLANNING_MODEL,
                 prompt=_plan_prompt(params, context_summary, []),
-                max_tokens=2048,
+                max_tokens=PLAN_MAX_TOKENS,
                 execution_id=params.execution_id,
                 task_id=params.task_id,
                 stage="plan",
@@ -297,7 +301,7 @@ class PlanReviewWorkflow:
                 ModelRequest(
                     logical_model=PLANNING_MODEL,
                     prompt=_plan_prompt(params, context_summary, outcome.findings),
-                    max_tokens=2048,
+                    max_tokens=PLAN_MAX_TOKENS,
                     execution_id=params.execution_id,
                     task_id=params.task_id,
                     stage="plan",

@@ -90,16 +90,14 @@ def catalog_profiles() -> dict[str, RuntimeProfile]:
     )
 
 
-def load_profiles(settings: Settings | None = None) -> dict[str, RuntimeProfile]:
+def load_profiles() -> dict[str, RuntimeProfile]:
     """Return the catalog and tenant profiles, refusing a tenant profile with a catalog name."""
-    from scripts.config import get_settings
 
-    resolved = settings or get_settings()
     profiles = catalog_profiles()
-    if env_config_path("profiles", environment=resolved.environment).exists():
-        require_current_config("profiles", environment=resolved.environment)
+    if env_config_path("profiles").exists():
+        require_current_config("profiles")
         tenant = parse_profiles(
-            load_env_config("profiles", environment=resolved.environment),
+            load_env_config("profiles"),
             catalog=False,
             source="profiles.yaml",
         )
@@ -122,7 +120,7 @@ def repository_profile(repo: str, settings: Settings | None = None) -> RuntimePr
     repository = load_repository_registry(settings).get(repo)
     if repository is None or not repository.profile:
         return None
-    profiles = load_profiles(settings)
+    profiles = load_profiles()
     if repository.profile not in profiles:
         raise ConfigError(
             f"repositories.yaml assigns repository {repo} the profile {repository.profile!r}, "
@@ -186,7 +184,7 @@ def profile_problems(settings: Settings) -> list[str]:
     from services.orchestration.gates.config import load_gates_config
 
     try:
-        profiles = load_profiles(settings)
+        profiles = load_profiles()
     except ConfigError as exc:
         return [str(exc)]
     problems = []

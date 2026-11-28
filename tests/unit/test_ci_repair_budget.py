@@ -4,6 +4,7 @@ from dataclasses import replace
 from typing import Any
 
 import pytest
+from services.orchestration.temporal_activities.limits import RunLimits
 from services.orchestration.temporal_activities.pull_request import CommitPushResult
 from services.orchestration.temporal_activities.repair import ApplyCIRepairResult
 from services.orchestration.temporal_workflows.draft_pull_request import (
@@ -50,6 +51,13 @@ class _BudgetLoop(DraftPullRequestWorkflow):
 
     async def _audit(self, event: Any) -> None:
         self.audited.append(event.event_type)
+
+    async def _run_limits(self, params: DraftPullRequestInput) -> RunLimits:
+        return RunLimits(
+            max_cost_usd=params.max_cost_usd,
+            max_llm_calls=params.max_llm_calls,
+            max_tokens=params.max_tokens,
+        )
 
 
 def _params() -> DraftPullRequestInput:

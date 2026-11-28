@@ -200,7 +200,7 @@ class LspProvider:
             self._process, self._client = self._client_factory(self._spec)
             self._client.initialize(self._root)
             self._open_documents(self._client)
-        except (OSError, LspError):
+        except OSError, LspError:
             self._client = None
         return self._client
 
